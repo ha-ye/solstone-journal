@@ -40,16 +40,23 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: scripts/release.sh [--test] [--no-publish]
+Usage: scripts/release.sh [--test] [--dry-run-linux|--dry-run-all-hosts]
 
-Options:
-  --test                       Publish to TestPyPI.
-  --no-publish                 Build and check artifacts only; do not upload,
-                               tag, create a GitHub release, or run pro5e.
+Modes:
+  default                      Build all-host artifacts, publish to PyPI, tag,
+                               and create a GitHub release.
+  --test                       Build all-host artifacts and publish to TestPyPI;
+                               skip git tag and GitHub release.
+  --dry-run-linux              Build and check local Linux artifacts only; skip
+                               macOS, upload, git tag, and GitHub release. No
+                               token required.
+  --dry-run-all-hosts          Build and check local Linux plus macOS artifacts,
+                               run twine check, then stop before upload, git tag,
+                               and GitHub release. No token required.
   -h, --help                   Show this help.
 
 Env overrides:
-  NOTARY_KEYCHAIN_PROFILE      notarytool keychain profile on pro5e
+  NOTARY_KEYCHAIN_PROFILE      notarytool keychain profile on the macOS build host
                                (default: sol-pbc-notary)
   PRO5E_HOST                   SSH alias for the macOS build host
                                (default: pro5e.local)
@@ -59,18 +66,33 @@ EOF
 TARGET="pypi"
 TOKEN_VAR="PYPI_TOKEN"
 REPOSITORY_ARGS=()
-PUBLISH="yes"
+MODE="publish"
+
+set_mode() {
+    local next_mode="$1"
+    if [[ "$MODE" != "publish" ]]; then
+        echo "only one release mode may be selected" >&2
+        usage >&2
+        exit 2
+    fi
+    MODE="$next_mode"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --test)
+            set_mode "test"
             TARGET="testpypi"
             TOKEN_VAR="TESTPYPI_TOKEN"
             REPOSITORY_ARGS=(--repository-url https://test.pypi.org/legacy/)
             shift
             ;;
-        --no-publish)
-            PUBLISH="no"
+        --dry-run-linux)
+            set_mode "dry-run-linux"
+            shift
+            ;;
+        --dry-run-all-hosts)
+            set_mode "dry-run-all-hosts"
             shift
             ;;
         -h|--help)
@@ -88,7 +110,13 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [[ "$PUBLISH" == "yes" ]]; then
+LOCAL_PREFLIGHT_ARGS=(local --root .)
+if [[ "$MODE" != "dry-run-linux" ]]; then
+    LOCAL_PREFLIGHT_ARGS+=(--require-clean)
+fi
+python3 scripts/check_release_preflight.py "${LOCAL_PREFLIGHT_ARGS[@]}"
+
+if [[ "$MODE" == "publish" || "$MODE" == "test" ]]; then
     if [[ -z "${!TOKEN_VAR:-}" ]]; then
         echo "set \$${TOKEN_VAR} before re-running" >&2
         exit 1
@@ -97,31 +125,14 @@ if [[ "$PUBLISH" == "yes" ]]; then
 fi
 PRO5E_HOST="${PRO5E_HOST:-pro5e.local}"
 NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-sol-pbc-notary}"
-CORE_X86_64_MATURIN_ARGS="--compatibility manylinux2014 --target x86_64-unknown-linux-musl"
-CORE_AARCH64_MATURIN_ARGS="--compatibility manylinux2014 --target aarch64-unknown-linux-musl"
-CORE_AARCH64_LINKER="rust-lld"
-
-require_rust_target() {
-    local target="$1"
-    if ! command -v rustup >/dev/null 2>&1; then
-        echo "rustup is required to build solstone-core ${target}; install rustup and retry" >&2
-        exit 1
-    fi
-    if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
-        echo "Rust target ${target} is required; run rustup target add ${target}" >&2
-        exit 1
-    fi
-}
+CORE_X86_64_MATURIN_ARGS="--locked --zig --compatibility manylinux2014 --target x86_64-unknown-linux-musl"
+CORE_AARCH64_MATURIN_ARGS="--locked --zig --compatibility manylinux2014 --target aarch64-unknown-linux-musl"
 
 # Capture the git ref we're publishing from. pro5e checks out the same ref
 # so the macOS wheel's source matches the local sdist. Reject ANY tracked or
 # untracked (non-ignored) change — untracked files would otherwise be built
 # locally but absent from the ref pro5e checks out.
-if [[ "$PUBLISH" == "yes" ]]; then
-    if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-        echo "working tree dirty (tracked or untracked changes); commit before releasing" >&2
-        exit 1
-    fi
+if [[ "$MODE" != "dry-run-linux" ]]; then
     GIT_REF=$(git rev-parse HEAD)
 fi
 
@@ -129,12 +140,8 @@ fi
 echo "==> [1/5] building local lockstep artifacts"
 python3 scripts/render_packaging.py --check
 rm -rf build/ dist/ *.egg-info/
-require_rust_target x86_64-unknown-linux-musl
-require_rust_target aarch64-unknown-linux-musl
 MATURIN_PEP517_ARGS="$CORE_X86_64_MATURIN_ARGS" uv build --all-packages
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$CORE_AARCH64_LINKER" \
-    MATURIN_PEP517_ARGS="$CORE_AARCH64_MATURIN_ARGS" \
-    uv build --package solstone-core --wheel
+MATURIN_PEP517_ARGS="$CORE_AARCH64_MATURIN_ARGS" uv build --package solstone-core --wheel
 python3 scripts/check_wheel_contents.py dist/
 
 # Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
@@ -149,56 +156,50 @@ TEST_FLAG=""
 MODELS_DECISION="$(python3 scripts/release_models_gate.py --version "$MODELS_VERSION" $TEST_FLAG)"
 echo "models gate: solstone-journal-models ${MODELS_VERSION} -> ${MODELS_DECISION}"
 
-LOCAL_LOCKSTEP_ARTIFACTS=(
-    "dist/solstone-${VERSION}.tar.gz"
-    "dist/solstone-${VERSION}-py3-none-any.whl"
-    "dist/solstone_core-${VERSION}.tar.gz"
-    "dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-    "dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-    "dist/solstone_journal-${VERSION}.tar.gz"
-    "dist/solstone_journal-${VERSION}-py3-none-any.whl"
-    "dist/solstone_journal_cuda-${VERSION}.tar.gz"
-    "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
-)
-MODELS_ARTIFACTS=(
-    "dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
-    "dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
-)
+RELEASE_SCOPE="linux"
 
-if [[ "$PUBLISH" == "no" ]]; then
+if [[ "$MODE" == "dry-run-linux" ]]; then
+    ARTIFACT_LIST=$(mktemp)
+    trap 'rm -f "$ARTIFACT_LIST"' EXIT
+    python3 scripts/check_wheel_contents.py \
+        --release-scope "$RELEASE_SCOPE" \
+        --models-decision "$MODELS_DECISION" \
+        --print-artifacts \
+        dist/ > "$ARTIFACT_LIST"
+    mapfile -t ARTIFACTS < "$ARTIFACT_LIST"
+
     echo
     echo "release artifacts:"
     ls -la dist/
 
     echo
-    echo "==> twine check (no publish)"
-    uvx twine check "${LOCAL_LOCKSTEP_ARTIFACTS[@]}" "${MODELS_ARTIFACTS[@]}"
+    echo "==> twine check (--dry-run-linux)"
+    uvx twine check "${ARTIFACTS[@]}"
 
     echo
-    echo "build/check complete (--no-publish); skipped pro5e, upload, git tag, git push, and GitHub release"
-    echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
-    echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
-    echo "  core sdist: dist/solstone_core-${VERSION}.tar.gz"
-    echo "  core x86:   dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-    echo "  core arm64: dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-    echo "  journal sdist: dist/solstone_journal-${VERSION}.tar.gz"
-    echo "  journal any:   dist/solstone_journal-${VERSION}-py3-none-any.whl"
-    echo "  cuda sdist:    dist/solstone_journal_cuda-${VERSION}.tar.gz"
-    echo "  cuda any:      dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
-    echo "  models sdist:  dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
-    echo "  models any:    dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
-    echo "  models gate:   ${MODELS_DECISION}"
-    echo "  macos:         pro5e/publish-time-only dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
-    echo "  core macos:    pro5e/publish-time-only dist/solstone_core-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+    echo "build/check complete (--dry-run-linux); skipped macOS, upload, git tag, git push, and GitHub release"
+    echo "skipped macOS artifacts (--dry-run-linux)"
+    printf '  %s\n' "${ARTIFACTS[@]}"
+    echo "  models gate: ${MODELS_DECISION}"
     exit 0
 fi
 
 # 2. macOS arm64 wheel: build helper + sign + notarize + bundle on pro5e
 echo "==> [2/5] pro5e: building macosx_14_0_arm64 wheel from $GIT_REF"
 if ! ssh -o ConnectTimeout=5 "$PRO5E_HOST" true 2>/dev/null; then
-    echo "error: $PRO5E_HOST not reachable; skip with --no-macos to publish only Linux artifacts (not implemented)" >&2
+    echo "error: $PRO5E_HOST not reachable; use --dry-run-linux to build only Linux artifacts" >&2
     exit 1
 fi
+
+REMOTE_STATUS_FILE=$(mktemp)
+trap 'rm -f "$REMOTE_STATUS_FILE"' EXIT
+REMOTE_REF=$(ssh "$PRO5E_HOST" "cd ~/projects/solstone && git fetch origin >/dev/null && git checkout $GIT_REF >/dev/null && git rev-parse HEAD")
+ssh "$PRO5E_HOST" "cd ~/projects/solstone && git status --porcelain --untracked-files=normal" > "$REMOTE_STATUS_FILE"
+python3 scripts/check_release_preflight.py remote-state \
+    --label "$PRO5E_HOST" \
+    --expected-ref "$GIT_REF" \
+    --actual-ref "$REMOTE_REF" \
+    --status-file "$REMOTE_STATUS_FILE"
 
 # tmux-run is required: codesign + notarytool need the sol-signing keychain
 # unlocked, and that unlock state lives in the hopper tmux session's launchd
@@ -206,8 +207,7 @@ fi
 # is idempotent and re-applies the unlock.
 ssh "$PRO5E_HOST" "ensure-build-windows >/dev/null"
 ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
-    git fetch origin && \
-    git checkout $GIT_REF && \
+    python3 scripts/check_release_preflight.py local --root . && \
     rm -rf build/ dist/ *.egg-info/ solstone/observe/transcribe/parakeet_helper/_bin && \
     NOTARY_KEYCHAIN_PROFILE=$NOTARY_PROFILE make wheel-macos'"
 
@@ -215,29 +215,32 @@ ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
 echo "==> [3/5] rsyncing macOS wheel back"
 rsync -av --include='*macosx_14_0_arm64.whl' --exclude='*' \
     "$PRO5E_HOST:projects/solstone/dist/" ./dist/
-python3 scripts/check_wheel_contents.py --require-core-platform darwin/arm64 dist/
+RELEASE_SCOPE="all-hosts"
 
 echo
 echo "release artifacts:"
 ls -la dist/
 
-ARTIFACTS=(
-    "dist/solstone-${VERSION}.tar.gz"
-    dist/solstone-${VERSION}-*.whl
-    "dist/solstone_core-${VERSION}.tar.gz"
-    dist/solstone_core-${VERSION}-*.whl
-    "dist/solstone_journal-${VERSION}.tar.gz"
-    "dist/solstone_journal-${VERSION}-py3-none-any.whl"
-    "dist/solstone_journal_cuda-${VERSION}.tar.gz"
-    "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
-)
-GH_RELEASE_ARTIFACT_HINT="dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_core-${VERSION}.tar.gz dist/solstone_core-${VERSION}-*.whl dist/solstone_journal-${VERSION}.tar.gz dist/solstone_journal-${VERSION}-*.whl dist/solstone_journal_cuda-${VERSION}.tar.gz dist/solstone_journal_cuda-${VERSION}-*.whl"
-if [[ "$MODELS_DECISION" == "publish" ]]; then
-    ARTIFACTS+=(
-        "dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
-        "dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
-    )
-    GH_RELEASE_ARTIFACT_HINT="${GH_RELEASE_ARTIFACT_HINT} dist/solstone_journal_models-${MODELS_VERSION}.tar.gz dist/solstone_journal_models-${MODELS_VERSION}-*.whl"
+ARTIFACT_LIST=$(mktemp)
+trap 'rm -f "$ARTIFACT_LIST" "$REMOTE_STATUS_FILE"' EXIT
+python3 scripts/check_wheel_contents.py \
+    --release-scope "$RELEASE_SCOPE" \
+    --models-decision "$MODELS_DECISION" \
+    --print-artifacts \
+    dist/ > "$ARTIFACT_LIST"
+mapfile -t ARTIFACTS < "$ARTIFACT_LIST"
+GH_RELEASE_ARTIFACT_HINT="${ARTIFACTS[*]}"
+
+if [[ "$MODE" == "dry-run-all-hosts" ]]; then
+    echo
+    echo "==> twine check (--dry-run-all-hosts)"
+    uvx twine check "${ARTIFACTS[@]}"
+
+    echo
+    echo "build/check complete (--dry-run-all-hosts); skipped upload, git tag, git push, and GitHub release"
+    printf '  %s\n' "${ARTIFACTS[@]}"
+    echo "  models gate: ${MODELS_DECISION}"
+    exit 0
 fi
 
 # 4. twine check + upload

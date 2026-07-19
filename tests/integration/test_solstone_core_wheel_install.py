@@ -7,9 +7,12 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
+
+import scripts.check_wheel_contents as checker
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.integration
@@ -34,7 +37,6 @@ def test_locally_built_linux_core_wheel_installs_and_runs(
     dist_dir = tmp_path / "dist"
     env = os.environ.copy()
     env.pop("MATURIN_PEP517_ARGS", None)
-    env.pop("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER", None)
     subprocess.run(
         [
             "uv",
@@ -52,6 +54,14 @@ def test_locally_built_linux_core_wheel_installs_and_runs(
     )
     wheels = sorted(dist_dir.glob("solstone_core-*.whl"))
     assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        script_members = [
+            name
+            for name in wheel.namelist()
+            if name.endswith(".data/scripts/solstone-core")
+        ]
+    assert len(script_members) == 1
+    assert checker.check_core_wheel(wheels[0], checker.MAX_CORE_WHEEL_BYTES) == []
 
     venv = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
