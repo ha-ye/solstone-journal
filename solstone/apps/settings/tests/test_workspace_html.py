@@ -141,6 +141,15 @@ def test_workspace_has_log_retention_storage_controls():
     assert 'id="cleanupLogsModal"' in text
 
 
+def test_workspace_stream_overrides_uses_render_mount():
+    text = _workspace_text()
+
+    assert 'id="streamOverridesMount"' in text
+    assert 'id="streamOverridesContainer"' not in text
+    assert 'id="streamOverridesLine"' not in text
+    assert 'id="streamOverridesBody"' not in text
+
+
 def test_workspace_log_cleanup_renderer_surfaces_preview_skips_and_errors():
     text = _workspace_text()
 

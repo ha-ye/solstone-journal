@@ -149,6 +149,31 @@ def test_settings_render_helpers() -> None:
         assert.strictEqual(render.streamOverridesLine(0), '0 overrides');
         assert.strictEqual(render.streamOverridesLine(1), '1 override');
         assert.strictEqual(render.streamOverridesLine(4), '4 overrides');
+        assert.strictEqual(render.buildStreamOverridesDrawerProps([], {}), null);
+        assert.strictEqual(render.buildStreamOverridesDrawerProps(null, {}), null);
+        assert.strictEqual(render.buildStreamOverridesDrawerProps(undefined, {}), null);
+
+        const configuredStreamProps = render.buildStreamOverridesDrawerProps(
+          [{ name: 'desktop' }, { name: 'mobile' }],
+          { desktop: { raw_media: 'processed', raw_media_days: null } },
+        );
+        assert(configuredStreamProps);
+        assert.strictEqual(configuredStreamProps.label, 'per-stream overrides');
+        assert.strictEqual(configuredStreamProps.line, '1 override');
+        assert(configuredStreamProps.bodyHtml.includes('override the global retention mode for individual streams.'));
+        assert(configuredStreamProps.bodyHtml.includes('id="streamOverridesList"'));
+
+        const unconfiguredStreamProps = render.buildStreamOverridesDrawerProps(
+          [{ name: 'desktop' }, { name: 'mobile' }],
+          {},
+        );
+        assert.strictEqual(unconfiguredStreamProps.line, '0 overrides');
+
+        const staleStreamProps = render.buildStreamOverridesDrawerProps(
+          [{ name: 'desktop' }, { name: 'mobile' }],
+          { tablet: { raw_media: 'processed', raw_media_days: null } },
+        );
+        assert.strictEqual(staleStreamProps.line, '0 overrides');
       """
     )
     result = subprocess.run(

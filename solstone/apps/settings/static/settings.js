@@ -28,6 +28,22 @@
     return countLine(count, STREAM_OVERRIDE_SINGULAR, STREAM_OVERRIDE_PLURAL);
   }
 
+  function buildStreamOverridesDrawerProps(streams, perStream) {
+    const streamList = Array.isArray(streams) ? streams : [];
+    const streamCount = streamList.length;
+    if (streamCount === 0) return null;
+    const overrides = perStream && typeof perStream === 'object' ? perStream : {};
+    const configuredCount = streamList.filter((stream) => overrides[stream?.name]?.raw_media).length;
+    const bodyHtml = '<p style="color: #666; font-size: 0.85em; margin: 0 0 1em 0;">override the global retention mode for individual streams.</p><div id="streamOverridesList"></div>';
+    return {
+      id: 'stream-overrides',
+      open: false,
+      label: 'per-stream overrides',
+      line: streamOverridesLine(configuredCount),
+      bodyHtml,
+    };
+  }
+
   function resolve(copy, key) {
     if (!copy || typeof key !== 'string' || !key) return '';
     const value = key.split('.').reduce((current, part) => {
@@ -197,6 +213,7 @@
     applyCopy,
     applyCopyAttr,
     applyThinkingSurfaces,
+    buildStreamOverridesDrawerProps,
     formatTitle,
     redactionRulesLine,
     renderFacetDetail,

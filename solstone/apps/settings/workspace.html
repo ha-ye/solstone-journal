@@ -2751,19 +2751,7 @@ button:focus:not(:focus-visible) {
         <div id="retentionStatus" style="margin-top: 0.75em; color: #666; font-size: 0.9em;">currently: always retain — no expiration</div>
       </div>
 
-      <details class="drawer" id="streamOverridesContainer" style="display: none;">
-        <summary>
-          <span class="drawer-chev"></span>
-          <span class="drawer-summary-text">
-            <span class="drawer-label">per-stream overrides</span>
-            <span class="drawer-line" id="streamOverridesLine" hidden></span>
-          </span>
-        </summary>
-        <div class="drawer-body" id="streamOverridesBody">
-          <p style="color: #666; font-size: 0.85em; margin: 0 0 1em 0;">override the global retention mode for individual streams.</p>
-          <div id="streamOverridesList"></div>
-        </div>
-      </details>
+      <div id="streamOverridesMount"></div>
 
       <div class="settings-field" id="logRetentionField">
         <label>operational logs</label>
@@ -6252,17 +6240,18 @@ function updateRetentionUI() {
 }
 
 function populateStreamOverrides(streams, perStream) {
-  const container = document.getElementById('streamOverridesContainer');
-  const list = document.getElementById('streamOverridesList');
+  const mount = document.getElementById('streamOverridesMount');
+  const props = window.SettingsRender.buildStreamOverridesDrawerProps(streams, perStream);
 
-  if (!streams || streams.length === 0) {
-    container.style.display = 'none';
-    setDrawerLine('streamOverridesLine', '');
+  if (!props) {
+    mount.innerHTML = '';
     return;
   }
 
-  container.style.display = '';
-  list.innerHTML = '';
+  window.Drawer.preserveOpen(mount, () => {
+    mount.innerHTML = window.Drawer.render(props);
+  });
+  const list = document.getElementById('streamOverridesList');
 
   streams.forEach(stream => {
     const name = stream.name;
@@ -6303,7 +6292,6 @@ function populateStreamOverrides(streams, perStream) {
     row.appendChild(daysInput);
     list.appendChild(row);
   });
-  updateStreamOverridesLine();
 }
 
 function configuredStreamOverrideCount() {
@@ -6312,7 +6300,10 @@ function configuredStreamOverrideCount() {
 }
 
 function updateStreamOverridesLine() {
-  setDrawerLine('streamOverridesLine', window.SettingsRender.streamOverridesLine(configuredStreamOverrideCount()));
+  const el = document.querySelector('#streamOverridesMount .drawer-line');
+  if (!el) return;
+  const text = window.SettingsRender.streamOverridesLine(configuredStreamOverrideCount());
+  el.innerHTML = window.Drawer.formatLine(text);
 }
 
 async function saveStreamOverrides() {
