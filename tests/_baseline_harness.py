@@ -137,12 +137,8 @@ def isolated_app_env(journal: Path) -> Iterator[Path]:
     previous = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
     try:
-        from solstone.think.providers import local_cuda, local_vulkan
+        from solstone.think.providers import local_cuda, local_install, local_vulkan
 
-        deterministic_backend = local_cuda.BackendChoice(
-            "vulkan",
-            "test default: no CUDA host",
-        )
         deterministic_devices = [
             local_vulkan.VulkanDevice(
                 1,
@@ -154,8 +150,26 @@ def isolated_app_env(journal: Path) -> Iterator[Path]:
         with (
             patch.object(
                 local_cuda,
-                "resolve_local_backend",
-                lambda _pin: deterministic_backend,
+                "probe_nvidia_gpu",
+                lambda: local_cuda.NvidiaProbe(
+                    index=None,
+                    compute_cap=None,
+                    driver_cuda_version=None,
+                    vram_mib=None,
+                    tiering_memory_mib=None,
+                    memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
+                    detected=False,
+                ),
+            ),
+            patch.object(
+                local_install,
+                "probe_cuda_runtime_artifact_trust",
+                lambda _pin, **_kwargs: local_cuda.ArtifactTrust.ABSENT,
+            ),
+            patch.object(
+                local_install,
+                "has_persisted_installed_cuda_target",
+                lambda **_kwargs: False,
             ),
             patch.object(
                 local_vulkan,

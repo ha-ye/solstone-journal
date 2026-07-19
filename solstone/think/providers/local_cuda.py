@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,12 @@ class LocalCudaError(RuntimeError):
     def __init__(self, reason_code: str, message: str) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+
+
+class ArtifactTrust(StrEnum):
+    TRUSTED = "trusted"
+    ABSENT = "absent"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -269,7 +276,36 @@ def select_local_backend(
     probe: NvidiaProbe,
     arch_set: frozenset[str],
     cuda_version: int,
+    trust: ArtifactTrust,
+    *,
+    persisted_installed_cuda: bool,
 ) -> BackendChoice:
+    hardware_rejection = _hardware_backend_rejection(probe, arch_set, cuda_version)
+    if hardware_rejection is not None:
+        return hardware_rejection
+
+    assert probe.compute_cap is not None
+    assert probe.driver_cuda_version is not None
+    cuda_reason = (
+        f"compute_cap {probe.compute_cap} covered; "
+        f"driver CUDA {probe.driver_cuda_version} >= {cuda_version}"
+    )
+    if trust == ArtifactTrust.TRUSTED or (
+        trust == ArtifactTrust.UNAVAILABLE and persisted_installed_cuda
+    ):
+        return BackendChoice("cuda", cuda_reason)
+
+    return BackendChoice(
+        "vulkan",
+        (f"{cuda_reason}; no trusted CUDA runtime artifact present"),
+    )
+
+
+def _hardware_backend_rejection(
+    probe: NvidiaProbe,
+    arch_set: frozenset[str],
+    cuda_version: int,
+) -> BackendChoice | None:
     if not probe.detected:
         return BackendChoice("vulkan", "no NVIDIA GPU detected")
     if probe.compute_cap is None:
@@ -289,21 +325,29 @@ def select_local_backend(
             "vulkan",
             f"driver CUDA {probe.driver_cuda_version} < required {cuda_version}",
         )
-
-    return BackendChoice(
-        "cuda",
-        (
-            f"compute_cap {probe.compute_cap} covered; "
-            f"driver CUDA {probe.driver_cuda_version} >= {cuda_version}"
-        ),
-    )
+    return None
 
 
 def resolve_local_backend(pin: CudaServerPin) -> BackendChoice:
-    return select_local_backend(
-        probe_nvidia_gpu(),
+    probe = probe_nvidia_gpu()
+    hardware_rejection = _hardware_backend_rejection(
+        probe,
         pin.embedded_arch_set,
         pin.cuda_version,
+    )
+    if hardware_rejection is not None:
+        return hardware_rejection
+
+    from solstone.think.providers import local_install
+
+    trust = local_install.probe_cuda_runtime_artifact_trust(pin)
+    persisted_installed_cuda = local_install.has_persisted_installed_cuda_target()
+    return select_local_backend(
+        probe,
+        pin.embedded_arch_set,
+        pin.cuda_version,
+        trust,
+        persisted_installed_cuda=persisted_installed_cuda,
     )
 
 
@@ -323,6 +367,7 @@ def verify_cuda_pin_arch_set(text: str, declared: frozenset[str]) -> None:
 
 
 __all__ = [
+    "ArtifactTrust",
     "BackendChoice",
     "CUDA_EMBEDDED_ARCH_SET",
     "CUDA_MIN_DRIVER_VERSION",

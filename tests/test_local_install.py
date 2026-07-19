@@ -23,11 +23,19 @@ from solstone.think.providers import (
     oci_image,
 )
 from solstone.think.providers.artifact_proof import (
+    ProofResult,
     ReadinessOutcome,
     artifact_manifest_path,
     prove_manifest,
 )
-from solstone.think.providers.install_state import read_install_status
+from solstone.think.providers.install_state import (
+    begin_or_replace_install_attempt,
+    canonical_fingerprint,
+    fingerprint_sha256,
+    read_install_status,
+    transition_state,
+    write_install_status,
+)
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
@@ -153,12 +161,242 @@ def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
     )
 
 
-@pytest.fixture(autouse=True)
-def _default_vulkan_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _covered_nvidia_probe(
+    *,
+    compute_cap: str = "sm_121",
+    driver_cuda_version: int = 13,
+    vram_mib: int = 24564,
+) -> local_cuda.NvidiaProbe:
+    return local_cuda.NvidiaProbe(
+        index=0,
+        compute_cap=compute_cap,
+        driver_cuda_version=driver_cuda_version,
+        vram_mib=vram_mib,
+        tiering_memory_mib=vram_mib,
+        memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+        detected=True,
+    )
+
+
+def _patch_backend_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    compute_cap: str,
+    driver_cuda_version: int,
+    trust: local_cuda.ArtifactTrust,
+    persisted_installed_cuda: bool = False,
+) -> None:
     monkeypatch.setattr(
         local_cuda,
-        "resolve_local_backend",
-        lambda _pin: local_cuda.BackendChoice("vulkan", "test vulkan"),
+        "probe_nvidia_gpu",
+        lambda: _covered_nvidia_probe(
+            compute_cap=compute_cap,
+            driver_cuda_version=driver_cuda_version,
+        ),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "probe_cuda_runtime_artifact_trust",
+        lambda _pin, **_kwargs: trust,
+    )
+    monkeypatch.setattr(
+        local_install,
+        "has_persisted_installed_cuda_target",
+        lambda **_kwargs: persisted_installed_cuda,
+    )
+
+
+def _force_cuda_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_backend_inputs(
+        monkeypatch,
+        compute_cap="sm_121",
+        driver_cuda_version=13,
+        trust=local_cuda.ArtifactTrust.TRUSTED,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("ready", local_cuda.ArtifactTrust.TRUSTED),
+        ("missing-or-mismatched", local_cuda.ArtifactTrust.ABSENT),
+        ("proof-unavailable", local_cuda.ArtifactTrust.UNAVAILABLE),
+    ],
+)
+@pytest.mark.real_local_backend_probe
+def test_probe_cuda_runtime_artifact_trust_maps_proof_status(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected: local_cuda.ArtifactTrust,
+) -> None:
+    monkeypatch.setattr(
+        local_install,
+        "_prove_cuda_runtime_artifact",
+        lambda _pin, **_kwargs: ProofResult(status, "test"),
+    )
+
+    assert (
+        local_install.probe_cuda_runtime_artifact_trust(local_install.CUDA_SERVER_PIN)
+        == expected
+    )
+
+
+@pytest.mark.real_local_backend_probe
+def test_probe_cuda_runtime_artifact_trust_contains_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail_proof(_pin, **_kwargs):
+        raise ValueError("required artifact is not a regular file")
+
+    monkeypatch.setattr(local_install, "_prove_cuda_runtime_artifact", fail_proof)
+
+    trust = local_install.probe_cuda_runtime_artifact_trust(
+        local_install.CUDA_SERVER_PIN
+    )
+
+    assert trust == local_cuda.ArtifactTrust.UNAVAILABLE
+    assert "trust probe failed" in caplog.text
+
+
+@pytest.mark.real_local_backend_probe
+def test_probe_cuda_runtime_artifact_trust_contains_non_regular_wanted_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_install.platform, "machine", lambda: "x86_64")
+    target = local_install.cuda_binary_dir()
+    target.mkdir(parents=True)
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch("amd64")
+    (target / wanted_files[0]).mkdir()
+    for name in wanted_files[1:]:
+        (target / name).write_text(name, encoding="utf-8")
+    (target / ".oci-install.json").write_text(
+        json.dumps(
+            {
+                "image_ref": local_install.CUDA_SERVER_PIN.image_ref,
+                "arch": "amd64",
+                "files": {name: "0" * 64 for name in wanted_files},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    trust = local_install.probe_cuda_runtime_artifact_trust(
+        local_install.CUDA_SERVER_PIN,
+        journal_path=tmp_path,
+    )
+
+    assert trust == local_cuda.ArtifactTrust.UNAVAILABLE
+
+
+@pytest.mark.real_local_backend_probe
+def test_has_persisted_installed_cuda_target_reads_installed_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    cuda_target = {
+        "provider": "local",
+        "runtime": "llama.cpp",
+        "backend": "cuda",
+        "model_pin": {"model_id": LOCAL_MODEL},
+    }
+    vulkan_target = {**cuda_target, "backend": "vulkan"}
+
+    status = begin_or_replace_install_attempt("local", cuda_target)
+    write_install_status(transition_state(status, new_state="installed"))
+    assert (
+        local_install.has_persisted_installed_cuda_target(journal_path=tmp_path) is True
+    )
+
+    status = begin_or_replace_install_attempt("local", vulkan_target)
+    write_install_status(transition_state(status, new_state="installed"))
+    assert (
+        local_install.has_persisted_installed_cuda_target(journal_path=tmp_path)
+        is False
+    )
+
+
+@pytest.mark.real_local_backend_probe
+def test_has_persisted_installed_cuda_target_treats_bad_status_as_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    path = tmp_path / "health" / "providers" / "local.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not-json", encoding="utf-8")
+
+    assert (
+        local_install.has_persisted_installed_cuda_target(journal_path=tmp_path)
+        is False
+    )
+
+
+def test_target_fingerprint_uses_vulkan_when_cuda_artifact_absent_on_covered_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _patch_backend_inputs(
+        monkeypatch,
+        compute_cap="sm_86",
+        driver_cuda_version=14,
+        trust=local_cuda.ArtifactTrust.ABSENT,
+    )
+
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+
+    assert fingerprint["backend"] == "vulkan"
+    assert fingerprint["backend_reason"] == (
+        "compute_cap sm_86 covered; driver CUDA 14 >= 13; "
+        "no trusted CUDA runtime artifact present"
+    )
+
+
+def test_target_fingerprint_holds_cuda_when_trust_unavailable_and_cuda_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _patch_backend_inputs(
+        monkeypatch,
+        compute_cap="sm_89",
+        driver_cuda_version=15,
+        trust=local_cuda.ArtifactTrust.UNAVAILABLE,
+        persisted_installed_cuda=True,
+    )
+
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+
+    assert fingerprint["backend"] == "cuda"
+    assert fingerprint["backend_reason"] == (
+        "compute_cap sm_89 covered; driver CUDA 15 >= 13"
+    )
+
+
+def test_target_fingerprint_uses_vulkan_when_trust_unavailable_without_cuda_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _patch_backend_inputs(
+        monkeypatch,
+        compute_cap="sm_121",
+        driver_cuda_version=16,
+        trust=local_cuda.ArtifactTrust.UNAVAILABLE,
+        persisted_installed_cuda=False,
+    )
+
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+
+    assert fingerprint["backend"] == "vulkan"
+    assert fingerprint["backend_reason"] == (
+        "compute_cap sm_121 covered; driver CUDA 16 >= 13; "
+        "no trusted CUDA runtime artifact present"
     )
 
 
@@ -712,11 +950,7 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
 ):
     _init_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
-    monkeypatch.setattr(
-        local_cuda,
-        "resolve_local_backend",
-        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
-    )
+    _force_cuda_backend(monkeypatch)
     pull_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
 
     def fake_pull_and_install(
@@ -758,11 +992,7 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
 
 def test_install_llama_server_cuda_preserves_oci_failure_reason(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        local_cuda,
-        "resolve_local_backend",
-        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
-    )
+    _force_cuda_backend(monkeypatch)
 
     def fail_pull(*_args, **_kwargs):
         raise oci_image.OciImageError(
@@ -1126,6 +1356,88 @@ def test_install_local_reinstalls_runtime_when_binary_record_stale(
     assert calls == ["llama_server", "model"]
 
 
+def test_install_local_replaces_failed_cuda_attempt_with_vulkan_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _patch_backend_inputs(
+        monkeypatch,
+        compute_cap="sm_89",
+        driver_cuda_version=15,
+        trust=local_cuda.ArtifactTrust.ABSENT,
+    )
+    stale_cuda = {
+        "provider": "local",
+        "runtime": "llama.cpp",
+        "backend": "cuda",
+        "backend_reason": "old cuda",
+        "runtime_pin": local_install._cuda_pin_identity(),
+        "model_pin": local_install._model_pin_identity(LOCAL_MODEL),
+    }
+    stale_status = begin_or_replace_install_attempt(
+        "local",
+        stale_cuda,
+        initial_state="resolving",
+    )
+    write_install_status(
+        transition_state(
+            stale_status,
+            new_state="failed",
+            error="the pinned image has no matching signature",
+            error_code="signature_verify_failed",
+        )
+    )
+    stale_sha = fingerprint_sha256(canonical_fingerprint(stale_cuda))
+    monkeypatch.setattr(
+        fit_report,
+        "build_local_fit_report",
+        lambda model_id: _fit("ok"),
+    )
+    calls: list[str] = []
+    readiness_calls = 0
+
+    def fake_readiness(model_id: str) -> ReadinessOutcome:
+        nonlocal readiness_calls
+        readiness_calls += 1
+        return _fake_local_readiness(
+            binary_installed=readiness_calls > 1,
+            model_installed=readiness_calls > 1,
+            binary_path=local_install.binary_path_for_pin(),
+            model_path=local_install.model_path(model_id),
+            mmproj_path=local_install.mmproj_path(model_id),
+        )
+
+    def fake_install_llama_server(**_kwargs):
+        calls.append("llama_server")
+        return {"install_state": "verifying"}
+
+    def fake_install_model(model_id: str, **_kwargs):
+        calls.append("model")
+        return {"install_state": "verifying", "model_id": model_id}
+
+    monkeypatch.setattr(local_install, "inspect_readiness", fake_readiness)
+    monkeypatch.setattr(
+        local_install,
+        "install_llama_server",
+        fake_install_llama_server,
+    )
+    monkeypatch.setattr(local_install, "install_model", fake_install_model)
+
+    result = local_install.install_local(LOCAL_MODEL)
+
+    status = _local_status()
+    target = json.loads(str(status["target_fingerprint_json"]))
+    assert result["install_state"] == "installed"
+    assert status["target_fingerprint_sha256"] != stale_sha
+    assert target["backend"] == "vulkan"
+    assert target["backend_reason"] == (
+        "compute_cap sm_89 covered; driver CUDA 15 >= 13; "
+        "no trusted CUDA runtime artifact present"
+    )
+    assert calls == ["llama_server", "model"]
+
+
 def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(
     tmp_path, monkeypatch
 ):
@@ -1272,11 +1584,7 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
     from solstone.think.providers import oci_image
 
     _init_journal(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        local_cuda,
-        "resolve_local_backend",
-        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
-    )
+    _force_cuda_backend(monkeypatch)
     binary = local_install.cuda_binary_path()
     binary.parent.mkdir(parents=True, exist_ok=True)
     wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(
@@ -1320,7 +1628,9 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
     assert readiness.host["backend"] == "cuda"
-    assert readiness.host["backend_reason"] == "test cuda"
+    assert readiness.host["backend_reason"] == (
+        "compute_cap sm_121 covered; driver CUDA 13 >= 13"
+    )
     assert readiness.artifacts["binary_path"] == str(binary)
     assert readiness.artifacts["binary_installed"] is sidecar_ok
     assert readiness.host["gpu_available"] is True
@@ -1354,7 +1664,7 @@ def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeyp
 
     assert readiness.host["gpu_available"] is True
     assert readiness.host["backend"] == "vulkan"
-    assert readiness.host["backend_reason"] == "test vulkan"
+    assert readiness.host["backend_reason"] == "no NVIDIA GPU detected"
 
 
 def test_inspect_readiness_reports_gpu_unavailable_without_hardware(

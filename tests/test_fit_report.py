@@ -170,6 +170,62 @@ def test_local_gpu_check_uses_vulkan_when_nvidia_probe_is_unavailable(
     )
 
 
+def test_build_local_fit_report_uses_cuda_artifact_trust_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fit_report.sys, "platform", "linux")
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: local_cuda.NvidiaProbe(
+            index=0,
+            compute_cap="sm_86",
+            driver_cuda_version=14,
+            vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+            detected=True,
+        ),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "probe_cuda_runtime_artifact_trust",
+        lambda _pin: local_cuda.ArtifactTrust.ABSENT,
+    )
+    monkeypatch.setattr(
+        local_install,
+        "has_persisted_installed_cuda_target",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [_vulkan_device(vram_mib=24564)],
+    )
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(local_install, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        fit_report,
+        "assess_memory",
+        lambda required, *, block_below_floor: MemoryVerdict(
+            available_bytes=required,
+            required_bytes=required,
+            severity="ok",
+        ),
+    )
+    monkeypatch.setattr(fit_report, "free_bytes", lambda _path: 500 * 1024**3)
+
+    report = fit_report.build_local_fit_report(local_install.LOCAL_MODEL)
+
+    gpu = next(check for check in report.checks if check.name == "gpu")
+    assert gpu.severity == "ok"
+    assert (
+        "resolved backend is vulkan: compute_cap sm_86 covered; "
+        "driver CUDA 14 >= 13; no trusted CUDA runtime artifact present"
+    ) in gpu.detail
+
+
 def test_disk_unknown_size_warns_when_known_size_fits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

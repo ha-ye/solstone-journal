@@ -386,10 +386,16 @@ def test_cuda_sidecar_success_is_cached_without_second_verifier(
         encoding="utf-8",
     )
     calls = 0
+    hash_calls: list[Path] = []
+    real_hash = artifact_proof._sha256_file
 
-    def verifier(_image_ref, _arch, _wanted, _target) -> bool:
+    def verifier(_image_ref, _arch, wanted, verify_target) -> bool:
         nonlocal calls
         calls += 1
+        for name in wanted:
+            path = verify_target / name
+            hash_calls.append(path)
+            real_hash(path)
         return True
 
     first = prove_cuda_sidecar(
@@ -415,6 +421,7 @@ def test_cuda_sidecar_success_is_cached_without_second_verifier(
     assert second.ready
     assert second.cache_hit is True
     assert calls == 1
+    assert hash_calls == [target / "llama-server"]
 
 
 def test_cuda_sidecar_absent_is_repair_needed(tmp_path, monkeypatch) -> None:

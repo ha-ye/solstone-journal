@@ -82,6 +82,10 @@ def build_local_fit_report(model_id: str) -> FitReport:
             probe,
             local_install.CUDA_SERVER_PIN.embedded_arch_set,
             local_install.CUDA_SERVER_PIN.cuda_version,
+            local_install.probe_cuda_runtime_artifact_trust(
+                local_install.CUDA_SERVER_PIN
+            ),
+            persisted_installed_cuda=local_install.has_persisted_installed_cuda_target(),
         )
         unknown_server = (
             "CUDA llama-server OCI image"

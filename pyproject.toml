@@ -253,6 +253,7 @@ python_functions = ["test_*"]
 markers = [
     "integration: exercises real local processes, builds, or persisted index contracts outside unit CI",
     "performance: asserts a wall-clock performance floor and is opt-in on an idle host",
+    "real_local_backend_probe: opts out of the deterministic bundled local backend probe monkeypatch",
     "xdist_group: marks tests to run in the same xdist worker group",
 ]
 timeout = 15

@@ -190,14 +190,33 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
 
 
 @pytest.fixture(autouse=True)
-def _default_local_backend_vulkan(monkeypatch):
-    from solstone.think.providers import local_cuda
+def _default_local_backend_vulkan(monkeypatch, request):
+    from solstone.think.providers import local_cuda, local_install
 
-    monkeypatch.setattr(
-        local_cuda,
-        "resolve_local_backend",
-        lambda pin: local_cuda.BackendChoice("vulkan", "test default: no CUDA host"),
-    )
+    if request.node.get_closest_marker("real_local_backend_probe") is None:
+        monkeypatch.setattr(
+            local_cuda,
+            "probe_nvidia_gpu",
+            lambda: local_cuda.NvidiaProbe(
+                index=None,
+                compute_cap=None,
+                driver_cuda_version=None,
+                vram_mib=None,
+                tiering_memory_mib=None,
+                memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
+                detected=False,
+            ),
+        )
+        monkeypatch.setattr(
+            local_install,
+            "probe_cuda_runtime_artifact_trust",
+            lambda _pin, **_kwargs: local_cuda.ArtifactTrust.ABSENT,
+        )
+        monkeypatch.setattr(
+            local_install,
+            "has_persisted_installed_cuda_target",
+            lambda **_kwargs: False,
+        )
 
 
 @pytest.fixture(autouse=True)

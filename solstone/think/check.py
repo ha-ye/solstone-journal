@@ -87,13 +87,10 @@ def build_check_report() -> CheckReport:
             _linux_ram_check(),
             _disk_check(),
         )
-        choice = local_cuda.select_local_backend(
-            probe,
-            local_cuda.CUDA_EMBEDDED_ARCH_SET,
-            local_cuda.CUDA_MIN_DRIVER_VERSION,
-        )
         recommended_package = (
-            "solstone-journal-cuda" if choice.backend == "cuda" else "solstone-journal"
+            "solstone-journal-cuda"
+            if arch == "x86_64" and probe.detected
+            else "solstone-journal"
         )
 
     return CheckReport(

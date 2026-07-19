@@ -320,6 +320,13 @@ def test_install_provider_local_skips_fit_report_when_ready(monkeypatch, capsys)
 
 
 def test_install_provider_local_expected_error_returns_nonzero(monkeypatch, capsys):
+    persisted = {
+        "provider": "local",
+        "install_state": "failed",
+        "install_error": "blocked detail",
+        "error_code": "host_unfit",
+    }
+
     def install_local(**_kwargs):
         raise install_provider.local_install.LocalProviderError(
             "host_unfit", "blocked detail"
@@ -336,12 +343,188 @@ def test_install_provider_local_expected_error_returns_nonzero(monkeypatch, caps
         fit_report, "build_local_fit_report", lambda _model: _fit("blocked")
     )
     monkeypatch.setattr(install_provider.local_install, "install_local", install_local)
+    monkeypatch.setattr(
+        install_provider,
+        "read_install_status",
+        lambda name: persisted if name == "local" else pytest.fail(name),
+    )
 
     assert install_provider.main() == 1
 
     captured = capsys.readouterr()
     assert lease.released is True
     assert "blocked detail" in captured.err
+    assert json.loads(captured.out) == persisted
+
+
+def test_install_provider_parakeet_expected_error_prints_persisted_status(
+    monkeypatch,
+    capsys,
+):
+    persisted = {
+        "provider": "parakeet",
+        "install_state": "failed",
+        "install_error": "blocked detail",
+        "error_code": "host_unfit",
+    }
+
+    def install_parakeet(**_kwargs):
+        raise install_provider.parakeet_install.ParakeetProviderError(
+            "host_unfit",
+            "blocked detail",
+        )
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "parakeet"])
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "inspect_readiness",
+        lambda: _readiness("parakeet", ready=False),
+    )
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "target_fingerprint",
+        lambda: {"provider": "parakeet"},
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "parakeet")
+    monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "install_parakeet",
+        install_parakeet,
+    )
+    monkeypatch.setattr(
+        install_provider,
+        "read_install_status",
+        lambda name: persisted if name == "parakeet" else pytest.fail(name),
+    )
+
+    assert install_provider.main() == 1
+
+    captured = capsys.readouterr()
+    assert lease.released is True
+    assert "blocked detail" in captured.err
+    assert json.loads(captured.out) == persisted
+
+
+def test_install_provider_mlx_expected_error_prints_persisted_status(
+    monkeypatch,
+    capsys,
+):
+    persisted = {
+        "provider": "local",
+        "install_state": "failed",
+        "install_error": "mlx unavailable",
+        "error_code": "mlx_unavailable",
+    }
+
+    def install_local_mlx(*_args, **_kwargs):
+        raise install_provider.mlx_install.MLXInstallUnavailableError("mlx unavailable")
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "local"])
+    monkeypatch.setattr(install_provider, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "resolve_model_spec",
+        lambda: type("Spec", (), {"name": "model"})(),
+    )
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "inspect_readiness",
+        lambda _model: _readiness("local", ready=False),
+    )
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "target_fingerprint",
+        lambda _model: {"provider": "local", "runtime": "mlx"},
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "local")
+    monkeypatch.setattr(fit_report, "build_mlx_fit_report", lambda _model: _fit("ok"))
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "install_local_mlx",
+        install_local_mlx,
+    )
+    monkeypatch.setattr(
+        install_provider,
+        "read_install_status",
+        lambda name: persisted if name == "local" else pytest.fail(name),
+    )
+
+    assert install_provider.main() == 1
+
+    captured = capsys.readouterr()
+    assert lease.released is True
+    assert "mlx unavailable" in captured.err
+    assert json.loads(captured.out) == persisted
+
+
+def test_install_provider_unexpected_error_prints_persisted_status(
+    monkeypatch,
+    capsys,
+):
+    persisted = {
+        "provider": "local",
+        "install_state": "failed",
+        "install_error": "boom",
+        "error_code": None,
+    }
+
+    def install_local(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "local"])
+    monkeypatch.setattr(
+        install_provider.local_install,
+        "inspect_readiness",
+        lambda: _readiness("local", ready=False),
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "local")
+    monkeypatch.setattr(fit_report, "build_local_fit_report", lambda _model: _fit("ok"))
+    monkeypatch.setattr(install_provider.local_install, "install_local", install_local)
+    monkeypatch.setattr(
+        install_provider,
+        "read_install_status",
+        lambda name: persisted if name == "local" else pytest.fail(name),
+    )
+
+    assert install_provider.main() == 1
+
+    captured = capsys.readouterr()
+    assert lease.released is True
+    assert "boom" in captured.err
+    assert json.loads(captured.out) == persisted
+
+
+def test_install_provider_failure_status_read_error_keeps_stdout_empty(
+    monkeypatch,
+    capsys,
+):
+    def install_local(**_kwargs):
+        raise install_provider.local_install.LocalProviderError(
+            "host_unfit",
+            "blocked detail",
+        )
+
+    def fail_read_status(*_args, **_kwargs):
+        raise ValueError("malformed status")
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "local"])
+    monkeypatch.setattr(
+        install_provider.local_install,
+        "inspect_readiness",
+        lambda: _readiness("local", ready=False),
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "local")
+    monkeypatch.setattr(fit_report, "build_local_fit_report", lambda _model: _fit("ok"))
+    monkeypatch.setattr(install_provider.local_install, "install_local", install_local)
+    monkeypatch.setattr(install_provider, "read_install_status", fail_read_status)
+
+    assert install_provider.main() == 1
+
+    captured = capsys.readouterr()
+    assert lease.released is True
+    assert "blocked detail" in captured.err
+    assert "could not read persisted local install status" in captured.err
     assert captured.out == ""
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from typing import Any
 
@@ -32,6 +33,7 @@ PARAKEET_DOWNLOAD_DISCLOSURE = (
     "cache before it can run: the parakeet.cpp server binary from github.com "
     "(MIT) and the speech model from huggingface.co (CC-BY-4.0)."
 )
+LOG = logging.getLogger(__name__)
 
 
 def _render_fit_report(report: FitReport) -> None:
@@ -86,6 +88,25 @@ def _status_exit_code(status: dict[str, Any]) -> int:
     return 1 if status.get("install_state") == "failed" else 0
 
 
+def _handle_install_failure(provider: str, exc: Exception) -> int:
+    print(str(exc), file=sys.stderr)
+    try:
+        status = read_install_status(name=provider)
+    except Exception as status_exc:
+        print(
+            f"could not read persisted {provider} install status: {status_exc}",
+            file=sys.stderr,
+        )
+        LOG.warning(
+            "could not read persisted %s install status after failure",
+            provider,
+            exc_info=True,
+        )
+        return 1
+    print(json.dumps(status, indent=2))
+    return 1
+
+
 def _is_mlx_backend() -> bool:
     return mlx_install.is_mlx_platform_supported()
 
@@ -117,12 +138,8 @@ def _install_mlx_local() -> int:
             lease=lease,
             attempt_status=attempt_status,
         )
-    except (
-        mlx_install.MLXInstallUnavailableError,
-        mlx_install.MLXVerificationError,
-    ) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    except Exception as exc:
+        return _handle_install_failure("local", exc)
     finally:
         lease.release()
     print(json.dumps(status, indent=2))
@@ -172,9 +189,8 @@ def main() -> int:
                 lease=lease,
                 attempt_status=attempt_status,
             )
-        except parakeet_install.ParakeetProviderError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+        except Exception as exc:
+            return _handle_install_failure("parakeet", exc)
         finally:
             lease.release()
         print(json.dumps(status, indent=2))
@@ -204,9 +220,8 @@ def main() -> int:
             owner={"entry": "install_provider"},
         )
         status = local_install.install_local(lease=lease, attempt_status=attempt_status)
-    except local_install.LocalProviderError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    except Exception as exc:
+        return _handle_install_failure("local", exc)
     finally:
         lease.release()
     print(json.dumps(status, indent=2))

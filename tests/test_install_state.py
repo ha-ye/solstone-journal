@@ -11,7 +11,13 @@ from typing import get_args
 
 import pytest
 
-from solstone.think.providers import install_state
+from solstone.think.models import LOCAL_MODEL
+from solstone.think.providers import (
+    install_state,
+    local_cuda,
+    local_install,
+    local_vulkan,
+)
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     TERMINAL_STATES,
@@ -252,6 +258,99 @@ def test_migration_api_removes_legacy_status_fields(tmp_path, monkeypatch) -> No
     assert result == {"removed": 4, "moved": 1}
     assert data["providers"]["bundled"]["local"] == {}
     assert data["providers"]["local"] == {"vulkan_device_index": "1"}
+
+
+def test_legacy_local_vulkan_adoption_when_cuda_artifact_absent_on_covered_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_journal(tmp_path, monkeypatch)
+    config_path = tmp_path / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True)
+    pin = local_install.pin_for_current_platform()
+    artifact_key = local_install.llama_server_artifact_key()
+    binary_path = local_install.binary_path_for_pin(artifact_key, pin)
+    model_path = local_install.model_path(LOCAL_MODEL)
+    mmproj_path = local_install.mmproj_path(LOCAL_MODEL)
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_text("llama", encoding="utf-8")
+    binary_path.chmod(0o755)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_text("model", encoding="utf-8")
+    if mmproj_path is not None:
+        mmproj_path.write_text("mmproj", encoding="utf-8")
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "bundled": {
+                        "local": {
+                            "install_state": "installed",
+                            "binary_artifact": artifact_key,
+                            "binary_sha256": pin["sha256"],
+                            "binary_path": str(binary_path),
+                            "model_id": LOCAL_MODEL,
+                            "model_path": str(model_path),
+                            "mmproj_path": str(mmproj_path)
+                            if mmproj_path is not None
+                            else None,
+                        }
+                    }
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: local_cuda.NvidiaProbe(
+            index=0,
+            compute_cap="sm_121",
+            driver_cuda_version=16,
+            vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+            detected=True,
+        ),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "probe_cuda_runtime_artifact_trust",
+        lambda _pin, **_kwargs: local_cuda.ArtifactTrust.ABSENT,
+    )
+    monkeypatch.setattr(
+        local_install,
+        "has_persisted_installed_cuda_target",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(
+                0,
+                "Test Vulkan GPU",
+                local_vulkan.VK_TYPE_DISCRETE,
+                8192,
+            )
+        ],
+    )
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _sha: None)
+
+    result = install_state.migrate_legacy_provider_artifact_truth(journal_path=tmp_path)
+
+    status = read_install_status(name="local", journal_path=tmp_path)
+    target = json.loads(str(status["target_fingerprint_json"]))
+    assert result["actions"][0]["action"] == "promoted"
+    assert status["install_state"] == "installed"
+    assert target["backend"] == "vulkan"
+    assert target["backend_reason"] == (
+        "compute_cap sm_121 covered; driver CUDA 16 >= 13; "
+        "no trusted CUDA runtime artifact present"
+    )
 
 
 def test_two_process_stale_transition_one_writer_wins(tmp_path, monkeypatch) -> None:

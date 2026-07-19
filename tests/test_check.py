@@ -163,7 +163,7 @@ def test_linux_cuda_too_small_blocks(
     capsys.readouterr()
 
 
-def test_linux_nvidia_vulkan_backend_recommendation(
+def test_linux_x86_64_nvidia_recommends_cuda_package(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
@@ -178,11 +178,45 @@ def test_linux_nvidia_vulkan_backend_recommendation(
 
     assert _checks(result)["gpu"].severity == "ok"
     assert result.report.overall == "ok"
+    assert result.recommended_package == "solstone-journal-cuda"
+    assert check.main([]) == 0
+    output = capsys.readouterr().out
+    assert "solstone-journal-cuda" in output
+
+
+def test_linux_aarch64_nvidia_recommends_base_package(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    _patch_platform(monkeypatch, arch="aarch64")
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe())
+
+    result = check.build_check_report()
+
+    assert _checks(result)["gpu"].severity == "ok"
+    assert result.report.overall == "ok"
     assert result.recommended_package == "solstone-journal"
     assert check.main([]) == 0
     output = capsys.readouterr().out
     assert "solstone-journal" in output
     assert "solstone-journal-cuda" not in output
+
+
+def test_linux_recommendation_does_not_select_local_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe())
+    monkeypatch.setattr(
+        local_cuda,
+        "select_local_backend",
+        lambda *_args, **_kwargs: pytest.fail("backend selection is not a check input"),
+    )
+
+    result = check.build_check_report()
+
+    assert result.recommended_package == "solstone-journal-cuda"
 
 
 def test_linux_nvidia_small_single_discrete_mentions_cpu_transcription(

@@ -10,6 +10,7 @@ import pytest
 from solstone.think.providers import local_cuda
 
 ARCH_SET = frozenset({"sm_86", "sm_89", "sm_120a", "sm_121a"})
+pytestmark = pytest.mark.real_local_backend_probe
 
 
 def _completed(stdout: str, returncode: int = 0) -> SimpleNamespace:
@@ -256,28 +257,149 @@ def test_probe_nvidia_gpu_garbled_output_fails_closed(
 
 def test_select_local_backend_matrix() -> None:
     cases = [
-        ("sm_75", 13, "vulkan", "compute_cap sm_75 not in CUDA image arch set"),
-        ("sm_75", 12, "vulkan", "compute_cap sm_75 not in CUDA image arch set"),
-        ("sm_86", 13, "cuda", "compute_cap sm_86 covered; driver CUDA 13 >= 13"),
-        ("sm_86", 12, "vulkan", "driver CUDA 12 < required 13"),
-        ("sm_121", 13, "cuda", "compute_cap sm_121 covered; driver CUDA 13 >= 13"),
-        ("sm_121", 12, "vulkan", "driver CUDA 12 < required 13"),
-        (None, 13, "vulkan", "NVIDIA compute capability unreadable"),
-        (None, 12, "vulkan", "NVIDIA compute capability unreadable"),
+        (
+            False,
+            None,
+            None,
+            local_cuda.ArtifactTrust.TRUSTED,
+            True,
+            "vulkan",
+            "no NVIDIA GPU detected",
+        ),
+        (
+            True,
+            None,
+            13,
+            local_cuda.ArtifactTrust.ABSENT,
+            False,
+            "vulkan",
+            "NVIDIA compute capability unreadable",
+        ),
+        (
+            True,
+            "sm_75",
+            13,
+            local_cuda.ArtifactTrust.UNAVAILABLE,
+            True,
+            "vulkan",
+            "compute_cap sm_75 not in CUDA image arch set",
+        ),
+        (
+            True,
+            "sm_75",
+            12,
+            local_cuda.ArtifactTrust.ABSENT,
+            True,
+            "vulkan",
+            "compute_cap sm_75 not in CUDA image arch set",
+        ),
+        (
+            True,
+            "sm_86",
+            13,
+            local_cuda.ArtifactTrust.TRUSTED,
+            False,
+            "cuda",
+            "compute_cap sm_86 covered; driver CUDA 13 >= 13",
+        ),
+        (
+            True,
+            "sm_86",
+            12,
+            local_cuda.ArtifactTrust.ABSENT,
+            True,
+            "vulkan",
+            "driver CUDA 12 < required 13",
+        ),
+        (
+            True,
+            "sm_121",
+            13,
+            local_cuda.ArtifactTrust.TRUSTED,
+            False,
+            "cuda",
+            "compute_cap sm_121 covered; driver CUDA 13 >= 13",
+        ),
+        (
+            True,
+            "sm_121",
+            12,
+            local_cuda.ArtifactTrust.UNAVAILABLE,
+            True,
+            "vulkan",
+            "driver CUDA 12 < required 13",
+        ),
+        (
+            True,
+            None,
+            13,
+            local_cuda.ArtifactTrust.ABSENT,
+            False,
+            "vulkan",
+            "NVIDIA compute capability unreadable",
+        ),
+        (
+            True,
+            None,
+            12,
+            local_cuda.ArtifactTrust.UNAVAILABLE,
+            True,
+            "vulkan",
+            "NVIDIA compute capability unreadable",
+        ),
+        (
+            True,
+            "sm_121",
+            13,
+            local_cuda.ArtifactTrust.ABSENT,
+            False,
+            "vulkan",
+            (
+                "compute_cap sm_121 covered; driver CUDA 13 >= 13; "
+                "no trusted CUDA runtime artifact present"
+            ),
+        ),
+        (
+            True,
+            "sm_121",
+            13,
+            local_cuda.ArtifactTrust.UNAVAILABLE,
+            True,
+            "cuda",
+            "compute_cap sm_121 covered; driver CUDA 13 >= 13",
+        ),
+        (
+            True,
+            "sm_121",
+            13,
+            local_cuda.ArtifactTrust.UNAVAILABLE,
+            False,
+            "vulkan",
+            (
+                "compute_cap sm_121 covered; driver CUDA 13 >= 13; "
+                "no trusted CUDA runtime artifact present"
+            ),
+        ),
     ]
 
-    for compute_cap, driver_cuda, backend, reason in cases:
+    for detected, compute_cap, driver_cuda, trust, persisted, backend, reason in cases:
         probe = local_cuda.NvidiaProbe(
-            index=0,
+            index=0 if detected else None,
             compute_cap=compute_cap,
             driver_cuda_version=driver_cuda,
             vram_mib=24564,
             tiering_memory_mib=24564,
             memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
-            detected=True,
+            detected=detected,
         )
 
-        choice = local_cuda.select_local_backend(probe, ARCH_SET, 13)
+        choice = local_cuda.select_local_backend(
+            probe,
+            ARCH_SET,
+            13,
+            trust,
+            persisted_installed_cuda=persisted,
+        )
 
         assert choice == local_cuda.BackendChoice(backend, reason)
 
@@ -295,6 +417,8 @@ def test_select_local_backend_no_gpu_detected() -> None:
         ),
         ARCH_SET,
         13,
+        local_cuda.ArtifactTrust.TRUSTED,
+        persisted_installed_cuda=True,
     )
 
     assert choice == local_cuda.BackendChoice("vulkan", "no NVIDIA GPU detected")
@@ -313,6 +437,8 @@ def test_select_local_backend_driver_cuda_unreadable() -> None:
         ),
         ARCH_SET,
         13,
+        local_cuda.ArtifactTrust.TRUSTED,
+        persisted_installed_cuda=False,
     )
 
     assert choice == local_cuda.BackendChoice(

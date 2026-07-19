@@ -10,6 +10,7 @@ access at import time.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import platform
 import shutil
@@ -23,6 +24,7 @@ from typing import Any, Callable
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.artifact_proof import (
+    ProofResult,
     ReadinessOutcome,
     artifact_manifest_path,
     build_manifest,
@@ -39,6 +41,7 @@ from solstone.think.providers.install_lease import (
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
+    InstallStatusMalformedError,
     assert_install_attempt_current,
     begin_or_replace_install_attempt,
     bump_progress,
@@ -56,6 +59,7 @@ from solstone.think.providers.local import (
 from solstone.think.providers.local_cuda import (
     CUDA_EMBEDDED_ARCH_SET,
     CUDA_MIN_DRIVER_VERSION,
+    ArtifactTrust,
 )
 from solstone.think.providers.memory import assess_memory
 from solstone.think.providers.oci_image import OciSignaturePolicy
@@ -353,6 +357,78 @@ def _cuda_pin_identity(
         "binary_name": CUDA_SERVER_PIN.binary_name,
         "wanted_files": list(wanted_files),
     }
+
+
+def _prove_cuda_runtime_artifact(
+    pin: CudaServerPin,
+    *,
+    journal_path: str | Path | None = None,
+) -> ProofResult:
+    from solstone.think.providers import oci_image
+
+    arch = _oci_arch()
+    wanted_files = pin.wanted_files_for_arch(arch)
+    return prove_cuda_sidecar(
+        provider=LOCAL_PROVIDER_NAME,
+        image_ref=pin.image_ref,
+        arch=arch,
+        wanted_files=wanted_files,
+        target_dir=cuda_binary_dir(),
+        pin_identity=_cuda_pin_identity(arch, wanted_files),
+        verifier=oci_image.verify_sidecar_install,
+        journal_path=journal_path,
+    )
+
+
+def probe_cuda_runtime_artifact_trust(
+    pin: CudaServerPin,
+    *,
+    journal_path: str | Path | None = None,
+) -> ArtifactTrust:
+    try:
+        result = _prove_cuda_runtime_artifact(pin, journal_path=journal_path)
+    except Exception:
+        LOG.warning(
+            "CUDA runtime artifact trust probe failed; treating proof as unavailable",
+            exc_info=True,
+        )
+        return ArtifactTrust.UNAVAILABLE
+    if result.status == "ready":
+        return ArtifactTrust.TRUSTED
+    if result.status == "missing-or-mismatched":
+        return ArtifactTrust.ABSENT
+    if result.status == "proof-unavailable":
+        return ArtifactTrust.UNAVAILABLE
+    LOG.warning(
+        "CUDA runtime artifact proof returned unknown status: %s", result.status
+    )
+    return ArtifactTrust.UNAVAILABLE
+
+
+def has_persisted_installed_cuda_target(
+    *,
+    journal_path: str | Path | None = None,
+) -> bool:
+    try:
+        status = read_install_status(
+            name=LOCAL_PROVIDER_NAME,
+            journal_path=journal_path,
+        )
+        target_json = status["target_fingerprint_json"]
+        if status["install_state"] != "installed" or target_json is None:
+            return False
+        target = json.loads(target_json)
+    except (InstallStatusMalformedError, ValueError):
+        LOG.warning(
+            "could not read persisted CUDA install target; not holding CUDA backend",
+            exc_info=True,
+        )
+        return False
+    return (
+        isinstance(target, dict)
+        and target.get("provider") == LOCAL_PROVIDER_NAME
+        and target.get("backend") == "cuda"
+    )
 
 
 def target_fingerprint(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
@@ -869,8 +945,6 @@ def _combined_artifact_status(
 
 
 def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
-    from solstone.think.providers import oci_image
-
     selected_model = normalize_model_id(model_id or LOCAL_MODEL)
     spec = LOCAL_MODEL_SPECS[selected_model]
     gguf_path = model_path(selected_model)
@@ -885,18 +959,8 @@ def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
     )
     vulkan_payload = _proof_result_payload(vulkan_proof)
 
-    arch = _oci_arch()
     cuda_binary = cuda_binary_path()
-    cuda_wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
-    cuda_proof = prove_cuda_sidecar(
-        provider=LOCAL_PROVIDER_NAME,
-        image_ref=CUDA_SERVER_PIN.image_ref,
-        arch=arch,
-        wanted_files=cuda_wanted_files,
-        target_dir=cuda_binary_dir(),
-        pin_identity=_cuda_pin_identity(arch, cuda_wanted_files),
-        verifier=oci_image.verify_sidecar_install,
-    )
+    cuda_proof = _prove_cuda_runtime_artifact(CUDA_SERVER_PIN)
     cuda_payload = _proof_result_payload(cuda_proof)
     model_proof = prove_manifest(
         artifact_manifest_path(model_dir(selected_model)),
@@ -1042,6 +1106,7 @@ __all__ = [
     "LLAMA_SERVER_PINS",
     "CudaServerPin",
     "LocalArtifacts",
+    "has_persisted_installed_cuda_target",
     "llama_server_artifact_key",
     "pin_for_current_platform",
     "binary_path_for_pin",
@@ -1053,6 +1118,7 @@ __all__ = [
     "install_model",
     "install_local",
     "install_hint",
+    "probe_cuda_runtime_artifact_trust",
     "probe_binary_runnable",
     "gpu_device_override",
     "inspect_readiness",
