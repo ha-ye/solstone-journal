@@ -1073,6 +1073,7 @@ mod tests {
     fn scan_observation_container_passthrough_fails_before_partial_insert() {
         let root = temp_root("edge-observation-container-failure");
         let rel = "facets/work/entities/source/observations.jsonl";
+        let expected_warning = "Skipping edge extraction for facets/work/entities/source/observations.jsonl: edge field label does not support object";
         write(
             &root,
             rel,
@@ -1085,16 +1086,40 @@ mod tests {
         assert_eq!(report.edges_indexed, 1);
         assert_eq!(report.edge_rows_inserted, 0);
         assert_eq!(report.failed, 1);
-        assert!(report.warnings.iter().any(|warning| {
-            warning
-                == "Skipping edge extraction for facets/work/entities/source/observations.jsonl: edge field label does not support object"
-        }));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| { warning == expected_warning })
+        );
         let conn = Connection::open(db_path(&root)).expect("open db");
         assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
         assert_eq!(
             count(
                 &conn,
                 "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/source/observations.jsonl'"
+            ),
+            0
+        );
+        assert_sqlite_and_fts_integrity(&conn);
+        drop(conn);
+
+        let retry = scan_journal(&root, true, "20260717").expect("retry observation failure");
+        assert_eq!(retry.edges_indexed, 1);
+        assert_eq!(retry.edge_rows_inserted, 0);
+        assert_eq!(retry.failed, 1);
+        assert!(
+            retry
+                .warnings
+                .iter()
+                .any(|warning| warning == expected_warning)
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db after retry");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/source/observations.jsonl'",
             ),
             0
         );

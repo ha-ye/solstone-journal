@@ -16,7 +16,8 @@ transactional reset. It does not implement the changes.
 - Treat `index_entity_search` as the fifth logical replacement unit. It has the
   same defect shape as file and edge replacement: destructive deletes, then many
   inserts, then watermark writes, all currently independent autocommits. Jer
-  should explicitly confirm this scope at the gate.
+  approved this D0 scope at the gate, and the native implementation now ships
+  it.
 - Fold segment aggregate rebuilds into the per-file transaction in
   `scan_journal` and remove the separate batched phase currently at
   `scan.rs:141`. Keep one rebuild per segment per scan run with an in-memory set
@@ -370,9 +371,9 @@ Add this text to `docs/PORTING.md` under `Indexer Selection Seam`:
 
 ## Risks And Open Questions
 
-- Gate confirmation needed: include `index_entity_search` in this implementation
-  now. I recommend yes because it is the same destructive replacement defect and
-  has only one call frame.
+- D0 is included, approved, and shipped: `index_entity_search` is covered by the
+  same transaction model because it has the same destructive replacement defect
+  and only one call frame.
 - D1 accepts a temporary cross-view mismatch when one file in a segment fails
   after a sibling has already committed an aggregate built from disk. The retry
   story is correct, but the mismatch is visible until the next successful scan.
