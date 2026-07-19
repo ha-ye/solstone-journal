@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
 from solstone.think.models import DEFAULT_MODEL_BY_PROVIDER
 from solstone.think.utils import get_journal
@@ -153,22 +152,26 @@ def migrate(config: dict[str, Any], journal: Path) -> bool:
             providers.pop("key_validation")
             changed = True
 
-    vertex_credentials = journal / ".config" / "vertex-credentials.json"
-    if vertex_credentials.exists() or vertex_credentials.is_symlink():
-        vertex_credentials.unlink()
-        changed = True
-
     return changed
 
 
 def main() -> None:
     journal = Path(get_journal())
-    with hold_config_lock(journal):
-        config = read_journal_config(journal)
-        if not migrate(config, journal):
-            print("Thinking provider config already unified.")
-            return
-        write_journal_config(config, journal)
+    result = mutate_journal_config(
+        lambda config: JournalConfigMutation(
+            changed=migrate(config, journal),
+            value=None,
+        ),
+        journal_path=journal,
+    )
+    vertex_credentials = journal / ".config" / "vertex-credentials.json"
+    removed_credentials = False
+    if vertex_credentials.exists() or vertex_credentials.is_symlink():
+        vertex_credentials.unlink()
+        removed_credentials = True
+    if not result.changed and not removed_credentials:
+        print("Thinking provider config already unified.")
+        return
     print("Unified thinking provider config and removed retired provider settings.")
 
 

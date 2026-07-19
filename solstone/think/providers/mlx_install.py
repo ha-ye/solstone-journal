@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import (
+    JournalConfigMutation,
+    mutate_journal_config,
+    read_journal_config,
+)
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
 from solstone.think.providers.install_state import (
     InstallStatus,
@@ -349,20 +353,28 @@ def _write_mlx_metadata(
     snapshot_dir: Path,
     variant_dir: Path | None,
 ) -> None:
-    config = read_journal_config()
-    slot = (
-        config.setdefault("providers", {})
-        .setdefault("bundled", {})
-        .setdefault(_LOCAL_NAME, {})
-    )
-    for key in _MLX_METADATA_KEYS:
-        slot.pop(key, None)
-    slot["mlx_model_id"] = spec.name
-    slot["mlx_revision"] = spec.revision
-    slot["mlx_snapshot_dir"] = str(snapshot_dir)
-    if variant_dir is not None:
-        slot["mlx_variant_dir"] = str(variant_dir)
-    write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        slot = (
+            config.setdefault("providers", {})
+            .setdefault("bundled", {})
+            .setdefault(_LOCAL_NAME, {})
+        )
+        next_values = {
+            "mlx_model_id": spec.name,
+            "mlx_revision": spec.revision,
+            "mlx_snapshot_dir": str(snapshot_dir),
+        }
+        if variant_dir is not None:
+            next_values["mlx_variant_dir"] = str(variant_dir)
+        changed = any(
+            slot.get(key) != next_values.get(key) for key in _MLX_METADATA_KEYS
+        )
+        for key in _MLX_METADATA_KEYS:
+            slot.pop(key, None)
+        slot.update(next_values)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:

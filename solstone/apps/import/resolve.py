@@ -22,9 +22,9 @@ from solstone.think.entities.relationships import (
     load_facet_relationship,
     save_facet_relationship,
 )
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
 from solstone.think.journal_io import atomic_replace
-from solstone.think.utils import get_config, get_journal
+from solstone.think.utils import get_journal
 
 from .ingest import _append_decision, _categorize_field, _write_state_atomic
 
@@ -221,9 +221,12 @@ def _resolve_config_field(state_dir: Path, field: str, action: str) -> None:
         raise ResolveInvalid(f"Config field '{field}' has invalid diff data.")
 
     if action == "apply":
-        config = get_config()
-        _set_nested(config, field, diff_entry.get("source"))
-        write_journal_config(config)
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+            _set_nested(config, field, diff_entry.get("source"))
+            return JournalConfigMutation(changed=True, value=None)
+
+        mutate_journal_config(apply)
         log_action = "config_field_applied"
         reason = "review_apply"
     else:

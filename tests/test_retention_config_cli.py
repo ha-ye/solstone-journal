@@ -160,7 +160,7 @@ def test_negative_days_rejected(journal_env):
 
 def test_action_logged(journal_env):
     result = runner.invoke(
-        call_app, ["journal", "retention", "config", "--mode", "keep"]
+        call_app, ["journal", "retention", "config", "--mode", "days", "--days", "7"]
     )
 
     assert result.exit_code == 0

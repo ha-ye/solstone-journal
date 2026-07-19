@@ -9,9 +9,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
 from solstone.think.pairing.config import InvalidHomeAddress, validate_home_address
 from solstone.think.utils import get_journal
@@ -58,12 +57,16 @@ def migrate(config: dict[str, Any]) -> bool:
 
 def main() -> None:
     journal = get_journal()
-    with hold_config_lock(journal):
-        config = read_journal_config(journal)
-        if not migrate(config):
-            print("Pairing home address already migrated.")
-            return
-        write_journal_config(config, journal)
+    result = mutate_journal_config(
+        lambda config: JournalConfigMutation(
+            changed=migrate(config),
+            value=None,
+        ),
+        journal_path=journal,
+    )
+    if not result.changed:
+        print("Pairing home address already migrated.")
+        return
     print("Migrated pairing home address config.")
 
 

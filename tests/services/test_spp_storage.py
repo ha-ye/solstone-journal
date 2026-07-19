@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
 from solstone.think.services import spp as spp_module
 from solstone.think.services.spp import (
     CREDENTIAL_FINGERPRINT_FIELD,
@@ -23,6 +22,7 @@ from solstone.think.services.spp import (
     is_confidential_enabled,
     provision_confidential_handoff,
 )
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _payload(suffix: str = "one") -> dict[str, str]:
@@ -44,7 +44,7 @@ def _read_config(journal: Path) -> dict:
 
 
 def _write_config(journal: Path, config: dict) -> None:
-    write_journal_config(config, journal)
+    seed_journal_config(config, journal)
 
 
 @pytest.fixture(autouse=True)

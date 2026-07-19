@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import stat
-from contextlib import contextmanager
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -27,6 +27,19 @@ def _write_config(journal: Path, payload: dict) -> None:
 
 def _read_config(journal: Path) -> dict:
     return json.loads(_config_path(journal).read_text(encoding="utf-8"))
+
+
+def _count_transactions(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    entries = 0
+    real_mutate = state.mutate_journal_config
+
+    def recording_mutate(mutator, *args, **kwargs):
+        nonlocal entries
+        entries += 1
+        return real_mutate(mutator, *args, **kwargs)
+
+    monkeypatch.setattr(state, "mutate_journal_config", recording_mutate)
+    return lambda: entries
 
 
 def test_missing_backup_section_defaults(
@@ -128,16 +141,15 @@ def test_generate_and_store_keys_preserves_hand_set_keys(
         },
     )
 
-    def fail_generate() -> str:
-        raise AssertionError("existing keys must not be regenerated")
-
-    monkeypatch.setattr(state, "generate_daily_key", fail_generate)
-    monkeypatch.setattr(state, "generate_recovery_key", fail_generate)
+    monkeypatch.setattr(state, "generate_daily_key", lambda: "unused-generated")
+    monkeypatch.setattr(state, "generate_recovery_key", lambda: "C" * 64)
 
     keys = state.generate_and_store_keys()
 
     assert keys.daily_key == "manual-daily"
     assert keys.recovery_key == "B" * 64
+    assert _read_config(tmp_path)["backup"]["daily_key"] == "manual-daily"
+    assert _read_config(tmp_path)["backup"]["recovery_key"] == "B" * 64
 
 
 def test_set_destination_writes_private_config_mode(
@@ -167,15 +179,7 @@ def test_setters_round_trip_under_config_lock(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
     destination = Destination(
         repository="b2:bucket:path",
         backend="b2",
@@ -188,7 +192,7 @@ def test_setters_round_trip_under_config_lock(
     state.set_destination(destination)
     state.set_recovery_key_confirmed()
 
-    assert entries == 2
+    assert transaction_count() == 2
     assert state.get_destination() == destination
     assert _read_config(tmp_path)["backup"]["confirmed_recovery_key"] is True
 
@@ -199,20 +203,12 @@ def test_set_enabled_round_trips_under_config_lock(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     state.set_enabled(True)
     state.set_enabled(False)
 
-    assert entries == 2
+    assert transaction_count() == 2
     assert _read_config(tmp_path)["backup"]["enabled"] is False
     assert state.get_backup_config()["enabled"] is False
     assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
@@ -224,20 +220,12 @@ def test_set_mode_round_trips_under_config_lock(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     state.set_mode("operated")
     state.set_mode("byo")
 
-    assert entries == 2
+    assert transaction_count() == 2
     assert _read_config(tmp_path)["backup"]["mode"] == "byo"
     assert state.get_backup_config()["mode"] == "byo"
     assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
@@ -251,20 +239,12 @@ def test_set_mode_rejects_invalid_value_without_writing(
     original = {"backup": {"mode": "byo"}}
     _write_config(tmp_path, original)
     before = _read_config(tmp_path)
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     with pytest.raises(ValueError):
         state.set_mode("invalid")
 
-    assert entries == 0
+    assert transaction_count() == 0
     assert _read_config(tmp_path) == before
 
 
@@ -274,19 +254,11 @@ def test_set_retention_round_trips_under_config_lock(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     state.set_retention({"hourly": 1, "daily": 2, "weekly": 3, "monthly": 4})
 
-    assert entries == 1
+    assert transaction_count() == 1
     assert _read_config(tmp_path)["backup"]["retention"] == {
         "hourly": 1,
         "daily": 2,
@@ -323,20 +295,12 @@ def test_set_retention_rejects_invalid_values_without_writing(
     }
     _write_config(tmp_path, original)
     before = _read_config(tmp_path)
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     with pytest.raises(ValueError):
         state.set_retention(retention)  # type: ignore[arg-type]
 
-    assert entries == 0
+    assert transaction_count() == 0
     assert _read_config(tmp_path) == before
 
 
@@ -396,15 +360,7 @@ def test_record_backup_result_writes_last_backup_under_config_lock(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     state.record_backup_result(
         status="error",
@@ -413,7 +369,7 @@ def test_record_backup_result_writes_last_backup_under_config_lock(
         error_reason="incomplete",
     )
 
-    assert entries == 1
+    assert transaction_count() == 1
     assert _read_config(tmp_path)["backup"]["last_backup"] == {
         "time": 123,
         "snapshot_id": "partial-snapshot",
@@ -429,15 +385,7 @@ def test_record_prune_result_writes_last_prune(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {})
-    entries = 0
-
-    @contextmanager
-    def fake_lock():
-        nonlocal entries
-        entries += 1
-        yield
-
-    monkeypatch.setattr(state, "hold_config_lock", fake_lock)
+    transaction_count = _count_transactions(monkeypatch)
 
     state.record_prune_result(
         status="error",
@@ -445,7 +393,7 @@ def test_record_prune_result_writes_last_prune(
         error_reason="timeout",
     )
 
-    assert entries == 1
+    assert transaction_count() == 1
     assert _read_config(tmp_path)["backup"]["last_prune"] == {
         "time": 456,
         "status": "error",

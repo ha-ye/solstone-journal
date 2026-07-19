@@ -13,9 +13,8 @@ from typing import Any
 from solstone.convey.sol_initiated.copy import CATEGORY_CAP_DEFAULTS
 from solstone.convey.sol_initiated.dedup import parse_dedupe_window
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
 from solstone.think.utils import get_config
 
@@ -95,17 +94,19 @@ def save_settings(updates: dict[str, Any]) -> SolVoiceSettings:
     if not isinstance(updates, dict):
         raise ValueError("sol_voice update must be an object")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[SolVoiceSettings]:
         raw_root = config.get("sol_voice")
         if not isinstance(raw_root, dict):
             raw_root = {}
 
         merged = _deep_merge(raw_root, updates)
         settings = _parse_settings(merged, strict=True)
-        config["sol_voice"] = settings.to_dict()
-        write_journal_config(config)
-    return settings
+        next_settings = settings.to_dict()
+        changed = config.get("sol_voice") != next_settings
+        config["sol_voice"] = next_settings
+        return JournalConfigMutation(changed=changed, value=settings)
+
+    return mutate_journal_config(apply).value
 
 
 def _parse_settings(raw_root: object, *, strict: bool) -> SolVoiceSettings:

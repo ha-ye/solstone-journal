@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import copy
 import json
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import get_args
@@ -27,6 +25,7 @@ from solstone.apps.thinking.install_copy import (
     INSTALL_PHASE_RESOLVING,
     INSTALL_PHASE_VERIFYING,
 )
+from solstone.think.journal_config import JournalConfigTransaction
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import install_state
 from solstone.think.providers.install_state import (
@@ -323,44 +322,21 @@ def test_write_install_status_waits_for_explicit_config_lock_and_preserves_commi
         total=100,
     )
     calls: list[tuple[str, object]] = []
-    in_lock = False
 
-    @contextmanager
-    def recording_lock(recorded_journal_path=None):
-        nonlocal in_lock
-        calls.append(("lock_enter", recorded_journal_path))
-        assert in_lock is False
-        in_lock = True
-        try:
-            yield
-        finally:
-            assert in_lock is True
-            in_lock = False
-            calls.append(("lock_exit", recorded_journal_path))
+    def recording_mutate(mutator, *, journal_path=None):
+        calls.append(("mutate", journal_path))
+        mutation = mutator(config)
+        return JournalConfigTransaction(
+            value=mutation.value,
+            changed=mutation.changed,
+            written=mutation.changed,
+        )
 
-    def recording_read(recorded_journal_path=None):
-        assert in_lock is True
-        calls.append(("read", recorded_journal_path))
-        return copy.deepcopy(config)
-
-    def recording_write(updated_config, recorded_journal_path=None):
-        assert in_lock is True
-        calls.append(("write", recorded_journal_path))
-        config.clear()
-        config.update(copy.deepcopy(updated_config))
-
-    monkeypatch.setattr(install_state, "hold_config_lock", recording_lock)
-    monkeypatch.setattr(install_state, "read_journal_config", recording_read)
-    monkeypatch.setattr(install_state, "write_journal_config", recording_write)
+    monkeypatch.setattr(install_state, "mutate_journal_config", recording_mutate)
 
     write_install_status(status, scope="bundled", journal_path=journal_path)
 
-    assert calls == [
-        ("lock_enter", journal_path),
-        ("read", journal_path),
-        ("write", journal_path),
-        ("lock_exit", journal_path),
-    ]
+    assert calls == [("mutate", journal_path)]
     persisted = config
     assert persisted["unrelated"] == "seeded"
     assert persisted["concurrent_unrelated"] == "committed while locked"
@@ -400,33 +376,17 @@ def test_write_install_status_propagates_config_lock_timeout_without_config_io(
     monkeypatch,
 ):
     timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
-    read_calls: list[object] = []
-    write_calls: list[object] = []
 
-    @contextmanager
-    def busy_lock(journal_path=None):
+    def busy_mutate(mutator, *, journal_path=None):
         raise timeout
-        yield
 
-    def fail_read(journal_path=None):
-        read_calls.append(journal_path)
-        pytest.fail("read_journal_config should not run before lock acquisition")
-
-    def fail_write(config, journal_path=None):
-        write_calls.append((config, journal_path))
-        pytest.fail("write_journal_config should not run before lock acquisition")
-
-    monkeypatch.setattr(install_state, "hold_config_lock", busy_lock)
-    monkeypatch.setattr(install_state, "read_journal_config", fail_read)
-    monkeypatch.setattr(install_state, "write_journal_config", fail_write)
+    monkeypatch.setattr(install_state, "mutate_journal_config", busy_mutate)
 
     status = transition_state(make_idle_status("anthropic"), new_state="downloading")
     with pytest.raises(LockTimeout) as exc_info:
         install_state.write_install_status(status, scope="bundled")
 
     assert exc_info.value is timeout
-    assert read_calls == []
-    assert write_calls == []
 
 
 def test_progress_byte_counters_persist_and_round_trip(journal_config):

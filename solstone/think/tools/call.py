@@ -19,6 +19,7 @@ import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -41,7 +42,8 @@ from solstone.think.importers.utils import (
     get_import_details,
     list_import_timestamps,
 )
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import (
     day_path,
     get_journal,
@@ -1032,7 +1034,6 @@ def config(
 ) -> None:
     """Show or update retention configuration."""
     from solstone.think.retention import load_retention_config
-    from solstone.think.utils import get_config
 
     if mode is None and days is None and not clear:
         cfg = load_retention_config()
@@ -1066,44 +1067,50 @@ def config(
         typer.echo("--days must be a positive integer.", err=True)
         raise typer.Exit(1)
 
-    journal_config = get_config()
-    retention = journal_config.setdefault("retention", {})
+    def apply(journal_config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+        retention = journal_config.setdefault("retention", {})
+        changed = False
 
-    if clear:
-        ps = retention.get("per_stream", {})
-        if stream in ps:
-            del ps[stream]
-            if not ps:
-                retention.pop("per_stream", None)
-        log_call_action(
-            facet=None,
-            action="retention_config",
-            params={"stream": stream, "clear": True},
-        )
-    elif stream:
-        ps = retention.setdefault("per_stream", {})
-        entry = ps.setdefault(stream, {})
-        if mode is not None:
-            entry["raw_media"] = mode
-        if days is not None:
-            entry["raw_media_days"] = days
-        log_call_action(
-            facet=None,
-            action="retention_config",
-            params={"stream": stream, "mode": mode, "days": days},
-        )
-    else:
-        if mode is not None:
-            retention["raw_media"] = mode
-        if days is not None:
-            retention["raw_media_days"] = days
-        log_call_action(
-            facet=None,
-            action="retention_config",
-            params={"mode": mode, "days": days},
-        )
+        if clear:
+            ps = retention.get("per_stream", {})
+            if stream in ps:
+                del ps[stream]
+                changed = True
+                if not ps:
+                    retention.pop("per_stream", None)
+            params = {"stream": stream, "clear": True}
+        elif stream:
+            ps = retention.setdefault("per_stream", {})
+            entry = ps.setdefault(stream, {})
+            if mode is not None and entry.get("raw_media") != mode:
+                entry["raw_media"] = mode
+                changed = True
+            if days is not None and entry.get("raw_media_days") != days:
+                entry["raw_media_days"] = days
+                changed = True
+            params = {"stream": stream, "mode": mode, "days": days}
+        else:
+            if mode is not None and retention.get("raw_media") != mode:
+                retention["raw_media"] = mode
+                changed = True
+            if days is not None and retention.get("raw_media_days") != days:
+                retention["raw_media_days"] = days
+                changed = True
+            params = {"mode": mode, "days": days}
+        return JournalConfigMutation(changed=changed, value=params)
 
-    write_journal_config(journal_config)
+    try:
+        mutation = mutate_journal_config(apply)
+    except LockTimeout:
+        typer.echo("Journal config is busy; try again.", err=True)
+        raise typer.Exit(1) from None
+
+    if mutation.changed:
+        log_call_action(
+            facet=None,
+            action="retention_config",
+            params=mutation.value,
+        )
 
     cfg = load_retention_config()
     result = {

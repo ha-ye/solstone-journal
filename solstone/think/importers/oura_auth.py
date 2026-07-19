@@ -8,8 +8,8 @@ confidential-client secret when Oura's registration requires one) lives in
 journal config under the reserved ``oura`` key — the journal is the one
 trusted store (owner ruling, 2026-07-07; no machine-local carve-out for
 device tokens). All reads and writes route through the config owner
-``solstone.think.journal_config`` (L2), with read-modify-write saves under
-``hold_config_lock``. Nothing token-shaped is ever printed or logged.
+``solstone.think.journal_config`` (L2). Nothing token-shaped is ever printed
+or logged.
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.journal_config import (
-    hold_config_lock,
+    JournalConfigMutation,
+    mutate_journal_config,
     read_journal_config,
-    write_journal_config,
 )
 
 CALLBACK_HOST = "localhost"
@@ -150,21 +150,24 @@ def save_oura_tokens(tokens: OuraTokens, journal_root: Path | None = None) -> No
     is preserved untouched.
     """
 
-    with hold_config_lock(journal_root):
-        config = read_journal_config(journal_root)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         section = config.setdefault(CONFIG_SECTION, {})
         if not isinstance(section, dict):
             raise OuraAuthError(
                 "Journal config 'oura' section is not an object; "
                 "repair config/journal.json before connecting."
             )
-        section["tokens"] = {
+        next_tokens = {
             "access_token": tokens.access_token,
             "refresh_token": tokens.refresh_token,
             "expires_at": tokens.expires_at,
             "token_type": tokens.token_type,
         }
-        write_journal_config(config, journal_root)
+        changed = section.get("tokens") != next_tokens
+        section["tokens"] = next_tokens
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply, journal_path=journal_root)
 
 
 def load_oura_client_secret(journal_root: Path | None = None) -> str | None:

@@ -6,7 +6,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib
-import json
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +27,7 @@ from solstone.think.models import (
 )
 from solstone.think.providers import get_provider_module
 from solstone.think.services.spp_attest.cadence import AttestationSession
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -73,12 +73,9 @@ def _cloud_call_mocks(monkeypatch: pytest.MonkeyPatch) -> list[Mock]:
     return mocks
 
 
-def _write_journal_config(tmp_path: Path, config: dict) -> str:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(config)
-    (config_dir / "journal.json").write_text(payload, encoding="utf-8")
-    return payload
+def _seed_journal_config(tmp_path: Path, config: dict) -> str:
+    config_path = seed_journal_config(config, tmp_path)
+    return config_path.read_text(encoding="utf-8")
 
 
 def _confidential_config(*, provider_pins: bool = True) -> dict:
@@ -367,7 +364,7 @@ def test_confidential_generate_stops_before_any_provider_dispatch(
     monkeypatch,
 ):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(tmp_path, _confidential_config())
+    _seed_journal_config(tmp_path, _confidential_config())
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
@@ -399,7 +396,7 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
     monkeypatch,
 ):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(tmp_path, _confidential_config())
+    _seed_journal_config(tmp_path, _confidential_config())
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     build_llm = Mock(side_effect=AssertionError("llm build attempted"))
@@ -435,7 +432,7 @@ def test_confidential_local_lane_stops_before_any_provider_dispatch(
     config["providers"] = {
         "active": {"provider": "local", "model": LOCAL_MODEL},
     }
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     local_generate = Mock(side_effect=AssertionError("local generate dispatched"))
@@ -493,7 +490,7 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
         "served_model_id": "confidential-model",
         "credential": "confidential-credential",
     }
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.get", httpx_get)
 
@@ -509,13 +506,13 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
     httpx_get.assert_not_called()
 
     config.pop("services", None)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     assert confidential_probe_status() is None
 
 
 def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(tmp_path, _confidential_config())
+    _seed_journal_config(tmp_path, _confidential_config())
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
 
@@ -549,7 +546,7 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     config["providers"] = {
         "active": {"provider": "local", "model": LOCAL_MODEL},
     }
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
@@ -572,7 +569,7 @@ def test_confidential_stt_attestation_failure_blocks_remote_audio_egress(
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
     _add_local_endpoint(config)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _install_stt_backend_mocks(
         monkeypatch,
@@ -613,7 +610,7 @@ def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypat
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
     _add_local_endpoint(config)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     spp_transport._LISTENER = _FakeListener()
     spp_transport._LISTENER_THREAD = _AliveThread()
     spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:4567"
@@ -640,7 +637,7 @@ def test_confidential_stt_setting_off_gate_blocks_confidential_only(
     config = _confidential_config(provider_pins=False)
     config["transcribe"] = {"confidential_audio": False}
     _add_local_endpoint(config)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     mocks = _install_stt_backend_mocks(monkeypatch, parakeet_result=[])
     httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
@@ -671,7 +668,7 @@ def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
     _add_local_endpoint(config)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     _patch_confidential_listener(monkeypatch)
 
     from solstone.think.services import spp_transport
@@ -714,7 +711,7 @@ def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch
 def test_confidential_stt_toggle_off_selection_is_immediate(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
@@ -730,7 +727,7 @@ def test_confidential_stt_toggle_off_selection_is_immediate(tmp_path, monkeypatc
     )
 
     config["transcribe"] = {"confidential_audio": False}
-    _write_journal_config(tmp_path, config)
+    _seed_journal_config(tmp_path, config)
 
     assert (
         transcribe_main.resolve_default_backend(
@@ -767,7 +764,7 @@ def test_key_presence_does_not_implicitly_select_a_provider(
     env_key: str,
 ):
     _empty_journal(tmp_path, monkeypatch)
-    original = _write_journal_config(tmp_path, {"env": {env_key: "test-key"}})
+    original = _seed_journal_config(tmp_path, {"env": {env_key: "test-key"}})
 
     provider, model = resolve_provider(agent_type)
 
@@ -780,7 +777,7 @@ def test_key_presence_does_not_implicitly_select_a_provider(
 
 def test_model_only_config_does_not_infer_provider_from_key(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(
+    _seed_journal_config(
         tmp_path,
         {
             "env": {"GOOGLE_API_KEY": "test-key"},
@@ -795,7 +792,7 @@ def test_explicit_provider_does_not_fall_through_to_keyed_provider(
     tmp_path, monkeypatch
 ):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(
+    _seed_journal_config(
         tmp_path,
         {
             "env": {"GOOGLE_API_KEY": "test-key"},
@@ -808,7 +805,7 @@ def test_explicit_provider_does_not_fall_through_to_keyed_provider(
 
 def test_key_only_config_requires_maintenance_migration(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(tmp_path, {"env": {"GOOGLE_API_KEY": "test-key"}})
+    _seed_journal_config(tmp_path, {"env": {"GOOGLE_API_KEY": "test-key"}})
 
     assert resolve_provider("generate") == (NO_BRAIN_PROVIDER, "")
 
@@ -832,7 +829,7 @@ def test_explicit_local_type_default_neutralizes_cloud_context_pin(
     monkeypatch,
 ):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(
+    _seed_journal_config(
         tmp_path,
         {
             "providers": {

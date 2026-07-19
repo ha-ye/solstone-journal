@@ -15,11 +15,12 @@ from urllib.request import Request
 
 import pytest
 
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import read_journal_config
 from solstone.think.link import ca as ca_module
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import LinkState, ca_dir
 from solstone.think.push import reach
+from tests.helpers.journal_config import seed_journal_config
 
 NOW = 1_745_006_400
 EXPIRES_AT = "2026-06-20T12:00:00Z"
@@ -82,7 +83,7 @@ def _stored_reach_state() -> object:
 
 
 def _write_reach_state(state: dict[str, Any]) -> None:
-    write_journal_config({"services": {"push": {"reach_token": state}}})
+    seed_journal_config({"services": {"push": {"reach_token": state}}})
 
 
 def _capture_success_urlopen(
@@ -248,7 +249,7 @@ def test_ensure_reach_token_success_writes_state_and_strips_stale_key(
     link_state = _setup_journal(tmp_path, monkeypatch)
     assert link_state is not None
     stale_key = "relay" + "_token"
-    write_journal_config({"services": {"push": {stale_key: "old"}}})
+    seed_journal_config({"services": {"push": {stale_key: "old"}}})
     _capture_success_urlopen(monkeypatch, _response_payload(link_state.instance_id))
 
     assert reach.ensure_reach_token() == "reach-token"
@@ -411,14 +412,14 @@ def test_reach_token_secrets_not_logged(
             _response_payload(link_state.instance_id, token="secret-token")
         )
 
-    def fail_write(config: dict[str, Any]) -> None:
+    def fail_mutate(*_args, **_kwargs) -> None:
         raise OSError("simulated failure")
 
     monkeypatch.setattr(reach.urllib_request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(reach, "write_journal_config", fail_write)
+    monkeypatch.setattr(reach, "mutate_journal_config", fail_mutate)
 
     with caplog.at_level("WARNING"):
-        assert reach.ensure_reach_token() == "secret-token"
+        assert reach.ensure_reach_token() is None
 
     body = captured["body"]
     assert "secret-token" not in caplog.text

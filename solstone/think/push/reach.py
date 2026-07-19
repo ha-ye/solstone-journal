@@ -15,10 +15,11 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from solstone.think.journal_config import (
-    hold_config_lock,
+    JournalConfigMutation,
+    mutate_journal_config,
     read_journal_config,
-    write_journal_config,
 )
+from solstone.think.journal_io import LockTimeout
 from solstone.think.link.ca import LoadedCa, load_or_generate_ca, mint_reach_assertion
 from solstone.think.link.paths import LinkState, ca_dir
 from solstone.think.services.portal_client import portal_base_url, request_headers
@@ -73,8 +74,8 @@ def ensure_reach_token() -> str | None:
         return _state_unexpired_token(state, now)
 
     try:
-        with hold_config_lock():
-            config = read_journal_config()
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
             services = config.setdefault("services", {})
             if not isinstance(services, dict):
                 services = {}
@@ -83,13 +84,24 @@ def ensure_reach_token() -> str | None:
             if not isinstance(push, dict):
                 push = {}
                 services["push"] = push
+            changed = push.get("reach_token") != new_state or "relay_token" in push
             push["reach_token"] = new_state
             push.pop("relay_token", None)
-            write_journal_config(config)
+            return JournalConfigMutation(changed=changed, value=None)
+
+        mutate_journal_config(apply)
+    except LockTimeout as exc:
+        logger.warning(
+            "reach relay token persistence busy: path=%s timeout=%s",
+            exc.path,
+            exc.timeout,
+        )
+        return _state_unexpired_token(state, now)
     except Exception as exc:
         logger.warning(
             "reach relay token persistence failed: error=%s", type(exc).__name__
         )
+        return _state_unexpired_token(state, now)
 
     return new_token
 

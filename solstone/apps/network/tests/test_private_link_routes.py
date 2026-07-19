@@ -10,7 +10,6 @@ import urllib.parse
 import pytest
 
 from solstone.apps.network import routes as link_routes
-from solstone.think.journal_config import write_journal_config
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.nonces import NonceStore
 from solstone.think.link.paths import (
@@ -20,6 +19,7 @@ from solstone.think.link.paths import (
     service_token_path,
 )
 from solstone.think.services import operations
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +63,7 @@ def _set_posture(env, posture: str) -> None:
     config_path = env.journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
     config.setdefault("link", {})["posture"] = posture
-    write_journal_config(config)
+    seed_journal_config(config, env.journal)
 
 
 def _seed_enabled_private_link(env) -> None:

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import copy
 import io
 import os
 import shutil
@@ -16,6 +15,7 @@ import pytest
 
 from solstone.think import parakeet_readiness
 from solstone.think.journal_config import (
+    JournalConfigTransaction,
     read_journal_config,
 )
 from solstone.think.journal_io.errors import LockTimeout
@@ -272,47 +272,24 @@ def test_write_parakeet_metadata_waits_for_config_lock_and_preserves_commits(
         "providers": {"bundled": {}},
     }
     calls: list[tuple[str, object]] = []
-    in_lock = False
 
-    @contextmanager
-    def recording_lock(recorded_journal_path=None):
-        nonlocal in_lock
-        calls.append(("lock_enter", recorded_journal_path))
-        assert in_lock is False
-        in_lock = True
-        try:
-            yield
-        finally:
-            assert in_lock is True
-            in_lock = False
-            calls.append(("lock_exit", recorded_journal_path))
+    def recording_mutate(mutator, *, journal_path=None):
+        calls.append(("mutate", journal_path))
+        mutation = mutator(config)
+        return JournalConfigTransaction(
+            value=mutation.value,
+            changed=mutation.changed,
+            written=mutation.changed,
+        )
 
-    def recording_read(recorded_journal_path=None):
-        assert in_lock is True
-        calls.append(("read", recorded_journal_path))
-        return copy.deepcopy(config)
-
-    def recording_write(updated_config, recorded_journal_path=None):
-        assert in_lock is True
-        calls.append(("write", recorded_journal_path))
-        config.clear()
-        config.update(copy.deepcopy(updated_config))
-
-    monkeypatch.setattr(parakeet_install, "hold_config_lock", recording_lock)
-    monkeypatch.setattr(parakeet_install, "read_journal_config", recording_read)
-    monkeypatch.setattr(parakeet_install, "write_journal_config", recording_write)
+    monkeypatch.setattr(parakeet_install, "mutate_journal_config", recording_mutate)
 
     parakeet_install._write_parakeet_metadata(
         {"model_repo": "openai/parakeet-test"},
         journal_path=journal_path,
     )
 
-    assert calls == [
-        ("lock_enter", journal_path),
-        ("read", journal_path),
-        ("write", journal_path),
-        ("lock_exit", journal_path),
-    ]
+    assert calls == [("mutate", journal_path)]
     persisted = config
     assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
     assert persisted["setup"]["completed_by"] == "setup-writer"
@@ -327,52 +304,35 @@ def test_write_parakeet_metadata_waits_for_config_lock_and_preserves_commits(
 def test_write_parakeet_metadata_rejects_unknown_key_without_lock(
     monkeypatch,
 ) -> None:
-    entered: list[object] = []
+    mutate_calls: list[object] = []
 
-    @contextmanager
-    def recording_lock(journal_path=None):
-        entered.append(journal_path)
-        yield
+    def recording_mutate(mutator, *, journal_path=None):
+        mutate_calls.append(journal_path)
+        pytest.fail("metadata validation must happen before transaction entry")
 
-    monkeypatch.setattr(parakeet_install, "hold_config_lock", recording_lock)
+    monkeypatch.setattr(parakeet_install, "mutate_journal_config", recording_mutate)
 
     with pytest.raises(ValueError) as exc_info:
         parakeet_install._write_parakeet_metadata({"unexpected": "value"})
 
     assert str(exc_info.value) == "unknown parakeet install metadata key: unexpected"
-    assert entered == []
+    assert mutate_calls == []
 
 
 def test_write_parakeet_metadata_propagates_config_lock_timeout_without_config_io(
     monkeypatch,
 ) -> None:
     timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
-    read_calls: list[object] = []
-    write_calls: list[object] = []
 
-    @contextmanager
-    def busy_lock(journal_path=None):
+    def busy_mutate(mutator, *, journal_path=None):
         raise timeout
-        yield
 
-    def fail_read(journal_path=None):
-        read_calls.append(journal_path)
-        pytest.fail("read_journal_config should not run before lock acquisition")
-
-    def fail_write(config, journal_path=None):
-        write_calls.append((config, journal_path))
-        pytest.fail("write_journal_config should not run before lock acquisition")
-
-    monkeypatch.setattr(parakeet_install, "hold_config_lock", busy_lock)
-    monkeypatch.setattr(parakeet_install, "read_journal_config", fail_read)
-    monkeypatch.setattr(parakeet_install, "write_journal_config", fail_write)
+    monkeypatch.setattr(parakeet_install, "mutate_journal_config", busy_mutate)
 
     with pytest.raises(LockTimeout) as exc_info:
         parakeet_install._write_parakeet_metadata({"model_repo": "openai/test"})
 
     assert exc_info.value is timeout
-    assert read_calls == []
-    assert write_calls == []
 
 
 def test_install_parakeet_blocks_before_downloads(tmp_path, monkeypatch) -> None:

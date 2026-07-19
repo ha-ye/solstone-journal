@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import LinkState, load_service_token
 from solstone.think.link.window import read_posture
 from solstone.think.services import (
@@ -24,6 +23,7 @@ from solstone.think.services import (
     status,
 )
 from solstone.think.spl import relay_client
+from tests.helpers.journal_config import seed_journal_config
 
 TEST_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 TEST_NONCE = "TESTNONCE"
@@ -118,7 +118,7 @@ def _set_posture(journal_copy: Path, posture: str) -> None:
     config_path = journal_copy / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
     config.setdefault("link", {})["posture"] = posture
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
 
 def _run(
@@ -461,7 +461,7 @@ def test_relay_http_rejection_non_json_body_falls_to_generic(
     assert read_posture() == "direct"
 
 
-def test_posture_write_failure_after_token_save_is_not_enabled(
+def test_posture_write_failure_before_token_save_is_not_enabled(
     journal_copy: Path,
     monkeypatch,
 ) -> None:
@@ -478,7 +478,7 @@ def test_posture_write_failure_after_token_save_is_not_enabled(
     assert outcome.code == outcomes.LOCAL_ERROR
     assert outcome.detail is None
     assert read_posture() == "direct"
-    assert load_service_token() == "tok.spl"
+    assert load_service_token() is None
     assert status.spl_status()["state"] == "not_enabled"
 
 

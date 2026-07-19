@@ -8,7 +8,7 @@ import stat
 
 import pytest
 
-from solstone.think import utils
+from solstone.think import journal_config, utils
 
 
 @pytest.fixture(autouse=True)
@@ -21,15 +21,15 @@ def _config_path(journal):
 
 
 def _mock_os(monkeypatch, identity=("Test User", "tester"), timezone="America/Denver"):
-    monkeypatch.setattr(utils, "_resolve_os_identity", lambda: identity)
-    monkeypatch.setattr(utils, "_resolve_os_timezone", lambda: timezone)
+    monkeypatch.setattr(journal_config, "_resolve_os_identity", lambda: identity)
+    monkeypatch.setattr(journal_config, "_resolve_os_timezone", lambda: timezone)
 
 
 def test_ensure_journal_config_creates_file_with_os_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _mock_os(monkeypatch)
 
-    config = utils.ensure_journal_config()
+    config = journal_config.ensure_journal_config()
 
     config_path = _config_path(tmp_path)
     assert config_path.exists()
@@ -43,10 +43,10 @@ def test_ensure_journal_config_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _mock_os(monkeypatch)
 
-    utils.ensure_journal_config()
+    journal_config.ensure_journal_config()
     config_path = _config_path(tmp_path)
     first = config_path.stat()
-    utils.ensure_journal_config()
+    journal_config.ensure_journal_config()
     second = config_path.stat()
 
     assert second.st_ino == first.st_ino
@@ -57,7 +57,7 @@ def test_ensure_journal_config_file_mode_is_private(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _mock_os(monkeypatch)
 
-    utils.ensure_journal_config()
+    journal_config.ensure_journal_config()
 
     assert stat.S_IMODE(_config_path(tmp_path).stat().st_mode) == 0o600
 
@@ -69,10 +69,12 @@ def test_ensure_journal_config_identity_resolver_failure_is_isolated(
         raise RuntimeError("identity failed")
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(utils, "_resolve_os_identity", fail)
-    monkeypatch.setattr(utils, "_resolve_os_timezone", lambda: "America/Denver")
+    monkeypatch.setattr(journal_config, "_resolve_os_identity", fail)
+    monkeypatch.setattr(
+        journal_config, "_resolve_os_timezone", lambda: "America/Denver"
+    )
 
-    config = utils.ensure_journal_config()
+    config = journal_config.ensure_journal_config()
 
     assert config["identity"]["name"] == ""
     assert config["identity"]["preferred"] == ""
@@ -87,10 +89,12 @@ def test_ensure_journal_config_timezone_resolver_failure_is_isolated(
         raise RuntimeError("timezone failed")
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(utils, "_resolve_os_identity", lambda: ("Test User", "tester"))
-    monkeypatch.setattr(utils, "_resolve_os_timezone", fail)
+    monkeypatch.setattr(
+        journal_config, "_resolve_os_identity", lambda: ("Test User", "tester")
+    )
+    monkeypatch.setattr(journal_config, "_resolve_os_timezone", fail)
 
-    config = utils.ensure_journal_config()
+    config = journal_config.ensure_journal_config()
 
     assert config["identity"]["name"] == "Test User"
     assert config["identity"]["preferred"] == "tester"
@@ -114,7 +118,7 @@ def test_ensure_journal_config_reads_existing_config_without_touching_identity(
     }
     config_path.write_text(json.dumps(staged), encoding="utf-8")
 
-    config = utils.ensure_journal_config()
+    config = journal_config.ensure_journal_config()
 
     assert config == staged
 
@@ -128,8 +132,8 @@ def test_ensure_journal_config_raises_on_corrupt_existing_config_without_writing
     config_path.write_bytes(b"{ invalid json }")
     before = config_path.read_bytes()
 
-    with pytest.raises(json.JSONDecodeError):
-        utils.ensure_journal_config()
+    with pytest.raises(utils.CorruptConfigError):
+        journal_config.ensure_journal_config()
 
     assert config_path.read_bytes() == before
 
@@ -141,7 +145,7 @@ def test_ensure_journal_config_returned_dict_does_not_mutate_defaults(
     second_journal = tmp_path / "second"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(first_journal))
     _mock_os(monkeypatch)
-    config = utils.ensure_journal_config()
+    config = journal_config.ensure_journal_config()
     config["identity"]["name"] = "Mutated"
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(second_journal))

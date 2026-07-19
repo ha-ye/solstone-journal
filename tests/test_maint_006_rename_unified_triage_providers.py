@@ -2,27 +2,24 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
-import json
 from pathlib import Path
+
+from tests.helpers.journal_config import seed_journal_config
 
 mod = importlib.import_module(
     "solstone.apps.sol.maint.006_rename_unified_triage_providers"
 )
 
 
-def _write_journal_config(journal: Path, data: object) -> Path:
-    config_dir = journal / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "journal.json"
-    config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    return config_path
+def _seed_journal_config(journal: Path, data: object) -> Path:
+    return seed_journal_config(data, journal)
 
 
 def test_rename_unified_and_triage_provider_contexts_is_retired_noop(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    config_path = _write_journal_config(
+    config_path = _seed_journal_config(
         tmp_path,
         {
             "providers": {
@@ -50,7 +47,7 @@ def test_rename_unified_and_triage_provider_contexts_is_retired_noop(
 
 def test_retired_migration_dry_run_is_also_noop(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    config_path = _write_journal_config(
+    config_path = _seed_journal_config(
         tmp_path,
         {"providers": {"contexts": {"talent.system.unified": {"provider": "openai"}}}},
     )

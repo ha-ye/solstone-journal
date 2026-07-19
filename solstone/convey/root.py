@@ -30,11 +30,14 @@ from flask import (
 )
 
 from solstone.think.cluster import cluster_segments
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import (
+    JournalConfigMutation,
+    ensure_journal_config,
+    mutate_journal_config,
+)
+from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import (
     day_dirs,
-    ensure_journal_config,
-    get_config,
     get_journal,
     journal_is_active,
 )
@@ -45,6 +48,8 @@ from .config import (
     seed_default_app_navigation,
 )
 from .reasons import (
+    CONFIG_BUSY,
+    CONVEY_OPERATION_FAILED,
     CROSS_ORIGIN_BLOCKED,
     HOST_NOT_ALLOWED,
     IDENTITY_NOT_LOCKED,
@@ -415,20 +420,6 @@ def init_finalize() -> Any:
 
     from solstone.think.utils import now_ms
 
-    config = get_config()
-    config.setdefault("convey", {}).pop("allow_network_access", None)
-    config.setdefault("identity", {}).update(
-        {
-            k: v
-            for k, v in {
-                "name": data.get("name"),
-                "preferred": data.get("preferred"),
-                "timezone": data.get("timezone"),
-            }.items()
-            if v
-        }
-    )
-    config.setdefault("setup", {})["completed_at"] = now_ms()
     retention_mode = data.get("retention_mode", "keep")
     retention_days = data.get("retention_days")
     if retention_mode == "days" and (
@@ -438,14 +429,33 @@ def init_finalize() -> Any:
             INVALID_CONFIG_VALUE,
             detail="retention_days must be a positive integer",
         )
-    config.setdefault("retention", {}).update(
-        {
-            "raw_media": retention_mode,
-            "raw_media_days": retention_days if retention_mode == "days" else None,
-        }
-    )
 
-    write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        config.setdefault("convey", {}).pop("allow_network_access", None)
+        config.setdefault("identity", {}).update(
+            {
+                k: v
+                for k, v in {
+                    "name": data.get("name"),
+                    "preferred": data.get("preferred"),
+                    "timezone": data.get("timezone"),
+                }.items()
+                if v
+            }
+        )
+        config.setdefault("setup", {})["completed_at"] = now_ms()
+        config.setdefault("retention", {}).update(
+            {
+                "raw_media": retention_mode,
+                "raw_media_days": retention_days if retention_mode == "days" else None,
+            }
+        )
+        return JournalConfigMutation(changed=True, value=None)
+
+    try:
+        mutate_journal_config(apply)
+    except LockTimeout:
+        return error_response(CONFIG_BUSY, detail="settings are busy; try again")
 
     def _seed(config: dict[str, Any]) -> dict[str, Any] | None:
         return config if seed_default_app_navigation(config) else None
@@ -453,15 +463,27 @@ def init_finalize() -> Any:
     try:
         locked_modify_convey_config(_seed)
     except Exception:
-        logger.error("default app navigation seed convey-config PERSIST failed")
+        logger.exception("default app navigation seed convey-config PERSIST failed")
+        return error_response(
+            CONVEY_OPERATION_FAILED,
+            detail="Setup was saved, but app navigation could not be initialized.",
+            extra={
+                "committed": True,
+                "secondary_effect": "default_app_navigation",
+            },
+        )
 
     try:
         start_secure_listener(current_app._get_current_object())
     except Exception:
-        logger.error("secure listener start after finalize FAILED")
-        warnings.append(
-            "Setup is complete, but secure network access didn't start — "
-            "you can retry pairing from settings."
+        logger.exception("secure listener start after finalize FAILED")
+        return error_response(
+            CONVEY_OPERATION_FAILED,
+            detail="Setup was saved, but secure network access did not start.",
+            extra={
+                "committed": True,
+                "secondary_effect": "secure_listener",
+            },
         )
 
     return jsonify(

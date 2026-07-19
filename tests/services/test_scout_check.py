@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
 from solstone.think.services import portal_client, scout
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _approved_payload() -> dict[str, str]:
@@ -28,7 +28,7 @@ def _read_config(journal: Path) -> dict:
 
 
 def _write_config(payload: dict) -> None:
-    write_journal_config(payload)
+    seed_journal_config(payload)
 
 
 def _clear_scout(journal: Path) -> None:

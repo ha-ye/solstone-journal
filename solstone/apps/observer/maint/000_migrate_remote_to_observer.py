@@ -6,11 +6,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
 
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
 from solstone.think.utils import get_journal, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -71,37 +70,28 @@ def _move_remote_storage(journal_path: Path) -> int:
 
 def _migrate_config(journal_path: Path) -> bool:
     """Move observe.remote config into observe.observer."""
-    config_path = journal_path / "config" / "journal.json"
-    if not config_path.exists():
-        return False
 
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read config %s: %s", config_path, exc)
-        return False
+    def apply(config: dict[str, object]) -> JournalConfigMutation[bool]:
+        observe_config = config.get("observe")
+        if not isinstance(observe_config, dict):
+            return JournalConfigMutation(changed=False, value=False)
 
-    observe_config = config.get("observe")
-    if not isinstance(observe_config, dict):
-        return False
+        remote_config = observe_config.get("remote")
+        if not isinstance(remote_config, dict):
+            return JournalConfigMutation(changed=False, value=False)
 
-    remote_config = observe_config.get("remote")
-    if not isinstance(remote_config, dict):
-        return False
+        observer_config = observe_config.setdefault("observer", {})
+        if not isinstance(observer_config, dict):
+            observer_config = {}
+            observe_config["observer"] = observer_config
 
-    observer_config = observe_config.setdefault("observer", {})
-    if not isinstance(observer_config, dict):
-        observer_config = {}
-        observe_config["observer"] = observer_config
+        for key, value in remote_config.items():
+            observer_config.setdefault(key, value)
 
-    for key, value in remote_config.items():
-        observer_config.setdefault(key, value)
+        del observe_config["remote"]
+        return JournalConfigMutation(changed=True, value=True)
 
-    del observe_config["remote"]
-
-    write_journal_config(config)
-    return True
+    return mutate_journal_config(apply, journal_path=journal_path).value
 
 
 def main() -> None:

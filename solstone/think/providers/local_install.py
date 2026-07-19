@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import (
+    JournalConfigMutation,
+    mutate_journal_config,
+    read_journal_config,
+)
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
@@ -289,15 +293,18 @@ def _write_local_metadata(updates: dict[str, str]) -> None:
     if unknown_keys:
         raise ValueError(f"unknown local install metadata key: {unknown_keys[0]}")
 
-    config = read_journal_config()
-    slot = (
-        config.setdefault("providers", {})
-        .setdefault("bundled", {})
-        .setdefault(LOCAL_PROVIDER_NAME, {})
-    )
-    for key, value in updates.items():
-        slot[key] = value
-    write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        slot = (
+            config.setdefault("providers", {})
+            .setdefault("bundled", {})
+            .setdefault(LOCAL_PROVIDER_NAME, {})
+        )
+        changed = any(slot.get(key) != value for key, value in updates.items())
+        for key, value in updates.items():
+            slot[key] = value
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def gpu_device_override() -> int | None:

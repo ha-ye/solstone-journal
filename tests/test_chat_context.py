@@ -11,6 +11,7 @@ from pathlib import Path
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.think.day_accumulator import append_record
+from tests.helpers.journal_config import seed_journal_config
 
 TEMPLATE_VAR_KEYS = {
     "active_talents",
@@ -44,15 +45,6 @@ def _assert_template_vars_result(result):
     assert "user_instruction" not in result
     assert set(result["template_vars"]) == TEMPLATE_VAR_KEYS
     return result["template_vars"]
-
-
-def _write_journal_config(journal: Path, data: dict) -> None:
-    config_dir = journal / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "journal.json").write_text(
-        json.dumps(data, indent=2),
-        encoding="utf-8",
-    )
 
 
 def _ts(hour: int, minute: int, second: int = 0) -> int:
@@ -90,12 +82,12 @@ def _chat_prompt_frontmatter() -> dict:
 def test_chat_context_injects_tail_trigger_location(monkeypatch, tmp_path):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    _write_journal_config(
-        journal,
+    seed_journal_config(
         {
             "identity": {"preferred": "Alice"},
             "agent": {"name": "Sol-agent", "name_status": "custom"},
         },
+        journal,
     )
 
     owner_ts = _ts(9, 0)

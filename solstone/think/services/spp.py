@@ -14,10 +14,11 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from solstone.think.journal_config import (
+    JournalConfigMutation,
+    JournalConfigPostCommitError,
     get_journal_config_path,
-    hold_config_lock,
+    mutate_journal_config,
     read_journal_config,
-    write_journal_config,
 )
 from solstone.think.providers.local_endpoint import (
     confidential_provenance_block,
@@ -184,9 +185,7 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
     values = _validate_handoff_payload(payload)
     _require_journal_config()
 
-    with hold_config_lock():
-        _require_journal_config()
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         providers = _providers_block(config)
         local = _local_block(providers)
         prior_local = dict(local) if local else None
@@ -209,8 +208,10 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
             "prior_active": prior_active,
             "prior_local_endpoint": prior_local,
         }
-        write_journal_config(config)
-        log.debug("provisioned confidential service")
+        return JournalConfigMutation(changed=True, value=None)
+
+    mutate_journal_config(apply)
+    log.debug("provisioned confidential service")
 
 
 def disable_confidential() -> DisableOutcome:
@@ -218,14 +219,14 @@ def disable_confidential() -> DisableOutcome:
 
     _require_journal_config()
 
-    with hold_config_lock():
-        _require_journal_config()
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[DisableOutcome]:
         services = config.setdefault("services", {})
         block = services.get("confidential")
         if not isinstance(block, dict):
-            delete_attestation_state()
-            return DisableOutcome(was_enabled=False, credential_preserved=False)
+            return JournalConfigMutation(
+                changed=False,
+                value=DisableOutcome(was_enabled=False, credential_preserved=False),
+            )
 
         providers = _providers_block(config)
         from solstone.think.models import LOCAL_MODEL
@@ -253,13 +254,28 @@ def disable_confidential() -> DisableOutcome:
             credential_preserved = False
 
         services.pop("confidential", None)
-        write_journal_config(config)
-        delete_attestation_state()
-        log.debug("disabled confidential service")
-        return DisableOutcome(
-            was_enabled=True,
-            credential_preserved=credential_preserved,
+        return JournalConfigMutation(
+            changed=True,
+            value=DisableOutcome(
+                was_enabled=True,
+                credential_preserved=credential_preserved,
+            ),
         )
+
+    result = mutate_journal_config(apply)
+    try:
+        delete_attestation_state()
+    except Exception as exc:
+        if result.changed:
+            raise JournalConfigPostCommitError(
+                "confidential config was saved, but attestation state was not cleared",
+                result=result,
+                error=exc,
+            ) from exc
+        raise
+    if result.changed:
+        log.debug("disabled confidential service")
+    return result.value
 
 
 def confidential_provenance() -> dict[str, Any] | None:

@@ -205,10 +205,10 @@ def test_init_finalize_logs_convey_seed_persist_failure(
         content_type="application/json",
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 500
     data = resp.get_json()
-    assert data["success"] is True
-    assert data["redirect"] == "/app/thinking/"
+    assert data["committed"] is True
+    assert data["secondary_effect"] == "default_app_navigation"
     assert "default app navigation seed convey-config PERSIST failed" in caplog.text
 
 

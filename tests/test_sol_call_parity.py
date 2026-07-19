@@ -12,8 +12,9 @@ from typer.testing import CliRunner
 
 from solstone.apps.sol.call import app
 from solstone.think.convey_client import ConveyClient
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import read_journal_config
 from tests._baseline_harness import make_test_client, mark_setup_complete
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def runner(journal, monkeypatch):
 
 
 def test_set_name_updates_config(runner) -> None:
-    write_journal_config({"setup": {"completed_at": 1700000000000}})
+    seed_journal_config({"setup": {"completed_at": 1700000000000}})
 
     result = runner.invoke(app, ["set-name", "aria", "--status", "chosen"])
 
@@ -44,7 +45,7 @@ def test_set_name_updates_config(runner) -> None:
 
 
 def test_reset_updates_agent(runner) -> None:
-    write_journal_config(
+    seed_journal_config(
         {
             "setup": {"completed_at": 1700000000000},
             "agent": {
@@ -67,7 +68,7 @@ def test_reset_updates_agent(runner) -> None:
 
 
 def test_set_owner_name_only_and_bio(runner) -> None:
-    write_journal_config({"setup": {"completed_at": 1700000000000}})
+    seed_journal_config({"setup": {"completed_at": 1700000000000}})
 
     name_only = runner.invoke(app, ["set-owner", "Jer"])
     with_bio = runner.invoke(app, ["set-owner", "Jer", "--bio", "Building solstone"])

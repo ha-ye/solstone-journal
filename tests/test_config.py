@@ -8,6 +8,7 @@ import json
 import pytest
 
 from solstone.think.utils import CorruptConfigError, get_config, journal_is_active
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture
@@ -178,12 +179,6 @@ def test_get_config_with_fixtures(monkeypatch):
     assert isinstance(config["identity"]["bio"], str)
 
 
-def _write_journal_config(journal_path, config):
-    config_dir = journal_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "journal.json").write_text(json.dumps(config), encoding="utf-8")
-
-
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
@@ -203,7 +198,7 @@ def _write_journal_config(journal_path, config):
     ],
 )
 def test_journal_is_active_from_config(tmp_path, config, expected):
-    _write_journal_config(tmp_path, config)
+    seed_journal_config(config, tmp_path)
     assert journal_is_active(tmp_path) is expected
 
 

@@ -119,6 +119,11 @@ SETTINGS_OPERATION_FAILED = Reason(
     "I couldn't save those settings.",
     500,
 )
+CONFIG_BUSY = Reason(
+    "config_busy",
+    "I couldn't save those settings right now because they were busy. Try again in a moment.",
+    503,
+)
 CONVEY_OPERATION_FAILED = Reason(
     "convey_operation_failed",
     "I couldn't update the interface settings.",

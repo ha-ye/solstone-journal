@@ -43,7 +43,10 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import DATE_RE, error_response
 from solstone.think.facets import get_facets
 from solstone.think.identity import ensure_identity_directory
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import (
+    JournalConfigMutation,
+    mutate_journal_config,
+)
 from solstone.think.journal_io import LockTimeout
 from solstone.think.models import calc_agent_cost
 from solstone.think.talent import get_output_path, get_talent_configs
@@ -779,36 +782,56 @@ def api_set_name() -> Any:
         return error
     status = body.get("status") or "chosen"
 
-    config = read_journal_config()
-    agent = config.get("agent", dict(DEFAULT_AGENT))
-    named_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    agent.update(
-        {
-            "name": name,
-            "name_status": status,
-            "named_date": named_date,
-        }
-    )
-    config["agent"] = agent
-    write_journal_config(config)
+    try:
 
-    return jsonify(agent)
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            agent = config.get("agent", dict(DEFAULT_AGENT))
+            old_agent = dict(agent)
+            named_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            agent.update(
+                {
+                    "name": name,
+                    "name_status": status,
+                    "named_date": named_date,
+                }
+            )
+            config["agent"] = agent
+            return JournalConfigMutation(
+                changed=agent != old_agent,
+                value=agent,
+            )
+
+        result = mutate_journal_config(apply)
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
+
+    return jsonify(result.value)
 
 
 @sol_bp.route("/api/reset", methods=["POST"])
 def api_reset() -> Any:
-    config = read_journal_config()
-    agent = config.get("agent", dict(DEFAULT_AGENT))
-    agent.update(
-        {
-            "name": "sol",
-            "name_status": "default",
-            "named_date": None,
-        }
-    )
-    config["agent"] = agent
-    write_journal_config(config)
-    return jsonify(agent)
+    try:
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            agent = config.get("agent", dict(DEFAULT_AGENT))
+            old_agent = dict(agent)
+            agent.update(
+                {
+                    "name": "sol",
+                    "name_status": "default",
+                    "named_date": None,
+                }
+            )
+            config["agent"] = agent
+            return JournalConfigMutation(
+                changed=agent != old_agent,
+                value=agent,
+            )
+
+        result = mutate_journal_config(apply)
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
+    return jsonify(result.value)
 
 
 @sol_bp.route("/api/set-owner", methods=["POST"])
@@ -821,13 +844,23 @@ def api_set_owner() -> Any:
         return error
     bio = body.get("bio")
 
-    config = read_journal_config()
-    identity = config.get("identity", {})
-    identity["name"] = name
-    if bio is not None:
-        identity["bio"] = bio
-    config["identity"] = identity
-    write_journal_config(config)
+    try:
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+            identity = config.get("identity", {})
+            old_identity = dict(identity)
+            identity["name"] = name
+            if bio is not None:
+                identity["bio"] = bio
+            config["identity"] = identity
+            return JournalConfigMutation(
+                changed=identity != old_identity,
+                value=None,
+            )
+
+        mutate_journal_config(apply)
+    except LockTimeout:
+        return error_response(IDENTITY_BUSY, detail="identity is busy; try again")
 
     return jsonify({"name": name, "bio": bio or ""})
 

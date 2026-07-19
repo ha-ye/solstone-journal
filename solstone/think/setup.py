@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from solstone.think import parakeet_readiness
+from solstone.think.journal_config import ensure_journal_config
 from solstone.think.setup_events import EVENT_TYPES, JsonlEmitter, utc_now_iso
 from solstone.think.user_config import (
     config_path,
@@ -32,7 +33,7 @@ from solstone.think.user_config import (
     read_user_config,
     write_user_config,
 )
-from solstone.think.utils import ensure_journal_config, get_project_root
+from solstone.think.utils import get_project_root
 from solstone.think.utils import is_source_checkout as source_checkout
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -1399,41 +1400,48 @@ def step_service(ctx: SetupContext, step_index: int) -> StepResult:
 
 def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
     started_at = utc_now()
-    from solstone.think.journal_config import read_journal_config, write_journal_config
+    from solstone.think.journal_config import (
+        JournalConfigMutation,
+        mutate_journal_config,
+    )
 
-    cfg = read_journal_config(ctx.journal_path)
     reason_malformed = "provider config is not in the expected shape"
-    if "providers" in cfg and not isinstance(cfg["providers"], dict):
-        print_step_skipped(ctx, step_index, "brain", reason_malformed)
-        return step_result("brain", "skipped", [], started_at, reason=reason_malformed)
 
-    providers = cfg.get("providers", {})
-    active = providers.get("active")
-    if active is not None and not isinstance(active, dict):
-        print_step_skipped(ctx, step_index, "brain", reason_malformed)
-        return step_result("brain", "skipped", [], started_at, reason=reason_malformed)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[str | None]:
+        if "providers" in config and not isinstance(config["providers"], dict):
+            return JournalConfigMutation(changed=False, value=reason_malformed)
 
-    owner_chose_other = isinstance(active, dict) and active.get("provider") not in {
-        None,
-        "local",
-    }
-    if owner_chose_other:
-        reason = "a provider is already configured"
-        print_step_skipped(ctx, step_index, "brain", reason)
-        return step_result("brain", "skipped", [], started_at, reason=reason)
+        providers = config.get("providers", {})
+        active = providers.get("active")
+        if active is not None and not isinstance(active, dict):
+            return JournalConfigMutation(changed=False, value=reason_malformed)
 
-    changed = False
-    if "providers" not in cfg:
-        cfg["providers"] = providers
-        changed = True
-    from solstone.think.models import LOCAL_MODEL
+        owner_chose_other = isinstance(active, dict) and active.get("provider") not in {
+            None,
+            "local",
+        }
+        if owner_chose_other:
+            return JournalConfigMutation(
+                changed=False,
+                value="a provider is already configured",
+            )
 
-    local_active = {"provider": "local", "model": LOCAL_MODEL}
-    if active != local_active:
-        providers["active"] = local_active
-        changed = True
-    if changed:
-        write_journal_config(cfg, ctx.journal_path)
+        changed = False
+        if "providers" not in config:
+            config["providers"] = providers
+            changed = True
+        from solstone.think.models import LOCAL_MODEL
+
+        local_active = {"provider": "local", "model": LOCAL_MODEL}
+        if active != local_active:
+            providers["active"] = local_active
+            changed = True
+        return JournalConfigMutation(changed=changed, value=None)
+
+    result = mutate_journal_config(apply, journal_path=ctx.journal_path)
+    if result.value is not None:
+        print_step_skipped(ctx, step_index, "brain", result.value)
+        return step_result("brain", "skipped", [], started_at, reason=result.value)
 
     if ctx.skip_brain:
         reason = brain_skip_reason(ctx)

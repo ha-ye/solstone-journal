@@ -8,7 +8,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Any
 
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
 from solstone.think.link import interface_watcher
 from solstone.think.utils import get_config
 
@@ -92,15 +92,23 @@ def get_home_address() -> str | None:
 
 
 def set_home_address(canonical: str) -> None:
-    config = get_config()
-    config.setdefault("pairing", {})["home_address"] = canonical
-    write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        pairing = config.setdefault("pairing", {})
+        changed = pairing.get("home_address") != canonical
+        pairing["home_address"] = canonical
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def clear_home_address() -> None:
-    config = get_config()
-    config.setdefault("pairing", {})["home_address"] = None
-    write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        pairing = config.setdefault("pairing", {})
+        changed = pairing.get("home_address") is not None
+        pairing["home_address"] = None
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 __all__ = [

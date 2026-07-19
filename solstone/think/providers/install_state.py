@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict, cast, get_args
+from typing import Any, Literal, TypedDict, cast, get_args
 
 from solstone.think.journal_config import (
-    hold_config_lock,
+    JournalConfigMutation,
+    mutate_journal_config,
     read_journal_config,
-    write_journal_config,
 )
 
 InstallState = Literal[
@@ -148,12 +148,22 @@ def write_install_status(
     scope: _InstallScope,
     journal_path: str | Path | None = None,
 ) -> None:
-    with hold_config_lock(journal_path):
-        config = read_journal_config(journal_path)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         slot = (
             config.setdefault("providers", {})
             .setdefault(scope, {})
             .setdefault(status["name"], {})
+        )
+        changed = any(
+            slot.get(key) != status[key]
+            for key in (
+                "install_state",
+                "last_transition_at",
+                "last_progress_at",
+                "install_error",
+                "progress_bytes_received",
+                "progress_bytes_total",
+            )
         )
         slot["install_state"] = status["install_state"]
         slot["last_transition_at"] = status["last_transition_at"]
@@ -161,7 +171,9 @@ def write_install_status(
         slot["install_error"] = status["install_error"]
         slot["progress_bytes_received"] = status["progress_bytes_received"]
         slot["progress_bytes_total"] = status["progress_bytes_total"]
-        write_journal_config(config, journal_path)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply, journal_path=journal_path)
 
 
 __all__ = [

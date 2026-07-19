@@ -10,8 +10,8 @@ import pytest
 
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import scout_lane
-from solstone.think.journal_config import write_journal_config
 from solstone.think.services import scout
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _approved_payload() -> dict[str, str]:
@@ -29,7 +29,7 @@ def _read_config(journal: Path) -> dict:
 
 
 def _write_config(payload: dict) -> None:
-    write_journal_config(payload)
+    seed_journal_config(payload)
 
 
 def _clear_scout(journal: Path) -> None:

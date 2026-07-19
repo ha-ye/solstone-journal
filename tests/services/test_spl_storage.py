@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import (
     authorized_clients_path,
     load_service_token,
@@ -19,6 +18,7 @@ from solstone.think.link.paths import (
 )
 from solstone.think.services import spl
 from solstone.think.spl import relay_client
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _config_path(journal_copy: Path) -> Path:
@@ -32,7 +32,7 @@ def _read_config(journal_copy: Path) -> dict[str, Any]:
 def _write_posture(journal_copy: Path, posture: str) -> None:
     config = _read_config(journal_copy)
     config.setdefault("link", {})["posture"] = posture
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
 
 def _install_relay(

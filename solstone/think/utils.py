@@ -775,50 +775,6 @@ def _resolve_os_timezone() -> str:
         return ""
 
 
-def ensure_journal_config() -> dict[str, Any]:
-    """Materialize <journal>/config/journal.json and return its contents.
-
-    Idempotent after first creation. Identity fields on an existing file are
-    never modified.
-    """
-    from solstone.think.journal_config import write_journal_config
-
-    global _default_config
-
-    journal = Path(get_journal())
-    config_path = journal / "config" / "journal.json"
-
-    if config_path.exists():
-        with config_path.open(encoding="utf-8") as fh:
-            config = json.load(fh)
-        return config
-
-    if _default_config is None:
-        _default_config = _load_default_config()
-    config = copy.deepcopy(_default_config)
-    try:
-        full_name, login_name = _resolve_os_identity()
-    except Exception:
-        logging.getLogger(__name__).debug(
-            "Failed to resolve OS identity", exc_info=True
-        )
-        full_name = ""
-        login_name = ""
-    try:
-        timezone = _resolve_os_timezone()
-    except Exception:
-        logging.getLogger(__name__).debug(
-            "Failed to resolve OS timezone", exc_info=True
-        )
-        timezone = ""
-    config.setdefault("identity", {})
-    config["identity"]["name"] = full_name
-    config["identity"]["preferred"] = login_name
-    config["identity"]["timezone"] = timezone
-    write_journal_config(config)
-    return config
-
-
 def journal_is_active(path: str | Path) -> bool:
     """Return whether the journal has been onboarded (setup completed)."""
     try:

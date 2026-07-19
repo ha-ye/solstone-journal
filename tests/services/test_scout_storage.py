@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
+from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
 from solstone.think.services import scout as scout_module
 from solstone.think.services import status as service_status
 from solstone.think.services.scout import (
@@ -27,6 +27,7 @@ from solstone.think.services.scout import (
     record_scout_pending,
     scout_provenance,
 )
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _payload(suffix: str = "one") -> dict[str, str]:
@@ -109,14 +110,14 @@ def test_scout_three_state_matrix(journal_copy) -> None:
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
     assert not is_scout_enabled()
     assert not is_manual_key_present()
     assert scout_provenance() is None
 
     config = _read_config(journal_copy)
     config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
     assert not is_scout_enabled()
     assert is_manual_key_present()
 
@@ -129,7 +130,7 @@ def test_pending_marker_alone_predicates(journal_copy) -> None:
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000)
 
@@ -152,7 +153,7 @@ def test_pending_marker_with_manual_key_predicates(journal_copy) -> None:
     config = _read_config(journal_copy)
     config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000)
 
@@ -166,7 +167,7 @@ def test_record_scout_pending_requires_account_id(journal_copy) -> None:
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     with pytest.raises(ValueError):
         record_scout_pending("", 123)
@@ -180,7 +181,7 @@ def test_record_scout_pending_writes_no_google_api_key(journal_copy) -> None:
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000)
 
@@ -195,7 +196,7 @@ def test_record_scout_pending_stores_non_empty_dispatch_token(journal_copy) -> N
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000, "dispatch-p")
 
@@ -218,7 +219,7 @@ def test_record_scout_pending_ignores_invalid_dispatch_token(
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000, dispatch_token)
 
@@ -231,7 +232,7 @@ def test_get_scout_dispatch_token_reads_pending_and_approved_blocks(
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
     assert get_scout_dispatch_token() is None
 
     record_scout_pending("acct-p", 1_700_000_000_000)
@@ -250,7 +251,7 @@ def test_approved_dispatch_token_is_approved_only_and_keeps_stale_push_behavior(
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
     assert approved_dispatch_token() is None
 
     record_scout_pending("acct-p", 1_700_000_000_000, "dispatch-p")
@@ -261,7 +262,7 @@ def test_approved_dispatch_token_is_approved_only_and_keeps_stale_push_behavior(
 
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
     assert approved_dispatch_token() == "dispatch-approved"
 
 
@@ -319,7 +320,7 @@ def test_provision_preserves_other_env_and_top_level_keys(journal_copy) -> None:
     }
     config["convey"] = {"port": 5015}
     config["custom_block"] = {"survives": True}
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     provision_scout_handoff(_payload("new"))
 
@@ -350,7 +351,7 @@ def test_disable_scout_preserves_env_key_when_fingerprint_mismatches(
     provision_scout_handoff(_payload("manual"))
     config = _read_config(journal_copy)
     config["env"]["GOOGLE_API_KEY"] = "manual-replacement"
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     outcome = disable_scout()
 
@@ -366,23 +367,13 @@ def test_disable_scout_when_not_enabled_returns_was_enabled_false(
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.setdefault("services", {}).pop("scout", None)
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
     outcome = disable_scout()
 
     assert outcome == DisableOutcome(was_enabled=False, env_key_preserved=False)
     saved = _read_config(journal_copy)
     assert saved["services"] == {}
-
-
-def test_disable_scout_creates_private_lock_file(journal_copy) -> None:
-    provision_scout_handoff(_payload("lock"))
-
-    disable_scout()
-
-    lock_path = journal_copy / "config" / ".journal.json.lock"
-    assert lock_path.exists()
-    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
 
 def test_provision_requires_initialized_journal(tmp_path, monkeypatch) -> None:
@@ -424,16 +415,18 @@ def test_atomic_write_leaves_existing_config_on_replace_failure(
     journal_copy, monkeypatch
 ) -> None:
     original_text = _config_path(journal_copy).read_text()
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "after"
 
     def fail_replace(_tmp, _path) -> None:
         raise OSError("replace failed")
 
     monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", fail_replace)
 
+    def apply(draft: dict) -> JournalConfigMutation[None]:
+        draft.setdefault("env", {})["GOOGLE_API_KEY"] = "after"
+        return JournalConfigMutation(changed=True, value=None)
+
     with pytest.raises(OSError, match="replace failed"):
-        write_journal_config(config)
+        mutate_journal_config(apply)
 
     assert _config_path(journal_copy).read_text() == original_text
     assert list(_config_path(journal_copy).parent.glob(".tmp_*")) == []

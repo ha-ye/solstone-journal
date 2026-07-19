@@ -5,7 +5,6 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -31,9 +30,12 @@ def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     monkeypatch.setattr(
-        "solstone.think.utils._resolve_os_identity", lambda: ("OS User", "osuser")
+        "solstone.think.journal_config._resolve_os_identity",
+        lambda: ("OS User", "osuser"),
     )
-    monkeypatch.setattr("solstone.think.utils._resolve_os_timezone", lambda: timezone)
+    monkeypatch.setattr(
+        "solstone.think.journal_config._resolve_os_timezone", lambda: timezone
+    )
     app = create_app(str(journal))
     app.config["TESTING"] = True
     return app.test_client(), journal
@@ -368,9 +370,10 @@ class TestInitDetection:
         config_path.write_bytes(b"{ invalid json }")
         before = config_path.read_bytes()
 
-        with pytest.raises(json.JSONDecodeError):
-            client.get("/init")
+        resp = client.get("/init")
 
+        assert resp.status_code == 500
+        assert resp.get_json()["reason_code"] == "corrupt_config"
         assert config_path.read_bytes() == before
 
 
@@ -768,12 +771,10 @@ class TestInitFinalize:
             content_type="application/json",
         )
 
-        assert resp.status_code == 200
+        assert resp.status_code == 500
         data = resp.get_json()
-        assert data["success"] is True
-        assert data["redirect"] == "/app/thinking/"
-        assert isinstance(data["warnings"], list)
-        assert data["warnings"]
+        assert data["committed"] is True
+        assert data["secondary_effect"] == "secure_listener"
 
     def test_finalize_happy_path_returns_empty_warnings(
         self, fresh_client, monkeypatch
@@ -969,14 +970,12 @@ class TestInitFinalize:
         config_path.write_bytes(b"{ invalid json }")
         before = config_path.read_bytes()
 
-        with patch("solstone.convey.root.write_journal_config") as write_config:
-            resp = fresh_client.post(
-                "/init/finalize",
-                json={"name": "Jane"},
-                content_type="application/json",
-            )
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"name": "Jane"},
+            content_type="application/json",
+        )
 
         assert resp.status_code == 500
         assert resp.get_json()["reason_code"] == "corrupt_config"
-        write_config.assert_not_called()
         assert config_path.read_bytes() == before

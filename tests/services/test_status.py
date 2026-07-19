@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import (
     save_service_token,
     service_token_path,
 )
 from solstone.think.services import scout, status
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _config_path(journal_copy: Path) -> Path:
@@ -25,7 +25,7 @@ def _read_config(journal_copy: Path) -> dict:
 
 
 def _write_config(journal_copy: Path, config: dict) -> None:
-    write_journal_config(config)
+    seed_journal_config(config, journal_copy)
 
 
 def _clear_scout(journal_copy: Path) -> None:

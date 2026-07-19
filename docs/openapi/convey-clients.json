@@ -47,6 +47,7 @@
               "backup_operation_failed",
               "backup_unavailable",
               "chat_queue_full",
+              "config_busy",
               "convey_busy",
               "convey_operation_failed",
               "corrupt_config",

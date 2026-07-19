@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 
 import pytest
 
 from solstone.think.providers import build_provider_status
+from tests.helpers.journal_config import seed_journal_config
 
 CLOUD_PROVIDERS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -83,17 +83,17 @@ def test_inert_upgrade_path_for_stale_bundled_config(
             }
         },
     }
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    seed_journal_config(config, tmp_path)
     before_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
 
-    def fail_write(_config: dict) -> None:
+    def fail_mutate(*_args, **_kwargs) -> None:
         raise AssertionError("cloud provider status must not write config")
 
     monkeypatch.setattr(
-        "solstone.think.journal_config.write_journal_config", fail_write
+        "solstone.think.journal_config.mutate_journal_config", fail_mutate
     )
     caplog.set_level(logging.WARNING)
 

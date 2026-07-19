@@ -174,10 +174,12 @@ def patch_service_health(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def patch_journal_os_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "solstone.think.utils._resolve_os_identity", lambda: ("Setup User", "setup")
+        "solstone.think.journal_config._resolve_os_identity",
+        lambda: ("Setup User", "setup"),
     )
     monkeypatch.setattr(
-        "solstone.think.utils._resolve_os_timezone", lambda: "America/Denver"
+        "solstone.think.journal_config._resolve_os_timezone",
+        lambda: "America/Denver",
     )
 
 

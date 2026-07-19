@@ -31,6 +31,7 @@ from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
     ACTIVITY_PROTECTED,
+    CONFIG_BUSY,
     FACET_ALREADY_EXISTS,
     FACET_NOT_FOUND,
     FILE_READ_FAILED,
@@ -55,9 +56,10 @@ from solstone.convey.sol_initiated.settings import (
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import facets
 from solstone.think.journal_config import (
-    hold_config_lock,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
+from solstone.think.journal_io import LockTimeout
 from solstone.think.log_retention import load_log_retention_config, prune
 from solstone.think.processing import (
     load_processing_settings,
@@ -97,6 +99,10 @@ GENERIC_SETTINGS_ERROR = (
 
 def _settings_operation_failed(detail: str = GENERIC_SETTINGS_ERROR) -> Any:
     return error_response(SETTINGS_OPERATION_FAILED, detail=detail)
+
+
+def _config_busy_response() -> Any:
+    return error_response(CONFIG_BUSY, detail="settings are busy; try again")
 
 
 def _serialize_prune_result(result: Any) -> dict[str, Any]:
@@ -360,9 +366,44 @@ def update_config() -> Any:
                     detail="Journal name cannot be empty",
                 )
 
-        with hold_config_lock():
-            # Load existing config
-            config = get_journal_config()
+        if section == "transcribe":
+            if "backend" in data:
+                from solstone.observe.transcribe import get_backend_list
+
+                selectable = {item["name"] for item in get_backend_list()}
+                if data["backend"] not in selectable:
+                    valid = ", ".join(sorted(selectable))
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=(
+                            f"Invalid backend: {data['backend']}. "
+                            f"Must be one of: {valid}"
+                        ),
+                    )
+            for bool_key in (
+                "preserve_all",
+                "confidential_audio",
+            ):
+                if bool_key in data and not isinstance(data[bool_key], bool):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"transcribe.{bool_key} must be a boolean",
+                    )
+
+        service_validation: dict[str, Any] = {}
+        if section == "env" and "PLAUD_ACCESS_TOKEN" in data:
+            new_val = data.get("PLAUD_ACCESS_TOKEN", "")
+            if new_val:
+                import importlib
+
+                mod = importlib.import_module("solstone.think.importers.plaud")
+                result = mod.validate_token(new_val)
+                result["timestamp"] = datetime.now(timezone.utc).isoformat()
+                service_validation["plaud"] = result
+            else:
+                service_validation["plaud"] = None
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             old_section = copy.deepcopy(config.get(section, {}))
 
             # Ensure section exists
@@ -371,26 +412,31 @@ def update_config() -> Any:
 
             # Track changes for logging
             changed_fields = {}
+            env_updates: dict[str, Any] = {}
 
             # Update only allowed fields
+            missing = object()
             for key in allowed_sections[section]:
                 if key in data:
                     new_value = data[key]
-                    old_value = old_section.get(key)
-                    if old_value != new_value:
-                        changed_fields[key] = {"old": old_value, "new": new_value}
+                    old_value = old_section.get(key, missing)
+                    if old_value is missing or old_value != new_value:
+                        changed_fields[key] = {
+                            "old": None if old_value is missing else old_value,
+                            "new": new_value,
+                        }
+                        if section == "env":
+                            env_updates[key] = new_value
                     config[section][key] = new_value
-                    if section == "env":
-                        if new_value:
-                            os.environ[key] = new_value
-                        else:
-                            os.environ.pop(key, None)
 
             if section == "processing":
                 try:
                     validated = validate_processing_update(old_section, data)
                 except ValueError as exc:
-                    return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
+                    return JournalConfigMutation(
+                        changed=False,
+                        value={"error": str(exc)},
+                    )
                 new_section = validated.to_dict()
                 if old_section != new_section:
                     changed_fields["processing"] = {
@@ -401,28 +447,6 @@ def update_config() -> Any:
 
             # Handle nested backend configs for transcribe section
             if section == "transcribe":
-                if "backend" in data:
-                    from solstone.observe.transcribe import get_backend_list
-
-                    selectable = {item["name"] for item in get_backend_list()}
-                    if data["backend"] not in selectable:
-                        valid = ", ".join(sorted(selectable))
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=(
-                                f"Invalid backend: {data['backend']}. "
-                                f"Must be one of: {valid}"
-                            ),
-                        )
-                for bool_key in (
-                    "preserve_all",
-                    "confidential_audio",
-                ):
-                    if bool_key in data and not isinstance(data[bool_key], bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"transcribe.{bool_key} must be a boolean",
-                        )
                 for backend_key, allowed_keys in transcribe_nested.items():
                     if backend_key in data and isinstance(data[backend_key], dict):
                         # Ensure nested dict exists
@@ -444,29 +468,35 @@ def update_config() -> Any:
             if section == "env" and changed_fields:
                 key_validation = config.setdefault("service_key_validation", {})
 
-                # Validate service tokens (Plaud) — not AI providers, so they use
-                # their own validators instead of think.providers.
-                SERVICE_TOKEN_VALIDATORS = {
-                    "PLAUD_ACCESS_TOKEN": (
-                        "plaud",
-                        "solstone.think.importers.plaud",
-                    ),
-                }
                 for env_var in changed_fields:
-                    if env_var in SERVICE_TOKEN_VALIDATORS:
-                        val_key, module_path = SERVICE_TOKEN_VALIDATORS[env_var]
-                        new_val = data.get(env_var, "")
-                        if new_val:
-                            import importlib
-
-                            mod = importlib.import_module(module_path)
-                            result = mod.validate_token(new_val)
-                            result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                            key_validation[val_key] = result
+                    if env_var == "PLAUD_ACCESS_TOKEN":
+                        result = service_validation.get("plaud")
+                        if result is None:
+                            key_validation.pop("plaud", None)
                         else:
-                            key_validation.pop(val_key, None)
+                            key_validation["plaud"] = result
 
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value={
+                    "config": config,
+                    "changed_fields": changed_fields,
+                    "env_updates": env_updates,
+                    "error": None,
+                },
+            )
+
+        result = mutate_journal_config(apply)
+        result_value = result.value
+        if result_value.get("error") is not None:
+            return error_response(INVALID_CONFIG_VALUE, detail=result_value["error"])
+        config = result_value["config"]
+        changed_fields = result_value["changed_fields"]
+        for key, new_value in result_value["env_updates"].items():
+            if new_value:
+                os.environ[key] = new_value
+            else:
+                os.environ.pop(key, None)
 
         # Log if something changed (don't log sensitive values)
         if changed_fields:
@@ -491,6 +521,8 @@ def update_config() -> Any:
         )
     except CorruptConfigError:
         raise
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error updating config")
         return _settings_operation_failed()
@@ -784,21 +816,41 @@ def validate_all_keys() -> Any:
     """Re-validate configured transcription/import service tokens."""
 
     try:
+        config = get_journal_config()
+        snapshot_env = config.get("env", {})
+        if not isinstance(snapshot_env, dict):
+            snapshot_env = {}
+        validated_values = {
+            "plaud": str(snapshot_env.get("PLAUD_ACCESS_TOKEN") or "").strip()
+        }
+        key_validation = _compute_key_validation(config)
         if request.method == "GET":
-            config = get_journal_config()
-            key_validation = _compute_key_validation(config)
             return jsonify({"key_validation": key_validation})
 
-        with hold_config_lock():
-            config = get_journal_config()
-            key_validation = _compute_key_validation(config)
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             existing = config.setdefault("service_key_validation", {})
-            for key in ("plaud",):
-                existing.pop(key, None)
-            existing.update(key_validation)
-            write_journal_config(config)
+            current_env = config.get("env", {})
+            if not isinstance(current_env, dict):
+                current_env = {}
+            current_value = str(current_env.get("PLAUD_ACCESS_TOKEN") or "").strip()
+            changed = False
+            if current_value == validated_values["plaud"]:
+                old_value = existing.get("plaud")
+                result = key_validation.get("plaud")
+                if result is None:
+                    if "plaud" in existing:
+                        existing.pop("plaud", None)
+                        changed = True
+                elif old_value != result:
+                    existing["plaud"] = result
+                    changed = True
+            persisted = {"plaud": existing["plaud"]} if "plaud" in existing else {}
+            return JournalConfigMutation(changed=changed, value=persisted)
 
-        return jsonify({"success": True, "key_validation": key_validation})
+        result = mutate_journal_config(apply)
+        return jsonify({"success": True, "key_validation": result.value})
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error validating service tokens")
         return _settings_operation_failed()
@@ -871,9 +923,74 @@ def update_vision() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        with hold_config_lock():
-            # Load existing config
-            config = get_journal_config()
+        normalized_redact: list[str] | None = None
+        if "max_extractions" in request_data:
+            max_ext = request_data["max_extractions"]
+            if not isinstance(max_ext, int) or max_ext < 5 or max_ext > 100:
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="max_extractions must be an integer between 5 and 100",
+                )
+        if "redact" in request_data:
+            redact = request_data["redact"]
+            if not isinstance(redact, list) or not all(
+                isinstance(r, str) for r in redact
+            ):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="redact must be a list of strings",
+                )
+            if len(redact) > 50:
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="redact may contain at most 50 rules",
+                )
+            if any(len(r) > 200 for r in redact):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="each redact rule must be 200 characters or fewer",
+                )
+            normalized_redact = [r for r in redact if r.strip()]
+        if "categories" in request_data:
+            categories_data = request_data["categories"]
+            if not isinstance(categories_data, dict):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="categories must be an object",
+                )
+            for name, cat_config in categories_data.items():
+                if name not in CATEGORIES:
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"Unknown category: {name}",
+                    )
+                if cat_config is None:
+                    continue
+                if not isinstance(cat_config, dict):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"category config for {name} must be an object",
+                    )
+                if "importance" in cat_config:
+                    importance = cat_config["importance"]
+                    if importance not in VALID_IMPORTANCE:
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=(
+                                f"Invalid importance for {name}: {importance}. "
+                                "Must be one of: "
+                                f"{', '.join(sorted(VALID_IMPORTANCE))}"
+                            ),
+                        )
+                if "extraction" in cat_config and not isinstance(
+                    cat_config["extraction"], str
+                ):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"extraction for {name} must be a string",
+                    )
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             old_describe = copy.deepcopy(config.get("describe", {}))
 
             # Ensure describe section exists
@@ -885,11 +1002,6 @@ def update_vision() -> Any:
             # Handle max_extractions update
             if "max_extractions" in request_data:
                 max_ext = request_data["max_extractions"]
-                if not isinstance(max_ext, int) or max_ext < 5 or max_ext > 100:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="max_extractions must be an integer between 5 and 100",
-                    )
                 old_val = old_describe.get("max_extractions")
                 if old_val != max_ext:
                     changed_fields["max_extractions"] = {
@@ -900,26 +1012,7 @@ def update_vision() -> Any:
 
             # Handle redact rules update
             if "redact" in request_data:
-                redact = request_data["redact"]
-                if not isinstance(redact, list) or not all(
-                    isinstance(r, str) for r in redact
-                ):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="redact must be a list of strings",
-                    )
-                if len(redact) > 50:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="redact may contain at most 50 rules",
-                    )
-                if any(len(r) > 200 for r in redact):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="each redact rule must be 200 characters or fewer",
-                    )
-                # Filter out empty strings
-                redact = [r for r in redact if r.strip()]
+                redact = normalized_redact or []
                 old_val = old_describe.get("redact")
                 if old_val != redact:
                     changed_fields["redact"] = {"old": old_val, "new": redact}
@@ -934,13 +1027,6 @@ def update_vision() -> Any:
                 old_categories = old_describe.get("categories", {})
 
                 for name, cat_config in categories_data.items():
-                    # Validate category exists
-                    if name not in CATEGORIES:
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"Unknown category: {name}",
-                        )
-
                     old_cat = old_categories.get(name)
 
                     # null means remove the override
@@ -953,28 +1039,6 @@ def update_vision() -> Any:
                             del config["describe"]["categories"][name]
                         continue
 
-                    # Validate importance if specified
-                    if "importance" in cat_config:
-                        importance = cat_config["importance"]
-                        if importance not in VALID_IMPORTANCE:
-                            return error_response(
-                                INVALID_CONFIG_VALUE,
-                                detail=(
-                                    f"Invalid importance for {name}: {importance}. "
-                                    "Must be one of: "
-                                    f"{', '.join(sorted(VALID_IMPORTANCE))}"
-                                ),
-                            )
-
-                    # Validate extraction if specified (must be string)
-                    if "extraction" in cat_config:
-                        extraction = cat_config["extraction"]
-                        if not isinstance(extraction, str):
-                            return error_response(
-                                INVALID_CONFIG_VALUE,
-                                detail=f"extraction for {name} must be a string",
-                            )
-
                     # Only store if there's something to override
                     if cat_config:
                         if old_cat != cat_config:
@@ -984,9 +1048,12 @@ def update_vision() -> Any:
                             }
                         config["describe"]["categories"][name] = cat_config
 
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value=changed_fields,
+            )
 
-        # Log if something changed
+        changed_fields = mutate_journal_config(apply).value
         if changed_fields:
             log_app_action(
                 app="settings",
@@ -998,6 +1065,8 @@ def update_vision() -> Any:
         # Return updated vision config
         return get_vision()
 
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error saving vision config")
         return _settings_operation_failed()
@@ -1065,9 +1134,37 @@ def update_observe() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        with hold_config_lock():
-            # Load existing config
-            config = get_journal_config()
+        if "tmux" in request_data:
+            tmux_data = request_data["tmux"]
+            if not isinstance(tmux_data, dict):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="tmux must be an object",
+                )
+            defaults = OBSERVE_TMUX_DEFAULTS
+            if "enabled" in tmux_data and not isinstance(tmux_data["enabled"], bool):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="tmux.enabled must be a boolean",
+                )
+            if "capture_interval" in tmux_data:
+                capture_interval = tmux_data["capture_interval"]
+                min_val = defaults["capture_interval_min"]
+                max_val = defaults["capture_interval_max"]
+                if (
+                    not isinstance(capture_interval, int)
+                    or capture_interval < min_val
+                    or capture_interval > max_val
+                ):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=(
+                            "tmux.capture_interval must be an integer between "
+                            f"{min_val} and {max_val}"
+                        ),
+                    )
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             old_observe = copy.deepcopy(config.get("observe", {}))
 
             # Ensure observe section exists
@@ -1079,12 +1176,6 @@ def update_observe() -> Any:
             # Handle tmux settings
             if "tmux" in request_data:
                 tmux_data = request_data["tmux"]
-                if not isinstance(tmux_data, dict):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="tmux must be an object",
-                    )
-
                 if "tmux" not in config["observe"]:
                     config["observe"]["tmux"] = {}
 
@@ -1094,11 +1185,6 @@ def update_observe() -> Any:
                 # Validate and update enabled
                 if "enabled" in tmux_data:
                     enabled = tmux_data["enabled"]
-                    if not isinstance(enabled, bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail="tmux.enabled must be a boolean",
-                        )
                     if enabled != old_tmux.get("enabled", defaults["enabled"]):
                         config["observe"]["tmux"]["enabled"] = enabled
                         changed_fields["tmux.enabled"] = enabled
@@ -1106,30 +1192,18 @@ def update_observe() -> Any:
                 # Validate and update capture_interval
                 if "capture_interval" in tmux_data:
                     capture_interval = tmux_data["capture_interval"]
-                    min_val = defaults["capture_interval_min"]
-                    max_val = defaults["capture_interval_max"]
-                    if (
-                        not isinstance(capture_interval, int)
-                        or capture_interval < min_val
-                        or capture_interval > max_val
-                    ):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=(
-                                "tmux.capture_interval must be an integer between "
-                                f"{min_val} and {max_val}"
-                            ),
-                        )
                     if capture_interval != old_tmux.get(
                         "capture_interval", defaults["capture_interval"]
                     ):
                         config["observe"]["tmux"]["capture_interval"] = capture_interval
                         changed_fields["tmux.capture_interval"] = capture_interval
 
-            # Save config if changed
-            if changed_fields:
-                write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value=changed_fields,
+            )
 
+        changed_fields = mutate_journal_config(apply).value
         if changed_fields:
             log_app_action(
                 app="settings",
@@ -1140,6 +1214,8 @@ def update_observe() -> Any:
 
         return get_observe()
 
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error saving observe config")
         return _settings_operation_failed()
@@ -1887,10 +1963,69 @@ def update_storage() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        with hold_config_lock():
-            config = get_journal_config()
-            old_retention = config.get("retention", {})
+        if "raw_media" in request_data:
+            mode = request_data["raw_media"]
+            if mode not in ("keep", "days", "processed"):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail=f"Invalid mode: {mode}",
+                )
+        if "raw_media_days" in request_data:
+            days = request_data["raw_media_days"]
+            if days is not None and (not isinstance(days, int) or days < 1):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="days must be a positive integer",
+                )
+        normalized_per_stream: dict[str, Any] | None = None
+        if "per_stream" in request_data:
+            ps = request_data["per_stream"]
+            if not isinstance(ps, dict):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="per_stream must be an object",
+                )
+            normalized_per_stream = {}
+            for stream_name, stream_cfg in ps.items():
+                if not isinstance(stream_cfg, dict):
+                    continue
+                mode = stream_cfg.get("raw_media")
+                if mode is not None and mode not in ("keep", "days", "processed"):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"Invalid mode for {stream_name}: {mode}",
+                    )
+                days = stream_cfg.get("raw_media_days")
+                if days is not None and (not isinstance(days, int) or days < 1):
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=f"Invalid days for {stream_name}",
+                    )
+                normalized_per_stream[stream_name] = stream_cfg
+        if "journal_logs" in request_data:
+            journal_logs = request_data["journal_logs"]
+            if not isinstance(journal_logs, dict):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="journal_logs must be an object",
+                )
+            if "enabled" in journal_logs and not isinstance(
+                journal_logs["enabled"], bool
+            ):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="enabled must be a boolean",
+                )
+            if "days" in journal_logs:
+                days = journal_logs["days"]
+                if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="days must be a positive integer",
+                    )
 
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            old_retention = copy.deepcopy(config.get("retention", {}))
             retention = config.setdefault("retention", {})
 
             changed = {}
@@ -1898,11 +2033,6 @@ def update_storage() -> Any:
             # Update global mode
             if "raw_media" in request_data:
                 mode = request_data["raw_media"]
-                if mode not in ("keep", "days", "processed"):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"Invalid mode: {mode}",
-                    )
                 if retention.get("raw_media") != mode:
                     changed["raw_media"] = {
                         "old": retention.get("raw_media"),
@@ -1913,12 +2043,6 @@ def update_storage() -> Any:
             # Update global days
             if "raw_media_days" in request_data:
                 days = request_data["raw_media_days"]
-                if days is not None:
-                    if not isinstance(days, int) or days < 1:
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail="days must be a positive integer",
-                        )
                 if retention.get("raw_media_days") != days:
                     changed["raw_media_days"] = {
                         "old": retention.get("raw_media_days"),
@@ -1928,29 +2052,7 @@ def update_storage() -> Any:
 
             # Update per-stream overrides
             if "per_stream" in request_data:
-                ps = request_data["per_stream"]
-                if not isinstance(ps, dict):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="per_stream must be an object",
-                    )
-                new_per_stream = {}
-                for stream_name, stream_cfg in ps.items():
-                    if not isinstance(stream_cfg, dict):
-                        continue
-                    mode = stream_cfg.get("raw_media")
-                    if mode is not None and mode not in ("keep", "days", "processed"):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"Invalid mode for {stream_name}: {mode}",
-                        )
-                    days = stream_cfg.get("raw_media_days")
-                    if days is not None and (not isinstance(days, int) or days < 1):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"Invalid days for {stream_name}",
-                        )
-                    new_per_stream[stream_name] = stream_cfg
+                new_per_stream = normalized_per_stream or {}
                 if old_retention.get("per_stream") != new_per_stream:
                     changed["per_stream"] = {
                         "old": old_retention.get("per_stream"),
@@ -1960,11 +2062,6 @@ def update_storage() -> Any:
 
             if "journal_logs" in request_data:
                 journal_logs = request_data["journal_logs"]
-                if not isinstance(journal_logs, dict):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="journal_logs must be an object",
-                    )
 
                 current_journal_logs = retention.get("journal_logs", {})
                 if not isinstance(current_journal_logs, dict):
@@ -1977,20 +2074,10 @@ def update_storage() -> Any:
 
                 if "enabled" in journal_logs:
                     enabled = journal_logs["enabled"]
-                    if not isinstance(enabled, bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail="enabled must be a boolean",
-                        )
                     new_journal_logs["enabled"] = enabled
 
                 if "days" in journal_logs:
                     days = journal_logs["days"]
-                    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail="days must be a positive integer",
-                        )
                     new_journal_logs["days"] = days
 
                 if old_journal_logs != new_journal_logs:
@@ -2000,8 +2087,14 @@ def update_storage() -> Any:
                     }
                 retention["journal_logs"] = new_journal_logs
 
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed),
+                value={"changed": changed, "retention": retention},
+            )
 
+        result = mutate_journal_config(apply).value
+        changed = result["changed"]
+        retention = result["retention"]
         if changed:
             log_app_action(
                 app="settings",
@@ -2011,6 +2104,8 @@ def update_storage() -> Any:
             )
 
         return jsonify({"success": True, "retention": retention})
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error saving retention config")
         return _settings_operation_failed()

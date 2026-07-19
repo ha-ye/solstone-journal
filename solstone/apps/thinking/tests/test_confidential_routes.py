@@ -13,9 +13,9 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.convey import create_app
-from solstone.think.journal_config import write_journal_config
 from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
+from tests.helpers.journal_config import seed_journal_config
 
 
 class _InlineThread:
@@ -69,7 +69,7 @@ def _read_config(journal: Path) -> dict:
 
 def _write_config(payload: dict) -> None:
     payload.setdefault("setup", {"completed_at": 1700000000000})
-    write_journal_config(payload)
+    seed_journal_config(payload)
 
 
 def _clear_confidential(journal: Path) -> None:

@@ -17,9 +17,9 @@ from solstone.think.backup.keys import (
     generate_recovery_key,
 )
 from solstone.think.journal_config import (
-    hold_config_lock,
+    JournalConfigMutation,
+    mutate_journal_config,
     read_journal_config,
-    write_journal_config,
 )
 
 BACKUP_DEFAULTS: dict[str, Any] = {
@@ -170,61 +170,76 @@ def get_keys() -> BackupKeys | None:
 
 
 def generate_and_store_keys() -> BackupKeys:
-    with hold_config_lock():
-        config = read_journal_config()
+    generated_daily_key = generate_daily_key()
+    generated_recovery_key = generate_recovery_key()
+
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[BackupKeys]:
         backup = _writable_backup_section(config)
         daily_key = backup.get("daily_key")
         recovery_key = backup.get("recovery_key")
+        changed = False
         if daily_key is None:
-            daily_key = generate_daily_key()
+            daily_key = generated_daily_key
+            changed = True
         if recovery_key is None:
-            recovery_key = generate_recovery_key()
+            recovery_key = generated_recovery_key
+            changed = True
         backup["daily_key"] = daily_key
         backup["recovery_key"] = recovery_key
         keys = _build_backup_keys(daily_key, recovery_key)
         if keys is None:
             raise RuntimeError("backup key generation failed")
-        write_journal_config(config)
-        return keys
+        return JournalConfigMutation(changed=changed, value=keys)
+
+    return mutate_journal_config(apply).value
 
 
 def set_destination(destination: Destination) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["destination"] = {
+        next_destination = {
             "repository": destination.repository,
             "backend": destination.backend,
             "credentials": dict(destination.credentials),
         }
-        write_journal_config(config)
+        changed = backup.get("destination") != next_destination
+        backup["destination"] = next_destination
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_enabled(enabled: bool) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
+        changed = backup.get("enabled") != enabled
         backup["enabled"] = enabled
-        write_journal_config(config)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_mode(mode: str) -> None:
     if mode not in {"byo", "operated"}:
         raise ValueError("backup mode must be byo or operated")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
+        changed = backup.get("mode") != mode
         backup["mode"] = mode
-        write_journal_config(config)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_recovery_key_confirmed(confirmed: bool = True) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
+        changed = backup.get("confirmed_recovery_key") != confirmed
         backup["confirmed_recovery_key"] = confirmed
-        write_journal_config(config)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_retention(retention: dict[str, int]) -> None:
@@ -237,11 +252,14 @@ def set_retention(retention: dict[str, int]) -> None:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError("backup retention values must be non-negative integers")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["retention"] = {key: int(retention[key]) for key in RETENTION_KEYS}
-        write_journal_config(config)
+        next_retention = {key: int(retention[key]) for key in RETENTION_KEYS}
+        changed = backup.get("retention") != next_retention
+        backup["retention"] = next_retention
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_offload(offload: dict[str, Any]) -> None:
@@ -260,30 +278,38 @@ def set_offload(offload: dict[str, Any]) -> None:
                 "backup offload byte values must be positive integers or null"
             )
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["offload"] = {
+        next_offload = {
             "enabled": offload["enabled"],
             "budget_bytes": offload["budget_bytes"],
             "floor_bytes": offload["floor_bytes"],
         }
-        write_journal_config(config)
+        changed = backup.get("offload") != next_offload
+        backup["offload"] = next_offload
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def set_recovery_key(recovery_key: str) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
+        changed = backup.get("recovery_key") != recovery_key
         backup["recovery_key"] = recovery_key
-        write_journal_config(config)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def clear_backup_config() -> None:
-    with hold_config_lock():
-        config = read_journal_config()
-        config["backup"] = copy.deepcopy(BACKUP_DEFAULTS)
-        write_journal_config(config)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
+        next_backup = copy.deepcopy(BACKUP_DEFAULTS)
+        changed = config.get("backup") != next_backup
+        config["backup"] = next_backup
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def record_backup_result(
@@ -293,16 +319,19 @@ def record_backup_result(
     snapshot_id: str | None = None,
     error_reason: str | None = None,
 ) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["last_backup"] = {
+        next_result = {
             "time": time,
             "snapshot_id": snapshot_id,
             "status": status,
             "error_reason": error_reason,
         }
-        write_journal_config(config)
+        changed = backup.get("last_backup") != next_result
+        backup["last_backup"] = next_result
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def record_prune_result(
@@ -311,15 +340,18 @@ def record_prune_result(
     time: int | None,
     error_reason: str | None = None,
 ) -> None:
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["last_prune"] = {
+        next_result = {
             "time": time,
             "status": status,
             "error_reason": error_reason,
         }
-        write_journal_config(config)
+        changed = backup.get("last_prune") != next_result
+        backup["last_prune"] = next_result
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def record_offload_result(
@@ -339,15 +371,14 @@ def record_offload_result(
     if status not in OFFLOAD_STATUSES:
         raise ValueError("backup offload status must be ok, skipped, stalled, or error")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
         prior = backup.get("last_offload")
         prior_last_ok_time = (
             prior.get("last_ok_time") if isinstance(prior, dict) else None
         )
         last_ok_time = time if status == "ok" else prior_last_ok_time
-        backup["last_offload"] = {
+        next_result = {
             "time": time,
             "status": status,
             "reason": reason,
@@ -356,7 +387,11 @@ def record_offload_result(
             "bytes_offloaded": bytes_offloaded,
             "ran_out_of_media": ran_out_of_media,
         }
-        write_journal_config(config)
+        changed = backup.get("last_offload") != next_result
+        backup["last_offload"] = next_result
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def record_verification_result(
@@ -374,8 +409,7 @@ def record_verification_result(
     if status not in VERIFICATION_STATUSES:
         raise ValueError("backup verification status must be ok, skipped, or error")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
         prior = backup.get("last_verification")
         prior_last_ok_time = (
@@ -385,14 +419,18 @@ def record_verification_result(
         # the latest attempt and must not overclaim after a failure.
         last_ok_time = time if status == "ok" else prior_last_ok_time
         latest_checked_subset = checked_subset if status == "ok" else None
-        backup["last_verification"] = {
+        next_result = {
             "time": time,
             "status": status,
             "reason": reason,
             "last_ok_time": last_ok_time,
             "checked_subset": latest_checked_subset,
         }
-        write_journal_config(config)
+        changed = backup.get("last_verification") != next_result
+        backup["last_verification"] = next_result
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def record_restore_result(
@@ -427,10 +465,9 @@ def record_restore_result(
         if type(value) is not int or value < 0:
             raise ValueError("backup restore counters must be non-negative integers")
 
-    with hold_config_lock():
-        config = read_journal_config()
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         backup = _writable_backup_section(config)
-        backup["last_restore"] = {
+        next_result = {
             "time": time,
             "status": status,
             "reason": reason,
@@ -443,7 +480,11 @@ def record_restore_result(
             "bytes_expected": bytes_expected,
             "bytes_restored": bytes_restored,
         }
-        write_journal_config(config)
+        changed = backup.get("last_restore") != next_result
+        backup["last_restore"] = next_result
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply)
 
 
 def status_view() -> dict[str, Any]:

@@ -14,7 +14,6 @@ import httpx
 import pytest
 
 from solstone.think import models
-from solstone.think.journal_config import write_journal_config
 from solstone.think.models import (
     CLAUDE_SONNET_4,
     LOCAL_MODEL,
@@ -30,6 +29,7 @@ from solstone.think.providers import state as provider_state
 from solstone.think.providers.cli import QuotaExhaustedError
 from solstone.think.providers.local import LocalCapacityExhausted, LocalProviderError
 from solstone.think.talents import _execute_generate, _execute_with_tools
+from tests.helpers.journal_config import seed_journal_config
 
 CLOUD_PROVIDERS = ("google", "openai", "anthropic")
 DAY = "20240115"
@@ -94,7 +94,7 @@ def _write_test_config(
     }
     if local_endpoint is not None:
         config["providers"]["local"] = local_endpoint
-    write_journal_config(config, journal)
+    seed_journal_config(config, journal)
     return config
 
 

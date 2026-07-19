@@ -30,6 +30,7 @@ from solstone.think.backup.readiness import (
 from solstone.think.backup.repo import init_repository
 from solstone.think.backup.runner import run_restic
 from solstone.think.backup.state import BACKUP_DEFAULTS, get_destination
+from tests.helpers.journal_config import seed_journal_config
 
 RESTIC_BIN = shutil.which("restic")
 
@@ -58,15 +59,14 @@ def _destination(repo: Path) -> Destination:
     )
 
 
-def _write_journal_config(
+def _seed_backup_config(
     journal: Path,
     *,
     destination: Destination,
     daily_key: str,
     recovery_key: str,
 ) -> None:
-    _write_json(
-        _config_path(journal),
+    seed_journal_config(
         {
             "backup": {
                 "enabled": True,
@@ -80,6 +80,7 @@ def _write_journal_config(
                 "confirmed_recovery_key": True,
             }
         },
+        journal,
     )
 
 
@@ -163,7 +164,7 @@ def test_backup_restore_rotation_teardown_real_local_round_trip(
     recovery_key = ("0" * 32) + ("1" * 32)
     entered_recovery_key = ("O" * 32) + ("I" * 32)
 
-    _write_journal_config(
+    _seed_backup_config(
         source_journal,
         destination=destination,
         daily_key=daily_key,

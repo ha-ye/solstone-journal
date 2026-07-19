@@ -9,7 +9,6 @@ default can resolve to such a lane, the default is capped at its slot count.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -17,6 +16,7 @@ import pytest
 
 from solstone.think import thinking as think
 from solstone.think.providers import fanout_policy, local_server
+from tests.helpers.journal_config import seed_journal_config
 
 FLOOR_SLOTS = local_server._FLOOR_TIER.parallel_slots
 CAPABLE_SLOTS = local_server._CAPABLE_TIER.parallel_slots
@@ -37,7 +37,7 @@ def _pin_cpu_count(monkeypatch: pytest.MonkeyPatch, cpu_count: int) -> None:
     monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: cpu_count)
 
 
-def _write_journal_config(
+def _seed_journal_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     providers: dict,
@@ -49,7 +49,7 @@ def _write_journal_config(
     config = {"providers": providers}
     if services is not None:
         config["services"] = services
-    (journal / "config" / "journal.json").write_text(json.dumps(config))
+    seed_journal_config(config, journal)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
 
@@ -97,7 +97,7 @@ def test_default_segment_workers_nonlocal_cpu_formula(monkeypatch):
 
 def test_default_segment_workers_ignores_context_local_pin(monkeypatch, tmp_path):
     """A retired context-local pin does not cap segment fan-out."""
-    _write_journal_config(
+    _seed_journal_config(
         monkeypatch,
         tmp_path,
         {
@@ -191,7 +191,7 @@ def test_segment_default_byo_endpoint_uses_configured_slot_cap_and_does_not_prob
     monkeypatch, tmp_path
 ):
     """A governed third-party endpoint caps without bundled slot discovery."""
-    _write_journal_config(
+    _seed_journal_config(
         monkeypatch,
         tmp_path,
         {
@@ -215,7 +215,7 @@ def test_segment_default_confidential_endpoint_uses_cpu_formula_and_does_not_pro
     monkeypatch, tmp_path
 ):
     """Confidential BYO endpoints are ungoverned even with a stray slot key."""
-    _write_journal_config(
+    _seed_journal_config(
         monkeypatch,
         tmp_path,
         {
@@ -238,7 +238,7 @@ def test_segment_default_confidential_endpoint_uses_cpu_formula_and_does_not_pro
 def test_describe_default_byo_endpoint_uses_configured_slot_cap_and_does_not_probe(
     monkeypatch, tmp_path
 ):
-    _write_journal_config(
+    _seed_journal_config(
         monkeypatch,
         tmp_path,
         {
@@ -260,7 +260,7 @@ def test_describe_default_byo_endpoint_uses_configured_slot_cap_and_does_not_pro
 def test_describe_default_confidential_endpoint_uses_cpu_formula_and_does_not_probe(
     monkeypatch, tmp_path
 ):
-    _write_journal_config(
+    _seed_journal_config(
         monkeypatch,
         tmp_path,
         {

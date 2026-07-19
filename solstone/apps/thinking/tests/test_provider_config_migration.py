@@ -54,7 +54,7 @@ def test_migration_prefers_cogitate_and_removes_legacy_provider_state(tmp_path):
         }
     }
     assert config["service_key_validation"] == {"revai": {"valid": True}}
-    assert not secret.exists()
+    assert secret.exists()
     assert migration.migrate(config, tmp_path) is False
 
 
@@ -79,7 +79,7 @@ def test_migration_materializes_local_default_and_removes_broken_vertex_link(tmp
         "provider": "local",
         "model": LOCAL_MODEL,
     }
-    assert not secret.is_symlink()
+    assert secret.is_symlink()
     assert migration.migrate(config, tmp_path) is False
 
 

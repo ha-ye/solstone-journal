@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 
 from solstone.apps.sol.routes import _resolve_output_path
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import read_journal_config
 from solstone.think.talent import _resolve_talent_path, get_talent, get_talent_configs
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture
@@ -568,7 +569,7 @@ class TestSolIdentityRoutes:
 
     def test_api_set_name_updates_agent(self, sol_identity_client):
         client, _journal = sol_identity_client
-        write_journal_config({})
+        seed_journal_config({})
 
         resp = client.post(
             "/app/sol/api/set-name",
@@ -584,7 +585,7 @@ class TestSolIdentityRoutes:
 
     def test_api_reset_updates_agent(self, sol_identity_client):
         client, _journal = sol_identity_client
-        write_journal_config(
+        seed_journal_config(
             {
                 "agent": {
                     "name": "aria",
@@ -606,7 +607,7 @@ class TestSolIdentityRoutes:
 
     def test_api_set_owner_updates_identity(self, sol_identity_client):
         client, _journal = sol_identity_client
-        write_journal_config({})
+        seed_journal_config({})
 
         resp = client.post(
             "/app/sol/api/set-owner",

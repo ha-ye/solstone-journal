@@ -26,9 +26,8 @@ from typing import Any, Callable
 
 from solstone.think import parakeet_readiness
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
@@ -191,16 +190,18 @@ def _write_parakeet_metadata(
     if unknown_keys:
         raise ValueError(f"unknown parakeet install metadata key: {unknown_keys[0]}")
 
-    with hold_config_lock(journal_path):
-        config = read_journal_config(journal_path)
+    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
         slot = (
             config.setdefault("providers", {})
             .setdefault("bundled", {})
             .setdefault(PARAKEET_PROVIDER_NAME, {})
         )
+        changed = any(slot.get(key) != value for key, value in updates.items())
         for key, value in updates.items():
             slot[key] = value
-        write_journal_config(config, journal_path)
+        return JournalConfigMutation(changed=changed, value=None)
+
+    mutate_journal_config(apply, journal_path=journal_path)
 
 
 def _record_parakeet_progress(

@@ -22,6 +22,7 @@ from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.utils import log_app_action
 from solstone.convey.readiness_snapshot import build_readiness_snapshot
 from solstone.convey.reasons import (
+    CONFIG_BUSY,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
@@ -33,10 +34,10 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import error_response
 from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
+    JournalConfigMutation,
+    mutate_journal_config,
 )
+from solstone.think.journal_io import LockTimeout
 from solstone.think.models import (
     DEFAULT_MODEL_BY_PROVIDER,
     LOCAL_MODEL,
@@ -100,6 +101,10 @@ GENERIC_THINKING_ERROR = (
 
 def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
     return error_response(SETTINGS_OPERATION_FAILED, detail=detail)
+
+
+def _config_busy_response() -> Any:
+    return error_response(CONFIG_BUSY, detail="settings are busy; try again")
 
 
 _CONFIDENTIAL_PHASE_TO_PRODUCT = {
@@ -780,8 +785,8 @@ def keys() -> Any:
         if new_value:
             validation = validate_key(provider, new_value)
             validation["timestamp"] = datetime.now(timezone.utc).isoformat()
-        with hold_config_lock():
-            config = read_journal_config()
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             env = config.get("env")
             if not isinstance(env, dict):
                 env = {}
@@ -797,17 +802,30 @@ def keys() -> Any:
             old_value = env.get(env_var)
             if new_value:
                 env[env_var] = new_value
-                os.environ[env_var] = new_value
                 assert validation is not None
                 key_validation[provider] = validation
             else:
                 env.pop(env_var, None)
-                os.environ.pop(env_var, None)
                 key_validation.pop(provider, None)
                 byo_models = providers_config.get("byo_models")
                 if isinstance(byo_models, dict):
                     byo_models.pop(provider, None)
-            write_journal_config(config)
+            changed = old_value != (new_value or None)
+            return JournalConfigMutation(
+                changed=changed,
+                value={
+                    "config": config,
+                    "old_value": old_value,
+                },
+            )
+
+        result = mutate_journal_config(apply)
+        config = result.value["config"]
+        old_value = result.value["old_value"]
+        if new_value:
+            os.environ[env_var] = new_value
+        else:
+            os.environ.pop(env_var, None)
 
         if old_value != (str(value or "").strip() or None):
             log_app_action(
@@ -828,6 +846,8 @@ def keys() -> Any:
         )
     except CorruptConfigError:
         raise
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error updating thinking keys")
         return _thinking_operation_failed()
@@ -850,8 +870,7 @@ def validate_all_keys() -> Any:
         if request.method == "GET":
             return jsonify({"key_validation": key_validation})
 
-        with hold_config_lock():
-            config = read_journal_config()
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             providers_config = config.get("providers")
             if not isinstance(providers_config, dict):
                 providers_config = {}
@@ -863,22 +882,30 @@ def validate_all_keys() -> Any:
             current_env = config.get("env", {})
             if not isinstance(current_env, dict):
                 current_env = {}
+            changed = False
             for env_var, provider in AI_ENV_TO_PROVIDER.items():
                 current_value = str(current_env.get(env_var) or "").strip()
                 if current_value != validated_values[provider]:
                     continue
                 result = key_validation.get(provider)
                 if result is None:
-                    existing.pop(provider, None)
-                else:
+                    if provider in existing:
+                        existing.pop(provider, None)
+                        changed = True
+                elif existing.get(provider) != result:
                     existing[provider] = result
-            write_journal_config(config)
+                    changed = True
             persisted = {
                 provider: existing[provider]
                 for provider in AI_ENV_TO_PROVIDER.values()
                 if provider in existing
             }
+            return JournalConfigMutation(changed=changed, value=persisted)
+
+        persisted = mutate_journal_config(apply).value
         return jsonify({"success": True, "key_validation": persisted})
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error validating thinking keys")
         return _thinking_operation_failed()
@@ -1008,8 +1035,7 @@ def update_local_endpoint() -> Any:
         ):
             return error_response(INVALID_REQUEST_VALUE, detail="credential")
 
-        with hold_config_lock():
-            config = read_journal_config()
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             local_config = _ensure_local_provider_config(config)
             before = dict(local_config)
             local_config["endpoint_url"] = endpoint_url
@@ -1025,8 +1051,17 @@ def update_local_endpoint() -> Any:
                 local_config,
                 credential_touched=credential_touched,
             )
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value={
+                    "config": config,
+                    "changed_fields": changed_fields,
+                },
+            )
 
+        result = mutate_journal_config(apply)
+        config = result.value["config"]
+        changed_fields = result.value["changed_fields"]
         if changed_fields:
             log_app_action(
                 app="thinking",
@@ -1042,6 +1077,8 @@ def update_local_endpoint() -> Any:
         )
     except CorruptConfigError:
         raise
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error updating local endpoint")
         return _thinking_operation_failed()
@@ -1050,8 +1087,8 @@ def update_local_endpoint() -> Any:
 @thinking_bp.route("/api/local/endpoint", methods=["DELETE"])
 def clear_local_endpoint() -> Any:
     try:
-        with hold_config_lock():
-            config = read_journal_config()
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             local_config = _ensure_local_provider_config(config)
             before = dict(local_config)
             for key in ("endpoint_url", "served_model_id", "credential"):
@@ -1061,8 +1098,17 @@ def clear_local_endpoint() -> Any:
                 local_config,
                 credential_touched=True,
             )
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value={
+                    "config": config,
+                    "changed_fields": changed_fields,
+                },
+            )
 
+        result = mutate_journal_config(apply)
+        config = result.value["config"]
+        changed_fields = result.value["changed_fields"]
         if changed_fields:
             log_app_action(
                 app="thinking",
@@ -1078,6 +1124,8 @@ def clear_local_endpoint() -> Any:
         )
     except CorruptConfigError:
         raise
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error clearing local endpoint")
         return _thinking_operation_failed()
@@ -1258,8 +1306,8 @@ def update_providers() -> Any:
             model = _validate_top_level_model(request_data["model"])
             if not isinstance(model, str):
                 return model
-        with hold_config_lock():
-            config = read_journal_config()
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             providers_config = config.get("providers")
             if not isinstance(providers_config, dict):
                 providers_config = {}
@@ -1281,7 +1329,12 @@ def update_providers() -> Any:
                 provider,
                 model,
             )
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value=changed_fields,
+            )
+
+        changed_fields = mutate_journal_config(apply).value
         if changed_fields:
             log_app_action(
                 app="thinking",
@@ -1290,6 +1343,8 @@ def update_providers() -> Any:
                 params={"changed_fields": changed_fields},
             )
         return get_providers()
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error saving providers")
         return _thinking_operation_failed()
@@ -1336,8 +1391,21 @@ def update_generators() -> Any:
 
         from solstone.think.talent import key_to_context
 
-        with hold_config_lock():
-            config = read_journal_config()
+        for key, updates in request_data.items():
+            if not isinstance(updates, dict):
+                continue
+            if "disabled" in updates and not isinstance(updates["disabled"], bool):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail=f"disabled must be boolean for {key}",
+                )
+            if "extract" in updates and not isinstance(updates["extract"], bool):
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail=f"extract must be boolean for {key}",
+                )
+
+        def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             contexts = config.get("talent_overrides")
             if not isinstance(contexts, dict):
                 contexts = {}
@@ -1352,18 +1420,8 @@ def update_generators() -> Any:
                 ctx_config = contexts.get(context_key, {})
                 old_ctx = old_contexts.get(context_key, {})
                 if "disabled" in updates:
-                    if not isinstance(updates["disabled"], bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"disabled must be boolean for {key}",
-                        )
                     ctx_config["disabled"] = updates["disabled"]
                 if "extract" in updates:
-                    if not isinstance(updates["extract"], bool):
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"extract must be boolean for {key}",
-                        )
                     ctx_config["extract"] = updates["extract"]
                 if ctx_config:
                     if old_ctx != ctx_config:
@@ -1373,7 +1431,12 @@ def update_generators() -> Any:
                         }
                     contexts[context_key] = ctx_config
 
-            write_journal_config(config)
+            return JournalConfigMutation(
+                changed=bool(changed_fields),
+                value=changed_fields,
+            )
+
+        changed_fields = mutate_journal_config(apply).value
         if changed_fields:
             log_app_action(
                 app="thinking",
@@ -1382,6 +1445,8 @@ def update_generators() -> Any:
                 params={"changed_fields": changed_fields},
             )
         return get_generators()
+    except LockTimeout:
+        return _config_busy_response()
     except Exception:
         logger.exception("error saving generators")
         return _thinking_operation_failed()
