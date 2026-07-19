@@ -42,38 +42,54 @@
     return `${totalCount} ${PIECE_PLURAL}`;
   }
 
-  function sampleMeta(sample) {
-    return [sample.stream, sample.segment || sample.segment_key]
+  function sampleFields(sample) {
+    return {
+      day: String(sample.day ?? '').trim(),
+      stream: String(sample.stream ?? '').trim(),
+      segment: String(sample.segment ?? '').trim(),
+    };
+  }
+
+  function plainRow(fields) {
+    const text = [fields.day, fields.stream, fields.segment]
       .map((part) => String(part ?? '').trim())
       .filter(Boolean)
       .join(META_SEPARATOR);
-  }
-
-  function renderSample(sample) {
-    const meta = sampleMeta(sample);
-    const metaHtml = meta ? `<span class="ev-meta">${escapeHtml(meta)}</span>` : '';
     return '<li class="drawer-evidence-row">' +
-      `<span class="drawer-evidence-title">${escapeHtml(sample.day)}</span>` +
-      metaHtml +
+      `<span class="drawer-evidence-title">${escapeHtml(text)}</span>` +
       '</li>';
   }
 
-  function buildEvidenceDrawerProps(item, options = {}) {
+  function linkedRow(fields) {
+    const dayHref = `/app/timeline/${fields.day}`;
+    const segmentHref = `/app/transcripts/${fields.day}#${fields.segment}`;
+    const streamHtml = fields.stream
+      ? `<span class="ev-meta">${escapeHtml(fields.stream)}</span>`
+      : '';
+    return '<li class="drawer-evidence-row">' +
+      `<a class="drawer-evidence-title" href="${escapeHtml(dayHref)}">${escapeHtml(fields.day)}</a>` +
+      streamHtml +
+      `<a class="ev-meta" href="${escapeHtml(segmentHref)}">${escapeHtml(fields.segment)}</a>` +
+      '</li>';
+  }
+
+  function renderSample(sample) {
+    const fields = sampleFields(sample);
+    if (!fields.day || !fields.segment) return plainRow(fields);
+    return linkedRow(fields);
+  }
+
+  function buildEvidenceDrawerProps(item) {
     const samples = samplesFor(item);
     const sampleCount = samples.length;
     if (sampleCount === 0) return null;
     const totalCount = totalCountFor(item, sampleCount);
-    const requestedMax = Number(options.maxSamples);
-    const maxSamples = Number.isInteger(requestedMax) && requestedMax > 0
-      ? requestedMax
-      : sampleCount;
-    const displayedSamples = samples.slice(0, maxSamples);
-    const bodyHtml = `<ul class="drawer-evidence">${displayedSamples.map(renderSample).join('')}</ul>`;
+    const bodyHtml = `<ul class="drawer-evidence">${samples.map(renderSample).join('')}</ul>`;
     return {
       id: `curation-evidence:${String(item?.kind ?? '')}:${String(item?.key ?? '')}`,
-      open: Boolean(options.open),
+      open: false,
       label: DRAWER_LABEL,
-      line: formatEvidenceLine(displayedSamples.length, totalCount),
+      line: formatEvidenceLine(sampleCount, totalCount),
       bodyHtml,
     };
   }

@@ -53,7 +53,7 @@
   }
 
   function run() {
-    equal('public keys', Object.keys(window.Drawer).join(','), 'render,preserveOpen');
+    equal('public keys', Object.keys(window.Drawer).join(','), 'render,preserveOpen,formatLine');
 
     let drawer = renderToFixture({ line: '4 imports', chipText: 'warn', chipTone: 'warn', open: true });
     assert('root is details', drawer && drawer.tagName === 'DETAILS');

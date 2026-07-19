@@ -23,6 +23,10 @@ def test_curation_evidence_drawer_props() -> None:
         const assert = require('assert');
         const evidence = require(process.argv[1]);
 
+        function anchorHrefs(html) {
+          return Array.from(html.matchAll(/<a [^>]*href="([^"]+)"/g)).map((match) => match[1]);
+        }
+
         assert.strictEqual(
           evidence.buildEvidenceDrawerProps({
             kind: 'facet_candidate',
@@ -36,6 +40,7 @@ def test_curation_evidence_drawer_props() -> None:
           kind: 'facet_candidate',
           key: 'focus',
           evidence: {
+            count: 1,
             samples: [
               { day: '20260701', stream: 'archon', segment: '090000_300' },
             ],
@@ -46,63 +51,85 @@ def test_curation_evidence_drawer_props() -> None:
         assert.strictEqual(one.label, 'evidence');
         assert.strictEqual(one.line, '1 piece');
         assert(one.bodyHtml.includes('<ul class="drawer-evidence">'));
-        assert(one.bodyHtml.includes('20260701'));
-        assert(one.bodyHtml.includes('archon · 090000_300'));
+        assert.deepStrictEqual(anchorHrefs(one.bodyHtml), [
+          '/app/timeline/20260701',
+          '/app/transcripts/20260701#090000_300',
+        ]);
+        assert(one.bodyHtml.includes('>20260701</a>'));
+        assert(one.bodyHtml.includes('>090000_300</a>'));
+        assert(one.bodyHtml.includes('<span class="ev-meta">archon</span>'));
+        assert(!/<a [^>]*>archon<\\/a>/.test(one.bodyHtml));
 
         const counted = evidence.buildEvidenceDrawerProps({
           kind: 'facet_candidate',
           key: 'counted',
           evidence: {
-            count: 3,
+            count: 5,
             samples: [
               { day: '20260701', stream: 'archon', segment: '090000_300' },
+              { day: '20260702', stream: 'archon', segment: '100000_300' },
+              { day: '20260703', stream: 'archon', segment: '110000_300' },
             ],
           },
         });
-        assert.strictEqual(counted.line, '1 of 3');
+        assert.strictEqual(counted.line, '3 of 5');
 
         const two = evidence.buildEvidenceDrawerProps({
           kind: 'entity_candidate',
           key: 'kognova',
           evidence: {
+            count: 2,
             samples: [
               { day: '20260701', stream: 'archon', segment: '090000_300' },
-              { day: '20260702', stream: 'watch', segment_key: '100000_300' },
+              { day: '20260702', stream: 'archon', segment: '100000_300' },
             ],
           },
         });
         assert.strictEqual(two.id, 'curation-evidence:entity_candidate:kognova');
         assert.strictEqual(two.line, '2 pieces');
-        assert(two.bodyHtml.includes('watch · 100000_300'));
+        assert(two.bodyHtml.includes('/app/transcripts/20260702#100000_300'));
 
-        const capped = evidence.buildEvidenceDrawerProps({
+        const missingSegment = evidence.buildEvidenceDrawerProps({
           kind: 'facet_candidate',
-          key: 'many',
+          key: 'missing-segment',
           evidence: {
+            count: 1,
             samples: [
-              { day: '20260701' },
-              { day: '20260702' },
-              { day: '20260703' },
+              { day: '20260701', stream: 'archon' },
             ],
           },
-        }, { maxSamples: 2, open: true });
-        assert.strictEqual(capped.open, true);
-        assert.strictEqual(capped.line, '2 of 3');
-        assert(capped.bodyHtml.includes('20260701'));
-        assert(capped.bodyHtml.includes('20260702'));
-        assert(!capped.bodyHtml.includes('20260703'));
+        });
+        assert.deepStrictEqual(anchorHrefs(missingSegment.bodyHtml), []);
+        assert(missingSegment.bodyHtml.includes('20260701 · archon'));
+
+        const missingDay = evidence.buildEvidenceDrawerProps({
+          kind: 'facet_candidate',
+          key: 'missing-day',
+          evidence: {
+            count: 1,
+            samples: [
+              { stream: 'archon', segment: '090000_300' },
+            ],
+          },
+        });
+        assert.deepStrictEqual(anchorHrefs(missingDay.bodyHtml), []);
+        assert(missingDay.bodyHtml.includes('archon · 090000_300'));
 
         const escaped = evidence.buildEvidenceDrawerProps({
           kind: 'facet_candidate',
           key: 'escape',
           evidence: {
+            count: 1,
             samples: [
-              { day: '<day&>', stream: 'a"b', segment: "c'd" },
+              { day: '2026<"0701', stream: 'a"b', segment: '09<"00' },
             ],
           },
         });
-        assert(escaped.bodyHtml.includes('&lt;day&amp;&gt;'));
-        assert(escaped.bodyHtml.includes('a&quot;b · c&#39;d'));
+        assert(escaped.bodyHtml.includes('href="/app/timeline/2026&lt;&quot;0701"'));
+        assert(escaped.bodyHtml.includes('>2026&lt;&quot;0701</a>'));
+        assert(escaped.bodyHtml.includes('href="/app/transcripts/2026&lt;&quot;0701#09&lt;&quot;00"'));
+        assert(escaped.bodyHtml.includes('>09&lt;&quot;00</a>'));
+        assert(escaped.bodyHtml.includes('<span class="ev-meta">a&quot;b</span>'));
       """
     )
     result = subprocess.run(
