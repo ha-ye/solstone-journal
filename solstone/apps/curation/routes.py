@@ -44,7 +44,13 @@ from solstone.think.entities import EntityAmbiguityError
 from solstone.think.facet_review_candidates import load_candidates
 from solstone.think.journal_io import LockTimeout
 
-curation_bp = Blueprint("app:curation", __name__, url_prefix="/app/curation")
+curation_bp = Blueprint(
+    "app:curation",
+    __name__,
+    url_prefix="/app/curation",
+    static_folder="static",
+    static_url_path="/static",
+)
 
 
 @curation_bp.route("/")

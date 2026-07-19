@@ -14,7 +14,6 @@ CUR_FACET_BODY = (
 )
 CUR_FACET_CREATE_ACTION = "create facet"
 CUR_FACET_DISMISS_ACTION = "not now"
-CUR_FACET_EVIDENCE_ACTION = "view evidence"
 CUR_ENTITY_BODY = '"{a}" and "{b}" look like the same entity. merge them?'
 CUR_ENTITY_MERGE_ACTION = "merge"
 CUR_ENTITY_DISMISS_ACTION = "keep separate"

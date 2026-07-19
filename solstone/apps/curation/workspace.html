@@ -124,19 +124,16 @@
   opacity: 0.65;
 }
 
-.curation-evidence,
 .curation-preview {
   margin-top: 0.85em;
   border-top: 1px solid #f3f4f6;
   padding-top: 0.85em;
 }
 
-.curation-evidence[hidden],
 .curation-preview[hidden] {
   display: none;
 }
 
-.curation-evidence-list,
 .curation-preview-list {
   margin: 0;
   padding-left: 1.2em;
@@ -207,6 +204,12 @@
   font-size: 0.9em;
 }
 
+.curation-pair-evidence {
+  margin-top: 0.85em;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 0.85em;
+}
+
 .curation-speaker-pair-summary {
   margin: 0 0 0.65em;
   color: #4b5563;
@@ -263,6 +266,7 @@
 <section class="curation-shell" data-curation-root>
 </section>
 
+<script src="/app/curation/static/curation_evidence.js"></script>
 <script>
 let CUR_COPY = {};
 window.CUR_COPY = CUR_COPY;
@@ -297,17 +301,6 @@ window.CUR_COPY = CUR_COPY;
     return result;
   }
 
-  function evidenceHtml(item) {
-    const samples = item?.evidence?.samples || [];
-    return samples.map((sample) => `
-      <li>
-        <span>${escapeHtml(sample.day)}</span>
-        ${sample.stream ? `<span> · ${escapeHtml(sample.stream)}</span>` : ''}
-        ${sample.segment ? `<span> · ${escapeHtml(sample.segment)}</span>` : ''}
-      </li>
-    `).join('');
-  }
-
   function formatSimilarity(value) {
     const number = Number(value || 0);
     return Number.isFinite(number) ? number.toFixed(2) : '0.00';
@@ -336,7 +329,7 @@ window.CUR_COPY = CUR_COPY;
     const sourceSamples = evidence.source_samples || [];
     const targetSamples = evidence.target_samples || [];
     return `
-      <div class="curation-evidence">
+      <div class="curation-pair-evidence">
         <p class="curation-speaker-pair-summary">
           ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_SIMILARITY_LABEL)}: ${escapeHtml(formatSimilarity(evidence.similarity))}
           · ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_SOURCE_LABEL)} ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_INTERVALS_LABEL)}: ${escapeHtml(evidence.source_intervals || 0)}
@@ -357,17 +350,16 @@ window.CUR_COPY = CUR_COPY;
   }
 
   function facetItemHtml(item) {
+    const evidenceProps = window.CurationEvidence.buildEvidenceDrawerProps(item);
+    const evidenceHtml = evidenceProps ? window.Drawer.render(evidenceProps) : '';
     return `
       <article class="curation-item" data-curation-item data-kind="facet_candidate" data-name-key="${escapeHtml(item.key)}">
         <p class="curation-body">${escapeHtml(copyFormat(CUR_COPY.CUR_FACET_BODY, {name: item.name}))}</p>
         <div class="curation-actions">
           <button class="curation-button curation-button-primary" type="button" data-action="facet-accept" data-name-key="${escapeHtml(item.key)}">${escapeHtml(CUR_COPY.CUR_FACET_CREATE_ACTION)}</button>
           <button class="curation-button" type="button" data-action="facet-dismiss" data-name-key="${escapeHtml(item.key)}">${escapeHtml(CUR_COPY.CUR_FACET_DISMISS_ACTION)}</button>
-          <button class="curation-button curation-button-link" type="button" data-action="toggle-evidence">${escapeHtml(CUR_COPY.CUR_FACET_EVIDENCE_ACTION)}</button>
         </div>
-        <div class="curation-evidence" hidden>
-          <ol class="curation-evidence-list">${evidenceHtml(item)}</ol>
-        </div>
+        ${evidenceHtml}
         <p class="curation-item-error" hidden></p>
       </article>
     `;
@@ -467,22 +459,24 @@ window.CUR_COPY = CUR_COPY;
     const speakerItems = payload.speaker_items || [];
     const speakerCandidatePairItems = payload.speaker_candidate_pair_items || [];
     const empty = !facetItems.length && !entityItems.length && !ambiguityItems.length && !speakerItems.length && !speakerCandidatePairItems.length;
-    root.innerHTML = `
-      <h1 class="curation-header">${escapeHtml(CUR_COPY.CUR_HEADING)}</h1>
-      ${empty ? `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_EMPTY_STATE)}</p>` : ''}
-      <div class="curation-outcomes" data-curation-outcomes></div>
-      <div class="curation-list" data-curation-list>
-        ${facetItems.map(facetItemHtml).join('')}
-        ${entityItems.length ? entityBatchHtml() : ''}
-        ${entityItems.map(entityItemHtml).join('')}
-        ${ambiguityItems.map(ambiguityItemHtml).join('')}
-        ${speakerItems.map(speakerItemHtml).join('')}
-        ${speakerCandidatePairItems.map(speakerCandidatePairItemHtml).join('')}
-      </div>
-    `;
-    const outcomes = root.querySelector('[data-curation-outcomes]');
-    savedOutcomes.forEach((outcome) => outcomes?.appendChild(outcome));
-    refreshToolbar();
+    window.Drawer.preserveOpen(root, () => {
+      root.innerHTML = `
+        <h1 class="curation-header">${escapeHtml(CUR_COPY.CUR_HEADING)}</h1>
+        ${empty ? `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_EMPTY_STATE)}</p>` : ''}
+        <div class="curation-outcomes" data-curation-outcomes></div>
+        <div class="curation-list" data-curation-list>
+          ${facetItems.map(facetItemHtml).join('')}
+          ${entityItems.length ? entityBatchHtml() : ''}
+          ${entityItems.map(entityItemHtml).join('')}
+          ${ambiguityItems.map(ambiguityItemHtml).join('')}
+          ${speakerItems.map(speakerItemHtml).join('')}
+          ${speakerCandidatePairItems.map(speakerCandidatePairItemHtml).join('')}
+        </div>
+      `;
+      const outcomes = root.querySelector('[data-curation-outcomes]');
+      savedOutcomes.forEach((outcome) => outcomes?.appendChild(outcome));
+      refreshToolbar();
+    });
   }
 
   async function refreshCurationState() {
@@ -758,12 +752,6 @@ window.CUR_COPY = CUR_COPY;
     if (!button) return;
     const item = itemFor(button);
     const action = button.dataset.action;
-
-    if (action === 'toggle-evidence') {
-      const evidence = item?.querySelector('.curation-evidence');
-      if (evidence) evidence.hidden = !evidence.hidden;
-      return;
-    }
 
     if (action === 'merge-undo') {
       const outcome = button.closest('.curation-outcome');

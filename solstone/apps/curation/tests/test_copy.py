@@ -49,7 +49,7 @@ def test_all_copy_constants_referenced_by_render_surface():
 
 
 def test_speaker_copy_avoids_banned_verbs():
-    banned = re.compile(r"\b(capture|watch|record|monitor|track|collect)\b", re.I)
+    banned = re.compile(r"\b(capture|watch|record|monitor|track|collect|user)\b", re.I)
     hits = {
         name: value
         for name, value in vars(copy_module).items()
@@ -74,7 +74,6 @@ def test_curation_copy_literals_are_folded_byte_for_byte():
         ),
         "CUR_FACET_CREATE_ACTION": "create facet",
         "CUR_FACET_DISMISS_ACTION": "not now",
-        "CUR_FACET_EVIDENCE_ACTION": "view evidence",
         "CUR_ENTITY_BODY": '"{a}" and "{b}" look like the same entity. merge them?',
         "CUR_ENTITY_MERGE_ACTION": "merge",
         "CUR_ENTITY_DISMISS_ACTION": "keep separate",

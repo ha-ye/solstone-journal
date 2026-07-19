@@ -980,6 +980,21 @@ def test_curation_api_state_route_resolves(curation_env):
     assert endpoint == "app:curation.api_state"
 
 
+def test_curation_static_literal_paths_resolve(curation_env):
+    env = curation_env()
+    adapter = env.app.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match(
+        "/app/curation/static/curation_evidence.js",
+        method="GET",
+    )
+    response = env.client.get("/app/curation/static/curation_evidence.js")
+
+    assert endpoint
+    assert response.status_code == 200
+    assert b"buildEvidenceDrawerProps" in response.data
+
+
 def test_curation_state_payload_shape_includes_nested_evidence(curation_env):
     env = curation_env()
     _seed_facet_candidate()
