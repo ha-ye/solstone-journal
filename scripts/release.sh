@@ -4,7 +4,7 @@
 #
 # Multi-wheel solstone release.
 #
-# Builds and uploads the ten lockstep artifacts to PyPI:
+# Builds and uploads the eleven lockstep artifacts to PyPI:
 #   - solstone-${VERSION}.tar.gz                                (root sdist)
 #   - solstone-${VERSION}-py3-none-any.whl                      (root any wheel)
 #   - solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl        (Apple Silicon macOS 14+)
@@ -67,6 +67,12 @@ TARGET="pypi"
 TOKEN_VAR="PYPI_TOKEN"
 REPOSITORY_ARGS=()
 MODE="publish"
+TMP_FILES=()
+
+cleanup_tmp_files() {
+    ((${#TMP_FILES[@]} == 0)) || rm -f "${TMP_FILES[@]}"
+}
+trap cleanup_tmp_files EXIT
 
 set_mode() {
     local next_mode="$1"
@@ -160,7 +166,7 @@ RELEASE_SCOPE="linux"
 
 if [[ "$MODE" == "dry-run-linux" ]]; then
     ARTIFACT_LIST=$(mktemp)
-    trap 'rm -f "$ARTIFACT_LIST"' EXIT
+    TMP_FILES+=("$ARTIFACT_LIST")
     python3 scripts/check_wheel_contents.py \
         --release-scope "$RELEASE_SCOPE" \
         --models-decision "$MODELS_DECISION" \
@@ -192,7 +198,7 @@ if ! ssh -o ConnectTimeout=5 "$PRO5E_HOST" true 2>/dev/null; then
 fi
 
 REMOTE_STATUS_FILE=$(mktemp)
-trap 'rm -f "$REMOTE_STATUS_FILE"' EXIT
+TMP_FILES+=("$REMOTE_STATUS_FILE")
 REMOTE_REF=$(ssh "$PRO5E_HOST" "cd ~/projects/solstone && git fetch origin >/dev/null && git checkout $GIT_REF >/dev/null && git rev-parse HEAD")
 ssh "$PRO5E_HOST" "cd ~/projects/solstone && git status --porcelain --untracked-files=normal" > "$REMOTE_STATUS_FILE"
 python3 scripts/check_release_preflight.py remote-state \
@@ -222,7 +228,7 @@ echo "release artifacts:"
 ls -la dist/
 
 ARTIFACT_LIST=$(mktemp)
-trap 'rm -f "$ARTIFACT_LIST" "$REMOTE_STATUS_FILE"' EXIT
+TMP_FILES+=("$ARTIFACT_LIST")
 python3 scripts/check_wheel_contents.py \
     --release-scope "$RELEASE_SCOPE" \
     --models-decision "$MODELS_DECISION" \
@@ -290,7 +296,7 @@ if ! git push origin "$TAG"; then
 fi
 
 NOTES_FILE=$(mktemp)
-trap 'rm -f "$NOTES_FILE"' EXIT
+TMP_FILES+=("$NOTES_FILE")
 scripts/extract_changelog.sh "$VERSION" > "$NOTES_FILE"
 
 if ! gh release create "$TAG" \

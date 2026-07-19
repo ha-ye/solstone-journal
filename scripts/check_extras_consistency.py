@@ -235,9 +235,14 @@ def _check_core_leaf(
     if build_system.get("build-backend") != "maturin":
         errors.append("core leaf [build-system].build-backend must be 'maturin'")
     requires = build_system.get("requires", [])
-    if requires != ["maturin==1.14.1"]:
+    expected_requires = ["maturin==1.14.1"]
+    if requires != expected_requires:
         errors.append(
-            "core leaf [build-system].requires must be exactly ['maturin==1.14.1']"
+            "core leaf [build-system].requires mismatch\n"
+            f"  expected: {expected_requires!r}\n"
+            f"  actual: {requires!r}\n"
+            "  repair command: edit packages/solstone-core/pyproject.toml to "
+            'requires = ["maturin==1.14.1"]'
         )
     if maturin.get("bindings") != "bin":
         errors.append("core leaf [tool.maturin].bindings must be 'bin'")

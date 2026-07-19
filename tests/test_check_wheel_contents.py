@@ -388,7 +388,10 @@ def test_release_artifacts_derive_core_tags_from_probe(tmp_path: Path) -> None:
     artifact_names = {path.name for path in artifacts}
 
     for tag in checker.SOLSTONE_CORE_PLATFORM_TAGS.values():
-        assert f"solstone_core-0.9.0-py3-none-{tag}.whl" in artifact_names
+        assert any(
+            name.startswith("solstone_core-") and name.endswith(f"-py3-none-{tag}.whl")
+            for name in artifact_names
+        )
 
 
 def test_release_artifacts_include_models_only_when_gate_publishes(
