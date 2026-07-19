@@ -77,30 +77,11 @@ def show_task_details(journal: Path, task_name: str) -> None:
     status, exit_code, ran_ts = get_task_status(journal, task.app, task.name)
     state_file = get_state_file(journal, task.app, task.name)
 
-    duration_ms = None
-    log_lines: list[str] = []
-    errors: list[str] = []
+    attempts: list[dict] = []
     if status != "pending" and state_file.exists():
-        with open(state_file, "r") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                event_type = event.get("event")
-                if event_type == "line":
-                    text = event.get("line")
-                    if isinstance(text, str):
-                        log_lines.append(text)
-                elif event_type == "exit":
-                    if isinstance(event.get("duration_ms"), int):
-                        duration_ms = event["duration_ms"]
-                    if event.get("error"):
-                        errors.append(str(event["error"]))
+        attempts = _read_attempt_logs(state_file)
+    latest = attempts[-1] if attempts else {}
+    duration_ms = latest.get("duration_ms")
 
     print(task.qualified_name)
     if task.description:
@@ -133,11 +114,49 @@ def show_task_details(journal: Path, task_name: str) -> None:
         print("Task has not been run yet.")
         return
 
-    for line in log_lines:
-        print(line)
+    for index, attempt in enumerate(reversed(attempts), start=1):
+        if index > 1:
+            print()
+            print(f"Prior attempt {index}:")
+        for line in attempt["lines"]:
+            print(line)
 
-    for error in errors:
-        print(f"Error: {error}")
+        for error in attempt["errors"]:
+            print(f"Error: {error}")
+
+
+def _read_attempt_logs(state_file: Path) -> list[dict]:
+    attempts: list[dict] = []
+    current: dict | None = None
+    with open(state_file, "r") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event_type = event.get("event")
+            if event_type == "exec":
+                if current is not None:
+                    attempts.append(current)
+                current = {"lines": [], "errors": [], "duration_ms": None}
+                continue
+            if current is None:
+                current = {"lines": [], "errors": [], "duration_ms": None}
+            if event_type == "line":
+                text = event.get("line")
+                if isinstance(text, str):
+                    current["lines"].append(text)
+            elif event_type == "exit":
+                if isinstance(event.get("duration_ms"), int):
+                    current["duration_ms"] = event["duration_ms"]
+                if event.get("error"):
+                    current["errors"].append(str(event["error"]))
+    if current is not None:
+        attempts.append(current)
+    return attempts
 
 
 def main() -> None:
@@ -238,7 +257,9 @@ Examples:
         print()
 
     # Run pending tasks
-    ran, succeeded = run_pending_tasks(journal)
+    results = run_pending_tasks(journal)
+    ran = len(results)
+    succeeded = sum(1 for result in results if result.success)
     if ran == 0:
         print("No pending maintenance tasks.")
     else:

@@ -15,6 +15,7 @@ import pytest
 from solstone.think.maint import (
     MaintTask,
     _terminate_with_grace,
+    discover_tasks,
     get_state_file,
     get_task_status,
     list_tasks,
@@ -104,6 +105,24 @@ class TestStatusTracking:
         assert status == "in_progress"
         assert exit_code is None
         assert ran_ts == 1000
+
+    def test_latest_attempt_status_wins(self, temp_journal):
+        state_dir = temp_journal / "maint" / "chat"
+        state_dir.mkdir(parents=True)
+        state_file = state_dir / "retry_task.jsonl"
+        state_file.write_text(
+            '{"event": "exec", "attempt_id": "a1", "ts": 1000}\n'
+            '{"event": "exit", "attempt_id": "a1", "ts": 2000, "exit_code": 1}\n'
+            '{"event": "exec", "attempt_id": "a2", "ts": 3000}\n'
+            '{"event": "line", "attempt_id": "a2", "ts": 3500, "line": "retry"}\n'
+            '{"event": "exit", "attempt_id": "a2", "ts": 4000, "exit_code": 0}\n'
+        )
+
+        status, exit_code, ran_ts = get_task_status(temp_journal, "chat", "retry_task")
+
+        assert status == "success"
+        assert exit_code == 0
+        assert ran_ts == 4000
 
 
 class TestListTasks:
@@ -275,10 +294,91 @@ class TestRunPendingTasks:
             encoding="utf-8",
         )
 
-        ran, succeeded = run_pending_tasks(journal)
+        results = run_pending_tasks(journal)
 
-        assert (ran, succeeded) == (0, 0)
+        assert results == []
         assert json.loads(config_path.read_text("utf-8")) == payload
+
+    def test_failed_task_retries_only_when_opted_in(self, monkeypatch, tmp_path):
+        journal = tmp_path / "journal"
+        retry_task = MaintTask(
+            app="test_app",
+            name="retry",
+            script_path=Path("/dummy/retry.py"),
+            retry_on_next_start=True,
+        )
+        no_retry_task = MaintTask(
+            app="test_app",
+            name="no_retry",
+            script_path=Path("/dummy/no_retry.py"),
+        )
+        in_progress_task = MaintTask(
+            app="test_app",
+            name="in_progress",
+            script_path=Path("/dummy/in_progress.py"),
+            retry_on_next_start=True,
+        )
+        monkeypatch.setattr(
+            "solstone.think.maint.discover_tasks",
+            lambda: [retry_task, no_retry_task, in_progress_task],
+        )
+        for task, body in (
+            (
+                retry_task,
+                '{"event": "exec", "ts": 1000}\n'
+                '{"event": "exit", "ts": 2000, "exit_code": 1}\n',
+            ),
+            (
+                no_retry_task,
+                '{"event": "exec", "ts": 1000}\n'
+                '{"event": "exit", "ts": 2000, "exit_code": 1}\n',
+            ),
+            (in_progress_task, '{"event": "exec", "ts": 1000}\n'),
+        ):
+            state_file = get_state_file(journal, task.app, task.name)
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(body, encoding="utf-8")
+        calls = []
+
+        def fake_run_task(_journal, task, emit_fn=None):
+            calls.append(task.name)
+            state_file = get_state_file(_journal, task.app, task.name)
+            with state_file.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    '{"event": "exec", "attempt_id": "retry", "ts": 3000}\n'
+                    '{"event": "exit", "attempt_id": "retry", "ts": 4000, '
+                    '"exit_code": 0}\n'
+                )
+            return True, 0
+
+        monkeypatch.setattr("solstone.think.maint.run_task", fake_run_task)
+
+        results = run_pending_tasks(journal)
+
+        assert calls == ["retry"]
+        assert [result.task.name for result in results] == ["retry"]
+        assert results[0].success is True
+
+    def test_existing_tasks_keep_default_opt_ins(self):
+        tasks = discover_tasks()
+        existing = [
+            task
+            for task in tasks
+            if task.qualified_name != "thinking:001_migrate_provider_install_state"
+        ]
+
+        assert len(existing) == 22
+        assert all(not task.retry_on_next_start for task in existing)
+        assert all(not task.blocks_supervisor_start for task in existing)
+
+        migration = [
+            task
+            for task in tasks
+            if task.qualified_name == "thinking:001_migrate_provider_install_state"
+        ]
+        assert len(migration) == 1
+        assert migration[0].retry_on_next_start is True
+        assert migration[0].blocks_supervisor_start is True
 
 
 class TestRunTask:
@@ -478,6 +578,7 @@ class TestRunTask:
         last_event = events[-1]
         assert list(last_event.keys()) == [
             "event",
+            "attempt_id",
             "ts",
             "exit_code",
             "duration_ms",

@@ -574,7 +574,7 @@ def test_supervisor_registers_maintenance_before_scheduler_init(tmp_path, monkey
         "argv",
         ["supervisor", "0", "--no-daily", "--no-convey", "--no-cortex", "--no-spl"],
     )
-    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(
         mod,

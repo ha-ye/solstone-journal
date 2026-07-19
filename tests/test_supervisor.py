@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import psutil
 import pytest
 
+from solstone.think.maint import MaintTask, MaintTaskResult
 from solstone.think.processing import (
     DISPLAY_POWERSAVE_UNAVAILABLE,
     DisplayPowersaveReading,
@@ -291,7 +292,7 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
         "argv",
         ["supervisor", "0", "--no-daily", "--no-schedule"],
     )
-    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
@@ -365,7 +366,7 @@ def test_supervisor_readiness_marker_requires_started_convey_accepting(
         "argv",
         ["supervisor", "0", "--no-daily", "--no-schedule"],
     )
-    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
@@ -429,7 +430,7 @@ def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
     monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
     monkeypatch.delenv("SOLSTONE_APP_SUPERVISED", raising=False)
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", lambda: None)
@@ -3889,7 +3890,7 @@ def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):
 
     # Skip maint discovery/subprocess runs — unrelated to lock acquisition and
     # slow enough on a fresh tmp_path to blow the 5s pytest-timeout under load.
-    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
     monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", stop_after_lock)
@@ -3907,6 +3908,43 @@ def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):
     )
     assert start_time == psutil.Process(os.getpid()).create_time()
     assert mod.is_supervisor_up() is True
+
+
+def test_supervisor_blocks_before_callosum_on_blocking_maint_failure(
+    tmp_path, monkeypatch, capsys
+):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    (tmp_path / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
+    task = MaintTask(
+        app="thinking",
+        name="001_migrate_provider_install_state",
+        script_path=Path("/dummy.py"),
+        retry_on_next_start=True,
+        blocks_supervisor_start=True,
+    )
+    state_file = tmp_path / "maint" / "thinking" / f"{task.name}.jsonl"
+    result = MaintTaskResult(
+        task=task,
+        success=False,
+        exit_code=7,
+        state_file=state_file,
+    )
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [result])
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    start_mock = MagicMock()
+    monkeypatch.setattr(mod, "start_callosum_in_process", start_mock)
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == 1
+    start_mock.assert_not_called()
+    captured = capsys.readouterr()
+    assert "thinking:001_migrate_provider_install_state" in captured.err
+    assert str(state_file) in captured.err
+    assert "retry-on-next-start" in captured.err
 
 
 def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):

@@ -483,6 +483,9 @@ install-checks: .installed
 	@echo "=== Running journal-config owner check ==="
 	@$(MAKE) check-journal-config-owner
 	@echo ""
+	@echo "=== Running provider-install owner check ==="
+	@$(MAKE) check-provider-install-owner
+	@echo ""
 	@echo "=== Running call-http-only check ==="
 	@$(MAKE) check-call-http-only
 	@echo ""
@@ -611,6 +614,10 @@ check-journal-io-mechanic: .installed
 # Journal config owner transaction boundary gate
 check-journal-config-owner: .installed
 	$(VENV_BIN)/python scripts/check_journal_config_owner.py
+
+# Provider install ownership boundary gate
+check-provider-install-owner: .installed
+	$(VENV_BIN)/python scripts/check_provider_install_owner.py
 
 # sol call HTTP-only gate (call.py reaches the journal only over HTTP)
 check-call-http-only: .installed

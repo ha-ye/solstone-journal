@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast, get_args
 
-from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
+from solstone.think.journal_config import (
+    JournalConfigMutation,
+    mutate_journal_config,
+    read_journal_config,
+)
 from solstone.think.journal_io.atomic import atomic_replace
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.utils import get_journal
@@ -408,11 +412,54 @@ def record_interrupted_install(
     )
 
 
+def migrate_legacy_provider_artifact_truth(
+    *,
+    journal_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Promote trustworthy legacy provider state into manifests/status records."""
+    journal = Path(journal_path) if journal_path is not None else Path(get_journal())
+    config = read_journal_config(journal)
+    providers = config.get("providers")
+    bundled = providers.get("bundled") if isinstance(providers, dict) else None
+    if not isinstance(bundled, dict):
+        cleanup = _cleanup_legacy_provider_install_config(
+            clean_providers=frozenset(), journal_path=journal
+        )
+        return {"actions": [], "cleanup": cleanup}
+
+    actions: list[dict[str, Any]] = []
+    clean_providers: set[str] = set()
+    for provider in ("local", "parakeet"):
+        legacy = bundled.get(provider)
+        if not _legacy_provider_has_operational_state(legacy):
+            continue
+        action = _migrate_legacy_provider(provider, legacy, journal)
+        actions.append(action)
+        if action.get("cleanup"):
+            clean_providers.add(provider)
+
+    cleanup = _cleanup_legacy_provider_install_config(
+        clean_providers=frozenset(clean_providers), journal_path=journal
+    )
+    return {"actions": actions, "cleanup": cleanup}
+
+
 def migrate_legacy_provider_install_state(
     *,
     journal_path: str | Path | None = None,
 ) -> dict[str, int]:
     """Remove legacy provider install operational fields from journal config."""
+    return _cleanup_legacy_provider_install_config(
+        clean_providers=PROVIDERS, journal_path=journal_path
+    )
+
+
+def _cleanup_legacy_provider_install_config(
+    *,
+    clean_providers: frozenset[str],
+    journal_path: str | Path | None = None,
+) -> dict[str, int]:
+    """Remove legacy provider install fields after owner proof is established."""
 
     def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, int]]:
         removed = 0
@@ -429,7 +476,7 @@ def migrate_legacy_provider_install_state(
                         owner_config["vulkan_device_index"] = value
                         moved += 1
                     removed += 1
-            for provider in PROVIDERS:
+            for provider in clean_providers:
                 record = bundled.get(provider)
                 if not isinstance(record, dict):
                     continue
@@ -443,6 +490,269 @@ def migrate_legacy_provider_install_state(
         )
 
     return mutate_journal_config(apply, journal_path=journal_path).value
+
+
+def _legacy_provider_has_operational_state(value: object) -> bool:
+    return isinstance(value, dict) and any(
+        key in value for key in _LEGACY_OPERATIONAL_KEYS | {"vulkan_device_index"}
+    )
+
+
+def _migrate_legacy_provider(
+    provider: str, legacy: object, journal: Path
+) -> dict[str, Any]:
+    from solstone.think.providers.install_lease import acquire_install_lease
+
+    lease = acquire_install_lease(provider, journal_path=journal)
+    if lease is None:
+        return {
+            "provider": provider,
+            "status": "busy",
+            "reason_code": "install_busy",
+            "cleanup": False,
+            "message": (
+                f"{provider} install is in progress; legacy provider state will be "
+                "retried on the next start."
+            ),
+        }
+    try:
+        if provider == "local":
+            return _migrate_legacy_local(legacy, journal)
+        return _migrate_legacy_parakeet(legacy, journal)
+    finally:
+        lease.release()
+
+
+def _migrate_legacy_local(legacy: object, journal: Path) -> dict[str, Any]:
+    from solstone.think.models import LOCAL_MODEL
+    from solstone.think.providers import local_cuda, local_install, mlx_install
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+    if readiness.ready:
+        _publish_installed_status("local", fingerprint, journal)
+        return _ready_action("local", "already-ready")
+    if readiness.status in {"proof-unavailable", "host-ineligible"}:
+        return _not_promoted_action("local", readiness.status, readiness.reason_code)
+    if not isinstance(legacy, dict) or legacy.get("install_state") != "installed":
+        return _not_promoted_action(
+            "local",
+            "missing-or-mismatched",
+            "legacy_status_not_installed",
+        )
+    if legacy.get("mlx_model_id") or legacy.get("mlx_snapshot_dir"):
+        try:
+            spec = mlx_install.resolve_model_spec(str(legacy.get("mlx_model_id") or ""))
+        except Exception:
+            spec = None
+        if (
+            spec is not None
+            and legacy.get("mlx_revision") == spec.revision
+            and mlx_install.inspect_readiness(spec.name).ready
+        ):
+            _publish_installed_status(
+                "local", mlx_install.target_fingerprint(spec.name), journal
+            )
+            return _ready_action("local", "already-ready")
+        return _not_promoted_action(
+            "local",
+            "missing-or-mismatched",
+            "manifest_missing",
+            message=(
+                "Existing local MLX artifacts cannot be trusted because there is "
+                "no Solstone manifest for the current pin. A reinstall will rebuild "
+                "the proof rather than trusting the old tree."
+            ),
+        )
+
+    choice = local_cuda.resolve_local_backend(local_install.CUDA_SERVER_PIN)
+    if choice.backend != "vulkan":
+        return _not_promoted_action(
+            "local", "missing-or-mismatched", "manifest_missing"
+        )
+    try:
+        _verify_legacy_local_llama(legacy)
+        local_install._write_vulkan_manifest(
+            artifact_key=local_install.llama_server_artifact_key(),
+            pin=local_install.pin_for_current_platform(),
+            attempt_status=None,
+            fingerprint=fingerprint,
+        )
+        local_install._write_model_manifest(
+            model_id=LOCAL_MODEL,
+            attempt_status=None,
+            fingerprint=fingerprint,
+        )
+    except OSError:
+        return _not_promoted_action("local", "proof-unavailable", "legacy_io_error")
+    except Exception as exc:
+        return _not_promoted_action(
+            "local",
+            "missing-or-mismatched",
+            getattr(exc, "reason_code", "manifest_missing"),
+            message=(
+                "Existing local artifacts cannot be trusted because there is no "
+                "Solstone manifest for the current pin. A reinstall will rebuild "
+                "the proof rather than trusting the old tree."
+            ),
+        )
+    final = local_install.inspect_readiness(LOCAL_MODEL)
+    if not final.ready:
+        return _not_promoted_action("local", final.status, final.reason_code)
+    _publish_installed_status("local", fingerprint, journal)
+    return _ready_action("local", "promoted")
+
+
+def _migrate_legacy_parakeet(legacy: object, journal: Path) -> dict[str, Any]:
+    from solstone.think.providers import parakeet_install
+
+    readiness = parakeet_install.inspect_readiness(journal)
+    fingerprint = parakeet_install.target_fingerprint(journal_path=journal)
+    if readiness.ready:
+        _publish_installed_status("parakeet", fingerprint, journal)
+        return _ready_action("parakeet", "already-ready")
+    if readiness.status in {"proof-unavailable", "host-ineligible"}:
+        return _not_promoted_action("parakeet", readiness.status, readiness.reason_code)
+    if not isinstance(legacy, dict) or legacy.get("install_state") != "installed":
+        return _not_promoted_action(
+            "parakeet",
+            "missing-or-mismatched",
+            "legacy_status_not_installed",
+        )
+    try:
+        _verify_legacy_parakeet(legacy, journal)
+        for backend in ("cpu", "vulkan"):
+            parakeet_install._write_binary_manifest(
+                backend=backend,
+                attempt_status=None,
+                fingerprint=fingerprint,
+                journal_path=journal,
+            )
+        parakeet_install._write_model_manifest(
+            attempt_status=None,
+            fingerprint=fingerprint,
+            journal_path=journal,
+        )
+    except OSError:
+        return _not_promoted_action("parakeet", "proof-unavailable", "legacy_io_error")
+    except Exception as exc:
+        return _not_promoted_action(
+            "parakeet",
+            "missing-or-mismatched",
+            getattr(exc, "reason_code", "manifest_missing"),
+        )
+    final = parakeet_install.inspect_readiness(journal)
+    if not final.ready:
+        return _not_promoted_action("parakeet", final.status, final.reason_code)
+    _publish_installed_status("parakeet", fingerprint, journal)
+    return _ready_action("parakeet", "promoted")
+
+
+def _verify_legacy_local_llama(legacy: dict[str, Any]) -> None:
+    from solstone.think.models import LOCAL_MODEL
+    from solstone.think.providers import local_install
+    from solstone.think.providers.local import LOCAL_MODEL_SPECS
+
+    artifact_key = local_install.llama_server_artifact_key()
+    pin = local_install.pin_for_current_platform()
+    spec = LOCAL_MODEL_SPECS[LOCAL_MODEL]
+    expected_binary = local_install.binary_path_for_pin(artifact_key, pin)
+    if legacy.get("binary_artifact") != artifact_key:
+        raise ValueError("legacy_binary_artifact_mismatch")
+    if legacy.get("binary_sha256") != pin["sha256"]:
+        raise ValueError("legacy_binary_pin_mismatch")
+    if legacy.get("binary_path") != str(expected_binary):
+        raise ValueError("legacy_binary_path_mismatch")
+    if not expected_binary.is_file() or not (expected_binary.stat().st_mode & 0o111):
+        raise ValueError("legacy_binary_missing")
+    if legacy.get("model_id") != spec.model_id:
+        raise ValueError("legacy_model_id_mismatch")
+    if legacy.get("model_path") != str(local_install.model_path(spec.model_id)):
+        raise ValueError("legacy_model_path_mismatch")
+    local_install._verify_sha256(local_install.model_path(spec.model_id), spec.sha256)
+    if spec.mmproj_sha256:
+        projector = local_install.mmproj_path(spec.model_id)
+        if projector is None or legacy.get("mmproj_path") != str(projector):
+            raise ValueError("legacy_projector_path_mismatch")
+        local_install._verify_sha256(projector, spec.mmproj_sha256)
+
+
+def _verify_legacy_parakeet(legacy: dict[str, Any], journal: Path) -> None:
+    from solstone.think import parakeet_readiness
+    from solstone.think.providers import parakeet_install
+
+    artifact_key = parakeet_install.parakeet_server_artifact_key()
+    for backend in ("cpu", "vulkan"):
+        pin = parakeet_install._pin_for_backend(artifact_key, backend)
+        if legacy.get(f"binary_artifact_{backend}") != artifact_key:
+            raise ValueError(f"legacy_binary_artifact_{backend}_mismatch")
+        if legacy.get(f"binary_sha256_{backend}") != pin["sha256"]:
+            raise ValueError(f"legacy_binary_pin_{backend}_mismatch")
+        if legacy.get(f"binary_path_{backend}") != str(
+            parakeet_install.binary_path(backend, journal)
+        ):
+            raise ValueError(f"legacy_binary_path_{backend}_mismatch")
+    parakeet_readiness.check_parakeet_cpp_files(journal)
+    spec = parakeet_install.PARAKEET_MODEL_SPEC
+    if legacy.get("model_repo") != spec.repo:
+        raise ValueError("legacy_model_repo_mismatch")
+    if legacy.get("model_filename") != spec.filename:
+        raise ValueError("legacy_model_filename_mismatch")
+    if legacy.get("model_revision") != spec.revision:
+        raise ValueError("legacy_model_revision_mismatch")
+    if legacy.get("model_path") != str(parakeet_install.model_path(journal)):
+        raise ValueError("legacy_model_path_mismatch")
+    parakeet_install._verify_sha256(parakeet_install.model_path(journal), spec.sha256)
+
+
+def _publish_installed_status(
+    provider: str,
+    fingerprint: dict[str, Any],
+    journal: Path,
+) -> InstallStatus:
+    current = read_install_status(name=provider, journal_path=journal)
+    if current["install_state"] in IN_FLIGHT_STATES:
+        raise InstallStatusConflictError("cannot migrate while install is in flight")
+    fingerprint_json = canonical_fingerprint(fingerprint)
+    current["target_fingerprint_json"] = fingerprint_json
+    current["target_fingerprint_sha256"] = fingerprint_sha256(fingerprint_json)
+    current["owner"] = {"entry": "legacy_provider_install_state_migration"}
+    return write_install_status(
+        transition_state(current, new_state="installed"),
+        journal_path=journal,
+    )
+
+
+def _ready_action(provider: str, action: str) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "status": "ready",
+        "reason_code": "ready",
+        "action": action,
+        "cleanup": True,
+        "message": f"{provider} provider install state migrated.",
+    }
+
+
+def _not_promoted_action(
+    provider: str,
+    status: str,
+    reason_code: str,
+    *,
+    message: str | None = None,
+) -> dict[str, Any]:
+    if message is None:
+        message = (
+            f"{provider} provider legacy install state was not promoted: {reason_code}."
+        )
+    return {
+        "provider": provider,
+        "status": status,
+        "reason_code": reason_code,
+        "action": "not-promoted",
+        "cleanup": False,
+        "message": message,
+    }
 
 
 def _read_current_unlocked(path: Path, provider: ProviderName) -> InstallStatus:
@@ -663,6 +973,7 @@ __all__ = [
     "canonical_fingerprint",
     "fingerprint_sha256",
     "make_idle_status",
+    "migrate_legacy_provider_artifact_truth",
     "migrate_legacy_provider_install_state",
     "now_iso",
     "observe_install_attempt",

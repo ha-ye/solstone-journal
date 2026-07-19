@@ -24,6 +24,7 @@ Execution:
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import queue
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -49,11 +51,23 @@ class MaintTask:
     name: str
     script_path: Path
     description: str = ""
+    retry_on_next_start: bool = False
+    blocks_supervisor_start: bool = False
 
     @property
     def qualified_name(self) -> str:
         """Return app:task qualified name."""
         return f"{self.app}:{self.name}"
+
+
+@dataclass(frozen=True)
+class MaintTaskResult:
+    """Result of a maintenance task run."""
+
+    task: MaintTask
+    success: bool
+    exit_code: int
+    state_file: Path
 
 
 def discover_tasks() -> list[MaintTask]:
@@ -80,8 +94,10 @@ def discover_tasks() -> list[MaintTask]:
             if script.name.startswith("_"):
                 continue
 
-            # Extract description from module docstring
+            # Extract description from module docstring and opt-ins without import.
             description = ""
+            retry_on_next_start = False
+            blocks_supervisor_start = False
             try:
                 content = script.read_text()
                 # Find first docstring (handles files with license headers)
@@ -94,6 +110,9 @@ def discover_tasks() -> list[MaintTask]:
                                 content[start + 3 : end].strip().split("\n")[0]
                             )
                             break
+                opt_ins = _parse_task_opt_ins(content, filename=str(script))
+                retry_on_next_start = opt_ins["retry_on_next_start"]
+                blocks_supervisor_start = opt_ins["blocks_supervisor_start"]
             except Exception:
                 pass
 
@@ -103,11 +122,40 @@ def discover_tasks() -> list[MaintTask]:
                     name=script.stem,
                     script_path=script,
                     description=description,
+                    retry_on_next_start=retry_on_next_start,
+                    blocks_supervisor_start=blocks_supervisor_start,
                 )
             )
 
     tasks.sort(key=lambda t: (t.name, t.app))
     return tasks
+
+
+def _parse_task_opt_ins(source: str, *, filename: str) -> dict[str, bool]:
+    tree = ast.parse(source, filename=filename)
+    opt_ins = {
+        "retry_on_next_start": False,
+        "blocks_supervisor_start": False,
+    }
+    names = {
+        "MAINT_RETRY_ON_NEXT_START": "retry_on_next_start",
+        "MAINT_BLOCKS_SUPERVISOR_START": "blocks_supervisor_start",
+    }
+    for node in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            value = node.value
+        if not isinstance(target, ast.Name) or target.id not in names:
+            continue
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, bool):
+            continue
+        opt_ins[names[target.id]] = value.value
+    return opt_ins
 
 
 def get_state_file(journal: Path, app: str, task: str) -> Path:
@@ -126,30 +174,24 @@ def _parse_state_file(state_file: Path) -> dict:
         return default
 
     try:
+        latest = _latest_attempt_events(state_file)
+        if not latest:
+            return default
+
         duration_ms = None
         line_count = 0
         exec_ts = None
         exit_ts = None
-
-        with open(state_file, "r") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("event")
-                if event_type == "exec" and exec_ts is None:
-                    exec_ts = event.get("ts")
-                elif event_type == "line":
-                    line_count += 1
-                elif event_type == "exit":
-                    exit_ts = event.get("ts")
-                    if isinstance(event.get("duration_ms"), int):
-                        duration_ms = event["duration_ms"]
+        for event in latest:
+            event_type = event.get("event")
+            if event_type == "exec" and exec_ts is None:
+                exec_ts = event.get("ts")
+            elif event_type == "line":
+                line_count += 1
+            elif event_type == "exit":
+                exit_ts = event.get("ts")
+                if isinstance(event.get("duration_ms"), int):
+                    duration_ms = event["duration_ms"]
 
         return {
             "duration_ms": duration_ms,
@@ -179,24 +221,14 @@ def get_task_status(
     if not state_file.exists():
         return "pending", None, None
 
-    # Track the first exec event and the last event.
     try:
+        events = _latest_attempt_events(state_file)
         exec_ts = None
         last_event = None
-
-        with open(state_file, "r") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("event") == "exec" and exec_ts is None:
-                    exec_ts = event.get("ts")
-                last_event = event
+        for event in events:
+            if event.get("event") == "exec" and exec_ts is None:
+                exec_ts = event.get("ts")
+            last_event = event
 
         if last_event and last_event.get("event") == "exit":
             ts = last_event.get("ts")
@@ -212,6 +244,59 @@ def get_task_status(
 
     # File exists but no valid exit event - treat as in-progress.
     return "in_progress", None, None
+
+
+def _read_events(state_file: Path) -> list[dict]:
+    events: list[dict] = []
+    with open(state_file, "r") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    return events
+
+
+def _attempt_blocks(events: list[dict]) -> list[list[dict]]:
+    blocks: list[list[dict]] = []
+    current: list[dict] = []
+    current_attempt_id: str | None = None
+    for event in events:
+        event_type = event.get("event")
+        if event_type == "exec":
+            if current:
+                blocks.append(current)
+            current = [event]
+            attempt_id = event.get("attempt_id")
+            current_attempt_id = attempt_id if isinstance(attempt_id, str) else None
+            continue
+        if not current:
+            current = [event]
+            continue
+        event_attempt_id = event.get("attempt_id")
+        if (
+            current_attempt_id is not None
+            and isinstance(event_attempt_id, str)
+            and event_attempt_id != current_attempt_id
+        ):
+            blocks.append(current)
+            current = [event]
+            current_attempt_id = event_attempt_id
+            continue
+        current.append(event)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _latest_attempt_events(state_file: Path) -> list[dict]:
+    blocks = _attempt_blocks(_read_events(state_file))
+    return blocks[-1] if blocks else []
 
 
 def _write_event(f, event: dict) -> None:
@@ -260,6 +345,7 @@ def run_task(
     state_file = get_state_file(journal, task.app, task.name)
     start_time = time.time()
     start_ts = int(start_time * 1000)
+    attempt_id = uuid.uuid4().hex
 
     # Build command to run the task
     cmd = [sys.executable, "-m", f"solstone.apps.{task.app}.maint.{task.name}"]
@@ -277,12 +363,13 @@ def run_task(
         )
 
     try:
-        with open(state_file, "w") as f:
+        with open(state_file, "a") as f:
             # Write exec event
             _write_event(
                 f,
                 {
                     "event": "exec",
+                    "attempt_id": attempt_id,
                     "ts": start_ts,
                     "app": task.app,
                     "task": task.name,
@@ -383,6 +470,7 @@ def run_task(
                     f,
                     {
                         "event": "line",
+                        "attempt_id": attempt_id,
                         "ts": now_ms(),
                         "line": line,
                     },
@@ -399,6 +487,7 @@ def run_task(
                     f,
                     {
                         "event": "exit",
+                        "attempt_id": attempt_id,
                         "ts": now_ms(),
                         "exit_code": exit_code,
                         "duration_ms": duration_ms,
@@ -412,6 +501,7 @@ def run_task(
                     f,
                     {
                         "event": "exit",
+                        "attempt_id": attempt_id,
                         "ts": now_ms(),
                         "exit_code": exit_code,
                         "duration_ms": duration_ms,
@@ -469,6 +559,7 @@ def run_task(
                     f,
                     {
                         "event": "exit",
+                        "attempt_id": attempt_id,
                         "ts": now_ms(),
                         "exit_code": -1,
                         "error": str(e),
@@ -491,7 +582,7 @@ def run_task(
         return False, -1
 
 
-def run_pending_tasks(journal: Path, emit_fn=None) -> tuple[int, int]:
+def run_pending_tasks(journal: Path, emit_fn=None) -> list[MaintTaskResult]:
     """Run all pending maintenance tasks.
 
     Args:
@@ -499,31 +590,36 @@ def run_pending_tasks(journal: Path, emit_fn=None) -> tuple[int, int]:
         emit_fn: Optional function to emit Callosum events
 
     Returns:
-        Tuple of (tasks_run, tasks_succeeded)
+        Per-task run results, in execution order.
     """
     tasks = discover_tasks()
     pending = []
 
     for task in tasks:
         status, _, _ = get_task_status(journal, task.app, task.name)
-        if status == "pending":
+        if status == "pending" or (status == "failed" and task.retry_on_next_start):
             pending.append(task)
 
     if not pending:
-        return 0, 0
+        return []
 
     logger.info(f"Found {len(pending)} pending maintenance task(s)")
 
-    ran = 0
-    succeeded = 0
+    results: list[MaintTaskResult] = []
 
     for task in pending:
-        ran += 1
         success, _ = run_task(journal, task, emit_fn)
-        if success:
-            succeeded += 1
+        _status, exit_code, _ran_ts = get_task_status(journal, task.app, task.name)
+        results.append(
+            MaintTaskResult(
+                task=task,
+                success=success,
+                exit_code=exit_code if exit_code is not None else -1,
+                state_file=get_state_file(journal, task.app, task.name),
+            )
+        )
 
-    return ran, succeeded
+    return results
 
 
 def list_tasks(journal: Path) -> list[dict]:

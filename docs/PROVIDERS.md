@@ -99,7 +99,7 @@ config, UI, credential flow, or validation path for enterprise integrations.
 `local.py` remains a thin product-policy wrapper rather than a second general
 cloud adapter. It owns guarantees that OpenHands alone does not provide:
 
-- bundled runtime installation and readiness;
+- bundled runtime installation and manifest-backed readiness;
 - context-budget fitting and local schema preparation;
 - Qwen sampling and chat-template controls;
 - cross-process local admission and bounded retry;
@@ -107,8 +107,9 @@ cloud adapter. It owns guarantees that OpenHands alone does not provide:
 - confidential egress/attestation gates;
 - stable local error classification.
 
-Bundled local posts to the supervisor-owned loopback server. A configured
-endpoint uses:
+Bundled local posts to the supervisor-owned loopback server. Its install status
+lives under `health/providers/`, while artifact truth lives in provider manifests
+and the affirmative proof cache. A configured endpoint uses:
 
 - `providers.local.endpoint_url`
 - `providers.local.served_model_id`
@@ -164,5 +165,13 @@ also:
 - deletes the canonical legacy Vertex credential file;
 - moves `providers.contexts` enable/extract controls to `talent_overrides`;
 - moves Rev.ai/Plaud validation state to `service_key_validation`.
+
+The next Thinking maintenance task moves legacy provider install truth out of
+`providers.bundled`. It promotes only artifacts that can be proven against the
+current pins, writes provider-owned status and manifests, and then removes the
+retired operational fields. Missing or mismatched proof exits successfully
+without promotion and is repaired by the provider installer under the provider
+lease. Unreadable proof exits successfully without promotion and is preserved
+until the owner fixes the underlying access or I/O problem.
 
 There are no runtime compatibility shims for the retired shapes.

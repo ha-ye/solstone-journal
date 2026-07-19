@@ -3705,7 +3705,9 @@ def main() -> None:
     # Run pending journal-maintenance tasks before spawning any writer children.
     # Callosum isn't up yet (emit_fn=None); migrations log through supervisor's logger only.
     try:
-        ran, succeeded = run_pending_tasks(journal_path, emit_fn=None)
+        maint_results = run_pending_tasks(journal_path, emit_fn=None)
+        ran = len(maint_results)
+        succeeded = sum(1 for result in maint_results if result.success)
         if ran > 0:
             print(f"  Ran {ran} maintenance task(s)", flush=True)
             if ran == succeeded:
@@ -3716,6 +3718,23 @@ def main() -> None:
                     succeeded,
                     ran,
                 )
+                blocking_failures = [
+                    result
+                    for result in maint_results
+                    if not result.success and result.task.blocks_supervisor_start
+                ]
+                if blocking_failures:
+                    failure = blocking_failures[0]
+                    message = (
+                        "Startup blocked by maintenance task "
+                        f"{failure.task.qualified_name} "
+                        f"(exit {failure.exit_code}). Log: {failure.state_file}. "
+                        "This task is retry-on-next-start; fix the error and start "
+                        "the supervisor again."
+                    )
+                    logging.error(message)
+                    print(f"  {message}", file=sys.stderr, flush=True)
+                    sys.exit(1)
     except Exception:
         logging.exception("Maintenance runner raised; continuing startup")
 
