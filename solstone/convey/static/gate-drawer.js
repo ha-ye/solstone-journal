@@ -65,7 +65,7 @@
     return text === copy.na ? text : `${text}${unit}`;
   }
 
-  function legacyCount(value) {
+  function countText(value) {
     return String(value || 0);
   }
 
@@ -133,9 +133,9 @@
     return gateRowHtml(reason, observed, threshold) +
       barHtml(observed, threshold) +
       `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.source_label)} ${escapeHtml(data.source || 'auto')}</div>` +
-      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.manual_tags_label)} ${escapeHtml(legacyCount(data.manual_tags_count))}</div>` +
-      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.segments_label)} ${escapeHtml(legacyCount(data.segments_available))}</div>` +
-      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.embeddings_label)} ${escapeHtml(legacyCount(data.embeddings_available))}</div>` +
+      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.manual_tags_label)} ${escapeHtml(countText(data.manual_tags_count))}</div>` +
+      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.segments_label)} ${escapeHtml(countText(data.segments_available))}</div>` +
+      `<div class="spk-owner-diagnostics-line">${escapeHtml(copy.embeddings_label)} ${escapeHtml(countText(data.embeddings_available))}</div>` +
       nextLineHtml(reason, data.can_build_from_tags) +
       (actionHtml || '');
   }

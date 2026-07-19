@@ -1557,16 +1557,15 @@
   }
 
   function renderOwnerGateDiagnostics(data) {
-    return window.GateDrawer.render(data, {
+    const rendered = window.GateDrawer.render(data, {
       actionHtml: renderOwnerBuildFromTagsAction(data),
     });
+    return rendered || renderOwnerColdStartDiagnostics(data);
   }
 
   function renderOwnerNotReady(data) {
     window.Drawer.preserveOpen(ownerBanner, () => {
-      const diagnostics = data.status === 'low_quality'
-        ? renderOwnerGateDiagnostics(data)
-        : renderOwnerColdStartDiagnostics(data);
+      const diagnostics = renderOwnerGateDiagnostics(data);
       ownerBanner.style.display = 'block';
       ownerBanner.innerHTML = `
       <div class="spk-owner-panel">

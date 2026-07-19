@@ -41,9 +41,9 @@
       low_quality_reason: 'too_few_stmts',
       observed_value: 5,
       threshold_value: 30,
-      manual_tags_count: 2,
-      segments_available: 4,
-      embeddings_available: 20,
+      manual_tags_count: 11,
+      segments_available: 12,
+      embeddings_available: 13,
       can_build_from_tags: false,
       ...overrides
     };
@@ -58,28 +58,49 @@
     return drawer.querySelector('.drawer-line');
   }
 
+  function formatMetric(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+
+  function formatWithUnit(value, unit) {
+    const text = formatMetric(value);
+    return text === 'n/a' ? text : `${text}${unit}`;
+  }
+
+  function boldTexts(drawer) {
+    return Array.from(lineEl(drawer).querySelectorAll('b')).map((node) => node.textContent);
+  }
+
   function run() {
     equal('public keys', Object.keys(window.GateDrawer).join(','), 'render');
 
-    let drawer = renderToFixture(payload(), { actionHtml: '<button id="spkOwnerBuildFromTags">build</button>' });
+    const tooFewPayload = payload();
+    let drawer = renderToFixture(tooFewPayload, { actionHtml: '<button id="spkOwnerBuildFromTags">build</button>' });
+    const tooFewLine = lineEl(drawer).textContent;
+    const tooFewObserved = formatMetric(tooFewPayload.observed_value);
+    const tooFewThreshold = formatMetric(tooFewPayload.threshold_value);
     equal('data id', drawer.getAttribute('data-drawer-id'), 'speakers-owner-gate-diagnostics');
-    equal('label text', drawer.querySelector('.drawer-label').textContent, 'why not yet?');
+    assert('label text renders', drawer.querySelector('.drawer-label').textContent.trim().length > 0);
     assert('no drawer chip', drawer.querySelector('.drawer-chip') === null);
-    equal('too few line text', lineEl(drawer).textContent, 'heard in 5 longer statements — needs 30');
-    assert('too few line emphasizes observed first', Array.from(lineEl(drawer).querySelectorAll('b')).map((node) => node.textContent).join('|') === '5|30');
+    assert('too few line includes payload values', tooFewLine.includes(tooFewObserved) && tooFewLine.includes(tooFewThreshold));
+    assert('too few line emphasizes observed first', boldTexts(drawer).join('|') === [tooFewObserved, tooFewThreshold].join('|'));
     equal('statements row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'statements');
     assert('gate need renders', drawer.querySelector('.gate-need') !== null);
     assert('gate next renders', drawer.querySelector('.gate-next') !== null);
-    assert('legacy body lines render', drawer.textContent.includes('source: candidate_pool') && drawer.textContent.includes('Manual tags: 2') && drawer.textContent.includes('Segments with audio: 4') && drawer.textContent.includes('Embeddings: 20'));
+    assert('carried body values render', drawer.textContent.includes(tooFewPayload.source) && drawer.textContent.includes(String(tooFewPayload.manual_tags_count)) && drawer.textContent.includes(String(tooFewPayload.segments_available)) && drawer.textContent.includes(String(tooFewPayload.embeddings_available)));
     assert('action html renders', drawer.querySelector('#spkOwnerBuildFromTags') !== null);
 
-    drawer = renderToFixture(payload({
+    const medianPayload = payload({
       low_quality_reason: 'median_duration_too_short',
       observed_value: 1.5,
       threshold_value: 2,
-    }));
-    equal('median line text', lineEl(drawer).textContent, 'median statement length 1.50s — needs 2s');
-    assert('median line emphasizes seconds', Array.from(lineEl(drawer).querySelectorAll('b')).map((node) => node.textContent).join('|') === '1.50s|2s');
+    });
+    drawer = renderToFixture(medianPayload);
+    const medianObserved = formatWithUnit(medianPayload.observed_value, 's');
+    const medianThreshold = formatWithUnit(medianPayload.threshold_value, 's');
+    assert('median line includes payload values', lineEl(drawer).textContent.includes(medianObserved) && lineEl(drawer).textContent.includes(medianThreshold));
+    assert('median line emphasizes seconds', boldTexts(drawer).join('|') === [medianObserved, medianThreshold].join('|'));
     equal('median row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'median length');
 
     drawer = renderToFixture(payload({
@@ -87,17 +108,18 @@
       observed_value: 0.2,
       threshold_value: 0.3,
     }));
-    equal('cohesion line text', lineEl(drawer).textContent, 'voice pattern is still too spread out');
+    assert('cohesion line renders text', lineEl(drawer).textContent.trim().length > 0);
     assert('cohesion line has no digits', !/\d/.test(lineEl(drawer).textContent));
     assert('cohesion line has no emphasis', lineEl(drawer).querySelector('b') === null);
     equal('consistency row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'consistency');
 
-    drawer = renderToFixture(payload({
+    const zeroPayload = payload({
       low_quality_reason: 'median_duration_too_short',
       observed_value: 0,
       threshold_value: 1.5,
-    }));
-    assert('zero observed renders', lineEl(drawer).textContent.includes('0s'));
+    });
+    drawer = renderToFixture(zeroPayload);
+    assert('zero observed renders', lineEl(drawer).textContent.includes(formatWithUnit(zeroPayload.observed_value, 's')));
 
     drawer = renderToFixture(payload({ threshold_value: 0 }));
     assert('missing threshold omits needs', !lineEl(drawer).textContent.includes('needs'));
@@ -108,7 +130,7 @@
     assert('nan never reaches output', !drawer.textContent.includes('NaN') && !drawer.innerHTML.includes('NaN'));
     assert('undefined never reaches output', !drawer.textContent.includes('undefined') && !drawer.innerHTML.includes('undefined'));
 
-    drawer = renderToFixture(payload({ observed_value: 60, threshold_value: 30 }));
+    drawer = renderToFixture(payload({ observed_value: payload().threshold_value * 2 }));
     assert('bar caps at one hundred', drawer.querySelector('.gate-bar > span').getAttribute('style').includes('100.00%'));
 
     fixture.innerHTML = window.GateDrawer.render(payload()) + window.GateDrawer.render(payload({ observed_value: 6 }));

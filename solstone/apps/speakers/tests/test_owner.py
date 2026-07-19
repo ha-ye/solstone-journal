@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
+import shutil
+import subprocess
 import traceback
 from pathlib import Path
 from queue import Empty
@@ -25,6 +28,22 @@ from solstone.apps.speakers.encoder_config import (
 from solstone.think.awareness import get_current, update_state
 
 SPEAKERS_WORKSPACE = Path(__file__).resolve().parents[1] / "workspace.html"
+
+
+def _node_or_skip() -> str:
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("node is not available")
+    return node
+
+
+def _workspace_function_source(source: str, name: str) -> str:
+    pattern = rf"^  function {name}\([^)]*\) \{{[\s\S]*?^  \}}\n"
+    match = re.search(pattern, source, flags=re.MULTILINE)
+    assert match is not None
+    return match.group(0)
 
 
 def _drain_queue(queue: Any) -> list[Any]:
@@ -2887,20 +2906,81 @@ def test_api_owner_status_low_quality(speakers_env):
     }
 
 
-def test_owner_not_ready_low_quality_uses_gate_drawer_workspace_source():
+def test_owner_gate_diagnostics_falls_back_when_renderer_declines_under_node():
+    node = _node_or_skip()
     source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
-
-    assert "function renderOwnerGateDiagnostics(data)" in source
-    assert "return window.GateDrawer.render(data, {" in source
-    assert "actionHtml: renderOwnerBuildFromTagsAction(data)" in source
-    assert "window.Drawer.preserveOpen(ownerBanner" in source
-    assert "data.status === 'low_quality'" in source
-    assert "? renderOwnerGateDiagnostics(data)" in source
-    assert ": renderOwnerColdStartDiagnostics(data)" in source
-    assert "spkOwnerBuildFromTags" in source
-    assert (
-        "document.getElementById('spkOwnerBuildFromTags')?.addEventListener" in source
+    functions = "\n".join(
+        _workspace_function_source(source, name)
+        for name in (
+            "renderOwnerBuildFromTagsAction",
+            "renderOwnerColdStartDiagnostics",
+            "renderOwnerGateDiagnostics",
+        )
     )
+    script = "\n".join(
+        [
+            "const window = {};",
+            "const SPK_COPY = { SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL: 'build from manual tags' };",
+            r"""
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char]);
+}
+
+function formatOwnerMetric(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'n/a';
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+}
+""",
+            functions,
+            r"""
+const lowQualityDefault = {
+  status: 'low_quality',
+  source: 'candidate_pool',
+  low_quality_reason: '',
+  observed_value: 0,
+  threshold_value: 0,
+  manual_tags_count: 7,
+  segments_available: 8,
+  embeddings_available: 9,
+  can_build_from_tags: true,
+};
+
+window.GateDrawer = { render() { return ''; } };
+const fallback = renderOwnerGateDiagnostics(lowQualityDefault);
+assert(fallback.includes('<details class="spk-owner-diagnostics">'), 'fallback diagnostics render');
+assert(fallback.includes('id="spkOwnerBuildFromTags"'), 'fallback keeps build-from-tags button');
+assert(fallback.includes(String(lowQualityDefault.manual_tags_count)), 'fallback keeps manual tag count');
+assert(fallback.includes(String(lowQualityDefault.segments_available)), 'fallback keeps segment count');
+assert(fallback.includes(String(lowQualityDefault.embeddings_available)), 'fallback keeps embedding count');
+
+window.GateDrawer = {
+  render(data, options) {
+    return `<details class="drawer">${options.actionHtml || ''}</details>`;
+  }
+};
+const claimed = renderOwnerGateDiagnostics({
+  ...lowQualityDefault,
+  low_quality_reason: 'too_few_stmts',
+});
+assert(claimed.includes('class="drawer"'), 'claimed drawer renders');
+assert(!claimed.includes('spk-owner-diagnostics'), 'claimed drawer does not duplicate cold-start details');
+assert(claimed.includes('id="spkOwnerBuildFromTags"'), 'claimed drawer keeps build-from-tags action html');
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
 
 
 def test_owner_not_ready_cold_start_diagnostics_retained_workspace_source():

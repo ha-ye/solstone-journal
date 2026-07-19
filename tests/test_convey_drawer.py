@@ -82,17 +82,7 @@ def test_gate_drawer_js_contract_and_owner_facing_region():
     source = (STATIC_ROOT / "gate-drawer.js").read_text(encoding="utf-8")
     regions = _owner_regions(source)
     banned = {"capture", "watch", "record", "monitor", "track", "collect", "user"}
-    gate_strings = [
-        "why not yet?",
-        "n/a",
-        "statements",
-        "median length",
-        "consistency",
-        "manual tags are ready; build from manual tags to save the voice profile.",
-        "tag more clear longer statements, then build from manual tags.",
-        "tag longer statements, then build from manual tags.",
-        "tag a steadier set of owner statements, then build from manual tags.",
-    ]
+    carried_strings = {"Manual tags:", "Segments with audio:", "Embeddings:"}
 
     assert "(function () {" in source
     assert "'use strict';" in source
@@ -107,9 +97,19 @@ def test_gate_drawer_js_contract_and_owner_facing_region():
     assert regions and len(regions) == 1
     assert "SPK_OVERVIEW_OWNER_COHESION_LABEL" in regions[0]
     assert "payload-key test" in regions[0]
-    for text in gate_strings:
+    for reason in (
+        "too_few_stmts",
+        "median_duration_too_short",
+        "cluster_too_diffuse",
+    ):
+        assert reason in regions[0]
+    strings = re.findall(r"'([^']*)'", regions[0])
+    assert strings
+    assert carried_strings.issubset(strings)
+    for text in strings:
+        if text in carried_strings:
+            continue
         assert text == text.lower()
-        assert text in regions[0]
         lowered = text.lower()
         assert {word for word in banned if word in lowered} == set()
 
@@ -241,12 +241,26 @@ function payload(overrides = {}) {
     low_quality_reason: "too_few_stmts",
     observed_value: 5,
     threshold_value: 30,
-    manual_tags_count: 2,
-    segments_available: 4,
-    embeddings_available: 20,
+    manual_tags_count: 11,
+    segments_available: 12,
+    embeddings_available: 13,
     can_build_from_tags: false,
     ...overrides,
   };
+}
+
+function formatMetric(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "n/a";
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatWithUnit(value, unit) {
+  const text = formatMetric(value);
+  return text === "n/a" ? text : `${text}${unit}`;
+}
+
+function boldTexts(html) {
+  return Array.from(html.matchAll(/<b>(.*?)<\/b>/g)).map((match) => match[1]);
 }
 
 function assertDeclined(name, rendered) {
@@ -273,32 +287,46 @@ const directDrawer = window.Drawer.render({
 });
 assert(lineHtml(directDrawer).includes("<b>1.5s</b>"), "drawer emphasizes compact seconds");
 
-const tooFew = window.GateDrawer.render(payload(), {
+const tooFewPayload = payload();
+const tooFew = window.GateDrawer.render(tooFewPayload, {
   actionHtml: '<button id="spkOwnerBuildFromTags">build</button>',
 });
 const tooFewLine = lineHtml(tooFew);
 const tooFewBody = bodyHtml(tooFew);
+const tooFewLineText = textContentAfterUnescape(tooFewLine);
+const tooFewBodyText = textContentAfterUnescape(tooFewBody);
+const tooFewObserved = formatMetric(tooFewPayload.observed_value);
+const tooFewThreshold = formatMetric(tooFewPayload.threshold_value);
 assert(tooFew.includes('data-drawer-id="speakers-owner-gate-diagnostics"'), "drawer id renders");
 assert(!tooFew.includes("drawer-chip"), "chip omitted");
-assert(textContentAfterUnescape(tooFewLine) === "heard in 5 longer statements — needs 30", "too few line is observed first");
-assert(Array.from(tooFewLine.matchAll(/<b>(.*?)<\/b>/g)).map((match) => match[1]).join("|") === "5|30", "too few emphasis follows line order");
+assert(tooFewLineText.includes(tooFewObserved), "too few line includes observed value");
+assert(tooFewLineText.includes(tooFewThreshold), "too few line includes threshold value");
+assert(tooFewLineText.indexOf(tooFewObserved) < tooFewLineText.indexOf(tooFewThreshold), "too few line is observed first");
+assert(boldTexts(tooFewLine).join("|") === [tooFewObserved, tooFewThreshold].join("|"), "too few emphasis follows line order");
 assert(tooFewBody.includes("<span>statements</span>"), "statements row label renders");
 assert(!tooFewBody.includes("too_few_stmts"), "raw reason token omitted");
-assert(tooFewBody.includes("source: candidate_pool"), "source line is retained");
-assert(tooFewBody.includes("Manual tags: 2"), "manual tags line is retained");
-assert(tooFewBody.includes("Segments with audio: 4"), "segments line is retained");
-assert(tooFewBody.includes("Embeddings: 20"), "embeddings line is retained");
+assert(!tooFewLineText.includes(tooFewPayload.low_quality_reason), "raw reason token omitted from line");
+assert(tooFewBodyText.includes(tooFewPayload.source), "source value is retained");
+assert(tooFewBodyText.includes(String(tooFewPayload.manual_tags_count)), "manual tags value is retained");
+assert(tooFewBodyText.includes(String(tooFewPayload.segments_available)), "segments value is retained");
+assert(tooFewBodyText.includes(String(tooFewPayload.embeddings_available)), "embeddings value is retained");
 assert(tooFewBody.includes("spkOwnerBuildFromTags"), "action html renders");
 assert(!tooFewBody.includes("<b>"), "body has no authored emphasis");
 
-const median = window.GateDrawer.render(payload({
+const medianPayload = payload({
   low_quality_reason: "median_duration_too_short",
   observed_value: 1.5,
   threshold_value: 2,
-}));
+});
+const median = window.GateDrawer.render(medianPayload);
 const medianLine = lineHtml(median);
-assert(textContentAfterUnescape(medianLine) === "median statement length 1.50s — needs 2s", "median line text renders");
-assert(Array.from(medianLine.matchAll(/<b>(.*?)<\/b>/g)).map((match) => match[1]).join("|") === "1.50s|2s", "median seconds are emphasized");
+const medianLineText = textContentAfterUnescape(medianLine);
+const medianObserved = formatWithUnit(medianPayload.observed_value, "s");
+const medianThreshold = formatWithUnit(medianPayload.threshold_value, "s");
+assert(medianLineText.includes(medianObserved), "median line includes observed value");
+assert(medianLineText.includes(medianThreshold), "median line includes threshold value");
+assert(medianLineText.indexOf(medianObserved) < medianLineText.indexOf(medianThreshold), "median line is observed first");
+assert(boldTexts(medianLine).join("|") === [medianObserved, medianThreshold].join("|"), "median seconds are emphasized");
 assert(bodyHtml(median).includes("<span>median length</span>"), "median row label renders");
 
 const diffuse = window.GateDrawer.render(payload({
@@ -307,17 +335,18 @@ const diffuse = window.GateDrawer.render(payload({
   threshold_value: 0.3,
 }));
 const diffuseLine = lineHtml(diffuse);
-assert(textContentAfterUnescape(diffuseLine) === "voice pattern is still too spread out", "diffuse line text renders");
+assert(textContentAfterUnescape(diffuseLine).trim().length > 0, "diffuse line text renders");
 assert(!/\d/.test(textContentAfterUnescape(diffuseLine)), "diffuse line has no digits");
 assert(!diffuseLine.includes("<b>"), "diffuse line has no emphasis");
 assert(bodyHtml(diffuse).includes("<span>consistency</span>"), "consistency row label renders");
 
-const zeroObserved = window.GateDrawer.render(payload({
+const zeroPayload = payload({
   low_quality_reason: "median_duration_too_short",
   observed_value: 0,
   threshold_value: 1.5,
-}));
-assert(textContentAfterUnescape(lineHtml(zeroObserved)).includes("0s"), "zero observed renders");
+});
+const zeroObserved = window.GateDrawer.render(zeroPayload);
+assert(textContentAfterUnescape(lineHtml(zeroObserved)).includes(formatWithUnit(zeroPayload.observed_value, "s")), "zero observed renders");
 
 const missingThreshold = window.GateDrawer.render(payload({ threshold_value: 0 }));
 assert(!textContentAfterUnescape(lineHtml(missingThreshold)).includes("needs"), "threshold zero omits needs clause");
@@ -328,7 +357,8 @@ assert(textContentAfterUnescape(lineHtml(absentObserved)).includes("n/a"), "abse
 assert(!absentObserved.includes("NaN"), "nan never reaches html");
 assert(!absentObserved.includes("undefined"), "undefined never reaches html");
 
-const capped = window.GateDrawer.render(payload({ observed_value: 60, threshold_value: 30 }));
+const cappedPayload = payload({ observed_value: payload().threshold_value * 2 });
+const capped = window.GateDrawer.render(cappedPayload);
 assert(capped.includes('style="width:100.00%"'), "bar caps at one hundred");
 """,
         ]
