@@ -294,10 +294,14 @@ def test_invalid_indexer_on_decline_value_returns_ex_config(
     )
 
 
-def test_non_object_core_returns_ex_config(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("core_value", [[], "yes"])
+def test_non_object_core_returns_ex_config(
+    core_value: object,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     result, python_calls, native_argvs = _route(
         _args(rescan=True),
-        config={"core": []},
+        config={"core": core_value},
     )
 
     assert result == core_handshake.EX_CONFIG
@@ -305,8 +309,8 @@ def test_non_object_core_returns_ex_config(capsys: pytest.CaptureFixture[str]) -
     assert native_argvs == []
     assert capsys.readouterr().err.strip() == (
         "journal indexer selected implementation 'invalid' from config key "
-        "core.indexer; found []; expected 'python' or 'rust'. Set core.indexer "
-        "to 'python' to revert."
+        f"core.indexer, but config section core has invalid value {core_value!r}; "
+        "expected an object. Set core.indexer to 'python' to revert."
     )
 
 

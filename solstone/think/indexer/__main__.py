@@ -3,7 +3,9 @@
 
 """Main entry point for the solstone.think.indexer package when run as a module."""
 
+import sys
+
 from .cli import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

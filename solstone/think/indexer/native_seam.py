@@ -15,6 +15,9 @@ Selection is read once from `config/journal.json` at command launch. Absent
 selection and explicit `python` continue in Python. `rust` runs the native
 binary only for write-only command invocations; query and mixed write+query
 invocations stay in Python.
+
+When 69 fallback is enabled, the command reruns the full operation set in
+Python; any native operations that completed before the decline are repeated.
 """
 
 from __future__ import annotations
@@ -41,6 +44,11 @@ INVALID_INDEXER_MESSAGE = (
     "journal indexer selected implementation 'invalid' from config key "
     "core.indexer; found {value!r}; expected 'python' or 'rust'. "
     "Set core.indexer to 'python' to revert."
+)
+INVALID_CORE_SECTION_MESSAGE = (
+    "journal indexer selected implementation 'invalid' from config key "
+    "core.indexer, but config section core has invalid value {value!r}; "
+    "expected an object. Set core.indexer to 'python' to revert."
 )
 INVALID_DECLINE_MESSAGE = (
     "journal indexer selected implementation {selected!r} from config key "
@@ -171,7 +179,7 @@ def _has_write_operation(args: argparse.Namespace) -> bool:
 def _resolve_config(config: dict[str, Any]) -> tuple[str, str, str | None]:
     core = config.get("core", {})
     if not isinstance(core, dict):
-        return "invalid", "abort", INVALID_INDEXER_MESSAGE.format(value=core)
+        return "invalid", "abort", INVALID_CORE_SECTION_MESSAGE.format(value=core)
 
     selected = core.get("indexer", "python")
     if selected not in ("python", "rust"):

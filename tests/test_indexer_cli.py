@@ -5,12 +5,22 @@
 
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 
 import pytest
 
 import solstone.think.utils as think_utils
 from solstone.think.indexer import cli as indexer_cli
+
+
+def test_module_entrypoint_propagates_main_return(monkeypatch):
+    monkeypatch.setattr(indexer_cli, "main", lambda: 75)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("solstone.think.indexer.__main__", run_name="__main__")
+
+    assert exc_info.value.code == 75
 
 
 def _run_indexer_cli(monkeypatch, journal: Path, args: list[str]) -> None:
@@ -115,6 +125,55 @@ def test_rescan_file_with_rescan_errors_after_reset_and_rebuild(
         "--rescan-file cannot be used with --rescan or --rescan-full"
         in capsys.readouterr().err
     )
+
+
+def test_native_decline_fallback_runs_python_write_blocks(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    seam_calls: list[tuple[str, bool, bool, bool]] = []
+    calls: list[tuple[str, str] | tuple[str, str, bool, bool]] = []
+
+    def fallback_after_native_decline(args, journal_arg: str) -> None:
+        seam_calls.append(
+            (journal_arg, args.reset, args.rebuild_edges, args.rescan_full)
+        )
+        return None
+
+    def reset_journal_index(journal_arg: str) -> None:
+        calls.append(("reset", journal_arg))
+
+    def rebuild_edges(journal_arg: str) -> dict[str, int]:
+        calls.append(("rebuild_edges", journal_arg))
+        return {"files": 1, "rows": 2, "drops": 0, "failed": 0}
+
+    def scan_journal(
+        journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> bool:
+        calls.append(("scan", journal_arg, verbose, full))
+        return True
+
+    monkeypatch.setattr(
+        indexer_cli, "maybe_run_native_indexer", fallback_after_native_decline
+    )
+    monkeypatch.setattr(indexer_cli, "reset_journal_index", reset_journal_index)
+    monkeypatch.setattr(indexer_cli, "rebuild_edges", rebuild_edges)
+    monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
+
+    _run_indexer_cli(
+        monkeypatch,
+        journal,
+        ["--reset", "--rebuild-edges", "--rescan-full"],
+    )
+
+    assert seam_calls == [(str(journal), True, True, True)]
+    assert calls == [
+        ("reset", str(journal)),
+        ("rebuild_edges", str(journal)),
+        ("scan", str(journal), False, True),
+    ]
 
 
 @pytest.mark.parametrize(
