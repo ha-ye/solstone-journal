@@ -590,7 +590,8 @@ def test_drawer_render_emphasizes_digits_after_escaping_under_node():
     node = _node_or_skip()
     source = Path("solstone/convey/static/drawer.js").read_text(encoding="utf-8")
     functions = "\n".join(
-        _function_source(source, name) for name in ("escapeHtml", "render")
+        _function_source(source, name)
+        for name in ("escapeHtml", "formatLine", "render")
     )
     script = "\n".join(
         [

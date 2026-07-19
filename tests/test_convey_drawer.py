@@ -59,7 +59,9 @@ def test_drawer_js_contract_and_constraints():
 
     assert "(function () {" in source
     assert "'use strict';" in source
-    assert "window.Drawer = Object.freeze({ render, preserveOpen });" in source
+    assert (
+        "window.Drawer = Object.freeze({ render, preserveOpen, formatLine });" in source
+    )
     assert "Storage" not in source
     assert "localStorage" not in source
     assert "sessionStorage" not in source
@@ -285,6 +287,8 @@ const directDrawer = window.Drawer.render({
   line: "median statement length 1.5s — needs 2s",
   bodyHtml: "",
 });
+assert(Object.keys(window.Drawer).join("|") === "render|preserveOpen|formatLine", "drawer exports formatLine");
+assert(window.Drawer.formatLine("2 files created · <5>").includes("<b>2</b> files created · &lt;<b>5</b>&gt;"), "formatLine escapes and emphasizes digits");
 assert(lineHtml(directDrawer).includes("<b>1.5s</b>"), "drawer emphasizes compact seconds");
 
 const tooFewPayload = payload();
