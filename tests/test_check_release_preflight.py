@@ -88,6 +88,46 @@ def test_rustc_version_mismatch_reports_expected_actual_and_repair(
     assert failures[0].repair == "rustup toolchain install 1.97.1"
 
 
+def test_missing_toolchain_component_reports_repair(tmp_path: Path) -> None:
+    toolchain = tmp_path / "1.97.1-x86_64-unknown-linux-gnu"
+    (toolchain / "bin").mkdir(parents=True)
+    (toolchain / "bin" / "rustfmt").write_text("", encoding="utf-8")
+
+    failures = preflight.check_toolchain_components(
+        toolchain,
+        "1.97.1",
+        ("rustfmt", "clippy"),
+    )
+
+    assert len(failures) == 1
+    assert failures[0].error == "release toolchain component is not installed"
+    assert "clippy" in failures[0].expected
+    assert failures[0].actual == "missing"
+    assert failures[0].repair == "rustup component add --toolchain 1.97.1 clippy"
+
+
+def test_missing_toolchain_target_reports_repair(tmp_path: Path) -> None:
+    toolchain = tmp_path / "1.97.1-x86_64-unknown-linux-gnu"
+    (toolchain / "lib" / "rustlib" / "x86_64-unknown-linux-musl" / "lib").mkdir(
+        parents=True
+    )
+
+    failures = preflight.check_toolchain_targets(
+        toolchain,
+        "1.97.1",
+        ("x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"),
+    )
+
+    assert len(failures) == 1
+    assert failures[0].error == "release toolchain target is not installed"
+    assert "aarch64-unknown-linux-musl" in failures[0].expected
+    assert failures[0].actual == "missing"
+    assert (
+        failures[0].repair
+        == "rustup target add --toolchain 1.97.1 aarch64-unknown-linux-musl"
+    )
+
+
 def test_missing_zig_reports_repair() -> None:
     failures = preflight.check_zig(which=lambda _name: None)
 

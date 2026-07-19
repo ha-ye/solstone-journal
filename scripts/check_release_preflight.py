@@ -18,6 +18,10 @@ from typing import Callable, Mapping, Sequence
 
 EXPECTED_ZIG_VERSION = "0.16.0"
 TOOLCHAIN_FILE = "rust-toolchain.toml"
+COMPONENT_BINARIES = {
+    "rustfmt": "rustfmt",
+    "clippy": "cargo-clippy",
+}
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,59 @@ def check_rustc_version(
     return []
 
 
+def check_toolchain_components(
+    toolchain_dir: Path,
+    channel: str,
+    components: Sequence[str],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    for component in components:
+        binary = COMPONENT_BINARIES.get(component)
+        if binary is None:
+            failures.append(
+                Failure(
+                    error="release toolchain component has no filesystem check",
+                    expected=f"known component in {sorted(COMPONENT_BINARIES)}",
+                    actual=component,
+                    repair=f"rustup component add --toolchain {channel} {component}",
+                )
+            )
+            continue
+        path = toolchain_dir / "bin" / binary
+        if path.is_file():
+            continue
+        failures.append(
+            Failure(
+                error="release toolchain component is not installed",
+                expected=f"{component} component marker {path}",
+                actual="missing",
+                repair=f"rustup component add --toolchain {channel} {component}",
+            )
+        )
+    return failures
+
+
+def check_toolchain_targets(
+    toolchain_dir: Path,
+    channel: str,
+    targets: Sequence[str],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    for target in targets:
+        path = toolchain_dir / "lib" / "rustlib" / target / "lib"
+        if path.is_dir():
+            continue
+        failures.append(
+            Failure(
+                error="release toolchain target is not installed",
+                expected=f"target stdlib directory {path}",
+                actual="missing",
+                repair=f"rustup target add --toolchain {channel} {target}",
+            )
+        )
+    return failures
+
+
 def check_zig(
     expected: str = EXPECTED_ZIG_VERSION,
     *,
@@ -275,6 +332,12 @@ def check_pinned_toolchain(root: Path, env: Mapping[str, str]) -> list[Failure]:
     failures.extend(install_failures)
     if toolchain_dir is not None:
         failures.extend(check_rustc_version(toolchain_dir, spec.channel))
+        failures.extend(
+            check_toolchain_components(toolchain_dir, spec.channel, spec.components)
+        )
+        failures.extend(
+            check_toolchain_targets(toolchain_dir, spec.channel, spec.targets)
+        )
     return failures
 
 
