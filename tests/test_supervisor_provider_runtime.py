@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import concurrent.futures
 import subprocess
@@ -1601,6 +1602,46 @@ def test_superseded_start_cleanup_failure_is_adopted(monkeypatch) -> None:
     assert state.pending_stop_request.managed is old_managed
 
 
+def test_pending_stop_request_assignment_uses_single_chokepoint() -> None:
+    tree = ast.parse(Path(supervisor.__file__).read_text(encoding="utf-8"))
+    offenders: list[tuple[str, int]] = []
+    stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            for target in node.targets:
+                self._check_target(target, node.lineno)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self._check_target(node.target, node.lineno)
+            self.generic_visit(node)
+
+        def _check_target(self, target: ast.expr, lineno: int) -> None:
+            if not (
+                isinstance(target, ast.Attribute)
+                and target.attr == "pending_stop_request"
+            ):
+                return
+            owner = stack[-1] if stack else "<module>"
+            if owner != "_set_provider_pending_stop_request":
+                offenders.append((owner, lineno))
+
+    Visitor().visit(tree)
+
+    assert offenders == []
+
+
 def test_pending_cleanup_survives_truth_phase_change_and_blocks_start(
     monkeypatch,
 ) -> None:
@@ -1665,6 +1706,174 @@ def test_pending_cleanup_survives_truth_phase_change_and_blocks_start(
     assert state.pending_stop_request is None
     assert state.latest_phase == "stopped"
     assert start_submits == []
+
+
+def test_cancelled_stop_cleanup_preserves_unresolved_handle(monkeypatch) -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "stopping"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.stop_cleanup_fence = supervisor._provider_fence(state, 1)
+    state.stop_cleanup_future = _future_with(
+        supervisor.ProviderStopCleanupOutcome(
+            status="cancelled",
+            reason_code="stale-result-ignored",
+            detail={"cancelled": True},
+            managed=managed,
+        )
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+
+    assert supervisor._handle_provider_stop_cleanup_result(state, []) is True
+
+    assert state.latest_phase == "cleanup-failed"
+    assert state.pending_stop_request is not None
+    assert state.pending_stop_request.managed is managed
+    assert state.cleanup_attempt_count == 1
+    assert state.cleanup_next_at == 102.0
+    supervisor._submit_provider_start_if_needed(state, [])
+    assert state.start_future is None
+
+
+def test_late_probe_cannot_declare_ready_with_cleanup_outstanding(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "cleanup-failed"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.probe_fence = supervisor._provider_fence(state, 1)
+    state.probe_future = _future_with(
+        supervisor.ProviderProbeOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+        )
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+
+    assert supervisor._handle_provider_probe_result(state) is True
+
+    assert state.latest_phase == "cleanup-failed"
+    assert state.pending_stop_request is not None
+    assert state.pending_stop_request.managed is managed
+    assert state.next_probe_at == 100.0 + supervisor.PROVIDER_PROBE_INTERVAL_SECONDS
+    assert read_runtime_health("local")["reason_code"] == "stale-result-ignored"
+
+
+def test_deferred_stop_preserves_existing_cleanup_request() -> None:
+    old_plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    _set_provider_ready("local", state, old_plan)
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.cleanup_attempt_count = 2
+    state.cleanup_next_at = 50.0
+    observation = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="not-desired",
+        reason_code="provider-not-needed",
+        detail={"active_provider": "cloud"},
+        desired_fingerprint_sha256=old_plan.desired_fingerprint_sha256,
+        boot_required=False,
+    )
+
+    supervisor._defer_provider_stop_for_observation(
+        state,
+        observation,
+        reason_code="admission-exclusive-stop",
+        admission_exclusive=True,
+    )
+
+    assert state.latest_phase == "stop-deferred"
+    assert state.pending_stop_request is not None
+    assert state.pending_stop_request.managed is managed
+    assert state.pending_stop_request.target_phase == "stop-deferred"
+    assert state.pending_stop_request.target_detail["target_phase"] == "not-desired"
+    assert state.cleanup_attempt_count == 2
+    assert state.cleanup_next_at == 50.0
+
+
+def test_unresolvable_cleanup_stays_owned_visible_and_blocks_start(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "cleanup-failed"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.cleanup_attempt_count = 0
+    state.cleanup_next_at = 0.0
+    starts: list[str] = []
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        supervisor,
+        "_terminate_cleanup_handle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("still alive")),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda *_args: starts.append("start"),
+    )
+
+    assert supervisor._submit_provider_stop_cleanup_if_needed(state, []) is True
+    assert supervisor._handle_provider_stop_cleanup_result(state, []) is True
+    supervisor._submit_provider_start_if_needed(state, [])
+
+    assert state.latest_phase == "cleanup-failed"
+    assert state.pending_stop_request is not None
+    assert state.pending_stop_request.managed is managed
+    assert state.cleanup_attempt_count == 1
+    assert state.cleanup_next_at == 102.0
+    assert state.start_future is None
+    assert starts == []
 
 
 def test_cancelled_ready_cleanup_failure_is_adopted(monkeypatch) -> None:
