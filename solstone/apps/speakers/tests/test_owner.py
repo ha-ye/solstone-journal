@@ -1189,7 +1189,7 @@ def test_detect_owner_candidate_strong_tier_writes_candidate_and_confirm_metadat
 
     env = speakers_env()
     env.create_entity("Self Person", is_principal=True)
-    embeddings = _two_lobe_embeddings(120, 0.16)
+    embeddings = _two_lobe_embeddings(120, 0.22)
     _write_labeled_segment(
         env,
         "20240101",
