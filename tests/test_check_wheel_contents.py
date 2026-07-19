@@ -117,6 +117,45 @@ def _write_core_wheel(
     return wheel_path
 
 
+def _write_platform_base_wheel(
+    path: Path,
+    *,
+    helper_name: str | None = checker.PARAKEET_HELPER_MEMBER,
+    helper_binary: bytes | None = None,
+    helper_mode: int = 0o755,
+    extra_payload_size: int = 0,
+) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    wheel_path = path / "solstone-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    if helper_binary is None:
+        helper_binary = _minimal_macho(checker.CPU_TYPE_ARM64)
+    members = {
+        "solstone-1.2.3.dist-info/METADATA": b"Name: solstone\nVersion: 1.2.3\n",
+        "solstone-1.2.3.dist-info/WHEEL": b"Wheel-Version: 1.0\n",
+    }
+    if helper_name is not None:
+        members[helper_name] = helper_binary
+    if extra_payload_size:
+        members["solstone/observe/transcribe/parakeet_helper/_bin/payload"] = (
+            b"x" * extra_payload_size
+        )
+    rows = [
+        f"{name},{_record_hash(content)},{len(content)}"
+        for name, content in members.items()
+    ]
+    rows.append("solstone-1.2.3.dist-info/RECORD,,")
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        for name, content in members.items():
+            mode = helper_mode if name == helper_name else 0o644
+            _write_member(wheel, name, content, mode=mode)
+        _write_member(
+            wheel,
+            "solstone-1.2.3.dist-info/RECORD",
+            "\n".join(rows).encode("utf-8"),
+        )
+    return wheel_path
+
+
 def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -282,25 +321,55 @@ def test_base_wheel_validator_rejects_tests_path_segment(tmp_path: Path) -> None
 
 
 def test_base_wheel_platform_cap_allows_bundled_helper(tmp_path: Path) -> None:
-    within = tmp_path / "solstone-1.2.3-py3-none-macosx_14_0_arm64.whl"
-    with zipfile.ZipFile(within, "w") as wheel:
-        _write_member(
-            wheel,
-            "solstone-1.2.3.data/scripts/helper",
-            b"x" * (5 * 1024 * 1024),
-        )
+    within = _write_platform_base_wheel(
+        tmp_path,
+        extra_payload_size=5 * 1024 * 1024,
+    )
     within_errors = checker.check_base_wheel(within, checker.MAX_BASE_WHEEL_BYTES)
     assert not [error for error in within_errors if "base wheel is" in error]
 
-    oversized = tmp_path / "solstone_big-1.2.3-py3-none-macosx_14_0_arm64.whl"
-    with zipfile.ZipFile(oversized, "w") as wheel:
-        _write_member(
-            wheel,
-            "solstone_big-1.2.3.data/scripts/helper",
-            b"x" * (7 * 1024 * 1024),
-        )
+    oversized = _write_platform_base_wheel(
+        tmp_path / "oversized",
+        extra_payload_size=7 * 1024 * 1024,
+    )
     oversized_errors = checker.check_base_wheel(oversized, checker.MAX_BASE_WHEEL_BYTES)
     assert any("base wheel is" in error for error in oversized_errors)
+
+
+def test_base_wheel_validator_rejects_missing_platform_helper(
+    tmp_path: Path,
+) -> None:
+    wheel = _write_platform_base_wheel(tmp_path, helper_name=None)
+
+    errors = checker.check_base_wheel(wheel, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert any("wrong parakeet helper member count" in error for error in errors)
+
+
+def test_base_wheel_validator_rejects_renamed_platform_helper(
+    tmp_path: Path,
+) -> None:
+    wheel = _write_platform_base_wheel(
+        tmp_path,
+        helper_name=f"{checker.PARAKEET_HELPER_MEMBER}-renamed",
+    )
+
+    errors = checker.check_base_wheel(wheel, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert any("wrong parakeet helper member count" in error for error in errors)
+
+
+def test_base_wheel_validator_rejects_wrong_arch_platform_helper(
+    tmp_path: Path,
+) -> None:
+    wheel = _write_platform_base_wheel(
+        tmp_path,
+        helper_binary=_minimal_macho(CPU_TYPE_X86_64),
+    )
+
+    errors = checker.check_base_wheel(wheel, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert any("parakeet helper Mach-O cputype" in error for error in errors)
 
 
 def _add_tar_member(archive: tarfile.TarFile, name: str) -> None:

@@ -44,6 +44,9 @@ EXPECTED_MODEL_SHA256 = {
 MAX_BASE_WHEEL_BYTES = 4 * 1024 * 1024
 MAX_BASE_PLATFORM_WHEEL_BYTES = 6 * 1024 * 1024
 MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
+PARAKEET_HELPER_MEMBER = (
+    "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
+)
 ELF_MAGIC = b"\x7fELF"
 ELF_CLASS_64 = 2
 ELF_DATA_LITTLE_ENDIAN = 1
@@ -167,7 +170,8 @@ def _core_rebuild_command(platform_tuple: CorePlatform) -> str:
 
 def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
     errors: list[str] = []
-    if not path.name.endswith("-any.whl"):
+    platform_wheel = not path.name.endswith("-any.whl")
+    if platform_wheel:
         # platform base wheels bundle the notarized parakeet helper binary
         max_bytes = max(max_bytes, MAX_BASE_PLATFORM_WHEEL_BYTES)
     size = path.stat().st_size
@@ -180,6 +184,8 @@ def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
         for member in wheel.namelist():
             if "tests" in member.split("/"):
                 errors.append(f"{path.name}: base wheel ships test path {member}")
+        if platform_wheel:
+            errors.extend(_check_base_platform_helper(path, wheel))
     return errors
 
 
@@ -250,6 +256,68 @@ def _check_record(path: Path, wheel: zipfile.ZipFile) -> list[str]:
     if missing:
         errors.append(f"{path.name}: members missing from RECORD: {missing}")
     return errors
+
+
+def _check_record_member(
+    path: Path,
+    wheel: zipfile.ZipFile,
+    member_name: str,
+    *,
+    repair: str,
+) -> list[str]:
+    names = set(wheel.namelist())
+    record_names = [name for name in names if name.endswith(".dist-info/RECORD")]
+    if len(record_names) != 1:
+        return [
+            _failure(
+                path.name,
+                "platform base wheel RECORD count is wrong",
+                expected="exactly one .dist-info/RECORD",
+                actual=str(len(record_names)),
+                repair=repair,
+            )
+        ]
+    record_name = record_names[0]
+    rows = wheel.read(record_name).decode("utf-8").splitlines()
+    for row in rows:
+        columns = row.split(",")
+        if len(columns) != 3:
+            continue
+        member, expected_hash, expected_size = columns
+        if member != member_name:
+            continue
+        content = wheel.read(member_name)
+        errors: list[str] = []
+        if expected_hash != _record_hash(content):
+            errors.append(
+                _failure(
+                    path.name,
+                    "parakeet helper RECORD hash mismatch",
+                    expected=_record_hash(content),
+                    actual=expected_hash,
+                    repair=repair,
+                )
+            )
+        if expected_size != str(len(content)):
+            errors.append(
+                _failure(
+                    path.name,
+                    "parakeet helper RECORD size mismatch",
+                    expected=str(len(content)),
+                    actual=expected_size,
+                    repair=repair,
+                )
+            )
+        return errors
+    return [
+        _failure(
+            path.name,
+            "parakeet helper is missing from RECORD",
+            expected=f"RECORD row for {member_name}",
+            actual="missing",
+            repair=repair,
+        )
+    ]
 
 
 def _check_elf_dynamic_entries(
@@ -397,13 +465,15 @@ def _check_macho_binary(
     wheel_name: str,
     content: bytes,
     platform_tuple: CorePlatform,
+    *,
+    binary_label: str = "solstone-core",
 ) -> list[str]:
     repair = _core_rebuild_command(platform_tuple)
     if len(content) < 8:
         return [
             _failure(
                 wheel_name,
-                "solstone-core Mach-O binary is too short",
+                f"{binary_label} Mach-O binary is too short",
                 expected="at least 8 bytes",
                 actual=f"{len(content)} bytes",
                 repair=repair,
@@ -418,7 +488,7 @@ def _check_macho_binary(
         return [
             _failure(
                 wheel_name,
-                "solstone-core Mach-O cputype does not match wheel tag",
+                f"{binary_label} Mach-O cputype does not match wheel tag",
                 expected=f"arm64 ({CPU_TYPE_ARM64:#010x})",
                 actual=f"{cputype:#010x}",
                 repair=repair,
@@ -431,7 +501,7 @@ def _check_macho_binary(
         return [
             _failure(
                 wheel_name,
-                "solstone-core Mach-O cputype does not match wheel tag",
+                f"{binary_label} Mach-O cputype does not match wheel tag",
                 expected=f"arm64 ({CPU_TYPE_ARM64:#010x})",
                 actual=f"{cputype:#010x}",
                 repair=repair,
@@ -450,7 +520,7 @@ def _check_macho_binary(
             return [
                 _failure(
                     wheel_name,
-                    "solstone-core fat Mach-O header exceeds binary length",
+                    f"{binary_label} fat Mach-O header exceeds binary length",
                     expected="all fat architecture records inside file",
                     actual=f"{nfat_arch} records require {header_size} bytes; file {len(content)}",
                     repair=repair,
@@ -465,7 +535,7 @@ def _check_macho_binary(
         return [
             _failure(
                 wheel_name,
-                "solstone-core fat Mach-O has no arm64 slice",
+                f"{binary_label} fat Mach-O has no arm64 slice",
                 expected=f"at least one cputype {CPU_TYPE_ARM64:#010x}",
                 actual=f"{nfat_arch} slice(s), none arm64",
                 repair=repair,
@@ -474,7 +544,7 @@ def _check_macho_binary(
     return [
         _failure(
             wheel_name,
-            "solstone-core binary is not recognized as Mach-O",
+            f"{binary_label} binary is not recognized as Mach-O",
             expected="Mach-O 64-bit or fat Mach-O magic",
             actual=content[:4].hex(),
             repair=repair,
@@ -490,6 +560,50 @@ def _check_core_binary(
     if platform_tuple[0] == "linux":
         return _check_elf_binary(wheel_name, content, platform_tuple)
     return _check_macho_binary(wheel_name, content, platform_tuple)
+
+
+def _check_base_platform_helper(
+    path: Path,
+    wheel: zipfile.ZipFile,
+) -> list[str]:
+    repair = "bash scripts/release.sh --dry-run-all-hosts"
+    helpers = [
+        info for info in wheel.infolist() if info.filename == PARAKEET_HELPER_MEMBER
+    ]
+    if len(helpers) != 1:
+        return [
+            _failure(
+                path.name,
+                "wrong parakeet helper member count",
+                expected=f"exactly one {PARAKEET_HELPER_MEMBER}",
+                actual=str(len(helpers)),
+                repair=repair,
+            )
+        ]
+    helper = helpers[0]
+    errors: list[str] = []
+    if ((helper.external_attr >> 16) & 0o111) == 0:
+        errors.append(
+            _failure(
+                path.name,
+                "parakeet helper is not executable",
+                expected="executable mode bit set",
+                actual=oct((helper.external_attr >> 16) & 0o777),
+                repair=repair,
+            )
+        )
+    errors.extend(
+        _check_macho_binary(
+            path.name,
+            wheel.read(helper),
+            ("darwin", "arm64"),
+            binary_label="parakeet helper",
+        )
+    )
+    errors.extend(
+        _check_record_member(path, wheel, PARAKEET_HELPER_MEMBER, repair=repair)
+    )
+    return errors
 
 
 def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
