@@ -10,6 +10,15 @@ def _apple_health_card_stream() -> str:
     return health_schema.health_card_stream(health_schema.SOURCE_APPLE_HEALTH)
 
 
+def _slice_between(text: str, start: str, end: str) -> str:
+    """Return the text between two anchors, failing if either is missing."""
+    assert text.count(start) == 1, f"expected exactly one start anchor: {start}"
+    start_idx = text.index(start) + len(start)
+    assert end in text[start_idx:], f"missing end anchor after {start}: {end}"
+    end_idx = text.index(end, start_idx)
+    return text[start_idx:end_idx]
+
+
 def test_workspace_html_single_purge_notice_emission():
     workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
 
@@ -341,44 +350,81 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
 
     text = workspace_html.read_text()
 
-    assert text.count("const HEADER_HEIGHT = 16;") == 1
-    assert "const PADDING = HEADER_HEIGHT + 12;" in text
+    header_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("const HEADER_HEIGHT = ")
+    ]
+    assert len(header_lines) == 1
+    header_value = int(
+        header_lines[0].split("const HEADER_HEIGHT = ", 1)[1].split(";", 1)[0]
+    )
+
+    padding_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("const PADDING = ")
+    ]
+    assert len(padding_lines) == 1
+    padding_expr = padding_lines[0].split("const PADDING = ", 1)[1].split(";", 1)[0]
+    padding_prefix = "HEADER_HEIGHT + "
+    assert padding_expr.startswith(padding_prefix), (
+        "PADDING must derive from HEADER_HEIGHT"
+    )
+    bottom_inset = int(padding_expr.split(padding_prefix, 1)[1])
     assert "const PADDING = 24" not in text
 
-    render_timeline = text.split("function renderTimeline", 1)[1].split(
-        "function buildZoomGrid", 1
-    )[0]
+    render_timeline = _slice_between(
+        text, "function renderTimeline", "function buildZoomGrid"
+    )
     assert (
         "selWrap.style.top = (HEADER_HEIGHT + y(range.start)) + 'px';"
         in render_timeline
     )
 
-    now_marker = text.split("updateNowPosition = function()", 1)[1].split(
-        "setInterval(updateNowPosition", 1
-    )[0]
+    now_marker = _slice_between(
+        text, "updateNowPosition = function()", "setInterval(updateNowPosition"
+    )
     assert "marker.style.top = (HEADER_HEIGHT + y(nowMin)) + 'px';" in now_marker
 
-    click_handler = text.split("timeline.addEventListener('click'", 1)[1].split(
-        "});", 1
-    )[0]
+    click_handler = _slice_between(text, "timeline.addEventListener('click'", "});")
     assert "const py = e.clientY - box.top - HEADER_HEIGHT;" in click_handler
 
-    header_line = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("const HEADER_HEIGHT = ")
-    ][0]
-    header_value = (
-        header_line.split("const HEADER_HEIGHT = ", 1)[1].split(";", 1)[0].strip()
+    rail_selectors = (
+        ".tr-grid",
+        ".tr-labels",
+        ".tr-segments",
+        ".tr-body-events",
+        ".tr-zoom-labels",
+        ".tr-zoom-grid",
+        ".tr-zoom-segments",
     )
 
-    grid_css = text.split(".tr-grid {", 1)[1].split("}", 1)[0]
-    grid_top_line = [
-        line.strip()
-        for line in grid_css.splitlines()
-        if line.strip().startswith("top:")
-    ][0]
-    grid_top = grid_top_line.split("top:", 1)[1].split("px", 1)[0].strip()
+    for selector in rail_selectors:
+        css_block = _slice_between(text, f"{selector} {{", "}")
+        top_lines = [
+            line.strip()
+            for line in css_block.splitlines()
+            if line.strip().startswith("top:")
+        ]
+        assert len(top_lines) == 1, f"{selector} must define exactly one top inset"
+        top_inset = int(top_lines[0].split("top:", 1)[1].split("px", 1)[0])
+        assert top_inset == header_value, (
+            f"{selector} top inset {top_inset}px != HEADER_HEIGHT {header_value}px"
+        )
 
-    assert grid_top == header_value
+        bottom_lines = [
+            line.strip()
+            for line in css_block.splitlines()
+            if line.strip().startswith("bottom:")
+        ]
+        assert len(bottom_lines) == 1, (
+            f"{selector} must define exactly one bottom inset"
+        )
+        bottom = int(bottom_lines[0].split("bottom:", 1)[1].split("px", 1)[0])
+        assert bottom == bottom_inset, (
+            f"{selector} bottom inset {bottom}px != PADDING - HEADER_HEIGHT "
+            f"{bottom_inset}px"
+        )
+
     assert "zoom.clientHeight - 24" not in text
