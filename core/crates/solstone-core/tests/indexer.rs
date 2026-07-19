@@ -5,6 +5,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, path::Path};
 
+use solstone_core_indexer_store::db::open_index;
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-core")
 }
@@ -22,6 +24,19 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::create_dir_all(path.parent().expect("test path should have parent"))
         .expect("create parent");
     fs::write(path, text).expect("write test file");
+}
+
+fn seed_edge_entity(root: &Path, entity_id: &str, name: &str) {
+    write(
+        root,
+        &format!("entities/{entity_id}/entity.json"),
+        &format!(r#"{{"name":"{name}","type":"Person"}}"#),
+    );
+    write(
+        root,
+        &format!("facets/work/entities/{entity_id}/entity.json"),
+        "{}",
+    );
 }
 
 #[test]
@@ -70,6 +85,36 @@ fn indexer_rescan_full_succeeds_for_tiny_journal() {
 }
 
 #[test]
+fn indexer_scan_edge_failure_warns_and_exits_zero() {
+    let root = temp_path("scan-edge-failure");
+    seed_edge_entity(&root, "alice", "Alice Edge");
+    seed_edge_entity(&root, "bob", "Bob Edge");
+    write(
+        &root,
+        "facets/work/entities/20260230.jsonl",
+        r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+    );
+
+    let output = Command::new(bin())
+        .arg("indexer")
+        .arg("--journal")
+        .arg(&root)
+        .arg("--rescan-full")
+        .output()
+        .expect("solstone-core should execute");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr should be utf-8")
+            .contains("warning: Skipping edge extraction for facets/work/entities/20260230.jsonl")
+    );
+    fs::remove_dir_all(root).expect("cleanup scan edge failure root");
+}
+
+#[test]
 fn indexer_write_failure_exits_tempfail() {
     let root = temp_path("write-failure");
     fs::write(&root, "not a dir").expect("write file journal path");
@@ -89,6 +134,45 @@ fn indexer_write_failure_exits_tempfail() {
             .starts_with("indexer scan failed: ")
     );
     fs::remove_file(root).expect("cleanup write failure path");
+}
+
+#[test]
+fn indexer_busy_timeout_exits_tempfail_without_partial_commit() {
+    let root = temp_path("busy-timeout");
+    write(
+        &root,
+        "chronicle/20260717/talents/flow.md",
+        "# Flow\n\nblocked",
+    );
+    let lock_conn = open_index(&root).expect("open index");
+    lock_conn
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold exclusive lock");
+
+    let output = Command::new(bin())
+        .arg("indexer")
+        .arg("--journal")
+        .arg(&root)
+        .arg("--rescan-full")
+        .output()
+        .expect("solstone-core should execute");
+
+    assert_eq!(output.status.code(), Some(75));
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr should be utf-8")
+            .starts_with("indexer scan failed: ")
+    );
+    lock_conn.execute_batch("ROLLBACK").expect("release lock");
+    assert_eq!(
+        lock_conn
+            .query_row("SELECT count(*) FROM chunks", [], |row| row
+                .get::<_, i64>(0))
+            .expect("chunk count"),
+        0
+    );
+    drop(lock_conn);
+    fs::remove_dir_all(root).expect("cleanup busy timeout root");
 }
 
 #[test]
@@ -133,4 +217,63 @@ fn indexer_unsupported_rescan_file_exits_declined() {
     );
     assert!(!root.join("indexer/journal.sqlite").exists());
     fs::remove_dir_all(root).expect("cleanup declined root");
+}
+
+#[test]
+fn indexer_rescan_file_edge_failure_exits_tempfail() {
+    let root = temp_path("rescan-file-edge-failure");
+    seed_edge_entity(&root, "alice", "Alice Edge");
+    seed_edge_entity(&root, "bob", "Bob Edge");
+    write(
+        &root,
+        "facets/work/entities/20260230.jsonl",
+        r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+    );
+
+    let output = Command::new(bin())
+        .arg("indexer")
+        .arg("--journal")
+        .arg(&root)
+        .arg("--rescan-file")
+        .arg("facets/work/entities/20260230.jsonl")
+        .output()
+        .expect("solstone-core should execute");
+
+    assert_eq!(output.status.code(), Some(75));
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr should be utf-8")
+            .starts_with("indexer rescan-file failed: ")
+    );
+    fs::remove_dir_all(root).expect("cleanup rescan file edge failure root");
+}
+
+#[test]
+fn indexer_rebuild_edges_failure_exits_tempfail() {
+    let root = temp_path("rebuild-edge-failure");
+    write(
+        &root,
+        "chronicle/20260430/default/090000_300/talents/documents.json",
+        "{not json",
+    );
+
+    let output = Command::new(bin())
+        .arg("indexer")
+        .arg("--journal")
+        .arg(&root)
+        .arg("--rebuild-edges")
+        .output()
+        .expect("solstone-core should execute");
+
+    assert_eq!(output.status.code(), Some(75));
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr should be utf-8")
+            .contains(
+                "warning: Skipping edge extraction for 20260430/default/090000_300/talents/documents.json"
+            )
+    );
+    fs::remove_dir_all(root).expect("cleanup rebuild edge failure root");
 }

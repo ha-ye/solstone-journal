@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -25,7 +25,7 @@ use solstone_core_indexer::segment_aggregate::build_segment_aggregate;
 use solstone_core_indexer::stream::extract_stream;
 
 use crate::StoreError;
-use crate::db::open_index;
+use crate::db::{EDGES_SCHEMA_PATH, EDGES_SCHEMA_VERSION, open_index};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanReport {
@@ -35,6 +35,7 @@ pub struct ScanReport {
     pub edges_indexed: usize,
     pub edges_removed: usize,
     pub edge_rows_inserted: usize,
+    pub failed: usize,
     pub warnings: Vec<String>,
 }
 
@@ -53,6 +54,7 @@ struct EdgeScanReport {
     indexed: usize,
     removed: usize,
     rows_inserted: usize,
+    failed: usize,
     warnings: Vec<String>,
 }
 
@@ -63,7 +65,7 @@ pub enum RescanFileStatus {
 }
 
 pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanReport, StoreError> {
-    let conn = open_index(journal)?;
+    let mut conn = open_index(journal)?;
     let mut report = ScanReport::default();
     let mut files = discover_indexable_files(journal)?;
     if !full {
@@ -88,6 +90,7 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
         }
     }
 
+    let mut rebuilt_segments = HashSet::new();
     for (rel, path, mtime) in &to_index {
         let Some(family) = classify(rel) else {
             report.skipped += 1;
@@ -96,21 +99,42 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
                 .push(format!("unclassified discovered file skipped: {rel}"));
             continue;
         };
-        conn.execute("DELETE FROM chunks WHERE path=?", [rel])?;
-        match index_file(&conn, journal, rel, path, family) {
-            Ok(warnings) => {
-                conn.execute(
-                    "REPLACE INTO files(path, mtime) VALUES (?, ?)",
-                    params![rel, mtime],
-                )?;
-                report.warnings.extend(warnings);
-                report.indexed += 1;
-            }
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM chunks WHERE path=?", [rel])?;
+        let mut warnings = match index_file(&tx, journal, rel, path, family) {
+            Ok(warnings) => warnings,
             Err(warning) => {
                 report.skipped += 1;
                 report.warnings.push(warning);
+                continue;
             }
+        };
+        let segment_to_mark =
+            match index_segment_aggregate_for_rel(&tx, journal, rel, &rebuilt_segments) {
+                Ok((aggregate_warnings, segment_to_mark)) => {
+                    warnings.extend(aggregate_warnings);
+                    segment_to_mark
+                }
+                Err(StoreError::AggregateIncomplete {
+                    warnings: aggregate_warnings,
+                    ..
+                }) => {
+                    report.skipped += 1;
+                    report.warnings.extend(aggregate_warnings);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+        tx.execute(
+            "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+            params![rel, mtime],
+        )?;
+        tx.commit()?;
+        if let Some(rel_segment) = segment_to_mark {
+            rebuilt_segments.insert(rel_segment);
         }
+        report.warnings.extend(warnings);
+        report.indexed += 1;
     }
 
     let discovered: BTreeSet<String> = files.keys().cloned().collect();
@@ -121,34 +145,46 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
             removed.push(rel.clone());
         }
     }
+    let mut removed_count = 0;
     for rel in &removed {
-        conn.execute("DELETE FROM chunks WHERE path=?", [rel])?;
-        conn.execute("DELETE FROM files WHERE path=?", [rel])?;
-    }
-    report.removed = removed.len();
-
-    let mut affected_segments = BTreeSet::new();
-    for (rel, _path, _mtime) in &to_index {
-        if let Some(rel_segment) = segment_rel_for_file(rel) {
-            affected_segments.insert(rel_segment);
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM chunks WHERE path=?", [rel])?;
+        tx.execute("DELETE FROM files WHERE path=?", [rel])?;
+        let segment_to_mark =
+            match index_segment_aggregate_for_rel(&tx, journal, rel, &rebuilt_segments) {
+                Ok((aggregate_warnings, segment_to_mark)) => {
+                    report.warnings.extend(aggregate_warnings);
+                    segment_to_mark
+                }
+                Err(StoreError::AggregateIncomplete {
+                    warnings: aggregate_warnings,
+                    ..
+                }) => {
+                    report.skipped += 1;
+                    report.warnings.extend(aggregate_warnings);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+        tx.commit()?;
+        if let Some(rel_segment) = segment_to_mark {
+            rebuilt_segments.insert(rel_segment);
         }
+        removed_count += 1;
     }
-    for rel in &removed {
-        if let Some(rel_segment) = segment_rel_for_file(rel) {
-            affected_segments.insert(rel_segment);
-        }
-    }
-    report.warnings.extend(index_segment_aggregates(
-        &conn,
-        journal,
-        &affected_segments,
-    )?);
+    report.removed = removed_count;
 
-    index_entity_search(&conn, journal, full)?;
-    let edge_report = reconcile_edges(&conn, journal, full, today)?;
+    let tx = conn.transaction()?;
+    index_entity_search(&tx, journal, full)?;
+    tx.commit()?;
+
+    let tx = conn.transaction()?;
+    let edge_report = reconcile_edges(&tx, journal, full, today)?;
+    tx.commit()?;
     report.edges_indexed = edge_report.indexed;
     report.edges_removed = edge_report.removed;
     report.edge_rows_inserted = edge_report.rows_inserted;
+    report.failed = edge_report.failed;
     report.warnings.extend(edge_report.warnings);
     Ok(report)
 }
@@ -164,26 +200,23 @@ pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, Sto
         return Err(StoreError::MissingFile(path));
     }
     let mtime = file_mtime_secs(&path)?;
-    let conn = open_index(journal)?;
+    let mut conn = open_index(journal)?;
+    let tx = conn.transaction()?;
     let mut warnings = Vec::new();
     if let Some(family) = family {
-        conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
-        match index_file(&conn, journal, &rel, &path, family) {
+        tx.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
+        match index_file(&tx, journal, &rel, &path, family) {
             Ok(content_warnings) => {
                 warnings.extend(content_warnings);
-                conn.execute(
-                    "REPLACE INTO files(path, mtime) VALUES (?, ?)",
-                    params![rel, mtime],
-                )?;
                 if let Some(rel_segment) = segment_rel_for_file(&rel) {
                     let mut affected_segments = BTreeSet::new();
                     affected_segments.insert(rel_segment);
-                    warnings.extend(index_segment_aggregates(
-                        &conn,
-                        journal,
-                        &affected_segments,
-                    )?);
+                    warnings.extend(index_segment_aggregates(&tx, journal, &affected_segments)?);
                 }
+                tx.execute(
+                    "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+                    params![rel, mtime],
+                )?;
             }
             Err(warning) => {
                 return Err(StoreError::Io(std::io::Error::new(
@@ -195,19 +228,24 @@ pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, Sto
     }
     if edge_source.is_some() {
         let mut resolver = EdgeResolver::new(journal);
-        delete_edges_for_path(&conn, &rel)?;
-        let result = process_edge_file(&conn, journal, &rel, &path, &mut resolver)?;
+        delete_edges_for_path(&tx, &rel)?;
+        let result = process_edge_file(&tx, journal, &rel, &path, &mut resolver)?;
         warnings.extend(result.warnings);
-        replace_edge_file_mtime(&conn, &rel, mtime)?;
+        if result.failed {
+            return Err(StoreError::EdgeFileFailed(warnings.join("; ")));
+        }
+        replace_edge_file_mtime(&tx, &rel, mtime)?;
     }
+    tx.commit()?;
     Ok(RescanFileStatus::Indexed { warnings })
 }
 
 pub fn rebuild_edges(journal: &Path) -> Result<EdgeRebuildReport, StoreError> {
-    let conn = open_index(journal)?;
-    conn.execute("DELETE FROM edges", [])?;
-    conn.execute("DELETE FROM edge_files", [])?;
-    conn.execute(
+    let mut conn = open_index(journal)?;
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM edges", [])?;
+    tx.execute("DELETE FROM edge_files", [])?;
+    tx.execute(
         "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
         params![EDGES_SCHEMA_PATH, EDGES_SCHEMA_VERSION],
     )?;
@@ -216,23 +254,34 @@ pub fn rebuild_edges(journal: &Path) -> Result<EdgeRebuildReport, StoreError> {
     let mut resolver = EdgeResolver::new(journal);
     let mut report = EdgeRebuildReport::default();
     for (rel, path) in files {
-        let Ok(mtime) = file_mtime_secs(&path) else {
-            continue;
+        let mtime = match file_mtime_secs(&path) {
+            Ok(mtime) => mtime,
+            Err(error) => {
+                report.failed += 1;
+                report
+                    .warnings
+                    .push(format!("mtime read failed for {rel}: {error}"));
+                continue;
+            }
         };
-        let result = process_edge_file(&conn, journal, &rel, &path, &mut resolver)?;
+        let result = process_edge_file(&tx, journal, &rel, &path, &mut resolver)?;
         report.files += 1;
         report.rows += result.rows_inserted;
         report.drops += result.drops;
         report.failed += usize::from(result.failed);
         report.skipped += usize::from(result.invalid_segment);
         report.warnings.extend(result.warnings);
-        replace_edge_file_mtime(&conn, &rel, mtime)?;
+        if !result.failed {
+            replace_edge_file_mtime(&tx, &rel, mtime)?;
+        }
     }
+    if report.failed > 0 {
+        tx.rollback()?;
+        return Ok(report);
+    }
+    tx.commit()?;
     Ok(report)
 }
-
-const EDGES_SCHEMA_PATH: &str = "edges:__schema__";
-const EDGES_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct EdgeProcessResult {
@@ -277,18 +326,71 @@ fn reconcile_edges(
     let mut resolver = EdgeResolver::new(journal);
     let mut report = EdgeScanReport::default();
     for (rel, path, mtime) in &to_index {
-        delete_edges_for_path(conn, rel)?;
-        let result = process_edge_file(conn, journal, rel, path, &mut resolver)?;
+        begin_edge_file_savepoint(conn)?;
+        let result = match replace_edge_file_edges(conn, journal, rel, path, *mtime, &mut resolver)
+        {
+            Ok(result) => result,
+            Err(error) => {
+                rollback_edge_file_savepoint(conn)?;
+                report.indexed += 1;
+                report.failed += 1;
+                report
+                    .warnings
+                    .push(format!("Skipping edge extraction for {rel}: {error}"));
+                continue;
+            }
+        };
         report.indexed += 1;
+        if result.failed {
+            rollback_edge_file_savepoint(conn)?;
+            report.failed += 1;
+            report.warnings.extend(result.warnings);
+            continue;
+        }
+        release_edge_file_savepoint(conn)?;
         report.rows_inserted += result.rows_inserted;
         report.warnings.extend(result.warnings);
-        replace_edge_file_mtime(conn, rel, *mtime)?;
     }
     for rel in &removed {
         delete_edges_for_path(conn, rel)?;
     }
     report.removed = removed.len();
     Ok(report)
+}
+
+fn replace_edge_file_edges(
+    conn: &Connection,
+    journal: &Path,
+    rel: &str,
+    path: &Path,
+    mtime: i64,
+    resolver: &mut EdgeResolver,
+) -> Result<EdgeProcessResult, StoreError> {
+    delete_edges_for_path(conn, rel)?;
+    let result = process_edge_file(conn, journal, rel, path, resolver)?;
+    if !result.failed {
+        replace_edge_file_mtime(conn, rel, mtime)?;
+    }
+    Ok(result)
+}
+
+fn begin_edge_file_savepoint(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute("SAVEPOINT edge_file_replacement", [])?;
+    Ok(())
+}
+
+fn release_edge_file_savepoint(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute("RELEASE SAVEPOINT edge_file_replacement", [])?;
+    Ok(())
+}
+
+fn rollback_edge_file_savepoint(conn: &Connection) -> Result<(), StoreError> {
+    let rollback = conn.execute("ROLLBACK TO SAVEPOINT edge_file_replacement", []);
+    let release = conn.execute("RELEASE SAVEPOINT edge_file_replacement", []);
+    match (rollback, release) {
+        (Ok(_), Ok(_)) => Ok(()),
+        (Err(error), _) | (_, Err(error)) => Err(StoreError::Sql(error)),
+    }
 }
 
 fn process_edge_file(
@@ -374,19 +476,8 @@ fn insert_normalized_edges(
     if rows.is_empty() {
         return Ok(0);
     }
-    conn.execute("SAVEPOINT edge_insert", [])?;
-    let insert_result = insert_normalized_edges_inner(conn, rows);
-    match insert_result {
-        Ok(()) => {
-            conn.execute("RELEASE SAVEPOINT edge_insert", [])?;
-            Ok(rows.len())
-        }
-        Err(error) => {
-            let _ = conn.execute("ROLLBACK TO SAVEPOINT edge_insert", []);
-            let _ = conn.execute("RELEASE SAVEPOINT edge_insert", []);
-            Err(error)
-        }
-    }
+    insert_normalized_edges_inner(conn, rows)?;
+    Ok(rows.len())
 }
 
 fn insert_normalized_edges_inner(
@@ -456,6 +547,24 @@ fn segment_rel_for_file(rel: &str) -> Option<String> {
     }
 }
 
+fn index_segment_aggregate_for_rel(
+    conn: &Connection,
+    journal: &Path,
+    rel: &str,
+    rebuilt_segments: &HashSet<String>,
+) -> Result<(Vec<String>, Option<String>), StoreError> {
+    let Some(rel_segment) = segment_rel_for_file(rel) else {
+        return Ok((Vec::new(), None));
+    };
+    if rebuilt_segments.contains(&rel_segment) {
+        return Ok((Vec::new(), None));
+    }
+    let mut affected_segments = BTreeSet::new();
+    affected_segments.insert(rel_segment.clone());
+    let warnings = index_segment_aggregates(conn, journal, &affected_segments)?;
+    Ok((warnings, Some(rel_segment)))
+}
+
 fn index_segment_aggregates(
     conn: &Connection,
     journal: &Path,
@@ -463,8 +572,14 @@ fn index_segment_aggregates(
 ) -> Result<Vec<String>, StoreError> {
     let mut warnings = Vec::new();
     for rel_segment in segments {
-        conn.execute("DELETE FROM chunks WHERE path = ?", [rel_segment])?;
         let aggregate = build_segment_aggregate(journal, rel_segment);
+        if !aggregate.complete {
+            return Err(StoreError::AggregateIncomplete {
+                segment: rel_segment.clone(),
+                warnings: aggregate.warnings,
+            });
+        }
+        conn.execute("DELETE FROM chunks WHERE path = ?", [rel_segment])?;
         for row in &aggregate.rows {
             conn.execute(
                 "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -723,11 +838,63 @@ mod tests {
             .join("\n")
     }
 
+    fn chunk_content(conn: &Connection, path: &str) -> String {
+        conn.prepare("SELECT content FROM chunks WHERE path=? ORDER BY idx")
+            .expect("prepare chunk content")
+            .query_map([path], |row| row.get::<_, String>(0))
+            .expect("query chunk content")
+            .map(|row| row.expect("chunk content row"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn file_mtime(conn: &Connection, path: &str) -> i64 {
         conn.query_row("SELECT mtime FROM files WHERE path=?", [path], |row| {
             row.get(0)
         })
         .expect("file mtime row")
+    }
+
+    fn edge_file_mtime(conn: &Connection, path: &str) -> Option<i64> {
+        conn.query_row("SELECT mtime FROM edge_files WHERE path=?", [path], |row| {
+            row.get(0)
+        })
+        .optional()
+        .expect("edge file mtime query")
+    }
+
+    fn create_abort_trigger(
+        conn: &Connection,
+        name: &str,
+        timing: &str,
+        event: &str,
+        table: &str,
+        when_clause: Option<&str>,
+    ) {
+        let when_sql = when_clause
+            .map(|clause| format!(" WHEN {clause}"))
+            .unwrap_or_default();
+        conn.execute(
+            &format!(
+                "CREATE TRIGGER {name} {timing} {event} ON {table}{when_sql} BEGIN SELECT RAISE(ABORT, '{name}'); END"
+            ),
+            [],
+        )
+        .expect("create abort trigger");
+    }
+
+    fn drop_trigger(conn: &Connection, name: &str) {
+        conn.execute(&format!("DROP TRIGGER IF EXISTS {name}"), [])
+            .expect("drop trigger");
+    }
+
+    fn assert_sqlite_and_fts_integrity(conn: &Connection) {
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok");
+        conn.execute("INSERT INTO chunks(chunks) VALUES('integrity-check')", [])
+            .expect("fts integrity check");
     }
 
     fn seed_edge_entity(root: &Path, entity_id: &str, name: &str) {
@@ -917,6 +1084,7 @@ mod tests {
         let report = scan_journal(&root, true, "20260717").expect("scan observation failure");
         assert_eq!(report.edges_indexed, 1);
         assert_eq!(report.edge_rows_inserted, 0);
+        assert_eq!(report.failed, 1);
         assert!(report.warnings.iter().any(|warning| {
             warning
                 == "Skipping edge extraction for facets/work/entities/source/observations.jsonl: edge field label does not support object"
@@ -928,8 +1096,9 @@ mod tests {
                 &conn,
                 "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/source/observations.jsonl'"
             ),
-            1
+            0
         );
+        assert_sqlite_and_fts_integrity(&conn);
         fs::remove_dir_all(root).expect("cleanup observation failure root");
     }
 
@@ -989,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_edge_failure_deletes_prior_rows_advances_mtime_and_keeps_sibling() {
+    fn scan_edge_failure_preserves_prior_rows_mtime_and_keeps_sibling() {
         let root = temp_root("edge-failure");
         seed_edge_entity(&root, "alice", "Alice Edge");
         seed_edge_entity(&root, "bob", "Bob Edge");
@@ -1031,6 +1200,7 @@ mod tests {
         let report = scan_journal(&root, true, "20260717").expect("scan edge failure");
         assert_eq!(report.edges_indexed, 2);
         assert_eq!(report.edge_rows_inserted, 1);
+        assert_eq!(report.failed, 1);
         assert!(report.warnings.iter().any(|warning| {
             warning.starts_with("Skipping edge extraction for facets/work/entities/20260230.jsonl")
         }));
@@ -1040,7 +1210,7 @@ mod tests {
                 &conn,
                 "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260230.jsonl'"
             ),
-            0
+            1
         );
         assert_eq!(
             count(
@@ -1056,11 +1226,16 @@ mod tests {
             ),
             1
         );
+        assert_eq!(
+            edge_file_mtime(&conn, "facets/work/entities/20260230.jsonl"),
+            Some(0)
+        );
+        assert_sqlite_and_fts_integrity(&conn);
         fs::remove_dir_all(root).expect("cleanup edge failure root");
     }
 
     #[test]
-    fn scan_candidate_load_failure_warns_and_advances_mtime() {
+    fn scan_candidate_load_failure_preserves_stale_rows_and_retries() {
         let root = temp_root("edge-candidate-load-failure");
         write(&root, "entities", "not a directory");
         write(&root, "facets/work/entities/alice/entity.json", "{}");
@@ -1095,6 +1270,7 @@ mod tests {
         let report = scan_journal(&root, true, "20260717").expect("scan candidate load failure");
         assert_eq!(report.edges_indexed, 1);
         assert_eq!(report.edge_rows_inserted, 0);
+        assert_eq!(report.failed, 1);
         assert!(report.warnings.iter().any(|warning| {
             warning.starts_with("Skipping edge extraction for facets/work/entities/20260304.jsonl")
                 && warning.contains("candidate load failed")
@@ -1105,7 +1281,7 @@ mod tests {
                 &conn,
                 "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
             ),
-            0
+            1
         );
         assert_eq!(
             count(
@@ -1114,6 +1290,29 @@ mod tests {
             ),
             1
         );
+        assert_eq!(
+            edge_file_mtime(&conn, "facets/work/entities/20260304.jsonl"),
+            Some(0)
+        );
+        assert_sqlite_and_fts_integrity(&conn);
+        drop(conn);
+
+        fs::remove_file(root.join("entities")).expect("remove blocking entities file");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        let retry = scan_journal(&root, true, "20260717").expect("retry candidate load");
+        assert_eq!(retry.edges_indexed, 1);
+        assert_eq!(retry.edge_rows_inserted, 1);
+        assert_eq!(retry.failed, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after retry");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        assert!(edge_file_mtime(&conn, "facets/work/entities/20260304.jsonl").unwrap() > 0);
         fs::remove_dir_all(root).expect("cleanup candidate load failure root");
     }
 
@@ -1230,6 +1429,48 @@ mod tests {
     }
 
     #[test]
+    fn scan_removed_edge_trigger_failure_preserves_rows_and_mtime() {
+        let root = temp_root("edge-removal-trigger-rollback");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        let rel = "facets/work/entities/20260304.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        scan_journal(&root, true, "20260717").expect("initial edge scan");
+        let conn = open_index(&root).expect("open index");
+        let prior_mtime = edge_file_mtime(&conn, rel).expect("prior edge mtime");
+        create_abort_trigger(
+            &conn,
+            "abort_edge_file_delete",
+            "BEFORE",
+            "DELETE",
+            "edge_files",
+            Some("OLD.path='facets/work/entities/20260304.jsonl'"),
+        );
+        drop(conn);
+        fs::remove_file(root.join(rel)).expect("remove edge source");
+
+        let error = scan_journal(&root, true, "20260717").expect_err("trigger aborts edge removal");
+        assert!(error.to_string().contains("abort_edge_file_delete"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed edge removal");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(edge_file_mtime(&conn, rel), Some(prior_mtime));
+        assert_sqlite_and_fts_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup edge removal trigger root");
+    }
+
+    #[test]
     fn scan_changed_edge_file_replaces_rows() {
         let root = temp_root("edge-changed-file");
         seed_edge_entity(&root, "alice", "Alice Edge");
@@ -1284,6 +1525,96 @@ mod tests {
     }
 
     #[test]
+    fn scan_edge_trigger_failure_rolls_back_one_file_and_keeps_sibling() {
+        let root = temp_root("edge-trigger-rollback");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        seed_edge_entity(&root, "cora", "Cora Edge");
+        let failed_rel = "facets/work/entities/20260304.jsonl";
+        let sibling_rel = "facets/work/entities/20260305.jsonl";
+        write(
+            &root,
+            failed_rel,
+            r#"{"name":"Alice Edge","segments":["old-failed"]}
+{"name":"Bob Edge","segments":["old-failed"]}
+"#,
+        );
+        write(
+            &root,
+            sibling_rel,
+            r#"{"name":"Alice Edge","segments":["old-sibling"]}
+{"name":"Cora Edge","segments":["old-sibling"]}
+"#,
+        );
+        scan_journal(&root, true, "20260717").expect("initial edge scan");
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "UPDATE edge_files SET mtime=0 WHERE path IN (?, ?)",
+            params![failed_rel, sibling_rel],
+        )
+        .expect("force edge reindex");
+        create_abort_trigger(
+            &conn,
+            "abort_failed_edge_mtime",
+            "BEFORE",
+            "INSERT",
+            "edge_files",
+            Some("NEW.path='facets/work/entities/20260304.jsonl'"),
+        );
+        drop(conn);
+        write(
+            &root,
+            failed_rel,
+            r#"{"name":"Alice Edge","segments":["new-failed"]}
+{"name":"Cora Edge","segments":["new-failed"]}
+"#,
+        );
+        write(
+            &root,
+            sibling_rel,
+            r#"{"name":"Bob Edge","segments":["new-sibling"]}
+{"name":"Cora Edge","segments":["new-sibling"]}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("edge trigger scan");
+        assert_eq!(report.edges_indexed, 2);
+        assert_eq!(report.edge_rows_inserted, 1);
+        assert_eq!(report.failed, 1);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("facets/work/entities/20260304.jsonl")
+                && warning.contains("abort_failed_edge_mtime")
+        }));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed edge scan");
+        let rows = edge_rows(&conn);
+        assert!(rows.iter().any(|row| {
+            row.0 == "alice" && row.1 == "bob" && row.3 == "old-failed" && row.4 == failed_rel
+        }));
+        assert!(rows.iter().any(|row| {
+            row.0 == "bob" && row.1 == "cora" && row.3 == "new-sibling" && row.4 == sibling_rel
+        }));
+        assert_eq!(edge_file_mtime(&conn, failed_rel), Some(0));
+        assert!(edge_file_mtime(&conn, sibling_rel).unwrap() > 0);
+        assert_sqlite_and_fts_integrity(&conn);
+        drop_trigger(&conn, "abort_failed_edge_mtime");
+        drop(conn);
+
+        let retry = scan_journal(&root, true, "20260717").expect("edge trigger retry");
+        assert_eq!(retry.edges_indexed, 1);
+        assert_eq!(retry.edge_rows_inserted, 1);
+        assert_eq!(retry.failed, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after edge retry");
+        let rows = edge_rows(&conn);
+        assert!(rows.iter().any(|row| {
+            row.0 == "alice" && row.1 == "cora" && row.3 == "new-failed" && row.4 == failed_rel
+        }));
+        assert!(rows.iter().any(|row| {
+            row.0 == "bob" && row.1 == "cora" && row.3 == "new-sibling" && row.4 == sibling_rel
+        }));
+        fs::remove_dir_all(root).expect("cleanup edge trigger root");
+    }
+
+    #[test]
     fn rebuild_edges_is_idempotent_and_preserves_content_tables_and_sentinel() {
         let root = temp_root("edge-rebuild");
         seed_edge_entity(&root, "alice", "Alice Edge");
@@ -1332,6 +1663,71 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_edges_trigger_failure_rolls_back_full_rebuild() {
+        let root = temp_root("edge-rebuild-trigger-rollback");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        let rel = "facets/work/entities/20260304.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["fresh"]}
+{"name":"Bob Edge","segments":["fresh"]}
+"#,
+        );
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, anchor, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "stale",
+                "edge",
+                "co-present",
+                0_i64,
+                "co-presence",
+                rel,
+                "stale-anchor",
+                1_i64,
+            ],
+        )
+        .expect("seed stale edge");
+        conn.execute(
+            "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+            params![rel, 0_i64],
+        )
+        .expect("seed stale edge mtime");
+        create_abort_trigger(
+            &conn,
+            "abort_rebuild_edge_insert",
+            "BEFORE",
+            "INSERT",
+            "edges",
+            None,
+        );
+        drop(conn);
+
+        let report = rebuild_edges(&root).expect("rebuild reports trigger failure");
+        assert_eq!(report.failed, 1);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("facets/work/entities/20260304.jsonl")
+                && warning.contains("abort_rebuild_edge_insert")
+        }));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed rebuild");
+        assert_eq!(
+            edge_rows(&conn),
+            vec![(
+                "stale".to_string(),
+                "edge".to_string(),
+                1,
+                "stale-anchor".to_string(),
+                rel.to_string(),
+            )]
+        );
+        assert_eq!(edge_file_mtime(&conn, rel), Some(0));
+        assert_sqlite_and_fts_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup edge rebuild trigger root");
+    }
+
+    #[test]
     fn rescan_file_indexes_edge_rows_for_facet_entity_file() {
         let root = temp_root("edge-rescan-file");
         seed_edge_entity(&root, "alice", "Alice Edge");
@@ -1361,6 +1757,66 @@ mod tests {
             1
         );
         fs::remove_dir_all(root).expect("cleanup edge rescan file root");
+    }
+
+    #[test]
+    fn rescan_file_edge_failure_returns_error_and_preserves_prior_rows() {
+        let root = temp_root("edge-rescan-file-failure");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        let rel = "facets/work/entities/20260230.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, anchor, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "stale",
+                "edge",
+                "co-present",
+                0_i64,
+                "co-presence",
+                rel,
+                "stale-anchor",
+                1_i64,
+            ],
+        )
+        .expect("seed stale edge");
+        conn.execute(
+            "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+            params![rel, 0_i64],
+        )
+        .expect("seed stale edge mtime");
+        drop(conn);
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s2"]}
+{"name":"Bob Edge","segments":["s2"]}
+"#,
+        );
+
+        let error = rescan_file(&root, Path::new(rel)).expect_err("rescan edge failure");
+        assert!(error.to_string().contains("Skipping edge extraction"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed edge rescan");
+        assert_eq!(
+            edge_rows(&conn),
+            vec![(
+                "stale".to_string(),
+                "edge".to_string(),
+                1,
+                "stale-anchor".to_string(),
+                rel.to_string(),
+            )]
+        );
+        assert_eq!(edge_file_mtime(&conn, rel), Some(0));
+        assert_sqlite_and_fts_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup edge rescan failure root");
     }
 
     #[test]
@@ -1405,6 +1861,99 @@ mod tests {
             0
         );
         fs::remove_dir_all(root).expect("cleanup mtime root");
+    }
+
+    #[test]
+    fn scan_content_trigger_failure_rolls_back_chunks_and_mtime_then_retries() {
+        let root = temp_root("content-trigger-rollback");
+        let rel = "20260717/talents/flow.md";
+        write(&root, &format!("chronicle/{rel}"), "# Flow\n\nold content");
+        scan_journal(&root, true, "20260717").expect("initial scan");
+        let conn = open_index(&root).expect("open index");
+        conn.execute("UPDATE files SET mtime=0 WHERE path=?", [rel])
+            .expect("force reindex");
+        create_abort_trigger(
+            &conn,
+            "abort_content_file_mtime",
+            "BEFORE",
+            "INSERT",
+            "files",
+            Some("NEW.path='20260717/talents/flow.md'"),
+        );
+        drop(conn);
+        write(&root, &format!("chronicle/{rel}"), "# Flow\n\nnew content");
+
+        let error = scan_journal(&root, true, "20260717").expect_err("trigger aborts scan");
+        assert!(error.to_string().contains("abort_content_file_mtime"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed scan");
+        assert_eq!(chunk_content(&conn, rel), "# Flow\n\nold content");
+        assert_eq!(file_mtime(&conn, rel), 0);
+        assert_sqlite_and_fts_integrity(&conn);
+        drop_trigger(&conn, "abort_content_file_mtime");
+        drop(conn);
+
+        let retry = scan_journal(&root, true, "20260717").expect("retry content scan");
+        assert_eq!(retry.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after retry");
+        assert_eq!(chunk_content(&conn, rel), "# Flow\n\nnew content");
+        assert!(file_mtime(&conn, rel) > 0);
+        fs::remove_dir_all(root).expect("cleanup content trigger root");
+    }
+
+    #[test]
+    fn rescan_file_trigger_failure_rolls_back_chunks_and_mtime() {
+        let root = temp_root("rescan-trigger-rollback");
+        let rel = "20260717/talents/flow.md";
+        write(&root, &format!("chronicle/{rel}"), "# Flow\n\nold content");
+        scan_journal(&root, true, "20260717").expect("initial scan");
+        let conn = open_index(&root).expect("open index");
+        conn.execute("UPDATE files SET mtime=0 WHERE path=?", [rel])
+            .expect("force reindex");
+        create_abort_trigger(
+            &conn,
+            "abort_rescan_file_mtime",
+            "BEFORE",
+            "INSERT",
+            "files",
+            Some("NEW.path='20260717/talents/flow.md'"),
+        );
+        drop(conn);
+        write(&root, &format!("chronicle/{rel}"), "# Flow\n\nnew content");
+
+        let error = rescan_file(&root, Path::new(rel)).expect_err("trigger aborts rescan file");
+        assert!(error.to_string().contains("abort_rescan_file_mtime"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed rescan");
+        assert_eq!(chunk_content(&conn, rel), "# Flow\n\nold content");
+        assert_eq!(file_mtime(&conn, rel), 0);
+        assert_sqlite_and_fts_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup rescan trigger root");
+    }
+
+    #[test]
+    fn scan_removed_content_trigger_failure_preserves_chunks_and_mtime() {
+        let root = temp_root("content-removal-trigger-rollback");
+        let rel = "20260717/talents/flow.md";
+        write(&root, &format!("chronicle/{rel}"), "# Flow\n\nremove me");
+        scan_journal(&root, true, "20260717").expect("initial scan");
+        let conn = open_index(&root).expect("open index");
+        create_abort_trigger(
+            &conn,
+            "abort_content_file_delete",
+            "BEFORE",
+            "DELETE",
+            "files",
+            Some("OLD.path='20260717/talents/flow.md'"),
+        );
+        drop(conn);
+        fs::remove_file(root.join(format!("chronicle/{rel}"))).expect("remove source");
+
+        let error = scan_journal(&root, true, "20260717").expect_err("trigger aborts removal");
+        assert!(error.to_string().contains("abort_content_file_delete"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed removal");
+        assert_eq!(chunk_content(&conn, rel), "# Flow\n\nremove me");
+        assert!(file_mtime(&conn, rel) > 0);
+        assert_sqlite_and_fts_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup content removal trigger root");
     }
 
     #[test]
@@ -1684,20 +2233,35 @@ mod tests {
     }
 
     #[test]
-    fn scan_segment_aggregate_warns_and_skips_unreadable_talent_markdown() {
+    fn scan_segment_aggregate_incomplete_preserves_prior_rows_and_retries() {
         let root = temp_root("segment-unreadable-talent");
         let segment = "20260717/default/104000_300";
+        let talent_rel = "20260717/default/104000_300/talents/audio.md";
         write_stream(&root, "20260717", "default", "104000_300");
         write(
             &root,
-            "chronicle/20260717/default/104000_300/talents/audio.md",
-            "# Audio\n\nReadable aggregate phrase",
+            &format!("chronicle/{talent_rel}"),
+            "# Audio\n\nInitial aggregate phrase",
         );
-        let invalid = root.join("chronicle/20260717/default/104000_300/talents/bad.md");
+        scan_journal(&root, true, "20260717").expect("initial segment scan");
+        let conn = open_index(&root).expect("open index");
+        assert!(segment_aggregate_content(&conn, segment).contains("Initial aggregate phrase"));
+        conn.execute("UPDATE files SET mtime=0 WHERE path=?", [talent_rel])
+            .expect("force source reindex");
+        drop(conn);
+
+        write(
+            &root,
+            &format!("chronicle/{talent_rel}"),
+            "# Audio\n\nFresh aggregate phrase",
+        );
+        let bad_rel = "20260717/default/104000_300/talents/bad.md";
+        let invalid = root.join(format!("chronicle/{bad_rel}"));
         fs::write(&invalid, [0xff]).expect("write invalid segment markdown");
 
         let report = scan_journal(&root, true, "20260717").expect("scan unreadable segment talent");
-        assert!(report.indexed >= 1);
+        assert_eq!(report.indexed, 0);
+        assert_eq!(report.skipped, 2);
         assert!(
             report
                 .warnings
@@ -1707,7 +2271,28 @@ mod tests {
         );
         let conn = Connection::open(db_path(&root)).expect("open db");
         let content = segment_aggregate_content(&conn, segment);
-        assert!(content.contains("Readable aggregate phrase"));
+        assert!(content.contains("Initial aggregate phrase"));
+        assert!(!content.contains("Fresh aggregate phrase"));
+        assert_eq!(file_mtime(&conn, talent_rel), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260717/default/104000_300/talents/bad.md'"
+            ),
+            0
+        );
+        drop(conn);
+
+        fs::write(&invalid, "# Bad\n\nRepaired aggregate phrase").expect("repair segment markdown");
+        let retry = scan_journal(&root, true, "20260717").expect("retry segment aggregate");
+        assert_eq!(retry.indexed, 2);
+        assert_eq!(retry.skipped, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after aggregate retry");
+        let content = segment_aggregate_content(&conn, segment);
+        assert!(content.contains("Fresh aggregate phrase"));
+        assert!(content.contains("Repaired aggregate phrase"));
+        assert!(file_mtime(&conn, talent_rel) > 0);
+        assert!(file_mtime(&conn, bad_rel) > 0);
         fs::remove_dir_all(root).expect("cleanup unreadable segment root");
     }
 
@@ -2118,6 +2703,65 @@ mod tests {
             0
         );
         fs::remove_dir_all(root).expect("cleanup empty entity search root");
+    }
+
+    #[test]
+    fn entity_search_trigger_failure_rolls_back_rows_and_watermarks_then_retries() {
+        let root = temp_root("entity-search-trigger-rollback");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Old","type":"Person"}"#,
+        );
+        scan_journal(&root, true, "20260717").expect("initial entity search scan");
+        let conn = open_index(&root).expect("open index");
+        assert_eq!(
+            chunk_content(&conn, "entity_search:alice"),
+            "Alice Old (Person)"
+        );
+        conn.execute(
+            "UPDATE files SET mtime=0 WHERE path='entity_search:__mtime__'",
+            [],
+        )
+        .expect("force entity search rebuild");
+        create_abort_trigger(
+            &conn,
+            "abort_entity_search_count",
+            "BEFORE",
+            "INSERT",
+            "files",
+            Some("NEW.path='entity_search:__count__'"),
+        );
+        drop(conn);
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice New","type":"Person"}"#,
+        );
+
+        let error = scan_journal(&root, true, "20260717").expect_err("entity trigger aborts");
+        assert!(error.to_string().contains("abort_entity_search_count"));
+        let conn = Connection::open(db_path(&root)).expect("open db after failed entity search");
+        assert_eq!(
+            chunk_content(&conn, "entity_search:alice"),
+            "Alice Old (Person)"
+        );
+        assert_eq!(file_mtime(&conn, "entity_search:__mtime__"), 0);
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), 1);
+        assert_sqlite_and_fts_integrity(&conn);
+        drop_trigger(&conn, "abort_entity_search_count");
+        drop(conn);
+
+        let retry = scan_journal(&root, true, "20260717").expect("retry entity search");
+        assert_eq!(retry.failed, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after entity retry");
+        assert_eq!(
+            chunk_content(&conn, "entity_search:alice"),
+            "Alice New (Person)"
+        );
+        assert!(file_mtime(&conn, "entity_search:__mtime__") > 0);
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), 1);
+        fs::remove_dir_all(root).expect("cleanup entity trigger root");
     }
 
     #[test]
@@ -3111,13 +3755,48 @@ not json
     }
 
     #[test]
-    fn reset_semantics_remove_only_main_database() {
+    fn reset_then_full_scan_reindexes_from_empty() {
         let root = temp_root("reset-scan");
-        open_index(&root).expect("open index");
-        fs::write(root.join("indexer/journal.sqlite-wal"), "wal").expect("write wal");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        write(
+            &root,
+            "chronicle/20260717/talents/flow.md",
+            "# Flow\n\nbefore",
+        );
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        scan_journal(&root, true, "20260717").expect("initial scan before reset");
+        let conn = Connection::open(db_path(&root)).expect("open db before reset");
+        assert!(count(&conn, "SELECT count(*) FROM chunks") > 0);
+        assert!(count(&conn, "SELECT count(*) FROM edges") > 0);
+        drop(conn);
+
         reset_index(&root).expect("reset index");
-        assert!(!db_path(&root).exists());
-        assert!(root.join("indexer/journal.sqlite-wal").exists());
+        let conn = Connection::open(db_path(&root)).expect("open db after reset");
+        assert_eq!(count(&conn, "SELECT count(*) FROM chunks"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        drop(conn);
+
+        let report = scan_journal(&root, true, "20260717").expect("full scan after reset");
+        assert_eq!(report.indexed, 2);
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after full rescan");
+        assert!(count(&conn, "SELECT count(*) FROM chunks") > 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        assert_sqlite_and_fts_integrity(&conn);
         fs::remove_dir_all(root).expect("cleanup reset root");
     }
 }

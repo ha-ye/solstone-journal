@@ -112,6 +112,9 @@ fn run_indexer(options: IndexerOptions) -> ExitCode {
                 for warning in report.warnings {
                     eprintln!("warning: {warning}");
                 }
+                if report.failed > 0 {
+                    return ExitCode::from(EXIT_TEMPFAIL);
+                }
             }
             Err(error) => {
                 eprintln!("indexer edge rebuild failed: {error}");

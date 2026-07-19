@@ -24,8 +24,8 @@ idx UNINDEXED,
 time_bucket UNINDEXED
 )";
 // Source of truth: solstone/think/indexer/edges.py EDGES_SCHEMA_PATH / EDGES_SCHEMA_VERSION
-const EDGES_SCHEMA_PATH: &str = "edges:__schema__";
-const EDGES_SCHEMA_VERSION: i64 = 1;
+pub(crate) const EDGES_SCHEMA_PATH: &str = "edges:__schema__";
+pub(crate) const EDGES_SCHEMA_VERSION: i64 = 1;
 const CREATE_EDGE_FILES: &str =
     "CREATE TABLE IF NOT EXISTS edge_files(path TEXT PRIMARY KEY, mtime INTEGER)";
 const CREATE_EDGES: &str = "\
@@ -59,17 +59,44 @@ pub fn open_index(journal: &Path) -> Result<Connection, StoreError> {
     let index_dir = journal.join(INDEX_DIR);
     fs::create_dir_all(&index_dir)?;
     let mut conn = Connection::open(db_path(journal))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    conn.execute_batch(
+        "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+    )?;
     ensure_schema(&mut conn)?;
     Ok(conn)
 }
 
 pub fn reset_index(journal: &Path) -> Result<(), StoreError> {
-    match fs::remove_file(db_path(journal)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(StoreError::Io(error)),
+    let index_dir = journal.join(INDEX_DIR);
+    fs::create_dir_all(&index_dir)?;
+    let mut conn = Connection::open(db_path(journal))?;
+    conn.execute_batch(
+        "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+    )?;
+    let tx = conn.transaction()?;
+
+    if sqlite_table_exists(&tx, "chunks")? {
+        tx.execute("DROP TABLE chunks", [])?;
+    } else {
+        for table in [
+            "chunks_config",
+            "chunks_docsize",
+            "chunks_content",
+            "chunks_idx",
+            "chunks_data",
+        ] {
+            tx.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+        }
     }
+    tx.execute("DROP INDEX IF EXISTS edges_path", [])?;
+    tx.execute("DROP INDEX IF EXISTS idx_edges_src", [])?;
+    tx.execute("DROP INDEX IF EXISTS idx_edges_dst", [])?;
+    tx.execute("DROP TABLE IF EXISTS edges", [])?;
+    tx.execute("DROP TABLE IF EXISTS edge_files", [])?;
+    tx.execute("DROP TABLE IF EXISTS files", [])?;
+    create_schema(&tx)?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn ensure_schema(conn: &mut Connection) -> Result<(), StoreError> {
@@ -81,19 +108,33 @@ fn ensure_schema(conn: &mut Connection) -> Result<(), StoreError> {
     // DDL is IF NOT EXISTS and the sentinel REPLACE rewrites an invariant value.
     // Native relies on --reset for any future edge schema change.
     let tx = conn.transaction()?;
-    tx.execute(CREATE_FILES, [])?;
-    tx.execute(CREATE_CHUNKS, [])?;
-    tx.execute(CREATE_EDGE_FILES, [])?;
-    tx.execute(CREATE_EDGES, [])?;
-    tx.execute(CREATE_EDGES_PATH_INDEX, [])?;
-    tx.execute(CREATE_EDGES_SRC_INDEX, [])?;
-    tx.execute(CREATE_EDGES_DST_INDEX, [])?;
-    tx.execute(
+    create_schema(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn create_schema(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute(CREATE_FILES, [])?;
+    conn.execute(CREATE_CHUNKS, [])?;
+    conn.execute(CREATE_EDGE_FILES, [])?;
+    conn.execute(CREATE_EDGES, [])?;
+    conn.execute(CREATE_EDGES_PATH_INDEX, [])?;
+    conn.execute(CREATE_EDGES_SRC_INDEX, [])?;
+    conn.execute(CREATE_EDGES_DST_INDEX, [])?;
+    conn.execute(
         "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
         params![EDGES_SCHEMA_PATH, EDGES_SCHEMA_VERSION],
     )?;
-    tx.commit()?;
     Ok(())
+}
+
+fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool, StoreError> {
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
 }
 
 #[cfg(test)]
@@ -207,6 +248,10 @@ mod tests {
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("synchronous");
         assert_eq!(synchronous, 1);
+        let busy_timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("busy timeout");
+        assert_eq!(busy_timeout, 5000);
         let files_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='files'",
@@ -330,16 +375,92 @@ mod tests {
     }
 
     #[test]
-    fn reset_removes_only_main_database_file() {
+    fn reset_rebuilds_schema_without_unlinking_database_files() {
         let root = temp_root("reset");
-        fs::create_dir_all(root.join(INDEX_DIR)).expect("create index dir");
-        fs::write(db_path(&root), "db").expect("write db");
-        fs::write(root.join(INDEX_DIR).join("journal.sqlite-wal"), "wal").expect("write wal");
-        fs::write(root.join(INDEX_DIR).join("journal.sqlite-shm"), "shm").expect("write shm");
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES ('stale', 'stale.md', '', '', 'note', '', 0, '')",
+            [],
+        )
+        .expect("seed chunk");
+        conn.execute("REPLACE INTO files(path, mtime) VALUES ('stale.md', 1)", [])
+            .expect("seed file");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, weight) VALUES ('a', 'b', 'related', 0, 'test', 'edge.jsonl', 1)",
+            [],
+        )
+        .expect("seed edge");
+        assert!(db_path(&root).is_file());
+        assert!(root.join(INDEX_DIR).join("journal.sqlite-wal").is_file());
+        assert!(root.join(INDEX_DIR).join("journal.sqlite-shm").is_file());
         reset_index(&root).expect("reset index");
-        assert!(!db_path(&root).exists());
-        assert!(root.join(INDEX_DIR).join("journal.sqlite-wal").exists());
-        assert!(root.join(INDEX_DIR).join("journal.sqlite-shm").exists());
+        assert!(db_path(&root).is_file());
+        assert!(root.join(INDEX_DIR).join("journal.sqlite-wal").is_file());
+        assert!(root.join(INDEX_DIR).join("journal.sqlite-shm").is_file());
+
+        let reset_conn = Connection::open(db_path(&root)).expect("open reset db");
+        assert!(table_exists(&reset_conn, "files"));
+        assert!(table_exists(&reset_conn, "chunks"));
+        assert!(table_exists(&reset_conn, "edge_files"));
+        assert!(table_exists(&reset_conn, "edges"));
+        assert_eq!(count_rows(&reset_conn, "files"), 0);
+        assert_eq!(count_rows(&reset_conn, "chunks"), 0);
+        assert_eq!(count_rows(&reset_conn, "edges"), 0);
+        assert_eq!(
+            edge_sentinel_json(&reset_conn),
+            json!({"path": EDGES_SCHEMA_PATH, "mtime": EDGES_SCHEMA_VERSION})
+        );
+        assert_sqlite_integrity(&reset_conn);
+        drop(reset_conn);
+        drop(conn);
         fs::remove_dir_all(root).expect("cleanup reset root");
+    }
+
+    #[test]
+    fn reset_recovers_from_orphaned_fts_shadow_tables() {
+        let root = temp_root("reset-orphan-shadow");
+        fs::create_dir_all(root.join(INDEX_DIR)).expect("create index dir");
+        let conn = Connection::open(db_path(&root)).expect("open incomplete db");
+        conn.execute_batch(
+            "\
+CREATE TABLE files(path TEXT PRIMARY KEY, mtime INTEGER);
+CREATE TABLE chunks_config(k PRIMARY KEY, v) WITHOUT ROWID;
+CREATE TABLE chunks_docsize(id INTEGER PRIMARY KEY, sz BLOB);
+CREATE TABLE chunks_content(id INTEGER PRIMARY KEY, c0, c1, c2, c3, c4, c5, c6, c7);
+CREATE TABLE chunks_idx(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
+CREATE TABLE chunks_data(id INTEGER PRIMARY KEY, block BLOB);
+CREATE TABLE edge_files(path TEXT PRIMARY KEY, mtime INTEGER);
+",
+        )
+        .expect("seed incomplete schema");
+        drop(conn);
+
+        reset_index(&root).expect("reset incomplete schema");
+        let conn = Connection::open(db_path(&root)).expect("open reset db");
+        assert!(table_exists(&conn, "chunks"));
+        assert!(table_exists(&conn, "files"));
+        assert!(table_exists(&conn, "edges"));
+        assert_eq!(
+            edge_sentinel_json(&conn),
+            json!({"path": EDGES_SCHEMA_PATH, "mtime": EDGES_SCHEMA_VERSION})
+        );
+        assert_sqlite_integrity(&conn);
+        fs::remove_dir_all(root).expect("cleanup reset root");
+    }
+
+    fn count_rows(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count rows")
+    }
+
+    fn assert_sqlite_integrity(conn: &Connection) {
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok");
+        conn.execute("INSERT INTO chunks(chunks) VALUES('integrity-check')", [])
+            .expect("fts integrity check");
     }
 }
