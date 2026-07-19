@@ -190,6 +190,16 @@ if [[ "$MODE" == "dry-run-linux" ]]; then
     exit 0
 fi
 
+LOCAL_STATUS_FILE=$(mktemp)
+TMP_FILES+=("$LOCAL_STATUS_FILE")
+LOCAL_REF=$(git rev-parse HEAD)
+git status --porcelain --untracked-files=normal > "$LOCAL_STATUS_FILE"
+python3 scripts/check_release_preflight.py remote-state \
+    --label "local release tree" \
+    --expected-ref "$GIT_REF" \
+    --actual-ref "$LOCAL_REF" \
+    --status-file "$LOCAL_STATUS_FILE"
+
 # 2. macOS arm64 wheel: build helper + sign + notarize + bundle on pro5e
 echo "==> [2/5] pro5e: building macosx_14_0_arm64 wheel from $GIT_REF"
 if ! ssh -o ConnectTimeout=5 "$PRO5E_HOST" true 2>/dev/null; then
