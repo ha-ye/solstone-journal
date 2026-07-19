@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import Any
 
 from solstone.think.providers import local_install, parakeet_install
 from solstone.think.providers.fit_report import FitReport
@@ -81,6 +82,10 @@ def _observe_same_target(provider: str, target_sha: str) -> int:
     return 0 if final["install_state"] == "installed" else 1
 
 
+def _status_exit_code(status: dict[str, Any]) -> int:
+    return 1 if status.get("install_state") == "failed" else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="journal install-provider",
@@ -130,7 +135,7 @@ def main() -> int:
         finally:
             lease.release()
         print(json.dumps(status, indent=2))
-        return 0
+        return _status_exit_code(status)
 
     readiness = local_install.inspect_readiness()
     if readiness.ready:
@@ -159,7 +164,7 @@ def main() -> int:
     finally:
         lease.release()
     print(json.dumps(status, indent=2))
-    return 0
+    return _status_exit_code(status)
 
 
 if __name__ == "__main__":

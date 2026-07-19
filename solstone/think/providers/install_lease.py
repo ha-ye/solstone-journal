@@ -97,6 +97,21 @@ def acquire_install_lease(
     return None
 
 
+def assert_install_lease_owned(
+    lease: InstallLease | None, provider: str
+) -> InstallLease:
+    """Return lease only when the caller still owns its held flock handle."""
+    validated = _validate_provider(provider)
+    if lease is None or lease.provider != validated or not lease.owned:
+        raise RuntimeError(f"{validated} install lease is not owned")
+    assert lease._fd is not None
+    try:
+        os.fstat(lease._fd)
+    except OSError as exc:
+        raise RuntimeError(f"{validated} install lease handle is not valid") from exc
+    return lease
+
+
 def probe_install_lease_free(
     provider: str,
     *,
@@ -144,6 +159,7 @@ __all__ = [
     "LEASE_ATTEMPTS",
     "LEASE_MODE",
     "acquire_install_lease",
+    "assert_install_lease_owned",
     "lease_path",
     "probe_install_lease_free",
     "prune_unowned_lease_file",

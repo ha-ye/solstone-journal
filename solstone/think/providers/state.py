@@ -35,6 +35,7 @@ READINESS_REASON_CODES = frozenset(
     {
         "provider_key_missing",
         "ram_insufficient",
+        "local_artifact_proof_unavailable",
         "local_model_missing",
         "local_model_installing",
         "local_model_loading",
@@ -325,9 +326,7 @@ def local_status_dict() -> dict:
         server_healthy = local_server.is_healthy()
         if not runtime_available:
             issues.append("runtime_missing")
-        if readiness.status == "proof-unavailable":
-            issues.append(readiness.reason_code)
-        elif not model_installed:
+        if not model_installed:
             issues.append("model_missing")
         if configured and not server_healthy:
             issues.append("server_unhealthy")
@@ -361,9 +360,7 @@ def local_status_dict() -> dict:
     server_healthy = local_server.is_healthy()
     if not readiness.host.get("gpu_available", True):
         issues.append("gpu_unavailable")
-    if readiness.status == "proof-unavailable":
-        issues.append(readiness.reason_code)
-    elif readiness.proof["binary"]["status"] == "missing-or-mismatched":
+    if readiness.proof["binary"]["status"] == "missing-or-mismatched":
         issues.append("binary_missing")
     if readiness.proof["model"]["status"] == "missing-or-mismatched":
         issues.append("model_missing")
@@ -519,6 +516,17 @@ def _local_readiness_for_provider(
                 source="local_install",
             )
 
+        if readiness.status == "proof-unavailable":
+            return _state(
+                provider,
+                interface,
+                "blocked",
+                "local_artifact_proof_unavailable",
+                model=model_id,
+                message=readiness.reason_code,
+                source="local_install",
+            )
+
         if not (
             readiness.host["platform_supported"]
             and readiness.host["package_available"]
@@ -598,6 +606,17 @@ def _local_readiness_for_provider(
             "blocked",
             "gpu_unavailable",
             model=model_id,
+            source="local_install",
+        )
+
+    if readiness.status == "proof-unavailable":
+        return _state(
+            provider,
+            interface,
+            "blocked",
+            "local_artifact_proof_unavailable",
+            model=model_id,
+            message=readiness.reason_code,
             source="local_install",
         )
 

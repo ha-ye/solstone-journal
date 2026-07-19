@@ -61,6 +61,21 @@ class LocalBootstrapStartError(RuntimeError):
     """Raised when the bootstrap worker could not be started."""
 
 
+def _ack_install_transfer(
+    ack: threading.Event,
+    cancel: threading.Event | None,
+    transfer_lock: threading.Lock | None,
+) -> bool:
+    if cancel is None or transfer_lock is None:
+        ack.set()
+        return True
+    with transfer_lock:
+        if cancel.is_set():
+            return False
+        ack.set()
+        return True
+
+
 def _is_mlx_backend() -> bool:
     return sys.platform == "darwin"
 
@@ -330,38 +345,38 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
             "reason_code": "install_busy",
         }, 409
 
-    with _INSTALL_LOCK:
-        status = _read_status()
-        if readiness.ready:
-            lease.release()
-            return {"install_state": "installed"}, 200
+    try:
+        with _INSTALL_LOCK:
+            status = _read_status()
+            if readiness.ready:
+                lease.release()
+                return {"install_state": "installed"}, 200
 
-        if status["install_state"] == "idle" and installed:
-            lease.release()
-            return {"install_state": "installed"}, 200
+            if status["install_state"] == "idle" and installed:
+                lease.release()
+                return {"install_state": "installed"}, 200
 
-        if (
-            status["install_state"] in IN_FLIGHT_STATES
-            and status["target_fingerprint_sha256"] == target_sha
-        ):
-            lease.release()
-            return {"install_state": status["install_state"]}, 200
+            if (
+                status["install_state"] in IN_FLIGHT_STATES
+                and status["target_fingerprint_sha256"] == target_sha
+            ):
+                lease.release()
+                return {"install_state": status["install_state"]}, 200
 
-        # Only genuinely-missing artifacts reach here: build the host-fit report
-        # and gate the download. Already-installed/in-flight paths returned above
-        # without ever constructing a fit report.
-        report = _fit_report_for_model(model_id)
-        blocked_reason = _blocked_reason(report)
-        if blocked_reason:
-            lease.release()
-            raise LocalBootstrapUnavailableError(blocked_reason)
+            # Only genuinely-missing artifacts reach here: build the host-fit report
+            # and gate the download. Already-installed/in-flight paths returned above
+            # without ever constructing a fit report.
+            report = _fit_report_for_model(model_id)
+            blocked_reason = _blocked_reason(report)
+            if blocked_reason:
+                lease.release()
+                raise LocalBootstrapUnavailableError(blocked_reason)
 
-        disk_reason = _disk_blocked_reason(report)
-        if disk_reason:
-            lease.release()
-            raise LocalBootstrapUnavailableError(disk_reason)
+            disk_reason = _disk_blocked_reason(report)
+            if disk_reason:
+                lease.release()
+                raise LocalBootstrapUnavailableError(disk_reason)
 
-        try:
             worker = (
                 _mlx_bootstrap_worker if _is_mlx_backend() else _run_bootstrap_worker
             )
@@ -372,18 +387,28 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                 owner={"entry": "thinking_bootstrap"},
             )
             ack = threading.Event()
+            cancel = threading.Event()
+            transfer_lock = threading.Lock()
             thread = threading.Thread(
                 target=worker,
-                args=(model_id, lease, attempt_status, ack),
+                args=(model_id, lease, attempt_status, ack, cancel, transfer_lock),
                 name=f"local-provider-bootstrap-{model_id}",
                 daemon=True,
             )
-        except Exception as exc:
-            lease.release()
-            _write_status(transition_state(status, new_state="failed", error=str(exc)))
-            raise LocalBootstrapStartError(str(exc)) from exc
-
-        _INSTALL_THREADS[model_id] = thread
+            _INSTALL_THREADS[model_id] = thread
+    except LocalBootstrapUnavailableError:
+        lease.release()
+        raise
+    except Exception as exc:
+        lease.release()
+        if "attempt_status" in locals():
+            try:
+                _write_status(
+                    transition_state(attempt_status, new_state="failed", error=str(exc))
+                )
+            except Exception:
+                logger.exception("could not mark failed local bootstrap construction")
+        raise
 
     try:
         thread.start()
@@ -397,11 +422,17 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         )
         raise LocalBootstrapStartError(str(exc)) from exc
     if not ack.wait(timeout=5.0):
-        with _INSTALL_LOCK:
-            if _INSTALL_THREADS.get(model_id) is thread:
-                _INSTALL_THREADS.pop(model_id, None)
-        lease.release()
-        raise LocalBootstrapStartError("local bootstrap worker did not acknowledge")
+        cancelled = False
+        with transfer_lock:
+            if not ack.is_set():
+                cancel.set()
+                cancelled = True
+        if cancelled:
+            with _INSTALL_LOCK:
+                if _INSTALL_THREADS.get(model_id) is thread:
+                    _INSTALL_THREADS.pop(model_id, None)
+            lease.release()
+            raise LocalBootstrapStartError("local bootstrap worker did not acknowledge")
     return {"install_state": "downloading"}, 202
 
 
@@ -434,9 +465,15 @@ def _mlx_bootstrap_worker(
     lease: InstallLease,
     attempt_status: InstallStatus,
     ack: threading.Event,
+    cancel: threading.Event | None = None,
+    transfer_lock: threading.Lock | None = None,
 ) -> None:
     current_thread = threading.current_thread()
-    ack.set()
+    if not _ack_install_transfer(ack, cancel, transfer_lock):
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is current_thread:
+                _INSTALL_THREADS.pop(model, None)
+        return
     try:
         mlx_install.install_local_mlx(
             model,
@@ -466,9 +503,15 @@ def _run_bootstrap_worker(
     lease: InstallLease,
     attempt_status: InstallStatus,
     ack: threading.Event,
+    cancel: threading.Event | None = None,
+    transfer_lock: threading.Lock | None = None,
 ) -> None:
     current_thread = threading.current_thread()
-    ack.set()
+    if not _ack_install_transfer(ack, cancel, transfer_lock):
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model) is current_thread:
+                _INSTALL_THREADS.pop(model, None)
+        return
     try:
         local_install.install_local(
             model,

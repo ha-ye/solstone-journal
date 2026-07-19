@@ -87,7 +87,6 @@ Failed-reason lookup:
 | State value | Rendered detail |
 |---|---|
 | `install_error` is null/empty | `INSTALL_FAILED_FALLBACK` |
-| `install_error === INSTALL_FAILED_NO_PROGRESS` | that constant value |
 | `install_error === INSTALL_FAILED_UV_MISSING` | that constant value |
 | other non-empty string | the server-provided string |
 

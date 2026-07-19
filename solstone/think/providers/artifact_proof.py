@@ -11,11 +11,10 @@ import logging
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Callable, Literal
 
 from solstone.think.journal_io.atomic import atomic_replace
 from solstone.think.journal_io.locking import hold_lock
@@ -377,26 +376,6 @@ def prove_cuda_sidecar(
     return ProofResult("ready", "ready", cache_hit=False)
 
 
-def prove_launch_probe(
-    command: Sequence[str], *, timeout_s: float = 10.0
-) -> ProofResult:
-    """Classify a probe command: rejected is repair-needed; no verdict is unavailable."""
-    try:
-        completed = subprocess.run(
-            list(command),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _log_unavailable("probe could not produce a verdict", exc)
-        return ProofResult("proof-unavailable", "probe_unavailable")
-    if completed.returncode == 0:
-        return ProofResult("ready", "ready")
-    return ProofResult("missing-or-mismatched", "probe_rejected")
-
-
 def _inventory_file_fingerprints(
     root: Path,
     manifest: dict[str, Any],
@@ -426,6 +405,7 @@ def _inventory_file_fingerprints(
                     "st_ino": stat_result.st_ino,
                     "size": stat_result.st_size,
                     "st_mtime_ns": stat_result.st_mtime_ns,
+                    "st_ctime_ns": stat_result.st_ctime_ns,
                     "expected_sha256": entry.get("sha256") or "symlink-no-content",
                 }
             )
@@ -490,18 +470,21 @@ def _write_affirmative_cache(
     manifest_identity_key: str | None = None,
     manifest_hash: str | None = None,
 ) -> None:
-    with hold_lock(path, mode=PRIVATE_MODE):
-        cache = _read_proof_cache(path)
-        cache.setdefault("affirmative", {})[proof_key] = {"ok": True}
-        if manifest_identity_key is not None and manifest_hash is not None:
-            cache.setdefault("manifest_hashes", {})[manifest_identity_key] = (
-                manifest_hash
+    try:
+        with hold_lock(path, mode=PRIVATE_MODE):
+            cache = _read_proof_cache(path)
+            cache.setdefault("affirmative", {})[proof_key] = {"ok": True}
+            if manifest_identity_key is not None and manifest_hash is not None:
+                cache.setdefault("manifest_hashes", {})[manifest_identity_key] = (
+                    manifest_hash
+                )
+            atomic_replace(
+                path,
+                json.dumps(cache, indent=2, sort_keys=True) + "\n",
+                mode=PRIVATE_MODE,
             )
-        atomic_replace(
-            path,
-            json.dumps(cache, indent=2, sort_keys=True) + "\n",
-            mode=PRIVATE_MODE,
-        )
+    except Exception as exc:
+        LOG.warning("could not update provider artifact proof cache: %s", exc)
 
 
 def _proof_key(
@@ -527,6 +510,7 @@ def _proof_key(
                         "st_ino",
                         "size",
                         "st_mtime_ns",
+                        "st_ctime_ns",
                         "executable",
                         "expected_sha256",
                     }
@@ -569,6 +553,7 @@ def _stat_identity_from_result(
         "st_ino": stat_result.st_ino,
         "size": stat_result.st_size,
         "st_mtime_ns": stat_result.st_mtime_ns,
+        "st_ctime_ns": stat_result.st_ctime_ns,
     }
 
 
@@ -664,7 +649,6 @@ __all__ = [
     "mlx_variant_manifest_path",
     "proof_cache_path",
     "prove_cuda_sidecar",
-    "prove_launch_probe",
     "prove_manifest",
     "publish_staged_tree",
     "read_manifest",

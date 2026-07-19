@@ -25,7 +25,11 @@ from solstone.think.providers.artifact_proof import (
     prove_manifest,
     write_manifest,
 )
-from solstone.think.providers.install_lease import InstallLease, acquire_install_lease
+from solstone.think.providers.install_lease import (
+    InstallLease,
+    acquire_install_lease,
+    assert_install_lease_owned,
+)
 from solstone.think.providers.install_state import (
     InstallStatus,
     assert_install_attempt_current,
@@ -605,6 +609,7 @@ def install_local_mlx(
             raise MLXInstallUnavailableError(
                 "Local provider install is already running."
             )
+    lease = assert_install_lease_owned(lease, _LOCAL_NAME)
     try:
         if attempt_status is None:
             attempt_status = begin_or_replace_install_attempt(
@@ -637,6 +642,7 @@ def install_local_mlx(
                 LOG.warning("MLX provider host fit warning:\n%s", rendered)
 
             _write_status(transition_state(_read_status(), new_state="downloading"))
+            assert_install_lease_owned(lease, _LOCAL_NAME)
             snapshot_dir = Path(
                 huggingface_hub.snapshot_download(
                     repo_id=spec.repo,
@@ -646,6 +652,7 @@ def install_local_mlx(
 
             _write_status(transition_state(_read_status(), new_state="verifying"))
             metadata = validate_snapshot_sha256(spec, snapshot_dir)
+            assert_install_lease_owned(lease, _LOCAL_NAME)
             assert_install_attempt_current(attempt_status)
             _write_snapshot_manifest(
                 spec,
@@ -657,7 +664,9 @@ def install_local_mlx(
 
             _write_status(transition_state(_read_status(), new_state="installing"))
             if spec.name == GEMMA4_26B_A4B_4BIT:
+                assert_install_lease_owned(lease, _LOCAL_NAME)
                 variant_dir = create_gemma4_variant(snapshot_dir)
+                assert_install_lease_owned(lease, _LOCAL_NAME)
                 assert_install_attempt_current(attempt_status)
                 _write_variant_manifest(
                     spec,
@@ -667,6 +676,7 @@ def install_local_mlx(
                 )
 
         final_readiness = inspect_readiness(model_id)
+        assert_install_lease_owned(lease, _LOCAL_NAME)
         current = assert_install_attempt_current(attempt_status)
         if final_readiness.ready:
             return _write_status(transition_state(current, new_state="installed"))

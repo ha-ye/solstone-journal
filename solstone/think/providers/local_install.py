@@ -15,6 +15,7 @@ import platform
 import shutil
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -27,9 +28,14 @@ from solstone.think.providers.artifact_proof import (
     build_manifest,
     prove_cuda_sidecar,
     prove_manifest,
+    publish_staged_tree,
     write_manifest,
 )
-from solstone.think.providers.install_lease import InstallLease, acquire_install_lease
+from solstone.think.providers.install_lease import (
+    InstallLease,
+    acquire_install_lease,
+    assert_install_lease_owned,
+)
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
@@ -407,8 +413,9 @@ def _write_vulkan_manifest(
     pin: dict[str, str],
     attempt_status: InstallStatus | None,
     fingerprint: dict[str, Any] | None = None,
+    root: Path | None = None,
 ) -> None:
-    install_dir = binary_install_dir(artifact_key, pin)
+    install_dir = root or binary_install_dir(artifact_key, pin)
     fingerprint = fingerprint or target_fingerprint()
     manifest = build_manifest(
         provider=LOCAL_PROVIDER_NAME,
@@ -603,7 +610,11 @@ def install_llama_server(
         f"{pin['release_tag']}/{pin['filename']}"
     )
     install_dir = binary_install_dir(artifact_key, pin)
-    tarball = install_dir / pin["filename"]
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=install_dir.parent)
+    )
+    tarball = staging / pin["filename"]
 
     try:
         _write_local_status(
@@ -614,33 +625,33 @@ def install_llama_server(
             transition_state(_read_local_status(), new_state="verifying")
         )
         _verify_sha256(tarball, pin["sha256"])
-        if install_dir.exists():
-            for child in install_dir.iterdir():
-                if child != tarball:
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-        _safe_extract_tarball(tarball, install_dir)
-        extracted = _find_extracted_binary(install_dir, pin["binary_name"])
-        final_path = binary_path_for_pin(artifact_key, pin)
+        _safe_extract_tarball(tarball, staging)
+        extracted = _find_extracted_binary(staging, pin["binary_name"])
+        final_path = staging / pin["binary_name"]
         if attempt_status is not None:
             assert_install_attempt_current(attempt_status)
         inner_dir = extracted.parent
-        if inner_dir != install_dir:
+        if inner_dir != staging:
             for item in inner_dir.iterdir():
-                shutil.move(str(item), str(install_dir / item.name))
+                shutil.move(str(item), str(staging / item.name))
             inner_dir.rmdir()
+        tarball.unlink(missing_ok=True)
         _chmod_executable(final_path)
-        _clear_macos_quarantine(install_dir)
+        _clear_macos_quarantine(staging)
         _write_vulkan_manifest(
             artifact_key=artifact_key,
             pin=pin,
             attempt_status=attempt_status,
             fingerprint=fingerprint,
+            root=staging,
         )
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status)
+        publish_staged_tree(staging, install_dir)
         return _read_local_status()
     except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
         _write_local_status(
             transition_state(_read_local_status(), new_state="failed", error=str(exc))
         )
@@ -740,6 +751,7 @@ def install_local(
             raise LocalProviderError(
                 "install_busy", "Local provider install is already running."
             )
+    lease = assert_install_lease_owned(lease, LOCAL_PROVIDER_NAME)
 
     try:
         if attempt_status is None:
@@ -770,11 +782,13 @@ def install_local(
                 LOG.warning("local provider host fit warning:\n%s", rendered)
 
             if readiness.proof["binary"]["status"] == "missing-or-mismatched":
+                assert_install_lease_owned(lease, LOCAL_PROVIDER_NAME)
                 install_llama_server(
                     attempt_status=attempt_status,
                     fingerprint=fingerprint,
                 )
             if readiness.proof["model"]["status"] == "missing-or-mismatched":
+                assert_install_lease_owned(lease, LOCAL_PROVIDER_NAME)
                 install_model(
                     selected_model,
                     attempt_status=attempt_status,
@@ -782,6 +796,7 @@ def install_local(
                 )
 
         final_readiness = inspect_readiness(selected_model)
+        assert_install_lease_owned(lease, LOCAL_PROVIDER_NAME)
         current = assert_install_attempt_current(attempt_status)
         if final_readiness.ready:
             return _write_local_status(transition_state(current, new_state="installed"))

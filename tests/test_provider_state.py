@@ -46,23 +46,42 @@ def _readiness(
     gpu_probe_ok: bool | None = None,
     install_state: str = "installed",
     backend: str = "vulkan",
+    status: str | None = None,
+    reason_code: str | None = None,
+    proof_status: str | None = None,
+    proof_reason_code: str | None = None,
 ) -> ReadinessOutcome:
     missing_binary = not binary
     missing_model = not model
-    status = "ready" if binary and model and ram and gpu else "missing-or-mismatched"
-    reason_code = (
+    outcome_status = (
+        status
+        if status is not None
+        else "ready"
+        if binary and model and ram and gpu
+        else "missing-or-mismatched"
+    )
+    outcome_reason_code = reason_code or (
         "ready"
-        if status == "ready"
+        if outcome_status == "ready"
         else "binary_missing"
         if missing_binary
         else "model_missing"
         if missing_model
+        else status
+        if status is not None
         else "host_unfit"
+    )
+    binary_proof_status = proof_status or (
+        "ready" if binary else "missing-or-mismatched"
+    )
+    model_proof_status = proof_status or ("ready" if model else "missing-or-mismatched")
+    proof_reason = proof_reason_code or (
+        outcome_reason_code if proof_status is not None else None
     )
     return ReadinessOutcome(
         provider="local",
-        status=status,
-        reason_code=reason_code,
+        status=outcome_status,
+        reason_code=outcome_reason_code,
         target={"model_id": LOCAL_MODEL},
         install={
             "install_state": install_state,
@@ -91,13 +110,15 @@ def _readiness(
         },
         proof={
             "binary": {
-                "status": "ready" if binary else "missing-or-mismatched",
-                "reason_code": "ready" if binary else "manifest_missing",
+                "status": binary_proof_status,
+                "reason_code": proof_reason
+                or ("ready" if binary else "manifest_missing"),
                 "cache_hit": False,
             },
             "model": {
-                "status": "ready" if model else "missing-or-mismatched",
-                "reason_code": "ready" if model else "manifest_missing",
+                "status": model_proof_status,
+                "reason_code": proof_reason
+                or ("ready" if model else "manifest_missing"),
                 "cache_hit": False,
             },
         },
@@ -110,15 +131,20 @@ def _mlx_readiness(
     model_installed: bool = True,
     platform_supported: bool = True,
     package_available: bool = True,
+    status: str | None = None,
+    reason_code: str | None = None,
 ) -> ReadinessOutcome:
+    outcome_status = (
+        status
+        if status is not None
+        else "ready"
+        if model_installed and platform_supported and package_available
+        else "missing-or-mismatched"
+    )
     return ReadinessOutcome(
         provider="local",
-        status=(
-            "ready"
-            if model_installed and platform_supported and package_available
-            else "missing-or-mismatched"
-        ),
-        reason_code="ready" if model_installed else "manifest_missing",
+        status=outcome_status,
+        reason_code=reason_code or ("ready" if model_installed else "manifest_missing"),
         target={"model_id": QWEN_35_9B},
         install={
             "install_state": install_state,
@@ -432,6 +458,24 @@ def test_local_readiness_missing_artifacts(monkeypatch):
 
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "local_model_missing"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_proof_unavailable_is_not_repair_prompt(monkeypatch):
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(
+            status="proof-unavailable",
+            reason_code="inventory_member_io_error",
+        ),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "local_artifact_proof_unavailable"
+    assert provider_state.message == "inventory_member_io_error"
     assert provider_state.source == "local_install"
 
 
@@ -754,6 +798,37 @@ def test_local_status_dict_backend_fields_are_additive(monkeypatch, backend):
     assert status["issues"] == []
 
 
+def test_local_status_dict_does_not_surface_proof_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "solstone.think.models.is_local_provider_needed",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: local_endpoint.LocalEndpoint("", "", None, is_bundled=True),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model=None: _readiness(
+            binary=False,
+            model=False,
+            status="proof-unavailable",
+            reason_code="inventory_member_io_error",
+            proof_status="proof-unavailable",
+            proof_reason_code="inventory_member_io_error",
+        ),
+    )
+    monkeypatch.setattr(local_server, "is_healthy", lambda: True)
+
+    status = state.local_status_dict()
+
+    assert "inventory_member_io_error" not in status["issues"]
+    assert "binary_missing" not in status["issues"]
+    assert "model_missing" not in status["issues"]
+
+
 def test_local_readiness_darwin_ready(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     _block_linux_local_path(monkeypatch)
@@ -816,6 +891,31 @@ def test_local_readiness_darwin_missing(monkeypatch):
 
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "local_model_missing"
+    assert provider_state.source == "local_install"
+
+
+def test_local_readiness_darwin_proof_unavailable_is_not_repair_prompt(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _block_linux_local_path(monkeypatch)
+    monkeypatch.setattr(
+        mlx_install,
+        "inspect_readiness",
+        lambda *a, **k: _mlx_readiness(
+            status="proof-unavailable",
+            reason_code="manifest_io_error",
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "probe_state",
+        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    )
+
+    provider_state = state.readiness_for_provider("local", "generate")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "local_artifact_proof_unavailable"
+    assert provider_state.message == "manifest_io_error"
     assert provider_state.source == "local_install"
 
 

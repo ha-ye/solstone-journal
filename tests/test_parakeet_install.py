@@ -209,6 +209,89 @@ def test_install_parakeet_server_relocates_and_chmods_binary(
     ).ready
 
 
+def test_install_parakeet_server_extract_failure_preserves_prior_tree(
+    tmp_path, monkeypatch
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    install_dir = parakeet_install.binary_install_dir("cpu")
+    binary = parakeet_install.binary_path("cpu")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"old server")
+    binary.chmod(0o755)
+    fingerprint = parakeet_install.target_fingerprint()
+    parakeet_install._write_binary_manifest(
+        backend="cpu",
+        attempt_status=None,
+        fingerprint=fingerprint,
+        journal_path=None,
+    )
+    old_manifest = artifact_manifest_path(install_dir).read_text(encoding="utf-8")
+
+    def fake_download(_url, dest, **_kwargs):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"archive")
+
+    monkeypatch.setattr(parakeet_install, "_download_file", fake_download)
+    monkeypatch.setattr(
+        parakeet_install, "_verify_sha256", lambda _path, _expected: None
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "_safe_extract_tarball",
+        lambda _tarball, _dest: (_ for _ in ()).throw(RuntimeError("extract broke")),
+    )
+
+    with pytest.raises(RuntimeError, match="extract broke"):
+        parakeet_install.install_parakeet_server("cpu")
+
+    assert binary.read_bytes() == b"old server"
+    assert (
+        artifact_manifest_path(install_dir).read_text(encoding="utf-8") == old_manifest
+    )
+
+
+def test_install_parakeet_server_manifest_failure_preserves_prior_tree(
+    tmp_path, monkeypatch
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    install_dir = parakeet_install.binary_install_dir("cpu")
+    binary = parakeet_install.binary_path("cpu")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"old server")
+    binary.chmod(0o755)
+    fingerprint = parakeet_install.target_fingerprint()
+    parakeet_install._write_binary_manifest(
+        backend="cpu",
+        attempt_status=None,
+        fingerprint=fingerprint,
+        journal_path=None,
+    )
+    old_manifest = artifact_manifest_path(install_dir).read_text(encoding="utf-8")
+    tarball = _server_tarball(tmp_path, "cpu")
+
+    def fake_download(_url, dest, **_kwargs):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tarball, dest)
+
+    monkeypatch.setattr(parakeet_install, "_download_file", fake_download)
+    monkeypatch.setattr(
+        parakeet_install, "_verify_sha256", lambda _path, _expected: None
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "_write_binary_manifest",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("manifest broke")),
+    )
+
+    with pytest.raises(RuntimeError, match="manifest broke"):
+        parakeet_install.install_parakeet_server("cpu")
+
+    assert binary.read_bytes() == b"old server"
+    assert (
+        artifact_manifest_path(install_dir).read_text(encoding="utf-8") == old_manifest
+    )
+
+
 def test_sha256_mismatch_fails_closed_and_records_failed_state(
     tmp_path, monkeypatch
 ) -> None:

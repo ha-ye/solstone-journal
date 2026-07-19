@@ -1941,10 +1941,18 @@ def _run_parakeet_bootstrap_worker(
     lease: Any | None = None,
     attempt_status: Any | None = None,
     ack: threading.Event | None = None,
+    cancel: threading.Event | None = None,
+    transfer_lock: threading.Lock | None = None,
 ) -> None:
     """Install parakeet.cpp artifacts in the background, then retry startup."""
     if ack is not None:
-        ack.set()
+        if cancel is not None and transfer_lock is not None:
+            with transfer_lock:
+                if cancel.is_set():
+                    return
+                ack.set()
+        else:
+            ack.set()
     try:
         from solstone.think.providers import parakeet_install
 
@@ -1995,12 +2003,16 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
             journal_path=journal_path,
         )
         ack = threading.Event()
+        cancel = threading.Event()
+        transfer_lock = threading.Lock()
         thread = threading.Thread(
             target=lambda: _run_parakeet_bootstrap_worker(
                 journal_path,
                 lease,
                 attempt_status,
                 ack,
+                cancel,
+                transfer_lock,
             ),
             name="parakeet-cpp-provider-bootstrap",
             daemon=True,
@@ -2021,8 +2033,14 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
         logging.exception("could not start parakeet.cpp provider bootstrap worker")
         return
     if not ack.wait(timeout=5.0):
-        lease.release()
-        logging.error("parakeet.cpp provider bootstrap worker did not acknowledge")
+        cancelled = False
+        with transfer_lock:
+            if not ack.is_set():
+                cancel.set()
+                cancelled = True
+        if cancelled:
+            lease.release()
+            logging.error("parakeet.cpp provider bootstrap worker did not acknowledge")
 
 
 def _build_parakeet_cmd(

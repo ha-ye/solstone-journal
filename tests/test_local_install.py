@@ -448,7 +448,7 @@ def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypat
             assert lib_path.exists()
             assert lib_path.read_bytes() == f"fake {lib_name}".encode()
         assert not (install_dir / inner_name).exists()
-        assert (install_dir / pin["filename"]).exists()
+        assert not (install_dir / pin["filename"]).exists()
 
     result = local_install.install_llama_server()
 
@@ -459,13 +459,15 @@ def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypat
         pin_identity=local_install._vulkan_pin_identity(artifact_key, pin),
     ).ready
     assert_flat_layout()
-    assert quarantine_calls == [install_dir]
+    assert len(quarantine_calls) == 1
+    assert quarantine_calls[0].parent == install_dir.parent
 
     result = local_install.install_llama_server()
 
     assert result["install_state"] == "verifying"
     assert_flat_layout()
-    assert quarantine_calls == [install_dir, install_dir]
+    assert len(quarantine_calls) == 2
+    assert all(path.parent == install_dir.parent for path in quarantine_calls)
 
 
 def test_install_llama_server_sha256_mismatch_fails_closed_before_extract(
@@ -518,7 +520,126 @@ def test_install_llama_server_sha256_mismatch_fails_closed_before_extract(
     assert not artifact_manifest_path(install_dir).exists()
     assert not binary_path.exists()
     assert not (install_dir / inner_name).exists()
-    assert sorted(child.name for child in install_dir.iterdir()) == [pin["filename"]]
+    assert not install_dir.exists()
+
+
+def test_install_llama_server_extract_failure_preserves_prior_tree(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    pin = local_install.pin_for_current_platform()
+    install_dir = local_install.binary_install_dir(artifact_key, pin)
+    binary = local_install.binary_path_for_pin(artifact_key, pin)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"old binary")
+    binary.chmod(0o755)
+    _write_ready_vulkan_manifest(artifact_key=artifact_key, pin=pin)
+    old_manifest = artifact_manifest_path(install_dir).read_text(encoding="utf-8")
+
+    def fake_download(_url, dest, **_kwargs):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"archive")
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(
+        local_install,
+        "_safe_extract_tarball",
+        lambda _tarball, _dest: (_ for _ in ()).throw(RuntimeError("extract broke")),
+    )
+
+    with pytest.raises(RuntimeError, match="extract broke"):
+        local_install.install_llama_server()
+
+    assert binary.read_bytes() == b"old binary"
+    assert (
+        artifact_manifest_path(install_dir).read_text(encoding="utf-8") == old_manifest
+    )
+
+
+def test_install_llama_server_manifest_failure_preserves_prior_tree(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    pin = local_install.pin_for_current_platform()
+    install_dir = local_install.binary_install_dir(artifact_key, pin)
+    binary = local_install.binary_path_for_pin(artifact_key, pin)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"old binary")
+    binary.chmod(0o755)
+    _write_ready_vulkan_manifest(artifact_key=artifact_key, pin=pin)
+    old_manifest = artifact_manifest_path(install_dir).read_text(encoding="utf-8")
+    fixture_root = tmp_path / "fixture" / "inner"
+    fixture_root.mkdir(parents=True)
+    (fixture_root / pin["binary_name"]).write_bytes(b"new binary")
+    fixture_tarball = tmp_path / pin["filename"]
+    with tarfile.open(fixture_tarball, "w:gz") as archive:
+        archive.add(fixture_root, arcname="inner")
+
+    def fake_download(_url, dest, **_kwargs):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture_tarball, dest)
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(
+        local_install,
+        "_write_vulkan_manifest",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("manifest broke")),
+    )
+
+    with pytest.raises(RuntimeError, match="manifest broke"):
+        local_install.install_llama_server()
+
+    assert binary.read_bytes() == b"old binary"
+    assert (
+        artifact_manifest_path(install_dir).read_text(encoding="utf-8") == old_manifest
+    )
+
+
+def test_install_llama_server_publish_failure_preserves_prior_tree(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    pin = local_install.pin_for_current_platform()
+    install_dir = local_install.binary_install_dir(artifact_key, pin)
+    binary = local_install.binary_path_for_pin(artifact_key, pin)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"old binary")
+    binary.chmod(0o755)
+    _write_ready_vulkan_manifest(artifact_key=artifact_key, pin=pin)
+    old_manifest = artifact_manifest_path(install_dir).read_text(encoding="utf-8")
+    fixture_root = tmp_path / "fixture" / "inner"
+    fixture_root.mkdir(parents=True)
+    (fixture_root / pin["binary_name"]).write_bytes(b"new binary")
+    fixture_tarball = tmp_path / pin["filename"]
+    with tarfile.open(fixture_tarball, "w:gz") as archive:
+        archive.add(fixture_root, arcname="inner")
+
+    def fake_download(_url, dest, **_kwargs):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture_tarball, dest)
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(
+        local_install,
+        "publish_staged_tree",
+        lambda _staging, _install_dir: (_ for _ in ()).throw(
+            RuntimeError("publish broke")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="publish broke"):
+        local_install.install_llama_server()
+
+    assert binary.read_bytes() == b"old binary"
+    assert (
+        artifact_manifest_path(install_dir).read_text(encoding="utf-8") == old_manifest
+    )
 
 
 def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):

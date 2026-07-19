@@ -124,6 +124,34 @@ def test_install_provider_local_prints_install_status(monkeypatch, capsys):
     }
 
 
+def test_install_provider_local_terminal_failed_returns_nonzero(monkeypatch, capsys):
+    def install_local(**_kwargs):
+        return {
+            "provider": "local",
+            "install_state": "failed",
+            "install_error": "manifest_io_error",
+        }
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "local"])
+    monkeypatch.setattr(
+        install_provider.local_install,
+        "inspect_readiness",
+        lambda: _readiness("local", ready=False),
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "local")
+    monkeypatch.setattr(fit_report, "build_local_fit_report", lambda _model: _fit("ok"))
+    monkeypatch.setattr(install_provider.local_install, "install_local", install_local)
+
+    assert install_provider.main() == 1
+
+    assert lease.released is True
+    assert json.loads(capsys.readouterr().out) == {
+        "provider": "local",
+        "install_state": "failed",
+        "install_error": "manifest_io_error",
+    }
+
+
 def test_install_provider_parakeet_prints_disclosure_and_status(monkeypatch, capsys):
     calls = []
 
@@ -159,6 +187,38 @@ def test_install_provider_parakeet_prints_disclosure_and_status(monkeypatch, cap
     assert "huggingface.co" in captured.err
     banned = {"capture", "watch", "record", "monitor", "track", "collect"}
     assert not (banned & set(captured.err.lower().split()))
+
+
+def test_install_provider_parakeet_terminal_failed_returns_nonzero(monkeypatch, capsys):
+    def install_parakeet(**_kwargs):
+        return {
+            "provider": "parakeet",
+            "install_state": "failed",
+            "install_error": "manifest_io_error",
+        }
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "parakeet"])
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "inspect_readiness",
+        lambda: _readiness("parakeet", ready=False),
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "parakeet")
+    monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "install_parakeet",
+        install_parakeet,
+    )
+
+    assert install_provider.main() == 1
+
+    assert lease.released is True
+    assert json.loads(capsys.readouterr().out) == {
+        "provider": "parakeet",
+        "install_state": "failed",
+        "install_error": "manifest_io_error",
+    }
 
 
 def test_install_provider_local_skips_fit_report_when_ready(monkeypatch, capsys):

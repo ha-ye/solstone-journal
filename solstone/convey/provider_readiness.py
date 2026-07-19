@@ -121,6 +121,15 @@ _ENTRIES: dict[str, _Entry] = {
         ),
         recovery_action=_THINKING_ACTION,
     ),
+    "local_artifact_proof_unavailable": _Entry(
+        klass="runtime",
+        summary="local provider files could not be verified",
+        detail=(
+            "Existing local files were left in place. Check file permissions or "
+            "disk I/O, then try again."
+        ),
+        recovery_action=None,
+    ),
     "local_model_missing": _Entry(
         klass="setup",
         summary="local model setup is not finished",

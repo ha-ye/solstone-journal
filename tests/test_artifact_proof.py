@@ -19,7 +19,6 @@ from solstone.think.providers.artifact_proof import (
     mlx_variant_manifest_path,
     proof_cache_path,
     prove_cuda_sidecar,
-    prove_launch_probe,
     prove_manifest,
     publish_staged_tree,
     write_manifest,
@@ -57,13 +56,6 @@ def _manifest(root: Path, *, pin: str = "pin") -> dict:
     )
 
 
-def _write_probe_script(tmp_path: Path, body: str, *, mode: int = 0o755) -> Path:
-    script = tmp_path / "probe.sh"
-    script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
-    script.chmod(mode)
-    return script
-
-
 def test_manifest_write_mode_and_proof_cache_zero_rehash(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     root = tmp_path / "artifact"
@@ -96,6 +88,136 @@ def test_manifest_write_mode_and_proof_cache_zero_rehash(tmp_path, monkeypatch) 
     assert calls == []
     assert (manifest_path.stat().st_mode & 0o777) == 0o600
     assert (proof_cache_path("local").stat().st_mode & 0o777) == 0o600
+
+
+def test_manifest_proof_cache_write_failure_is_nonfatal(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    root = tmp_path / "artifact"
+    manifest = _manifest(root)
+    manifest_path = artifact_manifest_path(root)
+    write_manifest(manifest_path, manifest)
+
+    def fail_cache_replace(path: Path, *_args, **_kwargs) -> None:
+        if path == proof_cache_path("local"):
+            raise PermissionError("cache read-only")
+        raise AssertionError(f"unexpected replace path: {path}")
+
+    monkeypatch.setattr(artifact_proof, "atomic_replace", fail_cache_replace)
+
+    result = prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "pin"},
+    )
+
+    assert result.ready
+    assert result.cache_hit is False
+    assert "could not update provider artifact proof cache" in caplog.text
+
+
+def test_manifest_cache_invalidates_on_chmod_after_cached_success(
+    tmp_path, monkeypatch
+) -> None:
+    _skip_if_root_chmod_is_ignored()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    root = tmp_path / "artifact"
+    manifest = _manifest(root)
+    manifest_path = artifact_manifest_path(root)
+    write_manifest(manifest_path, manifest)
+    assert prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "pin"},
+    ).ready
+    artifact = root / "bin" / "thing"
+    artifact.chmod(0o000)
+
+    try:
+        result = prove_manifest(
+            manifest_path,
+            provider="local",
+            pin_identity={"pin": "pin"},
+        )
+    finally:
+        artifact.chmod(0o755)
+
+    assert result.status == "proof-unavailable"
+    assert result.reason_code == "inventory_member_io_error"
+    assert result.cache_hit is False
+
+
+def test_manifest_cache_invalidates_on_touch_after_cached_success(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    root = tmp_path / "artifact"
+    manifest = _manifest(root)
+    manifest_path = artifact_manifest_path(root)
+    write_manifest(manifest_path, manifest)
+    first = prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "pin"},
+    )
+    assert first.ready
+    calls: list[Path] = []
+    real_hash = artifact_proof._sha256_file
+
+    def spy(path: Path) -> str:
+        calls.append(path)
+        return real_hash(path)
+
+    artifact = root / "bin" / "thing"
+    stat_result = artifact.stat()
+    os.utime(
+        artifact,
+        ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1_000_000_000),
+    )
+    monkeypatch.setattr(artifact_proof, "_sha256_file", spy)
+
+    second = prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "pin"},
+    )
+
+    assert second.ready
+    assert second.cache_hit is False
+    assert artifact in calls
+
+
+def test_manifest_cache_invalidates_on_pin_change_after_cached_success(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    root = tmp_path / "artifact"
+    manifest = _manifest(root)
+    manifest_path = artifact_manifest_path(root)
+    write_manifest(manifest_path, manifest)
+    assert prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "pin"},
+    ).ready
+    calls: list[Path] = []
+
+    def spy(path: Path) -> str:
+        calls.append(path)
+        return "unused"
+
+    monkeypatch.setattr(artifact_proof, "_sha256_file", spy)
+
+    result = prove_manifest(
+        manifest_path,
+        provider="local",
+        pin_identity={"pin": "new"},
+    )
+
+    assert result.status == "missing-or-mismatched"
+    assert result.reason_code == "manifest_pin_mismatch"
+    assert calls == []
 
 
 def test_tree_without_manifest_is_repair_needed(tmp_path, monkeypatch) -> None:
@@ -362,24 +484,6 @@ def test_cuda_sidecar_unreadable_is_proof_unavailable_and_does_not_verify(
         assert (target / "llama-server").read_bytes() == b"server"
     finally:
         sidecar.chmod(0o600)
-
-
-def test_probe_launch_rejection_is_repair_needed(tmp_path) -> None:
-    script = _write_probe_script(tmp_path, "exit 7")
-
-    result = prove_launch_probe([str(script)], timeout_s=1)
-
-    assert result.status == "missing-or-mismatched"
-    assert result.reason_code == "probe_rejected"
-
-
-def test_probe_launch_unavailable_when_not_executable(tmp_path) -> None:
-    script = _write_probe_script(tmp_path, "exit 0", mode=0o644)
-
-    result = prove_launch_probe([str(script)], timeout_s=1)
-
-    assert result.status == "proof-unavailable"
-    assert result.reason_code == "probe_unavailable"
 
 
 def test_publish_staged_tree_restores_prior_tree_on_replace_failure(

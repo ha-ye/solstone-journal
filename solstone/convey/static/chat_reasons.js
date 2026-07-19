@@ -30,6 +30,10 @@
       "template": "local GPU check couldn't finish",
       "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}
     },
+    "local_artifact_proof_unavailable": {
+      "template": "local provider files could not be verified",
+      "action": null
+    },
     "local_model_missing": {
       "template": "local model setup is not finished",
       "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}

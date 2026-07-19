@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import subprocess
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -21,6 +24,7 @@ from solstone.think.providers.install_state import (
     InstallState,
     InstallStatus,
     make_idle_status,
+    provider_status_path,
     read_install_status,
     transition_state,
     write_install_status,
@@ -70,8 +74,8 @@ class _FakeThread:
 
     def start(self):
         type(self).start_count += 1
-        if self.args and hasattr(self.args[-1], "set"):
-            self.args[-1].set()
+        if len(self.args) >= 4 and hasattr(self.args[3], "set"):
+            self.args[3].set()
 
     def is_alive(self):
         return self.alive
@@ -83,6 +87,27 @@ class _FakeLease:
 
     def release(self) -> None:
         self.released = True
+
+
+def _lease_probe_from_subprocess(journal_path) -> str:
+    code = """
+from solstone.think.providers.install_lease import acquire_install_lease
+lease = acquire_install_lease("local")
+if lease is None:
+    print("busy")
+else:
+    print("free")
+    lease.release()
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=os.getcwd(),
+        env={**os.environ, "SOLSTONE_JOURNAL": str(journal_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
 
 
 def _write_local_status(
@@ -686,6 +711,99 @@ def test_start_bootstrap_insufficient_disk_blocks_before_worker(
     assert status["install_state"] == "idle"
 
 
+def test_start_bootstrap_malformed_status_releases_lease(settings_env, monkeypatch):
+    journal_path, _config = settings_env(_settings_config())
+    provider_status_path("local").parent.mkdir(parents=True, exist_ok=True)
+    provider_status_path("local").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "inspect_readiness",
+        lambda _model=None: _local_readiness(binary_installed=False),
+    )
+    monkeypatch.setattr(
+        local_bootstrap,
+        "get_availability_payload",
+        lambda _model: {
+            "binary_present": False,
+            "model_present": False,
+            "download_bytes": 1,
+        },
+    )
+
+    with pytest.raises(Exception, match="malformed install status"):
+        local_bootstrap.start_bootstrap(LOCAL_MODEL)
+
+    assert _lease_probe_from_subprocess(journal_path) == "free"
+
+
+def test_start_bootstrap_ack_timeout_releases_parent_lease_for_other_process(
+    settings_env, monkeypatch
+):
+    journal_path, _config = settings_env(_settings_config())
+    _write_local_status("idle")
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "inspect_readiness",
+        lambda _model=None: _local_readiness(binary_installed=False),
+    )
+    monkeypatch.setattr(
+        local_bootstrap,
+        "get_availability_payload",
+        lambda _model: {
+            "binary_present": False,
+            "model_present": False,
+            "download_bytes": 1,
+        },
+    )
+    monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
+    )
+
+    class _NeverStartedThread:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            type(self).instances.append(self)
+            self.target = kwargs.get("target")
+            self.args = kwargs.get("args", ())
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+    class _Event:
+        def __init__(self):
+            self._set = False
+
+        def set(self):
+            self._set = True
+
+        def is_set(self):
+            return self._set
+
+        def wait(self, timeout=None):
+            return False
+
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _NeverStartedThread)
+    monkeypatch.setattr(local_bootstrap.threading, "Event", _Event)
+    install_local = Mock()
+    monkeypatch.setattr(local_bootstrap.local_install, "install_local", install_local)
+
+    with pytest.raises(
+        local_bootstrap.LocalBootstrapStartError,
+        match="did not acknowledge",
+    ):
+        local_bootstrap.start_bootstrap(LOCAL_MODEL)
+
+    assert _lease_probe_from_subprocess(journal_path) == "free"
+    worker = _NeverStartedThread.instances[0]
+    assert worker.target is not None
+    worker.target(*worker.args)
+    install_local.assert_not_called()
+
+
 def test_local_bootstrap_status_returns_canonical_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
@@ -934,6 +1052,35 @@ def test_local_worker_delegates_to_top_level_installer_with_lease_and_attempt(
         "ack_set": True,
     }
     assert lease.released is True
+
+
+def test_local_worker_cancel_before_ack_does_not_install_or_release(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
+    cancel = threading.Event()
+    cancel.set()
+    transfer_lock = threading.Lock()
+    install_local = Mock()
+    monkeypatch.setattr(local_bootstrap.local_install, "install_local", install_local)
+
+    local_bootstrap._run_bootstrap_worker(
+        LOCAL_MODEL,
+        lease,
+        attempt_status,
+        ack,
+        cancel,
+        transfer_lock,
+    )
+
+    assert not ack.is_set()
+    install_local.assert_not_called()
+    assert lease.released is False
 
 
 @pytest.mark.parametrize(

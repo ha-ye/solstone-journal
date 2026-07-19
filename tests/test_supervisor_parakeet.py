@@ -696,6 +696,75 @@ def test_start_parakeet_server_starts_background_install_when_missing(
     assert parakeet_server.read_parakeet_placement() is None
 
 
+def test_parakeet_bootstrap_ack_timeout_cancels_late_worker(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from solstone.think.providers.install_lease import acquire_install_lease
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "target_fingerprint",
+        lambda journal_path=None: {"provider": "parakeet", "unit": "test"},
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.install_state.begin_or_replace_install_attempt",
+        lambda *_args, **_kwargs: {
+            "provider": "parakeet",
+            "install_state": "downloading",
+            "attempt_id": "attempt",
+        },
+    )
+
+    class _LateThread:
+        instances = []
+
+        def __init__(self, *, target, name, daemon):
+            type(self).instances.append(self)
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            return None
+
+    class _Event:
+        def __init__(self):
+            self._set = False
+
+        def set(self):
+            self._set = True
+
+        def is_set(self):
+            return self._set
+
+        def wait(self, timeout=None):
+            return False
+
+    install_parakeet = []
+    monkeypatch.setattr(supervisor.threading, "Thread", _LateThread)
+    monkeypatch.setattr(supervisor.threading, "Event", _Event)
+    monkeypatch.setattr(
+        parakeet_install,
+        "install_parakeet",
+        lambda **kwargs: install_parakeet.append(kwargs),
+    )
+
+    supervisor._start_parakeet_bootstrap_if_needed("missing")
+
+    reacquired = acquire_install_lease("parakeet", journal_path=journal)
+    assert reacquired is not None
+    reacquired.release()
+    assert _LateThread.instances
+    _LateThread.instances[0].target()
+    assert install_parakeet == []
+
+
 def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> None:
     calls: list[dict[str, Any]] = []
     requests: list[str] = []
@@ -724,6 +793,35 @@ def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> 
     assert requests == ["start"]
     assert ack.is_set()
     assert lease.released is True
+
+
+def test_parakeet_bootstrap_worker_cancel_before_ack_does_not_install_or_release(
+    monkeypatch,
+) -> None:
+    lease = _FakeLease()
+    attempt_status = {"attempt_id": "attempt"}
+    ack = supervisor.threading.Event()
+    cancel = supervisor.threading.Event()
+    cancel.set()
+    transfer_lock = supervisor.threading.Lock()
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        parakeet_install,
+        "install_parakeet",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    supervisor._run_parakeet_bootstrap_worker(
+        lease=lease,
+        attempt_status=attempt_status,
+        ack=ack,
+        cancel=cancel,
+        transfer_lock=transfer_lock,
+    )
+
+    assert not ack.is_set()
+    assert calls == []
+    assert lease.released is False
 
 
 def test_parakeet_bootstrap_worker_uses_captured_journal_path(

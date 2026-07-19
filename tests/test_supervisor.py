@@ -3947,6 +3947,42 @@ def test_supervisor_blocks_before_callosum_on_blocking_maint_failure(
     assert "retry-on-next-start" in captured.err
 
 
+def test_supervisor_continues_after_successful_blocking_maint_task(
+    tmp_path, monkeypatch
+):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    (tmp_path / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
+    task = MaintTask(
+        app="thinking",
+        name="001_migrate_provider_install_state",
+        script_path=Path("/dummy.py"),
+        retry_on_next_start=True,
+        blocks_supervisor_start=True,
+    )
+    result = MaintTaskResult(
+        task=task,
+        success=True,
+        exit_code=0,
+        state_file=tmp_path / "maint" / "thinking" / f"{task.name}.jsonl",
+    )
+    monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [result])
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+
+    def stop_after_callosum():
+        raise SystemExit(0)
+
+    start_mock = MagicMock(side_effect=stop_after_callosum)
+    monkeypatch.setattr(mod, "start_callosum_in_process", start_mock)
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == 0
+    start_mock.assert_called_once()
+
+
 def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):
     import fcntl
 

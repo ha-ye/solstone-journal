@@ -16,6 +16,7 @@ EXPECTED_CODES = {
     "ram_insufficient",
     "gpu_unavailable",
     "gpu_probe_failed",
+    "local_artifact_proof_unavailable",
     "local_model_missing",
     "model_missing",
     "binary_missing",

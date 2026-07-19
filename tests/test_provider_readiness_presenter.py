@@ -145,6 +145,19 @@ def test_unknown_status_uses_neutral_readiness_copy():
         assert view.recovery_action is None
 
 
+def test_proof_unavailable_copy_preserves_without_setup_prompt():
+    view = present_for_reason(
+        "local_artifact_proof_unavailable",
+        provider="local",
+        status="blocked",
+    )
+
+    assert view.severity == "attention"
+    assert view.summary == "local provider files could not be verified"
+    assert "left in place" in view.detail
+    assert view.recovery_action is None
+
+
 def test_blocking_reason_classification():
     for code in (
         "provider_key_missing",

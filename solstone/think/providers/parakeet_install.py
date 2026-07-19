@@ -13,6 +13,7 @@ import hashlib
 import logging
 import shutil
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -23,9 +24,14 @@ from solstone.think.providers.artifact_proof import (
     artifact_manifest_path,
     build_manifest,
     prove_manifest,
+    publish_staged_tree,
     write_manifest,
 )
-from solstone.think.providers.install_lease import InstallLease, acquire_install_lease
+from solstone.think.providers.install_lease import (
+    InstallLease,
+    acquire_install_lease,
+    assert_install_lease_owned,
+)
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
@@ -270,10 +276,11 @@ def _write_binary_manifest(
     attempt_status: InstallStatus | None,
     fingerprint: dict[str, Any] | None,
     journal_path: str | Path | None,
+    root: Path | None = None,
 ) -> None:
     artifact_key = parakeet_server_artifact_key()
     pin = _pin_for_backend(artifact_key, backend)
-    root = binary_install_dir(backend, journal_path)
+    root = root or binary_install_dir(backend, journal_path)
     fingerprint = fingerprint or target_fingerprint(journal_path=journal_path)
     manifest = build_manifest(
         provider=PARAKEET_PROVIDER_NAME,
@@ -445,7 +452,11 @@ def _install_parakeet_server_unlocked(
         f"{parakeet_readiness.PARAKEET_CPP_RELEASE_TAG}/{pin['filename']}"
     )
     install_dir = binary_install_dir(backend, journal_path)
-    tarball = install_dir / pin["filename"]
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=install_dir.parent)
+    )
+    tarball = staging / pin["filename"]
 
     try:
         _write_parakeet_status(
@@ -468,34 +479,34 @@ def _install_parakeet_server_unlocked(
             journal_path,
         )
         _verify_sha256(tarball, pin["sha256"])
-        if install_dir.exists():
-            for child in install_dir.iterdir():
-                if child != tarball:
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-        _safe_extract_tarball(tarball, install_dir)
+        _safe_extract_tarball(tarball, staging)
         extracted = _find_extracted_binary(
-            install_dir, parakeet_readiness.PARAKEET_CPP_BINARY_NAME
+            staging, parakeet_readiness.PARAKEET_CPP_BINARY_NAME
         )
-        final_path = binary_path(backend, journal_path)
+        final_path = staging / parakeet_readiness.PARAKEET_CPP_BINARY_NAME
         if attempt_status is not None:
             assert_install_attempt_current(attempt_status, journal_path=journal_path)
         inner_dir = extracted.parent
-        if inner_dir != install_dir:
+        if inner_dir != staging:
             for item in inner_dir.iterdir():
-                shutil.move(str(item), str(install_dir / item.name))
+                shutil.move(str(item), str(staging / item.name))
             inner_dir.rmdir()
+        tarball.unlink(missing_ok=True)
         _chmod_executable(final_path)
         _write_binary_manifest(
             backend=backend,
             attempt_status=attempt_status,
             fingerprint=fingerprint,
             journal_path=journal_path,
+            root=staging,
         )
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status, journal_path=journal_path)
+        publish_staged_tree(staging, install_dir)
         return _read_parakeet_status(journal_path)
     except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
         _write_parakeet_status(
             transition_state(
                 _read_parakeet_status(journal_path),
@@ -588,6 +599,7 @@ def install_parakeet(
             raise ParakeetProviderError(
                 "install_busy", "Parakeet provider install is already running."
             )
+    lease = assert_install_lease_owned(lease, PARAKEET_PROVIDER_NAME)
     try:
         if attempt_status is None:
             attempt_status = begin_or_replace_install_attempt(
@@ -626,6 +638,7 @@ def install_parakeet(
                     or readiness.proof[f"binary_{backend}"]["status"]
                     == "missing-or-mismatched"
                 ):
+                    assert_install_lease_owned(lease, PARAKEET_PROVIDER_NAME)
                     _install_parakeet_server_unlocked(
                         backend,
                         journal_path,
@@ -633,6 +646,7 @@ def install_parakeet(
                         fingerprint=fingerprint,
                     )
             if force or readiness.proof["model"]["status"] == "missing-or-mismatched":
+                assert_install_lease_owned(lease, PARAKEET_PROVIDER_NAME)
                 _install_model_unlocked(
                     journal_path,
                     attempt_status=attempt_status,
@@ -640,6 +654,7 @@ def install_parakeet(
                 )
 
         final_readiness = inspect_readiness(journal_path)
+        assert_install_lease_owned(lease, PARAKEET_PROVIDER_NAME)
         current = assert_install_attempt_current(
             attempt_status, journal_path=journal_path
         )
