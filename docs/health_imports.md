@@ -132,4 +132,5 @@ Run these before treating health import changes as complete:
 - `make check-journal-io-access`
 - `make check-journal-io-mechanic`
 
-Run `make ci` before committing or handing this to a release branch.
+Use the focused checks above while iterating. Run `make ci` once on the settled
+final tree before merge or release.

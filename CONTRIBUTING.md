@@ -109,13 +109,17 @@ For app work, read [docs/APPS.md](docs/APPS.md) before changing `solstone/apps/`
 Use the Makefile targets. The high-signal commands are:
 
 ```bash
-make test
 make test-only TEST=tests/test_utils.py::test_foo
 make test-app APP=settings
+make test
 make ci
 ```
 
-`make test` runs all unit tests — `tests/` plus every `solstone/apps/*/tests/`, in one parallel run — after a format check. `make ci` is the pre-commit gate: format-check, ruff, layer hygiene, and tests. Run it before committing.
+Use `make test-only` and `make test-app` as the development loop. `make test`
+runs all unit tests — `tests/` plus every `solstone/apps/*/tests/`, in one
+parallel run — after a format check. `make ci` is the canonical full gate:
+install checks plus the full unit suite. Run it once on the settled final tree
+before submitting, merging, or releasing, not before every intermediate commit.
 
 ```bash
 make test-only TEST="-k test_foo"              # one test by name/pattern

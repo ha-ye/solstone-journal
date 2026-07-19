@@ -89,7 +89,6 @@ Verified against `Makefile`. Grouped by use.
 | Target | When to use |
 |--------|-------------|
 | `make install` | First setup and whenever `pyproject.toml` or `uv.lock` changes. Creates `.venv/`, syncs deps, runs `make skills`. |
-| `make hopper-install` | Lean lode bootstrap — builds only `.installed` (venv + dev/host deps + skills) so `make ci` runs. Intentionally skips runtime/model provisioning (no `install-models`, parakeet build, or CUDA validation). |
 | `make skills` | Regenerate generated router references, then rewrite the `sol` + `journal` router skill symlinks into `journal/`. (`make install` depends on this; rarely run alone.) |
 | `make update` | Upgrade all deps to latest, regenerate `uv.lock`. Expect test churn. |
 | `make update-prices` | Refresh genai-prices model-cost data when adding a new provider model or when pricing tests fail. |
@@ -110,16 +109,24 @@ Verified against `Makefile`. Grouped by use.
 |--------|-------------|
 | `make format` | Auto-fix formatting and imports with ruff. Safe to run anytime; modifies files. |
 | `make format-check` | Format dry-run. Part of `make ci`; rarely run alone. |
-| `make test` | All unit tests — `tests/` + every `solstone/apps/*/tests/`, one parallel run. Format-check runs first; failures block tests. Fast inner loop. |
-| `make test-cov` | Same suite with full-repo terminal coverage; used by `make ci` / `make verify`. |
+| `make test` | Full unit suite — `tests/` + every `solstone/apps/*/tests/`, one parallel run. Format-check runs first; failures block tests. |
+| `make test-cov` | Same suite with full-repo terminal coverage; used by `make verify`. |
 | `make test-app APP=<name>` | Run a single app's tests (focus helper). |
 | `make test-only TEST=<path-or-pattern>` | Run a specific test file or pytest node id (`TEST="-k test_name"` also works). |
 | `make coverage` | HTML coverage report under `htmlcov/`. Occasional. |
 | `make watch` | pytest-watch — reruns tests on file change. Useful during a test-heavy sprint. |
-| `make ci` | Format-check + ruff + layer-hygiene + coverage tests. **Run before every commit.** |
-| `make verify` | Same steps as `make ci`. Either name is fine. |
+| `make ci` | Install checks plus the full unit suite. Canonical final-tree gate before merge or release. |
+| `make verify` | Install checks plus the coverage suite. Use when coverage is specifically required. |
 | `make install-checks` | The pre-test half of `make ci` (format-check + ruff + layer-hygiene). Called by `ci` / `verify`. |
 | `make check-layer-hygiene` | Run `scripts/check_layer_hygiene.py` alone. Useful when iterating on an L1–L2 violation flagged by CI. |
+
+During development, use the narrowest checks that prove the changed behavior:
+`make test-only`, `make test-app`, and specific `make check-*` targets. Run
+`make ci` once on the settled final tree before merge or release. Run it
+earlier only for changes to CI/test infrastructure, shared fixtures, packaging
+or dependencies, broad cross-cutting contracts, or when a clean baseline is
+necessary to diagnose the task. Do not rerun an unchanged failure merely to
+seek green.
 
 ### Verification against a running sandbox
 
@@ -140,7 +147,7 @@ Verified against `Makefile`. Grouped by use.
 
 | Target | When to use |
 |--------|-------------|
-| `make pre-commit` | Install pre-commit hooks (optional; most coders rely on `make ci` directly). |
+| `make pre-commit` | Install pre-commit hooks (optional). |
 | `make versions` | Print versions of Python, uv, and key deps. Diagnostic. |
 
 ### Don't use
@@ -313,7 +320,7 @@ Generic software principles (DRY, KISS, YAGNI, single responsibility, small focu
 ## 10. Commit hygiene
 
 - Small, focused commits with descriptive messages.
-- Run `make ci` before every commit.
+- Validate each commit with focused checks appropriate to its diff. The full `make ci` gate belongs on the final tree before merge or release, not before every intermediate commit.
 - Run `git` commands directly — not `git -C` — you're already in the repo.
 - Don't commit runtime artifacts written under `tests/fixtures/journal/` by `make dev` / `make sandbox` (`.gitignore` covers them; verify with `git status` anyway).
 

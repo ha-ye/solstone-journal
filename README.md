@@ -128,7 +128,8 @@ Run `sol help` for the full command reference.
 
 See [AGENTS.md](AGENTS.md) for development guidelines, coding standards, and testing instructions.
 
-Use `make dev` to run the full stack against test fixtures and `make ci` for pre-commit checks.
+Use `make dev` to run the full stack against test fixtures, focused test targets
+during development, and `make ci` on the final tree before merge or release.
 
 ## feedback
 

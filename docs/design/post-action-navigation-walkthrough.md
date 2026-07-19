@@ -42,9 +42,10 @@ Use this recipe on a fresh or sandbox journal to verify the facet-detail and Nee
 Run:
 
 ```sh
-make ci
-make test
 make test-app APP=settings
+
+# Final-tree gate before merge or release
+make ci
 ```
 
 Use `make verify-api` when API baseline coverage is being audited for this route set.

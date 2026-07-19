@@ -2,7 +2,7 @@
 
 ## Test Structure
 
-- **Framework**: pytest; coverage reporting comes from `make test-cov`, `make ci`, or `make coverage`, not bare `make test`
+- **Framework**: pytest; coverage reporting comes from `make test-cov`, `make verify`, or `make coverage`, not `make test` or `make ci`
 - **Unit Tests**: live under `tests/` (and each app's `tests/` dir)
   - Fast, no external API calls, no real browser
   - Use `tests/fixtures/journal/` mock data
@@ -25,9 +25,9 @@ The `tests/fixtures/journal/` directory contains a complete mock journal structu
 
 - `make test` runs all unit tests — `tests/` + every `solstone/apps/*/tests/`, in one parallel run
 - `make test-cov` — the same suite with coverage reporting
-- `make test-app APP=<name>` to run a single app's tests; `make test-only TEST=path` for a specific file/pattern
+- `make test-app APP=<name>` and `make test-only TEST=path` are the focused development loop
 - `make coverage` to generate a coverage report
-- `make ci` before committing (formats, lints, tests)
+- `make ci` once on the settled final tree before merge or release (install checks plus the full unit suite)
 - Always run `journal restart-convey` after editing `solstone/convey/` or `solstone/apps/` to reload code
 
 ## OpenAPI Verification Lanes
