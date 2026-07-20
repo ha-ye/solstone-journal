@@ -3637,6 +3637,7 @@ def test_api_owner_status_confirmed(speakers_env):
     assert response.status_code == 200
     assert response.get_json() == {
         "status": "confirmed",
+        "manual_tags_count": 0,
         "centroid_metadata": {
             "cluster_size": 0,
             "streams": [],
@@ -3650,6 +3651,32 @@ def test_api_owner_status_confirmed(speakers_env):
             "evidence_tier": None,
         },
     }
+
+
+def test_api_owner_status_confirmed_includes_manual_tags_count(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    embeddings = np.zeros((7, 256), dtype=np.float32)
+    embeddings[:, 0] = 1.0
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(7, 2.0, dtype=np.float32),
+    )
+    update_state("voiceprint", {"status": "confirmed"})
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.get("/app/speakers/api/owner/status")
+
+    assert response.status_code == 200
+    assert response.get_json()["manual_tags_count"] == 7
 
 
 def test_api_owner_classify_no_centroid(speakers_env):

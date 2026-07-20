@@ -64,6 +64,7 @@ from solstone.apps.speakers.owner import (
     confirm_owner_candidate,
     detect_owner_candidate,
     ensure_principal_entity,
+    load_manual_tag_stats,
     load_owner_bootstrap_diagnostics,
     load_owner_centroid,
     load_owner_manual_bootstrap_guidance,
@@ -640,9 +641,13 @@ def _assign_attribution_impl(
             label = item
             break
 
+    principal_id = _principal_id_or_none()
     existing_speaker = label.get("speaker") if label else None
     if existing_speaker == speaker_id and label.get("method") == "user_assigned":
-        return success_response({"status": "already_assigned"})
+        response = {"status": "already_assigned"}
+        if speaker_id == principal_id:
+            response["owner_bootstrap_outcome"] = "not_attempted"
+        return success_response(response)
     if existing_speaker:
         return error_response(
             SPEAKER_ATTRIBUTION_STATE_INVALID,
@@ -677,7 +682,6 @@ def _assign_attribution_impl(
             detail="Choose an unblocked speaker.",
         )
 
-    principal_id = _principal_id_or_none()
     if speaker_id != principal_id and _check_owner_contamination(emb):
         return error_response(
             SPEAKER_OWNER_VOICE_TOO_CLOSE,
@@ -734,9 +738,12 @@ def _assign_attribution_impl(
             "speaker": speaker_id,
         },
     )
-    _maybe_bootstrap_owner_from_attestation(principal_id, speaker_id)
+    bootstrap_result = _maybe_bootstrap_owner_from_attestation(principal_id, speaker_id)
 
-    return success_response({"status": "assigned", "speaker": speaker_id})
+    response = {"status": "assigned", "speaker": speaker_id}
+    if speaker_id == principal_id:
+        response.update(_owner_bootstrap_response_fields(bootstrap_result))
+    return success_response(response)
 
 
 def _voiceprint_busy_response(exc: LockTimeout) -> Any:
@@ -766,10 +773,10 @@ def _owner_bootstrap_status_fields() -> dict[str, Any]:
 
 def _maybe_bootstrap_owner_from_attestation(
     principal_id: str | None, speaker_id: str | None
-) -> None:
+) -> dict[str, Any] | None:
     """Refresh manual owner bootstrap state after a principal attestation."""
     if principal_id is None or speaker_id != principal_id:
-        return
+        return None
     try:
         result = bootstrap_owner_from_manual_tags()
         if "error" in result:
@@ -777,8 +784,38 @@ def _maybe_bootstrap_owner_from_attestation(
                 "owner manual bootstrap failed after attestation: %s",
                 result["error"],
             )
+        return result
     except Exception:
         logger.exception("owner manual bootstrap failed after attestation")
+        return {"error": "owner manual bootstrap failed"}
+
+
+def _owner_bootstrap_response_fields(result: dict[str, Any] | None) -> dict[str, Any]:
+    """Map manual owner bootstrap internals to the browser assign contract."""
+    if result is None:
+        return {"owner_bootstrap_outcome": "failed"}
+
+    if result.get("status") == "confirmed" and set(result) == {
+        "status",
+        "principal_id",
+        "cluster_size",
+        "evidence_tier",
+    }:
+        return {"owner_bootstrap_outcome": "built"}
+    if (
+        result.get("status") == "confirmed"
+        and result.get("next_step") == "rebuild_owner"
+    ):
+        return {"owner_bootstrap_outcome": "already_built"}
+    if result.get("status") == "low_quality":
+        response = {"owner_bootstrap_outcome": "refused"}
+        guidance = result.get("guidance")
+        if isinstance(guidance, str):
+            response["owner_bootstrap_guidance"] = guidance
+        return response
+    if result.get("error_kind") == "voiceprint_busy":
+        return {"owner_bootstrap_outcome": "busy"}
+    return {"owner_bootstrap_outcome": "failed"}
 
 
 def _resolve_entity_display(
@@ -1299,7 +1336,7 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
             detail="Invalid segment key",
         )
 
-    sentences, _ = _load_sentences(day, segment_key, source, stream=stream)
+    sentences, emb_data = _load_sentences(day, segment_key, source, stream=stream)
     if not sentences:
         return error_response(
             SPEAKER_REVIEW_UNAVAILABLE,
@@ -1326,7 +1363,19 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
     principal_id = principal["id"] if principal else None
     entity_cache: dict[str, dict | None] = {}
 
+    duration_map: dict[int, float] = {}
+    if emb_data is not None:
+        _, statement_ids, durations_s = emb_data
+        for idx, sid in enumerate(statement_ids):
+            duration_map[int(sid)] = (
+                float(durations_s[idx])
+                if durations_s is not None and idx < len(durations_s)
+                else 0.0
+            )
+
     review_sentences = [s for s in sentences if s.get("has_embedding")]
+    for sentence in review_sentences:
+        sentence["duration_s"] = duration_map.get(sentence["id"], 0.0)
     needs_review_count = 0
     corrections_count = 0
 
@@ -1891,6 +1940,7 @@ def api_owner_status() -> Any:
 
     if status == "confirmed":
         centroid = load_owner_centroid()
+        manual_tag_stats = load_manual_tag_stats(_principal_id_or_none())
         metadata = {
             "cluster_size": centroid.cluster_size if centroid is not None else 0,
             "streams": centroid.streams if centroid is not None else [],
@@ -1910,7 +1960,11 @@ def api_owner_status() -> Any:
             "evidence_tier": centroid.evidence_tier if centroid is not None else None,
         }
         return jsonify(
-            {"status": OWNER_STATUS_CONFIRMED, "centroid_metadata": metadata}
+            {
+                "status": OWNER_STATUS_CONFIRMED,
+                "centroid_metadata": metadata,
+                "manual_tags_count": manual_tag_stats["manual_tags_count"],
+            }
         )
 
     if status == "candidate":

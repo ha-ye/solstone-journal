@@ -1462,6 +1462,27 @@ def test_api_review_with_labels(speakers_env):
         assert s1["speaker_name"] == "Alice Test"
         assert s1["confidence"] == "high"
         assert s1["needs_review"] is False
+        assert s1["duration_s"] == 0.0
+
+
+def test_api_review_includes_sentence_durations(speakers_env):
+    from solstone.apps.speakers.tests.test_owner import _write_segment
+
+    env = speakers_env()
+    embeddings = np.eye(3, 256, dtype=np.float32)
+    _write_segment(
+        env.journal,
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_STREAM,
+        SERVE_AUDIO_SEGMENT,
+        SERVE_AUDIO_SOURCE,
+        embeddings,
+        durations_s=np.array([1.0, 9.0, 4.0], dtype=np.float32),
+    )
+
+    data = _review_payload()
+
+    assert [sentence["duration_s"] for sentence in data["sentences"]] == [1.0, 9.0, 4.0]
 
 
 def test_api_review_no_labels(speakers_env):
@@ -2669,6 +2690,179 @@ def test_api_assign_attribution(speakers_env):
     assert labels["labels"][0]["method"] == "user_assigned"
 
 
+def test_owner_bootstrap_response_field_mapping():
+    from solstone.apps.speakers.routes import _owner_bootstrap_response_fields
+
+    guidance = "Use the existing guidance."
+
+    assert _owner_bootstrap_response_fields(
+        {
+            "status": "confirmed",
+            "principal_id": OWNER_ID,
+            "cluster_size": 30,
+            "evidence_tier": "standard",
+        }
+    ) == {"owner_bootstrap_outcome": "built"}
+    assert _owner_bootstrap_response_fields(
+        {
+            "status": "confirmed",
+            "principal_id": OWNER_ID,
+            "cluster_size": 30,
+            "evidence_tier": "standard",
+            "next_step": "rebuild_owner",
+            "guidance": "already exists",
+        }
+    ) == {"owner_bootstrap_outcome": "already_built"}
+    assert _owner_bootstrap_response_fields(
+        {
+            "status": "low_quality",
+            "guidance": guidance,
+        }
+    ) == {
+        "owner_bootstrap_outcome": "refused",
+        "owner_bootstrap_guidance": guidance,
+    }
+    assert _owner_bootstrap_response_fields(
+        {"error": "busy", "error_kind": "voiceprint_busy"}
+    ) == {"owner_bootstrap_outcome": "busy"}
+    assert _owner_bootstrap_response_fields({"error": "boom"}) == {
+        "owner_bootstrap_outcome": "failed"
+    }
+    assert _owner_bootstrap_response_fields(
+        {
+            "status": "confirmed",
+            "principal_id": OWNER_ID,
+            "cluster_size": 30,
+            "evidence_tier": "standard",
+            "future_key": "not fresh",
+        }
+    ) == {"owner_bootstrap_outcome": "failed"}
+
+
+def test_api_assign_principal_reports_owner_bootstrap_outcome(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import routes as speakers_routes
+
+    env = speakers_env()
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME, is_principal=True)
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "_maybe_bootstrap_owner_from_attestation",
+        lambda _principal_id, _speaker_id: {
+            "status": "confirmed",
+            "principal_id": OWNER_ID,
+            "cluster_size": 30,
+            "evidence_tier": "standard",
+        },
+    )
+
+    response = _post_assign(OWNER_ID)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["owner_bootstrap_outcome"] == "built"
+    assert "owner_bootstrap_guidance" not in payload
+
+
+def test_api_assign_principal_reports_refused_bootstrap_guidance(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import routes as speakers_routes
+
+    guidance = "Use server guidance."
+    env = speakers_env()
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME, is_principal=True)
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "_maybe_bootstrap_owner_from_attestation",
+        lambda _principal_id, _speaker_id: {
+            "status": "low_quality",
+            "guidance": guidance,
+        },
+    )
+
+    response = _post_assign(OWNER_ID)
+
+    assert response.status_code == 200
+    assert response.get_json()["owner_bootstrap_outcome"] == "refused"
+    assert response.get_json()["owner_bootstrap_guidance"] == guidance
+
+
+def test_api_assign_non_owner_omits_owner_bootstrap_outcome(speakers_env, monkeypatch):
+    from solstone.apps.speakers import routes as speakers_routes
+
+    env = speakers_env()
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME, is_principal=True)
+    env.create_entity("Alice Test")
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "_maybe_bootstrap_owner_from_attestation",
+        lambda _principal_id, _speaker_id: {"error": "should not be called"},
+    )
+
+    response = _post_assign("alice_test")
+
+    assert response.status_code == 200
+    assert "owner_bootstrap_outcome" not in response.get_json()
+
+
+def test_api_assign_principal_already_assigned_reports_not_attempted(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import routes as speakers_routes
+
+    env = speakers_env()
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME, is_principal=True)
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": OWNER_ID,
+                "confidence": "high",
+                "method": "user_assigned",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "_maybe_bootstrap_owner_from_attestation",
+        lambda _principal_id, _speaker_id: (_ for _ in ()).throw(
+            AssertionError("bootstrap should not be reached")
+        ),
+    )
+
+    response = _post_assign(OWNER_ID)
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "status": "already_assigned",
+        "owner_bootstrap_outcome": "not_attempted",
+    }
+
+
 def test_api_assign_already_has_speaker(speakers_env):
     """Cannot assign to a sentence that already has a speaker."""
     from flask import Flask
@@ -3100,7 +3294,9 @@ def test_api_owner_status_confirmed_has_centroid_metadata(speakers_env):
         resp = client.get("/app/speakers/api/owner/status")
 
     assert resp.status_code == 200
-    metadata = resp.get_json()["centroid_metadata"]
+    payload = resp.get_json()
+    metadata = payload["centroid_metadata"]
+    assert payload["manual_tags_count"] == 0
     assert metadata["cluster_size"] == 2
     assert metadata["streams"] == ["mic", "sys"]
     assert metadata["created_at"] is None
