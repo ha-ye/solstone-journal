@@ -555,6 +555,18 @@ def brain_refresh_lease_path(*, journal_path: str | Path | None = None) -> Path:
     return root / "health" / "brain-refresh.lease"
 
 
+def probe_brain_refresh_lease_held(*, journal_path: str | Path | None = None) -> bool:
+    """Report whether a brain-refresh permit lease is currently held.
+
+    Owner-routed read of the ``health/brain-refresh.lease`` domain artifact, so
+    non-owner callers (the ``journal brain`` CLI) can tell a busy refresh apart
+    from other reasons a permit was declined without importing the raw
+    ``journal_io`` lease primitive. Never mutates state; may propagate the
+    underlying ``OSError`` for the caller to interpret.
+    """
+    return probe_file_lease_held(brain_refresh_lease_path(journal_path=journal_path))
+
+
 def _utc(now: datetime) -> datetime:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("brain state timestamps require timezone-aware datetimes")

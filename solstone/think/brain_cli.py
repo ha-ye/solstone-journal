@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, cast
 
 from solstone.think.journal_config import read_journal_config
-from solstone.think.journal_io.lease import probe_file_lease_held
 from solstone.think.models import (
     AttestationFailedError,
     AttestationNotVerifiedError,
@@ -38,11 +37,11 @@ from solstone.think.providers.brain_state import (
     BrainStateRecord,
     abandon_brain_refresh,
     begin_brain_refresh,
-    brain_refresh_lease_path,
     brain_state_path,
     build_active_brain_fingerprint,
     finish_brain_refresh,
     inspect_brain_state,
+    probe_brain_refresh_lease_held,
     runtime_phase_reason,
 )
 from solstone.think.providers.runtime_health import (
@@ -650,7 +649,7 @@ def _run_refresh(args: argparse.Namespace) -> int:
     if permit is None:
         busy = False
         try:
-            busy = probe_file_lease_held(brain_refresh_lease_path())
+            busy = probe_brain_refresh_lease_held()
         except OSError:
             busy = False
         if busy:
