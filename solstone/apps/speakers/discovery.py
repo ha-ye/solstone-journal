@@ -81,19 +81,6 @@ def load_discovery_cache() -> dict[str, Any] | None:
     return data if isinstance(clusters, dict) else None
 
 
-def load_resolved_cluster(cluster_id: int) -> dict[str, Any] | None:
-    """Return cached identify result metadata for a resolved cluster."""
-    path = _discovery_resolved_path()
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    entry = data.get(str(cluster_id))
-    return entry if isinstance(entry, dict) else None
-
-
 def _write_resolved_cluster(cluster_id: int, entity_id: str, label: str) -> None:
     path = _discovery_resolved_path(create=True)
     try:
@@ -666,7 +653,7 @@ def identify_cluster(
             if vp_key in existing_keys:
                 continue
 
-            seg_dir = segment_path(day, seg_key, stream)
+            seg_dir = segment_path(day, seg_key, stream, create=False)
             emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
             if emb_data is None:
                 continue

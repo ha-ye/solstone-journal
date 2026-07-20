@@ -783,6 +783,39 @@ def test_identify_entity_id_wins_over_name(speakers_env):
     assert not (env.journal / "entities" / "something_else").exists()
 
 
+def test_identify_skips_stale_cache_member_without_creating_segment(speakers_env):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    real_segment = "114500_300"
+    missing_segment = "115000_300"
+    env.create_segment(
+        "20240101",
+        real_segment,
+        ["audio"],
+        embeddings=_make_speaker_embeddings([1.0, 0.0], 1),
+    )
+    missing_dir = env.journal / "chronicle" / "20240101" / "test" / missing_segment
+    assert not missing_dir.exists()
+    _write_discovery_cache(
+        env,
+        28,
+        [
+            _cluster_record("20240101", real_segment),
+            _cluster_record("20240101", missing_segment),
+        ],
+    )
+
+    result = identify_cluster(28, name="Bob Smith")
+
+    assert result["status"] == "identified"
+    assert result["entity_id"] == "bob_smith"
+    assert result["voiceprints_saved"] == 1
+    assert result["segments_updated"] == 1
+    assert not missing_dir.exists()
+    assert not (missing_dir / "talents" / "speaker_labels.json").exists()
+    assert not (missing_dir / "talents" / "speaker_corrections.json").exists()
+
+
 def test_identify_creates_entity(speakers_env):
     env = speakers_env()
     _setup_owner_centroid(env.journal, [0.0, 1.0])

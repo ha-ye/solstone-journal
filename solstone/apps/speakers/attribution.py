@@ -300,7 +300,7 @@ def _extract_meeting_participants_with_gaps(
     day: str, segment_key: str
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Extract participant names and report unreadable daily meetings output."""
-    meetings_path = day_path(day) / "talents" / "meetings.md"
+    meetings_path = day_path(day, create=False) / "talents" / "meetings.md"
     if not meetings_path.exists():
         return [], []
     try:
@@ -461,7 +461,6 @@ def attribute_segment(
         unmatched_texts  - {sentence_id: text} for LLM context
         source           - audio source stem processed
         candidates       - list of candidate speaker names
-        candidate_entity_ids - resolved entity IDs
         metadata         - owner centroid refresh timestamp + voiceprint counts
     """
     import numpy as np
@@ -927,7 +926,6 @@ def attribute_segment(
         "unmatched_texts": unmatched_texts,
         "source": source,
         "candidates": candidate_names,
-        "candidate_entity_ids": list(candidate_entities.keys()),
         "metadata": {
             "owner_centroid_last_refreshed_at": owner_refreshed_at,
             "voiceprint_versions": voiceprint_versions,

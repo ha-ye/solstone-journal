@@ -19,6 +19,7 @@ from solstone.apps.speakers.encoder_config import (
     OWNER_MARGIN_MIN,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
+from solstone.apps.speakers.tests.conftest import journal_tree_hash
 
 # Test stream name (matches conftest.STREAM)
 STREAM = "test"
@@ -452,7 +453,9 @@ def test_l2_single_speaker_downgrades_margin_declined_statement(
     assert control_label["method"] == "structural_single_speaker"
     assert "owner_margin_declined" not in control_label
     assert result["unmatched"] == []
-    assert result["candidate_entity_ids"] == ["aaron_reed"]
+    assert result["metadata"]["candidate_evidence"] == [
+        {"entity_id": "aaron_reed", "sources": ["speakers"]}
+    ]
     assert result["metadata"]["voiceprint_versions"] == {}
 
 
@@ -1370,6 +1373,27 @@ def test_legacy_speaker_labels_without_candidate_evidence_still_load(speakers_en
         "owner_centroid_last_refreshed_at": None,
         "voiceprint_versions": {},
     }
+
+
+def test_meeting_participant_reader_missing_day_is_read_only(speakers_env):
+    from solstone.apps.speakers.attribution import (
+        _extract_meeting_participants_with_gaps,
+    )
+
+    env = speakers_env()
+    missing_day = "19990101"
+    missing_day_dir = env.journal / "chronicle" / missing_day
+    before = journal_tree_hash(env.journal)
+
+    names, gaps = _extract_meeting_participants_with_gaps(
+        missing_day,
+        "000000_300",
+    )
+
+    assert names == []
+    assert gaps == []
+    assert not missing_day_dir.exists()
+    assert journal_tree_hash(env.journal) == before
 
 
 def test_candidate_evidence_records_malformed_gaps_and_keeps_siblings(
