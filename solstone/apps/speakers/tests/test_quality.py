@@ -368,6 +368,7 @@ def test_owner_teach_static_source_contracts() -> None:
     overview_candidate = _js_function_block(text, "ownerCandidate")
     teach_render = _js_function_block(text, "renderOwnerTeachSession")
     teach_fetch = _js_function_block(text, "loadOwnerTeachReviews")
+    submit_choice = _js_function_block(text, "submitOwnerChoice")
 
     assert "sessionStorage" not in text
     assert "localStorage" not in text
@@ -395,6 +396,10 @@ def test_owner_teach_static_source_contracts() -> None:
     assert "SPK_OWNER_TEACH_REFUSED_TITLE" in teach_render
     assert "SPK_OWNER_TEACH_BUSY" in text
     assert "SPK_OWNER_REVEAL_TITLE" not in teach_render
+    assert "unavailable_count" not in text
+    assert submit_choice.index("window.apiJson") < submit_choice.index(
+        "ownerRevealPendingSource"
+    )
 
 
 def test_quality_counts_unreadable_label_and_correction_files(speakers_env):

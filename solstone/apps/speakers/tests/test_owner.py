@@ -1670,6 +1670,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
     result = bootstrap_owner_from_manual_tags()
 
     owner_path = principal_dir / "owner_centroid.npz"
+    assert set(result) == {"status", "principal_id", "cluster_size", "evidence_tier"}
     assert result["status"] == "confirmed"
     assert result["principal_id"] == principal_id
     assert result["cluster_size"] == OWNER_BOOTSTRAP_MIN_STMTS
@@ -3465,6 +3466,7 @@ def test_owner_gate_diagnostics_falls_back_when_renderer_declines_under_node():
     functions = "\n".join(
         _workspace_function_source(source, name)
         for name in (
+            "ownerTeachMomentumCount",
             "renderOwnerColdStartDiagnostics",
             "renderOwnerGateDiagnostics",
         )
@@ -3571,6 +3573,8 @@ def test_owner_teach_pool_order_resume_and_count_consistency_under_node(speakers
             "ownerTeachEligibleStatements",
             "ownerTeachOrderStatements",
             "ownerTeachPoolCounts",
+            "ownerTeachSegmentsApiUrl",
+            "ownerTeachSegmentPageState",
         )
     )
     script = "\n".join(
@@ -3627,12 +3631,31 @@ const unknownLast = ownerTeachOrderStatements([
 assert(unknownLast.join(',') === '10,11', 'unknown duration sorts last');
 
 const counts = ownerTeachPoolCounts([
-  { items: [allItems[0], allItems[1]], failed_count: 1, unavailable_count: 2 },
-  { items: [allItems[2]], failed_count: 0, unavailable_count: 1 },
+  { items: [allItems[0], allItems[1]], failed_count: 1 },
+  { items: [allItems[2]], failed_count: 0 },
 ]);
 assert(counts.eligible_count === 3, 'pool counts eligible rows');
 assert(counts.failed_count === 1, 'pool counts failed reviews');
-assert(counts.unavailable_count === 3, 'pool counts unavailable rows');
+assert(!('unavailable_count' in counts), 'pool counts do not report a dead unavailable branch');
+
+globalThis.speakerFilter = 'alice_test';
+const poolUrl = ownerTeachSegmentsApiUrl('20240101', 20, 0);
+assert(poolUrl === '/app/speakers/api/segments/20240101?limit=20&offset=0', 'owner teach segment URL is unfiltered');
+assert(!poolUrl.includes('speaker='), 'active speaker filter does not shrink owner teach pool');
+
+let pageState = ownerTeachSegmentPageState([], {
+  total: 25,
+  segments: Array.from({ length: 20 }, (_, index) => ({ key: `seg-${index}` })),
+});
+assert(pageState.segments.length === 20, 'first page is retained');
+assert(pageState.nextOffset === 20, 'next offset advances by collected rows');
+assert(pageState.done === false, 'pool continues past the view page size');
+pageState = ownerTeachSegmentPageState(pageState.segments, {
+  total: 25,
+  segments: Array.from({ length: 5 }, (_, index) => ({ key: `tail-${index}` })),
+});
+assert(pageState.segments.length === 25, 'pool covers all pages');
+assert(pageState.done === true, 'pool stops when total is reached');
 """,
         ]
     )
@@ -3652,6 +3675,7 @@ def test_owner_teach_reveal_latch_and_refusal_classification_under_node():
             "ownerRevealFactTexts",
             "ownerRevealDecision",
             "classifyOwnerTeachResult",
+            "ownerTeachApplyResult",
         )
     )
     script = "\n".join(
@@ -3667,6 +3691,8 @@ const copy = {
   SPK_OWNER_REVEAL_STATEMENTS_TEMPLATE: '{count} statements taught',
   SPK_OWNER_REVEAL_STREAMS_TEMPLATE: '{count} places heard',
   SPK_OWNER_REVEAL_EVIDENCE_TEMPLATE: '{tier} evidence',
+  SPK_OWNER_TEACH_BUSY: 'busy',
+  SPK_OWNER_TEACH_FAILED: 'failed',
 };
 const confirmed = {
   status: 'confirmed',
@@ -3687,13 +3713,37 @@ assert(!candidateFacts.join('|').includes('statements taught'), 'candidate revea
 
 const refused = classifyOwnerTeachResult(null, 'refused');
 const busy = classifyOwnerTeachResult(null, 'busy');
-const failed = classifyOwnerTeachResult('speaker_not_found', null);
+const failed = classifyOwnerTeachResult(null, 'failed');
+const assigned = classifyOwnerTeachResult(null, null);
 assert(refused.kind === 'refused', 'low-quality refusal is distinct');
 assert(busy.kind === 'busy' && busy.copyKey === 'SPK_OWNER_TEACH_BUSY', 'busy refusal is distinct');
 assert(failed.kind === 'failed' && failed.copyKey === 'SPK_OWNER_TEACH_FAILED', 'failed outcome is distinct');
-assert(refused.advancesMomentum === false, 'refused does not advance momentum');
-assert(busy.advancesMomentum === false, 'busy does not advance momentum');
-assert(failed.advancesMomentum === false, 'failed does not advance momentum');
+
+function baseState() {
+  return {
+    statusData: { manual_tags_count: 7 },
+    items: [{ owner_teach_key: 'first' }, { owner_teach_key: 'second' }],
+    index: 0,
+    notice: '',
+    noticeKind: '',
+    refusalGuidance: '',
+  };
+}
+
+[
+  [refused, { owner_bootstrap_guidance: 'Use clearer statements.' }],
+  [busy, {}],
+  [failed, {}],
+].forEach(([classification, result]) => {
+  const next = ownerTeachApplyResult(baseState(), classification, result, copy);
+  assert(ownerTeachMomentumCount(next.statusData) === 7, `${classification.kind} keeps count unchanged`);
+  assert(next.index === 0, `${classification.kind} keeps session position unchanged`);
+  assert(next.items.map(item => item.owner_teach_key).join(',') === 'first,second', `${classification.kind} keeps current item`);
+});
+
+const advanced = ownerTeachApplyResult(baseState(), assigned, {}, copy);
+assert(ownerTeachMomentumCount(advanced.statusData) === 7, 'assigned still reads count from status data');
+assert(advanced.items.map(item => item.owner_teach_key).join(',') === 'second', 'assigned consumes current item');
 """,
         ]
     )
@@ -3716,7 +3766,7 @@ def test_owner_not_ready_cold_start_diagnostics_retained_workspace_source():
     ) in source
     assert (
         '<div class="spk-owner-diagnostics-line">Manual tags: '
-        "${escapeHtml(String(data.manual_tags_count || 0))}</div>"
+        "${escapeHtml(String(ownerTeachMomentumCount(data)))}</div>"
     ) in source
     assert (
         '<div class="spk-owner-diagnostics-line">Segments with audio: '

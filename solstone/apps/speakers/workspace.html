@@ -1726,8 +1726,45 @@
     return results.reduce((counts, result) => ({
       eligible_count: counts.eligible_count + (result.items || []).length,
       failed_count: counts.failed_count + Number(result.failed_count || 0),
-      unavailable_count: counts.unavailable_count + Number(result.unavailable_count || 0),
-    }), { eligible_count: 0, failed_count: 0, unavailable_count: 0 });
+    }), { eligible_count: 0, failed_count: 0 });
+  }
+
+  function ownerTeachSegmentsApiUrl(dayKey, limit, offset) {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset)
+    });
+    return `/app/speakers/api/segments/${dayKey}?${params.toString()}`;
+  }
+
+  function ownerTeachSegmentPageState(collectedSegments, pageData) {
+    const collected = Array.isArray(collectedSegments) ? collectedSegments : [];
+    const page = Array.isArray(pageData?.segments) ? pageData.segments : [];
+    const total = Number(pageData?.total || 0);
+    const segmentsSoFar = collected.concat(page);
+    const done = page.length === 0 || (Number.isFinite(total) && total > 0 && segmentsSoFar.length >= total);
+    return { segments: segmentsSoFar, nextOffset: segmentsSoFar.length, done };
+  }
+
+  function ownerTeachApplyResult(state, classification, result, copy) {
+    if (!state) return state;
+    const next = { ...state, items: [...(state.items || [])] };
+    if (classification.kind === 'refused') {
+      next.refusalGuidance = result?.owner_bootstrap_guidance || '';
+      return next;
+    }
+    if (classification.copyKey) {
+      next.notice = copy[classification.copyKey] || '';
+      next.noticeKind = classification.kind;
+      return next;
+    }
+    if (classification.advancesMomentum) {
+      next.items.splice(next.index, 1);
+      if (next.index > next.items.length) {
+        next.index = next.items.length;
+      }
+    }
+    return next;
   }
 
   function ownerRevealDecision(latchShown, pendingSource, status) {
@@ -1737,21 +1774,21 @@
 
   function classifyOwnerTeachResult(reasonCode, ownerBootstrapOutcome) {
     if (ownerBootstrapOutcome === 'built') {
-      return { kind: 'built', copyKey: '', continueSession: false, advancesMomentum: false };
+      return { kind: 'built', copyKey: '', advancesMomentum: false };
     }
     if (ownerBootstrapOutcome === 'already_built') {
-      return { kind: 'already_built', copyKey: '', continueSession: false, advancesMomentum: false };
+      return { kind: 'already_built', copyKey: '', advancesMomentum: false };
     }
     if (ownerBootstrapOutcome === 'refused') {
-      return { kind: 'refused', copyKey: '', continueSession: false, advancesMomentum: false };
+      return { kind: 'refused', copyKey: '', advancesMomentum: false };
     }
     if (ownerBootstrapOutcome === 'busy' || reasonCode === 'speaker_voiceprint_busy') {
-      return { kind: 'busy', copyKey: 'SPK_OWNER_TEACH_BUSY', continueSession: false, advancesMomentum: false };
+      return { kind: 'busy', copyKey: 'SPK_OWNER_TEACH_BUSY', advancesMomentum: false };
     }
     if (ownerBootstrapOutcome === 'failed' || ownerBootstrapOutcome === 'not_attempted' || reasonCode) {
-      return { kind: 'failed', copyKey: 'SPK_OWNER_TEACH_FAILED', continueSession: true, advancesMomentum: false };
+      return { kind: 'failed', copyKey: 'SPK_OWNER_TEACH_FAILED', advancesMomentum: false };
     }
-    return { kind: 'assigned', copyKey: '', continueSession: true, advancesMomentum: false };
+    return { kind: 'assigned', copyKey: '', advancesMomentum: true };
   }
 
   function navigateToOwnerHelp() {
@@ -1781,7 +1818,7 @@
                 gate: ${escapeHtml(data.low_quality_reason)} — observed ${escapeHtml(formatOwnerMetric(data.observed_value))}, threshold ${escapeHtml(formatOwnerMetric(data.threshold_value))}
               </div>
             ` : ''}
-            <div class="spk-owner-diagnostics-line">Manual tags: ${escapeHtml(String(data.manual_tags_count || 0))}</div>
+            <div class="spk-owner-diagnostics-line">Manual tags: ${escapeHtml(String(ownerTeachMomentumCount(data)))}</div>
             <div class="spk-owner-diagnostics-line">Segments with audio: ${escapeHtml(String(data.segments_available || 0))}</div>
             <div class="spk-owner-diagnostics-line">Embeddings: ${escapeHtml(String(data.embeddings_available || 0))}</div>
           </div>
@@ -1863,7 +1900,7 @@
   function renderOwnerTeachSession() {
     if (!ownerTeachState) return;
     const data = ownerTeachState.statusData || ownerStatusData || {};
-    const partial = ownerTeachState.failed_count > 0 || ownerTeachState.unavailable_count > 0;
+    const partial = ownerTeachState.failed_count > 0;
     const current = ownerTeachCurrentItem();
     let body = '';
 
@@ -1896,7 +1933,7 @@
           <div class="spk-owner-teach-text">${escapeHtml(current.text || '')}</div>
           ${current.audio_file ? `
             <div class="spk-owner-teach-audio">
-              <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachPlay" type="button">play from here</button>
+              <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachPlay" type="button">${escapeHtml(SPK_COPY.SPK_PLAY_FROM_HERE_LABEL || '')}</button>
               <audio id="spkOwnerTeachAudio" controls preload="metadata" src="${escapeHtml(current.audio_file)}"></audio>
             </div>
           ` : ''}
@@ -1974,10 +2011,12 @@
   }
 
   async function ensureOwnerTeachSegments() {
-    if (segments.length === 0 && segmentTotal === 0) {
-      await loadSegments();
+    let state = { segments: [], nextOffset: 0, done: false };
+    while (!state.done) {
+      const data = await window.apiJson(ownerTeachSegmentsApiUrl(day, 100, state.nextOffset));
+      state = ownerTeachSegmentPageState(state.segments, data);
     }
-    return segments;
+    return state.segments;
   }
 
   async function loadOwnerTeachReviews(poolSegments) {
@@ -2003,15 +2042,13 @@
             stream: request.seg.stream,
             segment_key: request.seg.key,
           };
-          const sentences = Array.isArray(data.sentences) ? data.sentences : [];
           results.push({
             items: ownerTeachEligibleStatements(payload, ownerTeachDeclinedKeys),
             failed_count: 0,
-            unavailable_count: sentences.filter(sentence => sentence.has_embedding !== true).length,
           });
         } catch (err) {
           window.logError?.(err, { context: 'speakers: owner teach review failed' });
-          results.push({ items: [], failed_count: 1, unavailable_count: 0 });
+          results.push({ items: [], failed_count: 1 });
         }
       }
     }
@@ -2030,7 +2067,6 @@
       items: [],
       index: 0,
       failed_count: 0,
-      unavailable_count: 0,
       notice: '',
       noticeKind: '',
       refusalGuidance: '',
@@ -2050,7 +2086,6 @@
       items: ownerTeachOrderStatements(items, ownerTeachMomentumCount(ownerTeachState.statusData)),
       index: 0,
       failed_count: counts.failed_count,
-      unavailable_count: counts.unavailable_count,
       startedWithItems: items.length > 0,
     };
     renderOwnerTeachSession();
@@ -2086,19 +2121,11 @@
         await checkOwnerStatus();
         return;
       }
-      await checkOwnerStatus();
-      if (!ownerTeachState) return;
-      if (classification.kind === 'refused') {
-        ownerTeachState.refusalGuidance = result.owner_bootstrap_guidance || '';
-      } else if (classification.copyKey) {
-        ownerTeachState.notice = SPK_COPY[classification.copyKey] || '';
-        ownerTeachState.noticeKind = classification.kind;
-      } else if (classification.continueSession) {
-        ownerTeachState.items.splice(ownerTeachState.index, 1);
-        if (ownerTeachState.index > ownerTeachState.items.length) {
-          ownerTeachState.index = ownerTeachState.items.length;
-        }
+      if (classification.advancesMomentum) {
+        await checkOwnerStatus();
       }
+      if (!ownerTeachState) return;
+      ownerTeachState = ownerTeachApplyResult(ownerTeachState, classification, result, SPK_COPY);
       renderOwnerTeachSession();
     } catch (err) {
       const classification = classifyOwnerTeachResult(err.reasonCode, null);
@@ -2134,14 +2161,13 @@
   }
 
   function submitOwnerChoice(path, revealSource = null) {
-    if (revealSource) ownerRevealPendingSource = revealSource;
     ownerBanner.querySelectorAll('button').forEach(btn => { btn.disabled = true; });
     window.apiJson(path, { method: 'POST' })
       .then(() => {
+        if (revealSource) ownerRevealPendingSource = revealSource;
         checkOwnerStatus();
       })
       .catch((err) => {
-        if (revealSource) ownerRevealPendingSource = null;
         ownerBanner.querySelectorAll('button').forEach(btn => { btn.disabled = false; });
         renderOwnerBanner(err.serverMessage);
         window.logError(err, { context: 'speakers: submitOwnerChoice failed' });
@@ -2692,7 +2718,7 @@
           <div class="spk-status-container" id="status-${sentence.id}" role="status" aria-live="polite"></div>
         </div>
         <div class="spk-sentence-actions">
-          <button class="spk-btn spk-btn-icon spk-play-btn" aria-label="play from here" title="play from here">&#9654;</button>
+          <button class="spk-btn spk-btn-icon spk-play-btn" aria-label="${escapeHtml(SPK_COPY.SPK_PLAY_FROM_HERE_LABEL || '')}" title="${escapeHtml(SPK_COPY.SPK_PLAY_FROM_HERE_LABEL || '')}">&#9654;</button>
           ${actionsHtml}
         </div>
       </div>
