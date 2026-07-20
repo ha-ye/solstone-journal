@@ -165,7 +165,7 @@ def test_run_cogitate_error_before_usage_baseline_omits_usage(
 ):
     build_exc = RuntimeError("llm exploded")
 
-    def fail_build(_provider, _model):
+    def fail_build(_provider, _model, *, num_retries=None):
         raise build_exc
 
     monkeypatch.setattr(openhands, "_build_llm", fail_build)

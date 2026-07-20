@@ -393,7 +393,11 @@ def test_tier_inventory_matches_capabilities():
         assert tiers[tier]["sol"] is caps.sol
         assert tiers[tier]["reads"] is caps.reads
         assert tiers[tier]["submit"] is caps.submit
-        expected_tools = ["sol", *COGITATE_READ_TOOL_NAMES] if caps.reads else ["sol"]
+        expected_tools: list[str] = []
+        if caps.sol:
+            expected_tools.append("sol")
+        if caps.reads:
+            expected_tools.extend(COGITATE_READ_TOOL_NAMES)
         assert tiers[tier]["tools"] == expected_tools
 
 

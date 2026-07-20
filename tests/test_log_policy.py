@@ -65,7 +65,9 @@ def test_run_cogitate_invokes_restore(monkeypatch):
     calls: list[tuple[int, tuple[logging.Handler, ...]] | None] = []
     real_apply_http_logging_policy = apply_http_logging_policy
 
-    def fail_build_llm(provider: str, model: str) -> Any:
+    def fail_build_llm(
+        provider: str, model: str, *, num_retries: int | None = None
+    ) -> Any:
         raise RuntimeError("sentinel")
 
     def apply_spy(
