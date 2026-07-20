@@ -46,7 +46,7 @@ def test_transcripts_speaker_source_resolves_in_speakers_review_cli(journal_copy
         actionable = [
             chunk
             for chunk in transcripts_payload["chunks"]
-            if chunk["type"] == "audio" and chunk["has_embedding"]
+            if chunk["type"] == "audio" and chunk["speaker_actionable"]
         ]
         assert actionable
 

@@ -386,7 +386,8 @@ def test_workspace_html_speaker_picker_markup_and_data_contract():
     assert "payload?.speakers" in text
     assert "payload.success" not in text
     assert "voices.length > 7" in text
-    assert 'href="/app/speakers#new-voices"' in text
+    assert 'href="/app/speakers"' in text
+    assert "#new-voices" not in text
     assert "Someone new" not in text
 
 
@@ -433,6 +434,7 @@ def test_workspace_html_speaker_dispatch_and_local_rerender_contract():
     assert "slot.innerHTML = renderSpeakerSlot(chunk" in text
     assert "renderLoadedSegmentData(data, activeTab)" not in text
     assert "loadSegmentContent(selectedSegment" not in text
+    assert "item.speaker_actionable !== true" in text
     assert "result?.status === 'already_correct'" in text
     assert "err.reasonCode === 'speaker_voiceprint_busy'" in text
     assert "err.reasonCode === 'speaker_labels_busy'" in text

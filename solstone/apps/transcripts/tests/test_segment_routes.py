@@ -659,6 +659,7 @@ def test_segment_content_adds_speaker_provenance_without_embeddings(client):
     assert all(chunk["speaker_source"] == "audio" for chunk in audio_chunks)
     assert all(chunk["source_ref"]["source"] == "mic" for chunk in audio_chunks)
     assert all(chunk["has_embedding"] is False for chunk in audio_chunks)
+    assert all(chunk["speaker_actionable"] is False for chunk in audio_chunks)
     assert audio_chunks[0]["speaker_label"] == {
         "name": "Romeo Montague",
         "entity_id": "romeo_montague",
@@ -692,9 +693,13 @@ def test_segment_content_marks_seeded_embedding_statement_ids(client, journal_co
         if chunk["type"] == "audio"
     }
     assert audio_by_sid[1]["has_embedding"] is True
+    assert audio_by_sid[1]["speaker_actionable"] is True
     assert audio_by_sid[2]["has_embedding"] is False
+    assert audio_by_sid[2]["speaker_actionable"] is False
     assert audio_by_sid[4]["has_embedding"] is True
+    assert audio_by_sid[4]["speaker_actionable"] is True
     assert audio_by_sid[5]["has_embedding"] is False
+    assert audio_by_sid[5]["speaker_actionable"] is False
 
 
 def test_segment_content_keeps_missing_confidence_label_as_unknown(
@@ -762,6 +767,48 @@ def test_segment_content_malformed_speaker_labels_warns(client, journal_copy):
         for chunk in data["chunks"]
         if chunk["type"] == "audio"
     )
+    assert all(
+        chunk["speaker_actionable"] is False
+        for chunk in data["chunks"]
+        if chunk["type"] == "audio"
+    )
+
+
+def test_segment_content_structurally_bad_speaker_labels_are_not_loaded(
+    client,
+    journal_copy,
+):
+    segment_dir = (
+        journal_copy / "chronicle" / FIXTURE_DAY / FIXTURE_STREAM / FIXTURE_SEGMENT
+    )
+    _write_embedding_npz(segment_dir, statement_ids=(1,))
+    labels_path = segment_dir / "talents" / "speaker_labels.json"
+    labels_path.write_text(
+        json.dumps({"labels": {}, "owner_centroid_last_refreshed_at": "test"}) + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(
+        f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["speaker_labels"] == {
+        "present": True,
+        "loaded": False,
+        "source": "audio",
+        "ambiguous": False,
+    }
+    assert any(
+        detail["type"] == "speaker_labels"
+        and detail["file"] == str(labels_path)
+        and detail["message"] == SPEAKER_LABELS_UNAVAILABLE_MESSAGE
+        for detail in data["warning_details"]
+    )
+    audio_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "audio"]
+    assert audio_chunks[0]["has_embedding"] is True
+    assert audio_chunks[0]["speaker_actionable"] is False
 
 
 def test_segment_content_ambiguous_audio_sources_do_not_join_labels(
@@ -818,7 +865,66 @@ def test_segment_content_ambiguous_audio_sources_do_not_join_labels(
         "mic_audio",
     }
     assert all(chunk["has_embedding"] is False for chunk in audio_chunks)
+    assert all(chunk["speaker_actionable"] is False for chunk in audio_chunks)
     assert all("speaker_label" not in chunk for chunk in audio_chunks)
+
+
+def test_segment_content_only_labels_source_is_actionable_with_multiple_npz(
+    client,
+    journal_copy,
+):
+    day = "20990107"
+    stream = "default"
+    segment = "091000_300"
+    _write_segment(journal_copy, day, stream, segment, screen=False)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "mic_audio.jsonl",
+        [
+            {"raw": "mic_audio.flac"},
+            {
+                "start": "00:00:02",
+                "source": "mic",
+                "speaker": 2,
+                "text": "mic source line",
+            },
+        ],
+    )
+    _write_embedding_npz(segment_dir, source="audio", statement_ids=(1,))
+    _write_embedding_npz(segment_dir, source="mic_audio", statement_ids=(1,))
+    _write_speaker_labels(
+        segment_dir,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "romeo_montague",
+                "confidence": "high",
+                "method": "owner_centroid",
+            }
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["speaker_labels"] == {
+        "present": True,
+        "loaded": True,
+        "source": "audio",
+        "ambiguous": False,
+    }
+    audio_by_source = {
+        chunk["speaker_source"]: chunk
+        for chunk in data["chunks"]
+        if chunk["type"] == "audio"
+    }
+    assert audio_by_source["audio"]["has_embedding"] is True
+    assert audio_by_source["audio"]["speaker_actionable"] is True
+    assert audio_by_source["audio"]["speaker_label"]["entity_id"] == "romeo_montague"
+    assert audio_by_source["mic_audio"]["has_embedding"] is True
+    assert audio_by_source["mic_audio"]["speaker_actionable"] is False
+    assert "speaker_label" not in audio_by_source["mic_audio"]
 
 
 def test_segment_content_invalid_embedding_npz_is_not_route_error(
@@ -851,6 +957,7 @@ def test_segment_content_invalid_embedding_npz_is_not_route_error(
     audio_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "audio"]
     assert audio_chunks[0]["speaker_label"]["entity_id"] == "romeo_montague"
     assert audio_chunks[0]["has_embedding"] is False
+    assert audio_chunks[0]["speaker_actionable"] is False
 
 
 def test_segment_content_merges_browser_between_audio_chunks(

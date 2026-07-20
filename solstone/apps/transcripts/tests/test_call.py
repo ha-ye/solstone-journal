@@ -92,6 +92,7 @@ def _speaker_payload() -> dict:
                 "time": "00:00:05",
                 "markdown": "(mic) hello",
                 "has_embedding": True,
+                "speaker_actionable": True,
                 "speaker_label": {
                     "name": "Romeo Montague",
                     "entity_id": "romeo_montague",
@@ -106,7 +107,8 @@ def _speaker_payload() -> dict:
                 "speaker_source": "audio",
                 "time": "00:00:20",
                 "markdown": "(mic) unlabeled",
-                "has_embedding": False,
+                "has_embedding": True,
+                "speaker_actionable": False,
             },
             {
                 "type": "screen",
@@ -272,7 +274,7 @@ def test_speakers_json_output_exposes_sentence_ids_and_sources(
             "speaker_source": "audio",
             "time": "00:00:20",
             "text": "(mic) unlabeled",
-            "has_embedding": False,
+            "has_embedding": True,
             "actionable": False,
             "speaker": None,
         },

@@ -977,13 +977,13 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 labels_data = json.load(f)
             if not isinstance(labels_data, dict):
                 raise ValueError("speaker labels payload must be an object")
-            speaker_labels_loaded = True
             principal = get_journal_principal()
             principal_id = principal["id"] if principal else None
             entity_cache: dict[str, dict | None] = {}
             labels = labels_data.get("labels", [])
             if not isinstance(labels, list):
                 raise ValueError("speaker labels must be a list")
+            speaker_labels_loaded = True
             for label in labels:
                 if not isinstance(label, dict):
                     continue
@@ -1117,6 +1117,13 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                     "speaker_source": speaker_source,
                     "has_embedding": bool(
                         chunk_sid and chunk_sid in embedding_statement_ids
+                    ),
+                    "speaker_actionable": bool(
+                        speaker_labels_present
+                        and speaker_labels_loaded
+                        and labels_source == speaker_source
+                        and chunk_sid
+                        and chunk_sid in embedding_statement_ids
                     ),
                     "source_ref": {
                         "start": time_str,

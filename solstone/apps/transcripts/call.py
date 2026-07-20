@@ -99,7 +99,7 @@ def _speaker_rows(payload: dict) -> list[dict]:
                 "time": chunk.get("time", ""),
                 "text": chunk.get("markdown", ""),
                 "has_embedding": bool(chunk.get("has_embedding")),
-                "actionable": bool(chunk.get("has_embedding")),
+                "actionable": bool(chunk.get("speaker_actionable")),
                 "speaker": label,
             }
         )
