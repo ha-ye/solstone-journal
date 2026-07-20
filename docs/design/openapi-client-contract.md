@@ -211,16 +211,23 @@ Implementation should also fix the stale non-generated prose in
 `docs/CONVEY.md`: the route is currently wrong at `docs/CONVEY.md:131-132`, and
 the `api/list` sentence is stale at `docs/CONVEY.md:149-151`.
 
-## 7. Artifact Path And Header
+## 7. Artifact Paths And Headers
 
-The generated artifact path is:
+The generated OpenAPI authority outputs are:
 
 - `docs/openapi/convey-clients.json`
+- `docs/openapi/observer-client-contract/manifest.json`
+- `docs/openapi/observer-client-contract/projection.openapi.json`
+- `docs/openapi/observer-client-contract/vectors.json`
+- `docs/openapi/observer-client-contract/fixtures/wire-behavior.json`
+- `docs/openapi/observer-client-contract/consumer-audit.json`
 
-`docs/openapi/` is a new directory. There is no current path collision.
+`docs/openapi/` is an existing generated-contract directory. The observer
+bundle is a generated subdirectory beside the full Convey client artifact, and
+the generator must not list files inside that bundle as generator inputs.
 
-The generated file is pretty-printed JSON with stable key order and a trailing
-newline. Header fields:
+Generated JSON is pretty-printed with stable key order and a trailing newline.
+The full artifact header fields are:
 
 - `openapi`: `3.1.0`
 - `info.title`: `Solstone Convey Native-Client Contract`
@@ -232,6 +239,12 @@ newline. Header fields:
 `info.version` is the static document version. It is not observer protocol
 negotiation.
 
+The observer bundle projection is an OpenAPI 3.1 document over the frozen
+observer-client operation set. The bundle manifest records the bundle SemVer,
+OpenAPI document version, observer on-wire protocol version, supported response
+variants, source-input digests, payload file digests, vocabulary inventory, and
+consumer audit metadata.
+
 ## 8. Checks, Make Targets, And Messages
 
 There are three check surfaces.
@@ -239,13 +252,15 @@ There are three check surfaces.
 ### Generator Staleness
 
 `scripts/build_openapi_contract.py` is thin. It imports assembly from
-`solstone.convey.contract`, renders the OpenAPI artifact, and updates the
-generated Callosum registry block in `docs/CONVEY.md`.
+`solstone.convey.contract`, renders the full OpenAPI artifact, renders the
+observer-client bundle, and updates the generated Callosum registry block in
+`docs/CONVEY.md`.
 
 `--check` mode regenerates in memory and compares:
 
 - `docs/openapi/convey-clients.json`
 - the marker-delimited generated block in `docs/CONVEY.md`
+- every file under `docs/openapi/observer-client-contract/`
 
 On diff it exits 1 and prints exactly:
 
@@ -285,6 +300,34 @@ On breaking diff it exits 1 and prints exactly:
 OpenAPI contract breaking changes detected: {items}. If intentional, run `make openapi` to re-pin and notify native-client owners; otherwise revert.
 ```
 
+### Observer Client Bundle Gates
+
+`scripts/check_observer_client_contract_bundle.py` checks the generated observer
+bundle after the existing full-OpenAPI tripwire and staleness check. It reports
+these gates independently and accumulates failure state:
+
+- bundle staleness;
+- manifest/file inventory verification, including path safety and source-input
+  digests;
+- Git-history compatibility and bundle SemVer enforcement;
+- Windows/Linux consumer-audit coverage from `consumer-audit.json`.
+
+Each failure exits nonzero and prints a recovery action, for example regenerate
+with `make openapi`, repair the manifest, or apply the required bundle SemVer
+bump.
+
+To export a verified committed bundle to a new directory inside the repository,
+run:
+
+```text
+.venv/bin/python scripts/export_observer_client_contract_bundle.py <new-destination>
+```
+
+The export command refuses an existing destination, stale generated output,
+digest mismatch, unsafe paths, symlinks/non-regular files, and unlisted payload
+files. It stages into a fresh sibling directory, verifies the staged bytes, then
+uses one final rename into the still-absent destination.
+
 ### Conformance Tests
 
 `tests/test_openapi_contract.py` is a normal pytest module. `make test` and
@@ -323,11 +366,16 @@ OpenAPI contract conformance failed: {operationId} returned undeclared top-level
 
 Add:
 
-- `make openapi`: regenerate artifact and `docs/CONVEY.md` generated block.
-- `make check-openapi`: run the breaking tripwire first, then the staleness check.
+- `make openapi`: regenerate `docs/openapi/convey-clients.json`, the observer
+  bundle, and the `docs/CONVEY.md` generated block.
+- `make check-openapi`: run the breaking tripwire first, then the full generated
+  staleness check, then `make check-openapi-observer-client-contract`.
+- `make check-openapi-observer-client-contract`: run the accumulated observer
+  bundle staleness, manifest, compatibility, and Windows/Linux coverage gates.
 
 The order is intentional. If staleness ran first and exited on any diff, the
-breaking classifier would never report breaking diffs.
+breaking classifier would never report breaking diffs. The observer bundle gate
+runs after the existing tripwire-then-staleness sequence.
 
 Wire `check-openapi` into `install-checks`, next to the existing generated
 reference checks. The current pattern is `check-* : .installed` targets at

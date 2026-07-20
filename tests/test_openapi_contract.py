@@ -469,6 +469,20 @@ def test_post_chat_missing_message_reason_code(contract_app, monkeypatch):
     assert body["reason_code"] == "missing_required_field"
 
 
+@pytest.mark.parametrize("payload", [{"request_id": ""}, {"request_id": "   "}])
+def test_open_sol_chat_request_rejects_blank_request_id(contract_app, payload):
+    _app, client, _journal = contract_app
+    document = build_document()
+
+    response = client.post("/api/chat/sol_chat_request/open", json=payload)
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert isinstance(body, dict)
+    _assert_structured_error(body, document)
+    assert body["reason_code"] == "missing_required_field"
+
+
 def test_chat_session_empty_state_named_fields(contract_app):
     _reset_chat_state()
     _app, client, _journal = contract_app

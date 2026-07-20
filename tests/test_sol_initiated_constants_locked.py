@@ -26,11 +26,17 @@ ALLOWED_PATHS = {
     Path("docs/design/sol_initiated_chat_lode3.md"),
     Path("docs/design/openapi-client-contract.md"),
     Path("solstone/convey/README.md"),
+    Path("solstone/convey/chat_contract.py"),
     Path("solstone/convey/chat_stream.py"),
     Path("solstone/convey/contract/assemble.py"),
+    Path("solstone/convey/contract/observer_bundle.py"),
+    Path("solstone/convey/contract/observer_bundle_recording.py"),
+    Path("solstone/convey/contract/observer_bundle_verification.py"),
     Path("solstone/convey/sol_initiated/copy.py"),
     Path("solstone/convey/static/chat_render.js"),
     Path("solstone/convey/static/sol_initiated_constants.js"),
+    Path("tests/test_observer_client_bundle.py"),
+    Path("tests/test_openapi_contract.py"),
     Path("tests/test_sol_initiated_constants_locked.py"),
 }
 
