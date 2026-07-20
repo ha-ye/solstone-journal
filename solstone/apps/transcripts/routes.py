@@ -31,6 +31,11 @@ from flask import (
 )
 
 import solstone.think.deferred_deletes as deferred_deletes
+from solstone.apps.transcripts.copy import (
+    SPEAKER_LABEL_SOURCE_AMBIGUOUS_MESSAGE,
+    SPEAKER_LABELS_UNAVAILABLE_MESSAGE,
+    transcripts_copy_payload,
+)
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.date_nav import build_date_nav_index
@@ -71,6 +76,7 @@ from solstone.think.data_state import (
     repair_modality_markers,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
+from solstone.think.journal_io.npz import load_npz
 from solstone.think.journal_stats import load_fresh_day_cache
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
@@ -260,6 +266,85 @@ def _attach_visible_streams_to_ranges(
         for range_payload in _attach_streams_to_ranges(ranges, segments, content_type)
         if range_payload["streams"]
     ]
+
+
+def _speaker_audio_sources(segment_dir_path: Path) -> list[str]:
+    return sorted(
+        path.stem for path in segment_dir_path.glob("*audio.jsonl") if path.is_file()
+    )
+
+
+def _speaker_embedding_sources(segment_dir_path: Path) -> list[str]:
+    return sorted(
+        path.stem
+        for path in segment_dir_path.glob("*.npz")
+        if path.is_file() and (path.stem == "audio" or path.stem.endswith("_audio"))
+    )
+
+
+def _resolve_speaker_labels_source(
+    segment_dir_path: Path,
+    audio_sources: list[str],
+) -> tuple[str | None, bool]:
+    embedding_sources = _speaker_embedding_sources(segment_dir_path)
+    if embedding_sources:
+        return embedding_sources[0], False
+    if len(audio_sources) == 1:
+        return audio_sources[0], False
+    if len(audio_sources) > 1:
+        return None, True
+    return None, False
+
+
+def _speaker_confidence_state(confidence: Any) -> str:
+    if confidence in {"high", "medium"}:
+        return str(confidence)
+    return "unknown"
+
+
+def _speaker_labels_warning_detail(path: Path, message: str) -> dict[str, str]:
+    return {
+        "type": "speaker_labels",
+        "file": str(path),
+        "message": message,
+        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+
+
+def _load_embedding_statement_ids(
+    segment_dir_path: Path,
+    speaker_source: str,
+) -> set[int]:
+    try:
+        data = load_npz(segment_dir_path / f"{speaker_source}.npz")
+    except Exception:
+        logger.debug(
+            "Failed to load speaker embeddings for source %s",
+            speaker_source,
+            exc_info=True,
+        )
+        return set()
+    if not data:
+        return set()
+
+    embeddings = data.get("embeddings")
+    statement_ids = data.get("statement_ids")
+    if embeddings is None or statement_ids is None:
+        return set()
+
+    try:
+        row_count = len(embeddings)
+        raw_ids = list(statement_ids)
+    except TypeError:
+        return set()
+
+    embedding_statement_ids: set[int] = set()
+    for raw_id in raw_ids[:row_count]:
+        try:
+            embedding_statement_ids.add(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    return embedding_statement_ids
 
 
 @transcripts_bp.route("/")
@@ -871,38 +956,85 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
 
     # Load speaker labels if available.
     speaker_labels_path = segment_dir_path / "talents" / "speaker_labels.json"
+    speaker_labels_present = speaker_labels_path.is_file()
+    speaker_labels_loaded = False
+    audio_sources = _speaker_audio_sources(segment_dir_path)
+    labels_source, labels_ambiguous = _resolve_speaker_labels_source(
+        segment_dir_path,
+        audio_sources,
+    )
     speaker_map: dict[int, dict] = {}
-    if speaker_labels_path.is_file():
+    if speaker_labels_present and labels_ambiguous:
+        warning_details.append(
+            _speaker_labels_warning_detail(
+                speaker_labels_path,
+                SPEAKER_LABEL_SOURCE_AMBIGUOUS_MESSAGE,
+            )
+        )
+    if speaker_labels_present:
         try:
             with open(speaker_labels_path) as f:
                 labels_data = json.load(f)
+            if not isinstance(labels_data, dict):
+                raise ValueError("speaker labels payload must be an object")
+            speaker_labels_loaded = True
             principal = get_journal_principal()
             principal_id = principal["id"] if principal else None
             entity_cache: dict[str, dict | None] = {}
-            for label in labels_data.get("labels", []):
+            labels = labels_data.get("labels", [])
+            if not isinstance(labels, list):
+                raise ValueError("speaker labels must be a list")
+            for label in labels:
+                if not isinstance(label, dict):
+                    continue
                 sid = label.get("sentence_id")
                 entity_id = label.get("speaker")
                 confidence = label.get("confidence")
-                if sid is None or not entity_id or not confidence:
+                if sid is None or not entity_id:
+                    continue
+                try:
+                    sentence_id = int(sid)
+                except (TypeError, ValueError):
                     continue
                 if entity_id not in entity_cache:
                     entity_cache[entity_id] = load_journal_entity(entity_id)
                 entity = entity_cache[entity_id]
                 name = entity["name"] if entity else entity_id
                 is_owner = entity_id == principal_id
-                speaker_map[sid] = {
+                speaker_map[sentence_id] = {
                     "name": name,
                     "entity_id": entity_id,
                     "confidence": confidence,
+                    "confidence_state": _speaker_confidence_state(confidence),
+                    "method": label.get("method"),
+                    "owner_margin_declined": bool(label.get("owner_margin_declined")),
+                    "acoustic_margin_declined": bool(
+                        label.get("acoustic_margin_declined")
+                    ),
                     "is_owner": is_owner,
                 }
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
+        except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+            logger.warning(
+                "Failed to load speaker labels %s",
+                speaker_labels_path,
+                exc_info=True,
+            )
+            warning_details.append(
+                _speaker_labels_warning_detail(
+                    speaker_labels_path,
+                    SPEAKER_LABELS_UNAVAILABLE_MESSAGE,
+                )
+            )
 
     # Process audio files
     audio_files = glob(os.path.join(segment_dir, "*audio.jsonl"))
     for audio_path in sorted(audio_files):
         has_jsonl["audio"] = True
+        speaker_source = Path(audio_path).stem
+        embedding_statement_ids = _load_embedding_statement_ids(
+            segment_dir_path,
+            speaker_source,
+        )
         try:
             entries = _load_jsonl(audio_path)
             record = read_processing_record(entries)
@@ -948,11 +1080,29 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 time_str = source.get("start", "")
                 markdown = chunk.get("markdown", "")
                 markdown = re.sub(r"^\[\d{2}:\d{2}:\d{2}\]\s*", "", markdown)
+                speaker_token = source.get("speaker")
+                if speaker_token is not None:
+                    if isinstance(speaker_token, int):
+                        markdown = re.sub(
+                            r"Speaker\s+\d+:\s*",
+                            "",
+                            markdown,
+                            count=1,
+                        )
+                    else:
+                        markdown = re.sub(
+                            rf"{re.escape(str(speaker_token))}:\s*",
+                            "",
+                            markdown,
+                            count=1,
+                        )
 
                 chunk_sid = entry_to_sid.get(id(source))
-                speaker_label = speaker_map.get(chunk_sid) if chunk_sid else None
-                if speaker_label:
-                    markdown = re.sub(r"Speaker \d+:\s*", "", markdown)
+                speaker_label = (
+                    speaker_map.get(chunk_sid)
+                    if chunk_sid and labels_source == speaker_source
+                    else None
+                )
 
                 chunk_data: dict[str, Any] = {
                     "type": "audio",
@@ -963,6 +1113,11 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                     # wall-clock starts (early mentra bridge) fix it at the writer.
                     "timestamp": chunk.get("timestamp", 0),
                     "markdown": markdown,
+                    "sentence_id": chunk_sid,
+                    "speaker_source": speaker_source,
+                    "has_embedding": bool(
+                        chunk_sid and chunk_sid in embedding_statement_ids
+                    ),
                     "source_ref": {
                         "start": time_str,
                         "source": source.get("source"),
@@ -1378,6 +1533,13 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             "media_purged": media_purged,
             "data_state": data_state,
             "signals": signals,
+            "transcripts_copy": transcripts_copy_payload(),
+            "speaker_labels": {
+                "present": speaker_labels_present,
+                "loaded": speaker_labels_loaded,
+                "source": labels_source if speaker_labels_present else None,
+                "ambiguous": bool(speaker_labels_present and labels_ambiguous),
+            },
             "warnings": len(warning_details),
             "warning_details": warning_details,
         }
