@@ -51,6 +51,7 @@ from solstone.apps.speakers.copy import (
 )
 from solstone.apps.speakers.discovery import (
     discover_unknown_speakers,
+    get_cluster_presence,
     identify_cluster,
     load_resolved_cluster,
 )
@@ -83,6 +84,7 @@ from solstone.apps.utils import log_app_action
 from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
+    DISCOVERY_CLUSTER_NOT_FOUND,
     ENTITY_BLOCKED,
     ENTITY_NOT_FOUND,
     FILE_NOT_FOUND,
@@ -2211,6 +2213,18 @@ def api_discovery_scan() -> Any:
     """Scan for recurring unknown speaker clusters."""
     result = discover_unknown_speakers()
     return jsonify(result)
+
+
+@speakers_bp.route("/api/discovery/cluster/<int:cluster_id>/presence", methods=["GET"])
+def api_cluster_presence(cluster_id: int) -> Any:
+    """Return read-only presence evidence for a discovery cluster."""
+    presence = get_cluster_presence(cluster_id)
+    if presence is None:
+        return error_response(
+            DISCOVERY_CLUSTER_NOT_FOUND,
+            detail=f"Cluster {cluster_id} was not found. Run a discovery scan first.",
+        )
+    return jsonify(presence)
 
 
 @speakers_bp.route("/api/discovery/identify", methods=["POST"])

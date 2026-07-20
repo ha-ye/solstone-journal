@@ -43,6 +43,7 @@ from solstone.apps.speakers.encoder_config import (
 )
 from solstone.apps.speakers.owner import load_owner_centroid
 from solstone.think.entities import (
+    EntityResolutionError,
     EntityResolutionOutcome,
     ResolutionOrigin,
     ResolutionScope,
@@ -352,6 +353,94 @@ def _assemble_candidate_evidence(
     ]
 
 
+def _candidate_name_channels(
+    speakers: list[str],
+    setting_names: list[str],
+    screen_names: list[str],
+    meeting_names: list[str],
+) -> dict[str, set[str]]:
+    name_channels: dict[str, set[str]] = defaultdict(set)
+    for channel, names in (
+        ("screen", screen_names),
+        ("meeting_day", meeting_names),
+        ("setting", setting_names),
+        ("speakers", speakers),
+    ):
+        for name in names:
+            name_channels[name].add(channel)
+    return name_channels
+
+
+def compute_segment_candidate_evidence_readonly(
+    day: str,
+    stream: str,
+    segment_key: str,
+) -> tuple[list[dict], list[dict]]:
+    """Compute per-segment candidate evidence without writing journal state."""
+    (
+        _load_embeddings_file,
+        _normalize_embedding,
+        load_segment_speakers,
+        _load_entity_voiceprints_file,
+    ) = _routes_helpers()
+
+    seg_dir = segment_path(day, segment_key, stream, create=False)
+    if not seg_dir.is_dir():
+        return [], []
+
+    evidence_gaps: list[dict[str, str]] = []
+    speakers = load_segment_speakers(seg_dir)
+    setting, setting_gaps = _load_setting_field_with_gaps(seg_dir)
+    evidence_gaps.extend(setting_gaps)
+    setting_names = _parse_setting_names(setting) if setting else []
+    screen_names, screen_gaps = _extract_screen_participants_with_gaps(seg_dir)
+    evidence_gaps.extend(screen_gaps)
+    meeting_names, meeting_gaps = _extract_meeting_participants_with_gaps(
+        day, segment_key
+    )
+    evidence_gaps.extend(meeting_gaps)
+
+    name_channels = _candidate_name_channels(
+        speakers,
+        setting_names,
+        screen_names,
+        meeting_names,
+    )
+    candidate_names: list[str] = list(
+        dict.fromkeys(speakers + setting_names + screen_names + meeting_names)
+    )
+
+    entities_list = [
+        e for e in load_all_journal_entities().values() if not e.get("blocked")
+    ]
+    resolution_scope = ResolutionScope.journal()
+    resolution_origin = ResolutionOrigin(
+        lane="apps.speakers.aggregation",
+        day=day,
+        segment_id=segment_key,
+        field="candidate_name",
+    )
+    name_entity_ids: dict[str, str] = {}
+    for name in candidate_names:
+        try:
+            resolution = record_entity_resolution(
+                name,
+                entities_list,
+                scope=resolution_scope,
+                origin=resolution_origin,
+                read_only=True,
+            )
+        except EntityResolutionError:
+            evidence_gaps.append(
+                {"source": "resolution", "reason": "stale_resolution"}
+            )
+            continue
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
+            name_entity_ids[name] = resolution.entity["id"]
+
+    return _assemble_candidate_evidence(name_channels, name_entity_ids), evidence_gaps
+
+
 # ---------------------------------------------------------------------------
 # Core attribution pipeline
 # ---------------------------------------------------------------------------
@@ -561,15 +650,12 @@ def attribute_segment(
     )
     evidence_gaps.extend(meeting_gaps)
 
-    name_channels: dict[str, set[str]] = defaultdict(set)
-    for channel, names in (
-        ("screen", screen_names),
-        ("meeting_day", meeting_names),
-        ("setting", setting_names),
-        ("speakers", speakers),
-    ):
-        for name in names:
-            name_channels[name].add(channel)
+    name_channels = _candidate_name_channels(
+        speakers,
+        setting_names,
+        screen_names,
+        meeting_names,
+    )
 
     # Deduplicate, preserve order
     candidate_names: list[str] = list(

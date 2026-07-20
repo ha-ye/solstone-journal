@@ -412,6 +412,11 @@ SPEAKER_COMMAND_FAILED = Reason(
     "I couldn't finish that speaker command.",
     400,
 )
+DISCOVERY_CLUSTER_NOT_FOUND = Reason(
+    "discovery_cluster_not_found",
+    "I couldn't find that discovery cluster. Run a discovery scan first.",
+    404,
+)
 AWARENESS_BUSY = Reason(
     "awareness_busy",
     "I couldn't update what I know right now because it was busy. Try again in a moment.",

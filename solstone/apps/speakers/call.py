@@ -24,6 +24,7 @@ Commands:
     sol call speakers backfill-last-seen [--commit] [--json]
     sol call speakers wipe [--commit] [--json]
     sol call speakers discover [--json]
+    sol call speakers presence <cluster-id> [--json]
     sol call speakers identify <cluster-id> <name> [--entity-id ID]
     sol call speakers merge-names <alias> <canonical>
     sol call speakers link-import <name> --entity-id <ID>
@@ -47,6 +48,7 @@ from typing import Any
 import typer
 
 from solstone.convey.reasons import (
+    DISCOVERY_CLUSTER_NOT_FOUND,
     ENTITY_BLOCKED,
     INVALID_DAY,
     INVALID_SEGMENT_OR_STREAM,
@@ -637,6 +639,74 @@ def discover(
                 f"sid={sample['sentence_id']}: {text_preview}"
             )
         typer.echo()
+
+
+@app.command()
+@convey_cli
+def presence(
+    cluster_id: int = typer.Argument(..., help="Cluster ID from discovery output."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output full result as JSON."
+    ),
+) -> None:
+    """Show who was around a discovered unknown voice cluster."""
+    try:
+        result = _request(
+            "GET",
+            f"/app/speakers/api/discovery/cluster/{cluster_id}/presence",
+        )
+    except ConveyClientError as err:
+        if err.reason_code == DISCOVERY_CLUSTER_NOT_FOUND.code:
+            typer.echo(f"Cluster {cluster_id} was not found.", err=True)
+            typer.echo(
+                "Run 'sol call speakers discover' to produce valid cluster ids.",
+                err=True,
+            )
+            raise typer.Exit(1) from err
+        raise
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    facts = result.get("facts", {})
+    candidates = result.get("candidates", {})
+    typer.echo(
+        f"Cluster {result['cluster_id']}: "
+        f"{facts.get('statement_count', 0)} statements, "
+        f"{facts.get('segment_count', 0)} segments, "
+        f"{facts.get('conversation_count', 0)} conversations"
+    )
+    typer.echo(
+        "Evidence: complete"
+        if result.get("evidence_complete")
+        else f"Evidence: {len(result.get('evidence_gaps') or [])} gap(s)"
+    )
+
+    co_presence = candidates.get("co_presence") or []
+    mention = candidates.get("mention") or []
+    if not co_presence and not mention:
+        typer.echo("No candidate entities found.")
+        return
+
+    if co_presence:
+        typer.echo("\nCo-presence:")
+        for candidate in co_presence:
+            typer.echo(
+                f"  {candidate['name']} ({candidate['entity_id']}): "
+                f"screen={candidate['screen_conversations']}, "
+                f"meeting_days={candidate['meeting_days']}, "
+                f"voice={'yes' if candidate['has_voice'] else 'no'}"
+            )
+    if mention:
+        typer.echo("\nMentions:")
+        for candidate in mention:
+            typer.echo(
+                f"  {candidate['name']} ({candidate['entity_id']}): "
+                f"setting={candidate['setting_conversations']}, "
+                f"speakers={candidate['speaker_conversations']}, "
+                f"voice={'yes' if candidate['has_voice'] else 'no'}"
+            )
 
 
 @app.command()

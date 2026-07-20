@@ -14,9 +14,11 @@ from solstone.apps.speakers.discovery import (
     _discovery_cache_path,
     _discovery_resolved_path,
     discover_unknown_speakers,
+    get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
 )
+from solstone.apps.speakers.tests.conftest import journal_tree_hash
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 
 
@@ -126,6 +128,48 @@ def _load_corrections_count(journal: Path, day: str, segment_key: str) -> int:
     return len(json.loads(path.read_text(encoding="utf-8")).get("corrections", []))
 
 
+def _write_discovery_cache(env, cluster_id: int, records: list[dict]) -> None:
+    awareness_dir = env.journal / "awareness"
+    awareness_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = awareness_dir / "discovery_clusters.json"
+    cache = {"version": "test", "clusters": {}}
+    if cache_path.exists():
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache.setdefault("clusters", {})[str(cluster_id)] = records
+    (awareness_dir / "discovery_clusters.json").write_text(
+        json.dumps(cache, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _cluster_record(
+    day: str,
+    segment_key: str,
+    *,
+    stream: str = "test",
+    source: str = "audio",
+    sentence_id: int = 1,
+) -> dict:
+    return {
+        "day": day,
+        "stream": stream,
+        "segment_key": segment_key,
+        "source": source,
+        "sentence_id": sentence_id,
+    }
+
+
+def _candidate_evidence(*items: tuple[str, list[str]]) -> dict:
+    return {
+        "owner_centroid_last_refreshed_at": None,
+        "voiceprint_versions": {},
+        "candidate_evidence": [
+            {"entity_id": entity_id, "sources": sources}
+            for entity_id, sources in items
+        ],
+    }
+
+
 def test_load_discovery_cache_missing_is_read_only(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     import solstone.think.utils as think_utils
@@ -227,6 +271,378 @@ def test_discover_filters_attributed(speakers_env):
     result = discover_unknown_speakers()
 
     assert result == {"clusters": []}
+
+
+def test_discover_sample_shape_stays_scan_stable(speakers_env):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
+    _create_cluster_segments(env, embeddings)
+
+    result = discover_unknown_speakers()
+
+    sample = result["clusters"][0]["samples"][0]
+    assert set(sample) == {
+        "day",
+        "stream",
+        "segment_key",
+        "source",
+        "sentence_id",
+        "audio_url",
+        "text",
+    }
+
+
+def test_cluster_presence_aggregates_persisted_evidence_and_ranks(speakers_env):
+    env = speakers_env()
+    env.create_entity(
+        "Alice Co",
+        voiceprints=[("20240101", "080000_300", "audio", 1)],
+    )
+    env.create_entity("Bob Co")
+    env.create_entity("Carol Mention")
+    env.create_entity("Dave Speaker")
+    segments = [
+        ("20240101", "091000_300", "Room A"),
+        ("20240101", "091500_300", "Room A"),
+        ("20240101", "092000_300", "Room B"),
+    ]
+    for day, segment_key, setting in segments:
+        env.create_import_segment(
+            day,
+            segment_key,
+            [("", "Unknown voice.")],
+            stream="test",
+            setting=setting,
+        )
+    env.create_speaker_labels(
+        "20240101",
+        "091000_300",
+        [],
+        metadata=_candidate_evidence(
+            ("alice_co", ["screen"]),
+            ("bob_co", ["meeting_day"]),
+            ("carol_mention", ["setting"]),
+            ("dave_speaker", ["speakers"]),
+        ),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "091500_300",
+        [],
+        metadata=_candidate_evidence(
+            ("alice_co", ["screen"]),
+            ("bob_co", ["screen", "meeting_day"]),
+            ("carol_mention", ["setting"]),
+            ("dave_speaker", ["speakers"]),
+        ),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "092000_300",
+        [],
+        metadata=_candidate_evidence(
+            ("alice_co", ["meeting_day"]),
+            ("bob_co", ["screen", "meeting_day"]),
+            ("carol_mention", ["speakers"]),
+        ),
+    )
+    _write_discovery_cache(
+        env,
+        7,
+        [
+            _cluster_record(day, segment_key, source="imported_audio")
+            for day, segment_key, _setting in segments
+        ],
+    )
+
+    presence = get_cluster_presence(7)
+
+    assert presence is not None
+    facts_without_samples = {
+        key: value for key, value in presence["facts"].items() if key != "samples"
+    }
+    assert facts_without_samples == {
+        "statement_count": 3,
+        "segment_count": 3,
+        "day_count": 1,
+        "streams": ["test"],
+        "conversation_count": 2,
+    }
+    assert [sample["setting"] for sample in presence["facts"]["samples"]] == [
+        "Room A",
+        "Room A",
+        "Room B",
+    ]
+    assert presence["evidence_complete"] is True
+    assert presence["evidence_gaps"] == []
+    assert presence["candidates"]["co_presence"] == [
+        {
+            "entity_id": "bob_co",
+            "name": "Bob Co",
+            "has_voice": False,
+            "screen_conversations": 2,
+            "meeting_days": 1,
+            "setting_conversations": 0,
+            "speaker_conversations": 0,
+        },
+        {
+            "entity_id": "alice_co",
+            "name": "Alice Co",
+            "has_voice": True,
+            "screen_conversations": 1,
+            "meeting_days": 1,
+            "setting_conversations": 0,
+            "speaker_conversations": 0,
+        },
+    ]
+    assert presence["candidates"]["mention"] == [
+        {
+            "entity_id": "carol_mention",
+            "name": "Carol Mention",
+            "has_voice": False,
+            "screen_conversations": 0,
+            "meeting_days": 0,
+            "setting_conversations": 1,
+            "speaker_conversations": 1,
+        },
+        {
+            "entity_id": "dave_speaker",
+            "name": "Dave Speaker",
+            "has_voice": False,
+            "screen_conversations": 0,
+            "meeting_days": 0,
+            "setting_conversations": 0,
+            "speaker_conversations": 1,
+        },
+    ]
+
+
+def test_cluster_presence_conversation_grouping_setting_vs_no_setting(speakers_env):
+    env = speakers_env()
+    for segment_key in ("093000_300", "093500_300"):
+        env.create_import_segment(
+            "20240101",
+            segment_key,
+            [("", "Unknown voice.")],
+            stream="test",
+            setting="Shared Room",
+        )
+        env.create_speaker_labels(
+            "20240101",
+            segment_key,
+            [],
+            metadata=_candidate_evidence(),
+        )
+    _write_discovery_cache(
+        env,
+        8,
+        [
+            _cluster_record("20240101", "093000_300", source="imported_audio"),
+            _cluster_record("20240101", "093500_300", source="imported_audio"),
+        ],
+    )
+
+    for segment_key in ("094000_300", "094500_300"):
+        env.create_segment("20240101", segment_key, ["audio"])
+        env.create_speaker_labels(
+            "20240101",
+            segment_key,
+            [],
+            metadata=_candidate_evidence(),
+        )
+    _write_discovery_cache(
+        env,
+        9,
+        [
+            _cluster_record("20240101", "094000_300"),
+            _cluster_record("20240101", "094500_300"),
+        ],
+    )
+
+    shared_setting = get_cluster_presence(8)
+    no_setting = get_cluster_presence(9)
+
+    assert shared_setting is not None
+    assert no_setting is not None
+    assert shared_setting["facts"]["conversation_count"] == 1
+    assert no_setting["facts"]["conversation_count"] == 2
+
+
+def test_cluster_presence_readonly_fallback_uses_legacy_sources_without_writes(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    env.create_entity("Bob Test")
+    env.create_entity("Carol Test")
+    env.create_import_segment(
+        "20240101",
+        "100000_300",
+        [("", "Unknown voice.")],
+        stream="test",
+        setting="Meeting with Alice Test",
+    )
+    embedding_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / "test"
+        / "100000_300"
+        / "imported_audio.npz"
+    )
+    embedding_path.unlink()
+    env.create_screen_json("20240101", "100000_300", ["Bob Test"], stream="test")
+    env.create_speakers_json("20240101", "100000_300", ["Carol Test"])
+    env.create_speaker_labels(
+        "20240101",
+        "100000_300",
+        [],
+        metadata={"owner_centroid_last_refreshed_at": None, "voiceprint_versions": {}},
+    )
+    _write_discovery_cache(
+        env,
+        10,
+        [_cluster_record("20240101", "100000_300", source="imported_audio")],
+    )
+    before = journal_tree_hash(env.journal)
+
+    presence = get_cluster_presence(10)
+
+    assert journal_tree_hash(env.journal) == before
+    assert presence is not None
+    assert presence["evidence_complete"] is True
+    assert {cand["entity_id"] for cand in presence["candidates"]["co_presence"]} == {
+        "bob_test"
+    }
+    assert {cand["entity_id"] for cand in presence["candidates"]["mention"]} == {
+        "alice_test",
+        "carol_test",
+    }
+
+
+def test_cluster_presence_stale_resolution_gap_keeps_siblings(speakers_env):
+    from solstone.think.entities import (
+        ResolutionOrigin,
+        ResolutionScope,
+        load_all_journal_entities,
+        record_ambiguity_choice,
+        record_entity_resolution,
+    )
+
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    entities = list(load_all_journal_entities().values())
+    scope = ResolutionScope.journal()
+    origin = ResolutionOrigin(lane="test", field="candidate_name")
+    record_entity_resolution("Sarah", entities, scope=scope, origin=origin)
+    record_ambiguity_choice("Sarah", "sarah_connor", entities, scope=scope)
+    sarah_path = env.journal / "entities" / "sarah_connor" / "entity.json"
+    sarah = json.loads(sarah_path.read_text(encoding="utf-8"))
+    sarah["blocked"] = True
+    sarah_path.write_text(json.dumps(sarah), encoding="utf-8")
+
+    env.create_import_segment(
+        "20240101",
+        "101000_300",
+        [("", "Unknown voice.")],
+        stream="test",
+        setting="Meeting with Alice Test",
+    )
+    env.create_screen_json("20240101", "101000_300", ["Sarah"], stream="test")
+    _write_discovery_cache(
+        env,
+        11,
+        [_cluster_record("20240101", "101000_300", source="imported_audio")],
+    )
+
+    presence = get_cluster_presence(11)
+
+    assert presence is not None
+    assert presence["evidence_complete"] is False
+    assert presence["evidence_gaps"] == [
+        {
+            "day": "20240101",
+            "stream": "test",
+            "segment_key": "101000_300",
+            "source": "resolution",
+            "reason": "stale_resolution",
+        }
+    ]
+    assert presence["candidates"]["mention"] == [
+        {
+            "entity_id": "alice_test",
+            "name": "Alice Test",
+            "has_voice": False,
+            "screen_conversations": 0,
+            "meeting_days": 0,
+            "setting_conversations": 1,
+            "speaker_conversations": 0,
+        }
+    ]
+
+
+def test_cluster_presence_excludes_principal_blocked_and_missing_entities(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Owner Test", is_principal=True)
+    env.create_entity("Alice Test")
+    blocked_dir = env.create_entity("Blocked Test")
+    blocked_path = blocked_dir / "entity.json"
+    blocked = json.loads(blocked_path.read_text(encoding="utf-8"))
+    blocked["blocked"] = True
+    blocked_path.write_text(json.dumps(blocked), encoding="utf-8")
+    env.create_segment("20240101", "102000_300", ["audio"])
+    env.create_speaker_labels(
+        "20240101",
+        "102000_300",
+        [],
+        metadata=_candidate_evidence(
+            ("owner_test", ["screen"]),
+            ("alice_test", ["screen"]),
+            ("blocked_test", ["screen"]),
+            ("missing_test", ["screen"]),
+        ),
+    )
+    _write_discovery_cache(env, 12, [_cluster_record("20240101", "102000_300")])
+
+    presence = get_cluster_presence(12)
+
+    assert presence is not None
+    assert presence["candidates"]["co_presence"] == [
+        {
+            "entity_id": "alice_test",
+            "name": "Alice Test",
+            "has_voice": False,
+            "screen_conversations": 1,
+            "meeting_days": 0,
+            "setting_conversations": 0,
+            "speaker_conversations": 0,
+        }
+    ]
+    assert presence["candidates"]["mention"] == []
+
+
+def test_cluster_presence_empty_evidence_and_unknown_cluster(speakers_env):
+    env = speakers_env()
+    env.create_segment("20240101", "103000_300", ["audio"])
+    env.create_speaker_labels(
+        "20240101",
+        "103000_300",
+        [],
+        metadata=_candidate_evidence(),
+    )
+    _write_discovery_cache(env, 13, [_cluster_record("20240101", "103000_300")])
+
+    presence = get_cluster_presence(13)
+
+    assert presence is not None
+    assert presence["facts"]["statement_count"] == 1
+    assert presence["candidates"] == {"co_presence": [], "mention": []}
+    assert get_cluster_presence(999) is None
 
 
 def test_identify_creates_entity(speakers_env):

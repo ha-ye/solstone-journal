@@ -12,7 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.speakers.attribution import (
+    _load_setting_field,
+    compute_segment_candidate_evidence_readonly,
+)
 from solstone.apps.speakers.audio import resolve_audio_url
+from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
 
@@ -116,6 +121,20 @@ def _get_sentence_text(segment_dir: Path, source: str, sentence_id: int) -> str 
         return entry.get("text")
     except (json.JSONDecodeError, OSError, IndexError):
         return None
+
+
+def _build_cluster_sample(record: dict) -> dict:
+    day = record["day"]
+    stream = record["stream"]
+    segment_key = record["segment_key"]
+    source = record["source"]
+    sentence_id = record["sentence_id"]
+    seg_dir = segment_path(day, segment_key, stream, create=False)
+    return {
+        **record,
+        "audio_url": resolve_audio_url(day, stream, segment_key, source),
+        "text": _get_sentence_text(seg_dir, source, sentence_id) or "",
+    }
 
 
 def _clear_discovery_cache() -> None:
@@ -259,50 +278,14 @@ def discover_unknown_speakers() -> dict[str, Any]:
             if seg_triplet in seen_segments:
                 continue
             seen_segments.add(seg_triplet)
-            seg_dir = segment_path(
-                record["day"], record["segment_key"], record["stream"], create=False
-            )
-            samples.append(
-                {
-                    **record,
-                    "audio_url": resolve_audio_url(
-                        record["day"],
-                        record["stream"],
-                        record["segment_key"],
-                        record["source"],
-                    ),
-                    "text": _get_sentence_text(
-                        seg_dir,
-                        record["source"],
-                        record["sentence_id"],
-                    )
-                    or "",
-                }
-            )
+            samples.append(_build_cluster_sample(record))
             if len(samples) == 3:
                 break
 
         if len(samples) < 3:
             for pos in sorted_positions:
                 record = provenance[int(cluster_indices[int(pos)])]
-                seg_dir = segment_path(
-                    record["day"], record["segment_key"], record["stream"], create=False
-                )
-                sample = {
-                    **record,
-                    "audio_url": resolve_audio_url(
-                        record["day"],
-                        record["stream"],
-                        record["segment_key"],
-                        record["source"],
-                    ),
-                    "text": _get_sentence_text(
-                        seg_dir,
-                        record["source"],
-                        record["sentence_id"],
-                    )
-                    or "",
-                }
+                sample = _build_cluster_sample(record)
                 if sample in samples:
                     continue
                 samples.append(sample)
@@ -338,6 +321,191 @@ def discover_unknown_speakers() -> dict[str, Any]:
 
     result_clusters.sort(key=lambda cluster: cluster["size"], reverse=True)
     return {"clusters": result_clusters}
+
+
+def _conversation_key(
+    day: str,
+    stream: str,
+    segment_key: str,
+    setting: str | None,
+) -> tuple:
+    if setting:
+        return (day, stream, setting)
+    return (day, stream, "__segment__", segment_key)
+
+
+def _voiceprints_exist(entity_id: str) -> bool:
+    return (Path(get_journal()) / "entities" / entity_id / "voiceprints.npz").exists()
+
+
+def _presence_candidate(
+    entity_id: str,
+    buckets: dict[str, set],
+) -> dict[str, Any] | None:
+    entity = load_journal_entity(entity_id)
+    if entity is None or entity.get("blocked"):
+        return None
+    return {
+        "entity_id": entity_id,
+        "name": entity["name"],
+        "has_voice": _voiceprints_exist(entity_id),
+        "screen_conversations": len(buckets["screen"]),
+        "meeting_days": len(buckets["meeting_day"]),
+        "setting_conversations": len(buckets["setting"]),
+        "speaker_conversations": len(buckets["speakers"]),
+    }
+
+
+def get_cluster_presence(cluster_id: int) -> dict[str, Any] | None:
+    """Return read-only co-presence evidence for a discovered cluster."""
+    cache = load_discovery_cache()
+    if cache is None:
+        return None
+    members = cache.get("clusters", {}).get(str(cluster_id))
+    if not members:
+        return None
+
+    _, load_speaker_labels, _, _, _ = _routes_helpers()
+
+    distinct_segments: list[tuple[str, str, str]] = []
+    first_record_by_segment: dict[tuple[str, str, str], dict] = {}
+    for member in members:
+        segment = (member["day"], member["stream"], member["segment_key"])
+        if segment in first_record_by_segment:
+            continue
+        first_record_by_segment[segment] = member
+        distinct_segments.append(segment)
+
+    segment_settings: dict[tuple[str, str, str], str | None] = {}
+    conversation_keys: dict[tuple[str, str, str], tuple] = {}
+    for day, stream, segment_key in distinct_segments:
+        seg_dir = segment_path(day, segment_key, stream, create=False)
+        setting = _load_setting_field(seg_dir)
+        segment_settings[(day, stream, segment_key)] = setting
+        conversation_keys[(day, stream, segment_key)] = _conversation_key(
+            day,
+            stream,
+            segment_key,
+            setting,
+        )
+
+    samples: list[dict[str, Any]] = []
+    for segment in distinct_segments[:3]:
+        sample = _build_cluster_sample(first_record_by_segment[segment])
+        sample["setting"] = segment_settings[segment]
+        samples.append(sample)
+
+    entity_buckets: dict[str, dict[str, set]] = defaultdict(
+        lambda: {
+            "screen": set(),
+            "meeting_day": set(),
+            "setting": set(),
+            "speakers": set(),
+        }
+    )
+    evidence_gaps: list[dict[str, Any]] = []
+
+    for day, stream, segment_key in distinct_segments:
+        seg_dir = segment_path(day, segment_key, stream, create=False)
+        labels = load_speaker_labels(seg_dir)
+        if isinstance(labels, dict) and "candidate_evidence" in labels:
+            evidence = labels.get("candidate_evidence") or []
+            seg_gaps = labels.get("candidate_evidence_gaps") or []
+        else:
+            evidence, seg_gaps = compute_segment_candidate_evidence_readonly(
+                day,
+                stream,
+                segment_key,
+            )
+
+        for gap in seg_gaps:
+            if isinstance(gap, dict):
+                evidence_gaps.append(
+                    {"day": day, "stream": stream, "segment_key": segment_key, **gap}
+                )
+
+        conversation_key = conversation_keys[(day, stream, segment_key)]
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            entity_id = item.get("entity_id")
+            sources = item.get("sources") or []
+            if not entity_id or not isinstance(sources, list):
+                continue
+            buckets = entity_buckets[str(entity_id)]
+            for source in sources:
+                if source == "screen":
+                    buckets["screen"].add(conversation_key)
+                elif source == "meeting_day":
+                    buckets["meeting_day"].add(day)
+                elif source == "setting":
+                    buckets["setting"].add(conversation_key)
+                elif source == "speakers":
+                    buckets["speakers"].add(conversation_key)
+
+    principal = get_journal_principal()
+    principal_id = principal.get("id") if isinstance(principal, dict) else None
+    candidates: list[dict[str, Any]] = []
+    for entity_id, buckets in entity_buckets.items():
+        if entity_id == principal_id:
+            continue
+        candidate = _presence_candidate(entity_id, buckets)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    co_presence = [
+        candidate
+        for candidate in candidates
+        if candidate["screen_conversations"] > 0 or candidate["meeting_days"] > 0
+    ]
+    co_presence.sort(
+        key=lambda candidate: (
+            -candidate["screen_conversations"],
+            -candidate["meeting_days"],
+            candidate["name"],
+            candidate["entity_id"],
+        )
+    )
+
+    mention = [
+        candidate
+        for candidate in candidates
+        if candidate not in co_presence
+        and (
+            candidate["setting_conversations"] > 0
+            or candidate["speaker_conversations"] > 0
+        )
+    ]
+    mention.sort(
+        key=lambda candidate: (
+            -candidate["setting_conversations"],
+            -candidate["speaker_conversations"],
+            candidate["name"],
+            candidate["entity_id"],
+        )
+    )
+
+    days = {day for day, _stream, _segment_key in distinct_segments}
+    streams = {stream for _day, stream, _segment_key in distinct_segments}
+    conversations = set(conversation_keys.values())
+
+    return {
+        "cluster_id": cluster_id,
+        "facts": {
+            "statement_count": len(members),
+            "segment_count": len(distinct_segments),
+            "day_count": len(days),
+            "streams": sorted(streams),
+            "conversation_count": len(conversations),
+            "samples": samples,
+        },
+        "evidence_complete": len(evidence_gaps) == 0,
+        "evidence_gaps": evidence_gaps,
+        "candidates": {
+            "co_presence": co_presence,
+            "mention": mention,
+        },
+    }
 
 
 def identify_cluster(

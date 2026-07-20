@@ -684,6 +684,54 @@ def test_discover_text_no_clusters_clusters_and_json(
     _assert_json_stdout(json_result, cluster_result)
 
 
+def test_presence_json_and_missing_cluster_hint(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    presence_result = {
+        "cluster_id": 7,
+        "facts": {
+            "statement_count": 2,
+            "segment_count": 1,
+            "day_count": 1,
+            "streams": ["mic"],
+            "conversation_count": 1,
+            "samples": [],
+        },
+        "evidence_complete": True,
+        "evidence_gaps": [],
+        "candidates": {
+            "co_presence": [
+                {
+                    "entity_id": "alice",
+                    "name": "Alice",
+                    "has_voice": True,
+                    "screen_conversations": 1,
+                    "meeting_days": 0,
+                    "setting_conversations": 0,
+                    "speaker_conversations": 0,
+                }
+            ],
+            "mention": [],
+        },
+    }
+    monkeypatch.setattr(
+        speakers_routes,
+        "get_cluster_presence",
+        lambda cluster_id: presence_result if cluster_id == 7 else None,
+    )
+
+    json_result = runner.invoke(app, ["presence", "7", "--json"])
+    missing = runner.invoke(app, ["presence", "404"])
+
+    _assert_json_stdout(json_result, presence_result)
+    assert missing.exit_code == 1
+    assert missing.stdout == ""
+    assert missing.stderr == (
+        "Cluster 404 was not found.\n"
+        "Run 'sol call speakers discover' to produce valid cluster ids.\n"
+    )
+
+
 def test_identify_success_forwards_entity_id_and_family2_error(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

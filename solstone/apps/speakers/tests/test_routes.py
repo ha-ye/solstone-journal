@@ -1214,6 +1214,48 @@ def test_discovery_identify_route_is_idempotent_after_success(
     assert second.get_json()["voiceprints_saved"] == 0
 
 
+def test_cluster_presence_route_returns_presence(speakers_env, monkeypatch):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+    payload = {
+        "cluster_id": 7,
+        "facts": {
+            "statement_count": 1,
+            "segment_count": 1,
+            "day_count": 1,
+            "streams": ["test"],
+            "conversation_count": 1,
+            "samples": [],
+        },
+        "evidence_complete": True,
+        "evidence_gaps": [],
+        "candidates": {"co_presence": [], "mention": []},
+    }
+    monkeypatch.setattr(routes, "get_cluster_presence", lambda cluster_id: payload)
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/discovery/cluster/7/presence")
+
+    assert response.status_code == 200
+    assert response.get_json() == payload
+
+
+def test_cluster_presence_route_returns_not_found(speakers_env, monkeypatch):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+    monkeypatch.setattr(routes, "get_cluster_presence", lambda cluster_id: None)
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/discovery/cluster/404/presence")
+
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["reason_code"] == "discovery_cluster_not_found"
+    assert body["detail"] == "Cluster 404 was not found. Run a discovery scan first."
+
+
 def test_serve_audio_sets_flac_mimetype(serve_audio_client):
     """Serve audio endpoint returns FLAC mimetype for sample playback."""
     client, _journal = serve_audio_client
