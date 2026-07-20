@@ -191,6 +191,7 @@ COMMANDS: dict[str, Command] = {
     "grab": Command("solstone.observe.grab", "service"),
     "observer": Command("solstone.observe.observer_cli", "service"),
     # AI providers and talent execution
+    "brain": Command("solstone.think.brain_cli", "service"),
     "providers": Command("solstone.think.providers_cli", "service"),
     "facet-candidates": Command("solstone.think.facet_candidates_cli", "service"),
     "cortex": Command("solstone.think.cortex", "service"),
