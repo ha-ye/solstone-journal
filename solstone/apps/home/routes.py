@@ -19,6 +19,7 @@ from flask import Blueprint, current_app, jsonify
 from solstone.apps.home.connections import build_connections_card
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you, needs_dedup_key
+from solstone.apps.home.owner_voice import build_owner_voice_needs
 from solstone.apps.home.thinking_readiness import _thinking_blocked
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.shell_data import _resolve_attention
@@ -836,6 +837,13 @@ def _build_pulse_context() -> dict[str, Any]:
         and not pulse_needs
         and not latest_weekly_reflection
     )
+
+    try:
+        owner_voice_needs = build_owner_voice_needs(today)
+    except Exception:
+        logger.warning("home: failed to build owner voice needs", exc_info=True)
+        owner_voice_needs = []
+    pulse_needs = [*owner_voice_needs, *pulse_needs]
 
     # Section summaries for collapsed state
     narrative_summary = ""

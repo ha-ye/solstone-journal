@@ -50,16 +50,30 @@ def _owner_helpers():
     return load_owner_centroid
 
 
-def _discovery_cache_path() -> Path:
+def _discovery_cache_path(*, create: bool = False) -> Path:
     """Return the temporary cache path for discovery cluster assignments."""
     awareness_dir = Path(get_journal()) / "awareness"
-    awareness_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        awareness_dir.mkdir(parents=True, exist_ok=True)
     return awareness_dir / "discovery_clusters.json"
 
 
-def _discovery_resolved_path() -> Path:
+def _discovery_resolved_path(*, create: bool = False) -> Path:
     """Return the idempotency sentinel path for resolved discovery clusters."""
-    return _discovery_cache_path().with_suffix(".resolved.json")
+    return _discovery_cache_path(create=create).with_suffix(".resolved.json")
+
+
+def load_discovery_cache() -> dict[str, Any] | None:
+    """Return cached discovery cluster assignments, if present and valid."""
+    path = _discovery_cache_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    clusters = data.get("clusters")
+    return data if isinstance(clusters, dict) else None
 
 
 def load_resolved_cluster(cluster_id: int) -> dict[str, Any] | None:
@@ -76,7 +90,7 @@ def load_resolved_cluster(cluster_id: int) -> dict[str, Any] | None:
 
 
 def _write_resolved_cluster(cluster_id: int, entity_id: str, label: str) -> None:
-    path = _discovery_resolved_path()
+    path = _discovery_resolved_path(create=True)
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (json.JSONDecodeError, OSError):
@@ -309,7 +323,7 @@ def discover_unknown_speakers() -> dict[str, Any]:
         _clear_discovery_cache()
         return {"clusters": []}
 
-    cache_path = _discovery_cache_path()
+    cache_path = _discovery_cache_path(create=True)
     tmp_path = cache_path.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -353,10 +367,8 @@ def identify_cluster(
     if not cache_path.exists():
         return {"error": "No discovery scan results. Run scan first."}
 
-    try:
-        with open(cache_path, encoding="utf-8") as f:
-            cache_data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    cache_data = load_discovery_cache()
+    if cache_data is None:
         return {"error": "Invalid discovery cache. Run scan again."}
 
     cluster_members = cache_data.get("clusters", {}).get(str(cluster_id))

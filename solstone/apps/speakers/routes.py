@@ -1989,8 +1989,10 @@ def api_owner_status() -> Any:
 @speakers_bp.route("/api/owner/detect", methods=["POST"])
 def api_owner_detect() -> Any:
     """Run owner voice candidate detection."""
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force") is True) if isinstance(body, dict) else False
     try:
-        result = detect_owner_candidate()
+        result = detect_owner_candidate(force=force)
     except LockTimeout as exc:
         return _voiceprint_busy_response(exc)
     if result.get("error_kind") == "voiceprint_busy":

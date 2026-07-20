@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,87 @@ from solstone.apps.home.needs_you import (
 
 def _june_22_ms() -> float:
     return datetime(2026, 6, 22, 12, 0, 0).timestamp() * 1000
+
+
+def _use_tmp_journal(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+    config_path = tmp_path / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"setup": {"completed_at": 1700000000000}}) + "\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _seed_owner_candidate(
+    journal: Path,
+    *,
+    recommendation: str,
+    streams_represented: int = 2,
+) -> None:
+    from solstone.think.awareness import update_state
+
+    candidate_path = journal / "awareness" / "owner_candidate.npz"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_bytes(b"candidate")
+    update_state(
+        "voiceprint",
+        {
+            "status": "candidate",
+            "cluster_size": 40,
+            "streams_represented": streams_represented,
+            "recommendation": recommendation,
+            "samples": [],
+        },
+    )
+
+
+def _seed_principal_centroid(journal: Path) -> None:
+    entity_dir = journal / "entities" / "self_person"
+    entity_dir.mkdir(parents=True, exist_ok=True)
+    (entity_dir / "entity.json").write_text(
+        json.dumps(
+            {
+                "id": "self_person",
+                "name": "Self Person",
+                "type": "Person",
+                "is_principal": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (entity_dir / "owner_centroid.npz").write_bytes(b"centroid")
+
+
+def _write_discovery_cache(journal: Path, triples: list[tuple[str, str, str]]) -> None:
+    cache_path = journal / "awareness" / "discovery_clusters.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": "2026-07-20T00:00:00",
+                "clusters": {
+                    "1": [
+                        {
+                            "day": day,
+                            "stream": stream,
+                            "segment_key": segment_key,
+                            "source": "mic_audio",
+                            "sentence_id": 1,
+                        }
+                        for day, stream, segment_key in triples
+                    ]
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _degraded_capture(
@@ -205,6 +287,142 @@ def test_classify_needs_you_route_same_origin_only(caplog):
     assert _normalize_route_payload({"href": "//evil.com/foo"}) is None
     assert _normalize_route_payload({"href": "https://evil.com"}) is None
     assert any("off-origin href" in record.message for record in caplog.records)
+
+
+def test_owner_voice_needs_require_ready_not_candidate_available(
+    tmp_path, monkeypatch
+):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_owner_candidate(journal, recommendation="single_stream", streams_represented=1)
+
+    assert build_owner_voice_needs("20260720") == []
+
+
+def test_owner_voice_needs_truth_table_ready_only(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+    from solstone.think.awareness import update_state
+
+    states: list[tuple[str, bool]] = [
+        ("centroid_exists", False),
+        ("cooldown", False),
+        ("candidate_found", True),
+        ("single_stream", False),
+        ("candidate_not_ready", False),
+        ("no_candidate", False),
+    ]
+
+    for state, expected_item in states:
+        journal = _use_tmp_journal(tmp_path / state, monkeypatch)
+        if state == "centroid_exists":
+            _seed_principal_centroid(journal)
+        elif state == "cooldown":
+            update_state(
+                "voiceprint",
+                {"status": "rejected", "rejected_at": datetime.now().isoformat()},
+            )
+        elif state == "candidate_found":
+            _seed_owner_candidate(journal, recommendation="ready")
+        elif state == "single_stream":
+            _seed_owner_candidate(
+                journal, recommendation="single_stream", streams_represented=1
+            )
+        elif state == "candidate_not_ready":
+            _seed_owner_candidate(journal, recommendation="needs_more_segments")
+
+        items = build_owner_voice_needs("20260720")
+        assert bool(items) is expected_item, state
+        if items:
+            assert items == [
+                {
+                    "text": "sol found a voice that sounds like you. confirm it in speakers",
+                    "kind": "route",
+                    "payload": {"href": "/app/speakers/20260720"},
+                    "source_id": "owner_voice:candidate",
+                }
+            ]
+            classified = classify_needs_you(None, items)
+            assert classified[0].kind == "route"
+            assert classified[0].payload == {"href": "/app/speakers/20260720"}
+
+def test_owner_voice_needs_cheap_negatives_skip_cohesion(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+    from solstone.think.awareness import update_state
+
+    def fail_cohesion(*args, **kwargs):
+        raise AssertionError("home owner collector ran centroid cohesion")
+
+    monkeypatch.setattr(
+        "solstone.apps.speakers.owner.compute_intra_cosine_p25",
+        fail_cohesion,
+    )
+
+    journal = _use_tmp_journal(tmp_path / "absent", monkeypatch)
+    assert build_owner_voice_needs("20260720") == []
+
+    journal = _use_tmp_journal(tmp_path / "status", monkeypatch)
+    _seed_principal_centroid(journal)
+    (journal / "awareness").mkdir(parents=True, exist_ok=True)
+    (journal / "awareness" / "owner_candidate.npz").write_bytes(b"candidate")
+    update_state("voiceprint", {"status": "confirmed"})
+    assert build_owner_voice_needs("20260720") == []
+
+    journal = _use_tmp_journal(tmp_path / "candidate-status", monkeypatch)
+    update_state("voiceprint", {"status": "candidate", "recommendation": "ready"})
+    assert build_owner_voice_needs("20260720") == []
+
+
+def test_owner_voice_recurring_needs_from_cache_only(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path / "missing", monkeypatch)
+    _seed_principal_centroid(journal)
+    assert build_owner_voice_needs("20260720") == []
+
+    journal = _use_tmp_journal(tmp_path / "below", monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache(
+        journal,
+        [
+            ("20260718", "mic", "090000_300"),
+            ("20260718", "mic", "091000_300"),
+        ],
+    )
+    assert build_owner_voice_needs("20260720") == []
+
+    journal = _use_tmp_journal(tmp_path / "unconfirmed", monkeypatch)
+    _write_discovery_cache(
+        journal,
+        [
+            ("20260718", "mic", "090000_300"),
+            ("20260718", "mic", "091000_300"),
+            ("20260719", "sys", "090000_300"),
+        ],
+    )
+    assert build_owner_voice_needs("20260720") == []
+
+    journal = _use_tmp_journal(tmp_path / "recurring", monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache(
+        journal,
+        [
+            ("20260718", "mic", "090000_300"),
+            ("20260718", "mic", "091000_300"),
+            ("20260719", "sys", "090000_300"),
+        ],
+    )
+
+    assert build_owner_voice_needs("20260720") == [
+        {
+            "text": "sol found a recurring voice. name it in speakers",
+            "kind": "route",
+            "payload": {"href": "/app/speakers/20260720"},
+            "source_id": "owner_voice:recurring",
+        }
+    ]
 
 
 def test_classify_needs_you_invalid_route_returns_disabled_item():

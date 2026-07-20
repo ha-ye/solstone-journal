@@ -17,7 +17,10 @@ from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.audio import resolve_audio_url
-from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
+from solstone.apps.speakers.copy import (
+    OWNER_CANDIDATE_CONFIRM_GUIDANCE,
+    OWNER_REJECTION_COOLDOWN_GUIDANCE,
+)
 from solstone.apps.speakers.encoder_config import (
     NOISY_FLYWHEEL_OVERLAP_MAX,
     OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
@@ -284,6 +287,19 @@ def _owner_candidate_path(*, create: bool = False) -> Path:
     if create:
         awareness_dir.mkdir(parents=True, exist_ok=True)
     return awareness_dir / "owner_candidate.npz"
+
+
+def _read_voiceprint_state_without_create() -> dict[str, Any]:
+    """Read awareness voiceprint state without creating awareness directories."""
+    current_path = Path(get_journal()) / "awareness" / "current.json"
+    try:
+        data = json.loads(current_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    voiceprint = data.get("voiceprint")
+    return voiceprint if isinstance(voiceprint, dict) else {}
 
 
 def _voiceprint_busy_result(exc: LockTimeout) -> dict[str, Any]:
@@ -968,6 +984,23 @@ def _candidate_no_cluster(
     }
 
 
+def _owner_detection_cooldown_refusal(cooldown: dict[str, Any]) -> dict[str, Any]:
+    manual_guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
+    return {
+        "status": "no_cluster",
+        "reason": "cooldown",
+        "segments_checked": 0,
+        "segments_available": 0,
+        "embeddings_available": 0,
+        "recommendation": "no_cluster",
+        "manual_tags_count": int(manual_guidance["manual_tags_count"]),
+        "can_build_from_tags": bool(manual_guidance["can_build_from_tags"]),
+        "days_remaining": int(cooldown["days_remaining"]),
+        "next_step": "wait_for_cooldown",
+        "guidance": OWNER_REJECTION_COOLDOWN_GUIDANCE,
+    }
+
+
 def _select_owner_candidate(
     principal_id: str | None,
 ) -> tuple[CandidateProfile | None, str | None]:
@@ -1248,7 +1281,7 @@ def _owner_candidate_samples(
     return samples
 
 
-def detect_owner_candidate() -> dict[str, Any]:
+def detect_owner_candidate(*, force: bool = False) -> dict[str, Any]:
     """Detect a likely owner voice centroid from the candidate pool.
 
     The cheap statement-count prefilter opens no segment files, so its
@@ -1274,6 +1307,16 @@ def detect_owner_candidate() -> dict[str, Any]:
 
     candidate_path = _owner_candidate_path()
     voiceprint = get_current().get("voiceprint", {})
+    if force:
+        candidate_path.unlink(missing_ok=True)
+        if voiceprint.get("rejected_at"):
+            update_state("voiceprint", {"rejected_at": None})
+            voiceprint = get_current().get("voiceprint", {})
+
+    cooldown = owner_rejection_cooldown_payload(voiceprint)
+    if cooldown is not None and not force:
+        return _owner_detection_cooldown_refusal(cooldown)
+
     if candidate_path.exists() and voiceprint.get("status") == "candidate":
         return _candidate_payload_from_awareness(voiceprint)
 
@@ -1429,6 +1472,12 @@ def _owner_candidate_ready_payload(
     }
 
 
+def owner_candidate_ready_possible() -> bool:
+    """Return whether owner readiness can reach the candidate branch."""
+    voiceprint = _read_voiceprint_state_without_create()
+    return _owner_candidate_path().exists() and voiceprint.get("status") == "candidate"
+
+
 def owner_detection_ready() -> dict[str, Any]:
     """Check cheap owner voice candidate state without running detection."""
     if load_owner_centroid() is not None:
@@ -1574,9 +1623,15 @@ def classify_sentences(
 
 def _rebuild_guidance(reason: str) -> tuple[str, str]:
     if reason == "no_principal":
+        if principal_identity_or_none() is None:
+            return (
+                "set_identity",
+                "set your journal identity before rebuilding your voice.",
+            )
         return (
-            "set_identity",
-            "Set the journal identity before rebuilding the owner voice.",
+            "tag_owner_statement",
+            "tag one owner statement first so sol can create your owner profile, "
+            "then build your voice from tags.",
         )
     if reason == "no_owner_centroid":
         return (

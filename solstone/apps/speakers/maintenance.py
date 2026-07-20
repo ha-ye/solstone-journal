@@ -10,7 +10,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.speakers.discovery import discover_unknown_speakers
 from solstone.think import speaker_candidate_pair_review_candidates as pair_store
+from solstone.think.entities.journal import (
+    get_journal_principal,
+    journal_entity_memory_path,
+)
 from solstone.think.journal_io import LockTimeout
 from solstone.think.maintenance import MaintenanceRoutine
 from solstone.think.speaker_review_candidates import (
@@ -40,6 +45,28 @@ def run_consolidation(args: list[str]) -> int:
     logger.info(
         "speaker candidate consolidation refreshed: merged=%d",
         result.get("merged", 0),
+    )
+    return 0
+
+
+def run_discovery_scan(args: list[str]) -> int:
+    """Refresh recurring unknown speaker discovery clusters."""
+    parser = argparse.ArgumentParser(
+        prog="journal maintenance run speakers:discover-voices"
+    )
+    parser.parse_args(args)
+
+    principal = get_journal_principal()
+    if principal is None:
+        return 0
+    owner_path = journal_entity_memory_path(str(principal["id"])) / "owner_centroid.npz"
+    if not owner_path.exists():
+        return 0
+
+    result = discover_unknown_speakers()
+    logger.info(
+        "speaker discovery refreshed: clusters=%d",
+        len(result.get("clusters", [])),
     )
     return 0
 
@@ -219,6 +246,13 @@ ROUTINES = [
         description="Find dense speaker candidate pairs for Suggestions.",
         every="daily",
         run=run_candidate_pair_suggestions,
+        max_runtime="10m",
+    ),
+    MaintenanceRoutine(
+        name="discover-voices",
+        description="Refresh recurring voice discovery cache.",
+        every="daily",
+        run=run_discovery_scan,
         max_runtime="10m",
     ),
     MaintenanceRoutine(

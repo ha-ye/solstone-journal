@@ -67,6 +67,7 @@ def _patch_minimal_pulse_context(
     monkeypatch.setattr(home_routes, "read_steward_health", lambda: None)
     monkeypatch.setattr(home_routes, "read_steward_summary", lambda *a, **k: None)
     monkeypatch.setattr(home_routes, "_thinking_blocked", lambda: False)
+    monkeypatch.setattr(home_routes, "build_owner_voice_needs", lambda today: [])
     monkeypatch.setattr(
         home_routes,
         "_summarize_yesterday_processing",
@@ -233,6 +234,24 @@ def test_pulse_and_briefing_needs_dedup_by_shared_source(monkeypatch):
     assert len(ctx["needs_you_items"]) == 1
     assert ctx["briefing_needs_shared_count"] == 1
     assert ctx["briefing_needs_deduped"] == []
+
+
+def test_owner_voice_needs_exception_omits_owner_pair_only(monkeypatch):
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=["Review launch"],
+        briefing_needs=[],
+    )
+
+    def fail_owner_needs(today: str) -> list[dict[str, Any]]:
+        raise RuntimeError("owner collector failed")
+
+    monkeypatch.setattr(home_routes, "build_owner_voice_needs", fail_owner_needs)
+
+    ctx = home_routes._build_pulse_context()
+
+    assert [item["text"] for item in ctx["needs_you_items"]] == ["Review launch"]
+    assert all("voice" not in item["text"] for item in ctx["needs_you_items"])
 
 
 def test_briefing_repeated_source_identity_renders_once(monkeypatch):

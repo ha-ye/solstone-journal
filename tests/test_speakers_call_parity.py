@@ -862,15 +862,25 @@ def test_detect_success_json_and_busy_owner_voice(
     monkeypatch.setattr(
         speakers_routes,
         "detect_owner_candidate",
-        lambda: {"status": "candidate", "cluster_size": 4},
+        lambda *, force=False: {
+            "status": "candidate",
+            "cluster_size": 4,
+            "force": force,
+        },
     )
     success = runner.invoke(app, ["detect"])
-    _assert_json_stdout(success, {"status": "candidate", "cluster_size": 4})
+    _assert_json_stdout(
+        success,
+        {"status": "candidate", "cluster_size": 4, "force": False},
+    )
+
+    forced = runner.invoke(app, ["detect", "--force"])
+    _assert_json_stdout(forced, {"status": "candidate", "cluster_size": 4, "force": True})
 
     monkeypatch.setattr(
         speakers_routes,
         "detect_owner_candidate",
-        lambda: {"error_kind": "voiceprint_busy", "error": "busy"},
+        lambda *, force=False: {"error_kind": "voiceprint_busy", "error": "busy"},
     )
     busy = runner.invoke(app, ["detect"])
 

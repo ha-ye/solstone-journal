@@ -15,6 +15,7 @@ from solstone.apps.speakers.discovery import (
     _discovery_resolved_path,
     discover_unknown_speakers,
     identify_cluster,
+    load_discovery_cache,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 
@@ -123,6 +124,16 @@ def _load_corrections_count(journal: Path, day: str, segment_key: str) -> int:
     if not path.exists():
         return 0
     return len(json.loads(path.read_text(encoding="utf-8")).get("corrections", []))
+
+
+def test_load_discovery_cache_missing_is_read_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+
+    assert load_discovery_cache() is None
+    assert not (tmp_path / "awareness").exists()
 
 
 def test_discover_no_owner_centroid(speakers_env):

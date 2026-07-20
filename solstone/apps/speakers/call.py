@@ -29,7 +29,7 @@ Commands:
     sol call speakers link-import <name> --entity-id <ID>
     sol call speakers seed-from-imports [--commit] [--json]
     sol call speakers suggest [--limit N] [--json]
-    sol call speakers detect
+    sol call speakers detect [--force]
     sol call speakers build-from-tags [--json]
     sol call speakers rebuild-owner [--override] [--json]
     sol call speakers tag-owner <day> <stream> <segment> <source> <sentence-id> [--json]
@@ -787,9 +787,19 @@ def suggest(
 
 @app.command("detect")
 @convey_cli
-def detect_cmd() -> None:
+def detect_cmd(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Bypass the candidate-exists and rejection-cooldown early-outs.",
+    ),
+) -> None:
     """Run owner voice candidate detection."""
-    result = _request("POST", "/app/speakers/api/owner/detect")
+    result = _request(
+        "POST",
+        "/app/speakers/api/owner/detect",
+        json_body={"force": force},
+    )
     typer.echo(json.dumps(result, indent=2, default=str))
 
 

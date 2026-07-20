@@ -66,7 +66,14 @@ OWNER_DETECT_CANDIDATE_GUIDANCE = (
     "Analyze available voice patterns to look for an owner voice candidate."
 )
 OWNER_REJECTION_COOLDOWN_GUIDANCE = (
-    "Wait for the owner voice rejection cooldown before running detection again."
+    "Wait for the owner voice rejection cooldown before running detection again, "
+    "or run sol call speakers detect --force to look now."
+)
+OWNER_NEEDS_CONFIRM_VOICE_TEXT = (
+    "sol found a voice that sounds like you. confirm it in speakers"
+)
+OWNER_NEEDS_RECURRING_VOICE_TEXT = (
+    "sol found a recurring voice. name it in speakers"
 )
 
 

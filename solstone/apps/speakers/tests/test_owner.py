@@ -638,6 +638,95 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
     assert get_current()["voiceprint"]["status"] == "candidate"
 
 
+def test_detect_owner_candidate_refuses_during_rejection_cooldown(speakers_env):
+    from datetime import datetime
+
+    from solstone.apps.speakers.copy import OWNER_REJECTION_COOLDOWN_GUIDANCE
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=60,
+            )
+        ],
+    )
+    update_state(
+        "voiceprint",
+        {"status": "rejected", "rejected_at": datetime.now().isoformat()},
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "no_cluster"
+    assert result["reason"] == "cooldown"
+    assert result["recommendation"] == "no_cluster"
+    assert result["days_remaining"] == 14
+    assert result["next_step"] == "wait_for_cooldown"
+    assert result["guidance"] == OWNER_REJECTION_COOLDOWN_GUIDANCE
+    assert "--force" in result["guidance"]
+    assert not _candidate_path(env.journal).exists()
+
+
+def test_detect_owner_candidate_force_bypasses_cooldown_and_refreshes_candidate(
+    speakers_env,
+):
+    from datetime import datetime
+
+    from solstone.apps.speakers.owner import (
+        detect_owner_candidate,
+        owner_detection_ready,
+    )
+
+    env = speakers_env()
+    rng = np.random.default_rng(42)
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _owner_embeddings(20, rng)},
+        stream="mic",
+    )
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "091000_300",
+        {1: _owner_embeddings(20, rng)},
+        stream="sys",
+    )
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [
+                    _source_segment("20240101", "090000_300", stream="mic"),
+                    _source_segment("20240101", "091000_300", stream="sys"),
+                ],
+                n_intervals=40,
+            )
+        ],
+    )
+    update_state(
+        "voiceprint",
+        {"status": "rejected", "rejected_at": datetime.now().isoformat()},
+    )
+
+    result = detect_owner_candidate(force=True)
+
+    assert result["status"] == "candidate"
+    assert result["recommendation"] == "ready"
+    assert _candidate_path(env.journal).exists()
+    assert get_current()["voiceprint"]["rejected_at"] is None
+    ready = owner_detection_ready()
+    assert ready["ready"] is True
+    assert ready["reason"] == "candidate_found"
+
+
 def test_detect_owner_candidate_e2e_from_solo_candidate_tracker(speakers_env):
     from solstone.apps.speakers.candidate_tracker import CandidateTracker
     from solstone.apps.speakers.owner import detect_owner_candidate
@@ -2496,8 +2585,27 @@ def test_rebuild_no_principal_returns_clean_refusal(speakers_env):
 
     assert result["status"] == "refused"
     assert result["reason"] == "no_principal"
-    assert result["next_step"]
-    assert result["guidance"]
+    assert result["next_step"] == "set_identity"
+    assert result["guidance"] == "set your journal identity before rebuilding your voice."
+
+
+def test_rebuild_no_principal_with_identity_guides_owner_statement_tag(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    env.set_identity(preferred="Self Person")
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "refused"
+    assert result["reason"] == "no_principal"
+    assert result["next_step"] == "tag_owner_statement"
+    assert result["guidance"] == (
+        "tag one owner statement first so sol can create your owner profile, "
+        "then build your voice from tags."
+    )
 
 
 def test_rebuild_confirm_sourced_without_manual_tags_refuses_too_few_stmts_preserves_incumbent(
@@ -3343,7 +3451,6 @@ def test_owner_gate_diagnostics_falls_back_when_renderer_declines_under_node():
     functions = "\n".join(
         _workspace_function_source(source, name)
         for name in (
-            "renderOwnerBuildFromTagsAction",
             "renderOwnerColdStartDiagnostics",
             "renderOwnerGateDiagnostics",
         )
@@ -3351,7 +3458,6 @@ def test_owner_gate_diagnostics_falls_back_when_renderer_declines_under_node():
     script = "\n".join(
         [
             "const window = {};",
-            "const SPK_COPY = { SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL: 'build from manual tags' };",
             r"""
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -3390,14 +3496,15 @@ const lowQualityDefault = {
 window.GateDrawer = { render() { return ''; } };
 const fallback = renderOwnerGateDiagnostics(lowQualityDefault);
 assert(fallback.includes('<details class="spk-owner-diagnostics">'), 'fallback diagnostics render');
-assert(fallback.includes('id="spkOwnerBuildFromTags"'), 'fallback keeps build-from-tags button');
+assert(!fallback.includes('id="spkOwnerBuildFromTags"'), 'fallback omits build-from-tags button');
 assert(fallback.includes(String(lowQualityDefault.manual_tags_count)), 'fallback keeps manual tag count');
 assert(fallback.includes(String(lowQualityDefault.segments_available)), 'fallback keeps segment count');
 assert(fallback.includes(String(lowQualityDefault.embeddings_available)), 'fallback keeps embedding count');
 
 window.GateDrawer = {
   render(data, options) {
-    return `<details class="drawer">${options.actionHtml || ''}</details>`;
+    assert(options === undefined, 'drawer receives no action html');
+    return '<details class="drawer">diagnostics</details>';
   }
 };
 const claimed = renderOwnerGateDiagnostics({
@@ -3406,7 +3513,7 @@ const claimed = renderOwnerGateDiagnostics({
 });
 assert(claimed.includes('class="drawer"'), 'claimed drawer renders');
 assert(!claimed.includes('spk-owner-diagnostics'), 'claimed drawer does not duplicate cold-start details');
-assert(claimed.includes('id="spkOwnerBuildFromTags"'), 'claimed drawer keeps build-from-tags action html');
+assert(!claimed.includes('id="spkOwnerBuildFromTags"'), 'claimed drawer omits build-from-tags button');
 """,
         ]
     )
@@ -3439,6 +3546,13 @@ def test_owner_not_ready_cold_start_diagnostics_retained_workspace_source():
         '<div class="spk-owner-diagnostics-line">Embeddings: '
         "${escapeHtml(String(data.embeddings_available || 0))}</div>"
     ) in source
+    cold_start = _workspace_function_source(source, "renderOwnerColdStartDiagnostics")
+    gate = _workspace_function_source(source, "renderOwnerGateDiagnostics")
+    not_ready = _workspace_function_source(source, "renderOwnerNotReady")
+    assert "spkOwnerBuildFromTags" not in cold_start
+    assert "actionHtml" not in gate
+    assert "spkOwnerBuildFromTags" in not_ready
+    assert "data.can_build_from_tags === true" in not_ready
 
 
 def test_api_owner_status_no_cluster(speakers_env):

@@ -13,6 +13,7 @@ import numpy as np
 from solstone.apps.speakers.maintenance import (
     run_candidate_pair_suggestions,
     run_consolidation,
+    run_discovery_scan,
     run_name_variants,
 )
 from solstone.apps.speakers.suggest import suggest_opportunities
@@ -137,6 +138,7 @@ def test_speakers_pool_routines_are_discovered():
     for routine_id in (
         "speakers:consolidate-pool",
         "speakers:candidate-pair-suggestions",
+        "speakers:discover-voices",
     ):
         assert routine_id in routines
         routine = routines[routine_id]
@@ -149,6 +151,21 @@ def test_speakers_pool_routines_are_discovered():
             "max_runtime": "10m",
         }
         assert maintenance_schedule_name(routine_id) == f"maintenance:{routine_id}"
+
+
+def test_run_discovery_scan_noops_without_owner(speakers_env, monkeypatch):
+    from solstone.apps.speakers import maintenance as speakers_maintenance
+
+    speakers_env()
+    calls = []
+    monkeypatch.setattr(
+        speakers_maintenance,
+        "discover_unknown_speakers",
+        lambda: calls.append(True) or {"clusters": []},
+    )
+
+    assert run_discovery_scan([]) == 0
+    assert calls == []
 
 
 def test_run_consolidation_merges_dense_pool(speakers_env):
