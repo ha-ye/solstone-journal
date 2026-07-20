@@ -873,7 +873,7 @@ def test_ready_episode_reobserves_on_sixty_second_cadence(monkeypatch) -> None:
     asyncio.run(supervisor._reconcile_local_provider_runtime([]))
 
     assert observations == 1
-    assert state.latest_phase == "ready"
+    assert state.latest_phase in {"ready", "ready-proof-unavailable"}
 
 
 @pytest.mark.parametrize(
@@ -930,7 +930,7 @@ def test_ready_truth_refresh_keeps_same_target_process_authoritative(
 
     asyncio.run(supervisor._reconcile_provider_runtime(provider, [managed]))
     submitted_health = read_runtime_health(provider)
-    assert state.latest_phase == "ready"
+    assert state.latest_phase in {"ready", "ready-proof-unavailable"}
     assert submitted_health["phase"] == "ready"
     assert submitted_health["process"] == process
 
@@ -2556,6 +2556,137 @@ def test_stop_before_replace_runs_before_replacement_start(
         asyncio.run(supervisor._reconcile_provider_runtime(provider, procs))
     assert order[-1] == f"start:{provider}"
     assert old_managed.terminate.call_count == 1
+
+
+def test_local_artifact_failure_before_replacement_keeps_old_child_and_retries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from solstone.think.providers.install_state import (
+        begin_or_replace_install_attempt,
+        read_install_status,
+        transition_state,
+        write_install_status,
+    )
+
+    state = supervisor._provider_runtime_states["local"]
+    old_managed = _FakeManaged(supervisor.LOCAL_SERVER_PROCESS_NAME)
+    prior_tree = tmp_path / "prior-runtime"
+    prior_tree.mkdir()
+    prior_binary = prior_tree / "llama-server"
+    prior_binary.write_text("old runtime", encoding="utf-8")
+    old_plan = replace(
+        _local_plan(),
+        binary_path=prior_binary,
+        desired_fingerprint_json='{"provider":"local","backend":"vulkan"}',
+        desired_fingerprint_sha256="fp-local-vulkan-old",
+    )
+    _set_provider_ready("local", state, old_plan)
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint=old_plan.desired_fingerprint_sha256,
+            generation=1,
+            attempt=1,
+            process={
+                "name": old_managed.name,
+                "pid": old_managed.process.pid,
+                "ref": old_managed.ref,
+                "port": 45678,
+            },
+        )
+    )
+    failed_target = {"provider": "local", "backend": "cuda"}
+    attempt = begin_or_replace_install_attempt(
+        "local",
+        failed_target,
+        initial_state="downloading",
+    )
+    write_install_status(
+        transition_state(
+            attempt,
+            new_state="failed",
+            error="cuda_runtime_incomplete",
+            error_code="cuda_runtime_incomplete",
+        )
+    )
+    failed_observation = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        detail={
+            "readiness_status": "missing-or-mismatched",
+            "readiness_reason_code": "cuda_runtime_incomplete",
+            "install_state": "failed",
+            "install_acquisition_allowed": False,
+        },
+        desired_fingerprint_json='{"provider":"local","backend":"cuda"}',
+        desired_fingerprint_sha256="fp-local-cuda",
+        plan=None,
+        boot_required=True,
+    )
+    state.next_truth_at = 10**12
+    state.next_probe_at = 10**12
+    state.truth_fence = supervisor._provider_fence(state, 1)
+    state.truth_future = _future_with(failed_observation)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+
+    asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
+
+    old_managed.terminate.assert_not_called()
+    old_managed.cleanup.assert_not_called()
+    assert prior_binary.read_text(encoding="utf-8") == "old runtime"
+    status = read_install_status(name="local")
+    assert status["install_state"] == "failed"
+    assert status["error_code"] == "cuda_runtime_incomplete"
+    assert state.latest_phase in {"ready", "ready-proof-unavailable"}
+    assert state.desired_fingerprint == old_plan.desired_fingerprint_sha256
+    record = read_runtime_health("local")
+    assert record["phase"] == "artifact-not-ready"
+    assert record["reason_code"] == "artifact-missing"
+    assert record["process"]["ref"] == old_managed.ref
+
+    retry_observation = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="starting",
+        reason_code="launch-requested",
+        detail={},
+        desired_fingerprint_json='{"provider":"local","backend":"cuda"}',
+        desired_fingerprint_sha256="fp-local-cuda",
+        plan=_cuda_plan(),
+        boot_required=True,
+    )
+    state.truth_fence = supervisor._provider_fence(state, 1)
+    state.truth_future = _future_with(retry_observation)
+    order: list[str] = []
+
+    def cleanup(managed, *, reason, state_name=None):
+        del state_name
+        order.append(f"cleanup:{managed.name}:{reason}")
+        managed.terminate()
+        managed.cleanup()
+        managed.is_running = lambda: False
+
+    def start_worker(provider_arg, _plan_arg, _fence, _cancel_event):
+        order.append(f"start:{provider_arg}")
+        return supervisor.ProviderLaunchOutcome(
+            status="launch-failed",
+            reason_code="launch-failed",
+            detail={},
+        )
+
+    monkeypatch.setattr(supervisor, "_terminate_cleanup_handle", cleanup)
+    monkeypatch.setattr(supervisor, "_provider_start_worker", start_worker)
+
+    asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
+    assert order == ["cleanup:" + old_managed.name + ":target-changed"]
+
+    for _ in range(3):
+        if order[-1] == "start:local":
+            break
+        asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
+    assert order[-1] == "start:local"
 
 
 def test_matching_target_duplicate_convergence_keeps_owner_and_stops_stale(

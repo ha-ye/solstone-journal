@@ -4960,6 +4960,20 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             admission_exclusive=False,
         )
         return True
+    if (
+        fingerprint_changed
+        and observation.phase == "artifact-not-ready"
+        and state.latest_phase in {"ready", "ready-proof-unavailable"}
+    ):
+        _write_provider_runtime(
+            state,
+            phase=observation.phase,
+            reason_code=observation.reason_code,
+            detail=observation.detail,
+            process=_current_provider_process_record(state.provider),
+        )
+        _finish_provider_startup_condition(state, observation.phase)
+        return True
     if observation.phase in {"not-desired", "host-blocked"} and state.latest_phase in {
         "ready",
         "ready-proof-unavailable",

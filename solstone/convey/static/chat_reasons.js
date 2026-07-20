@@ -94,6 +94,10 @@
       "template": "local model setup could not be verified",
       "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
+    "cuda_runtime_incomplete": {
+      "template": "local model setup could not be verified",
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
+    },
     "provider_key_invalid": {
       "template": "your {provider} key didn't validate",
       "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}

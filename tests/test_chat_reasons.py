@@ -32,6 +32,7 @@ EXPECTED_CODES = {
     "unsupported_model",
     "sha256_mismatch",
     "archive_path_traversal",
+    "cuda_runtime_incomplete",
     "provider_key_invalid",
     "provider_quota_exceeded",
     "network_unreachable",

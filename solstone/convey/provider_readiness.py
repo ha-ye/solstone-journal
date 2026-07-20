@@ -227,6 +227,12 @@ _ENTRIES: dict[str, _Entry] = {
         detail=_LOCAL_VERIFY_DETAIL,
         recovery_action=_LOCAL_SETUP_ACTION,
     ),
+    "cuda_runtime_incomplete": _Entry(
+        klass="setup",
+        summary="local model setup could not be verified",
+        detail=_LOCAL_VERIFY_DETAIL,
+        recovery_action=_LOCAL_SETUP_ACTION,
+    ),
     "provider_key_invalid": _Entry(
         klass="provider",
         summary="your {provider} key didn't validate",
