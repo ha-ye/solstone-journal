@@ -27,6 +27,12 @@ from solstone.think.journal_io.errors import (
     MalformedDataError,
     PathEscapeError,
 )
+from solstone.think.journal_io.lease import (
+    acquire_file_lease,
+    assert_file_lease_owned,
+    probe_file_lease_free,
+    probe_file_lease_held,
+)
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.journal_io.paths import contained_path
 from solstone.think.journal_io.readers import (
@@ -64,6 +70,22 @@ def test_install_file_installs_streamed_temp(tmp_path) -> None:
     assert not temp.exists()
     assert list(tmp_path.glob(".tmp_*")) == []
     assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.opus"]
+
+
+def test_file_lease_holder_and_probe(tmp_path) -> None:
+    path = tmp_path / "health" / "brain-refresh.lease"
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+
+    assert probe_file_lease_free(path) is True
+    lease = acquire_file_lease(path, attempts=1)
+    assert lease is not None
+    assert assert_file_lease_owned(lease) is lease
+    assert probe_file_lease_held(path) is True
+    assert acquire_file_lease(path, attempts=1) is None
+
+    lease.release()
+    assert probe_file_lease_free(path) is True
 
 
 def test_install_file_crash_safe(tmp_path, monkeypatch) -> None:
