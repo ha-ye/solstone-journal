@@ -360,6 +360,43 @@ def test_quality_teaching_copy_is_wired_to_quality_panel() -> None:
     )
 
 
+def test_owner_teach_static_source_contracts() -> None:
+    text = _workspace_text()
+    teach_entry = _js_function_block(text, "ownerStatusStartsTeachSession")
+    apply_day_state = _js_function_block(text, "applySpeakersDayState")
+    day_candidate = _js_function_block(text, "renderOwnerCandidate")
+    overview_candidate = _js_function_block(text, "ownerCandidate")
+    teach_render = _js_function_block(text, "renderOwnerTeachSession")
+    teach_fetch = _js_function_block(text, "loadOwnerTeachReviews")
+
+    assert "sessionStorage" not in text
+    assert "localStorage" not in text
+    assert "OWNER_HELP_TOAST" not in text
+    assert "spkOwnerGuideToast" not in text
+    assert "SPK_OWNER_TEACH_ALREADY_BUILT" not in text
+    assert "OWNER_MIN = payload.owner_min_statements || 0" in apply_day_state
+
+    assert "data.status === 'needs_detection'" in teach_entry
+    assert "data.status === 'low_quality'" in teach_entry
+    assert "data.status === 'none'" in teach_entry
+    assert "data.status === 'candidate'" not in teach_entry
+    assert "data.status === 'no_cluster'" not in teach_entry
+    assert "SPK_OWNER_TEACH_START_LABEL" not in day_candidate
+    assert "SPK_OVERVIEW_OWNER_HELP_LABEL" not in overview_candidate
+
+    assert teach_fetch.count("/app/speakers/api/assign-attribution") == 1
+    assert "/app/speakers/api/owner/build-from-tags" not in teach_fetch
+    assert "/app/speakers/api/owner/detect" not in teach_fetch
+    assert "/app/speakers/api/owner/confirm" not in teach_fetch
+    assert "/app/speakers/api/owner/reject" not in teach_fetch
+    assert "/app/speakers/api/correct-attribution" not in teach_fetch
+    assert "/app/speakers/api/propagate-correction" not in teach_fetch
+    assert "ownerTeachState.refusalGuidance" in teach_render
+    assert "SPK_OWNER_TEACH_REFUSED_TITLE" in teach_render
+    assert "SPK_OWNER_TEACH_BUSY" in text
+    assert "SPK_OWNER_REVEAL_TITLE" not in teach_render
+
+
 def test_quality_counts_unreadable_label_and_correction_files(speakers_env):
     env = speakers_env()
     day = "20240110"

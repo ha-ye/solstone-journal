@@ -689,8 +689,72 @@
   line-height: 1.5;
 }
 
-.spk-owner-toast {
-  margin-top: 6px;
+.spk-owner-progress-line,
+.spk-owner-teach-meta,
+.spk-owner-notice {
+  font-size: 13px;
+  color: #334155;
+}
+
+.spk-owner-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(147, 197, 253, 0.35);
+}
+
+.spk-owner-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: #2563eb;
+}
+
+.spk-owner-teach-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.spk-owner-teach-text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #111827;
+}
+
+.spk-owner-teach-audio {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.spk-owner-teach-audio audio {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.spk-owner-reveal {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.spk-owner-facts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.spk-owner-fact {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #14532d;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .spk-discovery-banner {
@@ -1200,6 +1264,7 @@
   };
   let day = '';
   let SPK_COPY = {};
+  let OWNER_MIN = 0;
   let speakerFilter = '';
   let speakerFilterName = '';
   const segmentList = document.getElementById('spkSegmentList');
@@ -1223,15 +1288,28 @@
   let playingSentenceId = null;
   let detailExpanded = false;
   let ownerDetectionInFlight = false;
-  const OWNER_HELP_TOAST_KEY = 'speakers-owner-help-toast';
-  const OWNER_HELP_TOAST_MESSAGE = 'click on segments and tag your own statements with the assign button. solstone needs ~30 longer ones to lock in your voice.';
+  let ownerStatusData = null;
+  let ownerTeachState = null;
+  let ownerTeachPrincipalId = null;
+  let ownerTeachStartRequested = false;
+  let ownerTeachRequestId = 0;
+  let ownerRevealPendingSource = null;
+  let ownerRevealShown = false;
+  const ownerTeachDeclinedKeys = new Set();
+  const OWNER_TEACH_HASH = 'owner-teach';
+  const OWNER_TEACH_REVIEW_CONCURRENCY = 4;
 
   function initSpeakers() {
+    ownerTeachStartRequested = window.location.hash.slice(1) === OWNER_TEACH_HASH;
     checkOwnerStatus();
     loadSegments();
 
     window.addEventListener('hashchange', () => {
       const hash = window.location.hash.slice(1);
+      if (hash === OWNER_TEACH_HASH) {
+        navigateToOwnerHelp();
+        return;
+      }
       if (hash && !selectSegmentByKey(hash) && segments.length < segmentTotal) {
         loadUntilFound(hash);
       }
@@ -1242,6 +1320,7 @@
     const context = window.SPEAKERS_CONTEXT || {};
     day = context.day || '';
     SPK_COPY = payload.speaker_copy || {};
+    OWNER_MIN = payload.owner_min_statements || 0;
     speakerFilter = context.speakerFilter || '';
     speakerFilterName = payload.speaker_filter_name || speakerFilter;
     const header = document.getElementById('spkSegmentsHeader');
@@ -1337,14 +1416,14 @@
     input.disabled = true;
     status.textContent = 'identifying...';
 
-	    window.apiJson('/app/speakers/api/discovery/identify', {
-	      method: 'POST',
-	      headers: { 'Content-Type': 'application/json' },
-	      body: JSON.stringify({ cluster_id: clusterId, name: name }),
-	    })
-	      .then(data => {
-	        status.textContent = `identified as ${data.entity_name} (${data.voiceprints_saved} voiceprints, ${data.segments_updated} segments updated)`;
-	        card.style.opacity = '0.5';
+    window.apiJson('/app/speakers/api/discovery/identify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cluster_id: clusterId, name: name }),
+    })
+      .then(data => {
+        status.textContent = `identified as ${data.entity_name} (${data.voiceprints_saved} voiceprints, ${data.segments_updated} segments updated)`;
+        card.style.opacity = '0.5';
         loadSegments();
         if (selectedSegment && selectedSource) {
           loadReview(selectedSegment, selectedSource);
@@ -1359,24 +1438,24 @@
           }, 300);
         }, 3000);
       })
-	      .catch((err) => {
-	        window.logError(err, { context: 'speakers: identify discovery cluster failed' });
-	        status.innerHTML = window.SurfaceState.error({
-	          heading: "I couldn't identify that speaker",
-	          desc: window.CONVEY_COPY?.RELOAD_HINT || 'reload to try again.',
-	          retry: true,
-	          retryLabel: window.CONVEY_COPY?.ACTION_TRY_AGAIN || 'Try again',
-	          serverMessage: err.serverMessage,
-	          detail: err,
-	          headingLevel: 'h4'
-	        });
-	        const retry = status.querySelector('.surface-state-retry');
-	        if (retry) {
-	          retry.addEventListener('click', () => submitDiscoveryName(card));
-	        }
-	        btn.disabled = false;
-	        input.disabled = false;
-	      });
+      .catch((err) => {
+        window.logError(err, { context: 'speakers: identify discovery cluster failed' });
+        status.innerHTML = window.SurfaceState.error({
+          heading: "I couldn't identify that speaker",
+          desc: window.CONVEY_COPY?.RELOAD_HINT || 'reload to try again.',
+          retry: true,
+          retryLabel: window.CONVEY_COPY?.ACTION_TRY_AGAIN || 'Try again',
+          serverMessage: err.serverMessage,
+          detail: err,
+          headingLevel: 'h4'
+        });
+        const retry = status.querySelector('.surface-state-retry');
+        if (retry) {
+          retry.addEventListener('click', () => submitDiscoveryName(card));
+        }
+        btn.disabled = false;
+        input.disabled = false;
+      });
   }
 
   discoveryBanner.addEventListener('submit', e => {
@@ -1387,15 +1466,38 @@
   });
 
   function checkOwnerStatus() {
-    window.apiJson('/app/speakers/api/owner/status')
+    return window.apiJson('/app/speakers/api/owner/status')
       .then(data => {
-        if (
-          data.status === 'needs_detection'
-          || data.status === 'low_quality'
-          || (data.status === 'none' && data.segments_with_embeddings > 0)
-        ) {
+        ownerStatusData = data;
+        if (data.status === 'confirmed') {
+          ownerDetectionInFlight = false;
+          const revealSource = ownerRevealPendingSource;
+          const reveal = ownerRevealDecision(ownerRevealShown, revealSource, data.status);
+          ownerRevealShown = reveal.nextLatchShown;
+          ownerTeachState = null;
+          ownerTeachStartRequested = false;
+          if (reveal.show) {
+            ownerRevealPendingSource = null;
+            hideDiscovery();
+            renderOwnerReveal(data, revealSource);
+            return data;
+          }
+          ownerRevealPendingSource = null;
+          hideOwnerBanner();
+          checkDiscovery();
+          return data;
+        }
+
+        if (ownerStatusStartsTeachSession(data)) {
           hideDiscovery();
-          renderOwnerNotReady(data);
+          if (ownerTeachState?.active) {
+            ownerTeachState.statusData = data;
+            renderOwnerTeachSession();
+          } else if (ownerTeachStartRequested) {
+            startOwnerTeachSession(data);
+          } else {
+            renderOwnerNotReady(data);
+          }
           if (data.status === 'needs_detection' && !ownerDetectionInFlight) {
             ownerDetectionInFlight = true;
             window.apiJson('/app/speakers/api/owner/detect', { method: 'POST' })
@@ -1409,23 +1511,30 @@
                 window.logError(err, { context: 'speakers: owner detect failed' });
               });
           }
-          return;
+          return data;
         }
 
         ownerDetectionInFlight = false;
         if (data.status === 'no_cluster') {
+          ownerTeachState = null;
+          ownerTeachStartRequested = false;
           hideDiscovery();
           hideOwnerBanner();
-          return;
+          return data;
         }
         if (data.status === 'candidate') {
+          ownerTeachState = null;
+          ownerTeachStartRequested = false;
           hideDiscovery();
           renderOwnerCandidate(data);
-          return;
+          return data;
         }
 
+        ownerTeachState = null;
+        ownerTeachStartRequested = false;
         hideOwnerBanner();
         checkDiscovery();
+        return data;
       })
       .catch((err) => {
         ownerDetectionInFlight = false;
@@ -1478,7 +1587,7 @@
     `;
 
     document.getElementById('spkOwnerConfirm')?.addEventListener('click', () => {
-      submitOwnerChoice('/app/speakers/api/owner/confirm');
+      submitOwnerChoice('/app/speakers/api/owner/confirm', 'candidate');
     });
     document.getElementById('spkOwnerReject')?.addEventListener('click', () => {
       submitOwnerChoice('/app/speakers/api/owner/reject');
@@ -1506,26 +1615,160 @@
     return principal ? principal.entity_id : null;
   }
 
-  function showOwnerGuideToast(message = OWNER_HELP_TOAST_MESSAGE, type = 'info') {
-    const container = document.getElementById('spkOwnerGuideToast');
-    if (!container) return;
-    container.innerHTML = `<div class="spk-status spk-status-${type}">${escapeHtml(message)}</div>`;
+  function ownerStatusStartsTeachSession(data) {
+    return Boolean(
+      data
+      && (
+        data.status === 'needs_detection'
+        || data.status === 'low_quality'
+        || (data.status === 'none' && Number(data.segments_with_embeddings || 0) > 0)
+      )
+    );
   }
 
-  function maybeShowOwnerGuideToast() {
-    if (sessionStorage.getItem(OWNER_HELP_TOAST_KEY) !== '1') return;
-    sessionStorage.removeItem(OWNER_HELP_TOAST_KEY);
-    showOwnerGuideToast();
+  function ownerTeachMomentumCount(state) {
+    const count = Number(state?.manual_tags_count || 0);
+    if (!Number.isFinite(count)) return 0;
+    return Math.max(0, Math.floor(count));
+  }
+
+  function ownerTeachTemplateText(template, replacements) {
+    return Object.entries(replacements).reduce(
+      (text, entry) => text.replaceAll(`{${entry[0]}}`, String(entry[1])),
+      template || ''
+    );
+  }
+
+  function ownerTeachProgressText(state, copy, minimum) {
+    return ownerTeachTemplateText(copy.SPK_OWNER_TEACH_PROGRESS_TEMPLATE, {
+      count: ownerTeachMomentumCount(state),
+      minimum,
+    });
+  }
+
+  function ownerTeachExhaustedBody(state, copy, minimum) {
+    return ownerTeachTemplateText(copy.SPK_OWNER_TEACH_EXHAUSTED_BODY_TEMPLATE, {
+      count: ownerTeachMomentumCount(state),
+      minimum,
+    });
+  }
+
+  function ownerRevealStatementText(state, copy) {
+    return ownerTeachTemplateText(copy.SPK_OWNER_REVEAL_STATEMENTS_TEMPLATE, {
+      count: ownerTeachMomentumCount(state),
+    });
+  }
+
+  function ownerRevealFactTexts(state, source, copy) {
+    if (source === 'manual_tags') return [ownerRevealStatementText(state, copy)];
+    const meta = state?.centroid_metadata || {};
+    const streams = Array.isArray(meta.streams) ? meta.streams.length : 0;
+    return [
+      ownerTeachTemplateText(copy.SPK_OWNER_REVEAL_STREAMS_TEMPLATE, { count: streams }),
+      ownerTeachTemplateText(copy.SPK_OWNER_REVEAL_EVIDENCE_TEMPLATE, { tier: meta.evidence_tier || '' }),
+    ];
+  }
+
+  function ownerTeachStatementKey(item) {
+    return [
+      item.day || '',
+      item.stream || '',
+      item.segment_key || '',
+      item.source || '',
+      item.id,
+    ].join('/');
+  }
+
+  function ownerTeachEligibleStatements(reviewPayload, declinedKeys) {
+    const declined = declinedKeys || new Set();
+    const sentences = Array.isArray(reviewPayload?.sentences) ? reviewPayload.sentences : [];
+    return sentences.reduce((items, sentence) => {
+      const item = {
+        ...sentence,
+        day: reviewPayload.day || '',
+        stream: reviewPayload.stream || '',
+        segment_key: reviewPayload.segment?.key || reviewPayload.segment_key || '',
+        segment_start: reviewPayload.segment?.start || '',
+        segment_end: reviewPayload.segment?.end || '',
+        source: reviewPayload.source || '',
+        audio_file: reviewPayload.audio_file || '',
+        audio_mimetype: reviewPayload.audio_mimetype || '',
+      };
+      const key = ownerTeachStatementKey(item);
+      if (
+        sentence.has_embedding === true
+        && !sentence.speaker_entity_id
+        && !declined.has(key)
+      ) {
+        items.push({
+          ...item,
+          owner_teach_key: key,
+          duration_s: Number(sentence.duration_s || 0),
+        });
+      }
+      return items;
+    }, []);
+  }
+
+  function ownerTeachOrderStatements(items, manualTagCount) {
+    const sorted = [...items].sort((a, b) => {
+      const durationDiff = Number(b.duration_s || 0) - Number(a.duration_s || 0);
+      if (durationDiff !== 0) return durationDiff;
+      return ownerTeachStatementKey(a).localeCompare(ownerTeachStatementKey(b));
+    });
+    if (sorted.length === 0) return sorted;
+    const count = Number(manualTagCount || 0);
+    const rotation = (Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0) % sorted.length;
+    return sorted.slice(rotation).concat(sorted.slice(0, rotation));
+  }
+
+  function ownerTeachPoolCounts(results) {
+    return results.reduce((counts, result) => ({
+      eligible_count: counts.eligible_count + (result.items || []).length,
+      failed_count: counts.failed_count + Number(result.failed_count || 0),
+      unavailable_count: counts.unavailable_count + Number(result.unavailable_count || 0),
+    }), { eligible_count: 0, failed_count: 0, unavailable_count: 0 });
+  }
+
+  function ownerRevealDecision(latchShown, pendingSource, status) {
+    const show = latchShown !== true && Boolean(pendingSource) && status === 'confirmed';
+    return { show, nextLatchShown: latchShown === true || show };
+  }
+
+  function classifyOwnerTeachResult(reasonCode, ownerBootstrapOutcome) {
+    if (ownerBootstrapOutcome === 'built') {
+      return { kind: 'built', copyKey: '', continueSession: false, advancesMomentum: false };
+    }
+    if (ownerBootstrapOutcome === 'already_built') {
+      return { kind: 'already_built', copyKey: '', continueSession: false, advancesMomentum: false };
+    }
+    if (ownerBootstrapOutcome === 'refused') {
+      return { kind: 'refused', copyKey: '', continueSession: false, advancesMomentum: false };
+    }
+    if (ownerBootstrapOutcome === 'busy' || reasonCode === 'speaker_voiceprint_busy') {
+      return { kind: 'busy', copyKey: 'SPK_OWNER_TEACH_BUSY', continueSession: false, advancesMomentum: false };
+    }
+    if (ownerBootstrapOutcome === 'failed' || ownerBootstrapOutcome === 'not_attempted' || reasonCode) {
+      return { kind: 'failed', copyKey: 'SPK_OWNER_TEACH_FAILED', continueSession: true, advancesMomentum: false };
+    }
+    return { kind: 'assigned', copyKey: '', continueSession: true, advancesMomentum: false };
   }
 
   function navigateToOwnerHelp() {
     const today = todayDayKey();
     if (day !== today) {
-      sessionStorage.setItem(OWNER_HELP_TOAST_KEY, '1');
-      window.location.href = `/app/speakers/${today}`;
+      window.location.href = `/app/speakers/${today}#${OWNER_TEACH_HASH}`;
       return;
     }
-    showOwnerGuideToast();
+    ownerTeachStartRequested = true;
+    if (window.location.hash.slice(1) !== OWNER_TEACH_HASH) {
+      window.location.hash = OWNER_TEACH_HASH;
+    }
+    if (ownerStatusData && ownerStatusStartsTeachSession(ownerStatusData)) {
+      startOwnerTeachSession(ownerStatusData);
+    } else {
+      checkOwnerStatus();
+    }
   }
 
   function renderOwnerColdStartDiagnostics(data) {
@@ -1553,16 +1796,24 @@
   function renderOwnerNotReady(data) {
     window.Drawer.preserveOpen(ownerBanner, () => {
       const diagnostics = renderOwnerGateDiagnostics(data);
+      const minimum = OWNER_MIN || 0;
+      const count = ownerTeachMomentumCount(data);
+      const progress = minimum > 0 ? Math.min(100, Math.max(0, Math.round((count / minimum) * 100))) : 0;
       ownerBanner.style.display = 'block';
       ownerBanner.innerHTML = `
       <div class="spk-owner-panel">
-        <div class="spk-owner-title">sol is still learning your voice</div>
+        <div class="spk-owner-title">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_TITLE || '')}</div>
         <div class="spk-owner-copy">
-          we're tagging audio segments to recognize you. help sol learn faster by tagging your own statements.
+          ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_BODY || '')}
         </div>
+        <div class="spk-owner-progress-line">${escapeHtml(ownerTeachProgressText(data, SPK_COPY, minimum))}</div>
+        <div class="spk-owner-progress" aria-hidden="true">
+          <div class="spk-owner-progress-fill" style="width:${progress}%"></div>
+        </div>
+        ${data.ownerTeachPaused ? `<div class="spk-owner-notice">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_PAUSED || '')}</div>` : ''}
         <div class="spk-owner-actions">
           <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerHelp">
-            ${escapeHtml(SPK_COPY.SPK_OVERVIEW_OWNER_HELP_LABEL || '')}
+            ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_START_LABEL || '')}
           </button>
           ${data.can_build_from_tags === true ? `
             <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerBuildFromTags">
@@ -1570,7 +1821,6 @@
             </button>
           ` : ''}
         </div>
-        <div class="spk-owner-toast" id="spkOwnerGuideToast"></div>
         ${diagnostics}
       </div>
     `;
@@ -1586,20 +1836,312 @@
         })
         .catch((err) => {
           btn.disabled = false;
-          showOwnerGuideToast(`Couldn't build from manual tags — ${err.serverMessage}`, 'error');
+          renderOwnerBanner(`Couldn't build from manual tags — ${err.serverMessage}`);
           window.logError(err, { context: 'speakers: owner build from tags failed' });
         });
     });
-    maybeShowOwnerGuideToast();
   }
 
-  function submitOwnerChoice(path) {
+  function renderOwnerTeachProgress(data) {
+    const minimum = OWNER_MIN || 0;
+    const count = ownerTeachMomentumCount(data);
+    const progress = minimum > 0 ? Math.min(100, Math.max(0, Math.round((count / minimum) * 100))) : 0;
+    return `
+      <div class="spk-owner-progress-line">${escapeHtml(ownerTeachProgressText(data, SPK_COPY, minimum))}</div>
+      <div class="spk-owner-progress" aria-hidden="true">
+        <div class="spk-owner-progress-fill" style="width:${progress}%"></div>
+      </div>
+    `;
+  }
+
+  function ownerTeachCurrentItem() {
+    if (!ownerTeachState || ownerTeachState.items.length === 0) return null;
+    if (ownerTeachState.index < 0 || ownerTeachState.index >= ownerTeachState.items.length) return null;
+    return ownerTeachState.items[ownerTeachState.index];
+  }
+
+  function renderOwnerTeachSession() {
+    if (!ownerTeachState) return;
+    const data = ownerTeachState.statusData || ownerStatusData || {};
+    const partial = ownerTeachState.failed_count > 0 || ownerTeachState.unavailable_count > 0;
+    const current = ownerTeachCurrentItem();
+    let body = '';
+
+    if (ownerTeachState.loading) {
+      body = `<div class="spk-owner-copy">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_LOADING || '')}</div>`;
+    } else if (ownerTeachState.refusalGuidance) {
+      body = `
+        <div class="spk-owner-title">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_REFUSED_TITLE || '')}</div>
+        <div class="spk-owner-copy">${escapeHtml(ownerTeachState.refusalGuidance)}</div>
+      `;
+    } else if ((ownerTeachState.noticeKind === 'busy' || ownerTeachState.noticeKind === 'failed') && !current) {
+      body = `<div class="spk-owner-copy">${escapeHtml(ownerTeachState.notice || '')}</div>`;
+    } else if (ownerTeachState.items.length === 0 && !ownerTeachState.startedWithItems) {
+      body = `<div class="spk-owner-copy">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_EMPTY || '')}</div>`;
+    } else if (ownerTeachState.items.length === 0 || !current) {
+      body = `
+        <div class="spk-owner-title">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_EXHAUSTED_TITLE || '')}</div>
+        <div class="spk-owner-copy">${escapeHtml(ownerTeachExhaustedBody(data, SPK_COPY, OWNER_MIN || 0))}</div>
+      `;
+    } else {
+      const meta = [
+        `${current.segment_start || ''} - ${current.segment_end || ''}`.trim(),
+        formatSource(current.source || ''),
+        formatDuration(current.duration_s || 0),
+      ].filter(Boolean).join(' · ');
+      body = `
+        ${ownerTeachState.notice ? `<div class="spk-owner-notice">${escapeHtml(ownerTeachState.notice)}</div>` : ''}
+        <div class="spk-owner-teach-card" data-owner-teach-key="${escapeHtml(current.owner_teach_key)}">
+          <div class="spk-owner-teach-meta">${escapeHtml(meta)}</div>
+          <div class="spk-owner-teach-text">${escapeHtml(current.text || '')}</div>
+          ${current.audio_file ? `
+            <div class="spk-owner-teach-audio">
+              <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachPlay" type="button">play from here</button>
+              <audio id="spkOwnerTeachAudio" controls preload="metadata" src="${escapeHtml(current.audio_file)}"></audio>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    ownerBanner.style.display = 'block';
+    ownerBanner.innerHTML = `
+      <div class="spk-owner-panel">
+        <div class="spk-owner-title">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_TITLE || '')}</div>
+        ${renderOwnerTeachProgress(data)}
+        ${partial ? `<div class="spk-owner-notice">${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_PARTIAL || '')}</div>` : ''}
+        ${body}
+        <div class="spk-owner-actions">
+          ${current && !ownerTeachState.loading && !ownerTeachState.refusalGuidance ? `
+            <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerTeachMine" type="button">
+              ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_MINE_LABEL || '')}
+            </button>
+            <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachNotMe" type="button">
+              ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_NOT_ME_LABEL || '')}
+            </button>
+            <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachSkip" type="button">
+              ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_SKIP_LABEL || '')}
+            </button>
+          ` : ''}
+          <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerTeachPause" type="button">
+            ${escapeHtml(SPK_COPY.SPK_OWNER_TEACH_PAUSE_LABEL || '')}
+          </button>
+        </div>
+      </div>
+    `;
+    attachOwnerTeachHandlers();
+  }
+
+  function attachOwnerTeachHandlers() {
+    document.getElementById('spkOwnerTeachPause')?.addEventListener('click', pauseOwnerTeachSession);
+    document.getElementById('spkOwnerTeachMine')?.addEventListener('click', submitOwnerTeachMine);
+    document.getElementById('spkOwnerTeachNotMe')?.addEventListener('click', declineOwnerTeachStatement);
+    document.getElementById('spkOwnerTeachSkip')?.addEventListener('click', skipOwnerTeachStatement);
+    document.getElementById('spkOwnerTeachPlay')?.addEventListener('click', () => {
+      const current = ownerTeachCurrentItem();
+      const audio = document.getElementById('spkOwnerTeachAudio');
+      if (!current || !audio) return;
+      audio.currentTime = Math.max(0, Number(current.offset || 0));
+      audio.play();
+    });
+  }
+
+  function pauseOwnerTeachSession() {
+    ownerTeachState = null;
+    ownerTeachStartRequested = false;
+    renderOwnerNotReady({ ...(ownerStatusData || {}), ownerTeachPaused: true });
+  }
+
+  function declineOwnerTeachStatement() {
+    const current = ownerTeachCurrentItem();
+    if (!ownerTeachState || !current) return;
+    ownerTeachDeclinedKeys.add(current.owner_teach_key);
+    ownerTeachState.items.splice(ownerTeachState.index, 1);
+    if (ownerTeachState.index > ownerTeachState.items.length) {
+      ownerTeachState.index = ownerTeachState.items.length;
+    }
+    ownerTeachState.notice = SPK_COPY.SPK_OWNER_TEACH_NOT_ME_RESPONSE || '';
+    ownerTeachState.noticeKind = '';
+    renderOwnerTeachSession();
+  }
+
+  function skipOwnerTeachStatement() {
+    if (!ownerTeachState) return;
+    ownerTeachState.index += 1;
+    ownerTeachState.notice = '';
+    ownerTeachState.noticeKind = '';
+    renderOwnerTeachSession();
+  }
+
+  async function ensureOwnerTeachSegments() {
+    if (segments.length === 0 && segmentTotal === 0) {
+      await loadSegments();
+    }
+    return segments;
+  }
+
+  async function loadOwnerTeachReviews(poolSegments) {
+    const requests = [];
+    poolSegments.forEach(seg => {
+      (seg.sources || []).forEach(source => {
+        requests.push({ seg, source });
+      });
+    });
+    const results = [];
+    let nextIndex = 0;
+    async function worker() {
+      while (nextIndex < requests.length) {
+        const request = requests[nextIndex];
+        nextIndex += 1;
+        try {
+          const data = await window.apiJson(`/app/speakers/api/review/${day}/${request.seg.stream}/${request.seg.key}/${request.source}`);
+          const principal = (data.all_entities || []).find(entity => entity.is_principal);
+          if (principal) ownerTeachPrincipalId = principal.entity_id;
+          const payload = {
+            ...data,
+            day,
+            stream: request.seg.stream,
+            segment_key: request.seg.key,
+          };
+          const sentences = Array.isArray(data.sentences) ? data.sentences : [];
+          results.push({
+            items: ownerTeachEligibleStatements(payload, ownerTeachDeclinedKeys),
+            failed_count: 0,
+            unavailable_count: sentences.filter(sentence => sentence.has_embedding !== true).length,
+          });
+        } catch (err) {
+          window.logError?.(err, { context: 'speakers: owner teach review failed' });
+          results.push({ items: [], failed_count: 1, unavailable_count: 0 });
+        }
+      }
+    }
+    const workerCount = Math.min(OWNER_TEACH_REVIEW_CONCURRENCY, requests.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  }
+
+  async function startOwnerTeachSession(data) {
+    ownerTeachStartRequested = true;
+    ownerTeachPrincipalId = null;
+    ownerTeachState = {
+      active: true,
+      loading: true,
+      statusData: data || ownerStatusData || {},
+      items: [],
+      index: 0,
+      failed_count: 0,
+      unavailable_count: 0,
+      notice: '',
+      noticeKind: '',
+      refusalGuidance: '',
+      startedWithItems: false,
+    };
+    const requestId = ownerTeachRequestId + 1;
+    ownerTeachRequestId = requestId;
+    renderOwnerTeachSession();
+    const poolSegments = await ensureOwnerTeachSegments();
+    const results = await loadOwnerTeachReviews(poolSegments);
+    if (!ownerTeachState || ownerTeachRequestId !== requestId) return;
+    const counts = ownerTeachPoolCounts(results);
+    const items = results.flatMap(result => result.items || []);
+    ownerTeachState = {
+      ...ownerTeachState,
+      loading: false,
+      items: ownerTeachOrderStatements(items, ownerTeachMomentumCount(ownerTeachState.statusData)),
+      index: 0,
+      failed_count: counts.failed_count,
+      unavailable_count: counts.unavailable_count,
+      startedWithItems: items.length > 0,
+    };
+    renderOwnerTeachSession();
+  }
+
+  async function submitOwnerTeachMine() {
+    const current = ownerTeachCurrentItem();
+    const principalId = ownerTeachPrincipalId || principalEntityId();
+    if (!ownerTeachState || !current || !principalId) return;
+    ownerBanner.querySelectorAll('button').forEach(btn => { btn.disabled = true; });
+    try {
+      const result = await window.apiJson('/app/speakers/api/assign-attribution', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          day: current.day,
+          stream: current.stream,
+          segment_key: current.segment_key,
+          source: current.source,
+          sentence_id: current.id,
+          speaker: principalId,
+        }),
+      });
+      const classification = classifyOwnerTeachResult(null, result.owner_bootstrap_outcome);
+      if (classification.kind === 'built') {
+        ownerRevealPendingSource = 'manual_tags';
+        ownerTeachState = null;
+        await checkOwnerStatus();
+        return;
+      }
+      if (classification.kind === 'already_built') {
+        ownerTeachState = null;
+        await checkOwnerStatus();
+        return;
+      }
+      await checkOwnerStatus();
+      if (!ownerTeachState) return;
+      if (classification.kind === 'refused') {
+        ownerTeachState.refusalGuidance = result.owner_bootstrap_guidance || '';
+      } else if (classification.copyKey) {
+        ownerTeachState.notice = SPK_COPY[classification.copyKey] || '';
+        ownerTeachState.noticeKind = classification.kind;
+      } else if (classification.continueSession) {
+        ownerTeachState.items.splice(ownerTeachState.index, 1);
+        if (ownerTeachState.index > ownerTeachState.items.length) {
+          ownerTeachState.index = ownerTeachState.items.length;
+        }
+      }
+      renderOwnerTeachSession();
+    } catch (err) {
+      const classification = classifyOwnerTeachResult(err.reasonCode, null);
+      if (ownerTeachState) {
+        ownerTeachState.notice = SPK_COPY[classification.copyKey] || err.serverMessage || '';
+        ownerTeachState.noticeKind = classification.kind;
+      }
+      renderOwnerTeachSession();
+      window.logError(err, { context: 'speakers: owner teach assign failed' });
+    }
+  }
+
+  function renderOwnerReveal(data, source) {
+    const facts = ownerRevealFactTexts(data, source, SPK_COPY);
+    ownerBanner.style.display = 'block';
+    ownerBanner.innerHTML = `
+      <div class="spk-owner-panel spk-owner-reveal">
+        <div class="spk-owner-title">${escapeHtml(SPK_COPY.SPK_OWNER_REVEAL_TITLE || '')}</div>
+        <div class="spk-owner-facts">
+          ${facts.map(fact => `<span class="spk-owner-fact">${escapeHtml(fact)}</span>`).join('')}
+        </div>
+        <div class="spk-owner-actions">
+          <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerRevealClose" type="button">
+            ${escapeHtml(SPK_COPY.SPK_OWNER_REVEAL_CLOSE_LABEL || '')}
+          </button>
+        </div>
+      </div>
+    `;
+    document.getElementById('spkOwnerRevealClose')?.addEventListener('click', () => {
+      hideOwnerBanner();
+      checkDiscovery();
+    });
+  }
+
+  function submitOwnerChoice(path, revealSource = null) {
+    if (revealSource) ownerRevealPendingSource = revealSource;
     ownerBanner.querySelectorAll('button').forEach(btn => { btn.disabled = true; });
     window.apiJson(path, { method: 'POST' })
       .then(() => {
         checkOwnerStatus();
       })
       .catch((err) => {
+        if (revealSource) ownerRevealPendingSource = null;
         ownerBanner.querySelectorAll('button').forEach(btn => { btn.disabled = false; });
         renderOwnerBanner(err.serverMessage);
         window.logError(err, { context: 'speakers: submitOwnerChoice failed' });
@@ -1691,7 +2233,7 @@
   function loadSegments() {
     updateSpeakerFilterIndicator();
     const fetchLimit = Math.max(segments.length, 20);
-    fetch(segmentsApiUrl(fetchLimit, 0))
+    return fetch(segmentsApiUrl(fetchLimit, 0))
       .then(r => r.json())
       .then(data => {
         setSegmentsStatus();
@@ -1699,12 +2241,12 @@
         segmentTotal = data.total || 0;
         renderSegmentList();
         updateLoadMore();
-        if (window.location.hash) {
-          const hashKey = window.location.hash.slice(1);
-          if (!selectSegmentByKey(hashKey) && segments.length < segmentTotal) {
-            loadUntilFound(hashKey);
-          }
-        }
+	        if (window.location.hash && window.location.hash.slice(1) !== OWNER_TEACH_HASH) {
+	          const hashKey = window.location.hash.slice(1);
+	          if (!selectSegmentByKey(hashKey) && segments.length < segmentTotal) {
+	            loadUntilFound(hashKey);
+	          }
+	        }
       })
       .catch(() => {
         segmentList.innerHTML = '<li class="spk-empty">Failed to load segments</li>';

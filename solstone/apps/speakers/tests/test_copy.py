@@ -20,11 +20,14 @@ def test_no_literal_copy_in_templates():
     """
 
     root = Path("solstone/apps/speakers")
+    protocol_literals = {"built", "confirmed", "pause"}
 
     hits: list[tuple[Path, str]] = []
     for path in root.rglob("*.html"):
         text = path.read_text(encoding="utf-8")
         for value in speaker_copy_values():
+            if value in protocol_literals:
+                continue
             literal_patterns = (
                 re.compile(rf">\s*{re.escape(value)}\s*<"),
                 re.compile(rf"(?<!=)['\"`]{re.escape(value)}['\"`]"),
@@ -44,3 +47,22 @@ def test_all_copy_constants_referenced_by_render_surface():
     missing = [name for name in speaker_copy_payload() if name not in html]
 
     assert missing == []
+
+
+def test_owner_teach_banned_substrings_absent():
+    root = Path("solstone/apps/speakers")
+    banned = (
+        "we're tagging " + "audio segments",
+        "to recognize " + "you",
+        "solstone " + "needs",
+    )
+    hits: list[tuple[Path, str]] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".html"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for value in banned:
+            if value in text:
+                hits.append((path, value))
+
+    assert hits == []

@@ -3535,6 +3535,172 @@ assert(!claimed.includes('id="spkOwnerBuildFromTags"'), 'claimed drawer omits bu
     subprocess.run([node, "-e", script], check=True, text=True)
 
 
+def test_owner_teach_pool_order_resume_and_count_consistency_under_node(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    node = _node_or_skip()
+    env = speakers_env()
+    embeddings = np.eye(3, 256, dtype=np.float32)
+    _write_segment(
+        env.journal,
+        "20240101",
+        "mic",
+        "090000_300",
+        "audio",
+        embeddings,
+        durations_s=np.array([1.0, 9.0, 4.0], dtype=np.float32),
+    )
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+    with app.test_client() as client:
+        response = client.get("/app/speakers/api/review/20240101/mic/090000_300/audio")
+    assert response.status_code == 200
+    review_payload = response.get_json()
+    review_payload["day"] = "20240101"
+    review_payload["stream"] = "mic"
+
+    source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _workspace_function_source(source, name)
+        for name in (
+            "ownerTeachMomentumCount",
+            "ownerTeachTemplateText",
+            "ownerTeachProgressText",
+            "ownerTeachExhaustedBody",
+            "ownerTeachStatementKey",
+            "ownerTeachEligibleStatements",
+            "ownerTeachOrderStatements",
+            "ownerTeachPoolCounts",
+        )
+    )
+    script = "\n".join(
+        [
+            r"""
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+""",
+            functions,
+            f"const fixturePayload = {json.dumps(review_payload)};",
+            r"""
+const copy = {
+  SPK_OWNER_TEACH_PROGRESS_TEMPLATE: '{count} of {minimum} longer statements',
+  SPK_OWNER_TEACH_EXHAUSTED_BODY_TEMPLATE: '{count} of {minimum} longer statements taught',
+};
+const state = { manual_tags_count: 7 };
+const progress = ownerTeachProgressText(state, copy, 30);
+const exhausted = ownerTeachExhaustedBody(state, copy, 30);
+assert(ownerTeachMomentumCount(state) === 7, 'momentum count reads manual_tags_count');
+assert(progress.startsWith('7 of 30'), 'progress uses momentum count');
+assert(exhausted.startsWith('7 of 30'), 'exhausted uses same momentum count');
+
+const syntheticPayload = {
+  day: '20240101',
+  stream: 'mic',
+  segment: { key: '090000_300', start: '09:00', end: '09:05' },
+  source: 'audio',
+  audio_file: '/audio.flac',
+  audio_mimetype: 'audio/flac',
+  sentences: [
+    { id: 1, text: 'first', has_embedding: true, speaker_entity_id: null, duration_s: 1.0 },
+    { id: 2, text: 'second', has_embedding: true, speaker_entity_id: null, duration_s: 9.0 },
+    { id: 3, text: 'third', has_embedding: true, speaker_entity_id: null, duration_s: 4.0 },
+    { id: 4, text: 'tagged', has_embedding: true, speaker_entity_id: 'alice', duration_s: 8.0 },
+    { id: 5, text: 'missing', has_embedding: false, speaker_entity_id: null, duration_s: 20.0 },
+  ],
+};
+const declined = new Set(['20240101/mic/090000_300/audio/3']);
+const eligible = ownerTeachEligibleStatements(syntheticPayload, declined);
+assert(eligible.map(item => item.id).join(',') === '1,2', 'eligibility filters missing, tagged, and declined statements');
+
+const allItems = ownerTeachEligibleStatements(fixturePayload, new Set());
+const ordered = ownerTeachOrderStatements(allItems, 0).map(item => item.id);
+assert(ordered.join(',') === '2,3,1', 'duration order wins');
+assert(ordered.join(',') !== '1,2,3', 'transcript order would fail');
+const resumed = ownerTeachOrderStatements(allItems, 1).map(item => item.id);
+assert(resumed.join(',') === '3,1,2', 'manual tag count rotates starting statement');
+assert(resumed[0] !== ordered[0], 'fresh page resumes from persisted tag count');
+const unknownLast = ownerTeachOrderStatements([
+  { id: 10, day: '20240101', stream: 'mic', segment_key: '090000_300', source: 'audio', duration_s: 5 },
+  { id: 11, day: '20240101', stream: 'mic', segment_key: '090000_300', source: 'audio' },
+], 0).map(item => item.id);
+assert(unknownLast.join(',') === '10,11', 'unknown duration sorts last');
+
+const counts = ownerTeachPoolCounts([
+  { items: [allItems[0], allItems[1]], failed_count: 1, unavailable_count: 2 },
+  { items: [allItems[2]], failed_count: 0, unavailable_count: 1 },
+]);
+assert(counts.eligible_count === 3, 'pool counts eligible rows');
+assert(counts.failed_count === 1, 'pool counts failed reviews');
+assert(counts.unavailable_count === 3, 'pool counts unavailable rows');
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_owner_teach_reveal_latch_and_refusal_classification_under_node():
+    node = _node_or_skip()
+    source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _workspace_function_source(source, name)
+        for name in (
+            "ownerTeachMomentumCount",
+            "ownerTeachTemplateText",
+            "ownerRevealStatementText",
+            "ownerRevealFactTexts",
+            "ownerRevealDecision",
+            "classifyOwnerTeachResult",
+        )
+    )
+    script = "\n".join(
+        [
+            r"""
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+""",
+            functions,
+            r"""
+const copy = {
+  SPK_OWNER_REVEAL_STATEMENTS_TEMPLATE: '{count} statements taught',
+  SPK_OWNER_REVEAL_STREAMS_TEMPLATE: '{count} places heard',
+  SPK_OWNER_REVEAL_EVIDENCE_TEMPLATE: '{tier} evidence',
+};
+const confirmed = {
+  status: 'confirmed',
+  manual_tags_count: 30,
+  centroid_metadata: { streams: ['mic', 'sys'], evidence_tier: 'standard' },
+};
+const first = ownerRevealDecision(false, 'manual_tags', 'confirmed');
+const second = ownerRevealDecision(first.nextLatchShown, 'manual_tags', 'confirmed');
+assert(first.show === true, 'first confirmed transition shows reveal');
+assert(second.show === false, 'second in-flight status response does not show reveal');
+assert(ownerRevealDecision(false, null, 'confirmed').show === false, 'confirmed first load does not show reveal');
+
+const manualFacts = ownerRevealFactTexts(confirmed, 'manual_tags', copy);
+const candidateFacts = ownerRevealFactTexts(confirmed, 'candidate', copy);
+assert(manualFacts.join('|') === '30 statements taught', 'manual reveal uses statements taught');
+assert(candidateFacts.join('|') === '2 places heard|standard evidence', 'candidate reveal uses stream and evidence facts');
+assert(!candidateFacts.join('|').includes('statements taught'), 'candidate reveal omits statements taught');
+
+const refused = classifyOwnerTeachResult(null, 'refused');
+const busy = classifyOwnerTeachResult(null, 'busy');
+const failed = classifyOwnerTeachResult('speaker_not_found', null);
+assert(refused.kind === 'refused', 'low-quality refusal is distinct');
+assert(busy.kind === 'busy' && busy.copyKey === 'SPK_OWNER_TEACH_BUSY', 'busy refusal is distinct');
+assert(failed.kind === 'failed' && failed.copyKey === 'SPK_OWNER_TEACH_FAILED', 'failed outcome is distinct');
+assert(refused.advancesMomentum === false, 'refused does not advance momentum');
+assert(busy.advancesMomentum === false, 'busy does not advance momentum');
+assert(failed.advancesMomentum === false, 'failed does not advance momentum');
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
 def test_owner_not_ready_cold_start_diagnostics_retained_workspace_source():
     source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
 
