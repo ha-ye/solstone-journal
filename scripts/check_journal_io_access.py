@@ -58,8 +58,12 @@ GATED_PRIMITIVES: frozenset[str] = frozenset(
         "append_jsonl",
         "append_text",
         "atomic_replace",
+        "acquire_file_lease",
+        "assert_file_lease_owned",
         "hold_lock",
         "install_file",
+        "probe_file_lease_free",
+        "probe_file_lease_held",
         "save_npz",
         "update_npz",
         "write_bytes_exclusive",
@@ -84,6 +88,14 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
         }
     ),
     "solstone.think.journal_io.locking": frozenset({"hold_lock"}),
+    "solstone.think.journal_io.lease": frozenset(
+        {
+            "acquire_file_lease",
+            "assert_file_lease_owned",
+            "probe_file_lease_free",
+            "probe_file_lease_held",
+        }
+    ),
     "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz", "write_npz"}),
 }
 
@@ -129,6 +141,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/offload_ledger.py",
         # Sole writer of content-free bundled-local inference telemetry.
         "solstone/think/providers/local_admission.py",
+        # Active-brain state, fingerprint key, and refresh lease.
+        "solstone/think/providers/brain_state.py",
         # Provider install status, proof cache, and artifact manifests.
         "solstone/think/providers/artifact_proof.py",
         "solstone/think/providers/install_state.py",

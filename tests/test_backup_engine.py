@@ -264,6 +264,8 @@ def test_run_backup_unlocks_then_calls_restic_with_expected_argv(
             "--exclude",
             ".tmp*",
             "--exclude",
+            "brain-fingerprint.key",
+            "--exclude",
             "supervisor.ready",
             "--exclude",
             "supervisor.start_time",

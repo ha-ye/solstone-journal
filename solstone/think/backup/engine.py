@@ -72,6 +72,7 @@ BACKUP_EXCLUDES = (
     "*.lock",
     "*.tmp",
     ".tmp*",
+    "brain-fingerprint.key",
     "supervisor.ready",
     "supervisor.start_time",
     "parakeet-cpp.placement",
