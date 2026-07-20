@@ -771,14 +771,14 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
     resolve = runner.invoke(app, ["identify", "6", "Alice", "--resolve-only"])
     missing_target = runner.invoke(app, ["identify", "7"])
 
-    _assert_json_stdout(entity_id, {"status": "identified", "entity_id": "person-alice"})
+    _assert_json_stdout(
+        entity_id, {"status": "identified", "entity_id": "person-alice"}
+    )
     _assert_json_stdout(
         no_match,
         {
             "status": "no_match",
-            "candidates": [
-                {"id": "alice", "name": "Alice", "tier": 8, "score": 10.0}
-            ],
+            "candidates": [{"id": "alice", "name": "Alice", "tier": 8, "score": 10.0}],
         },
     )
     _assert_json_stdout(

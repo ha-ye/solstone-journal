@@ -44,7 +44,7 @@ Read: `discover`, `resolve-names`, `status`
 
 Write: `backfill`, `backfill-last-seen`, `bootstrap`, `link-import`, `merge-names`, `rebuild-owner`, `seed-from-imports`
 
-Other: `attribute-segment`, `build-from-tags`, `confirm-owner`, `correct`, `day-segments`, `detect`, `identify`, `owner-ready`, `propagate-correction`, `reject-owner`, `sentences`, `suggest`, `tag-owner`, `wipe`
+Other: `attribute-segment`, `build-from-tags`, `confirm-owner`, `correct`, `day-segments`, `detect`, `identify`, `owner-ready`, `presence`, `propagate-correction`, `reject-owner`, `sentences`, `suggest`, `tag-owner`, `wipe`
 
 Guidance: `solstone/apps/speakers/talent/speakers/SKILL.md`
 

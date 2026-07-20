@@ -431,9 +431,7 @@ def compute_segment_candidate_evidence_readonly(
                 read_only=True,
             )
         except EntityResolutionError:
-            evidence_gaps.append(
-                {"source": "resolution", "reason": "stale_resolution"}
-            )
+            evidence_gaps.append({"source": "resolution", "reason": "stale_resolution"})
             continue
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             name_entity_ids[name] = resolution.entity["id"]
@@ -1371,10 +1369,10 @@ def _speaker_label_changes(
 def _speaker_evidence_changed(current: dict | None, updated: dict) -> bool:
     if not isinstance(current, dict):
         return True
-    return (
-        current.get("candidate_evidence") != updated.get("candidate_evidence")
-        or current.get("candidate_evidence_gaps", [])
-        != updated.get("candidate_evidence_gaps", [])
+    return current.get("candidate_evidence") != updated.get(
+        "candidate_evidence"
+    ) or current.get("candidate_evidence_gaps", []) != updated.get(
+        "candidate_evidence_gaps", []
     )
 
 

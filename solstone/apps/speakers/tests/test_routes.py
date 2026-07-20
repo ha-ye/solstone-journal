@@ -1415,9 +1415,7 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
 
 
 def test_workspace_discovery_identify_requests_create_new():
-    template = Path("solstone/apps/speakers/workspace.html").read_text(
-        encoding="utf-8"
-    )
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
 
     assert (
         "JSON.stringify({ cluster_id: clusterId, name: name, create_new: true })"

@@ -18,8 +18,8 @@ from solstone.apps.speakers.discovery import (
     identify_cluster,
     load_discovery_cache,
 )
-from solstone.apps.speakers.tests.conftest import journal_tree_hash
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
+from solstone.apps.speakers.tests.conftest import journal_tree_hash
 
 
 def _make_speaker_embeddings(
@@ -164,8 +164,7 @@ def _candidate_evidence(*items: tuple[str, list[str]]) -> dict:
         "owner_centroid_last_refreshed_at": None,
         "voiceprint_versions": {},
         "candidate_evidence": [
-            {"entity_id": entity_id, "sources": sources}
-            for entity_id, sources in items
+            {"entity_id": entity_id, "sources": sources} for entity_id, sources in items
         ],
     }
 
@@ -691,8 +690,7 @@ def test_identify_resolve_only_matrix_is_byte_unchanged(speakers_env):
         (
             lambda: identify_cluster(20, name="Bob Smith", resolve_only=True),
             lambda result: (
-                result["status"] == "resolved"
-                and result["entity_id"] == "bob_smith"
+                result["status"] == "resolved" and result["entity_id"] == "bob_smith"
             ),
         ),
         (
@@ -711,8 +709,7 @@ def test_identify_resolve_only_matrix_is_byte_unchanged(speakers_env):
                 create_new=True,
                 entity_type="Invalid Type",
             ),
-            lambda result: result["status"] == "no_match"
-            and "candidates" in result,
+            lambda result: result["status"] == "no_match" and "candidates" in result,
         ),
     ):
         before = journal_tree_hash(env.journal)
