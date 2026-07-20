@@ -31,6 +31,28 @@ def _convey_client(journal_root):
     return app.test_client()
 
 
+def _write_discovery_cluster(env, cluster_id: int, segment_key: str) -> None:
+    embeddings = np.zeros((1, 256), dtype=np.float32)
+    embeddings[0, 0] = 1.0
+    env.create_segment("20240101", segment_key, ["audio"], embeddings=embeddings)
+    awareness_dir = env.journal / "awareness"
+    awareness_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = awareness_dir / "discovery_clusters.json"
+    cache = {"version": "test", "clusters": {}}
+    if cache_path.exists():
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache.setdefault("clusters", {})[str(cluster_id)] = [
+        {
+            "day": "20240101",
+            "stream": "test",
+            "segment_key": segment_key,
+            "source": "audio",
+            "sentence_id": 1,
+        }
+    ]
+    cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+
 @pytest.fixture
 def serve_audio_client(tmp_path, monkeypatch):
     from solstone.convey import create_app
@@ -1164,7 +1186,7 @@ def test_api_speakers_empty_when_no_speakers_json(speakers_env):
         assert data["unmatched"] == []
 
 
-def test_discovery_identify_route_is_idempotent_after_success(
+def test_discovery_identify_route_does_not_synthesize_success_and_logs_identified(
     speakers_env, monkeypatch
 ):
     from solstone.apps.speakers import routes
@@ -1172,8 +1194,9 @@ def test_discovery_identify_route_is_idempotent_after_success(
 
     speakers_env()
     calls = {"count": 0}
+    logs = []
 
-    def fake_identify(cluster_id, name):
+    def fake_identify(cluster_id, **kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return {
@@ -1188,12 +1211,7 @@ def test_discovery_identify_route_is_idempotent_after_success(
         return {"error": "No discovery scan results. Run scan first."}
 
     monkeypatch.setattr(routes, "identify_cluster", fake_identify)
-    monkeypatch.setattr(
-        routes,
-        "load_resolved_cluster",
-        lambda cluster_id: {"entity_id": "bob_smith", "label": "Bob Smith"},
-    )
-    monkeypatch.setattr(routes, "log_app_action", lambda **kwargs: None)
+    monkeypatch.setattr(routes, "log_app_action", lambda **kwargs: logs.append(kwargs))
 
     app = Flask(__name__)
     app.register_blueprint(speakers_bp)
@@ -1209,9 +1227,206 @@ def test_discovery_identify_route_is_idempotent_after_success(
         )
 
     assert first.status_code == 200
-    assert second.status_code == 200
-    assert second.get_json()["entity_id"] == "bob_smith"
-    assert second.get_json()["voiceprints_saved"] == 0
+    assert second.status_code == 400
+    assert second.get_json()["reason_code"] == "invalid_request_value"
+    assert len(logs) == 1
+    assert logs[0]["action"] == "speaker_identified"
+
+
+def test_discovery_identify_route_entity_id_only_and_result_mapping(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import routes
+    from solstone.apps.speakers.routes import speakers_bp
+
+    speakers_env()
+    seen = {}
+
+    def fake_identify(cluster_id, **kwargs):
+        seen.update(kwargs)
+        return {
+            "status": "identified",
+            "entity_id": kwargs["entity_id"],
+            "entity_name": "Bob Smith",
+            "entity_created": False,
+            "voiceprints_saved": 1,
+            "segments_updated": 1,
+            "sentences_attributed": 1,
+        }
+
+    monkeypatch.setattr(routes, "identify_cluster", fake_identify)
+    monkeypatch.setattr(routes, "log_app_action", lambda **kwargs: None)
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/discovery/identify",
+            json={"cluster_id": 7, "entity_id": "bob_smith"},
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["entity_id"] == "bob_smith"
+    assert seen == {
+        "name": None,
+        "entity_id": "bob_smith",
+        "resolve_only": False,
+        "create_new": False,
+        "entity_type": "Person",
+    }
+
+
+def test_discovery_identify_route_name_create_flags_preserve_visible_paths(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    _write_discovery_cluster(env, 31, "104000_300")
+    _write_discovery_cluster(env, 32, "104500_300")
+    _write_discovery_cluster(env, 33, "105000_300")
+    _write_discovery_cluster(env, 34, "105500_300")
+    client = _convey_client(env.journal)
+
+    no_create = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 31, "name": "Zelda Unknown"},
+    )
+    created = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 32, "name": "Zelda Unknown", "create_new": True},
+    )
+    resolved = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 33, "name": "Bob Smith", "create_new": True},
+    )
+    ambiguous = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 34, "name": "Sarah", "create_new": True},
+    )
+
+    assert no_create.status_code == 200
+    assert no_create.get_json()["status"] == "no_match"
+    assert created.status_code == 200
+    assert created.get_json()["status"] == "identified"
+    assert created.get_json()["entity_created"] is True
+    assert resolved.status_code == 200
+    assert resolved.get_json()["entity_id"] == "bob_smith"
+    assert resolved.get_json()["entity_created"] is False
+    assert ambiguous.status_code == 200
+    assert ambiguous.get_json()["status"] == "ambiguous"
+    assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
+
+
+def test_discovery_identify_route_invalid_entity_type(speakers_env):
+    env = speakers_env()
+    _write_discovery_cluster(env, 35, "110000_300")
+    client = _convey_client(env.journal)
+
+    response = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={
+            "cluster_id": 35,
+            "name": "Widget Person",
+            "create_new": True,
+            "entity_type": "Nope!",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == "invalid_entity_type"
+    assert not (env.journal / "entities" / "widget_person").exists()
+
+
+def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
+    from solstone.apps.speakers import discovery
+
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _write_discovery_cluster(env, 36, "110500_300")
+    _write_discovery_cluster(env, 37, "111000_300")
+    client = _convey_client(env.journal)
+
+    def fail_after_voiceprints(stage: str) -> None:
+        if stage == "after_voiceprints":
+            raise RuntimeError("forced after voiceprints")
+
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        fail_after_voiceprints,
+    )
+    partial_voice = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 36, "name": "Bob Smith"},
+    )
+
+    assert partial_voice.status_code == 409
+    body = partial_voice.get_json()
+    assert body["reason_code"] == "speaker_identify_partial"
+    assert body["status"] == "partial"
+    assert body["completed"] == ["voiceprints"]
+    assert body["failed"] == ["segments", "sentinel"]
+
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        lambda stage: None,
+    )
+    retry_voice = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 36, "name": "Bob Smith"},
+    )
+    assert retry_voice.status_code == 200
+    assert retry_voice.get_json()["status"] == "identified"
+
+    def fail_after_segments(stage: str) -> None:
+        if stage == "after_segments":
+            raise RuntimeError("forced after segments")
+
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        fail_after_segments,
+    )
+    partial_segments = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 37, "name": "Bob Smith"},
+    )
+
+    assert partial_segments.status_code == 409
+    body = partial_segments.get_json()
+    assert body["completed"] == ["voiceprints", "segments"]
+    assert body["failed"] == ["sentinel"]
+
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        lambda stage: None,
+    )
+    retry_segments = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 37, "name": "Bob Smith"},
+    )
+    assert retry_segments.status_code == 200
+    assert retry_segments.get_json()["status"] == "identified"
+
+
+def test_workspace_discovery_identify_requests_create_new():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "JSON.stringify({ cluster_id: clusterId, name: name, create_new: true })"
+        in template
+    )
+    assert (
+        "JSON.stringify({cluster_id: card.dataset.clusterId, name, create_new: true})"
+        in template
+    )
 
 
 def test_cluster_presence_route_returns_presence(speakers_env, monkeypatch):

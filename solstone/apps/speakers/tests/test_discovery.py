@@ -170,6 +170,26 @@ def _candidate_evidence(*items: tuple[str, list[str]]) -> dict:
     }
 
 
+def _create_identify_cluster(
+    env,
+    cluster_id: int,
+    segment_key: str,
+    *,
+    day: str = "20240101",
+    sentence_count: int = 1,
+) -> None:
+    embeddings = _make_speaker_embeddings([1.0, 0.0], sentence_count)
+    env.create_segment(day, segment_key, ["audio"], embeddings=embeddings)
+    _write_discovery_cache(
+        env,
+        cluster_id,
+        [
+            _cluster_record(day, segment_key, sentence_id=sentence_id)
+            for sentence_id in range(1, sentence_count + 1)
+        ],
+    )
+
+
 def test_load_discovery_cache_missing_is_read_only(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     import solstone.think.utils as think_utils
@@ -645,6 +665,124 @@ def test_cluster_presence_empty_evidence_and_unknown_cluster(speakers_env):
     assert get_cluster_presence(999) is None
 
 
+def test_identify_resolve_only_matrix_is_byte_unchanged(speakers_env):
+    env = speakers_env()
+    env.create_entity(
+        "Bob Smith",
+        voiceprints=[("20240101", "080000_300", "audio", 1)],
+    )
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    _create_identify_cluster(env, 20, "110000_300")
+
+    for call, assert_result in (
+        (
+            lambda: identify_cluster(20, entity_id="bob_smith", resolve_only=True),
+            lambda result: (
+                result["status"] == "resolved"
+                and result["entity_id"] == "bob_smith"
+                and result["has_voice"] is True
+            ),
+        ),
+        (
+            lambda: identify_cluster(20, entity_id="missing", resolve_only=True),
+            lambda result: result["not_found"] is True,
+        ),
+        (
+            lambda: identify_cluster(20, name="Bob Smith", resolve_only=True),
+            lambda result: (
+                result["status"] == "resolved"
+                and result["entity_id"] == "bob_smith"
+            ),
+        ),
+        (
+            lambda: identify_cluster(20, name="Sarah", resolve_only=True),
+            lambda result: (
+                result["status"] == "ambiguous"
+                and {candidate["id"] for candidate in result["candidates"]}
+                == {"sarah_connor", "sarah_lee"}
+            ),
+        ),
+        (
+            lambda: identify_cluster(
+                20,
+                name="Zelda Unknown",
+                resolve_only=True,
+                create_new=True,
+                entity_type="Invalid Type",
+            ),
+            lambda result: result["status"] == "no_match"
+            and "candidates" in result,
+        ),
+    ):
+        before = journal_tree_hash(env.journal)
+        result = call()
+        assert assert_result(result)
+        assert journal_tree_hash(env.journal) == before
+
+    assert not (env.journal / "entities" / "zelda_unknown").exists()
+
+
+def test_identify_name_create_matrix_and_entity_type_validation(speakers_env):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    _create_identify_cluster(env, 21, "111000_300")
+    _create_identify_cluster(env, 22, "111500_300")
+    _create_identify_cluster(env, 23, "112000_300")
+    _create_identify_cluster(env, 24, "112500_300")
+    _create_identify_cluster(env, 25, "113000_300")
+    _create_identify_cluster(env, 27, "113500_300")
+
+    existing = identify_cluster(21, name="Bob Smith")
+    existing_create = identify_cluster(27, name="Bob Smith", create_new=True)
+    no_match = identify_cluster(22, name="Zelda Unknown")
+    created = identify_cluster(23, name="Yara New", create_new=True)
+    ambiguous = identify_cluster(24, name="Sarah", create_new=True)
+    invalid_type = identify_cluster(
+        25,
+        name="Qzxqv Wvuty",
+        create_new=True,
+        entity_type="Nope!",
+    )
+
+    assert existing["status"] == "identified"
+    assert existing["entity_id"] == "bob_smith"
+    assert existing["entity_created"] is False
+    assert existing_create["status"] == "identified"
+    assert existing_create["entity_id"] == "bob_smith"
+    assert existing_create["entity_created"] is False
+    assert no_match["status"] == "no_match"
+    assert not (env.journal / "entities" / "zelda_unknown").exists()
+    assert created["status"] == "identified"
+    assert created["entity_id"] == "yara_new"
+    assert created["entity_created"] is True
+    assert (env.journal / "entities" / "yara_new" / "entity.json").exists()
+    assert ambiguous["status"] == "ambiguous"
+    assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
+    assert invalid_type["invalid_entity_type"] is True
+    assert not (env.journal / "entities" / "qzxqv_wvuty").exists()
+
+
+def test_identify_entity_id_wins_over_name(speakers_env):
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    _create_identify_cluster(env, 26, "114000_300")
+
+    result = identify_cluster(
+        26,
+        name="Something Else",
+        entity_id="alice_test",
+        create_new=True,
+    )
+
+    assert result["status"] == "identified"
+    assert result["entity_id"] == "alice_test"
+    assert result["entity_name"] == "Alice Test"
+    assert not (env.journal / "entities" / "something_else").exists()
+
+
 def test_identify_creates_entity(speakers_env):
     env = speakers_env()
     _setup_owner_centroid(env.journal, [0.0, 1.0])
@@ -654,7 +792,7 @@ def test_identify_creates_entity(speakers_env):
     scan_result = discover_unknown_speakers()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
 
-    result = identify_cluster(cluster_id, "Bob Smith")
+    result = identify_cluster(cluster_id, "Bob Smith", create_new=True)
 
     entity_dir = env.journal / "entities" / "bob_smith"
     assert result["status"] == "identified"
@@ -794,7 +932,7 @@ def test_identify_idempotent(speakers_env):
     scan_result = discover_unknown_speakers()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
 
-    first = identify_cluster(cluster_id, "Bob Smith")
+    first = identify_cluster(cluster_id, "Bob Smith", create_new=True)
     first_voiceprints = _load_voiceprint_count(env.journal, "bob_smith")
     first_corrections = {
         (day, segment_key): _load_corrections_count(env.journal, day, segment_key)
@@ -825,7 +963,7 @@ def test_identify_contamination_guard(speakers_env):
     cluster_id = scan_result["clusters"][0]["cluster_id"]
     _setup_owner_centroid(env.journal, [1.0, 0.0])
 
-    result = identify_cluster(cluster_id, "Bob Smith")
+    result = identify_cluster(cluster_id, "Bob Smith", create_new=True)
 
     assert result["voiceprints_saved"] == 0
     assert not (env.journal / "entities" / "bob_smith" / "voiceprints.npz").exists()

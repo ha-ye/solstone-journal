@@ -679,6 +679,23 @@ def _candidate_similarity_score(query: str, entity: EntityDict) -> float:
         )
 
 
+def closest_resolution_candidates(
+    query: str,
+    entities: list[EntityDict],
+    limit: int = 3,
+) -> list[ResolutionCandidate]:
+    """Return closest entities using the same candidate shape as ambiguities."""
+    if not query or not entities or limit <= 0:
+        return []
+    return list(
+        _rank_resolution_candidates(
+            query,
+            MatchTier.FUZZY,
+            _closest_candidates(query, entities, limit=limit),
+        )
+    )
+
+
 def _rank_resolution_candidates(
     query: str,
     tier: MatchTier,

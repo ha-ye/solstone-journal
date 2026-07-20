@@ -732,34 +732,103 @@ def test_presence_json_and_missing_cluster_hint(
     )
 
 
-def test_identify_success_forwards_entity_id_and_family2_error(
+def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: dict[str, Any] = {}
+    seen: list[dict[str, Any]] = []
 
-    def identify_cluster(cluster_id: int, name: str, entity_id: str | None = None):
-        seen.update({"cluster_id": cluster_id, "name": name, "entity_id": entity_id})
-        return {"status": "identified", "entity_id": entity_id}
+    def identify_cluster(cluster_id: int, **kwargs):
+        seen.append({"cluster_id": cluster_id, **kwargs})
+        if kwargs["resolve_only"]:
+            return {
+                "status": "resolved",
+                "entity_id": kwargs["entity_id"] or "alice",
+                "entity_name": kwargs["name"] or "Alice",
+                "has_voice": False,
+            }
+        if kwargs["entity_id"]:
+            return {"status": "identified", "entity_id": kwargs["entity_id"]}
+        if kwargs["create_new"]:
+            return {
+                "status": "identified",
+                "entity_id": "alice",
+                "entity_created": True,
+            }
+        return {
+            "status": "no_match",
+            "candidates": [{"id": "alice", "name": "Alice", "tier": 8, "score": 10.0}],
+        }
 
     monkeypatch.setattr(speakers_routes, "identify_cluster", identify_cluster)
-    success = runner.invoke(
+    entity_id = runner.invoke(
         app, ["identify", "3", "Alice", "--entity-id", "person-alice"]
     )
-
-    _assert_json_stdout(success, {"status": "identified", "entity_id": "person-alice"})
-    assert seen == {"cluster_id": 3, "name": "Alice", "entity_id": "person-alice"}
-
-    error_payload = {"error": "No discovery scan results. Run scan first."}
-    monkeypatch.setattr(
-        speakers_routes,
-        "identify_cluster",
-        lambda cluster_id, name, entity_id=None: error_payload,
+    no_match = runner.invoke(app, ["identify", "4", "Nope"])
+    create = runner.invoke(
+        app,
+        ["identify", "5", "Alice", "--create", "--entity-type", "Organization"],
     )
-    error = runner.invoke(app, ["identify", "3", "Alice"])
+    resolve = runner.invoke(app, ["identify", "6", "Alice", "--resolve-only"])
+    missing_target = runner.invoke(app, ["identify", "7"])
 
-    assert error.exit_code == 1
-    assert error.stdout == ""
-    assert error.stderr == json.dumps(error_payload, indent=2, default=str) + "\n"
+    _assert_json_stdout(entity_id, {"status": "identified", "entity_id": "person-alice"})
+    _assert_json_stdout(
+        no_match,
+        {
+            "status": "no_match",
+            "candidates": [
+                {"id": "alice", "name": "Alice", "tier": 8, "score": 10.0}
+            ],
+        },
+    )
+    _assert_json_stdout(
+        create,
+        {"status": "identified", "entity_id": "alice", "entity_created": True},
+    )
+    _assert_json_stdout(
+        resolve,
+        {
+            "status": "resolved",
+            "entity_id": "alice",
+            "entity_name": "Alice",
+            "has_voice": False,
+        },
+    )
+    assert missing_target.exit_code != 0
+    assert seen == [
+        {
+            "cluster_id": 3,
+            "name": "Alice",
+            "entity_id": "person-alice",
+            "resolve_only": False,
+            "create_new": False,
+            "entity_type": "Person",
+        },
+        {
+            "cluster_id": 4,
+            "name": "Nope",
+            "entity_id": None,
+            "resolve_only": False,
+            "create_new": False,
+            "entity_type": "Person",
+        },
+        {
+            "cluster_id": 5,
+            "name": "Alice",
+            "entity_id": None,
+            "resolve_only": False,
+            "create_new": True,
+            "entity_type": "Organization",
+        },
+        {
+            "cluster_id": 6,
+            "name": "Alice",
+            "entity_id": None,
+            "resolve_only": True,
+            "create_new": False,
+            "entity_type": "Person",
+        },
+    ]
 
 
 def test_merge_names_success_simple_error_and_multi_key_error(

@@ -713,17 +713,37 @@ def presence(
 @convey_cli
 def identify(
     cluster_id: int = typer.Argument(..., help="Cluster ID from discovery output."),
-    name: str = typer.Argument(..., help="Speaker name to assign."),
+    name: str | None = typer.Argument(
+        None, help="Speaker name (optional when --entity-id is given)."
+    ),
     entity_id: str | None = typer.Option(
         None, "--entity-id", help="Link to existing entity ID instead of name matching."
     ),
+    create: bool = typer.Option(
+        False, "--create", help="Create a new entity when the name matches nothing."
+    ),
+    entity_type: str = typer.Option(
+        "Person", "--entity-type", help="Entity type for --create."
+    ),
+    resolve_only: bool = typer.Option(
+        False, "--resolve-only", help="Resolve without writing (dry run)."
+    ),
 ) -> None:
     """Identify a discovered unknown speaker cluster."""
+    if not name and not entity_id:
+        raise typer.BadParameter("name or --entity-id is required")
     try:
         result = _request(
             "POST",
             "/app/speakers/api/discovery/identify-cli",
-            json_body={"cluster_id": cluster_id, "name": name, "entity_id": entity_id},
+            json_body={
+                "cluster_id": cluster_id,
+                "name": name,
+                "entity_id": entity_id,
+                "create_new": create,
+                "entity_type": entity_type,
+                "resolve_only": resolve_only,
+            },
         )
     except ConveyClientError as err:
         if err.reason_code == SPEAKER_COMMAND_FAILED.code:

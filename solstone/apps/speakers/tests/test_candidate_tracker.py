@@ -1225,7 +1225,7 @@ def test_identify_cluster_triggers_retroactive_confirm(speakers_env):
         encoding="utf-8",
     )
 
-    result = identify_cluster(0, "Alice Test")
+    result = identify_cluster(0, "Alice Test", create_new=True)
 
     assert result["status"] == "identified"
     alice_dir = env.journal / "entities" / "alice_test"

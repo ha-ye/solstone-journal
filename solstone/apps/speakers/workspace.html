@@ -1419,7 +1419,7 @@
     window.apiJson('/app/speakers/api/discovery/identify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cluster_id: clusterId, name: name }),
+      body: JSON.stringify({ cluster_id: clusterId, name: name, create_new: true }),
     })
       .then(data => {
         status.textContent = `identified as ${data.entity_name} (${data.voiceprints_saved} voiceprints, ${data.segments_updated} segments updated)`;
@@ -3721,7 +3721,7 @@
         fetch('/app/speakers/api/discovery/identify', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cluster_id: card.dataset.clusterId, name})
+          body: JSON.stringify({cluster_id: card.dataset.clusterId, name, create_new: true})
         }).then(loadDiscovery);
       });
     });

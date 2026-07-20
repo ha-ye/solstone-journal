@@ -53,7 +53,6 @@ from solstone.apps.speakers.discovery import (
     discover_unknown_speakers,
     get_cluster_presence,
     identify_cluster,
-    load_resolved_cluster,
 )
 from solstone.apps.speakers.encoder_config import (
     OWNER_BOOTSTRAP_MIN_STMTS,
@@ -90,6 +89,7 @@ from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
     INVALID_DAY,
+    INVALID_ENTITY_TYPE,
     INVALID_MONTH,
     INVALID_REQUEST_VALUE,
     INVALID_SEGMENT_OR_STREAM,
@@ -97,6 +97,7 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
     SPEAKER_COMMAND_FAILED,
+    SPEAKER_IDENTIFY_PARTIAL,
     SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
     SPEAKER_OWNER_CENTROID_REQUIRED,
@@ -2227,20 +2228,56 @@ def api_cluster_presence(cluster_id: int) -> Any:
     return jsonify(presence)
 
 
+def _identify_result_response(result: dict) -> Any:
+    status = result.get("status")
+    if status in {"identified", "resolved", "ambiguous", "no_match"}:
+        return jsonify(result)
+    if status == "partial":
+        return error_response(
+            SPEAKER_IDENTIFY_PARTIAL,
+            detail=result.get("detail"),
+            extra={
+                "status": "partial",
+                "completed": result.get("completed", []),
+                "failed": result.get("failed", []),
+            },
+        )
+    if result.get("not_found"):
+        return error_response(SPEAKER_NOT_FOUND, detail=result["error"])
+    if result.get("invalid_entity_type"):
+        return error_response(INVALID_ENTITY_TYPE, detail=result["error"])
+    if "error" in result:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail=result["error"],
+            status=400,
+        )
+    return jsonify(result)
+
+
 @speakers_bp.route("/api/discovery/identify", methods=["POST"])
 def api_discovery_identify() -> Any:
     """Identify a discovered unknown speaker cluster by naming it."""
     data = request.get_json(silent=True) or {}
     cluster_id = data.get("cluster_id")
-    name = data.get("name", "").strip()
+    name_value = data.get("name")
+    entity_id_value = data.get("entity_id")
+    name = str(name_value).strip() if name_value is not None else ""
+    entity_id = str(entity_id_value).strip() if entity_id_value else ""
+    resolve_only = bool(data.get("resolve_only", False))
+    create_new = bool(data.get("create_new", False))
+    entity_type = data.get("entity_type") or "Person"
 
     if cluster_id is None:
         return error_response(
             MISSING_REQUIRED_FIELD,
             detail="cluster_id is required",
         )
-    if not name:
-        return error_response(MISSING_REQUIRED_FIELD, detail="name is required")
+    if not entity_id and not name:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="entity_id or name is required",
+        )
 
     try:
         cluster_id = int(cluster_id)
@@ -2251,46 +2288,34 @@ def api_discovery_identify() -> Any:
         )
 
     try:
-        result = identify_cluster(cluster_id, name)
+        result = identify_cluster(
+            cluster_id,
+            name=name or None,
+            entity_id=entity_id or None,
+            resolve_only=resolve_only,
+            create_new=create_new,
+            entity_type=entity_type,
+        )
     except LockTimeout as exc:
         if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
             return _labels_busy_response(exc)
         return _voiceprint_busy_response(exc)
 
-    if "error" in result:
-        resolved = load_resolved_cluster(cluster_id)
-        if resolved and resolved.get("label", "").strip().lower() == name.lower():
-            result = {
-                "status": "identified",
-                "entity_id": resolved.get("entity_id"),
-                "entity_name": resolved.get("label"),
-                "entity_created": False,
-                "voiceprints_saved": 0,
-                "segments_updated": 0,
-                "sentences_attributed": 0,
-            }
-        else:
-            reason = (
-                SPEAKER_NOT_FOUND
-                if "Entity" in result["error"]
-                else INVALID_REQUEST_VALUE
-            )
-            return error_response(reason, detail=result["error"], status=400)
+    if result.get("status") == "identified":
+        log_app_action(
+            app="speakers",
+            facet=None,
+            action="speaker_identified",
+            params={
+                "entity_id": result.get("entity_id"),
+                "entity_name": result.get("entity_name"),
+                "cluster_id": cluster_id,
+                "voiceprints_saved": result.get("voiceprints_saved"),
+                "segments_updated": result.get("segments_updated"),
+            },
+        )
 
-    log_app_action(
-        app="speakers",
-        facet=None,
-        action="speaker_identified",
-        params={
-            "entity_id": result.get("entity_id"),
-            "entity_name": result.get("entity_name"),
-            "cluster_id": cluster_id,
-            "voiceprints_saved": result.get("voiceprints_saved"),
-            "segments_updated": result.get("segments_updated"),
-        },
-    )
-
-    return jsonify(result)
+    return _identify_result_response(result)
 
 
 # CLI-backing routes for sol call speakers HTTP cutover.
@@ -2449,13 +2474,23 @@ def api_cli_discovery_identify() -> Any:
     """Identify a discovery cluster with CLI-compatible pass-through behavior."""
     data = request.get_json(silent=True) or {}
     cluster_id = data.get("cluster_id")
-    name = data.get("name")
-    entity_id = data.get("entity_id")
+    name_value = data.get("name")
+    entity_id_value = data.get("entity_id")
+    name = str(name_value).strip() if name_value is not None else ""
+    entity_id = str(entity_id_value).strip() if entity_id_value else ""
+    resolve_only = bool(data.get("resolve_only", False))
+    create_new = bool(data.get("create_new", False))
+    entity_type = data.get("entity_type") or "Person"
 
-    if cluster_id is None or not name:
+    if cluster_id is None:
         return error_response(
             MISSING_REQUIRED_FIELD,
-            detail="cluster_id and name are required",
+            detail="cluster_id is required",
+        )
+    if not entity_id and not name:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="entity_id or name is required",
         )
 
     try:
@@ -2467,19 +2502,20 @@ def api_cli_discovery_identify() -> Any:
         )
 
     try:
-        result = identify_cluster(cluster_id, name, entity_id=entity_id)
+        result = identify_cluster(
+            cluster_id,
+            name=name or None,
+            entity_id=entity_id or None,
+            resolve_only=resolve_only,
+            create_new=create_new,
+            entity_type=entity_type,
+        )
     except LockTimeout as exc:
         if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
             return _labels_busy_response(exc)
         return _voiceprint_busy_response(exc)
 
-    if "error" in result:
-        return error_response(
-            SPEAKER_COMMAND_FAILED,
-            detail=json.dumps(result, indent=2, default=str),
-            status=400,
-        )
-    return jsonify(result)
+    return _identify_result_response(result)
 
 
 @speakers_bp.route("/api/merge-names", methods=["POST"])

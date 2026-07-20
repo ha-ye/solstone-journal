@@ -508,8 +508,18 @@ def get_cluster_presence(cluster_id: int) -> dict[str, Any] | None:
     }
 
 
+def _maybe_inject_identify_fault(stage: str) -> None:
+    return None
+
+
 def identify_cluster(
-    cluster_id: int, name: str, entity_id: str | None = None
+    cluster_id: int,
+    name: str | None = None,
+    entity_id: str | None = None,
+    *,
+    resolve_only: bool = False,
+    create_new: bool = False,
+    entity_type: str = "Person",
 ) -> dict[str, Any]:
     """Identify a discovered unknown speaker cluster."""
     import numpy as np
@@ -519,8 +529,20 @@ def identify_cluster(
         apply_label_patches,
     )
     from solstone.think.entities import (
+        EntityResolutionOutcome,
+        ResolutionOrigin,
+        ResolutionScope,
+        closest_resolution_candidates,
+        entity_slug,
+        is_valid_entity_type,
         load_existing_voiceprint_keys,
+        record_entity_resolution,
         save_voiceprints_batch,
+    )
+    from solstone.think.entities.journal import (
+        create_journal_entity,
+        load_all_journal_entities,
+        load_journal_entity,
     )
 
     (
@@ -544,35 +566,31 @@ def identify_cluster(
         return {"error": f"Cluster {cluster_id} not found in scan results."}
 
     from solstone.apps.speakers.routes import _load_speaker_corrections
-    from solstone.think.entities import (
-        EntityResolutionOutcome,
-        ResolutionOrigin,
-        ResolutionScope,
-        entity_slug,
-        record_entity_resolution,
-    )
-    from solstone.think.entities.journal import (
-        create_journal_entity,
-        load_all_journal_entities,
-        load_journal_entity,
-    )
 
     entity_created = False
+    will_create = False
+    name_value = name.strip() if isinstance(name, str) else ""
+    entity_id_value = entity_id.strip() if isinstance(entity_id, str) else ""
 
-    if entity_id:
-        # Direct entity ID — load it
-        entity = load_journal_entity(entity_id)
+    if entity_id_value:
+        entity = load_journal_entity(entity_id_value)
         if not entity:
-            return {"error": f"Entity '{entity_id}' not found."}
-        entity_name = entity.get("name", name)
+            return {
+                "error": f"Entity '{entity_id_value}' not found.",
+                "not_found": True,
+            }
+        target_id = entity_id_value
+        target_name = entity.get("name", target_id)
     else:
+        if not name_value:
+            return {"error": "name is required"}
         journal_entities = load_all_journal_entities()
         entities_list = [
             entity for entity in journal_entities.values() if not entity.get("blocked")
         ]
 
         resolution = record_entity_resolution(
-            name,
+            name_value,
             entities_list,
             scope=ResolutionScope.journal(),
             origin=ResolutionOrigin(
@@ -580,6 +598,7 @@ def identify_cluster(
                 record_id=str(cluster_id),
                 field="name",
             ),
+            read_only=resolve_only,
         )
         if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
             return {
@@ -590,162 +609,222 @@ def identify_cluster(
                 ],
             }
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
-            entity_id = resolution.entity["id"]
-            entity_name = resolution.entity.get("name", name)
+            target_id = resolution.entity["id"]
+            target_name = resolution.entity.get("name", name_value)
         else:
-            entity_id = entity_slug(name)
-            existing = load_journal_entity(entity_id)
-            entity_created = existing is None
-            entity = existing or create_journal_entity(
-                entity_id=entity_id,
-                name=name,
-                entity_type="Person",
-            )
-            entity_name = entity.get("name", name)
+            if resolve_only or not create_new:
+                return {
+                    "status": "no_match",
+                    "candidates": [
+                        candidate.to_dict()
+                        for candidate in closest_resolution_candidates(
+                            name_value,
+                            entities_list,
+                        )
+                    ],
+                }
+            will_create = True
+            target_id = entity_slug(name_value)
+            target_name = name_value
 
-    existing_keys = load_existing_voiceprint_keys(entity_id)
-    vp_batch: list[tuple[np.ndarray, dict[str, Any]]] = []
-
-    for member in cluster_members:
-        day = member["day"]
-        stream = member["stream"]
-        seg_key = member["segment_key"]
-        source = member["source"]
-        sentence_id = int(member["sentence_id"])
-
-        vp_key = (day, seg_key, source, sentence_id)
-        if vp_key in existing_keys:
-            continue
-
-        seg_dir = segment_path(day, seg_key, stream)
-        emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
-        if emb_data is None:
-            continue
-
-        embeddings, statement_ids, _ = emb_data
-        emb_vec = None
-        for emb, sid in zip(embeddings, statement_ids):
-            if int(sid) == sentence_id:
-                emb_vec = normalize_embedding(emb)
-                break
-
-        if emb_vec is None or check_owner_contamination(emb_vec):
-            continue
-
-        vp_batch.append(
-            (
-                emb_vec,
-                {
-                    "day": day,
-                    "segment_key": seg_key,
-                    "source": source,
-                    "stream": stream,
-                    "sentence_id": sentence_id,
-                    "added_at": now_ms(),
-                },
-            )
-        )
-        existing_keys.add(vp_key)
-
-    voiceprints_saved = save_voiceprints_batch(entity_id, vp_batch) if vp_batch else 0
-
-    segments_map: dict[tuple[str, str, str], list[int]] = defaultdict(list)
-    for member in cluster_members:
-        key = (member["day"], member["stream"], member["segment_key"])
-        segments_map[key].append(int(member["sentence_id"]))
-
-    segments_updated = 0
-    sentences_attributed = 0
-    timestamp = now_ms()
-
-    for (day, stream, seg_key), sentence_ids in segments_map.items():
-        seg_dir_check = day_path(day, create=False) / stream / seg_key
-        if not seg_dir_check.is_dir():
-            continue
-        seg_dir = seg_dir_check
-        labels_data = load_speaker_labels(seg_dir)
-        if labels_data is None:
-            labels_data = {
-                "labels": [],
-                "owner_centroid_last_refreshed_at": None,
-                "voiceprint_versions": {},
-            }
-
-        labels_by_sid: dict[int, dict[str, Any]] = {}
-        for label in labels_data.get("labels", []):
-            sentence_id = label.get("sentence_id")
-            if sentence_id is not None:
-                labels_by_sid[int(sentence_id)] = label
-
-        existing_correction_keys = {
-            (
-                correction.get("sentence_id"),
-                correction.get("corrected_speaker"),
-            )
-            for correction in _load_speaker_corrections(seg_dir)
+    if resolve_only:
+        return {
+            "status": "resolved",
+            "entity_id": target_id,
+            "entity_name": target_name,
+            "has_voice": _voiceprints_exist(target_id),
         }
 
-        updated = False
-        patches: dict[int, dict[str, Any]] = {}
-        for sentence_id in sorted(set(sentence_ids)):
-            original = labels_by_sid.get(sentence_id, {})
-            new_label = {
-                "sentence_id": sentence_id,
-                "speaker": entity_id,
-                "confidence": "high",
-                "method": "user_identified",
+    if will_create:
+        if not is_valid_entity_type(entity_type):
+            return {
+                "error": f"Invalid entity type: {entity_type}",
+                "invalid_entity_type": True,
             }
-            if original != new_label:
-                updated = True
-                sentences_attributed += 1
-                patches[sentence_id] = {
-                    "speaker": entity_id,
+        existing = load_journal_entity(target_id)
+        entity_created = existing is None
+        entity = existing or create_journal_entity(
+            entity_id=target_id,
+            name=name_value,
+            entity_type=entity_type,
+        )
+        target_name = entity.get("name", name_value)
+
+    completed: list[str] = []
+    try:
+        existing_keys = load_existing_voiceprint_keys(target_id)
+        vp_batch: list[tuple[np.ndarray, dict[str, Any]]] = []
+
+        for member in cluster_members:
+            day = member["day"]
+            stream = member["stream"]
+            seg_key = member["segment_key"]
+            source = member["source"]
+            sentence_id = int(member["sentence_id"])
+
+            vp_key = (day, seg_key, source, sentence_id)
+            if vp_key in existing_keys:
+                continue
+
+            seg_dir = segment_path(day, seg_key, stream)
+            emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
+            if emb_data is None:
+                continue
+
+            embeddings, statement_ids, _ = emb_data
+            emb_vec = None
+            for emb, sid in zip(embeddings, statement_ids):
+                if int(sid) == sentence_id:
+                    emb_vec = normalize_embedding(emb)
+                    break
+
+            if emb_vec is None or check_owner_contamination(emb_vec):
+                continue
+
+            vp_batch.append(
+                (
+                    emb_vec,
+                    {
+                        "day": day,
+                        "segment_key": seg_key,
+                        "source": source,
+                        "stream": stream,
+                        "sentence_id": sentence_id,
+                        "added_at": now_ms(),
+                    },
+                )
+            )
+            existing_keys.add(vp_key)
+
+        voiceprints_saved = (
+            save_voiceprints_batch(target_id, vp_batch) if vp_batch else 0
+        )
+        completed.append("voiceprints")
+        _maybe_inject_identify_fault("after_voiceprints")
+
+        segments_map: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+        for member in cluster_members:
+            key = (member["day"], member["stream"], member["segment_key"])
+            segments_map[key].append(int(member["sentence_id"]))
+
+        segments_updated = 0
+        sentences_attributed = 0
+        timestamp = now_ms()
+
+        for (day, stream, seg_key), sentence_ids in segments_map.items():
+            seg_dir_check = day_path(day, create=False) / stream / seg_key
+            if not seg_dir_check.is_dir():
+                continue
+            seg_dir = seg_dir_check
+            labels_data = load_speaker_labels(seg_dir)
+            if labels_data is None:
+                labels_data = {
+                    "labels": [],
+                    "owner_centroid_last_refreshed_at": None,
+                    "voiceprint_versions": {},
+                }
+
+            labels_by_sid: dict[int, dict[str, Any]] = {}
+            for label in labels_data.get("labels", []):
+                sentence_id = label.get("sentence_id")
+                if sentence_id is not None:
+                    labels_by_sid[int(sentence_id)] = label
+
+            existing_correction_keys = {
+                (
+                    correction.get("sentence_id"),
+                    correction.get("corrected_speaker"),
+                )
+                for correction in _load_speaker_corrections(seg_dir)
+            }
+
+            updated = False
+            patches: dict[int, dict[str, Any]] = {}
+            for sentence_id in sorted(set(sentence_ids)):
+                original = labels_by_sid.get(sentence_id, {})
+                new_label = {
+                    "sentence_id": sentence_id,
+                    "speaker": target_id,
                     "confidence": "high",
                     "method": "user_identified",
                 }
+                if original != new_label:
+                    updated = True
+                    sentences_attributed += 1
+                    patches[sentence_id] = {
+                        "speaker": target_id,
+                        "confidence": "high",
+                        "method": "user_identified",
+                    }
 
-            correction_key = (sentence_id, entity_id)
-            if correction_key in existing_correction_keys:
-                continue
+                correction_key = (sentence_id, target_id)
+                if correction_key in existing_correction_keys:
+                    continue
 
-            append_speaker_correction(
-                seg_dir,
-                {
-                    "sentence_id": sentence_id,
-                    "original_speaker": original.get("speaker"),
-                    "corrected_speaker": entity_id,
-                    "original_method": original.get("method"),
-                    "timestamp": timestamp,
-                },
-            )
-            existing_correction_keys.add(correction_key)
+                append_speaker_correction(
+                    seg_dir,
+                    {
+                        "sentence_id": sentence_id,
+                        "original_speaker": original.get("speaker"),
+                        "corrected_speaker": target_id,
+                        "original_method": original.get("method"),
+                        "timestamp": timestamp,
+                    },
+                )
+                existing_correction_keys.add(correction_key)
 
-        if updated:
-            apply_label_patches(seg_dir, patches, allow_insert=True)
-            segments_updated += 1
+            if updated:
+                apply_label_patches(seg_dir, patches, allow_insert=True)
+                segments_updated += 1
 
-    if vp_batch:
-        try:
-            cluster_centroid = normalize_embedding(
-                np.mean([embedding for embedding, _ in vp_batch], axis=0)
-            )
-            if cluster_centroid is not None:
-                from solstone.apps.speakers.candidate_tracker import CandidateTracker
+        completed.append("segments")
+        _maybe_inject_identify_fault("after_segments")
 
-                CandidateTracker().retroactive_confirm(cluster_centroid, entity_id)
-        except Exception as exc:
-            logger.warning(
-                "Failed to retroactively confirm speaker candidate for %s: %s",
-                entity_id,
-                exc,
-            )
+        if vp_batch:
+            try:
+                cluster_centroid = normalize_embedding(
+                    np.mean([embedding for embedding, _ in vp_batch], axis=0)
+                )
+                if cluster_centroid is not None:
+                    from solstone.apps.speakers.candidate_tracker import (
+                        CandidateTracker,
+                    )
 
-    _write_resolved_cluster(cluster_id, entity_id, entity_name)
+                    CandidateTracker().retroactive_confirm(cluster_centroid, target_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to retroactively confirm speaker candidate for %s: %s",
+                    target_id,
+                    exc,
+                )
+
+        _write_resolved_cluster(cluster_id, target_id, target_name)
+        completed.append("sentinel")
+    except Exception as exc:
+        from solstone.think.journal_io.errors import LockTimeout
+
+        if isinstance(exc, LockTimeout):
+            raise
+        if not completed:
+            raise
+        failed = [
+            category
+            for category in ("voiceprints", "segments", "sentinel")
+            if category not in completed
+        ]
+        return {
+            "status": "partial",
+            "completed": completed,
+            "failed": failed,
+            "detail": str(exc),
+            "entity_id": target_id,
+            "entity_name": target_name,
+        }
 
     return {
         "status": "identified",
-        "entity_id": entity_id,
-        "entity_name": entity_name,
+        "entity_id": target_id,
+        "entity_name": target_name,
         "entity_created": entity_created,
         "voiceprints_saved": voiceprints_saved,
         "segments_updated": segments_updated,
