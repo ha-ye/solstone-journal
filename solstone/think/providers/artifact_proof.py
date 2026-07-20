@@ -14,7 +14,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from solstone.think.journal_io.atomic import atomic_replace
 from solstone.think.journal_io.locking import hold_lock
@@ -281,98 +281,6 @@ def prove_manifest(
         manifest_identity_key=manifest_identity_key,
         manifest_hash=manifest_hash,
     )
-    return ProofResult("ready", "ready", cache_hit=False)
-
-
-def prove_cuda_sidecar(
-    *,
-    provider: str,
-    image_ref: str,
-    arch: str,
-    wanted_files: list[str] | tuple[str, ...],
-    target_dir: Path,
-    pin_identity: dict[str, Any],
-    verifier: Callable[[str, str, list[str] | tuple[str, ...], Path], bool],
-    journal_path: str | Path | None = None,
-) -> ProofResult:
-    """Cache successful CUDA OCI sidecar verification."""
-    _validate_provider(provider)
-    target_dir = Path(target_dir)
-    sidecar = target_dir / ".oci-install.json"
-    try:
-        sidecar_stat = _required_file_stat(
-            sidecar,
-            io_reason_code="cuda_sidecar_io_error",
-        )
-    except FileNotFoundError:
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_missing")
-    except ValueError:
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_malformed")
-    except ProofUnavailableError as exc:
-        return ProofResult("proof-unavailable", exc.reason_code)
-    try:
-        record = json.loads(sidecar.read_text(encoding="utf-8"))
-    except OSError as exc:
-        _log_unavailable("CUDA sidecar read failed", exc)
-        return ProofResult("proof-unavailable", "cuda_sidecar_io_error")
-    except (json.JSONDecodeError, ValueError):
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_malformed")
-    files = record.get("files")
-    if record.get("image_ref") != image_ref or record.get("arch") != arch:
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_pin_mismatch")
-    if not isinstance(files, dict):
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_malformed")
-
-    file_fingerprints: list[dict[str, Any]] = []
-    for name in wanted_files:
-        expected = files.get(name)
-        if not isinstance(expected, str):
-            return ProofResult("missing-or-mismatched", "expected_hash_unavailable")
-        path = target_dir / name
-        try:
-            stat_result = _required_file_stat(path)
-        except FileNotFoundError:
-            return ProofResult("missing-or-mismatched", "inventory_member_missing")
-        except ProofUnavailableError as exc:
-            return ProofResult("proof-unavailable", exc.reason_code)
-        stat_info = _stat_identity_from_result(path, stat_result)
-        stat_info.update(
-            {
-                "path": str(path),
-                "relative_path": name,
-                "expected_sha256": expected,
-                "executable": os.access(path, os.X_OK),
-            }
-        )
-        file_fingerprints.append(stat_info)
-
-    cache_path = proof_cache_path(provider, journal_path=journal_path)
-    cache = _read_proof_cache(cache_path)
-    sidecar_identity = canonical_fingerprint(
-        _stat_identity_from_result(sidecar, sidecar_stat)
-    )
-    proof_key = _proof_key(
-        provider=provider,
-        pin_identity={
-            **pin_identity,
-            "image_ref": image_ref,
-            "arch": arch,
-            "sidecar_identity": sidecar_identity,
-        },
-        manifest_hash="cuda-oci-sidecar",
-        files=file_fingerprints,
-    )
-    if proof_key in cache.get("affirmative", {}):
-        return ProofResult("ready", "ready", cache_hit=True)
-
-    try:
-        verified = verifier(image_ref, arch, wanted_files, target_dir)
-    except OSError as exc:
-        _log_unavailable("CUDA sidecar verifier could not run", exc)
-        return ProofResult("proof-unavailable", "cuda_sidecar_verify_unavailable")
-    if not verified:
-        return ProofResult("missing-or-mismatched", "cuda_sidecar_verify_failed")
-    _write_affirmative_cache(cache_path, proof_key=proof_key)
     return ProofResult("ready", "ready", cache_hit=False)
 
 
@@ -648,7 +556,6 @@ __all__ = [
     "mlx_snapshot_manifest_path",
     "mlx_variant_manifest_path",
     "proof_cache_path",
-    "prove_cuda_sidecar",
     "prove_manifest",
     "publish_staged_tree",
     "read_manifest",

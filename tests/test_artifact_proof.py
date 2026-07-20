@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from solstone.think.providers.artifact_proof import (
     mlx_snapshot_manifest_path,
     mlx_variant_manifest_path,
     proof_cache_path,
-    prove_cuda_sidecar,
     prove_manifest,
     publish_staged_tree,
     write_manifest,
@@ -365,132 +363,6 @@ def test_mlx_manifests_are_solstone_side(tmp_path, monkeypatch) -> None:
     assert str(variant).startswith(str(tmp_path / "journal" / "cache"))
     assert not str(snapshot).startswith(str(hf_root))
     assert not str(variant).startswith(str(hf_root))
-
-
-def test_cuda_sidecar_success_is_cached_without_second_verifier(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
-    target = tmp_path / "cuda"
-    target.mkdir()
-    (target / "llama-server").write_bytes(b"server")
-    (target / ".oci-install.json").write_text(
-        json.dumps(
-            {
-                "image_ref": "image@sha256:abc",
-                "arch": "amd64",
-                "files": {"llama-server": _sha(b"server")},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    calls = 0
-    hash_calls: list[Path] = []
-    real_hash = artifact_proof._sha256_file
-
-    def verifier(_image_ref, _arch, wanted, verify_target) -> bool:
-        nonlocal calls
-        calls += 1
-        for name in wanted:
-            path = verify_target / name
-            hash_calls.append(path)
-            real_hash(path)
-        return True
-
-    first = prove_cuda_sidecar(
-        provider="local",
-        image_ref="image@sha256:abc",
-        arch="amd64",
-        wanted_files=("llama-server",),
-        target_dir=target,
-        pin_identity={"pin": "cuda"},
-        verifier=verifier,
-    )
-    second = prove_cuda_sidecar(
-        provider="local",
-        image_ref="image@sha256:abc",
-        arch="amd64",
-        wanted_files=("llama-server",),
-        target_dir=target,
-        pin_identity={"pin": "cuda"},
-        verifier=verifier,
-    )
-
-    assert first.ready
-    assert second.ready
-    assert second.cache_hit is True
-    assert calls == 1
-    assert hash_calls == [target / "llama-server"]
-
-
-def test_cuda_sidecar_absent_is_repair_needed(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
-    target = tmp_path / "cuda"
-    target.mkdir()
-
-    def verifier(_image_ref, _arch, _wanted, _target) -> bool:
-        raise AssertionError("verifier should not run when the sidecar is absent")
-
-    result = prove_cuda_sidecar(
-        provider="local",
-        image_ref="image@sha256:abc",
-        arch="amd64",
-        wanted_files=("llama-server",),
-        target_dir=target,
-        pin_identity={"pin": "cuda"},
-        verifier=verifier,
-    )
-
-    assert result.status == "missing-or-mismatched"
-    assert result.reason_code == "cuda_sidecar_missing"
-
-
-def test_cuda_sidecar_unreadable_is_proof_unavailable_and_does_not_verify(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    _skip_if_root_chmod_is_ignored()
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
-    target = tmp_path / "cuda"
-    target.mkdir()
-    (target / "llama-server").write_bytes(b"server")
-    sidecar = target / ".oci-install.json"
-    sidecar.write_text(
-        json.dumps(
-            {
-                "image_ref": "image@sha256:abc",
-                "arch": "amd64",
-                "files": {"llama-server": _sha(b"server")},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    sidecar.chmod(0o000)
-    calls = 0
-
-    def verifier(_image_ref, _arch, _wanted, _target) -> bool:
-        nonlocal calls
-        calls += 1
-        return True
-
-    try:
-        result = prove_cuda_sidecar(
-            provider="local",
-            image_ref="image@sha256:abc",
-            arch="amd64",
-            wanted_files=("llama-server",),
-            target_dir=target,
-            pin_identity={"pin": "cuda"},
-            verifier=verifier,
-        )
-        assert result.status == "proof-unavailable"
-        assert result.reason_code == "cuda_sidecar_io_error"
-        assert calls == 0
-        assert (target / "llama-server").read_bytes() == b"server"
-    finally:
-        sidecar.chmod(0o600)
 
 
 def test_publish_staged_tree_restores_prior_tree_on_replace_failure(
