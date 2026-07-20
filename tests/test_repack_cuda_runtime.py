@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import gzip
 import hashlib
 import io
 import json
@@ -10,6 +12,7 @@ import socket
 import tarfile
 from collections.abc import Iterator
 from pathlib import Path
+from unittest import mock
 
 import httpx
 import pytest
@@ -23,6 +26,8 @@ IMAGE_REF = f"ghcr.io/{REPO}:{TAG}"
 ARCH = "amd64"
 SECOND_ARCH = "arm64"
 TIMESTAMP = 1_800_000_000
+# Fixed gzip header time keeps mock layer digests stable regardless of suite time.
+LAYER_GZIP_MTIME = 0
 REVISION = "abcdef1234567890"
 EULA_BYTES = b"fixture NVIDIA CUDA EULA\n"
 LLAMA_LICENSE_BYTES = b"MIT License\n\nCopyright (c) 2023-2026 The ggml authors\n"
@@ -71,16 +76,30 @@ def _symlink(archive: tarfile.TarFile, name: str, target: str) -> None:
 
 def _layer(entries: list[tuple[str, bytes | str, str]]) -> bytes:
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        for name, data, kind in entries:
-            if kind == "symlink":
-                assert isinstance(data, str)
-                _symlink(archive, name, data)
-            else:
-                assert isinstance(data, bytes)
-                mode = 0o755 if name.endswith("llama-server") else 0o644
-                _regular(archive, name, data, mode=mode)
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        fileobj=buffer,
+        compresslevel=9,
+        mtime=LAYER_GZIP_MTIME,
+    ) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as archive:
+            for name, data, kind in entries:
+                if kind == "symlink":
+                    assert isinstance(data, str)
+                    _symlink(archive, name, data)
+                else:
+                    assert isinstance(data, bytes)
+                    mode = 0o755 if name.endswith("llama-server") else 0o644
+                    _regular(archive, name, data, mode=mode)
     return buffer.getvalue()
+
+
+@contextlib.contextmanager
+def _pinned_clock(now: float) -> Iterator[None]:
+    # gzip.time is the global time module; keep this patch scoped to one build.
+    with mock.patch.object(gzip.time, "time", lambda: now):
+        yield
 
 
 class _Registry:
@@ -678,3 +697,105 @@ def test_no_network_fetch_layer_is_injected(
 
     assert registry.requests
     assert all(request.url.host == "ghcr.io" for request in registry.requests)
+
+
+def test_layer_helper_is_deterministic_across_clock_seconds() -> None:
+    _lower_entries, upper_entries = _base_entries()
+
+    with _pinned_clock(1_700_000_000.0):
+        first = _layer(upper_entries)
+    with _pinned_clock(1_700_000_001.0):
+        second = _layer(upper_entries)
+
+    assert first == second
+    assert int.from_bytes(first[4:8], "little") == LAYER_GZIP_MTIME
+    assert int.from_bytes(second[4:8], "little") == LAYER_GZIP_MTIME
+
+    def members(
+        data: bytes,
+    ) -> list[tuple[str, bytes, str, int, bytes | None]]:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            records: list[tuple[str, bytes, str, int, bytes | None]] = []
+            for member in archive.getmembers():
+                payload = None
+                if member.isfile():
+                    extracted = archive.extractfile(member)
+                    assert extracted is not None
+                    payload = extracted.read()
+                records.append(
+                    (member.name, member.type, member.linkname, member.mode, payload)
+                )
+            return records
+
+    first_members = members(first)
+    assert first_members == members(second)
+    assert (
+        "usr/local/cuda/lib64/libcudart-middle.so",
+        tarfile.SYMTYPE,
+        "libcudart.so.13.3.29",
+        0o644,
+        None,
+    ) in first_members
+    assert (
+        "usr/local/cuda/lib64/libcudart.so.13",
+        tarfile.SYMTYPE,
+        "libcudart-middle.so",
+        0o644,
+        None,
+    ) in first_members
+
+
+def test_registry_layer_manifests_are_stable_across_clock_seconds() -> None:
+    with _pinned_clock(1_700_000_000.0):
+        first = _registry()
+    with _pinned_clock(1_700_000_001.0):
+        second = _registry()
+
+    assert first.layer_refs == second.layer_refs
+    assert first.manifests.keys() == second.manifests.keys()
+    for key in first.manifests:
+        assert first.manifests[key] == second.manifests[key]
+
+
+def test_full_repack_ignores_mock_layer_build_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _pinned_clock(1_700_000_000.0):
+        first_registry = _registry()
+    with _pinned_clock(1_700_000_001.0):
+        second_registry = _registry()
+
+    first, _stderr = _run_one(tmp_path / "one", first_registry, monkeypatch=monkeypatch)
+    second, _stderr = _run_one(
+        tmp_path / "two", second_registry, monkeypatch=monkeypatch
+    )
+
+    assert first.tarball_sha256 == second.tarball_sha256
+
+
+def test_former_layer_construction_was_clock_dependent() -> None:
+    _lower_entries, upper_entries = _base_entries()
+
+    def former_layer(entries: list[tuple[str, bytes | str, str]]) -> bytes:
+        buffer = io.BytesIO()
+        # Intentional reproduction of the removed path to prove drift is caught.
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, data, kind in entries:
+                if kind == "symlink":
+                    assert isinstance(data, str)
+                    _symlink(archive, name, data)
+                else:
+                    assert isinstance(data, bytes)
+                    mode = 0o755 if name.endswith("llama-server") else 0o644
+                    _regular(archive, name, data, mode=mode)
+        return buffer.getvalue()
+
+    with _pinned_clock(1_700_000_000.0):
+        first = former_layer(upper_entries)
+    with _pinned_clock(1_700_000_001.0):
+        second = former_layer(upper_entries)
+
+    assert int.from_bytes(first[4:8], "little") == 1_700_000_000
+    assert int.from_bytes(second[4:8], "little") == 1_700_000_001
+    assert first != second
+    assert _sha256(first) != _sha256(second)
