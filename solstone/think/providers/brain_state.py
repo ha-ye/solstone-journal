@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast, get_args
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.journal_io import atomic_replace, hold_lock, write_json
@@ -42,6 +42,10 @@ from solstone.think.providers.install_state import (
 from solstone.think.providers.local_endpoint import (
     confidential_provenance_block,
     normalize_local_endpoint_url,
+)
+from solstone.think.providers.runtime_health import (
+    RuntimeRecordInspection,
+    inspect_runtime_health,
 )
 from solstone.think.utils import get_journal
 
@@ -65,6 +69,9 @@ BrainComponentStatus = Literal["ok", "blocked", "failed", "unknown", "not_attemp
 BrainLaneId = Literal["none", "byo-cloud", "byo-endpoint", "bundled", "spp", "unknown"]
 BrainInspectionStatus = Literal["ok", "corrupt", "unavailable"]
 BrainDiagnosticValue = str | int | float | bool
+# Brain reasons are deliberately snake_case, unlike runtime_health.py's
+# kebab-case phases/reasons. They match the owner-facing status/reason style in
+# provider_readiness.py and state.py; do not harmonize them with runtime health.
 BrainReasonCode = Literal[
     "attestation_expired",
     "attestation_not_verified",
@@ -155,12 +162,19 @@ BRAIN_REASON_TO_AGGREGATE: dict[str, BrainAggregateState] = {
     "timestamp_invalid": "unknown",
 }
 BRAIN_REASON_CODES = frozenset(BRAIN_REASON_TO_AGGREGATE)
+RUNTIME_FAILURE_AGGREGATES: frozenset[BrainAggregateState] = frozenset(
+    {"blocked", "unhealthy", "unknown"}
+)
 
 if BRAIN_AGGREGATE_STATES & BRAIN_REASON_CODES:
     raise RuntimeError("brain aggregate-state and reason-code vocabularies overlap")
 if BRAIN_COMPONENT_STATUSES & BRAIN_REASON_CODES:
     raise RuntimeError("brain component-status and reason-code vocabularies overlap")
 
+RUNTIME_PHASES = frozenset(cast(tuple[str, ...], get_args(RuntimePhase)))
+# ready-proof-unavailable is non-ready for brain proof even though supervisor.py
+# treats it as ready-equivalent for process gating. The brain contract requires
+# actual ready proof before reporting the selected brain as ready.
 RUNTIME_PHASE_TO_REASON: dict[str, BrainReasonCode | None] = {
     "ready": None,
     "artifact-not-ready": "runtime_blocked",
@@ -181,19 +195,19 @@ RUNTIME_PHASE_TO_REASON: dict[str, BrainReasonCode | None] = {
     "ready-proof-unavailable": "runtime_ready_proof_unavailable",
 }
 
-DIAGNOSTIC_METADATA_SCHEMAS: dict[str, frozenset[str]] = {
-    reason: frozenset() for reason in BRAIN_REASON_CODES
+DiagnosticMetadataSchema = dict[str, frozenset[str]]
+CONFIG_DIAGNOSTIC_FIELDS = frozenset({"providers.active.provider"})
+DIAGNOSTIC_METADATA_SCHEMAS: dict[str, DiagnosticMetadataSchema] = {
+    reason: {} for reason in BRAIN_REASON_CODES
 }
 DIAGNOSTIC_METADATA_SCHEMAS.update(
     {
-        "configuration_invalid": frozenset({"field"}),
-        "endpoint_contract_failed": frozenset({"status"}),
-        "endpoint_unreachable": frozenset({"status"}),
-        "runtime_blocked": frozenset({"phase"}),
-        "runtime_failed": frozenset({"phase"}),
-        "runtime_not_ready": frozenset({"phase"}),
-        "runtime_ready_proof_unavailable": frozenset({"phase"}),
-        "runtime_state_unavailable": frozenset({"phase"}),
+        "configuration_invalid": {"field": CONFIG_DIAGNOSTIC_FIELDS},
+        "runtime_blocked": {"phase": RUNTIME_PHASES},
+        "runtime_failed": {"phase": RUNTIME_PHASES},
+        "runtime_not_ready": {"phase": RUNTIME_PHASES},
+        "runtime_ready_proof_unavailable": {"phase": RUNTIME_PHASES},
+        "runtime_state_unavailable": {"phase": RUNTIME_PHASES},
     }
 )
 
@@ -309,6 +323,7 @@ class BrainFingerprintResult(TypedDict):
     active_model: str | None
     reason_code: BrainReasonCode | None
     diagnostic: dict[str, BrainDiagnosticValue]
+    bundled_runtime_fingerprint_sha256: NotRequired[str | None]
 
 
 class BrainProbeOutcome(TypedDict):
@@ -506,6 +521,7 @@ def build_active_brain_fingerprint(
 ) -> BrainFingerprintResult:
     lane, provider, model = _derive_lane(config)
     diagnostic: dict[str, BrainDiagnosticValue] = {}
+    bundled_runtime_fingerprint_sha256: str | None = None
     if lane == "unknown":
         return {
             "ok": False,
@@ -515,6 +531,7 @@ def build_active_brain_fingerprint(
             "active_model": model,
             "reason_code": "configuration_invalid",
             "diagnostic": {"field": "providers.active.provider"},
+            "bundled_runtime_fingerprint_sha256": None,
         }
 
     components: dict[str, Any] = {
@@ -552,7 +569,8 @@ def build_active_brain_fingerprint(
             )
     elif lane == "bundled":
         try:
-            components["bundled_runtime"] = _bundled_runtime_fingerprint_sha()
+            bundled_runtime_fingerprint_sha256 = _bundled_runtime_fingerprint_sha()
+            components["bundled_runtime"] = bundled_runtime_fingerprint_sha256
         except Exception:
             return {
                 "ok": False,
@@ -562,6 +580,7 @@ def build_active_brain_fingerprint(
                 "active_model": model,
                 "reason_code": "fingerprint_unavailable",
                 "diagnostic": {},
+                "bundled_runtime_fingerprint_sha256": None,
             }
 
     fingerprint = fingerprint_sha256(canonical_fingerprint(components))
@@ -573,6 +592,7 @@ def build_active_brain_fingerprint(
         "active_model": model,
         "reason_code": None,
         "diagnostic": diagnostic,
+        "bundled_runtime_fingerprint_sha256": bundled_runtime_fingerprint_sha256,
     }
 
 
@@ -678,35 +698,22 @@ def _validate_diagnostic(
         return {}
     if not isinstance(value, Mapping):
         raise BrainStateValidationError(path, "diagnostic must be an object")
-    allowed = DIAGNOSTIC_METADATA_SCHEMAS.get(reason_code or "", frozenset())
+    allowed = DIAGNOSTIC_METADATA_SCHEMAS.get(reason_code or "", {})
     found: dict[str, BrainDiagnosticValue] = {}
     for key, raw in value.items():
         if not isinstance(key, str) or key not in allowed:
             raise BrainStateValidationError(
                 f"{path}.{key}", "diagnostic key not allowed"
             )
-        if (
-            not isinstance(raw, (str, int, float, bool))
-            or isinstance(raw, bool)
-            and False
-        ):
+        allowed_values = allowed[key]
+        if not isinstance(raw, str):
             raise BrainStateValidationError(
-                f"{path}.{key}", "diagnostic value not bounded"
+                f"{path}.{key}", "diagnostic value must be an enum string"
             )
-        if isinstance(raw, str):
-            if len(raw) > 160 or "://" in raw:
-                raise BrainStateValidationError(
-                    f"{path}.{key}", "diagnostic string is not bounded"
-                )
-            if len(raw) == 64:
-                try:
-                    int(raw, 16)
-                except ValueError:
-                    pass
-                else:
-                    raise BrainStateValidationError(
-                        f"{path}.{key}", "diagnostic must not carry hash material"
-                    )
+        if raw not in allowed_values:
+            raise BrainStateValidationError(
+                f"{path}.{key}", "diagnostic enum value not allowed"
+            )
         found[key] = raw
     return found
 
@@ -887,6 +894,11 @@ def validate_brain_state_record(record: Mapping[str, Any]) -> BrainStateRecord:
     diagnostic = _validate_diagnostic(
         record.get("diagnostic", {}), "diagnostic", reason
     )
+    checking = _validate_checking(record.get("checking"), "checking")
+    if (aggregate == "checking") != (checking is not None):
+        raise BrainStateValidationError(
+            "checking", "checking aggregate requires matching checking marker"
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "revision": revision,
@@ -898,7 +910,7 @@ def validate_brain_state_record(record: Mapping[str, Any]) -> BrainStateRecord:
         "fingerprint_sha256": _validate_hex(
             record.get("fingerprint_sha256"), "fingerprint_sha256"
         ),
-        "checking": _validate_checking(record.get("checking"), "checking"),
+        "checking": checking,
         "evidence": _validate_evidence(record.get("evidence"), "evidence"),
         "runtime_failure_marker": _validate_runtime_failure_marker(
             record.get("runtime_failure_marker"), "runtime_failure_marker"
@@ -1005,6 +1017,27 @@ def _reduce_evidence(
     return "ready", None
 
 
+def _bundled_runtime_reason(
+    runtime_health: RuntimeRecordInspection | None,
+    bundled_runtime_fingerprint_sha256: str | None,
+) -> BrainReasonCode | None:
+    if runtime_health is None or runtime_health["status"] != "ok":
+        return "runtime_state_unavailable"
+    record = runtime_health["record"]
+    if not isinstance(record, Mapping):
+        return "runtime_state_unavailable"
+    phase = record.get("phase")
+    if not isinstance(phase, str) or phase not in RUNTIME_PHASE_TO_REASON:
+        return "runtime_state_unavailable"
+    reason = RUNTIME_PHASE_TO_REASON[phase]
+    if reason is not None:
+        return reason
+    desired = record.get("desired_fingerprint_sha256")
+    if not isinstance(desired, str) or desired != bundled_runtime_fingerprint_sha256:
+        return "runtime_state_unavailable"
+    return None
+
+
 def project_brain_state(
     record: BrainStateRecord | None,
     now: datetime,
@@ -1012,6 +1045,7 @@ def project_brain_state(
     config: Mapping[str, Any],
     hmac_key: bytes | None,
     refresh_permit_active: bool,
+    runtime_health: RuntimeRecordInspection | None,
 ) -> BrainProjection:
     """Project persisted brain state against live config and lease evidence.
 
@@ -1103,6 +1137,20 @@ def project_brain_state(
             active_model=record["active_model"],
             fingerprint_sha256=record["fingerprint_sha256"],
         )
+    if record["active_lane"] == "bundled":
+        runtime_reason = _bundled_runtime_reason(
+            runtime_health,
+            fingerprint.get("bundled_runtime_fingerprint_sha256"),
+        )
+        if runtime_reason is not None:
+            return _projection(
+                BRAIN_REASON_TO_AGGREGATE[runtime_reason],
+                runtime_reason,
+                active_lane=record["active_lane"],
+                active_provider=record["active_provider"],
+                active_model=record["active_model"],
+                fingerprint_sha256=record["fingerprint_sha256"],
+            )
     aggregate, reason = _reduce_evidence(record["evidence"], now)
     return _projection(
         aggregate,
@@ -1121,6 +1169,12 @@ def inspect_brain_state(
     path = brain_state_path(journal_path=journal_path)
     hmac_key = _load_existing_fingerprint_key(journal_path=journal_path)
     config = read_journal_config(journal_path)
+    lane, _provider, _model = _derive_lane(config)
+    runtime_health = (
+        inspect_runtime_health("local", journal_path=journal_path)
+        if lane == "bundled"
+        else None
+    )
     refresh_permit_active = probe_file_lease_held(
         brain_refresh_lease_path(journal_path=journal_path)
     )
@@ -1143,6 +1197,7 @@ def inspect_brain_state(
             config=config,
             hmac_key=hmac_key,
             refresh_permit_active=refresh_permit_active,
+            runtime_health=runtime_health,
         )
         return {
             "status": "unavailable",
@@ -1158,6 +1213,7 @@ def inspect_brain_state(
         config=config,
         hmac_key=hmac_key,
         refresh_permit_active=refresh_permit_active,
+        runtime_health=runtime_health,
     )
     return {
         "status": "ok",
@@ -1443,6 +1499,8 @@ def record_brain_runtime_failure(
 ) -> BrainStateRecord:
     now = _utc(now)
     path = brain_state_path(journal_path=journal_path)
+    if BRAIN_REASON_TO_AGGREGATE[reason_code] not in RUNTIME_FAILURE_AGGREGATES:
+        raise ValueError("brain runtime failure reason must be non-checking")
     diagnostic = _validate_diagnostic(diagnostic or {}, "diagnostic", reason_code)
     with hold_lock(path, mode=BRAIN_FILE_MODE):
         current = _read_record_unlocked(path)
@@ -1509,6 +1567,7 @@ __all__ = [
     "BrainStateInspection",
     "BrainStateRecord",
     "BrainStateValidationError",
+    "abandon_brain_refresh",
     "brain_fingerprint_key_path",
     "brain_refresh_lease_path",
     "brain_state_path",
