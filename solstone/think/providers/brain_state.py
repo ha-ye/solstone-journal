@@ -19,6 +19,11 @@ be proved by an actual ``ready`` runtime record.
 ``local_runtime_state_stale`` is reserved in the vocabulary with no producer in
 this phase. There is deliberately no wall-clock threshold and no synthetic stale
 runtime status.
+
+``local_runtime_fingerprint_mismatch`` is retained as recordable
+lane-prerequisites evidence, but passive bundled inspection no longer produces
+it; a change in the runtime's desired fingerprint projects as
+``brain_config_changed``.
 """
 
 from __future__ import annotations
@@ -720,11 +725,14 @@ def _bundled_runtime_fingerprint_sha() -> str:
 
 
 def build_active_brain_fingerprint(
-    config: Mapping[str, Any], *, hmac_key: bytes
+    config: Mapping[str, Any],
+    *,
+    hmac_key: bytes,
+    bundled_runtime_fingerprint_sha256: str | None = None,
 ) -> BrainFingerprintResult:
     lane, provider, model = _derive_lane(config)
     diagnostic: dict[str, BrainDiagnosticValue] = {}
-    bundled_runtime_fingerprint_sha256: str | None = None
+    resolved_bundled_runtime_fingerprint_sha256: str | None = None
     if lane is None:
         return {
             "ok": False,
@@ -771,20 +779,27 @@ def build_active_brain_fingerprint(
                 else None
             )
     elif lane == "bundled":
-        try:
-            bundled_runtime_fingerprint_sha256 = _bundled_runtime_fingerprint_sha()
-            components["bundled_runtime"] = bundled_runtime_fingerprint_sha256
-        except Exception:
-            return {
-                "ok": False,
-                "fingerprint_sha256": None,
-                "active_lane": lane,
-                "active_provider": provider,
-                "active_model": model,
-                "reason_code": "local_runtime_state_unavailable",
-                "diagnostic": {},
-                "bundled_runtime_fingerprint_sha256": None,
-            }
+        if bundled_runtime_fingerprint_sha256 is None:
+            try:
+                resolved_bundled_runtime_fingerprint_sha256 = (
+                    _bundled_runtime_fingerprint_sha()
+                )
+            except Exception:
+                return {
+                    "ok": False,
+                    "fingerprint_sha256": None,
+                    "active_lane": lane,
+                    "active_provider": provider,
+                    "active_model": model,
+                    "reason_code": "local_runtime_state_unavailable",
+                    "diagnostic": {},
+                    "bundled_runtime_fingerprint_sha256": None,
+                }
+        else:
+            resolved_bundled_runtime_fingerprint_sha256 = (
+                bundled_runtime_fingerprint_sha256
+            )
+        components["bundled_runtime"] = resolved_bundled_runtime_fingerprint_sha256
 
     fingerprint = fingerprint_sha256(canonical_fingerprint(components))
     return {
@@ -795,7 +810,9 @@ def build_active_brain_fingerprint(
         "active_model": model,
         "reason_code": None,
         "diagnostic": diagnostic,
-        "bundled_runtime_fingerprint_sha256": bundled_runtime_fingerprint_sha256,
+        "bundled_runtime_fingerprint_sha256": (
+            resolved_bundled_runtime_fingerprint_sha256
+        ),
     }
 
 
@@ -1417,24 +1434,33 @@ def _reduce_evidence(
     return "ready", None
 
 
-def _bundled_runtime_reason(
+def _valid_runtime_fingerprint_sha256(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) != 64:
+        return None
+    try:
+        int(value, 16)
+    except ValueError:
+        return None
+    return value
+
+
+def _bundled_runtime_projection_inputs(
     runtime_health: RuntimeRecordInspection | None,
-    bundled_runtime_fingerprint_sha256: str | None,
-) -> BrainReasonCode | None:
+) -> tuple[BrainReasonCode | None, str | None]:
     if runtime_health is None:
-        return "local_runtime_state_unavailable"
+        return "local_runtime_state_unavailable", None
     if runtime_health["status"] == "corrupt":
-        return "local_runtime_state_invalid"
+        return "local_runtime_state_invalid", None
     if runtime_health["status"] == "unavailable":
-        return "local_runtime_state_unavailable"
+        return "local_runtime_state_unavailable", None
     if runtime_health["status"] != "ok":
-        return "local_runtime_state_unavailable"
+        return "local_runtime_state_unavailable", None
     record = runtime_health["record"]
     if not isinstance(record, Mapping):
-        return "local_runtime_state_unavailable"
+        return "local_runtime_state_unavailable", None
     phase = record.get("phase")
     if not isinstance(phase, str) or phase not in RUNTIME_PHASE_TO_REASON:
-        return "local_runtime_state_invalid"
+        return "local_runtime_state_invalid", None
     runtime_reason = record.get("reason_code")
     if (
         isinstance(runtime_reason, str)
@@ -1444,24 +1470,20 @@ def _bundled_runtime_reason(
         )
         in INCOHERENT_RUNTIME_PHASE_REASON_CODES
     ):
-        return "local_runtime_state_invalid"
+        return "local_runtime_state_invalid", None
+    desired = _valid_runtime_fingerprint_sha256(
+        record.get("desired_fingerprint_sha256")
+    )
     if isinstance(runtime_reason, str):
         mapped_reason = RUNTIME_REASON_TO_BRAIN_REASON.get(runtime_reason)
         if mapped_reason is not None:
-            return mapped_reason
+            return mapped_reason, desired
     phase_reason = RUNTIME_PHASE_TO_REASON[phase]
     if phase_reason is not None:
-        return phase_reason
-    desired = record.get("desired_fingerprint_sha256")
-    if not isinstance(desired, str) or len(desired) != 64:
-        return "local_runtime_state_invalid"
-    try:
-        int(desired, 16)
-    except ValueError:
-        return "local_runtime_state_invalid"
-    if desired != bundled_runtime_fingerprint_sha256:
-        return "local_runtime_fingerprint_mismatch"
-    return None
+        return phase_reason, desired
+    if desired is None:
+        return "local_runtime_state_invalid", None
+    return None, desired
 
 
 def _runtime_transition_in_progress(
@@ -1552,7 +1574,37 @@ def project_brain_state(
             active_model=record["active_model"],
             fingerprint_sha256=record["fingerprint_sha256"],
         )
-    fingerprint = build_active_brain_fingerprint(config, hmac_key=hmac_key)
+    runtime_reason: BrainReasonCode | None = None
+    injected_bundled_runtime_fingerprint_sha256: str | None = None
+    runtime_transition = _runtime_transition_in_progress(lane, runtime_health)
+    if lane == "bundled":
+        runtime_reason, injected_bundled_runtime_fingerprint_sha256 = (
+            _bundled_runtime_projection_inputs(runtime_health)
+        )
+        if injected_bundled_runtime_fingerprint_sha256 is None:
+            aggregate, reason = _reduce_evidence(
+                record["evidence"],
+                now,
+                active_lane=record["active_lane"],
+                checking=record["checking"],
+                refresh_permit_active=refresh_permit_active,
+                runtime_failure_reason=_active_runtime_failure_reason(record),
+                runtime_reason=runtime_reason,
+            )
+            return _projection(
+                aggregate,
+                reason,
+                active_lane=record["active_lane"],
+                active_provider=record["active_provider"],
+                active_model=record["active_model"],
+                fingerprint_sha256=record["fingerprint_sha256"],
+                runtime_transition_in_progress=runtime_transition,
+            )
+    fingerprint = build_active_brain_fingerprint(
+        config,
+        hmac_key=hmac_key,
+        bundled_runtime_fingerprint_sha256=injected_bundled_runtime_fingerprint_sha256,
+    )
     if not fingerprint["ok"]:
         reason = fingerprint["reason_code"] or "configuration_invalid"
         return _projection(
@@ -1571,15 +1623,6 @@ def project_brain_state(
             active_provider=fingerprint["active_provider"],
             active_model=fingerprint["active_model"],
             fingerprint_sha256=record["fingerprint_sha256"],
-        )
-    runtime_reason: BrainReasonCode | None = None
-    runtime_transition = _runtime_transition_in_progress(
-        record["active_lane"], runtime_health
-    )
-    if record["active_lane"] == "bundled":
-        runtime_reason = _bundled_runtime_reason(
-            runtime_health,
-            fingerprint.get("bundled_runtime_fingerprint_sha256"),
         )
     aggregate, reason = _reduce_evidence(
         record["evidence"],

@@ -38,6 +38,7 @@ from solstone.think.providers.brain_state import (
     runtime_phase_reason,
     validate_brain_state_record,
 )
+from solstone.think.providers.runtime_health import runtime_health_path
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 BUNDLED_RUNTIME_FINGERPRINT = "b" * 64
@@ -168,6 +169,20 @@ def _write_ready_record(journal: Path, config: dict[str, Any]) -> None:
     permit = begin_brain_refresh(NOW, journal_path=journal)
     assert permit is not None
     finish_brain_refresh(permit, _ready_outcome(), NOW, journal_path=journal)
+
+
+def _write_runtime_health_record(
+    journal: Path,
+    *,
+    desired: str | None = BUNDLED_RUNTIME_FINGERPRINT,
+    phase: str = "ready",
+) -> None:
+    runtime_health = _runtime_inspection(phase=phase, desired=desired)
+    record = runtime_health["record"]
+    assert record is not None
+    path = runtime_health_path("local", journal_path=journal)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_replace(path, json.dumps(record), mode=0o600)
 
 
 def _current_fingerprint(journal: Path, config: dict[str, Any]) -> str:
@@ -449,30 +464,37 @@ def test_bundled_runtime_health_ready_allows_ready_projection(
     assert projection["reason_code"] is None
 
 
-def test_inspect_brain_state_injects_bundled_runtime_health(
+def test_inspect_brain_state_is_passive_host_probe_free_for_bundled_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_bundled_runtime(monkeypatch)
     config = _bundled_config()
     _write_ready_record(tmp_path, config)
-    calls: list[tuple[str, Path | None]] = []
+    _write_runtime_health_record(tmp_path)
 
-    def fake_inspect_runtime_health(
-        provider: str, *, journal_path: str | Path | None = None
-    ) -> dict[str, Any]:
-        calls.append(
-            (provider, Path(journal_path) if journal_path is not None else None)
-        )
-        return _runtime_inspection()
+    before = _health_snapshot(tmp_path)
+
+    def fail_probe(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("passive bundled inspection must not probe host state")
+
+    from solstone.think.providers import local_cuda, local_install
 
     monkeypatch.setattr(
-        brain_state_module, "inspect_runtime_health", fake_inspect_runtime_health
+        brain_state_module, "_bundled_runtime_fingerprint_sha", fail_probe
     )
+    monkeypatch.setattr(local_install, "target_fingerprint", fail_probe)
+    monkeypatch.setattr(local_cuda, "resolve_local_backend", fail_probe)
+    if brain_state_module.sys.platform == "darwin":
+        from solstone.think.providers import mlx_install
+
+        monkeypatch.setattr(mlx_install, "target_fingerprint", fail_probe)
 
     inspection = inspect_brain_state(NOW, journal_path=tmp_path)
 
-    assert calls == [("local", tmp_path)]
+    assert inspection["status"] == "ok"
     assert inspection["projection"]["aggregate_state"] == "ready"
+    assert inspection["projection"]["reason_code"] is None
+    assert _health_snapshot(tmp_path) == before
 
 
 def test_inspect_brain_state_faults_do_not_modify_health(
@@ -573,10 +595,20 @@ def test_inspect_brain_state_faults_do_not_modify_health(
         permit.release()
 
 
-def test_byo_cloud_inspection_never_reads_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("config", "expected_lane"),
+    [
+        (_cloud_config(), "byo-cloud"),
+        (_local_endpoint_config(), "byo-endpoint"),
+    ],
+)
+def test_non_bundled_inspection_never_reads_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, Any],
+    expected_lane: str,
 ) -> None:
-    _write_ready_record(tmp_path, _cloud_config())
+    _write_ready_record(tmp_path, config)
 
     def fail_runtime(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("runtime inspector should not be called")
@@ -586,6 +618,7 @@ def test_byo_cloud_inspection_never_reads_runtime(
     inspection = inspect_brain_state(NOW, journal_path=tmp_path)
 
     assert inspection["projection"]["aggregate_state"] == "ready"
+    assert inspection["projection"]["active_lane"] == expected_lane
 
 
 def test_bundled_runtime_health_phase_lattice(
@@ -683,10 +716,6 @@ def test_bundled_runtime_health_invalid_and_unavailable_records(
             _runtime_inspection(phase="ready", desired=None),
             "local_runtime_state_invalid",
         ),
-        (
-            _runtime_inspection(phase="ready", desired="c" * 64),
-            "local_runtime_fingerprint_mismatch",
-        ),
     ]
 
     for runtime_health, expected_reason in cases:
@@ -700,6 +729,28 @@ def test_bundled_runtime_health_invalid_and_unavailable_records(
         )
         assert projection["aggregate_state"] == "unknown"
         assert projection["reason_code"] == expected_reason
+
+
+def test_bundled_runtime_desired_change_invalidates_old_brain_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_bundled_runtime(monkeypatch)
+    config = _bundled_config()
+    _write_ready_record(tmp_path, config)
+    record = validate_brain_state_record(_read_raw_record(tmp_path))
+    key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+
+    projection = project_brain_state(
+        record,
+        NOW,
+        config=config,
+        hmac_key=key,
+        refresh_permit_active=False,
+        runtime_health=_runtime_inspection(desired="c" * 64),
+    )
+
+    assert projection["aggregate_state"] == "unknown"
+    assert projection["reason_code"] == "brain_config_changed"
 
 
 def test_runtime_transition_in_progress_is_closed(
