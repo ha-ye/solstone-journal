@@ -66,6 +66,6 @@ Triggers: `transcript`, `recording`, `audio`, `what was said`, `conversation`, `
 
 Read: `read`, `scan`
 
-Other: `segments`, `stats`
+Other: `segments`, `speakers`, `stats`
 
 Guidance: `solstone/apps/transcripts/talent/transcripts/SKILL.md`

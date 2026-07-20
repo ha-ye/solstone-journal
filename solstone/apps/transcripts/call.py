@@ -6,8 +6,16 @@
 Auto-discovered by ``think.call`` and mounted as ``sol call transcripts ...``.
 Every verb reaches the journal only over HTTP via the Convey client; this
 module imports no journal/domain function and performs no filesystem I/O.
+
+Commands:
+    sol call transcripts scan <day>
+    sol call transcripts segments <day>
+    sol call transcripts read <day> [--segment KEY] [--stream STREAM]
+    sol call transcripts speakers <day> <stream> <segment> [--json]
+    sol call transcripts stats <month>
 """
 
+import json
 import os
 
 import typer
@@ -76,6 +84,36 @@ def _slot_overlaps_range(slot: tuple[str, str], range_: tuple[str, str]) -> bool
     slot_start, slot_end = (_to_min(slot[0]), _to_min(slot[1]))
     range_start, range_end = (_to_min(range_[0]), _to_min(range_[1]))
     return slot_start < range_end and slot_end > range_start
+
+
+def _speaker_rows(payload: dict) -> list[dict]:
+    rows: list[dict] = []
+    for chunk in payload.get("chunks", []):
+        if chunk.get("type") != "audio":
+            continue
+        label = chunk.get("speaker_label") or None
+        rows.append(
+            {
+                "sentence_id": chunk.get("sentence_id"),
+                "speaker_source": chunk.get("speaker_source"),
+                "time": chunk.get("time", ""),
+                "text": chunk.get("markdown", ""),
+                "has_embedding": bool(chunk.get("has_embedding")),
+                "actionable": bool(chunk.get("has_embedding")),
+                "speaker": label,
+            }
+        )
+    return rows
+
+
+def _row_speaker_text(row: dict) -> tuple[str, str]:
+    label = row.get("speaker") or {}
+    if not label or label.get("confidence_state") == "unknown":
+        return "unknown voice", "unknown"
+    return (
+        str(label.get("name") or label.get("entity_id") or "unknown voice"),
+        str(label.get("confidence_state") or label.get("confidence") or "unknown"),
+    )
 
 
 @app.command("scan")
@@ -147,6 +185,54 @@ def segments(
         end = segment.get("end", "")
         types = ", ".join(segment.get("types", []))
         typer.echo(f"{key}  {start} - {end}  [{types}]")
+
+
+@app.command("speakers")
+@convey_cli
+def speakers(
+    day: str = typer.Argument(..., help="Day YYYYMMDD."),
+    stream: str = typer.Argument(..., help="Stream name."),
+    segment: str = typer.Argument(..., help="Segment key (HHMMSS_LEN)."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """List speaker correction rows for one transcript segment."""
+    payload = get_client().request(
+        "GET",
+        f"/app/transcripts/api/segment/{day}/{stream}/{segment}",
+    )
+    rows = _speaker_rows(payload)
+    result = {
+        "day": day,
+        "stream": stream,
+        "segment_key": segment,
+        "speaker_labels": payload.get("speaker_labels") or {},
+        "sentences": rows,
+    }
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    typer.echo(f"Speakers for {day}/{stream}/{segment}:")
+    if rows:
+        for row in rows:
+            marker = "*" if row["actionable"] else "-"
+            speaker_name, confidence = _row_speaker_text(row)
+            typer.echo(
+                f"  {marker} #{row['sentence_id']} "
+                f"{row['speaker_source']} {row['time']} "
+                f"{speaker_name} [{confidence}] {row['text']}"
+            )
+    else:
+        typer.echo("  (none)")
+    typer.echo("")
+    typer.echo(
+        "* actionable: sol call speakers correct "
+        "<day> <stream> <segment> <source> <sentence-id> <new-speaker>"
+    )
+    typer.echo(
+        "- not actionable: sol call speakers tag-owner "
+        "<day> <stream> <segment> <source> <sentence-id>"
+    )
 
 
 @app.command("read")

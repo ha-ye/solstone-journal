@@ -3,6 +3,8 @@
 
 """Golden parity tests for transcripts CLI commands."""
 
+import json
+
 import pytest
 import requests
 from typer.testing import CliRunner
@@ -57,6 +59,62 @@ def _route_markdown(journal, day: str, params: dict[str, str]) -> str:
     return client.request("GET", f"/app/transcripts/api/read/{day}", params=params)[
         "markdown"
     ]
+
+
+class _FakeClient:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[tuple[str, str, dict[str, str] | None]] = []
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, str] | None = None,
+    ) -> dict:
+        self.calls.append((method, path, params))
+        return self.payload
+
+
+def _speaker_payload() -> dict:
+    return {
+        "speaker_labels": {
+            "present": True,
+            "loaded": True,
+            "source": "audio",
+            "ambiguous": False,
+        },
+        "chunks": [
+            {
+                "type": "audio",
+                "sentence_id": 1,
+                "speaker_source": "audio",
+                "time": "00:00:05",
+                "markdown": "(mic) hello",
+                "has_embedding": True,
+                "speaker_label": {
+                    "name": "Romeo Montague",
+                    "entity_id": "romeo_montague",
+                    "confidence": "high",
+                    "confidence_state": "high",
+                    "is_owner": True,
+                },
+            },
+            {
+                "type": "audio",
+                "sentence_id": 2,
+                "speaker_source": "audio",
+                "time": "00:00:20",
+                "markdown": "(mic) unlabeled",
+                "has_embedding": False,
+            },
+            {
+                "type": "screen",
+                "time": "00:00:22",
+                "markdown": "screen",
+            },
+        ],
+    }
 
 
 def test_scan_output_byte_identical_when_no_pending_segments(runner, journal):
@@ -147,6 +205,78 @@ def test_segments_empty(runner):
 
     assert result.exit_code == 0
     assert result.output == "No segments.\n"
+
+
+def test_speakers_human_output_uses_structured_segment_endpoint(
+    runner,
+    monkeypatch,
+):
+    fake = _FakeClient(_speaker_payload())
+    monkeypatch.setattr("solstone.apps.transcripts.call.get_client", lambda: fake)
+
+    result = runner.invoke(app, ["speakers", "20260304", "default", "090000_300"])
+
+    assert result.exit_code == 0
+    assert fake.calls == [
+        (
+            "GET",
+            "/app/transcripts/api/segment/20260304/default/090000_300",
+            None,
+        )
+    ]
+    assert result.output == (
+        "Speakers for 20260304/default/090000_300:\n"
+        "  * #1 audio 00:00:05 Romeo Montague [high] (mic) hello\n"
+        "  - #2 audio 00:00:20 unknown voice [unknown] (mic) unlabeled\n"
+        "\n"
+        "* actionable: sol call speakers correct "
+        "<day> <stream> <segment> <source> <sentence-id> <new-speaker>\n"
+        "- not actionable: sol call speakers tag-owner "
+        "<day> <stream> <segment> <source> <sentence-id>\n"
+    )
+
+
+def test_speakers_json_output_exposes_sentence_ids_and_sources(
+    runner,
+    monkeypatch,
+):
+    fake = _FakeClient(_speaker_payload())
+    monkeypatch.setattr("solstone.apps.transcripts.call.get_client", lambda: fake)
+
+    result = runner.invoke(
+        app,
+        ["speakers", "20260304", "default", "090000_300", "--json"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["speaker_labels"]["source"] == "audio"
+    assert data["sentences"] == [
+        {
+            "sentence_id": 1,
+            "speaker_source": "audio",
+            "time": "00:00:05",
+            "text": "(mic) hello",
+            "has_embedding": True,
+            "actionable": True,
+            "speaker": {
+                "name": "Romeo Montague",
+                "entity_id": "romeo_montague",
+                "confidence": "high",
+                "confidence_state": "high",
+                "is_owner": True,
+            },
+        },
+        {
+            "sentence_id": 2,
+            "speaker_source": "audio",
+            "time": "00:00:20",
+            "text": "(mic) unlabeled",
+            "has_embedding": False,
+            "actionable": False,
+            "speaker": None,
+        },
+    ]
 
 
 def test_read_default_matches_route_markdown(runner, journal):
