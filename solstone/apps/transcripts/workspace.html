@@ -1793,6 +1793,196 @@ body.has-app-bar .tr-zoom {
   background: #eab308;
 }
 
+.tr-speaker-slot {
+  margin-bottom: 4px;
+}
+
+.tr-speaker-chip,
+.tr-speaker-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tr-speaker-chip {
+  color: #374151;
+}
+
+.tr-speaker-chip-neutral {
+  color: #6b7280;
+}
+
+.tr-speaker-button {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.tr-speaker-button:hover {
+  border-color: #9ca3af;
+  background: #f9fafb;
+}
+
+.tr-speaker-button:focus-visible,
+.tr-speaker-picker-option:focus-visible,
+.tr-speaker-picker-close:focus-visible,
+.tr-speaker-propagation-action:focus-visible,
+.tr-speaker-propagation-dismiss:focus-visible,
+.tr-speaker-status-retry:focus-visible {
+  outline: 2px solid var(--accent, #4a9eff);
+  outline-offset: 2px;
+}
+
+.tr-speaker-button[aria-busy="true"] {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.tr-speaker-disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.tr-speaker-popover {
+  position: fixed;
+  z-index: 2000;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+}
+
+.tr-speaker-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tr-speaker-picker-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.tr-speaker-picker-close,
+.tr-speaker-propagation-dismiss {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.tr-speaker-picker-search {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.tr-speaker-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+
+.tr-speaker-picker-option {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #111827;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tr-speaker-picker-option:hover {
+  background: #f3f4f6;
+}
+
+.tr-speaker-picker-tail,
+.tr-speaker-status {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.tr-speaker-picker-tail a {
+  color: #374151;
+}
+
+.tr-speaker-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.tr-speaker-status-error {
+  color: #991b1b;
+}
+
+.tr-speaker-status-retry,
+.tr-speaker-propagation-action {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.tr-speaker-propagation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f9fafb;
+  color: #374151;
+  font-size: 12px;
+}
+
+.tr-speaker-propagation-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .tr-panel > .surface-state {
   min-height: 100%;
 }
@@ -2164,6 +2354,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   const HEADER_HEIGHT = 16;
 
   const { day } = window.solPathContext();
+  let TR_COPY = {};
 
   // Elements - main timeline
   const timeline = document.getElementById('trTimeline');
@@ -3526,6 +3717,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   let analyzePollTimer = null;
   let analyzePollStartedAt = 0;
   let analyzePollModalities = new Set();
+  let knownSpeakersPromise = null;
+  let knownSpeakers = [];
+  let activeSpeakerPicker = null;
 
   function loadSegmentContent(seg, requestedTabId = null) {
     currentSegmentAbort?.abort();
@@ -3871,6 +4065,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   function renderLoadedSegmentData(data, requestedTabId = null) {
     segmentData = data;
+    TR_COPY = data.transcripts_copy || {};
     updateRangeText();
     buildTabBar(data);
     const nextTab = requestedTabId && tabExists(requestedTabId) ? requestedTabId : 'transcript';
@@ -4159,6 +4354,552 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     targetEl.innerHTML = html;
   }
 
+  function trCopy(key) {
+    const values = {
+      TR_SPEAKER_CHANGE_LABEL: TR_COPY.TR_SPEAKER_CHANGE_LABEL || '',
+      TR_SPEAKER_ASSIGN_LABEL: TR_COPY.TR_SPEAKER_ASSIGN_LABEL || '',
+      TR_SPEAKER_PICKER_TITLE: TR_COPY.TR_SPEAKER_PICKER_TITLE || '',
+      TR_SPEAKER_PICKER_SEARCH_PLACEHOLDER: TR_COPY.TR_SPEAKER_PICKER_SEARCH_PLACEHOLDER || '',
+      TR_SPEAKER_PICKER_OWNER: TR_COPY.TR_SPEAKER_PICKER_OWNER || '',
+      TR_SPEAKER_PICKER_EMPTY: TR_COPY.TR_SPEAKER_PICKER_EMPTY || '',
+      TR_SPEAKER_PICKER_DISCOVERY_LINK: TR_COPY.TR_SPEAKER_PICKER_DISCOVERY_LINK || '',
+      TR_SPEAKER_PICKER_NO_RESULTS: TR_COPY.TR_SPEAKER_PICKER_NO_RESULTS || '',
+      TR_SPEAKER_UNKNOWN_CHIP: TR_COPY.TR_SPEAKER_UNKNOWN_CHIP || '',
+      TR_SPEAKER_HEDGE_PROBABLE: TR_COPY.TR_SPEAKER_HEDGE_PROBABLE || '',
+      TR_SPEAKER_HEDGE_MAYBE: TR_COPY.TR_SPEAKER_HEDGE_MAYBE || '',
+      TR_SPEAKER_CONFIDENCE_HIGH: TR_COPY.TR_SPEAKER_CONFIDENCE_HIGH || '',
+      TR_SPEAKER_CONFIDENCE_UNKNOWN: TR_COPY.TR_SPEAKER_CONFIDENCE_UNKNOWN || '',
+      TR_SPEAKER_MARGIN_OWNER: TR_COPY.TR_SPEAKER_MARGIN_OWNER || '',
+      TR_SPEAKER_MARGIN_ACOUSTIC: TR_COPY.TR_SPEAKER_MARGIN_ACOUSTIC || '',
+      TR_SPEAKER_ACTION_UNAVAILABLE: TR_COPY.TR_SPEAKER_ACTION_UNAVAILABLE || '',
+      TR_SPEAKER_NO_EMBEDDING: TR_COPY.TR_SPEAKER_NO_EMBEDDING || '',
+      TR_SPEAKER_CORRECT_RETRY: TR_COPY.TR_SPEAKER_CORRECT_RETRY || '',
+      TR_SPEAKER_CORRECT_BUSY: TR_COPY.TR_SPEAKER_CORRECT_BUSY || '',
+      TR_SPEAKER_OWNER_TOO_CLOSE: TR_COPY.TR_SPEAKER_OWNER_TOO_CLOSE || '',
+      TR_SPEAKER_OWNER_IDENTITY_REQUIRED: TR_COPY.TR_SPEAKER_OWNER_IDENTITY_REQUIRED || '',
+      TR_SPEAKER_ALREADY_CORRECT: TR_COPY.TR_SPEAKER_ALREADY_CORRECT || '',
+      TR_SPEAKER_PROPAGATION_OFFER: TR_COPY.TR_SPEAKER_PROPAGATION_OFFER || '',
+      TR_SPEAKER_PROPAGATION_APPLY: TR_COPY.TR_SPEAKER_PROPAGATION_APPLY || '',
+      TR_SPEAKER_PROPAGATION_DISMISS: TR_COPY.TR_SPEAKER_PROPAGATION_DISMISS || '',
+      TR_SPEAKER_PROPAGATION_APPLIED: TR_COPY.TR_SPEAKER_PROPAGATION_APPLIED || ''
+    };
+    return values[key] || '';
+  }
+
+  function trCopyTemplate(key, values) {
+    return trCopy(key).replace(/\{(\w+)\}/g, (_, name) => values[name] ?? '');
+  }
+
+  function speakerNameForLabel(label) {
+    if (!label) return '';
+    if (label.is_owner) return trCopy('TR_SPEAKER_PICKER_OWNER');
+    return String(label.name || label.entity_id || '');
+  }
+
+  function speakerMarginText(label) {
+    const parts = [];
+    if (label?.owner_margin_declined) {
+      parts.push(trCopy('TR_SPEAKER_MARGIN_OWNER'));
+    }
+    if (label?.acoustic_margin_declined) {
+      parts.push(trCopy('TR_SPEAKER_MARGIN_ACOUSTIC'));
+    }
+    return parts.filter(Boolean).join(', ');
+  }
+
+  function speakerChipModel(item) {
+    const label = item.speaker_label || null;
+    if (!label || label.confidence_state === 'unknown') {
+      return {
+        text: trCopy('TR_SPEAKER_UNKNOWN_CHIP'),
+        dotClass: '',
+        neutral: true,
+        assistive: trCopy('TR_SPEAKER_CONFIDENCE_UNKNOWN')
+      };
+    }
+
+    const name = speakerNameForLabel(label);
+    const hasMargin = !!(label.owner_margin_declined || label.acoustic_margin_declined);
+    if (hasMargin) {
+      return {
+        text: trCopyTemplate('TR_SPEAKER_HEDGE_MAYBE', { name }),
+        dotClass: 'tr-speaker-dot-medium',
+        neutral: false,
+        assistive: speakerMarginText(label)
+      };
+    }
+
+    if (label.confidence_state === 'high') {
+      return {
+        text: name,
+        dotClass: 'tr-speaker-dot-high',
+        neutral: false,
+        assistive: trCopy('TR_SPEAKER_CONFIDENCE_HIGH')
+      };
+    }
+
+    return {
+      text: trCopyTemplate('TR_SPEAKER_HEDGE_PROBABLE', { name }),
+      dotClass: 'tr-speaker-dot-medium',
+      neutral: false,
+      assistive: ''
+    };
+  }
+
+  function speakerCurrentEntityId(item) {
+    return item.speaker_label?.entity_id || '';
+  }
+
+  function speakerActionUnavailableReason(item, data) {
+    const labels = data.speaker_labels || {};
+    if (!labels.present || !labels.loaded) {
+      return trCopy('TR_SPEAKER_ACTION_UNAVAILABLE');
+    }
+    if (!item.has_embedding) {
+      return trCopy('TR_SPEAKER_NO_EMBEDDING');
+    }
+    return '';
+  }
+
+  function renderSpeakerChipInner(model) {
+    const dot = model.dotClass
+      ? `<span class="tr-speaker-dot ${model.dotClass}" aria-hidden="true"></span>`
+      : '';
+    const assistive = model.assistive
+      ? `<span class="sr-only">${escapeHtml(model.assistive)}</span>`
+      : '';
+    return `${dot}<span class="tr-speaker-name">${escapeHtml(model.text)}</span>${assistive}`;
+  }
+
+  function renderSpeakerSlot(item, idx, data) {
+    const model = speakerChipModel(item);
+    const unavailableReason = speakerActionUnavailableReason(item, data);
+    const currentSpeaker = speakerCurrentEntityId(item);
+    if (unavailableReason) {
+      return `
+        <span class="tr-speaker-disabled" title="${escapeHtml(unavailableReason)}">
+          <span class="tr-speaker-chip${model.neutral ? ' tr-speaker-chip-neutral' : ''}">
+            ${renderSpeakerChipInner(model)}
+          </span>
+          <span class="sr-only">${escapeHtml(unavailableReason)}</span>
+        </span>
+      `;
+    }
+
+    const actionLabel = currentSpeaker
+      ? trCopy('TR_SPEAKER_CHANGE_LABEL')
+      : trCopy('TR_SPEAKER_ASSIGN_LABEL');
+    const sentenceId = Number(item.sentence_id);
+    return `
+      <button
+        type="button"
+        class="tr-speaker-button${model.neutral ? ' tr-speaker-chip-neutral' : ''}"
+        data-action="speaker-picker"
+        data-idx="${idx}"
+        data-day="${escapeHtml(day)}"
+        data-stream="${escapeHtml(selectedSegment?.stream || '')}"
+        data-segment-key="${escapeHtml(selectedSegment?.key || '')}"
+        data-sentence-id="${Number.isFinite(sentenceId) ? sentenceId : ''}"
+        data-speaker-source="${escapeHtml(item.speaker_source || '')}"
+        data-current-speaker="${escapeHtml(currentSpeaker)}"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-label="${escapeHtml(actionLabel)}"
+      >
+        ${renderSpeakerChipInner(model)}
+      </button>
+    `;
+  }
+
+  function loadKnownSpeakers() {
+    if (!knownSpeakersPromise) {
+      knownSpeakersPromise = window.apiJson('/app/speakers/api/speakers/known')
+        .then(payload => {
+          knownSpeakers = Array.isArray(payload?.speakers) ? payload.speakers : [];
+          return knownSpeakers;
+        })
+        .catch(err => {
+          knownSpeakersPromise = null;
+          throw err;
+        });
+    }
+    return knownSpeakersPromise;
+  }
+
+  function speakerPickerOptions(voices, query) {
+    const normalized = String(query || '').trim().toLowerCase();
+    const filtered = voices.filter(voice => {
+      if (!normalized) return true;
+      return String(voice.name || voice.entity_id || '').toLowerCase().includes(normalized);
+    });
+    return [
+      {
+        kind: 'owner',
+        name: trCopy('TR_SPEAKER_PICKER_OWNER'),
+        entity_id: '',
+        isOwner: true
+      },
+      ...filtered.map(voice => ({
+        kind: 'known',
+        name: String(voice.name || voice.entity_id || ''),
+        entity_id: String(voice.entity_id || ''),
+        isOwner: false
+      }))
+    ];
+  }
+
+  function positionSpeakerPicker(trigger, popover) {
+    const rect = trigger.getBoundingClientRect();
+    const margin = 12;
+    const left = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - popover.offsetWidth - margin)
+    );
+    const preferredTop = rect.bottom + 6;
+    const fallbackTop = rect.top - popover.offsetHeight - 6;
+    const top = preferredTop + popover.offsetHeight + margin <= window.innerHeight
+      ? preferredTop
+      : Math.max(margin, fallbackTop);
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+  }
+
+  function speakerPickerFocusable(popover) {
+    return [...popover.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+    )];
+  }
+
+  function trapSpeakerPickerTab(e) {
+    const popover = activeSpeakerPicker?.popover;
+    if (!popover) return;
+    const focusable = speakerPickerFocusable(popover);
+    if (focusable.length === 0) return;
+    const currentIndex = focusable.indexOf(document.activeElement);
+    const nextIndex = e.shiftKey
+      ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+      : (currentIndex >= focusable.length - 1 ? 0 : currentIndex + 1);
+    e.preventDefault();
+    focusable[nextIndex].focus();
+  }
+
+  function handleSpeakerPickerKeydown(e) {
+    if (!activeSpeakerPicker) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSpeakerPicker();
+      return;
+    }
+    if (e.key === 'Tab') {
+      trapSpeakerPickerTab(e);
+    }
+  }
+
+  function handleSpeakerPickerOutsidePointer(e) {
+    if (!activeSpeakerPicker) return;
+    const { popover, trigger } = activeSpeakerPicker;
+    if (popover.contains(e.target) || trigger.contains(e.target)) return;
+    closeSpeakerPicker({ restoreFocus: false });
+  }
+
+  function handleSpeakerPickerReposition() {
+    if (!activeSpeakerPicker) return;
+    positionSpeakerPicker(activeSpeakerPicker.trigger, activeSpeakerPicker.popover);
+  }
+
+  function closeSpeakerPicker(options = {}) {
+    if (!activeSpeakerPicker) return;
+    const { popover, trigger } = activeSpeakerPicker;
+    activeSpeakerPicker = null;
+    popover.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('keydown', handleSpeakerPickerKeydown);
+    document.removeEventListener('pointerdown', handleSpeakerPickerOutsidePointer, true);
+    window.removeEventListener('resize', handleSpeakerPickerReposition, true);
+    window.removeEventListener('scroll', handleSpeakerPickerReposition, true);
+    if (options.restoreFocus !== false && document.contains(trigger)) {
+      trigger.focus();
+    }
+  }
+
+  function renderSpeakerPickerContent(popover, trigger, voices, query = '') {
+    const showSearch = voices.length > 7;
+    const options = speakerPickerOptions(voices, query);
+    const knownMatches = options.filter(option => option.kind === 'known');
+    const emptyText = voices.length === 0
+      ? trCopy('TR_SPEAKER_PICKER_EMPTY')
+      : (knownMatches.length === 0 ? trCopy('TR_SPEAKER_PICKER_NO_RESULTS') : '');
+    popover.innerHTML = `
+      <div class="tr-speaker-picker-head">
+        <div class="tr-speaker-picker-title">${escapeHtml(trCopy('TR_SPEAKER_PICKER_TITLE'))}</div>
+        <button type="button" class="tr-speaker-picker-close" aria-label="${escapeHtml(trCopy('TR_SPEAKER_PROPAGATION_DISMISS'))}">×</button>
+      </div>
+      ${showSearch ? `<input class="tr-speaker-picker-search" type="search" value="${escapeHtml(query)}" placeholder="${escapeHtml(trCopy('TR_SPEAKER_PICKER_SEARCH_PLACEHOLDER'))}">` : ''}
+      <div class="tr-speaker-picker-list" role="listbox">
+        ${options.map(option => `
+          <button
+            type="button"
+            class="tr-speaker-picker-option"
+            data-speaker-option="${escapeHtml(option.kind)}"
+            data-speaker-id="${escapeHtml(option.entity_id)}"
+            data-speaker-name="${escapeHtml(option.name)}"
+          >${escapeHtml(option.name)}</button>
+        `).join('')}
+      </div>
+      <div class="tr-speaker-picker-tail">
+        ${emptyText ? `<div>${escapeHtml(emptyText)}</div>` : ''}
+        <a href="/app/speakers#new-voices">${escapeHtml(trCopy('TR_SPEAKER_PICKER_DISCOVERY_LINK'))}</a>
+      </div>
+    `;
+
+    popover.querySelector('.tr-speaker-picker-close')?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSpeakerPicker();
+    });
+    popover.querySelector('.tr-speaker-picker-search')?.addEventListener('input', e => {
+      renderSpeakerPickerContent(popover, trigger, voices, e.target.value);
+      positionSpeakerPicker(trigger, popover);
+      popover.querySelector('.tr-speaker-picker-search')?.focus();
+    });
+    popover.querySelectorAll('.tr-speaker-picker-option').forEach(option => {
+      option.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = {
+          isOwner: option.dataset.speakerOption === 'owner',
+          entityId: option.dataset.speakerId || '',
+          name: option.dataset.speakerName || ''
+        };
+        performSpeakerSelection(trigger, target);
+      });
+    });
+  }
+
+  function openSpeakerPicker(trigger) {
+    if (activeSpeakerPicker?.trigger === trigger) {
+      closeSpeakerPicker();
+      return;
+    }
+    closeSpeakerPicker({ restoreFocus: false });
+    const popover = document.createElement('div');
+    popover.className = 'tr-speaker-popover';
+    popover.setAttribute('role', 'dialog');
+    popover.setAttribute('aria-label', trCopy('TR_SPEAKER_PICKER_TITLE'));
+    popover.tabIndex = -1;
+    document.body.appendChild(popover);
+    activeSpeakerPicker = { popover, trigger };
+    trigger.setAttribute('aria-expanded', 'true');
+    renderSpeakerPickerContent(popover, trigger, knownSpeakers);
+    positionSpeakerPicker(trigger, popover);
+    document.addEventListener('keydown', handleSpeakerPickerKeydown);
+    document.addEventListener('pointerdown', handleSpeakerPickerOutsidePointer, true);
+    window.addEventListener('resize', handleSpeakerPickerReposition, true);
+    window.addEventListener('scroll', handleSpeakerPickerReposition, true);
+    loadKnownSpeakers()
+      .then(voices => {
+        if (!activeSpeakerPicker || activeSpeakerPicker.popover !== popover) return;
+        renderSpeakerPickerContent(popover, trigger, voices);
+        positionSpeakerPicker(trigger, popover);
+        const first = popover.querySelector('.tr-speaker-picker-search, .tr-speaker-picker-option, .tr-speaker-picker-close');
+        first?.focus();
+      })
+      .catch(err => {
+        if (!activeSpeakerPicker || activeSpeakerPicker.popover !== popover) return;
+        renderSpeakerStatus(
+          trigger.closest('[data-speaker-slot]'),
+          err.serverMessage || err.message || trCopy('TR_SPEAKER_ACTION_UNAVAILABLE'),
+          { error: true }
+        );
+      });
+    requestAnimationFrame(() => {
+      if (!activeSpeakerPicker || activeSpeakerPicker.popover !== popover) return;
+      const first = popover.querySelector('.tr-speaker-picker-option, .tr-speaker-picker-close');
+      first?.focus();
+    });
+  }
+
+  function clearSpeakerRowMessages(trigger) {
+    const row = trigger.closest('.tr-entry-audio');
+    row?.querySelectorAll('.tr-speaker-status, .tr-speaker-propagation').forEach(el => el.remove());
+  }
+
+  function renderSpeakerStatus(slot, message, options = {}) {
+    if (!slot) return;
+    slot.parentElement?.querySelectorAll('.tr-speaker-status').forEach(el => el.remove());
+    if (!message) return;
+    const status = document.createElement('div');
+    status.className = `tr-speaker-status${options.error ? ' tr-speaker-status-error' : ''}`;
+    status.setAttribute('role', options.error ? 'alert' : 'status');
+    const text = document.createElement('span');
+    text.textContent = message;
+    status.appendChild(text);
+    if (options.retry && typeof options.onRetry === 'function') {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'tr-speaker-status-retry';
+      retry.textContent = trCopy('TR_SPEAKER_CORRECT_RETRY');
+      retry.addEventListener('click', options.onRetry);
+      status.appendChild(retry);
+    }
+    slot.insertAdjacentElement('afterend', status);
+  }
+
+  function speakerFailureMessage(err) {
+    if (err.reasonCode === 'speaker_voiceprint_busy' || err.reasonCode === 'speaker_labels_busy') {
+      return { message: trCopy('TR_SPEAKER_CORRECT_BUSY') || err.serverMessage, retry: true };
+    }
+    if (err.reasonCode === 'speaker_owner_voice_too_close') {
+      return { message: trCopy('TR_SPEAKER_OWNER_TOO_CLOSE') || err.serverMessage, retry: false };
+    }
+    if (err.reasonCode === 'speaker_owner_identity_required') {
+      return { message: trCopy('TR_SPEAKER_OWNER_IDENTITY_REQUIRED') || err.serverMessage, retry: false };
+    }
+    return { message: err.serverMessage || err.message || trCopy('TR_SPEAKER_ACTION_UNAVAILABLE'), retry: false };
+  }
+
+  function findAudioChunkForTrigger(trigger) {
+    const sentenceId = Number(trigger.dataset.sentenceId);
+    const source = trigger.dataset.speakerSource || '';
+    const row = trigger.closest('.tr-entry-audio');
+    const timestamp = Number(row?.dataset.timestamp);
+    return (segmentData?.chunks || []).find(chunk => (
+      chunk.type === 'audio'
+      && Number(chunk.sentence_id) === sentenceId
+      && chunk.speaker_source === source
+      && Number(chunk.timestamp) === timestamp
+    )) || null;
+  }
+
+  function renderSpeakerPropagationOffer(row, result) {
+    row?.querySelectorAll('.tr-speaker-propagation').forEach(el => el.remove());
+    const offer = result?.propagation_offer || null;
+    const statementCount = Number(offer?.statement_count || 0);
+    if (!offer?.available || statementCount <= 0) return;
+    const strip = document.createElement('div');
+    strip.className = 'tr-speaker-propagation';
+    const message = trCopyTemplate('TR_SPEAKER_PROPAGATION_OFFER', { count: statementCount });
+    strip.innerHTML = `
+      <span>${escapeHtml(message)}</span>
+      <span class="tr-speaker-propagation-actions">
+        <button type="button" class="tr-speaker-propagation-action">${escapeHtml(trCopy('TR_SPEAKER_PROPAGATION_APPLY'))}</button>
+        <button type="button" class="tr-speaker-propagation-dismiss" aria-label="${escapeHtml(trCopy('TR_SPEAKER_PROPAGATION_DISMISS'))}">×</button>
+      </span>
+    `;
+    row.querySelector('.tr-entry-content')?.appendChild(strip);
+    strip.querySelector('.tr-speaker-propagation-dismiss')?.addEventListener('click', () => strip.remove());
+    strip.querySelector('.tr-speaker-propagation-action')?.addEventListener('click', async e => {
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        const route = offer.route || '/app/speakers/api/propagate-correction';
+        const request = { ...(offer.request || {}), commit: true };
+        await window.apiJson(route, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request)
+        });
+        strip.querySelector('span').textContent = trCopy('TR_SPEAKER_PROPAGATION_APPLIED');
+        button.remove();
+      } catch (err) {
+        button.disabled = false;
+        renderSpeakerStatus(
+          row.querySelector('[data-speaker-slot]'),
+          err.serverMessage || err.message || trCopy('TR_SPEAKER_ACTION_UNAVAILABLE'),
+          { error: true }
+        );
+      }
+    });
+  }
+
+  function applySpeakerSuccess(trigger, target, result) {
+    const slot = trigger.closest('[data-speaker-slot]');
+    const row = trigger.closest('.tr-entry-audio');
+    if (result?.status === 'already_correct' || result?.status === 'already_assigned') {
+      renderSpeakerStatus(slot, trCopy('TR_SPEAKER_ALREADY_CORRECT'));
+      return;
+    }
+
+    const chunk = findAudioChunkForTrigger(trigger);
+    if (!chunk) return;
+    const currentSpeaker = speakerCurrentEntityId(chunk);
+    const entityId = String(result?.new_speaker || result?.speaker || target.entityId || '');
+    chunk.speaker_label = {
+      name: target.name || entityId,
+      entity_id: entityId,
+      confidence: 'high',
+      confidence_state: 'high',
+      method: currentSpeaker ? 'user_corrected' : 'user_assigned',
+      owner_margin_declined: false,
+      acoustic_margin_declined: false,
+      is_owner: !!target.isOwner
+    };
+    slot.innerHTML = renderSpeakerSlot(chunk, Number(trigger.dataset.idx), segmentData);
+    attachSpeakerPickerHandlers(slot);
+    renderSpeakerPropagationOffer(row, result);
+  }
+
+  async function performSpeakerSelection(trigger, target) {
+    closeSpeakerPicker();
+    const slot = trigger.closest('[data-speaker-slot]');
+    clearSpeakerRowMessages(trigger);
+
+    const sentenceId = Number(trigger.dataset.sentenceId);
+    const body = {
+      day: trigger.dataset.day || day,
+      stream: trigger.dataset.stream || selectedSegment?.stream || '',
+      segment_key: trigger.dataset.segmentKey || selectedSegment?.key || '',
+      source: trigger.dataset.speakerSource || '',
+      sentence_id: sentenceId
+    };
+    const hasCurrentSpeaker = !!(trigger.dataset.currentSpeaker || '');
+    let route = '/app/speakers/api/assign-attribution';
+    if (target.isOwner) {
+      route = '/app/speakers/api/owner/tag-cli';
+    } else if (hasCurrentSpeaker) {
+      route = '/app/speakers/api/correct-attribution';
+      body.new_speaker = target.entityId;
+    } else {
+      body.speaker = target.entityId;
+    }
+
+    if (!target.isOwner && !target.entityId) {
+      renderSpeakerStatus(slot, trCopy('TR_SPEAKER_ACTION_UNAVAILABLE'), { error: true });
+      return;
+    }
+
+    trigger.disabled = true;
+    trigger.setAttribute('aria-busy', 'true');
+    try {
+      const result = await window.apiJson(route, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      applySpeakerSuccess(trigger, target, result);
+    } catch (err) {
+      const failure = speakerFailureMessage(err);
+      renderSpeakerStatus(slot, failure.message, {
+        error: true,
+        retry: failure.retry,
+        onRetry: () => performSpeakerSelection(trigger, target)
+      });
+    } finally {
+      trigger.disabled = false;
+      trigger.removeAttribute('aria-busy');
+    }
+  }
+
+  function attachSpeakerPickerHandlers(root) {
+    root.querySelectorAll('[data-action="speaker-picker"]').forEach(button => {
+      button.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        openSpeakerPicker(button);
+      });
+    });
+  }
+
   function renderSegmentTimeline(data, showAudio, showScreen, targetEl, showBrowser = true) {
     const browserOnlyView = showBrowser && !showAudio && !showScreen;
     const chunks = (data.chunks || []).filter(c => {
@@ -4253,14 +4994,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         html += `<div class="tr-entry-time">${timeStr}</div>`;
         html += '<div class="tr-entry-content">';
         html += '<span class="sr-only">audio: </span>';
-        if (item.speaker_label) {
-          const sl = item.speaker_label;
-          const dotClass = sl.confidence === 'high' ? 'tr-speaker-dot-high' : 'tr-speaker-dot-medium';
-          const labelClass = sl.is_owner ? 'tr-speaker-label tr-speaker-label-owner' : 'tr-speaker-label';
-          const displayName = sl.is_owner ? 'You' : escapeHtml(sl.name);
-          const entityHref = '/app/entities#' + encodeURIComponent(sl.entity_id);
-          html += `<div class="${labelClass}" aria-label="speaker: ${displayName}, ${sl.confidence} confidence"><span class="tr-speaker-dot ${dotClass}"></span><a href="${entityHref}">${displayName}</a><span class="sr-only">${sl.confidence} confidence</span></div>`;
-        }
+        html += `<div class="tr-speaker-slot" data-speaker-slot>${renderSpeakerSlot(item, idx, data)}</div>`;
         html += `<div class="tr-entry-text">${escapeHtml(item.markdown)}</div>`;
         html += '</div></div>';
       } else if (item.type === 'markdown' || item.type === 'transcript') {
@@ -4304,6 +5038,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     html += '</div>';
     targetEl.innerHTML = html;
     attachBodyWindowButtons(targetEl);
+    attachSpeakerPickerHandlers(targetEl);
 
     // Get audio element reference
     const paneAudioEl = targetEl.querySelector('audio[data-role="segment-audio"]');
@@ -4328,7 +5063,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     // Add click handlers for audio entries to seek
     targetEl.querySelectorAll('.tr-entry-audio').forEach(entry => {
-      entry.addEventListener('click', () => {
+      entry.addEventListener('click', e => {
+        if (e.target.closest('[data-action="speaker-picker"]')) return;
         if (paneAudioEl && segmentData?.audio_file) {
           const timestamp = parseInt(entry.dataset.timestamp, 10);
           const baseTimestamp = chunks[0]?.timestamp || timestamp;
@@ -4342,6 +5078,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     // Add keyboard handler for audio entries
     targetEl.querySelectorAll('.tr-entry-audio').forEach(entry => {
       entry.addEventListener('keydown', e => {
+        if (e.target !== entry) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           entry.click();

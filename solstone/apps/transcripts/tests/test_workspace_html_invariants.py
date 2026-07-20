@@ -3,6 +3,7 @@
 
 from pathlib import Path
 
+from solstone.apps.transcripts.copy import transcripts_copy_payload
 from solstone.think.importers import health_schema
 
 
@@ -343,6 +344,133 @@ def test_workspace_html_owner_copy_folds_named_transcript_literals():
     assert "Loading screen entries..." in text
     assert "loading screen entries..." in text
     assert "Current time" in text
+
+
+def test_workspace_html_speaker_copy_identifiers_are_referenced():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert "let TR_COPY = {};" in text
+    assert "TR_COPY = data.transcripts_copy || {};" in text
+    for name in transcripts_copy_payload():
+        assert f"TR_COPY.{name} || ''" in text
+
+
+def test_workspace_html_speaker_picker_markup_and_data_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    render_slot = text.split("function renderSpeakerSlot", 1)[1].split(
+        "function loadKnownSpeakers",
+        1,
+    )[0]
+    render_timeline = text.split("function renderSegmentTimeline", 1)[1].split(
+        "targetEl.innerHTML = html;",
+        1,
+    )[0]
+    assert render_slot.count('data-action="speaker-picker"') == 1
+    assert render_timeline.count("data-speaker-slot") == 1
+    for attr in (
+        "data-sentence-id",
+        "data-speaker-source",
+        "data-current-speaker",
+        "data-segment-key",
+        "data-stream",
+    ):
+        assert attr in text
+    assert "Number(trigger.dataset.sentenceId)" in text
+    assert "source: trigger.dataset.speakerSource || ''" in text
+    assert "'/app/speakers/api/speakers/known'" in text
+    assert "payload?.speakers" in text
+    assert "payload.success" not in text
+    assert "voices.length > 7" in text
+    assert 'href="/app/speakers#new-voices"' in text
+    assert "Someone new" not in text
+
+
+def test_workspace_html_speaker_picker_focus_and_touch_targets():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert ".tr-speaker-button {" in text
+    assert ".tr-speaker-picker-option {" in text
+    assert text.count("min-height: var(--touch-min)") >= 5
+    assert text.count("min-width: var(--touch-min)") >= 5
+    assert "function handleSpeakerPickerKeydown" in text
+    assert "if (e.key === 'Escape')" in text
+    assert "function trapSpeakerPickerTab" in text
+    assert "speakerPickerFocusable(popover)" in text
+    assert "trigger.focus();" in text
+    assert (
+        "document.addEventListener('pointerdown', handleSpeakerPickerOutsidePointer, true)"
+        in text
+    )
+    assert (
+        "document.removeEventListener('pointerdown', handleSpeakerPickerOutsidePointer, true)"
+        in text
+    )
+
+
+def test_workspace_html_speaker_dispatch_and_local_rerender_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert "'/app/speakers/api/correct-attribution'" in text
+    assert "'/app/speakers/api/assign-attribution'" in text
+    assert "'/app/speakers/api/owner/tag-cli'" in text
+    assert "body.new_speaker = target.entityId;" in text
+    assert "body.speaker = target.entityId;" in text
+    assert "target.isOwner" in text
+    owner_branch = text.split("if (target.isOwner)", 1)[1].split(
+        "} else if (hasCurrentSpeaker)",
+        1,
+    )[0]
+    assert "body.speaker" not in owner_branch
+    assert "slot.innerHTML = renderSpeakerSlot(chunk" in text
+    assert "renderLoadedSegmentData(data, activeTab)" not in text
+    assert "loadSegmentContent(selectedSegment" not in text
+    assert "result?.status === 'already_correct'" in text
+    assert "err.reasonCode === 'speaker_voiceprint_busy'" in text
+    assert "err.reasonCode === 'speaker_labels_busy'" in text
+    assert "err.reasonCode === 'speaker_owner_voice_too_close'" in text
+    assert "err.reasonCode === 'speaker_owner_identity_required'" in text
+
+
+def test_workspace_html_speaker_propagation_strip_uses_response_offer():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert "function renderSpeakerPropagationOffer" in text
+    propagation_fn = text.split("function renderSpeakerPropagationOffer", 1)[1].split(
+        "function applySpeakerSuccess",
+        1,
+    )[0]
+    assert "result?.propagation_offer" in propagation_fn
+    assert "offer.request" in propagation_fn
+    assert "commit: true" in propagation_fn
+    assert "'/app/speakers/api/propagate-correction'" in propagation_fn
+    assert "preview" not in propagation_fn
+    assert "modal" not in propagation_fn.lower()
+
+
+def test_workspace_html_speaker_rendering_states():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert "label.confidence_state === 'unknown'" in text
+    assert "label.confidence_state === 'high'" in text
+    assert "TR_COPY.TR_SPEAKER_HEDGE_PROBABLE || ''" in text
+    assert "TR_COPY.TR_SPEAKER_HEDGE_MAYBE || ''" in text
+    assert "tr-speaker-dot-high" in text
+    assert "tr-speaker-dot-medium" in text
+    assert "const displayName = sl.is_owner ? 'You'" not in text
+    assert "Speaker 1:" not in text
 
 
 def test_workspace_html_timeline_rail_vertical_math_contract():
