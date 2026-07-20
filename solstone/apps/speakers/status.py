@@ -23,6 +23,7 @@ SECTIONS = (
     "clusters",
     "imports",
     "attribution",
+    "quality",
 )
 
 
@@ -43,6 +44,7 @@ def get_speakers_status(section: str | None = None) -> Any:
         "clusters": _clusters_section,
         "imports": _imports_section,
         "attribution": _attribution_section,
+        "quality": _quality_section,
     }
 
     if section:
@@ -286,3 +288,9 @@ def _attribution_section() -> dict[str, Any]:
         "by_confidence": by_confidence,
         "by_method": by_method,
     }
+
+
+def _quality_section() -> dict[str, Any]:
+    from solstone.apps.speakers.quality import get_speaker_quality_status
+
+    return get_speaker_quality_status()

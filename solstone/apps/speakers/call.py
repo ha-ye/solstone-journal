@@ -91,7 +91,7 @@ def status(
         None,
         help=(
             "Section to show (embeddings, owner, speakers, pool, clusters, imports, "
-            "attribution). Omit for all."
+            "attribution, quality). Omit for all."
         ),
     ),
 ) -> None:
@@ -105,6 +105,7 @@ def status(
         "clusters",
         "imports",
         "attribution",
+        "quality",
     ]
     if section is None:
         result = body

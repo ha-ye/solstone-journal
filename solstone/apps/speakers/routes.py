@@ -74,6 +74,7 @@ from solstone.apps.speakers.owner import (
     rebuild_owner_centroid,
     reject_owner_candidate,
 )
+from solstone.apps.speakers.quality import get_speaker_quality_status
 from solstone.apps.speakers.status import get_speakers_status
 from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
@@ -1061,6 +1062,12 @@ def api_grid() -> Any:
             activity=activity,
         )
     )
+
+
+@speakers_bp.route("/api/quality")
+def api_quality() -> Any:
+    """Return bounded local speaker-quality counters for the overview."""
+    return jsonify(get_speaker_quality_status())
 
 
 @speakers_bp.route("/api/stats/<month>")

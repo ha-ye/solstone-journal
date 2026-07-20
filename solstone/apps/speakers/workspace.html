@@ -2806,6 +2806,13 @@
     <div id="spkOverviewOwner" class="spk-overview-panel"></div>
   </section>
 
+  <section class="spk-overview-section" data-section="quality">
+    <div class="spk-overview-header">
+      <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_QUALITY_HEADER"></h2>
+    </div>
+    <div id="spkOverviewQuality" class="spk-overview-panel"></div>
+  </section>
+
   <section class="spk-overview-section" data-section="known-voices">
     <div class="spk-overview-header">
       <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_KNOWN_VOICES_HEADER"></h2>
@@ -2834,6 +2841,7 @@
   let TODAY = '';
   let OWNER_MIN = 0;
   const ownerPanel = document.getElementById('spkOverviewOwner');
+  const qualityPanel = document.getElementById('spkOverviewQuality');
   const knownContainer = document.getElementById('spkKnownVoices');
   const sortSelect = document.getElementById('spkKnownSort');
   const discoverySection = document.getElementById('spkNewVoicesSection');
@@ -2989,6 +2997,86 @@
       <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_BUILT_PREFIX)}: ${builtAt}</p>
       <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_REFRESHED_PREFIX)}: ${relativeTime(meta.last_refreshed_at)}</p>
     `;
+  }
+
+  function qualityCount(value) {
+    const count = Number(value || 0);
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  function qualityLine(label, value) {
+    return `<p class="spk-card-line">${escapeHtml(label)}: ${escapeHtml(String(qualityCount(value)))}</p>`;
+  }
+
+  function qualityRows(data) {
+    const buckets = data.tier_histogram || {};
+    return [
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_HIGH_LABEL, buckets.high_statements),
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_MEDIUM_LABEL, buckets.medium_statements),
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_MARGIN_LABEL, buckets.margin_declined_statements),
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_UNLABELED_LABEL, buckets.unlabeled_sentence_statements),
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_MISSING_LABEL, buckets.no_labels_file_segments),
+      qualityLine(COPY.SPK_OVERVIEW_QUALITY_SKIPPED_LABEL, buckets.skipped_stub_segments),
+    ].join('');
+  }
+
+  function qualityTeachingLine(data) {
+    const count = qualityCount(data.corrections_window_count);
+    if (count === 0) {
+      return `<p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_QUALITY_TEACHING_ZERO)}</p>`;
+    }
+    return `<p class="spk-card-line">${escapeHtml(String(count))} ${escapeHtml(COPY.SPK_OVERVIEW_QUALITY_TEACHING_LABEL)}</p>`;
+  }
+
+  function qualityWarning(data) {
+    const unreadable = data.unreadable_files || {};
+    const count = qualityCount(unreadable.total_window_count);
+    if (count === 0) return '';
+    return `<div class="spk-status spk-status-info">${escapeHtml(COPY.SPK_OVERVIEW_QUALITY_UNREADABLE_WARNING)} (${escapeHtml(String(count))})</div>`;
+  }
+
+  function renderQualityPreBootstrap(data) {
+    const ownerVoice = data.owner_voice || {};
+    qualityPanel.innerHTML = `
+      <strong>${escapeHtml(COPY.SPK_OVERVIEW_QUALITY_PREBOOTSTRAP)}</strong>
+      <p class="spk-overview-muted">${escapeHtml(String(qualityCount(ownerVoice.evidence_count)))} ${escapeHtml(COPY.SPK_OVERVIEW_OWNER_PROGRESS_SUFFIX)}</p>
+      <div class="spk-overview-actions">
+        <a class="spk-overview-btn spk-overview-btn-primary" href="/app/speakers/${TODAY}">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_HELP_LABEL)}</a>
+      </div>
+    `;
+  }
+
+  function renderQualityReady(data) {
+    qualityPanel.innerHTML = `
+      <strong>${escapeHtml(COPY.SPK_OVERVIEW_QUALITY_READY)}</strong>
+      ${qualityWarning(data)}
+      ${qualityRows(data)}
+      ${qualityTeachingLine(data)}
+    `;
+  }
+
+  function renderQuality(data) {
+    const ownerVoice = data.owner_voice || {};
+    if (ownerVoice.bootstrap_state === 'pre_bootstrap') {
+      renderQualityPreBootstrap(data);
+      return;
+    }
+    renderQualityReady(data);
+  }
+
+  function loadQuality() {
+    fetch('/app/speakers/api/quality')
+      .then((response) => response.json())
+      .then(renderQuality)
+      .catch((err) => {
+        window.logError?.(err, { context: 'speakers-quality' });
+        qualityPanel.innerHTML = window.SurfaceState.error({
+          heading: "Couldn't load voice quality",
+          desc: window.CONVEY_COPY.RELOAD_HINT,
+          serverMessage: err?.serverMessage || err?.message || '',
+          detail: err,
+        });
+      });
   }
 
   function loadOwner() {
@@ -3149,6 +3237,7 @@
     setupSort();
     loadDayGrid();
     loadOwner();
+    loadQuality();
     loadKnown();
     loadDiscovery();
   }

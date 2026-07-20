@@ -53,6 +53,7 @@ def test_status_all_sections(speakers_env):
     assert "clusters" in result
     assert "imports" in result
     assert "attribution" in result
+    assert "quality" in result
 
 
 def test_status_single_section(speakers_env):

@@ -225,7 +225,7 @@ def test_status_full_section_and_unknown(
         {
             "error": (
                 "Unknown section 'nope'. Valid: embeddings, owner, speakers, "
-                "pool, clusters, imports, attribution"
+                "pool, clusters, imports, attribution, quality"
             )
         },
     )
