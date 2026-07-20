@@ -16,6 +16,7 @@ from solstone.apps.speakers.discovery import (
     load_discovery_cache,
 )
 from solstone.apps.speakers.owner import (
+    load_owner_centroid,
     owner_candidate_ready_possible,
     owner_detection_ready,
 )
@@ -60,6 +61,8 @@ def _recurring_voice_need(today: str) -> dict[str, Any] | None:
     if not isinstance(clusters, dict):
         return None
     if not any(_has_segment_diversity(records) for records in clusters.values()):
+        return None
+    if not load_owner_centroid():
         return None
     return _route_need(
         OWNER_NEEDS_RECURRING_VOICE_TEXT,

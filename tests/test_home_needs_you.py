@@ -414,6 +414,10 @@ def test_owner_voice_recurring_needs_from_cache_only(tmp_path, monkeypatch):
             ("20260719", "sys", "090000_300"),
         ],
     )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
 
     assert build_owner_voice_needs("20260720") == [
         {
@@ -423,6 +427,30 @@ def test_owner_voice_recurring_needs_from_cache_only(tmp_path, monkeypatch):
             "source_id": "owner_voice:recurring",
         }
     ]
+
+
+def test_owner_voice_recurring_need_requires_authoritative_owner_centroid(
+    tmp_path, monkeypatch
+):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache(
+        journal,
+        [
+            ("20260718", "mic", "090000_300"),
+            ("20260718", "mic", "091000_300"),
+            ("20260719", "sys", "090000_300"),
+        ],
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: None,
+        raising=False,
+    )
+
+    assert build_owner_voice_needs("20260720") == []
 
 
 def test_classify_needs_you_invalid_route_returns_disabled_item():

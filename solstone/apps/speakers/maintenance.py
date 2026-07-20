@@ -63,7 +63,12 @@ def run_discovery_scan(args: list[str]) -> int:
     if not owner_path.exists():
         return 0
 
-    result = discover_unknown_speakers()
+    try:
+        result = discover_unknown_speakers()
+    except LockTimeout as exc:
+        logger.warning("speaker discovery scan skipped: %s", exc)
+        return 1
+
     logger.info(
         "speaker discovery refreshed: clusters=%d",
         len(result.get("clusters", [])),
