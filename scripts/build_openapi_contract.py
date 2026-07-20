@@ -12,6 +12,13 @@ import sys
 from pathlib import Path
 
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY, build_document
+from solstone.convey.contract.observer_bundle import (
+    build_bundle_files,
+    stale_bundle_paths,
+)
+from solstone.convey.contract.observer_bundle_compatibility import (
+    check_bundle_compatibility,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_PATH = ROOT / "docs" / "openapi" / "convey-clients.json"
@@ -48,11 +55,29 @@ def render_convey_doc(current: str) -> str:
 
 
 def write_outputs() -> None:
-    ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ARTIFACT_PATH.write_text(render_openapi_json(), encoding="utf-8")
+    openapi_text = render_openapi_json()
     current_doc = CONVEY_DOC_PATH.read_text(encoding="utf-8")
-    CONVEY_DOC_PATH.write_text(render_convey_doc(current_doc), encoding="utf-8")
+    convey_doc_text = render_convey_doc(current_doc)
+    bundle_files = build_bundle_files(ROOT)
+    deterministic_bundle_files = build_bundle_files(ROOT)
+    if deterministic_bundle_files != bundle_files:
+        raise RuntimeError(
+            "observer client contract bundle generation is not deterministic"
+        )
+    compatibility_failures = check_bundle_compatibility(ROOT, bundle_files)
+    if compatibility_failures:
+        raise RuntimeError("\n".join(compatibility_failures))
+
+    ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ARTIFACT_PATH.write_text(openapi_text, encoding="utf-8")
+    CONVEY_DOC_PATH.write_text(convey_doc_text, encoding="utf-8")
+    for rel_path, text in bundle_files.items():
+        output = ROOT / rel_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
     print(f"wrote {ARTIFACT_PATH.relative_to(ROOT)}")
+    for rel_path in sorted(bundle_files):
+        print(f"wrote {rel_path}")
     print(f"updated {CONVEY_DOC_PATH.relative_to(ROOT)}")
 
 
@@ -70,6 +95,8 @@ def check_outputs() -> int:
     expected_doc = render_convey_doc(current_doc)
     if current_doc != expected_doc:
         stale.append(str(CONVEY_DOC_PATH.relative_to(ROOT)))
+
+    stale.extend(str(path) for path in stale_bundle_paths(ROOT))
 
     if stale:
         paths = ", ".join(stale)
