@@ -12,6 +12,13 @@ import pytest
 
 import solstone.think.utils as think_utils
 from solstone.think.indexer import cli as indexer_cli
+from solstone.think.indexer.journal import ScanReport
+
+EXPECTED_ZERO_EDGE_HINT = (
+    "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase "
+    "remains modification-time incremental — run journal indexer --rebuild-edges to "
+    "force full edge re-extraction."
+)
 
 
 def test_module_entrypoint_propagates_main_return(monkeypatch):
@@ -37,6 +44,120 @@ def _run_indexer_cli(monkeypatch, journal: Path, args: list[str]) -> None:
 
     monkeypatch.setattr(indexer_cli, "setup_cli", setup_cli)
     indexer_cli.main()
+
+
+def test_rescan_full_zero_edge_rows_prints_hint(tmp_path, monkeypatch, capsys):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    scans: list[tuple[str, bool, bool]] = []
+
+    def scan_journal(
+        journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> ScanReport:
+        scans.append((journal_arg, verbose, full))
+        return ScanReport(changed=True, edge_rows_inserted=0)
+
+    monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
+
+    _run_indexer_cli(monkeypatch, journal, ["--rescan-full"])
+
+    captured = capsys.readouterr()
+    assert scans == [(str(journal), False, True)]
+    assert captured.out == EXPECTED_ZERO_EDGE_HINT + "\n"
+    assert captured.err == ""
+
+
+def test_rescan_full_nonzero_edge_rows_suppresses_hint(tmp_path, monkeypatch, capsys):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+
+    def scan_journal(
+        _journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> ScanReport:
+        assert verbose is False
+        assert full is True
+        return ScanReport(changed=True, edge_rows_inserted=1)
+
+    monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
+
+    _run_indexer_cli(monkeypatch, journal, ["--rescan-full"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_rebuild_edges_rescan_full_suppresses_zero_edge_hint(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    calls: list[tuple[str, str] | tuple[str, str, bool, bool]] = []
+
+    def rebuild_edges(journal_arg: str) -> dict[str, int]:
+        calls.append(("rebuild_edges", journal_arg))
+        return {"files": 0, "rows": 0, "drops": 0, "failed": 0}
+
+    def scan_journal(
+        journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> ScanReport:
+        calls.append(("scan", journal_arg, verbose, full))
+        return ScanReport(changed=True, edge_rows_inserted=0)
+
+    monkeypatch.setattr(indexer_cli, "rebuild_edges", rebuild_edges)
+    monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
+
+    _run_indexer_cli(monkeypatch, journal, ["--rebuild-edges", "--rescan-full"])
+
+    captured = capsys.readouterr()
+    assert calls == [
+        ("rebuild_edges", str(journal)),
+        ("scan", str(journal), False, True),
+    ]
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_reset_rescan_full_suppresses_zero_edge_hint(tmp_path, monkeypatch, capsys):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    calls: list[tuple[str, str] | tuple[str, str, bool, bool]] = []
+
+    def reset_journal_index(journal_arg: str) -> None:
+        calls.append(("reset", journal_arg))
+
+    def scan_journal(
+        journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> ScanReport:
+        calls.append(("scan", journal_arg, verbose, full))
+        return ScanReport(changed=True, edge_rows_inserted=0)
+
+    monkeypatch.setattr(indexer_cli, "reset_journal_index", reset_journal_index)
+    monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
+
+    _run_indexer_cli(monkeypatch, journal, ["--reset", "--rescan-full"])
+
+    captured = capsys.readouterr()
+    assert calls == [
+        ("reset", str(journal)),
+        ("scan", str(journal), False, True),
+    ]
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_rescan_file_does_not_create_root_task_log(tmp_path, monkeypatch):
@@ -151,9 +272,9 @@ def test_native_decline_fallback_runs_python_write_blocks(tmp_path, monkeypatch)
         *,
         verbose: bool = False,
         full: bool = False,
-    ) -> bool:
+    ) -> ScanReport:
         calls.append(("scan", journal_arg, verbose, full))
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=0)
 
     monkeypatch.setattr(
         indexer_cli, "maybe_run_native_indexer", fallback_after_native_decline
@@ -196,9 +317,14 @@ def test_rescan_leaves_existing_root_task_log_unchanged(
     root_log.write_bytes(original)
     scans: list[tuple[str, bool, bool]] = []
 
-    def scan_journal(journal_arg: str, *, verbose: bool = False, full: bool = False):
+    def scan_journal(
+        journal_arg: str,
+        *,
+        verbose: bool = False,
+        full: bool = False,
+    ) -> ScanReport:
         scans.append((journal_arg, verbose, full))
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=1)
 
     monkeypatch.setattr(indexer_cli, "scan_journal", scan_journal)
 

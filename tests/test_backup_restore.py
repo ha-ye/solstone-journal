@@ -14,6 +14,7 @@ from solstone.think.backup import restore
 from solstone.think.backup.destination import Destination
 from solstone.think.backup.hosted import HostedBinding, HostedCredentials
 from solstone.think.backup.runner import ResticResult
+from solstone.think.indexer.journal import ScanReport
 
 
 def _config_path(journal: Path) -> Path:
@@ -132,11 +133,11 @@ def test_restore_success_normalizes_key_assembles_env_and_reindexes(
         order.append("set_recovery_key_confirmed")
         assert value is True
 
-    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+    def fake_scan_journal(journal: str, **kwargs: Any) -> ScanReport:
         order.append("scan_journal")
         assert journal == str(tmp_path)
         assert kwargs == {"full": True}
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=0)
 
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
     monkeypatch.setattr(restore, "run_restic", fake_run_restic)
@@ -370,11 +371,11 @@ def test_restore_check_failure_reports_degraded_and_keeps_side_effects(
         order.append("set_recovery_key_confirmed")
         assert value is True
 
-    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+    def fake_scan_journal(journal: str, **kwargs: Any) -> ScanReport:
         order.append("scan_journal")
         assert journal == str(tmp_path)
         assert kwargs == {"full": True}
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=0)
 
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
     monkeypatch.setattr(restore, "run_restic", fake_run_restic)
@@ -429,7 +430,11 @@ def test_restore_missing_daily_key_is_not_resumable(
     monkeypatch.setattr(restore, "set_recovery_key", lambda key: None)
     monkeypatch.setattr(restore, "set_recovery_key_confirmed", lambda confirmed: None)
     monkeypatch.setattr(restore, "get_backup_config", lambda: {"daily_key": None})
-    monkeypatch.setattr(restore, "scan_journal", lambda journal, **kwargs: True)
+    monkeypatch.setattr(
+        restore,
+        "scan_journal",
+        lambda journal, **kwargs: ScanReport(changed=True, edge_rows_inserted=0),
+    )
 
     result = restore.restore_journal(_destination(), "A" * 64)
 
@@ -481,11 +486,11 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         assert value is True
         real_set_recovery_key_confirmed(value)
 
-    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+    def fake_scan_journal(journal: str, **kwargs: Any) -> ScanReport:
         order.append("scan_journal")
         assert journal == str(tmp_path)
         assert kwargs == {"full": True}
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=0)
 
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
     monkeypatch.setattr(restore, "ensure_rclone", lambda: Path("/rclone"))

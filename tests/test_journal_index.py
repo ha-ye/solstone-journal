@@ -460,7 +460,7 @@ def test_scan_journal(journal_fixture):
     """Test scanning journal creates index."""
     from solstone.think.indexer.journal import scan_journal
 
-    changed = scan_journal(str(journal_fixture), verbose=True)
+    changed = scan_journal(str(journal_fixture), verbose=True).changed
     assert changed is True
 
     # Index file should exist
@@ -786,11 +786,11 @@ def test_index_caching(journal_fixture):
     from solstone.think.indexer.journal import scan_journal
 
     # First scan indexes files
-    changed = scan_journal(str(journal_fixture))
+    changed = scan_journal(str(journal_fixture)).changed
     assert changed is True
 
     # Second scan should be a no-op (all cached)
-    changed = scan_journal(str(journal_fixture))
+    changed = scan_journal(str(journal_fixture)).changed
     assert changed is False
 
 
@@ -819,7 +819,7 @@ def test_scan_journal_full_mode(journal_fixture):
     from solstone.think.indexer.journal import scan_journal, search_journal
 
     # Full scan should include everything
-    changed = scan_journal(str(journal_fixture), full=True)
+    changed = scan_journal(str(journal_fixture), full=True).changed
     assert changed is True
 
     # Should find content from historical day
@@ -1437,7 +1437,7 @@ def test_light_scan_removes_deleted_facet_content(journal_fixture):
     events_file.unlink()
 
     # Light rescan should detect the deletion (facet content is in scope)
-    changed = scan_journal(str(journal_fixture), full=False)
+    changed = scan_journal(str(journal_fixture), full=False).changed
     assert changed is True
 
     # Event should no longer be searchable
@@ -1474,7 +1474,7 @@ def test_light_scan_removes_deleted_today_segment(tmp_path, monkeypatch):
     output_file.unlink()
 
     # Light rescan should detect the deletion
-    changed = scan_journal(str(journal), full=False)
+    changed = scan_journal(str(journal), full=False).changed
     assert changed is True
 
     # Content should no longer be searchable
@@ -1508,7 +1508,7 @@ def test_light_scan_preserves_historical_content(tmp_path, monkeypatch):
     output_file.unlink()
 
     # Light rescan should NOT remove the historical content (out of scope)
-    changed = scan_journal(str(journal), full=False)
+    changed = scan_journal(str(journal), full=False).changed
     # No changes because the historical path is out of scope
     assert changed is False
 
@@ -1543,7 +1543,7 @@ def test_full_scan_removes_historical_content(tmp_path, monkeypatch):
     output_file.unlink()
 
     # Full rescan SHOULD remove the historical content
-    changed = scan_journal(str(journal), full=True)
+    changed = scan_journal(str(journal), full=True).changed
     assert changed is True
 
     # Content should no longer be searchable

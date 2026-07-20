@@ -192,6 +192,41 @@ def test_rust_prefers_rescan_full_when_both_scan_flags_are_set() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_flags"),
+    [
+        ({"rescan_full": True}, ["--rescan-full"]),
+        ({"rescan": True}, ["--rescan"]),
+        (
+            {"rebuild_edges": True, "rescan_full": True},
+            ["--rebuild-edges", "--rescan-full"],
+        ),
+        ({"reset": True, "rescan_full": True}, ["--reset", "--rescan-full"]),
+    ],
+)
+def test_rust_zero_edge_hint_suppression_options_are_forwarded_in_native_argv(
+    overrides: dict[str, Any],
+    expected_flags: list[str],
+) -> None:
+    # The seam inherits native stdio, so direct Rust tests assert hint output.
+    result, python_calls, native_argvs = _route(
+        _args(**overrides),
+        config={"core": {"indexer": "rust"}},
+    )
+
+    assert result == 0
+    assert python_calls == []
+    assert native_argvs == [
+        [
+            "/tmp/bin/solstone-core",
+            "indexer",
+            "--journal",
+            "/tmp/journal",
+            *expected_flags,
+        ]
+    ]
+
+
 def test_rust_rescan_file_normalizes_chronicle_prefixed_relative_to_absolute(
     tmp_path: Path,
 ) -> None:

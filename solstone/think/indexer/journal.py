@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -62,6 +63,13 @@ INDEX_DIR = "indexer"
 DB_NAME = "journal.sqlite"
 ENTITY_SEARCH_WATERMARK_MTIME_PATH = "entity_search:__mtime__"
 ENTITY_SEARCH_WATERMARK_COUNT_PATH = "entity_search:__count__"
+
+
+@dataclass(frozen=True)
+class ScanReport:
+    changed: bool
+    edge_rows_inserted: int
+
 
 # Schema for the unified journal index
 SCHEMA = [
@@ -599,7 +607,7 @@ def _index_entity_search_chunks(conn: sqlite3.Connection) -> int:
     return count
 
 
-def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> bool:
+def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> ScanReport:
     """Scan and index journal content.
 
     Args:
@@ -609,7 +617,7 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
             YYYYMMDD directories (before today) for lighter incremental scans.
 
     Returns:
-        True if any files were indexed or removed
+        Report with whether any rows changed and how many edge rows were inserted.
     """
     conn, db_path = get_journal_index(journal)
     journal_path = Path(journal)
@@ -805,7 +813,10 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
     )
 
     conn.close()
-    return bool(to_index or removed or entity_changed or edge_changed)
+    return ScanReport(
+        changed=bool(to_index or removed or entity_changed or edge_changed),
+        edge_rows_inserted=edge_rows_inserted,
+    )
 
 
 # Compiled patterns for temporal extraction (checked against unquoted text only)

@@ -19,6 +19,7 @@ use solstone_core_journal::{
 const EXIT_USAGE: u8 = 64;
 const EXIT_UNAVAILABLE: u8 = 69;
 const EXIT_TEMPFAIL: u8 = 75;
+const ZERO_EDGE_HINT: &str = "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase remains modification-time incremental — run journal indexer --rebuild-edges to force full edge re-extraction.";
 
 struct JournalPathLine {
     label: &'static str,
@@ -148,6 +149,13 @@ fn run_indexer(options: IndexerOptions) -> ExitCode {
             Ok(report) => {
                 for warning in report.warnings {
                     eprintln!("warning: {warning}");
+                }
+                let should_emit_zero_edge_hint = options.rescan_full
+                    && !options.rebuild_edges
+                    && !options.reset
+                    && report.edge_rows_inserted == 0;
+                if should_emit_zero_edge_hint {
+                    println!("{ZERO_EDGE_HINT}");
                 }
                 return ExitCode::SUCCESS;
             }

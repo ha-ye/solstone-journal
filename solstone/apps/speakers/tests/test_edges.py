@@ -467,7 +467,7 @@ def test_ac10_scan_journal_full_is_content_hash_idempotent(edge_journal):
     )
     _write_transcript(edge_journal, ["Cora Candidate is named.", "No mention here."])
 
-    assert scan_journal(str(edge_journal), full=True) is True
+    assert scan_journal(str(edge_journal), full=True).changed is True
     conn, _ = get_journal_index(str(edge_journal))
     first_hash = edges_content_hash(conn)
     conn.close()

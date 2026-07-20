@@ -11,6 +11,7 @@ from .cli import main
 
 # Import from journal (unified index)
 from .journal import (
+    ScanReport,
     get_journal_index,
     index_file,
     reset_journal_index,
@@ -24,6 +25,7 @@ from .journal import (
 # All public functions and constants
 __all__ = [
     # Journal (unified index)
+    "ScanReport",
     "get_journal_index",
     "index_file",
     "reset_journal_index",

@@ -30,6 +30,7 @@ from solstone.think.backup.readiness import (
 from solstone.think.backup.repo import init_repository
 from solstone.think.backup.runner import run_restic
 from solstone.think.backup.state import BACKUP_DEFAULTS, get_destination
+from solstone.think.indexer.journal import ScanReport
 from tests.helpers.journal_config import seed_journal_config
 
 RESTIC_BIN = shutil.which("restic")
@@ -238,9 +239,9 @@ def test_backup_restore_rotation_teardown_real_local_round_trip(
 
     scan_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+    def fake_scan_journal(journal: str, **kwargs: Any) -> ScanReport:
         scan_calls.append((journal, kwargs))
-        return True
+        return ScanReport(changed=True, edge_rows_inserted=0)
 
     monkeypatch.setattr(restore, "scan_journal", fake_scan_journal)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(restored_journal))

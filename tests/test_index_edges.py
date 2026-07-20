@@ -383,7 +383,7 @@ def test_discover_edge_files_keeps_structural_sources_with_chronicle_root(
 
 
 def test_scan_indexes_edges_and_second_scan_is_zero_delta(edges_journal):
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
 
     conn = _conn(edges_journal)
     schema_version = conn.execute(
@@ -477,7 +477,7 @@ def test_scan_indexes_edges_and_second_scan_is_zero_delta(edges_journal):
     first_hash = edges_content_hash(conn)
     conn.close()
 
-    assert scan_journal(str(edges_journal), full=True) is False
+    assert scan_journal(str(edges_journal), full=True).changed is False
     conn = _conn(edges_journal)
     assert edges_content_hash(conn) == first_hash
     conn.close()
@@ -495,7 +495,7 @@ def test_touching_one_edge_file_replaces_only_that_path(edges_journal):
     _write_jsonl(path, records)
     _bump_mtime(path)
 
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     after = _source_counts(conn)
     assert after["participation"] == 6
@@ -514,7 +514,7 @@ def test_deleted_edge_source_removes_rows_and_ledger(edges_journal):
     path = edges_journal / "facets" / "edges-events" / "events" / "20260430.jsonl"
     path.unlink()
 
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     assert (
         conn.execute(
@@ -640,7 +640,7 @@ def test_pretty_documents_json_edges_via_index_file_and_scan_journal(edges_journ
     )
     conn.close()
 
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     assert (
         conn.execute(
@@ -806,7 +806,7 @@ def test_new_source_shapes_support_index_file_replacement_and_deletion(
     _replace_new_source_fixture(shape, path)
     _bump_mtime(path)
 
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     assert (
         conn.execute("SELECT count(*) FROM edges WHERE path=?", (rel,)).fetchone()[0]
@@ -815,7 +815,7 @@ def test_new_source_shapes_support_index_file_replacement_and_deletion(
     conn.close()
 
     path.unlink()
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     assert (
         conn.execute("SELECT count(*) FROM edges WHERE path=?", (rel,)).fetchone()[0]
@@ -845,7 +845,7 @@ def test_malformed_new_source_fails_without_suppressing_sibling(
 
     caplog.clear()
     caplog.set_level(logging.ERROR, logger="solstone.think.indexer.edges")
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     assert f"Skipping edge extraction for {bad_rel}" in caplog.text
 
     conn = _conn(edges_journal)
@@ -1012,7 +1012,7 @@ def test_non_date_activity_edge_source_fails_without_poisoning_sibling(
     assert f"Skipping edge extraction for {bad_rel}" in caplog.text
 
     caplog.clear()
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
 
     conn = _conn(edges_journal)
     assert (
@@ -1200,7 +1200,7 @@ def test_schema_version_migration_preserves_chunks_and_files(
     assert table_content_hash(conn, "files", FILE_COLUMNS) == files_hash
     conn.close()
 
-    assert scan_journal(str(edges_journal), full=True) is True
+    assert scan_journal(str(edges_journal), full=True).changed is True
     conn = _conn(edges_journal)
     assert conn.execute("SELECT count(*) FROM edges").fetchone()[0] == 24
     conn.close()

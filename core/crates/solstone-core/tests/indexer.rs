@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, path::Path};
 
 use solstone_core_indexer_store::db::open_index;
+
+const EXPECTED_ZERO_EDGE_HINT: &str = "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase remains modification-time incremental — run journal indexer --rebuild-edges to force full edge re-extraction.";
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-core")
@@ -24,6 +26,16 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::create_dir_all(path.parent().expect("test path should have parent"))
         .expect("create parent");
     fs::write(path, text).expect("write test file");
+}
+
+fn run_indexer(root: &Path, args: &[&str]) -> Output {
+    Command::new(bin())
+        .arg("indexer")
+        .arg("--journal")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("solstone-core should execute")
 }
 
 fn seed_edge_entity(root: &Path, entity_id: &str, name: &str) {
@@ -67,21 +79,84 @@ fn indexer_rescan_full_succeeds_for_tiny_journal() {
         "# Flow\n\nindexed",
     );
 
-    let output = Command::new(bin())
-        .arg("indexer")
-        .arg("--journal")
-        .arg(&root)
-        .arg("--rescan-full")
-        .output()
-        .expect("solstone-core should execute");
+    let output = run_indexer(&root, &["--rescan-full"]);
 
     assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+        format!("{EXPECTED_ZERO_EDGE_HINT}\n")
+    );
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr should be utf-8"),
         ""
     );
     assert!(root.join("indexer/journal.sqlite").is_file());
     fs::remove_dir_all(root).expect("cleanup success root");
+}
+
+#[test]
+fn indexer_rescan_full_suppresses_zero_edge_hint_for_nonzero_rebuild_and_reset_cases() {
+    let nonzero_root = temp_path("nonzero-edge-no-hint");
+    seed_edge_entity(&nonzero_root, "alice", "Alice Edge");
+    seed_edge_entity(&nonzero_root, "bob", "Bob Edge");
+    write(
+        &nonzero_root,
+        "facets/work/entities/20260717.jsonl",
+        r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+    );
+
+    let output = run_indexer(&nonzero_root, &["--rescan-full"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+        ""
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+        ""
+    );
+    fs::remove_dir_all(nonzero_root).expect("cleanup nonzero root");
+
+    let rebuild_root = temp_path("rebuild-suppression");
+    write(
+        &rebuild_root,
+        "chronicle/20260717/talents/flow.md",
+        "# Flow\n\nindexed",
+    );
+    let output = run_indexer(&rebuild_root, &["--rebuild-edges", "--rescan-full"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+        ""
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+        ""
+    );
+    fs::remove_dir_all(rebuild_root).expect("cleanup rebuild root");
+
+    let reset_root = temp_path("reset-suppression");
+    write(
+        &reset_root,
+        "chronicle/20260717/talents/flow.md",
+        "# Flow\n\nindexed",
+    );
+    let output = run_indexer(&reset_root, &["--reset", "--rescan-full"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+        ""
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+        ""
+    );
+    fs::remove_dir_all(reset_root).expect("cleanup reset root");
 }
 
 #[test]

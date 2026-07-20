@@ -21,6 +21,12 @@ from .native_seam import maybe_run_native_indexer
 
 logger = logging.getLogger(__name__)
 
+ZERO_EDGE_HINT = (
+    "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase "
+    "remains modification-time incremental — run journal indexer --rebuild-edges to "
+    "force full edge re-extraction."
+)
+
 
 def _format_count_column(
     items: list[tuple[str, int]], total: int, top_n: int
@@ -207,9 +213,17 @@ def main() -> int | None:
         except (ValueError, FileNotFoundError) as e:
             parser.error(str(e))
     elif args.rescan or args.rescan_full:
-        changed = scan_journal(journal, verbose=args.verbose, full=args.rescan_full)
-        if changed:
+        report = scan_journal(journal, verbose=args.verbose, full=args.rescan_full)
+        if report.changed:
             logger.info("indexer journal rescan ok")
+        should_emit_zero_edge_hint = (
+            args.rescan_full
+            and not args.rebuild_edges
+            and not args.reset
+            and report.edge_rows_inserted == 0
+        )
+        if should_emit_zero_edge_hint:
+            print(ZERO_EDGE_HINT)
 
     if args.query is not None:
         query_kwargs: dict[str, Any] = {}
