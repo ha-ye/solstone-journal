@@ -12,6 +12,7 @@ from solstone.think.cogitate_contract import (
     COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
     FUTURE_ACCESS_TIERS,
+    TALENT_ACCESS_TIERS,
     TALENT_FINALIZATION_MODES,
     expects_emit_final,
 )
@@ -81,6 +82,12 @@ def test_cogitate_vocabulary_lock():
         "grep_search",
     )
     assert FUTURE_ACCESS_TIERS == ("code-agent",)
+    assert TALENT_ACCESS_TIERS == (
+        "normal",
+        "system-read",
+        "outbound",
+        "synthesis",
+    )
     assert TALENT_FINALIZATION_MODES == ("emit_final", "FinishTool", "quiet")
     assert "repair" not in COGITATE_ACCESS_TIERS
     assert "repair" not in FUTURE_ACCESS_TIERS

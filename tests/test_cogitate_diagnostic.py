@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from solstone.think.cogitate_contract import (
@@ -94,15 +95,24 @@ def test_diagnostic_run_registers_only_emit_final_and_writes_no_files(
     _install_emit_final_arun(fake_openhands, "diagnostic ok")
     config = _run_config(monkeypatch, tmp_path)
     events: list[dict] = []
+    created_temp_dirs: list[Path] = []
 
-    before_files = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+    real_tempdir = openhands.tempfile.TemporaryDirectory
+
+    def tracking_tempdir(*args, **kwargs):
+        kwargs.setdefault("dir", tmp_path.parent)
+        tempdir = real_tempdir(*args, **kwargs)
+        created_temp_dirs.append(Path(tempdir.name))
+        return tempdir
+
+    monkeypatch.setattr(openhands.tempfile, "TemporaryDirectory", tracking_tempdir)
+
+    before_tree = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     result = asyncio.run(openhands.run_cogitate(config, events.append))
 
     conversation = fake_openhands.Conversation.instances[0]
     agent_tool_names = {tool.name for tool in conversation.agent.tools}
-    after_files = {
-        path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file()
-    }
+    after_tree = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
 
     assert result == "diagnostic ok"
     assert agent_tool_names == {"emit_final"}
@@ -119,7 +129,9 @@ def test_diagnostic_run_registers_only_emit_final_and_writes_no_files(
     assert "grep_search" not in conversation.agent.system_prompt
     assert "through the `sol` tool" not in conversation.agent.system_prompt
     assert "sol call" not in conversation.agent.system_prompt
-    assert before_files == set()
-    assert after_files == set()
+    assert before_tree == set()
+    assert after_tree == set()
+    assert created_temp_dirs
+    assert not any(path.exists() for path in created_temp_dirs)
     assert [event["event"] for event in events] == ["finish"]
     assert events[0]["result"] == "diagnostic ok"

@@ -123,6 +123,14 @@ def test_validate_access_tier_rejects_unknown_tier():
         _validate_access_tier("repair", "cogitate", "test-agent")
 
 
+def test_validate_access_tier_rejects_internal_diagnostic_tier():
+    with pytest.raises(
+        ValueError,
+        match="Prompt 'test-agent' has invalid 'access_tier' value 'diagnostic'",
+    ):
+        _validate_access_tier("diagnostic", "cogitate", "test-agent")
+
+
 def test_validate_access_tier_rejects_generate_with_access_tier():
     with pytest.raises(
         ValueError,

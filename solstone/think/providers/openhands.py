@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import traceback
 import uuid
@@ -1604,6 +1605,7 @@ async def run_cogitate(
 
     llm: Any | None = None
     usage_start: dict[str, int] | None = None
+    persistence_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     try:
         with _openhands_import_policy():
             from openhands.sdk import Conversation
@@ -1678,8 +1680,14 @@ async def run_cogitate(
             system_prompt=system_instruction,
         )
 
-        persistence_dir = journal / ".cache" / "cogitate-history" / session_id
-        persistence_dir.mkdir(parents=True, exist_ok=True)
+        if diagnostic:
+            persistence_tmpdir = tempfile.TemporaryDirectory(
+                prefix="solstone-cogitate-diagnostic-"
+            )
+            persistence_dir = Path(persistence_tmpdir.name)
+        else:
+            persistence_dir = journal / ".cache" / "cogitate-history" / session_id
+            persistence_dir.mkdir(parents=True, exist_ok=True)
         translator = _OpenHandsTranslator(
             callback=callback,
             llm=llm,
@@ -1899,6 +1907,9 @@ async def run_cogitate(
         callback.emit(error_event)
         setattr(exc, "_evented", True)
         raise
+    finally:
+        if persistence_tmpdir is not None:
+            persistence_tmpdir.cleanup()
 
 
 def run_generate(

@@ -42,6 +42,9 @@ COGITATE_ACCESS_TIERS = (
     "synthesis",
     "diagnostic",
 )
+TALENT_ACCESS_TIERS = tuple(
+    tier for tier in COGITATE_ACCESS_TIERS if tier != "diagnostic"
+)
 
 # `code-agent` is a documented FUTURE tier — NOT part of the current cogitate
 # runtime (it needs write access, broad tools, and a repo cwd, deliberately out of
@@ -110,6 +113,7 @@ __all__ = [
     "COGITATE_ACCESS_TIERS",
     "COGITATE_READ_TOOL_NAMES",
     "FUTURE_ACCESS_TIERS",
+    "TALENT_ACCESS_TIERS",
     "TALENT_FINALIZATION_MODES",
     "capabilities_for_access_tier",
     "expects_emit_final",
