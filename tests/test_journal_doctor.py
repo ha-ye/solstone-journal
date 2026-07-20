@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -143,6 +144,29 @@ def write_legacy_plist(home_root: Path, argv: list[str]) -> Path:
             }
         )
     )
+    return plist_path
+
+
+def write_foreign_plist(
+    home_root: Path,
+    filename: str,
+    *,
+    label: str,
+    keep_alive=True,
+    program: str | None = None,
+    program_arguments: list[str] | None = None,
+) -> Path:
+    plist_path = home_root / "Library" / "LaunchAgents" / filename
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "Label": label,
+        "KeepAlive": keep_alive,
+    }
+    if program is not None:
+        data["Program"] = program
+    if program_arguments is not None:
+        data["ProgramArguments"] = program_arguments
+    plist_path.write_bytes(plistlib.dumps(data))
     return plist_path
 
 
@@ -516,6 +540,7 @@ def test_supervisor_conflict_grid(
             f"journal_app={app_state} pid={app_pid or 'none'} "
             f"exe={app_executable or 'none'}"
         ),
+        foreign=service.ForeignLauncherScan(matches=(), incomplete_paths=()),
     )
     monkeypatch.setattr(doctor, "inspect_supervisor_conflict", lambda: evidence)
 
@@ -545,6 +570,225 @@ def test_supervisor_conflict_grid_counts():
     }
 
     assert counts == {"fail": 8, "ok": 7, "warn": 21}
+
+
+def test_foreign_launcher_remedy_renders_single_match_example(doctor):
+    match = service.ForeignLauncherMatch(
+        label="com.example.solstone-watchdog",
+        plist_path="/Users/.../com.example.solstone-watchdog.plist",
+        service_target="gui/501/com.example.solstone-watchdog",
+    )
+
+    assert doctor._foreign_launcher_remedy((match,)) == (
+        "remove foreign launchers targeting /Applications/solstone.app: "
+        "launchctl bootout gui/501/com.example.solstone-watchdog; "
+        "rm /Users/.../com.example.solstone-watchdog.plist; "
+        "then rerun journal doctor"
+    )
+
+
+def test_foreign_launcher_incident_regression_blocks_without_legacy_or_app(
+    doctor, monkeypatch, home_root
+):
+    """Incident regression: a hand-written user LaunchAgent with KeepAlive=True
+    relaunches /Applications/solstone.app and must block journal doctor even
+    when the legacy service is absent and journal.app is not currently running.
+    This is the standing reality proxy for macOS-only behavior that cannot be
+    validated on this Linux host.
+    """
+
+    plist_path = write_foreign_plist(
+        home_root,
+        "com.example.solstone-watchdog.plist",
+        label="com.example.solstone-watchdog",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="Bootstrap lookup failed: service not found",
+        ),
+    )
+    before = tree_snapshot(home_root)
+
+    results = doctor.run_checks(
+        args(doctor),
+        checks=[(doctor.SUPERVISOR_CONFLICT_CHECK, doctor.supervisor_conflict_check)],
+    )
+
+    assert tree_snapshot(home_root) == before
+    result = results[0]
+    assert result.status == "fail"
+    assert "1 foreign KeepAlive launcher targets /Applications/solstone.app" in (
+        result.detail
+    )
+    assert "foreign_launchers=1" in result.detail
+    assert f"com.example.solstone-watchdog@{plist_path}" in result.detail
+    assert result.fix == (
+        "remove foreign launchers targeting /Applications/solstone.app: "
+        "launchctl bootout gui/501/com.example.solstone-watchdog; "
+        f"rm {plist_path}; then rerun journal doctor"
+    )
+
+
+def test_foreign_launcher_fix_shell_quotes_single_line_adversarial_label(
+    doctor, monkeypatch, home_root
+):
+    label = "com.example; rm -rf ~ `tick` $(echo hi) space 'quote"
+    write_foreign_plist(
+        home_root,
+        "shell-safe.plist",
+        label=label,
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "fail"
+    assert result.fix is not None
+    assert "\n" not in result.fix
+    target = f"gui/501/{label}"
+    quoted_target = shlex.quote(target)
+    assert result.fix.count(quoted_target) == 1
+    assert shlex.split(quoted_target) == [target]
+
+
+def test_control_character_foreign_label_warns_without_remedy(
+    doctor, monkeypatch, home_root
+):
+    plist_path = write_foreign_plist(
+        home_root,
+        "control-label.plist",
+        label="com.example.bad\nlabel",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    evidence = service.inspect_supervisor_conflict()
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert evidence.foreign.matches == ()
+    assert evidence.foreign.incomplete_paths == (str(plist_path),)
+    assert result.status == "warn"
+    assert result.fix is None
+    assert "foreign_incomplete=" in result.detail
+    assert "\n" not in result.detail
+
+
+def test_combined_exact_and_foreign_conflict_fix_contains_both_actions(
+    doctor, monkeypatch, home_root
+):
+    write_legacy_plist(home_root, ["/tmp/legacy-journal", "start"])
+    foreign_path = write_foreign_plist(
+        home_root,
+        "com.example.foreign.plist",
+        label="com.example.foreign",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=0,
+            stdout="\tpid = 12345\n",
+            stderr="",
+        ),
+        processes=[
+            _FakeProcess(
+                pid=4242,
+                exe="/Applications/journal.app/Contents/MacOS/journal",
+            )
+        ],
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "fail"
+    assert result.fix == (
+        "journal service uninstall; "
+        "remove foreign launchers targeting /Applications/solstone.app: "
+        "launchctl bootout gui/501/com.example.foreign; "
+        f"rm {foreign_path}; then rerun journal doctor"
+    )
+
+
+def test_foreign_match_with_incomplete_scan_fails_with_match_remedy_only(
+    doctor, monkeypatch, home_root
+):
+    foreign_path = write_foreign_plist(
+        home_root,
+        "com.example.foreign.plist",
+        label="com.example.foreign",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    bad_path = home_root / "Library" / "LaunchAgents" / "broken.plist"
+    bad_path.write_text("not a plist", encoding="utf-8")
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "fail"
+    assert result.fix is not None
+    assert str(foreign_path) in result.fix
+    assert str(bad_path) not in result.fix
+    assert "foreign launcher scan incomplete" in result.detail
+    assert f"foreign_incomplete={bad_path}" in result.detail
+
+
+def test_incomplete_foreign_scan_warns_without_remedy(doctor, monkeypatch, home_root):
+    bad_path = home_root / "Library" / "LaunchAgents" / "broken.plist"
+    bad_path.parent.mkdir(parents=True)
+    bad_path.write_text("not a plist", encoding="utf-8")
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.fix is None
+    assert "foreign launcher scan incomplete" in result.detail
+    assert f"foreign_incomplete={bad_path}" in result.detail
 
 
 def test_conflict_report_suppresses_orthogonal_upgrade_fix(

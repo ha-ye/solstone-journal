@@ -54,6 +54,7 @@ _LAUNCHD_BOOTSTRAP_MAX_ATTEMPTS = 5
 _LAUNCHD_BOOTSTRAP_RETRY_WAIT_S = 1.0
 _SUPERVISOR_CONFLICT_LAUNCHCTL_TIMEOUT_S = 2.0
 _JOURNAL_APP_EXECUTABLE_SUFFIX = "/journal.app/Contents/MacOS/journal"
+SOLSTONE_APP_BUNDLE_PATH = "/Applications/solstone.app"
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,23 @@ class ServiceTargetIdentity:
 
 
 @dataclass(frozen=True)
+class ForeignLauncherMatch:
+    label: str
+    plist_path: str
+    service_target: str
+
+
+@dataclass(frozen=True)
+class ForeignLauncherScan:
+    matches: tuple[ForeignLauncherMatch, ...]
+    incomplete_paths: tuple[str, ...]
+
+    @property
+    def is_incomplete(self) -> bool:
+        return bool(self.incomplete_paths)
+
+
+@dataclass(frozen=True)
 class SupervisorConflictEvidence:
     """Read-only macOS topology evidence for competing journal supervisors."""
 
@@ -89,6 +107,7 @@ class SupervisorConflictEvidence:
     app_pid: int | None
     app_executable: str | None
     detail: str
+    foreign: ForeignLauncherScan
 
     @property
     def plist_installed(self) -> bool:
@@ -106,10 +125,18 @@ class SupervisorConflictEvidence:
         return tuple(axes)
 
     @property
-    def is_conflict(self) -> bool:
+    def exact_label_conflict(self) -> bool:
         return self.app_state == "running" and (
             self.plist_installed or self.label_state == "loaded"
         )
+
+    @property
+    def foreign_conflict(self) -> bool:
+        return bool(self.foreign.matches)
+
+    @property
+    def is_conflict(self) -> bool:
+        return self.exact_label_conflict or self.foreign_conflict
 
 
 def _ready_timeout_message() -> str:
@@ -290,6 +317,15 @@ def _systemd_exec_start_parts(path: Path) -> tuple[list[str] | None, list[str]]:
     return parts, lines
 
 
+def _load_launchd_plist(path: Path) -> dict | None:
+    try:
+        with path.open("rb") as handle:
+            data = plistlib.load(handle)
+    except (plistlib.InvalidFileException, ValueError, ExpatError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _launchd_program_arguments(path: Path) -> list[str] | None:
     """Return a launchd plist's ProgramArguments as strings (read-only).
 
@@ -297,10 +333,8 @@ def _launchd_program_arguments(path: Path) -> list[str] | None:
     list. Mirrors the inline read in ``_reconcile_launchd_plist`` but is a
     pure reader: it never prints or mutates.
     """
-    try:
-        with path.open("rb") as handle:
-            data = plistlib.load(handle)
-    except (plistlib.InvalidFileException, ValueError, ExpatError, OSError):
+    data = _load_launchd_plist(path)
+    if data is None:
         return None
 
     program_arguments = data.get("ProgramArguments")
@@ -308,6 +342,129 @@ def _launchd_program_arguments(path: Path) -> list[str] | None:
         return None
 
     return [str(arg) for arg in program_arguments]
+
+
+def _contains_control_char(value: str) -> bool:
+    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+
+
+def _display_safe(value: str) -> str:
+    return "".join(
+        "?" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value
+    )
+
+
+def _is_foreign_launcher_label(label: str) -> bool:
+    return label != SERVICE_LABEL and not label.startswith(f"{SERVICE_LABEL}.")
+
+
+def _keepalive_is_persistent(value: object) -> bool:
+    if value is True:
+        return True
+    return isinstance(value, dict) and bool(value)
+
+
+def _launchd_command_strings(data: dict) -> tuple[str, ...]:
+    strings: list[str] = []
+    program = data.get("Program")
+    if isinstance(program, str):
+        strings.append(program)
+    program_arguments = data.get("ProgramArguments")
+    if isinstance(program_arguments, list):
+        strings.extend(str(arg) for arg in program_arguments)
+    return tuple(strings)
+
+
+def _is_app_path_continuation_char(char: str) -> bool:
+    return char.isalnum() or char in "._-/"
+
+
+def _has_leading_app_path_boundary(value: str, index: int) -> bool:
+    return index == 0 or not _is_app_path_continuation_char(value[index - 1])
+
+
+def _has_trailing_app_path_boundary(value: str, end: int) -> bool:
+    return (
+        end == len(value)
+        or value[end] == "/"
+        or not _is_app_path_continuation_char(value[end])
+    )
+
+
+def _mentions_solstone_app_bundle(value: str) -> bool:
+    start = 0
+    while True:
+        index = value.find(SOLSTONE_APP_BUNDLE_PATH, start)
+        if index == -1:
+            return False
+        end = index + len(SOLSTONE_APP_BUNDLE_PATH)
+        if _has_leading_app_path_boundary(
+            value, index
+        ) and _has_trailing_app_path_boundary(value, end):
+            return True
+        start = index + 1
+
+
+def _foreign_launcher_match(
+    data: dict, path: Path, uid: int
+) -> ForeignLauncherMatch | None:
+    label = data.get("Label")
+    if not isinstance(label, str) or not label:
+        return None
+    if _contains_control_char(label):
+        return None
+    if not _is_foreign_launcher_label(label):
+        return None
+    if not _keepalive_is_persistent(data.get("KeepAlive")):
+        return None
+    if not any(
+        _mentions_solstone_app_bundle(command)
+        for command in _launchd_command_strings(data)
+    ):
+        return None
+    return ForeignLauncherMatch(
+        label=label,
+        plist_path=str(path),
+        service_target=f"gui/{uid}/{label}",
+    )
+
+
+def _scan_foreign_solstone_app_launchers() -> ForeignLauncherScan:
+    scan_dir = _plist_path().parent
+    try:
+        if not scan_dir.is_dir():
+            return ForeignLauncherScan((), ())
+        paths = sorted(scan_dir.glob("*.plist"))
+    except OSError:
+        return ForeignLauncherScan((), (str(scan_dir),))
+
+    matches: list[ForeignLauncherMatch] = []
+    incomplete_paths: list[str] = []
+    uid = os.getuid()
+    for path in paths:
+        path_text = str(path)
+        if _contains_control_char(path_text):
+            incomplete_paths.append(path_text)
+            continue
+
+        data = _load_launchd_plist(path)
+        if data is None:
+            incomplete_paths.append(path_text)
+            continue
+
+        label = data.get("Label")
+        if isinstance(label, str) and _contains_control_char(label):
+            incomplete_paths.append(path_text)
+            continue
+
+        match = _foreign_launcher_match(data, path, uid)
+        if match is not None:
+            matches.append(match)
+
+    return ForeignLauncherScan(
+        tuple(sorted(matches, key=lambda match: (match.label, match.plist_path))),
+        tuple(sorted(incomplete_paths)),
+    )
 
 
 def _classify_unit_args(args: list[str]) -> tuple[str, str, list[str], bool] | None:
@@ -497,15 +654,30 @@ def _supervisor_conflict_detail(
     app_state: str,
     app_pid: int | None,
     app_executable: str | None,
+    foreign: ForeignLauncherScan,
 ) -> str:
     label_pid_text = str(label_pid) if label_pid is not None else "none"
     app_pid_text = str(app_pid) if app_pid is not None else "none"
     app_executable_text = app_executable if app_executable is not None else "none"
-    return (
+    detail = (
         f"plist_path={plist_path} plist_state={plist_state}; "
         f"launchd_label={label_state} pid={label_pid_text}; "
         f"journal_app={app_state} pid={app_pid_text} exe={app_executable_text}"
     )
+    foreign_parts: list[str] = []
+    if foreign.matches:
+        matches = "|".join(
+            f"{_display_safe(match.label)}@{_display_safe(match.plist_path)}"
+            for match in foreign.matches
+        )
+        foreign_parts.append(f"foreign={matches}")
+    if foreign.incomplete_paths:
+        incomplete = "|".join(_display_safe(path) for path in foreign.incomplete_paths)
+        foreign_parts.append(f"foreign_incomplete={incomplete}")
+    if foreign_parts:
+        detail += f"; foreign_launchers={len(foreign.matches)} "
+        detail += " ".join(foreign_parts)
+    return detail
 
 
 def _inspect_supervisor_conflict_plist(path: Path) -> str:
@@ -582,6 +754,7 @@ def inspect_supervisor_conflict() -> SupervisorConflictEvidence:
     without invoking launchctl or enumerating processes.
     """
     if sys.platform != "darwin":
+        foreign = ForeignLauncherScan((), ())
         return SupervisorConflictEvidence(
             str(_plist_path()),
             "absent",
@@ -591,6 +764,7 @@ def inspect_supervisor_conflict() -> SupervisorConflictEvidence:
             None,
             None,
             "macOS supervisor topology is not applicable on this platform",
+            foreign,
         )
 
     uid = os.getuid()
@@ -598,6 +772,7 @@ def inspect_supervisor_conflict() -> SupervisorConflictEvidence:
     plist_state = _inspect_supervisor_conflict_plist(plist_path)
     label_state, label_pid = _inspect_supervisor_conflict_label(uid)
     app_state, app_pid, app_executable = _inspect_supervisor_conflict_app(uid)
+    foreign = _scan_foreign_solstone_app_launchers()
     return SupervisorConflictEvidence(
         str(plist_path),
         plist_state,
@@ -614,7 +789,9 @@ def inspect_supervisor_conflict() -> SupervisorConflictEvidence:
             app_state,
             app_pid,
             app_executable,
+            foreign,
         ),
+        foreign,
     )
 
 

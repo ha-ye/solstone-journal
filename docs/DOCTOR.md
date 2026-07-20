@@ -54,7 +54,7 @@ Use the diagnostic command that matches the question:
 | `disk_space` | advisory | Free-space warning. |
 | `config_dir_readable` | blocker | Home and service config directory permissions. |
 | `journal_dir_writable` | blocker | Journal directory writability when the local journal exists. |
-| `supervisor_conflict` | blocker | macOS only; detects journal.app and the legacy LaunchAgent both supervising one journal. |
+| `supervisor_conflict` | blocker | macOS only; detects journal.app with the legacy LaunchAgent, or foreign persistent LaunchAgents that relaunch `/Applications/solstone.app`. |
 | `service_identity` | blocker | Installed service points at this install. |
 | `service_running` | blocker | Service installed/running/crash-loop diagnosis. |
 | `journal_sync` | blocker | Concurrent-writer conflict check. |
@@ -74,13 +74,16 @@ warning when the OS unit is not failed. Host dependency and feature checks repor
 missing journal-host packaging pieces directly.
 
 On macOS, `supervisor_conflict` fails when `journal.app` is running while the
-legacy `org.solpbc.solstone` LaunchAgent is installed or loaded. The proven
-conflict remediation is `journal service uninstall`. In that state, other
-diagnoses stay visible but their action strings point back to resolving the
-supervisor conflict first, so the report does not mix service creation,
-restart, setup, upgrade, or deletion advice with the single conflict fix. If the
-topology is unknown rather than proven, only service lifecycle actions are
-withheld until the topology can be determined.
+legacy `org.solpbc.solstone` LaunchAgent is installed or loaded, or when a
+foreign persistent LaunchAgent targets `/Applications/solstone.app`. The proven
+legacy remediation is `journal service uninstall`; foreign launcher findings
+include one-line `remove foreign launchers targeting /Applications/solstone.app`
+commands for the matching plists. In a proven conflict, other diagnoses stay
+visible but their action strings point back to resolving the supervisor conflict
+first, so the report does not mix service creation, restart, setup, upgrade, or
+deletion advice with the conflict fix. If the topology or foreign-launcher scan
+is incomplete rather than proven, only service lifecycle actions are withheld
+until it can be determined.
 
 `journal setup` step 1 runs `journal doctor --readiness`: the client readiness
 checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`,

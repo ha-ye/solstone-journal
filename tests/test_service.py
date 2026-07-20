@@ -666,6 +666,7 @@ class TestSupervisorConflictInspection:
         evidence = service.inspect_supervisor_conflict()
 
         assert evidence.plist_state == "malformed"
+        assert evidence.foreign.incomplete_paths == (str(plist_path),)
 
     def test_plist_missing_argv_is_malformed(self, monkeypatch, tmp_path):
         plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
@@ -713,16 +714,368 @@ class TestSupervisorConflictInspection:
         assert evidence.plist_state == "present"
 
     def test_stat_permission_error_is_plist_unknown(self, monkeypatch, tmp_path):
-        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        original_stat = service.os.stat
+
+        def deny_plist_stat(path, *args, **kwargs):
+            if Path(path) == plist_path:
+                raise PermissionError("denied")
+            return original_stat(path, *args, **kwargs)
+
         monkeypatch.setattr(
             service.os,
             "stat",
-            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+            deny_plist_stat,
         )
 
         evidence = service.inspect_supervisor_conflict()
 
         assert evidence.plist_state == "unknown"
+
+
+class TestForeignSolstoneAppLaunchers:
+    @staticmethod
+    def _configure(monkeypatch, tmp_path: Path) -> Path:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(service.os, "getuid", lambda: 501)
+        launch_agents = tmp_path / "LaunchAgents"
+        monkeypatch.setattr(
+            service,
+            "_plist_path",
+            lambda: launch_agents / "org.solpbc.solstone.plist",
+        )
+        launch_agents.mkdir(parents=True, exist_ok=True)
+        return launch_agents
+
+    @staticmethod
+    def _write_plist(path: Path, data: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(plistlib.dumps(data))
+
+    def test_load_launchd_plist_returns_dict_or_none(self, tmp_path):
+        valid = tmp_path / "valid.plist"
+        invalid = tmp_path / "invalid.plist"
+        list_payload = tmp_path / "list.plist"
+        self._write_plist(valid, {"Label": "x"})
+        invalid.write_text("not a plist", encoding="utf-8")
+        self._write_plist(list_payload, ["not", "a", "dict"])
+
+        assert service._load_launchd_plist(valid) == {"Label": "x"}
+        assert service._load_launchd_plist(invalid) is None
+        assert service._load_launchd_plist(list_payload) is None
+        assert service._load_launchd_plist(tmp_path / "missing.plist") is None
+
+    @pytest.mark.parametrize(
+        ("candidate", "expected"),
+        [
+            ("/Applications/solstone.app", True),
+            ("/Applications/solstone.app/Contents/MacOS/solstone", True),
+            ('open -a "/Applications/solstone.app"', True),
+            ("exec /Applications/solstone.app; sleep 1", True),
+            ("/tmp/Applications/solstone.app", False),
+            ("/Applications/solstone.application", False),
+            ("/Applications/solstone.app.old", False),
+            ("/Applications/solstone.app2", False),
+        ],
+    )
+    def test_app_path_boundary_matrix(self, candidate, expected):
+        assert service._mentions_solstone_app_bundle(candidate) is expected
+
+    @pytest.mark.parametrize(
+        ("keep_alive", "expected"),
+        [
+            (True, True),
+            ({"SuccessfulExit": False}, True),
+            ({"Crashed": True}, True),
+            (False, False),
+            ({}, False),
+            ("true", False),
+            (1, False),
+            (None, False),
+        ],
+    )
+    def test_keepalive_persistence_matrix(
+        self, monkeypatch, tmp_path, keep_alive, expected
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        data = {
+            "Label": "com.example.solstone-watchdog",
+            "ProgramArguments": ["/usr/bin/open", "-a", "/Applications/solstone.app"],
+        }
+        if keep_alive is not None:
+            data["KeepAlive"] = keep_alive
+        self._write_plist(launch_agents / "foreign.plist", data)
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert bool(scan.matches) is expected
+        assert scan.incomplete_paths == ()
+
+    def test_foreign_launcher_incident_regression_direct_program(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "com.example.solstone-watchdog.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.solstone-watchdog",
+                "Program": "/Applications/solstone.app/Contents/MacOS/solstone",
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.incomplete_paths == ()
+        assert scan.matches == (
+            service.ForeignLauncherMatch(
+                label="com.example.solstone-watchdog",
+                plist_path=str(plist_path),
+                service_target="gui/501/com.example.solstone-watchdog",
+            ),
+        )
+
+    def test_foreign_launcher_matches_open_and_shell_arguments(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        self._write_plist(
+            launch_agents / "open.plist",
+            {
+                "Label": "com.example.open",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+        self._write_plist(
+            launch_agents / "shell.plist",
+            {
+                "Label": "com.example.shell",
+                "ProgramArguments": [
+                    "/bin/sh",
+                    "-c",
+                    "exec /usr/bin/open -a /Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert [match.label for match in scan.matches] == [
+            "com.example.open",
+            "com.example.shell",
+        ]
+
+    def test_foreign_launcher_ignores_non_command_fields(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        self._write_plist(
+            launch_agents / "non-command.plist",
+            {
+                "Label": "com.example.solstone-watchdog",
+                "BundleProgram": "/Applications/solstone.app",
+                "EnvironmentVariables": {"TARGET": "/Applications/solstone.app"},
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == ()
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            service.SERVICE_LABEL,
+            f"{service.SERVICE_LABEL}.dev",
+        ],
+    )
+    def test_product_labels_do_not_match(self, monkeypatch, tmp_path, label):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        self._write_plist(
+            launch_agents / "product.plist",
+            {
+                "Label": label,
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == ()
+
+    def test_control_character_label_is_incomplete_not_match(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "control-label.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.bad\nlabel",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+
+    def test_control_character_path_is_incomplete_and_detail_safe(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "bad\npath.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.solstone-watchdog",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+        detail = service._supervisor_conflict_detail(
+            launch_agents / "org.solpbc.solstone.plist",
+            "absent",
+            "unloaded",
+            None,
+            "absent",
+            None,
+            None,
+            scan,
+        )
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+        assert "\n" not in detail
+        assert "bad?path.plist" in detail
+
+    def test_multi_field_same_plist_dedupes_to_one_match(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "multi.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.multi",
+                "Program": "/Applications/solstone.app/Contents/MacOS/solstone",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == (
+            service.ForeignLauncherMatch(
+                label="com.example.multi",
+                plist_path=str(plist_path),
+                service_target="gui/501/com.example.multi",
+            ),
+        )
+
+    def test_two_paths_one_label_sorted_by_label_then_path(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        later = launch_agents / "z.plist"
+        earlier = launch_agents / "a.plist"
+        for path in (later, earlier):
+            self._write_plist(
+                path,
+                {
+                    "Label": "com.example.duplicate",
+                    "ProgramArguments": [
+                        "/usr/bin/open",
+                        "-a",
+                        "/Applications/solstone.app",
+                    ],
+                    "KeepAlive": True,
+                },
+            )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert [match.plist_path for match in scan.matches] == [
+            str(earlier),
+            str(later),
+        ]
+
+    def test_incomplete_file_parse_failure(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        bad_path = launch_agents / "broken.plist"
+        bad_path.write_text("not a plist", encoding="utf-8")
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(bad_path),)
+
+    def test_incomplete_directory_unenumerable(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        original_glob = Path.glob
+
+        def fail_glob(path, pattern):
+            if path == launch_agents and pattern == "*.plist":
+                raise OSError("denied")
+            return original_glob(path, pattern)
+
+        monkeypatch.setattr(Path, "glob", fail_glob)
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(launch_agents),)
+
+    def test_missing_launch_agents_dir_is_complete_empty(self, monkeypatch, tmp_path):
+        launch_agents = tmp_path / "missing" / "LaunchAgents"
+        monkeypatch.setattr(
+            service,
+            "_plist_path",
+            lambda: launch_agents / "org.solpbc.solstone.plist",
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == ()
+
+    def test_non_darwin_inspection_does_not_scan_foreign_launchers(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(
+            service,
+            "_scan_foreign_solstone_app_launchers",
+            lambda: pytest.fail("foreign launchers should not be scanned"),
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.foreign == service.ForeignLauncherScan((), ())
 
 
 class TestStatus:

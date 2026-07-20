@@ -34,6 +34,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -69,6 +70,9 @@ from solstone.think.probe import (
     version_text,
 )
 from solstone.think.service import (
+    SOLSTONE_APP_BUNDLE_PATH,
+    ForeignLauncherMatch,
+    SupervisorConflictEvidence,
     check_service_target_identity,
     inspect_supervisor_conflict,
     service_is_failed,
@@ -164,8 +168,11 @@ _ORPHAN_SEGMENT_PDF_FIX = (
     "then re-run journal doctor"
 )
 _SUPERVISOR_CONFLICT_FIX = "journal service uninstall"
-_SUPERVISOR_CONFLICT_FIX_POINTER = (
-    "resolve the macOS supervisor conflict first: journal service uninstall"
+_SUPERVISOR_CONFLICT_FIX_POINTER_TEMPLATE = (
+    "resolve the macOS supervisor conflict first: {fix}"
+)
+_SUPERVISOR_CONFLICT_FIX_POINTER = _SUPERVISOR_CONFLICT_FIX_POINTER_TEMPLATE.format(
+    fix=_SUPERVISOR_CONFLICT_FIX
 )
 _SUPERVISOR_TOPOLOGY_WARN_POINTER = (
     "resolve the macOS supervisor topology warning before changing the journal service"
@@ -566,27 +573,77 @@ def _format_unknown_axes(axes: tuple[str, ...]) -> str:
     return ", ".join(axes)
 
 
+def _foreign_launcher_remedy(matches: tuple[ForeignLauncherMatch, ...]) -> str:
+    commands = "; ".join(
+        "launchctl bootout "
+        f"{shlex.quote(match.service_target)}; rm {shlex.quote(match.plist_path)}"
+        for match in matches
+    )
+    return (
+        f"remove foreign launchers targeting {SOLSTONE_APP_BUNDLE_PATH}: "
+        f"{commands}; then rerun journal doctor"
+    )
+
+
+def _supervisor_conflict_fix(evidence: SupervisorConflictEvidence) -> str:
+    parts: list[str] = []
+    if evidence.exact_label_conflict:
+        parts.append(_SUPERVISOR_CONFLICT_FIX)
+    if evidence.foreign_conflict:
+        parts.append(_foreign_launcher_remedy(evidence.foreign.matches))
+    return "; ".join(parts)
+
+
+def _supervisor_conflict_fail_reason(evidence: SupervisorConflictEvidence) -> str:
+    reasons: list[str] = []
+    if evidence.exact_label_conflict:
+        reasons.append(
+            "journal.app is running while the legacy LaunchAgent is installed or loaded"
+        )
+    if evidence.foreign_conflict:
+        count = len(evidence.foreign.matches)
+        noun = "launcher" if count == 1 else "launchers"
+        verb = "targets" if count == 1 else "target"
+        reasons.append(
+            f"{count} foreign KeepAlive {noun} {verb} {SOLSTONE_APP_BUNDLE_PATH}"
+        )
+    if evidence.foreign.is_incomplete:
+        reasons.append("foreign launcher scan incomplete")
+    return "; ".join(reasons)
+
+
+def _supervisor_topology_unknown_reason(
+    unknown_axes: tuple[str, ...], evidence: SupervisorConflictEvidence
+) -> str:
+    reasons: list[str] = []
+    if unknown_axes:
+        reasons.append(f"unknown axis(es): {_format_unknown_axes(unknown_axes)}")
+    if evidence.foreign.is_incomplete:
+        reasons.append("foreign launcher scan incomplete")
+    return "; ".join(reasons)
+
+
 def supervisor_conflict_check(args: Args) -> CheckResult:
     del args
     evidence = inspect_supervisor_conflict()
     if evidence.is_conflict:
+        fix = _supervisor_conflict_fix(evidence)
         return make_result(
             SUPERVISOR_CONFLICT_CHECK,
             "fail",
-            (
-                "macOS supervisor conflict: journal.app is running while the legacy "
-                f"LaunchAgent is installed or loaded ({evidence.detail})"
-            ),
-            _SUPERVISOR_CONFLICT_FIX,
+            f"macOS supervisor conflict: {_supervisor_conflict_fail_reason(evidence)} "
+            f"({evidence.detail})",
+            fix,
         )
     unknown_axes = evidence.unknown_axes
-    if unknown_axes:
+    if unknown_axes or evidence.foreign.is_incomplete:
         return make_result(
             SUPERVISOR_CONFLICT_CHECK,
             "warn",
             (
-                "couldn't fully determine macOS supervisor topology; unknown "
-                f"axis(es): {_format_unknown_axes(unknown_axes)} ({evidence.detail})"
+                "couldn't fully determine macOS supervisor topology; "
+                f"{_supervisor_topology_unknown_reason(unknown_axes, evidence)} "
+                f"({evidence.detail})"
             ),
         )
     return make_result(
@@ -1274,7 +1331,8 @@ def _apply_supervisor_conflict_fix_policy(
             updated.append(result)
             continue
         if conflict.status == "fail":
-            updated.append(replace(result, fix=_SUPERVISOR_CONFLICT_FIX_POINTER))
+            pointer = _SUPERVISOR_CONFLICT_FIX_POINTER_TEMPLATE.format(fix=conflict.fix)
+            updated.append(replace(result, fix=pointer))
             continue
         if _fix_mentions_unsafe_service_action(result.fix):
             updated.append(replace(result, fix=_SUPERVISOR_TOPOLOGY_WARN_POINTER))
