@@ -109,6 +109,47 @@ _SEGMENTS_RESPONSE_SCHEMA = {
     ]
 }
 
+_INGEST_UPLOAD_STATUS_SCHEMA = {
+    "type": "string",
+    "enum": ["ok", "duplicate", "collision", "conflict", "failed"],
+    "x-vocabulary": {
+        "classification": "closed",
+        "id": "observer.ingestUpload.status",
+        "unknown_value_behavior": "reject",
+    },
+}
+
+_OBSERVER_STATUS_OK_SCHEMA = {
+    "type": "string",
+    "enum": ["ok"],
+    "x-vocabulary": {
+        "classification": "closed",
+        "id": "observer.status.ok",
+        "unknown_value_behavior": "reject",
+    },
+}
+
+_SEGMENTS_RESPONSE_EXTENSIONS = {
+    "x-vocabularies": {
+        "X-Solstone-Protocol-Version": {
+            "absent_or_unparseable": 1,
+            "classification": "extensible_integer",
+            "current": 2,
+            "supported_response_variants": [1, 2],
+            "unknown_value_behavior": "version_greater_or_equal_current_uses_v2",
+        },
+    }
+}
+
+_OBSERVER_SSE_EXTENSIONS = {
+    "x-sse-frame-kinds": {
+        "classification": "closed",
+        "id": "observer.callosumStream.sse_frames",
+        "unknown_value_behavior": "reject",
+        "values": ["data", "error", "heartbeat"],
+    },
+}
+
 _SEGMENT_ITEM_EXAMPLE = {
     "key": "143022_300",
     "observed": True,
@@ -252,7 +293,12 @@ OPERATIONS: list[OperationSpec] = [
                     "content is not a collision; the upload joins that segment."
                 ),
                 named_fields=(
-                    FieldSpec("status", "string", required=True),
+                    FieldSpec(
+                        "status",
+                        "string",
+                        required=True,
+                        raw_schema=_INGEST_UPLOAD_STATUS_SCHEMA,
+                    ),
                     FieldSpec("segment", "string"),
                     FieldSpec("files", "array", item_type="string"),
                     FieldSpec("bytes", "integer"),
@@ -338,7 +384,14 @@ OPERATIONS: list[OperationSpec] = [
             ResponseSpec(
                 status=200,
                 description="Event relayed.",
-                named_fields=(FieldSpec("status", "string", required=True),),
+                named_fields=(
+                    FieldSpec(
+                        "status",
+                        "string",
+                        required=True,
+                        raw_schema=_OBSERVER_STATUS_OK_SCHEMA,
+                    ),
+                ),
                 example={"status": "ok"},
             ),
             *_observer_auth_errors(),
@@ -535,6 +588,7 @@ OPERATIONS: list[OperationSpec] = [
                         },
                     },
                 },
+                extensions=_SEGMENTS_RESPONSE_EXTENSIONS,
             ),
             *_observer_auth_errors(),
             _json_error(
@@ -573,6 +627,7 @@ OPERATIONS: list[OperationSpec] = [
                     "segment": "143022_300",
                 },
                 extensions={
+                    **_OBSERVER_SSE_EXTENSIONS,
                     "x-sse-error-frame": {
                         "schema": {"$ref": "#/components/schemas/Error"},
                         "x-reason-codes": [
@@ -588,7 +643,7 @@ OPERATIONS: list[OperationSpec] = [
                             "cover observer missing/revoked/disabled "
                             "(routes.py:281-292)."
                         ),
-                    }
+                    },
                 },
             ),
             _json_error(

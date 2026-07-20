@@ -156,7 +156,12 @@
               "missing",
               "processed"
             ],
-            "type": "string"
+            "type": "string",
+            "x-vocabulary": {
+              "classification": "closed",
+              "id": "SegmentFile.status",
+              "unknown_value_behavior": "reject"
+            }
           },
           "submitted_name": {
             "type": "string"
@@ -532,6 +537,8 @@
                 "additionalProperties": true,
                 "properties": {
                   "request_id": {
+                    "minLength": 1,
+                    "pattern": "\\S",
                     "type": "string"
                   }
                 },
@@ -2934,6 +2941,16 @@
                 "feature_unavailable",
                 "pl_revoked"
               ]
+            },
+            "x-sse-frame-kinds": {
+              "classification": "closed",
+              "id": "observer.callosumStream.sse_frames",
+              "unknown_value_behavior": "reject",
+              "values": [
+                "data",
+                "error",
+                "heartbeat"
+              ]
             }
           },
           "401": {
@@ -3213,7 +3230,19 @@
                       "type": "string"
                     },
                     "status": {
-                      "type": "string"
+                      "enum": [
+                        "ok",
+                        "duplicate",
+                        "collision",
+                        "conflict",
+                        "failed"
+                      ],
+                      "type": "string",
+                      "x-vocabulary": {
+                        "classification": "closed",
+                        "id": "observer.ingestUpload.status",
+                        "unknown_value_behavior": "reject"
+                      }
                     }
                   },
                   "required": [
@@ -3391,7 +3420,15 @@
                   "additionalProperties": true,
                   "properties": {
                     "status": {
-                      "type": "string"
+                      "enum": [
+                        "ok"
+                      ],
+                      "type": "string",
+                      "x-vocabulary": {
+                        "classification": "closed",
+                        "id": "observer.status.ok",
+                        "unknown_value_behavior": "reject"
+                      }
                     }
                   },
                   "required": [
@@ -3822,7 +3859,19 @@
                 }
               }
             },
-            "description": "Segment verification response."
+            "description": "Segment verification response.",
+            "x-vocabularies": {
+              "X-Solstone-Protocol-Version": {
+                "absent_or_unparseable": 1,
+                "classification": "extensible_integer",
+                "current": 2,
+                "supported_response_variants": [
+                  1,
+                  2
+                ],
+                "unknown_value_behavior": "version_greater_or_equal_current_uses_v2"
+              }
+            }
           },
           "400": {
             "content": {
@@ -4166,7 +4215,9 @@
             },
             "description": "Callosum event stream. Heartbeat frames are comments `: heartbeat\\n\\n`; data frames are `data: {json}\\n\\n` and carry CallosumEvent JSON for all tracts, including chat.",
             "x-chat-events": {
-              "description": "CallosumEvent kinds on tract 'chat' a native client branches on. Payloads remain open (CallosumEvent.additionalProperties).",
+              "classification": "extensible",
+              "description": "Native-client-interest subset of CallosumEvent kinds on tract 'chat'. This is not an exhaustive stream vocabulary; root SSE can carry other tracts and events. Payloads remain open (CallosumEvent.additionalProperties).",
+              "id": "root.chat.native_interest_kinds",
               "kinds": [
                 "owner_message",
                 "sol_message",
@@ -4177,6 +4228,17 @@
                 "chat_queue_depth",
                 "result",
                 "chat_error"
+              ],
+              "stream_exhaustive": false,
+              "unknown_value_behavior": "preserve"
+            },
+            "x-sse-frame-kinds": {
+              "classification": "closed",
+              "id": "callosum.rootEvents.sse_frames",
+              "unknown_value_behavior": "reject",
+              "values": [
+                "data",
+                "heartbeat"
               ]
             }
           },
@@ -4282,5 +4344,93 @@
       "segments_started",
       "segments_completed"
     ]
+  },
+  "x-vocabularies": {
+    "callosum.tract_event": {
+      "classification": "extensible",
+      "known_registry": {
+        "activity": [
+          "live",
+          "recorded"
+        ],
+        "chat": [
+          "owner_message",
+          "sol_message",
+          "talent_queued",
+          "talent_spawned",
+          "talent_finished",
+          "talent_errored",
+          "reflection_ready",
+          "chat_queue_depth",
+          "chat_error",
+          "sol_chat_request",
+          "sol_chat_request_superseded",
+          "owner_chat_open",
+          "owner_chat_dismissed",
+          "support_draft",
+          "result",
+          "support_submit_claim"
+        ],
+        "cortex": [
+          "request",
+          "start",
+          "thinking",
+          "tool_start",
+          "tool_end",
+          "finish",
+          "error",
+          "talent_updated",
+          "info",
+          "status"
+        ],
+        "importer": [
+          "started",
+          "status",
+          "completed",
+          "error"
+        ],
+        "logs": [
+          "exec",
+          "line",
+          "exit"
+        ],
+        "navigate": [
+          "request"
+        ],
+        "notification": [
+          "*"
+        ],
+        "observe": [
+          "status",
+          "observing",
+          "detected",
+          "described",
+          "transcribed",
+          "observed"
+        ],
+        "supervisor": [
+          "started",
+          "stopped",
+          "restarting",
+          "status",
+          "queue"
+        ],
+        "sync": [
+          "status"
+        ],
+        "think": [
+          "started",
+          "status",
+          "group_started",
+          "group_completed",
+          "talent_started",
+          "talent_completed",
+          "completed",
+          "segments_started",
+          "segments_completed"
+        ]
+      },
+      "unknown_value_behavior": "preserve"
+    }
   }
 }

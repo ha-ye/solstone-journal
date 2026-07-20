@@ -146,7 +146,18 @@ OPERATIONS: list[OperationSpec] = [
             "The request identifier must be a non-empty value after trimming."
         ),
         request=RequestSpec(
-            fields=(FieldSpec("request_id", "string", required=True),),
+            fields=(
+                FieldSpec(
+                    "request_id",
+                    "string",
+                    required=True,
+                    raw_schema={
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S",
+                    },
+                ),
+            ),
             example={"request_id": "sol-chat-1781803200000"},
         ),
         responses=(

@@ -254,7 +254,15 @@ def _components() -> dict[str, Any]:
             "name": {"type": "string"},
             "size": {"type": "integer"},
             "sha256": {"type": "string"},
-            "status": {"type": "string", "enum": ["present", "missing", "processed"]},
+            "status": {
+                "type": "string",
+                "enum": ["present", "missing", "processed"],
+                "x-vocabulary": {
+                    "classification": "closed",
+                    "id": "SegmentFile.status",
+                    "unknown_value_behavior": "reject",
+                },
+            },
             "submitted_name": {"type": "string"},
         },
         "required": ["name", "size", "sha256", "status"],
@@ -337,6 +345,15 @@ def assemble(fragments: list[list[OperationSpec]]) -> dict[str, Any]:
         "components": _components(),
         "x-callosum-registry": {
             key: CALLOSUM_REGISTRY[key] for key in sorted(CALLOSUM_REGISTRY)
+        },
+        "x-vocabularies": {
+            "callosum.tract_event": {
+                "classification": "extensible",
+                "known_registry": {
+                    key: CALLOSUM_REGISTRY[key] for key in sorted(CALLOSUM_REGISTRY)
+                },
+                "unknown_value_behavior": "preserve",
+            }
         },
     }
 

@@ -63,13 +63,25 @@ OPERATIONS: list[OperationSpec] = [
                 },
                 extensions={
                     "x-chat-events": {
+                        "classification": "extensible",
                         "description": (
-                            "CallosumEvent kinds on tract 'chat' a native client "
-                            "branches on. Payloads remain open "
+                            "Native-client-interest subset of CallosumEvent kinds "
+                            "on tract 'chat'. This is not an exhaustive stream "
+                            "vocabulary; root SSE can carry other tracts and "
+                            "events. Payloads remain open "
                             "(CallosumEvent.additionalProperties)."
                         ),
+                        "id": "root.chat.native_interest_kinds",
                         "kinds": NATIVE_CHAT_EVENT_KINDS,
-                    }
+                        "stream_exhaustive": False,
+                        "unknown_value_behavior": "preserve",
+                    },
+                    "x-sse-frame-kinds": {
+                        "classification": "closed",
+                        "id": "callosum.rootEvents.sse_frames",
+                        "unknown_value_behavior": "reject",
+                        "values": ["data", "heartbeat"],
+                    },
                 },
             ),
             _json_error(
