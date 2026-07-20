@@ -364,15 +364,29 @@ def _keepalive_is_persistent(value: object) -> bool:
     return isinstance(value, dict) and bool(value)
 
 
-def _launchd_command_strings(data: dict) -> tuple[str, ...]:
+def _launchd_command_strings(data: dict) -> tuple[tuple[str, ...], bool]:
     strings: list[str] = []
-    program = data.get("Program")
-    if isinstance(program, str):
-        strings.append(program)
-    program_arguments = data.get("ProgramArguments")
-    if isinstance(program_arguments, list):
-        strings.extend(str(arg) for arg in program_arguments)
-    return tuple(strings)
+    malformed = False
+
+    if "Program" in data:
+        program = data["Program"]
+        if isinstance(program, str):
+            strings.append(program)
+        else:
+            malformed = True
+
+    if "ProgramArguments" in data:
+        program_arguments = data["ProgramArguments"]
+        if isinstance(program_arguments, list):
+            for arg in program_arguments:
+                if isinstance(arg, str):
+                    strings.append(arg)
+                else:
+                    malformed = True
+        else:
+            malformed = True
+
+    return tuple(strings), malformed
 
 
 def _is_app_path_continuation_char(char: str) -> bool:
@@ -406,7 +420,7 @@ def _mentions_solstone_app_bundle(value: str) -> bool:
 
 
 def _foreign_launcher_match(
-    data: dict, path: Path, uid: int
+    data: dict, path: Path, uid: int, command_strings: tuple[str, ...]
 ) -> ForeignLauncherMatch | None:
     label = data.get("Label")
     if not isinstance(label, str) or not label:
@@ -415,10 +429,7 @@ def _foreign_launcher_match(
         return None
     if not _keepalive_is_persistent(data.get("KeepAlive")):
         return None
-    if not any(
-        _mentions_solstone_app_bundle(command)
-        for command in _launchd_command_strings(data)
-    ):
+    if not any(_mentions_solstone_app_bundle(command) for command in command_strings):
         return None
     return ForeignLauncherMatch(
         label=label,
@@ -430,9 +441,16 @@ def _foreign_launcher_match(
 def _scan_foreign_solstone_app_launchers() -> ForeignLauncherScan:
     scan_dir = _plist_path().parent
     try:
-        if not scan_dir.is_dir():
-            return ForeignLauncherScan((), ())
-        paths = sorted(scan_dir.glob("*.plist"))
+        os.lstat(scan_dir)
+    except FileNotFoundError:
+        return ForeignLauncherScan((), ())
+    except OSError:
+        return ForeignLauncherScan((), (str(scan_dir),))
+
+    try:
+        paths = sorted(
+            path for path in scan_dir.iterdir() if path.name.endswith(".plist")
+        )
     except OSError:
         return ForeignLauncherScan((), (str(scan_dir),))
 
@@ -455,7 +473,11 @@ def _scan_foreign_solstone_app_launchers() -> ForeignLauncherScan:
             incomplete_paths.append(path_text)
             continue
 
-        match = _foreign_launcher_match(data, path, uid)
+        command_strings, malformed_commands = _launchd_command_strings(data)
+        if malformed_commands:
+            incomplete_paths.append(path_text)
+
+        match = _foreign_launcher_match(data, path, uid, command_strings)
         if match is not None:
             matches.append(match)
 

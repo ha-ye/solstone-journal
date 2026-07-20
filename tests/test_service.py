@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import plistlib
 import subprocess
 import sys
@@ -735,15 +736,19 @@ class TestSupervisorConflictInspection:
 
 class TestForeignSolstoneAppLaunchers:
     @staticmethod
-    def _configure(monkeypatch, tmp_path: Path) -> Path:
+    def _set_scan_dir(monkeypatch, launch_agents: Path) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(service.os, "getuid", lambda: 501)
-        launch_agents = tmp_path / "LaunchAgents"
         monkeypatch.setattr(
             service,
             "_plist_path",
             lambda: launch_agents / "org.solpbc.solstone.plist",
         )
+
+    @staticmethod
+    def _configure(monkeypatch, tmp_path: Path) -> Path:
+        launch_agents = tmp_path / "LaunchAgents"
+        TestForeignSolstoneAppLaunchers._set_scan_dir(monkeypatch, launch_agents)
         launch_agents.mkdir(parents=True, exist_ok=True)
         return launch_agents
 
@@ -751,6 +756,11 @@ class TestForeignSolstoneAppLaunchers:
     def _write_plist(path: Path, data: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(plistlib.dumps(data))
+
+    @staticmethod
+    def _skip_if_root_for_chmod() -> None:
+        if os.geteuid() == 0:
+            pytest.skip("chmod-based permission checks are ineffective as root")
 
     def test_load_launchd_plist_returns_dict_or_none(self, tmp_path):
         valid = tmp_path / "valid.plist"
@@ -1036,16 +1046,33 @@ class TestForeignSolstoneAppLaunchers:
         assert scan.matches == ()
         assert scan.incomplete_paths == (str(bad_path),)
 
-    def test_incomplete_directory_unenumerable(self, monkeypatch, tmp_path):
+    def test_incomplete_directory_unreadable(self, monkeypatch, tmp_path):
         launch_agents = self._configure(monkeypatch, tmp_path)
-        original_glob = Path.glob
+        self._skip_if_root_for_chmod()
 
-        def fail_glob(path, pattern):
-            if path == launch_agents and pattern == "*.plist":
-                raise OSError("denied")
-            return original_glob(path, pattern)
+        try:
+            launch_agents.chmod(0o000)
+            scan = service._scan_foreign_solstone_app_launchers()
+        finally:
+            launch_agents.chmod(0o700)
 
-        monkeypatch.setattr(Path, "glob", fail_glob)
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(launch_agents),)
+
+    def test_incomplete_scan_path_regular_file(self, monkeypatch, tmp_path):
+        launch_agents = tmp_path / "LaunchAgents"
+        launch_agents.write_text("not a directory", encoding="utf-8")
+        self._set_scan_dir(monkeypatch, launch_agents)
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(launch_agents),)
+
+    def test_incomplete_scan_path_dangling_symlink(self, monkeypatch, tmp_path):
+        launch_agents = tmp_path / "LaunchAgents"
+        launch_agents.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+        self._set_scan_dir(monkeypatch, launch_agents)
 
         scan = service._scan_foreign_solstone_app_launchers()
 
@@ -1054,16 +1081,169 @@ class TestForeignSolstoneAppLaunchers:
 
     def test_missing_launch_agents_dir_is_complete_empty(self, monkeypatch, tmp_path):
         launch_agents = tmp_path / "missing" / "LaunchAgents"
-        monkeypatch.setattr(
-            service,
-            "_plist_path",
-            lambda: launch_agents / "org.solpbc.solstone.plist",
-        )
+        self._set_scan_dir(monkeypatch, launch_agents)
 
         scan = service._scan_foreign_solstone_app_launchers()
 
         assert scan.matches == ()
         assert scan.incomplete_paths == ()
+
+    def test_incomplete_scan_path_blocked_parent(self, monkeypatch, tmp_path):
+        self._skip_if_root_for_chmod()
+        blocked_parent = tmp_path / "blocked"
+        launch_agents = blocked_parent / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        self._set_scan_dir(monkeypatch, launch_agents)
+
+        try:
+            blocked_parent.chmod(0o000)
+            scan = service._scan_foreign_solstone_app_launchers()
+        finally:
+            blocked_parent.chmod(0o700)
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(launch_agents),)
+
+    def test_incomplete_scan_path_disappears_after_metadata(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        original_lstat = service.os.lstat
+
+        def remove_after_lstat(path, *args, **kwargs):
+            result = original_lstat(path, *args, **kwargs)
+            if Path(path) == launch_agents:
+                launch_agents.rmdir()
+            return result
+
+        # This seam only sequences a real race; Path.iterdir remains unmocked,
+        # so the scanner observes the real FileNotFoundError.
+        monkeypatch.setattr(service.os, "lstat", remove_after_lstat)
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(launch_agents),)
+
+    def test_readable_plist_symlink_matches_normally(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        target = tmp_path / "target.plist"
+        self._write_plist(
+            target,
+            {
+                "Label": "com.example.symlink",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+        plist_path = launch_agents / "link.plist"
+        plist_path.symlink_to(target)
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.incomplete_paths == ()
+        assert scan.matches == (
+            service.ForeignLauncherMatch(
+                label="com.example.symlink",
+                plist_path=str(plist_path),
+                service_target="gui/501/com.example.symlink",
+            ),
+        )
+
+    def test_broken_plist_symlink_is_incomplete(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "broken-link.plist"
+        plist_path.symlink_to(tmp_path / "missing.plist")
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+
+    def test_non_string_program_is_incomplete_not_match(self, monkeypatch, tmp_path):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "bad-program.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.bad-program",
+                "Program": {"target": "/Applications/solstone.app"},
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+
+    def test_program_arguments_not_list_is_incomplete_not_match(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "bad-arguments.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.bad-arguments",
+                "ProgramArguments": "/Applications/solstone.app",
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+
+    def test_program_arguments_non_string_element_does_not_coerce_to_match(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "coercion-regression.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.coercion",
+                "ProgramArguments": [{"target": "/Applications/solstone.app"}],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+
+    def test_valid_program_with_malformed_arguments_matches_and_is_incomplete(
+        self, monkeypatch, tmp_path
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / "match-and-incomplete.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.match-and-incomplete",
+                "Program": "/Applications/solstone.app/Contents/MacOS/solstone",
+                "ProgramArguments": [{"target": "/Applications/solstone.app"}],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+
+        assert scan.matches == (
+            service.ForeignLauncherMatch(
+                label="com.example.match-and-incomplete",
+                plist_path=str(plist_path),
+                service_target="gui/501/com.example.match-and-incomplete",
+            ),
+        )
+        assert scan.incomplete_paths == (str(plist_path),)
 
     def test_non_darwin_inspection_does_not_scan_foreign_launchers(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
