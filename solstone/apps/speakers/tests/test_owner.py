@@ -1681,6 +1681,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "created_at",
             "evidence_tier",
         }
         centroid = data["centroid"]
@@ -1688,11 +1689,13 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
         threshold = float(np.asarray(data["threshold"]).item())
         margin = float(np.asarray(data["margin"]).item())
         last_refreshed_at = str(np.asarray(data["last_refreshed_at"]).item())
+        created_at = str(np.asarray(data["created_at"]).item())
     assert cluster_size == OWNER_BOOTSTRAP_MIN_STMTS
     assert np.isclose(np.linalg.norm(centroid), 1.0)
     assert np.isclose(threshold, OWNER_THRESHOLD)
     assert np.isclose(margin, OWNER_MARGIN_MIN)
     assert last_refreshed_at.endswith("Z")
+    assert created_at == last_refreshed_at
     assert get_current()["voiceprint"]["status"] == "confirmed"
     assert get_current()["voiceprint"]["evidence_tier"] == (
         OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
@@ -1942,6 +1945,7 @@ def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_
             "threshold",
             "margin",
             "last_refreshed_at",
+            "created_at",
             "evidence_tier",
         }
     )
@@ -2006,8 +2010,12 @@ def test_confirm_owner_candidate_writes_margin_schema(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "created_at",
             "evidence_tier",
         }
+        assert str(np.asarray(data["created_at"]).item()) == str(
+            np.asarray(data["last_refreshed_at"]).item()
+        )
         assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
         assert str(np.asarray(data["evidence_tier"]).item()) == (
             OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
@@ -2068,8 +2076,12 @@ def test_bootstrap_owner_from_manual_tags_writes_margin_schema(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "created_at",
             "evidence_tier",
         }
+        assert str(np.asarray(data["created_at"]).item()) == str(
+            np.asarray(data["last_refreshed_at"]).item()
+        )
         assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
         assert str(np.asarray(data["evidence_tier"]).item()) == (
             OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD

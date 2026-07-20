@@ -707,6 +707,7 @@ def _write_owner_centroid(
     import numpy as np
 
     owner_path = ensure_journal_entity_memory(principal_id) / "owner_centroid.npz"
+    created_at = _iso_now()
     save_npz(
         owner_path,
         {
@@ -714,7 +715,8 @@ def _write_owner_centroid(
             "cluster_size": np.array(cluster_size, dtype=np.int32),
             "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
             "margin": np.array(OWNER_MARGIN_MIN, dtype=np.float32),
-            "last_refreshed_at": np.array(_iso_now()),
+            "last_refreshed_at": np.array(created_at),
+            "created_at": np.array(created_at),
             "evidence_tier": np.array(evidence_tier),
         },
         expected_keys=(
@@ -723,6 +725,7 @@ def _write_owner_centroid(
             "threshold",
             "margin",
             "last_refreshed_at",
+            "created_at",
             "evidence_tier",
         ),
     )

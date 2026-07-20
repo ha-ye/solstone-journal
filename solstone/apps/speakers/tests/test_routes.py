@@ -944,6 +944,7 @@ def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
                 "threshold",
                 "margin",
                 "last_refreshed_at",
+                "created_at",
                 "evidence_tier",
             }
             assert int(np.asarray(centroid["cluster_size"]).item()) == (
@@ -952,6 +953,9 @@ def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
             assert np.isclose(
                 float(np.asarray(centroid["margin"]).item()),
                 OWNER_MARGIN_MIN,
+            )
+            assert str(np.asarray(centroid["created_at"]).item()) == str(
+                np.asarray(centroid["last_refreshed_at"]).item()
             )
             assert str(np.asarray(centroid["evidence_tier"]).item()) == "standard"
 
