@@ -72,9 +72,7 @@ OWNER_REJECTION_COOLDOWN_GUIDANCE = (
 OWNER_NEEDS_CONFIRM_VOICE_TEXT = (
     "sol found a voice that sounds like you. confirm it in speakers"
 )
-OWNER_NEEDS_RECURRING_VOICE_TEXT = (
-    "sol found a recurring voice. name it in speakers"
-)
+OWNER_NEEDS_RECURRING_VOICE_TEXT = "sol found a recurring voice. name it in speakers"
 
 
 def speaker_copy_payload() -> dict[str, Any]:

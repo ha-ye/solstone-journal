@@ -289,13 +289,13 @@ def test_classify_needs_you_route_same_origin_only(caplog):
     assert any("off-origin href" in record.message for record in caplog.records)
 
 
-def test_owner_voice_needs_require_ready_not_candidate_available(
-    tmp_path, monkeypatch
-):
+def test_owner_voice_needs_require_ready_not_candidate_available(tmp_path, monkeypatch):
     from solstone.apps.home.owner_voice import build_owner_voice_needs
 
     journal = _use_tmp_journal(tmp_path, monkeypatch)
-    _seed_owner_candidate(journal, recommendation="single_stream", streams_represented=1)
+    _seed_owner_candidate(
+        journal, recommendation="single_stream", streams_represented=1
+    )
 
     assert build_owner_voice_needs("20260720") == []
 
@@ -347,6 +347,7 @@ def test_owner_voice_needs_truth_table_ready_only(tmp_path, monkeypatch):
             classified = classify_needs_you(None, items)
             assert classified[0].kind == "route"
             assert classified[0].payload == {"href": "/app/speakers/20260720"}
+
 
 def test_owner_voice_needs_cheap_negatives_skip_cohesion(tmp_path, monkeypatch):
     from solstone.apps.home.owner_voice import build_owner_voice_needs

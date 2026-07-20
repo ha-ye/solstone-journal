@@ -2586,7 +2586,9 @@ def test_rebuild_no_principal_returns_clean_refusal(speakers_env):
     assert result["status"] == "refused"
     assert result["reason"] == "no_principal"
     assert result["next_step"] == "set_identity"
-    assert result["guidance"] == "set your journal identity before rebuilding your voice."
+    assert (
+        result["guidance"] == "set your journal identity before rebuilding your voice."
+    )
 
 
 def test_rebuild_no_principal_with_identity_guides_owner_statement_tag(

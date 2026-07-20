@@ -875,7 +875,9 @@ def test_detect_success_json_and_busy_owner_voice(
     )
 
     forced = runner.invoke(app, ["detect", "--force"])
-    _assert_json_stdout(forced, {"status": "candidate", "cluster_size": 4, "force": True})
+    _assert_json_stdout(
+        forced, {"status": "candidate", "cluster_size": 4, "force": True}
+    )
 
     monkeypatch.setattr(
         speakers_routes,
