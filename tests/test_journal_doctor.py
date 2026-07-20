@@ -762,6 +762,37 @@ def test_printable_unicode_foreign_label_with_shell_metacharacters_matches(
     assert shlex.split(quoted_target) == [target]
 
 
+def test_printable_unicode_foreign_plist_path_with_shell_metacharacters_matches(
+    doctor, monkeypatch, home_root
+):
+    plist_path = write_foreign_plist(
+        home_root,
+        "cafeé 東京; $(echo hi) it's.plist",
+        label="com.example.solstone-watchdog",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"], returncode=113, stdout="", stderr="service not found"
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "fail"
+    assert result.fix is not None
+    assert "foreign_launchers=1" in result.detail
+    assert str(plist_path) in result.detail
+    assert "foreign_incomplete" not in result.detail
+    lex = shlex.shlex(result.fix, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    tokens = list(lex)
+    assert tokens.count("rm") == 1
+    assert tokens[tokens.index("rm") + 1] == str(plist_path)
+
+
 def test_control_character_foreign_label_warns_without_remedy(
     doctor, monkeypatch, home_root
 ):
