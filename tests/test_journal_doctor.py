@@ -8,6 +8,7 @@ import os
 import plistlib
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -661,6 +662,100 @@ def test_foreign_launcher_fix_shell_quotes_single_line_adversarial_label(
     assert result.status == "fail"
     assert result.fix is not None
     assert "\n" not in result.fix
+    target = f"gui/501/{label}"
+    quoted_target = shlex.quote(target)
+    assert result.fix.count(quoted_target) == 1
+    assert shlex.split(quoted_target) == [target]
+
+
+@pytest.mark.parametrize(
+    "unsafe_char",
+    ["\u0085", "\u2028", "\u2029", "\u202e"],
+)
+def test_unsafe_unicode_foreign_label_warns_without_remedy(
+    doctor, monkeypatch, home_root, unsafe_char
+):
+    write_foreign_plist(
+        home_root,
+        f"unsafe-label-{ord(unsafe_char):x}.plist",
+        label=f"com.example.bad{unsafe_char}label",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.fix is None
+    assert "foreign launcher scan incomplete" in result.detail
+    assert unsafe_char not in result.detail
+
+
+def test_surrogateescape_foreign_filename_warns_without_remedy(
+    doctor, monkeypatch, home_root
+):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("surrogateescape filename creation is only exercised on Linux")
+    write_foreign_plist(
+        home_root,
+        os.fsdecode(b"bad\xffname.plist"),
+        label="com.example.solstone-watchdog",
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.fix is None
+    assert "\udcff" not in result.detail
+    assert "bad?name.plist" in result.detail
+
+
+def test_printable_unicode_foreign_label_with_shell_metacharacters_matches(
+    doctor, monkeypatch, home_root
+):
+    label = "com.example.cafe-\u00e9.\u6771\u4eac; $(echo hi) space 'quote"
+    write_foreign_plist(
+        home_root,
+        "printable-unicode-shell-safe.plist",
+        label=label,
+        program_arguments=["/usr/bin/open", "-a", "/Applications/solstone.app"],
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=113,
+            stdout="",
+            stderr="service not found",
+        ),
+    )
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == "fail"
+    assert result.fix is not None
+    assert "foreign_launchers=1" in result.detail
     target = f"gui/501/{label}"
     quoted_target = shlex.quote(target)
     assert result.fix.count(quoted_target) == 1

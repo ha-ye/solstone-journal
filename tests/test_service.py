@@ -926,6 +926,108 @@ class TestForeignSolstoneAppLaunchers:
         assert scan.matches == ()
         assert scan.incomplete_paths == ()
 
+    @pytest.mark.parametrize(
+        "unsafe_char",
+        ["\u0085", "\u2028", "\u2029", "\u202e"],
+    )
+    def test_unsafe_unicode_label_is_incomplete_and_detail_safe(
+        self, monkeypatch, tmp_path, unsafe_char
+    ):
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        plist_path = launch_agents / f"unsafe-label-{ord(unsafe_char):x}.plist"
+        self._write_plist(
+            plist_path,
+            {
+                "Label": f"com.example.bad{unsafe_char}label",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+        detail = service._supervisor_conflict_detail(
+            launch_agents / "org.solpbc.solstone.plist",
+            "absent",
+            "unloaded",
+            None,
+            "absent",
+            None,
+            None,
+            scan,
+        )
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+        assert unsafe_char not in detail
+
+    def test_surrogateescape_filename_is_incomplete_and_detail_safe(
+        self, monkeypatch, tmp_path
+    ):
+        if not sys.platform.startswith("linux"):
+            pytest.skip("surrogateescape filename creation is only exercised on Linux")
+        launch_agents = self._configure(monkeypatch, tmp_path)
+        filename = os.fsdecode(b"bad\xffname.plist")
+        plist_path = launch_agents / filename
+        self._write_plist(
+            plist_path,
+            {
+                "Label": "com.example.solstone-watchdog",
+                "ProgramArguments": [
+                    "/usr/bin/open",
+                    "-a",
+                    "/Applications/solstone.app",
+                ],
+                "KeepAlive": True,
+            },
+        )
+
+        scan = service._scan_foreign_solstone_app_launchers()
+        detail = service._supervisor_conflict_detail(
+            launch_agents / "org.solpbc.solstone.plist",
+            "absent",
+            "unloaded",
+            None,
+            "absent",
+            None,
+            None,
+            scan,
+        )
+
+        assert scan.matches == ()
+        assert scan.incomplete_paths == (str(plist_path),)
+        assert "\udcff" not in detail
+        assert "bad?name.plist" in detail
+
+    def test_supervisor_conflict_detail_sanitizes_static_prefix(self):
+        unsafe_chars = ("\u0085", "\u2028", "\u2029", "\u202e")
+
+        detail = service._supervisor_conflict_detail(
+            Path(f"/tmp/plist{unsafe_chars[3]}.plist"),
+            "present",
+            "loaded",
+            12345,
+            "running",
+            2468,
+            f"/tmp/journal{unsafe_chars[0]}.app/Contents/MacOS/journal",
+            service.ForeignLauncherScan(
+                matches=(
+                    service.ForeignLauncherMatch(
+                        label=f"com.example.bad{unsafe_chars[1]}label",
+                        plist_path=f"/tmp/foreign{unsafe_chars[2]}.plist",
+                        service_target="gui/501/com.example.bad",
+                    ),
+                ),
+                incomplete_paths=(f"/tmp/incomplete{unsafe_chars[0]}.plist",),
+            ),
+        )
+
+        assert not any(char in detail for char in unsafe_chars)
+        assert "?" in detail
+
     def test_control_character_label_is_incomplete_not_match(
         self, monkeypatch, tmp_path
     ):

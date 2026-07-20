@@ -29,6 +29,7 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from xml.parsers.expat import ExpatError
@@ -344,13 +345,17 @@ def _launchd_program_arguments(path: Path) -> list[str] | None:
     return [str(arg) for arg in program_arguments]
 
 
-def _contains_control_char(value: str) -> bool:
-    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+_UNSAFE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _contains_unsafe_text(value: str) -> bool:
+    return any(unicodedata.category(char) in _UNSAFE_TEXT_CATEGORIES for char in value)
 
 
 def _display_safe(value: str) -> str:
     return "".join(
-        "?" if ord(char) < 0x20 or ord(char) == 0x7F else char for char in value
+        "?" if unicodedata.category(char) in _UNSAFE_TEXT_CATEGORIES else char
+        for char in value
     )
 
 
@@ -459,7 +464,7 @@ def _scan_foreign_solstone_app_launchers() -> ForeignLauncherScan:
     uid = os.getuid()
     for path in paths:
         path_text = str(path)
-        if _contains_control_char(path_text):
+        if _contains_unsafe_text(path_text):
             incomplete_paths.append(path_text)
             continue
 
@@ -469,7 +474,7 @@ def _scan_foreign_solstone_app_launchers() -> ForeignLauncherScan:
             continue
 
         label = data.get("Label")
-        if isinstance(label, str) and _contains_control_char(label):
+        if isinstance(label, str) and _contains_unsafe_text(label):
             incomplete_paths.append(path_text)
             continue
 
@@ -687,17 +692,16 @@ def _supervisor_conflict_detail(
     foreign_parts: list[str] = []
     if foreign.matches:
         matches = "|".join(
-            f"{_display_safe(match.label)}@{_display_safe(match.plist_path)}"
-            for match in foreign.matches
+            f"{match.label}@{match.plist_path}" for match in foreign.matches
         )
         foreign_parts.append(f"foreign={matches}")
     if foreign.incomplete_paths:
-        incomplete = "|".join(_display_safe(path) for path in foreign.incomplete_paths)
+        incomplete = "|".join(foreign.incomplete_paths)
         foreign_parts.append(f"foreign_incomplete={incomplete}")
     if foreign_parts:
         detail += f"; foreign_launchers={len(foreign.matches)} "
         detail += " ".join(foreign_parts)
-    return detail
+    return _display_safe(detail)
 
 
 def _inspect_supervisor_conflict_plist(path: Path) -> str:
