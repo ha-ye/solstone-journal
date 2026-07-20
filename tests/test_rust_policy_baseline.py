@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -89,15 +90,26 @@ def test_audit_recipe_refreshes_then_checks_offline_fail_closed() -> None:
 
 
 def test_release_rail_runs_audit_before_artifact_construction() -> None:
-    text = (ROOT / "scripts" / "release.sh").read_text(encoding="utf-8")
-    audit = "\nmake audit\n"
-    artifact = 'echo "==> [1/5] building local lockstep artifacts"'
-    inspected_commands = [audit, artifact]
+    lines = (ROOT / "scripts" / "release.sh").read_text(encoding="utf-8").splitlines()
+    audit_pattern = re.compile(r"^\s*(?:make|\$\(MAKE\))\s+audit\s*$")
+    artifact_marker = "[1/5] building local lockstep artifacts"
+    inspected_commands = [audit_pattern.pattern, artifact_marker]
 
-    assert inspected_commands
-    for command in inspected_commands:
-        assert command in text
-    assert text.index(audit) < text.index(artifact)
+    assert inspected_commands, "release rail command enumeration must not be empty"
+    audit_line_index: int | None = None
+    artifact_line_index: int | None = None
+    for index, line in enumerate(lines):
+        if audit_line_index is None and audit_pattern.match(line):
+            audit_line_index = index
+        if artifact_line_index is None and artifact_marker in line:
+            artifact_line_index = index
+
+    assert audit_line_index is not None, "release rail must invoke make audit"
+    assert artifact_line_index is not None, "release rail artifact echo is missing"
+    assert audit_line_index < artifact_line_index, (
+        f"make audit line {audit_line_index + 1} must precede artifact "
+        f"construction line {artifact_line_index + 1}"
+    )
 
 
 def test_ci_summary_names_only_established_evidence_classes() -> None:
