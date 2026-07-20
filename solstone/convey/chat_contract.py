@@ -137,6 +137,38 @@ OPERATIONS: list[OperationSpec] = [
         ),
     ),
     OperationSpec(
+        operation_id="chat.openSolChatRequest",
+        method="POST",
+        rule="/api/chat/sol_chat_request/open",
+        summary="Open sol chat request",
+        description=(
+            "Record that the owner opened a sol-initiated chat request. "
+            "The request identifier must be a non-empty value after trimming."
+        ),
+        request=RequestSpec(
+            fields=(FieldSpec("request_id", "string", required=True),),
+            example={"request_id": "sol-chat-1781803200000"},
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Sol-initiated chat request opened.",
+                named_fields=(FieldSpec("ok", "boolean", required=True),),
+                example={"ok": True},
+            ),
+            _json_error(
+                400,
+                ("missing_required_field",),
+                "Request identifier was missing, malformed, empty, or blank.",
+            ),
+            _json_error(
+                403,
+                ("pl_revoked",),
+                "Access gate rejected a revoked paired-link identity.",
+            ),
+        ),
+    ),
+    OperationSpec(
         operation_id="chat.declineOffer",
         method="POST",
         rule="/api/chat/offer/decline",

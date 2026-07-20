@@ -39,6 +39,7 @@ CONTRACTED_PATHS = {
     "/api/chat",
     "/api/chat/offer/decline",
     "/api/chat/session",
+    "/api/chat/sol_chat_request/open",
     "/api/chat/support/draft/cancel",
     "/api/chat/support/draft/confirm",
     "/api/push/register",
@@ -70,6 +71,7 @@ CONTRACTED_PATHS = {
 CONTRACTED_INVENTORY_TRIPLES = {
     ("POST", "/api/chat", "chat.postMessage"),
     ("GET", "/api/chat/session", "chat.session"),
+    ("POST", "/api/chat/sol_chat_request/open", "chat.openSolChatRequest"),
     ("POST", "/api/chat/offer/decline", "chat.declineOffer"),
     ("POST", "/api/chat/support/draft/confirm", "chat.supportDraftConfirm"),
     ("POST", "/api/chat/support/draft/cancel", "chat.supportDraftCancel"),
@@ -372,7 +374,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 29
+    assert len(document["paths"]) == 30
 
 
 def test_home_pulse_named_fields_present(contract_app):

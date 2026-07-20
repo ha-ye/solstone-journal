@@ -518,6 +518,88 @@
         ]
       }
     },
+    "/api/chat/sol_chat_request/open": {
+      "post": {
+        "description": "Record that the owner opened a sol-initiated chat request. The request identifier must be a non-empty value after trimming.",
+        "operationId": "chat.openSolChatRequest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "request_id": "sol-chat-1781803200000"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "request_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sol-initiated chat request opened."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request identifier was missing, malformed, empty, or blank.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Access gate rejected a revoked paired-link identity.",
+            "x-reason-codes": [
+              "pl_revoked"
+            ]
+          }
+        },
+        "summary": "Open sol chat request",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/support/draft/cancel": {
       "post": {
         "description": "Cancel a captured support draft without submitting it.",
