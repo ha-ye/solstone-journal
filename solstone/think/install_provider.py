@@ -33,6 +33,13 @@ PARAKEET_DOWNLOAD_DISCLOSURE = (
     "cache before it can run: the parakeet.cpp server binary from github.com "
     "(MIT) and the speech model from huggingface.co (CC-BY-4.0)."
 )
+
+LOCAL_DOWNLOAD_DISCLOSURE = (
+    "local model assets: downloading the llama.cpp runtime from "
+    "updates.solstone.app (MIT; the CUDA build also carries NVIDIA-licensed "
+    "runtime components; see THIRD_PARTY_NOTICES.md) or github.com (MIT), "
+    "and the model from huggingface.co (Apache-2.0)."
+)
 LOG = logging.getLogger(__name__)
 
 
@@ -199,6 +206,7 @@ def main() -> int:
     if _is_mlx_backend():
         return _install_mlx_local()
 
+    print(LOCAL_DOWNLOAD_DISCLOSURE, file=sys.stderr)
     readiness = local_install.inspect_readiness()
     if readiness.ready:
         print("local already installed", file=sys.stderr)

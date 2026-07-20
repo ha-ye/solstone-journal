@@ -123,7 +123,9 @@ def test_install_provider_local_prints_install_status(monkeypatch, capsys):
     assert calls == [True]
     assert parakeet_calls == []
     assert lease.released is True
-    assert json.loads(capsys.readouterr().out) == {
+    captured = capsys.readouterr()
+    assert install_provider.LOCAL_DOWNLOAD_DISCLOSURE in captured.err
+    assert json.loads(captured.out) == {
         "provider": "local",
         "install_state": "installed",
     }

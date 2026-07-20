@@ -78,7 +78,7 @@ a `solstone-journal` install bundles everything a journal host needs — PDF ren
 
 Pick one of `solstone-journal` or `solstone-journal-cuda` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime and model are ready.
 
-This CUDA extra is only for transcription. The Linux local model provider uses Vulkan for screen analysis, so a hardware Vulkan GPU from AMD, NVIDIA, or Intel can work; CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
+This CUDA extra is only for transcription. The Linux local model provider picks its own GPU backend: on NVIDIA GPUs from the RTX 30 series up with a current NVIDIA driver (580 series or newer), it runs natively on CUDA; the runtime downloads from updates.solstone.app as a checksum-pinned bundle. On other hardware GPUs (AMD, Intel, or older NVIDIA) it uses Vulkan. CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
 
 if the service fails to start, check `journal service logs`.
 
@@ -86,7 +86,7 @@ if the service fails to start, check `journal service logs`.
 
 sol is powered by an AI model, and it runs **locally by default** — on every device. the bundled model runs right in your journal, so your thinking never leaves the machine. a cloud lane is an option, not the default; you choose in settings → providers (or the thinking app).
 
-- **local is the default.** on a capable machine sol thinks locally with nothing extra to set up — the bundled model handles both the reasoning over your journal and screen analysis, and nothing is sent to a cloud provider. the practical floor is about **8 GB**: an 8 GB GPU, or 8 GB of free memory on Apple Silicon (the model is ~2.74 GB on disk, plus the ~2.5 GB transcription model). solstone checks first and won't activate a local model that won't fit; on Linux it needs a supported hardware GPU (AMD, NVIDIA, or Intel via Vulkan).
+- **local is the default.** on a capable machine sol thinks locally with nothing extra to set up — the bundled model handles both the reasoning over your journal and screen analysis, and nothing is sent to a cloud provider. the practical floor is about **8 GB**: an 8 GB GPU, or 8 GB of free memory on Apple Silicon (the model is ~2.74 GB on disk, plus the ~2.5 GB transcription model). solstone checks first and won't activate a local model that won't fit; on Linux it needs a supported hardware GPU (NVIDIA via CUDA on RTX 30-series or newer, or AMD, NVIDIA, and Intel via Vulkan).
 - **a cloud lane, if your machine can't clear that bar — or you'd rather not spend its power.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). you can switch any time in settings → providers.
 
 what actually leaves your machine differs sharply between these paths: with the local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it. for the full picture of what's sent, to whom, and under whose terms, see [what solstone sends](DATA-FLOW.md).
