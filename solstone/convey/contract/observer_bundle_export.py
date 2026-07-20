@@ -15,7 +15,6 @@ from pathlib import Path
 
 from solstone.convey.contract.observer_bundle import (
     _WINDOWS_RESERVED_BASENAMES,
-    BUNDLE_REL_DIR,
     BundleExportRefused,
     BundleSnapshot,
     BundleVerificationError,
@@ -41,7 +40,6 @@ def export_bundle(destination: Path, root: Path | None = None) -> Path:
     """Export the committed observer-client bundle to a new destination."""
 
     repo_root = _repo_root(root)
-    source_dir = repo_root / BUNDLE_REL_DIR
     stale = stale_bundle_paths(repo_root)
     if stale:
         raise _export_refused(
@@ -56,7 +54,6 @@ def export_bundle(destination: Path, root: Path | None = None) -> Path:
             "repair the bundle manifest and rerun make openapi",
         ) from exc
     return _publish_verified_bundle(
-        source_dir,
         Path(destination),
         repo_root,
         source_snapshot,
@@ -73,7 +70,6 @@ def publish_bundle_directory(
     repo_root = _repo_root(root)
     source_snapshot = verify_bundle_directory(source_dir)
     return _publish_verified_bundle(
-        Path(source_dir),
         Path(destination),
         repo_root,
         source_snapshot,
@@ -81,7 +77,6 @@ def publish_bundle_directory(
 
 
 def _publish_verified_bundle(
-    source_dir: Path,
     destination: Path,
     repo_root: Path,
     source_snapshot: BundleSnapshot,

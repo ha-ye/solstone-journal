@@ -14,7 +14,7 @@
     }
   ],
   "bundle_schema_identity": "solstone.observer-client-contract-bundle.schema.v1",
-  "bundle_semver": "1.0.0",
+  "bundle_semver": "1.0.1",
   "component_closure": [
     "CallosumEvent",
     "Error",
@@ -55,7 +55,7 @@
       "id": "bundle.projection_builder",
       "path": "solstone/convey/contract/observer_bundle.py",
       "role": "projection_builder",
-      "sha256": "b4492b813745381f2df6a9f802c2f64460528842643c91453c5555e315acb791"
+      "sha256": "53cba75fdcee8c7968345adfc5f5142174cc769a08987c7a51d52ee70bff02b5"
     },
     {
       "id": "bundle.recording",

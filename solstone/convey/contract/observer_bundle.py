@@ -19,7 +19,8 @@ from typing import Any
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY, build_document
 from solstone.observe import protocol
 
-BUNDLE_SEMVER = "1.0.0"
+INITIAL_BUNDLE_SEMVER = "1.0.0"
+BUNDLE_SEMVER = "1.0.1"
 GENERATOR_IDENTITY = "solstone.convey.contract.observer_bundle.v1"
 BUNDLE_SCHEMA_IDENTITY = "solstone.observer-client-contract-bundle.schema.v1"
 SCHEMA_DIALECT_URI = "https://json-schema.org/draft/2020-12/schema"
@@ -336,27 +337,6 @@ def build_bundle_files(root: Path | None = None) -> dict[Path, str]:
         MANIFEST_REL: render_json(manifest),
         **payload_texts,
     }
-
-
-def write_bundle_files(root: Path | None = None) -> list[Path]:
-    """Write the generated bundle files into the repository tree."""
-
-    repo_root = _repo_root(root)
-    files = build_bundle_files(repo_root)
-    from solstone.convey.contract.observer_bundle_compatibility import (
-        check_bundle_compatibility,
-    )
-
-    compatibility_failures = check_bundle_compatibility(repo_root, files)
-    if compatibility_failures:
-        raise BundleCompatibilityError("\n".join(compatibility_failures))
-    written: list[Path] = []
-    for rel_path, text in files.items():
-        path = repo_root / rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        written.append(rel_path)
-    return sorted(written)
 
 
 def stale_bundle_paths(root: Path | None = None) -> list[Path]:
@@ -1225,6 +1205,7 @@ __all__ = [
     "BundleVerificationError",
     "CONSUMER_AUDIT_REL",
     "FIXTURES_REL",
+    "INITIAL_BUNDLE_SEMVER",
     "MANIFEST_REL",
     "OBSERVER_CLIENT_OPERATION_IDS",
     "PROJECTION_REL",
@@ -1237,5 +1218,4 @@ __all__ = [
     "render_json",
     "stale_bundle_paths",
     "validate_projection_refs",
-    "write_bundle_files",
 ]

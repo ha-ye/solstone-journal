@@ -13,7 +13,7 @@ from typing import Any
 
 from solstone.convey.contract.observer_bundle import (
     BUNDLE_REL_DIR,
-    BUNDLE_SEMVER,
+    INITIAL_BUNDLE_SEMVER,
     MANIFEST_NAME,
     BundleCompatibilityError,
     BundleSnapshot,
@@ -111,19 +111,21 @@ def _check_bundle_history_compatibility(root: Path, candidate: BundleSnapshot) -
         )
         return
     if not found_bundle_history:
-        if candidate_version != BUNDLE_SEMVER:
+        if candidate_version != INITIAL_BUNDLE_SEMVER:
             raise BundleCompatibilityError(
                 "observer client contract history check failed: genuine first "
-                f"bundle must use version {BUNDLE_SEMVER}, got {candidate_version}. "
+                "bundle must use version "
+                f"{INITIAL_BUNDLE_SEMVER}, got {candidate_version}. "
                 "Recovery: set bundle_semver to 1.0.0 before publishing the first bundle."
             )
         return
     if bundle_commit_count == identical_commit_count == 1 and (
-        candidate_version != BUNDLE_SEMVER
+        candidate_version != INITIAL_BUNDLE_SEMVER
     ):
         raise BundleCompatibilityError(
             "observer client contract history check failed: genuine first "
-            f"bundle must use version {BUNDLE_SEMVER}, got {candidate_version}. "
+            "bundle must use version "
+            f"{INITIAL_BUNDLE_SEMVER}, got {candidate_version}. "
             "Recovery: set bundle_semver to 1.0.0 before publishing the first bundle."
         )
 

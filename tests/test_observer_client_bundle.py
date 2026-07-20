@@ -157,6 +157,14 @@ EXPECTED_GENERATOR_INPUTS = [
     ("reason_codes", "solstone/convey/reasons.py", "vocabulary_source"),
 ]
 
+
+def _generator_input_class_cases() -> list[tuple[str, str, str]]:
+    cases: dict[str, tuple[str, str, str]] = {}
+    for input_id, path, role in EXPECTED_GENERATOR_INPUTS:
+        cases.setdefault(role, (role, input_id, path))
+    return sorted(cases.values())
+
+
 EXPECTED_FIXTURE_IDS = [
     "declared.observer.ingestSegments.custody_unknown_rejected",
     "declared.observer.ingestSegments.envelope_total_mismatch",
@@ -672,7 +680,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         },
     )
 
-    assert manifest["bundle_semver"] == "1.0.0"
+    assert manifest["bundle_semver"] == "1.0.1"
     assert projection["info"]["version"] == "9.8.7"
     assert manifest["openapi_document_version"] == "9.8.7"
     assert manifest["openapi_spec_version"] == "3.1.9"
@@ -680,7 +688,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         manifest["bundle_semver"],
         manifest["openapi_document_version"],
         manifest["openapi_spec_version"],
-    } == {"1.0.0", "9.8.7", "3.1.9"}
+    } == {"1.0.1", "9.8.7", "3.1.9"}
 
 
 def test_observer_client_bundle_manifest_file_inventory(
@@ -694,7 +702,7 @@ def test_observer_client_bundle_manifest_file_inventory(
         "vectors.json",
     ]
 
-    assert manifest["bundle_semver"] == "1.0.0"
+    assert manifest["bundle_semver"] == "1.0.1"
     assert manifest["openapi_document_version"] == "1.0.0"
     assert manifest["openapi_spec_version"] == "3.1.0"
     assert manifest["observer_protocol_version"] == 2
@@ -1449,6 +1457,35 @@ def test_observer_client_bundle_rejects_each_generator_input_digest_drift(
         observer_bundle_verification.verify_committed_bundle(bundle_dir.parents[2])
 
 
+@pytest.mark.parametrize(
+    ("role", "input_id", "rel_path"),
+    _generator_input_class_cases(),
+)
+def test_observer_client_bundle_rejects_each_generator_input_class_source_mutation(
+    bundle_files: dict[Path, str],
+    tmp_path: Path,
+    role: str,
+    input_id: str,
+    rel_path: str,
+) -> None:
+    mutated = _clone_bundle_files(bundle_files)
+    manifest = _manifest(mutated)
+    bundle_dir = _bundle_dir_with_files(tmp_path / role, mutated)
+    repo = bundle_dir.parents[2]
+    _copy_manifest_source_inputs(repo, manifest)
+
+    source_path = repo / rel_path
+    if source_path.is_dir() and not source_path.is_symlink():
+        mutation_path = source_path / ".observer-bundle-source-mutation"
+        mutation_path.write_text(f"{role}:{input_id}\n", encoding="utf-8")
+    else:
+        with source_path.open("ab") as handle:
+            handle.write(f"\n# observer bundle source mutation: {role}\n".encode())
+
+    with pytest.raises(observer_bundle.BundleVerificationError, match=input_id):
+        observer_bundle_verification.verify_committed_bundle(repo)
+
+
 def test_observer_client_bundle_tree_digest_does_not_follow_symlinked_dirs(
     tmp_path: Path,
 ) -> None:
@@ -1915,12 +1952,11 @@ def test_observer_client_bundle_history_genuine_first_bundle_requires_1_0_0(
 ) -> None:
     repo = tmp_path / "repo"
     _init_git_repo(repo)
+    initial = _clone_bundle_files(bundle_files)
+    _set_bundle_version(initial, "1.0.0")
 
-    assert (
-        observer_bundle_compatibility.check_bundle_compatibility(repo, bundle_files)
-        == []
-    )
-    bumped = _clone_bundle_files(bundle_files)
+    assert observer_bundle_compatibility.check_bundle_compatibility(repo, initial) == []
+    bumped = _clone_bundle_files(initial)
     _set_bundle_version(bumped, "1.0.1")
     _assert_history_failure(repo, bumped, "genuine first bundle")
 
@@ -1944,6 +1980,9 @@ def test_observer_client_bundle_history_identical_same_version_passes_dirty_and_
 ) -> None:
     repo = tmp_path / "repo"
     _init_git_repo(repo)
+    initial = _clone_bundle_files(bundle_files)
+    _set_bundle_version(initial, "1.0.0")
+    _commit_bundle(repo, initial, "initial bundle")
     _commit_bundle(repo, bundle_files, "bundle")
 
     assert (
@@ -1963,6 +2002,9 @@ def test_observer_client_bundle_history_unrelated_identical_commit_passes_same_v
 ) -> None:
     repo = tmp_path / "repo"
     _init_git_repo(repo)
+    initial = _clone_bundle_files(bundle_files)
+    _set_bundle_version(initial, "1.0.0")
+    _commit_bundle(repo, initial, "initial bundle")
     _commit_bundle(repo, bundle_files, "bundle")
     (repo / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
     _git(repo, "add", "unrelated.txt")
@@ -1980,7 +2022,9 @@ def test_observer_client_bundle_history_clean_tree_compares_nearest_distinct(
 ) -> None:
     repo = tmp_path / "repo"
     _init_git_repo(repo)
-    _commit_bundle(repo, bundle_files, "initial bundle")
+    initial = _clone_bundle_files(bundle_files)
+    _set_bundle_version(initial, "1.0.0")
+    _commit_bundle(repo, initial, "initial bundle")
     candidate = _description_patch_candidate(bundle_files, "1.0.1")
     _commit_bundle(repo, candidate, "patch bundle")
 
@@ -2074,7 +2118,7 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     _commit_bundle(equal_repo, bundle_files, "bundle")
     _assert_history_failure(
         equal_repo,
-        _description_patch_candidate(bundle_files, "1.0.0"),
+        _description_patch_candidate(bundle_files, "1.0.1"),
         "without a version bump",
     )
 
@@ -2276,7 +2320,7 @@ def test_observer_client_bundle_history_semantic_vector_change_is_never_patch(
 
     _assert_history_failure(
         repo,
-        _semantic_status_fixture_candidate(bundle_files, "1.0.1"),
+        _semantic_status_fixture_candidate(bundle_files, "1.0.2"),
         "major change",
         enforce_current_contract=False,
     )
