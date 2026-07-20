@@ -79,11 +79,7 @@ def build_local_fit_report(model_id: str) -> FitReport:
     if sys.platform.startswith("linux"):
         probe = local_cuda.probe_nvidia_gpu()
         choice = local_cuda.resolve_local_backend(local_install.CUDA_SERVER_PIN)
-        unknown_server = (
-            "CUDA llama-server OCI image"
-            if choice.backend == "cuda"
-            else "llama-server tarball"
-        )
+        unknown_server = "llama-server tarball"
         devices = local_vulkan.detect_gpus()
         try:
             from solstone.think.models import is_local_provider_needed
@@ -100,12 +96,29 @@ def build_local_fit_report(model_id: str) -> FitReport:
     known_artifacts = [("GGUF model", spec.size_bytes)]
     if spec.mmproj_size_bytes is not None:
         known_artifacts.append(("mmproj", spec.mmproj_size_bytes))
+    if (
+        sys.platform.startswith("linux")
+        and choice is not None
+        and choice.backend == "cuda"
+    ):
+        cuda_artifact_pin = local_install.cuda_artifact_pin_for_current_platform(
+            local_install.CUDA_SERVER_PIN
+        )
+        if cuda_artifact_pin is not None:
+            known_artifacts.append(
+                ("CUDA llama-server tarball", cuda_artifact_pin.size_bytes)
+            )
+            unknown_artifacts: tuple[str, ...] = ()
+        else:
+            unknown_artifacts = (unknown_server,)
+    else:
+        unknown_artifacts = (unknown_server,)
     checks.append(
         _disk_check(
             "disk",
             local_install.cache_root(),
             tuple(known_artifacts),
-            (unknown_server,),
+            unknown_artifacts,
         )
     )
 

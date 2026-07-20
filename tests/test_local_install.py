@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import tarfile
 import time
 from dataclasses import replace
@@ -20,7 +21,6 @@ from solstone.think.providers import (
     local_install,
     local_vulkan,
     memory,
-    oci_image,
 )
 from solstone.think.providers.artifact_proof import (
     ProofResult,
@@ -231,6 +231,11 @@ def test_probe_cuda_runtime_artifact_trust_maps_proof_status(
 ) -> None:
     monkeypatch.setattr(
         local_install,
+        "cuda_artifact_pin_for_current_platform",
+        lambda _pin=None: None,
+    )
+    monkeypatch.setattr(
+        local_install,
         "_prove_cuda_runtime_artifact",
         lambda _pin, **_kwargs: ProofResult(status, "test"),
     )
@@ -242,6 +247,21 @@ def test_probe_cuda_runtime_artifact_trust_maps_proof_status(
 
 
 @pytest.mark.real_local_backend_probe
+def test_probe_cuda_runtime_artifact_trust_uses_present_pin_without_local_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_proof(_pin, **_kwargs):
+        raise AssertionError("present platform pin should short-circuit proof")
+
+    monkeypatch.setattr(local_install, "_prove_cuda_runtime_artifact", fail_proof)
+
+    assert (
+        local_install.probe_cuda_runtime_artifact_trust(local_install.CUDA_SERVER_PIN)
+        == local_cuda.ArtifactTrust.TRUSTED
+    )
+
+
+@pytest.mark.real_local_backend_probe
 def test_probe_cuda_runtime_artifact_trust_contains_unexpected_exception(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -249,6 +269,11 @@ def test_probe_cuda_runtime_artifact_trust_contains_unexpected_exception(
     def fail_proof(_pin, **_kwargs):
         raise ValueError("required artifact is not a regular file")
 
+    monkeypatch.setattr(
+        local_install,
+        "cuda_artifact_pin_for_current_platform",
+        lambda _pin=None: None,
+    )
     monkeypatch.setattr(local_install, "_prove_cuda_runtime_artifact", fail_proof)
 
     trust = local_install.probe_cuda_runtime_artifact_trust(
@@ -260,36 +285,18 @@ def test_probe_cuda_runtime_artifact_trust_contains_unexpected_exception(
 
 
 @pytest.mark.real_local_backend_probe
-def test_probe_cuda_runtime_artifact_trust_contains_non_regular_wanted_file(
+def test_probe_cuda_runtime_artifact_trust_absent_without_platform_pin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _init_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(local_install.platform, "machine", lambda: "x86_64")
-    target = local_install.cuda_binary_dir()
-    target.mkdir(parents=True)
-    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch("amd64")
-    (target / wanted_files[0]).mkdir()
-    for name in wanted_files[1:]:
-        (target / name).write_text(name, encoding="utf-8")
-    (target / ".oci-install.json").write_text(
-        json.dumps(
-            {
-                "image_ref": local_install.CUDA_SERVER_PIN.image_ref,
-                "arch": "amd64",
-                "files": {name: "0" * 64 for name in wanted_files},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    pin = replace(local_install.CUDA_SERVER_PIN, artifacts_by_key={})
 
-    trust = local_install.probe_cuda_runtime_artifact_trust(
-        local_install.CUDA_SERVER_PIN,
-        journal_path=tmp_path,
+    assert (
+        local_install.probe_cuda_runtime_artifact_trust(pin, journal_path=tmp_path)
+        == local_cuda.ArtifactTrust.ABSENT
     )
-
-    assert trust == local_cuda.ArtifactTrust.UNAVAILABLE
 
 
 @pytest.mark.real_local_backend_probe
@@ -336,7 +343,7 @@ def test_has_persisted_installed_cuda_target_treats_bad_status_as_false(
     )
 
 
-def test_target_fingerprint_uses_vulkan_when_cuda_artifact_absent_on_covered_host(
+def test_target_fingerprint_uses_cuda_when_platform_pin_present_on_covered_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -345,15 +352,15 @@ def test_target_fingerprint_uses_vulkan_when_cuda_artifact_absent_on_covered_hos
         monkeypatch,
         compute_cap="sm_86",
         driver_cuda_version=14,
-        trust=local_cuda.ArtifactTrust.ABSENT,
+        trust=local_cuda.ArtifactTrust.TRUSTED,
     )
 
     fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
 
-    assert fingerprint["backend"] == "vulkan"
-    assert fingerprint["backend_reason"] == (
-        "compute_cap sm_86 covered; driver CUDA 14 >= 13; "
-        "no trusted CUDA runtime artifact present"
+    assert fingerprint["backend"] == "cuda"
+    assert (
+        fingerprint["backend_reason"]
+        == "compute_cap sm_86 covered; driver CUDA 14 >= 13"
     )
 
 
@@ -378,7 +385,7 @@ def test_target_fingerprint_holds_cuda_when_trust_unavailable_and_cuda_installed
     )
 
 
-def test_target_fingerprint_uses_vulkan_when_trust_unavailable_without_cuda_install(
+def test_target_fingerprint_uses_cuda_when_runtime_pin_is_trusted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,16 +394,15 @@ def test_target_fingerprint_uses_vulkan_when_trust_unavailable_without_cuda_inst
         monkeypatch,
         compute_cap="sm_121",
         driver_cuda_version=16,
-        trust=local_cuda.ArtifactTrust.UNAVAILABLE,
+        trust=local_cuda.ArtifactTrust.TRUSTED,
         persisted_installed_cuda=False,
     )
 
     fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
 
-    assert fingerprint["backend"] == "vulkan"
+    assert fingerprint["backend"] == "cuda"
     assert fingerprint["backend_reason"] == (
-        "compute_cap sm_121 covered; driver CUDA 16 >= 13; "
-        "no trusted CUDA runtime artifact present"
+        "compute_cap sm_121 covered; driver CUDA 16 >= 13"
     )
 
 
@@ -566,9 +572,9 @@ def test_oci_arch_unsupported_raises(monkeypatch: pytest.MonkeyPatch):
     assert exc_info.value.reason_code == "unsupported_platform"
 
 
-def test_cuda_binary_paths_include_index_digest(tmp_path, monkeypatch):
+def test_cuda_binary_paths_include_tarball_sha256(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
-    digest = local_install.CUDA_SERVER_PIN.image_ref.split("@sha256:", 1)[1]
+    artifact_pin = local_install.require_cuda_artifact_pin_for_current_platform()
 
     assert local_install.cuda_binary_dir() == (
         tmp_path
@@ -577,7 +583,7 @@ def test_cuda_binary_paths_include_index_digest(tmp_path, monkeypatch):
         / "local"
         / "cuda"
         / local_install.llama_server_artifact_key()
-        / digest
+        / artifact_pin.sha256
     )
     assert local_install.cuda_binary_path() == (
         local_install.cuda_binary_dir() / local_install.CUDA_SERVER_PIN.binary_name
@@ -641,6 +647,98 @@ def test_llama_server_pins_are_complete_immutable_artifacts() -> None:
     assert set(pins) == set(expected)
     for key, expected_pin in expected.items():
         assert pins[key] == expected_pin
+
+
+def test_cuda_server_artifact_pins_are_complete_immutable_artifacts() -> None:
+    expected = {
+        "x86_64-unknown-linux-gnu": local_install.CudaArtifactPin(
+            url=(
+                "https://updates.solstone.app/runtimes/llama-cuda13/b10068/"
+                "llama-b10068-bin-linux-cuda13-amd64-sol1.tar.gz"
+            ),
+            sha256="3727630e6ac79953f5c652fddcfd7100da98c55d773c0aec115a55f40f3aafea",
+            size_bytes=550238443,
+            release_tag="b10068",
+            upstream_image_digest=(
+                "sha256:"
+                "5bd5290bd35cfde893d0dcbd9811723c16d89575927d537b5f21becbfbab2f63"
+            ),
+            llama_cpp_revision="571d0d540df04f25298d0e159e520d9fc62ed121",
+            repack_revision="sol1",
+        ),
+        "aarch64-unknown-linux-gnu": local_install.CudaArtifactPin(
+            url=(
+                "https://updates.solstone.app/runtimes/llama-cuda13/b10068/"
+                "llama-b10068-bin-linux-cuda13-arm64-sol1.tar.gz"
+            ),
+            sha256="6de68319db40e8c0eb45dc4bd3a45a16971dbdc128f2b621b19bef5dae87d064",
+            size_bytes=654508507,
+            release_tag="b10068",
+            upstream_image_digest=(
+                "sha256:"
+                "5bd5290bd35cfde893d0dcbd9811723c16d89575927d537b5f21becbfbab2f63"
+            ),
+            llama_cpp_revision="571d0d540df04f25298d0e159e520d9fc62ed121",
+            repack_revision="sol1",
+        ),
+    }
+
+    assert local_install.CUDA_SERVER_PIN.artifacts_by_key == expected
+    for key, artifact_pin in local_install.CUDA_SERVER_PIN.artifacts_by_key.items():
+        assert artifact_pin.url.startswith("https://updates.solstone.app/runtimes/")
+        assert len(artifact_pin.sha256) == 64
+        assert set(artifact_pin.sha256) <= set("0123456789abcdef")
+        assert artifact_pin.size_bytes > 0
+        assert (
+            artifact_pin.release_tag
+            == local_install.LLAMA_SERVER_PINS[key]["release_tag"]
+        )
+
+
+def _write_cuda_runtime_tarball(
+    tmp_path: Path,
+    *,
+    arch: str = "amd64",
+    missing: tuple[str, ...] = (),
+    traversal: bool = False,
+) -> Path:
+    source = tmp_path / "cuda-source"
+    source.mkdir()
+    missing_set = set(missing)
+    for name in local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch):
+        if name in missing_set:
+            continue
+        path = source / name
+        path.write_text(name, encoding="utf-8")
+    if "licenses/" not in missing_set:
+        licenses = source / "licenses"
+        licenses.mkdir()
+        (licenses / "LICENSE").write_text("license", encoding="utf-8")
+    if "provenance.json" not in missing_set:
+        (source / "provenance.json").write_text("{}\n", encoding="utf-8")
+
+    tarball = tmp_path / "cuda-runtime.tar.gz"
+    with tarfile.open(tarball, "w:gz") as archive:
+        for path in sorted(source.rglob("*")):
+            archive.add(path, arcname=path.relative_to(source).as_posix())
+        if traversal:
+            escape = tmp_path / "escape-source"
+            escape.write_text("bad", encoding="utf-8")
+            archive.add(escape, arcname="../escape")
+    return tarball
+
+
+def _patch_tarball_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tarball: Path,
+) -> None:
+    def fake_download(_url: str, dest: Path, **kwargs: object) -> None:
+        shutil.copyfile(tarball, dest)
+        on_progress = kwargs.get("on_progress")
+        if on_progress is not None:
+            on_progress(tarball.stat().st_size, tarball.stat().st_size)
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
 
 
 def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypatch):
@@ -940,7 +1038,7 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
         ("arm64", "arm64", "libggml-cpu-armv8.0_1.so", "libggml-cpu-haswell.so"),
     ],
 )
-def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
+def test_install_llama_server_cuda_extracts_flat_tarball_and_writes_manifest(
     tmp_path,
     monkeypatch,
     machine: str,
@@ -951,108 +1049,208 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
     _init_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
     _force_cuda_backend(monkeypatch)
-    pull_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
+    tarball = _write_cuda_runtime_tarball(tmp_path, arch=arch)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
 
-    def fake_pull_and_install(
-        image_ref: str,
-        arch: str,
-        wanted_files: tuple[str, ...],
-        target_dir: Path,
-        *,
-        policy: oci_image.OciSignaturePolicy | None = None,
-    ) -> oci_image.OciInstallResult:
-        assert policy is local_install.CUDA_SERVER_PIN.signature_policy
-        target_dir.mkdir(parents=True, exist_ok=True)
-        binary = target_dir / local_install.CUDA_SERVER_PIN.binary_name
-        binary.write_text("binary", encoding="utf-8")
-        pull_calls.append((image_ref, arch, wanted_files, target_dir))
-        return oci_image.OciInstallResult(
-            target_dir=target_dir,
-            files={},
-            already_present=False,
-        )
-
-    monkeypatch.setattr(oci_image, "pull_and_install", fake_pull_and_install)
     result = local_install.install_llama_server()
 
     wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     assert result["install_state"] == "verifying"
-    assert pull_calls == [
-        (
-            local_install.CUDA_SERVER_PIN.image_ref,
-            arch,
-            wanted_files,
-            local_install.cuda_binary_dir(),
-        )
-    ]
-    assert expected_cpu in pull_calls[0][2]
-    assert unexpected_cpu not in pull_calls[0][2]
+    assert expected_cpu in wanted_files
+    assert unexpected_cpu not in wanted_files
+    for name in wanted_files:
+        assert (local_install.cuda_binary_dir() / name).is_file()
+    assert (local_install.cuda_binary_dir() / "licenses" / "LICENSE").is_file()
+    assert (local_install.cuda_binary_dir() / "provenance.json").is_file()
+    assert not (local_install.cuda_binary_dir() / ".oci-install.json").exists()
     assert local_install.cuda_binary_path().stat().st_mode & 0o111
 
-
-def test_install_llama_server_cuda_preserves_oci_failure_reason(tmp_path, monkeypatch):
-    _init_journal(tmp_path, monkeypatch)
-    _force_cuda_backend(monkeypatch)
-
-    def fail_pull(*_args, **_kwargs):
-        raise oci_image.OciImageError(
-            "signature_verify_failed",
-            "the pinned image has no matching signature",
-        )
-
-    monkeypatch.setattr(oci_image, "pull_and_install", fail_pull)
-
-    with pytest.raises(oci_image.OciImageError, match="no matching signature"):
-        local_install.install_llama_server()
-
-    status = _local_status()
-    assert status["install_state"] == "failed"
-    assert status["install_error"] == "the pinned image has no matching signature"
-    assert status["error_code"] == "signature_verify_failed"
-
-
-def test_install_llama_server_vulkan_choice_does_not_pull_oci(tmp_path, monkeypatch):
-    _init_journal(tmp_path, monkeypatch)
-    pin = {
-        "release_tag": "v1",
-        "filename": "llama.tar.gz",
-        "sha256": "abc123",
-        "binary_name": "llama-server",
-    }
-    final_path = local_install.binary_path_for_pin("test-platform", pin)
-    final_path.parent.mkdir(parents=True)
-    final_path.write_text("binary", encoding="utf-8")
-
-    monkeypatch.setattr(
-        local_install, "llama_server_artifact_key", lambda: "test-platform"
-    )
-    monkeypatch.setattr(local_install, "pin_for_current_platform", lambda: pin)
-    monkeypatch.setattr(local_install, "_download_file", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
-    monkeypatch.setattr(
-        local_install, "_safe_extract_tarball", lambda _tarball, _dest: None
-    )
-    monkeypatch.setattr(
-        local_install, "_find_extracted_binary", lambda _dest, _name: final_path
-    )
-    monkeypatch.setattr(local_install, "_chmod_executable", lambda _path: None)
-    monkeypatch.setattr(local_install, "_clear_macos_quarantine", lambda _path: None)
-    monkeypatch.setattr(
-        oci_image,
-        "pull_and_install",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("OCI pull not expected")
+    artifact_pin = local_install.require_cuda_artifact_pin_for_current_platform()
+    proof = prove_manifest(
+        artifact_manifest_path(local_install.cuda_binary_dir()),
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        pin_identity=local_install._cuda_pin_identity(
+            arch,
+            wanted_files,
+            artifact_pin=artifact_pin,
         ),
     )
+    assert proof.ready
+    manifest = json.loads(
+        artifact_manifest_path(local_install.cuda_binary_dir()).read_text(
+            encoding="utf-8"
+        )
+    )
+    inventory_paths = {entry["relative_path"] for entry in manifest["inventory"]}
+    assert set(wanted_files) <= inventory_paths
+    assert {"licenses/LICENSE", "provenance.json"} <= inventory_paths
 
-    result = local_install.install_llama_server()
 
-    assert result["install_state"] == "verifying"
-    assert prove_manifest(
-        artifact_manifest_path(final_path.parent),
-        provider=local_install.LOCAL_PROVIDER_NAME,
-        pin_identity=local_install._vulkan_pin_identity("test-platform", pin),
-    ).ready
+def test_install_llama_server_cuda_sha256_mismatch_fails_closed(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    tarball = _write_cuda_runtime_tarball(tmp_path)
+    _patch_tarball_download(monkeypatch, tarball)
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.install_llama_server()
+
+    assert exc_info.value.reason_code == "sha256_mismatch"
+    status = _local_status()
+    assert status["install_state"] == "failed"
+    assert status["error_code"] == "sha256_mismatch"
+    assert not local_install.cuda_binary_dir().exists()
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected_detail"),
+    [
+        (("libllama.so.0",), "libllama.so.0"),
+        (("licenses/",), "licenses/"),
+    ],
+)
+def test_install_llama_server_cuda_required_files_fail_closed(
+    tmp_path,
+    monkeypatch,
+    missing: tuple[str, ...],
+    expected_detail: str,
+):
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    tarball = _write_cuda_runtime_tarball(tmp_path, missing=missing)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.install_llama_server()
+
+    assert exc_info.value.reason_code == "cuda_runtime_incomplete"
+    assert expected_detail in str(exc_info.value)
+    assert not local_install.cuda_binary_dir().exists()
+
+
+def test_install_llama_server_cuda_rejects_traversal_member(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    tarball = _write_cuda_runtime_tarball(tmp_path, traversal=True)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.install_llama_server()
+
+    assert exc_info.value.reason_code == "archive_path_traversal"
+    assert not (tmp_path / "escape").exists()
+    assert not local_install.cuda_binary_dir().exists()
+
+
+def test_install_llama_server_cuda_removes_legacy_oci_tree_after_publish_only(
+    tmp_path,
+    monkeypatch,
+):
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    legacy_digest = "a" * 64
+    legacy_dir = (
+        tmp_path
+        / "cache"
+        / "providers"
+        / "local"
+        / "cuda"
+        / artifact_key
+        / legacy_digest
+    )
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / ".oci-install.json").write_text(
+        json.dumps(
+            {
+                "image_ref": f"ghcr.io/acme/runtime@sha256:{legacy_digest}",
+                "arch": "amd64",
+                "files": {"llama-server": "b" * 64},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (legacy_dir / "llama-server").write_text("legacy", encoding="utf-8")
+    vulkan_dir = local_install.binary_install_dir()
+    vulkan_dir.mkdir(parents=True)
+    (vulkan_dir / "llama-server").write_text("vulkan", encoding="utf-8")
+    tarball = _write_cuda_runtime_tarball(tmp_path)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+
+    local_install.install_llama_server()
+
+    assert not legacy_dir.exists()
+    assert (vulkan_dir / "llama-server").read_text(encoding="utf-8") == "vulkan"
+    assert local_install.cuda_binary_path().is_file()
+
+
+def test_install_llama_server_cuda_failure_leaves_legacy_oci_tree(
+    tmp_path,
+    monkeypatch,
+):
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    legacy_digest = "a" * 64
+    legacy_dir = (
+        tmp_path
+        / "cache"
+        / "providers"
+        / "local"
+        / "cuda"
+        / artifact_key
+        / legacy_digest
+    )
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / ".oci-install.json").write_text(
+        json.dumps(
+            {
+                "image_ref": f"ghcr.io/acme/runtime@sha256:{legacy_digest}",
+                "arch": "amd64",
+                "files": {"llama-server": "b" * 64},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tarball = _write_cuda_runtime_tarball(tmp_path, missing=("licenses/",))
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+
+    with pytest.raises(local_install.LocalProviderError):
+        local_install.install_llama_server()
+
+    assert legacy_dir.exists()
+
+
+def test_local_install_owner_path_has_no_oci_registry_or_cosign_entrypoint(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = Path(local_install.__file__).read_text(encoding="utf-8")
+    assert "solstone.think.providers import oci_image" not in source
+    assert "pull_and_install" not in source
+    assert "verify_image_signature" not in source
+    assert "cosign" not in source
+
+    def fail_cosign(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        if cmd and cmd[0] == "cosign":
+            raise AssertionError("cosign must not run in the owner install path")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    tarball = _write_cuda_runtime_tarball(tmp_path)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(subprocess, "run", fail_cosign)
+
+    local_install.install_llama_server()
 
 
 def test_probe_binary_runnable_returns_true_for_zero_exit(tmp_path):
@@ -1202,11 +1400,6 @@ def test_install_local_blocks_before_downloads(tmp_path, monkeypatch):
         "_download_file",
         lambda *_args, **_kwargs: pytest.fail("download should not start"),
     )
-    monkeypatch.setattr(
-        oci_image,
-        "pull_and_install",
-        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
-    )
 
     with pytest.raises(local_install.LocalProviderError) as exc_info:
         local_install.install_local(LOCAL_MODEL)
@@ -1263,11 +1456,6 @@ def test_install_local_warning_continues_to_download(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(local_install, "_chmod_executable", lambda _path: None)
     monkeypatch.setattr(local_install, "_clear_macos_quarantine", lambda _path: None)
-    monkeypatch.setattr(
-        oci_image,
-        "pull_and_install",
-        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
-    )
 
     assert local_install.install_local(LOCAL_MODEL)["install_state"] == "installed"
 
@@ -1295,11 +1483,6 @@ def test_install_local_ready_short_circuits_before_fit_report(tmp_path, monkeypa
         local_install,
         "_download_file",
         lambda *_args, **_kwargs: pytest.fail("download should not start"),
-    )
-    monkeypatch.setattr(
-        oci_image,
-        "pull_and_install",
-        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
     )
 
     result = local_install.install_local(LOCAL_MODEL)
@@ -1356,7 +1539,7 @@ def test_install_local_reinstalls_runtime_when_binary_record_stale(
     assert calls == ["llama_server", "model"]
 
 
-def test_install_local_replaces_failed_cuda_attempt_with_vulkan_target(
+def test_install_local_replaces_failed_cuda_attempt_with_current_cuda_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1365,7 +1548,7 @@ def test_install_local_replaces_failed_cuda_attempt_with_vulkan_target(
         monkeypatch,
         compute_cap="sm_89",
         driver_cuda_version=15,
-        trust=local_cuda.ArtifactTrust.ABSENT,
+        trust=local_cuda.ArtifactTrust.TRUSTED,
     )
     stale_cuda = {
         "provider": "local",
@@ -1430,11 +1613,8 @@ def test_install_local_replaces_failed_cuda_attempt_with_vulkan_target(
     target = json.loads(str(status["target_fingerprint_json"]))
     assert result["install_state"] == "installed"
     assert status["target_fingerprint_sha256"] != stale_sha
-    assert target["backend"] == "vulkan"
-    assert target["backend_reason"] == (
-        "compute_cap sm_89 covered; driver CUDA 15 >= 13; "
-        "no trusted CUDA runtime artifact present"
-    )
+    assert target["backend"] == "cuda"
+    assert target["backend_reason"] == "compute_cap sm_89 covered; driver CUDA 15 >= 13"
     assert calls == ["llama_server", "model"]
 
 
@@ -1575,48 +1755,38 @@ def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
     assert readiness.host["ram_sufficient"] is True
 
 
-@pytest.mark.parametrize("sidecar_ok", [True, False])
-def test_inspect_readiness_cuda_uses_sidecar_full_set(
+@pytest.mark.parametrize("manifest_ok", [True, False])
+def test_inspect_readiness_cuda_uses_manifest_full_set(
     tmp_path,
     monkeypatch,
-    sidecar_ok,
+    manifest_ok,
 ):
-    from solstone.think.providers import oci_image
-
     _init_journal(tmp_path, monkeypatch)
     _force_cuda_backend(monkeypatch)
     binary = local_install.cuda_binary_path()
     binary.parent.mkdir(parents=True, exist_ok=True)
-    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(
-        local_install._oci_arch()
-    )
+    arch = local_install._oci_arch()
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     for name in wanted_files:
         member = binary.parent / name
         member.write_text(name, encoding="utf-8")
         member.chmod(0o755)
-    (binary.parent / ".oci-install.json").write_text(
-        json.dumps(
-            {
-                "image_ref": local_install.CUDA_SERVER_PIN.image_ref,
-                "arch": local_install._oci_arch(),
-                "files": {name: "0" * 64 for name in wanted_files},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    licenses = binary.parent / "licenses"
+    licenses.mkdir()
+    (licenses / "LICENSE").write_text("license", encoding="utf-8")
+    (binary.parent / "provenance.json").write_text("{}\n", encoding="utf-8")
+    artifact_pin = local_install.require_cuda_artifact_pin_for_current_platform()
+    local_install._write_cuda_manifest(
+        artifact_key=local_install.llama_server_artifact_key(),
+        artifact_pin=artifact_pin,
+        arch=arch,
+        wanted_files=wanted_files,
+        attempt_status=None,
+        fingerprint=local_install.target_fingerprint(LOCAL_MODEL),
+        root=binary.parent,
     )
-    verify_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
-
-    def fake_verify(
-        image_ref: str,
-        arch: str,
-        wanted_files: tuple[str, ...],
-        target_dir: Path,
-    ) -> bool:
-        verify_calls.append((image_ref, arch, wanted_files, target_dir))
-        return sidecar_ok
-
-    monkeypatch.setattr(oci_image, "verify_sidecar_install", fake_verify)
+    if not manifest_ok:
+        (binary.parent / wanted_files[-1]).unlink()
     monkeypatch.setattr(
         local_vulkan,
         "detect_gpus",
@@ -1632,17 +1802,12 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
         "compute_cap sm_121 covered; driver CUDA 13 >= 13"
     )
     assert readiness.artifacts["binary_path"] == str(binary)
-    assert readiness.artifacts["binary_installed"] is sidecar_ok
+    assert readiness.artifacts["binary_installed"] is manifest_ok
     assert readiness.host["gpu_available"] is True
     assert readiness.host["gpu_probe_ok"] is True
-    assert verify_calls == [
-        (
-            local_install.CUDA_SERVER_PIN.image_ref,
-            local_install._oci_arch(),
-            wanted_files,
-            local_install.cuda_binary_dir(),
-        )
-    ]
+    assert readiness.proof["cuda"]["status"] == (
+        "ready" if manifest_ok else "missing-or-mismatched"
+    )
 
 
 def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeypatch):

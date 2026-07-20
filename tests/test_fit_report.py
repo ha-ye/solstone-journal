@@ -191,7 +191,7 @@ def test_build_local_fit_report_uses_cuda_artifact_trust_probe(
     monkeypatch.setattr(
         local_install,
         "probe_cuda_runtime_artifact_trust",
-        lambda _pin: local_cuda.ArtifactTrust.ABSENT,
+        lambda _pin: local_cuda.ArtifactTrust.TRUSTED,
     )
     monkeypatch.setattr(
         local_install,
@@ -220,10 +220,16 @@ def test_build_local_fit_report_uses_cuda_artifact_trust_probe(
 
     gpu = next(check for check in report.checks if check.name == "gpu")
     assert gpu.severity == "ok"
-    assert (
-        "resolved backend is vulkan: compute_cap sm_86 covered; "
-        "driver CUDA 14 >= 13; no trusted CUDA runtime artifact present"
-    ) in gpu.detail
+    assert gpu.detail == (
+        "CUDA backend selected: compute_cap sm_86 covered; driver CUDA 14 >= 13"
+    )
+    disk = next(check for check in report.checks if check.name == "disk")
+    assert disk.severity == "ok"
+    assert "CUDA llama-server tarball" not in disk.detail
+    assert disk.required_bytes is not None
+    assert disk.required_bytes >= (
+        local_install.require_cuda_artifact_pin_for_current_platform().size_bytes
+    )
 
 
 def test_disk_unknown_size_warns_when_known_size_fits(

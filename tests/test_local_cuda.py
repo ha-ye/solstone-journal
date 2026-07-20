@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from solstone.think.providers import local_cuda
+from solstone.think.providers import local_cuda, local_install
 
 ARCH_SET = frozenset({"sm_86", "sm_89", "sm_120a", "sm_121a"})
 pytestmark = pytest.mark.real_local_backend_probe
@@ -347,6 +348,8 @@ def test_select_local_backend_matrix() -> None:
             "vulkan",
             "NVIDIA compute capability unreadable",
         ),
+        # These rows pin select_local_backend's raw trust contract; resolver
+        # tests cover the production pin-present and pin-absent states.
         (
             True,
             "sm_86",
@@ -402,6 +405,62 @@ def test_select_local_backend_matrix() -> None:
         )
 
         assert choice == local_cuda.BackendChoice(backend, reason)
+
+
+def test_resolve_local_backend_uses_pinned_cuda_artifact_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: local_cuda.NvidiaProbe(
+            index=0,
+            compute_cap="sm_86",
+            driver_cuda_version=13,
+            vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+            detected=True,
+        ),
+    )
+    monkeypatch.setattr(local_install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(local_install.sys, "platform", "linux")
+
+    assert local_cuda.resolve_local_backend(local_install.CUDA_SERVER_PIN) == (
+        local_cuda.BackendChoice(
+            "cuda",
+            "compute_cap sm_86 covered; driver CUDA 13 >= 13",
+        )
+    )
+
+
+def test_resolve_local_backend_uses_byte_identical_vulkan_reason_without_platform_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: local_cuda.NvidiaProbe(
+            index=0,
+            compute_cap="sm_86",
+            driver_cuda_version=13,
+            vram_mib=24564,
+            tiering_memory_mib=24564,
+            memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+            detected=True,
+        ),
+    )
+    monkeypatch.setattr(local_install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(local_install.sys, "platform", "linux")
+    pin = replace(local_install.CUDA_SERVER_PIN, artifacts_by_key={})
+
+    assert local_cuda.resolve_local_backend(pin) == local_cuda.BackendChoice(
+        "vulkan",
+        (
+            "compute_cap sm_86 covered; driver CUDA 13 >= 13; "
+            "no trusted CUDA runtime artifact present"
+        ),
+    )
 
 
 def test_select_local_backend_no_gpu_detected() -> None:

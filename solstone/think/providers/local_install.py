@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -28,7 +29,6 @@ from solstone.think.providers.artifact_proof import (
     ReadinessOutcome,
     artifact_manifest_path,
     build_manifest,
-    prove_cuda_sidecar,
     prove_manifest,
     publish_staged_tree,
     write_manifest,
@@ -62,17 +62,28 @@ from solstone.think.providers.local_cuda import (
     ArtifactTrust,
 )
 from solstone.think.providers.memory import assess_memory
-from solstone.think.providers.oci_image import OciSignaturePolicy
 from solstone.think.utils import get_journal
 
 LOG = logging.getLogger(__name__)
 LOCAL_PROVIDER_NAME = "local"
 _PROBE_TIMEOUT_SECONDS = 10
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_LEGACY_OCI_SIDECAR_NAME = ".oci-install.json"
+
+
+@dataclass(frozen=True)
+class CudaArtifactPin:
+    url: str
+    sha256: str
+    size_bytes: int
+    release_tag: str
+    upstream_image_digest: str
+    llama_cpp_revision: str
+    repack_revision: str
 
 
 @dataclass(frozen=True)
 class CudaServerPin:
-    image_ref: str
     cuda_version: int
     embedded_arch_set: frozenset[str]
     binary_name: str
@@ -80,7 +91,7 @@ class CudaServerPin:
     visible_devices_env: str
     shared_wanted_files: tuple[str, ...]
     cpu_wanted_files_by_arch: dict[str, tuple[str, ...]]
-    signature_policy: OciSignaturePolicy | None = None
+    artifacts_by_key: dict[str, CudaArtifactPin]
 
     def wanted_files_for_arch(self, arch: str) -> tuple[str, ...]:
         cpu_wanted_files = self.cpu_wanted_files_by_arch.get(arch)
@@ -124,12 +135,6 @@ LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
 }
 
 CUDA_SERVER_PIN = CudaServerPin(
-    # TODO(AC10): confirm pinned server-cuda13 digest (build b9853) on the
-    # Spark GB10.
-    image_ref=(
-        "ghcr.io/ggml-org/llama.cpp@sha256:"
-        "bc998878c040cf2095b4c5cf3b1cf56df3984053e2a2650e5c4c66a4953e10cb"
-    ),
     cuda_version=CUDA_MIN_DRIVER_VERSION,
     embedded_arch_set=CUDA_EMBEDDED_ARCH_SET,
     binary_name="llama-server",
@@ -179,15 +184,38 @@ CUDA_SERVER_PIN = CudaServerPin(
             "libggml-cpu-armv9.2_2.so",
         ),
     },
-    # TODO(AC10): narrow this to the exact upstream workflow identity after
-    # validating the pinned CUDA image signature on hardware.
-    signature_policy=OciSignaturePolicy(
-        certificate_identity_regexp=(
-            r"^https://github\.com/ggml-org/llama\.cpp/\.github/workflows/"
-            r".+@refs/(heads|tags)/.+$"
+    artifacts_by_key={
+        "x86_64-unknown-linux-gnu": CudaArtifactPin(
+            url=(
+                "https://updates.solstone.app/runtimes/llama-cuda13/b10068/"
+                "llama-b10068-bin-linux-cuda13-amd64-sol1.tar.gz"
+            ),
+            sha256="3727630e6ac79953f5c652fddcfd7100da98c55d773c0aec115a55f40f3aafea",
+            size_bytes=550238443,
+            release_tag="b10068",
+            upstream_image_digest=(
+                "sha256:"
+                "5bd5290bd35cfde893d0dcbd9811723c16d89575927d537b5f21becbfbab2f63"
+            ),
+            llama_cpp_revision="571d0d540df04f25298d0e159e520d9fc62ed121",
+            repack_revision="sol1",
         ),
-        oidc_issuer="https://token.actions.githubusercontent.com",
-    ),
+        "aarch64-unknown-linux-gnu": CudaArtifactPin(
+            url=(
+                "https://updates.solstone.app/runtimes/llama-cuda13/b10068/"
+                "llama-b10068-bin-linux-cuda13-arm64-sol1.tar.gz"
+            ),
+            sha256="6de68319db40e8c0eb45dc4bd3a45a16971dbdc128f2b621b19bef5dae87d064",
+            size_bytes=654508507,
+            release_tag="b10068",
+            upstream_image_digest=(
+                "sha256:"
+                "5bd5290bd35cfde893d0dcbd9811723c16d89575927d537b5f21becbfbab2f63"
+            ),
+            llama_cpp_revision="571d0d540df04f25298d0e159e520d9fc62ed121",
+            repack_revision="sol1",
+        ),
+    },
 )
 
 
@@ -214,6 +242,27 @@ def pin_for_current_platform() -> dict[str, str]:
             f"No pinned llama-server artifact for platform {key}",
         )
     return pin
+
+
+def cuda_artifact_pin_for_current_platform(
+    pin: CudaServerPin | None = None,
+) -> CudaArtifactPin | None:
+    server_pin = pin or CUDA_SERVER_PIN
+    return server_pin.artifacts_by_key.get(llama_server_artifact_key())
+
+
+def require_cuda_artifact_pin_for_current_platform(
+    pin: CudaServerPin | None = None,
+) -> CudaArtifactPin:
+    key = llama_server_artifact_key()
+    server_pin = pin or CUDA_SERVER_PIN
+    artifact_pin = server_pin.artifacts_by_key.get(key)
+    if artifact_pin is None:
+        raise LocalProviderError(
+            "unsupported_platform",
+            f"No pinned CUDA llama-server artifact for platform {key}",
+        )
+    return artifact_pin
 
 
 def cache_root() -> Path:
@@ -249,12 +298,17 @@ def _oci_arch() -> str:
     )
 
 
-def _cuda_digest_hex() -> str:
-    return CUDA_SERVER_PIN.image_ref.rsplit("@sha256:", 1)[1]
+def _cuda_binary_dir_for_pin(
+    artifact_key: str,
+    artifact_pin: CudaArtifactPin,
+) -> Path:
+    return cache_root() / "cuda" / artifact_key / artifact_pin.sha256
 
 
 def cuda_binary_dir() -> Path:
-    return cache_root() / "cuda" / llama_server_artifact_key() / _cuda_digest_hex()
+    artifact_key = llama_server_artifact_key()
+    artifact_pin = require_cuda_artifact_pin_for_current_platform()
+    return _cuda_binary_dir_for_pin(artifact_key, artifact_pin)
 
 
 def cuda_binary_path() -> Path:
@@ -346,13 +400,23 @@ def _vulkan_pin_identity(
 def _cuda_pin_identity(
     arch: str | None = None,
     wanted_files: tuple[str, ...] | None = None,
+    artifact_key: str | None = None,
+    artifact_pin: CudaArtifactPin | None = None,
 ) -> dict[str, Any]:
+    artifact_key = artifact_key or llama_server_artifact_key()
+    artifact_pin = artifact_pin or require_cuda_artifact_pin_for_current_platform()
     arch = arch or _oci_arch()
     wanted_files = wanted_files or CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     return {
         "unit": "llama-server-cuda",
-        "artifact_key": llama_server_artifact_key(),
-        "image_ref": CUDA_SERVER_PIN.image_ref,
+        "artifact_key": artifact_key,
+        "url": artifact_pin.url,
+        "sha256": artifact_pin.sha256,
+        "size_bytes": artifact_pin.size_bytes,
+        "release_tag": artifact_pin.release_tag,
+        "upstream_image_digest": artifact_pin.upstream_image_digest,
+        "llama_cpp_revision": artifact_pin.llama_cpp_revision,
+        "repack_revision": artifact_pin.repack_revision,
         "arch": arch,
         "binary_name": CUDA_SERVER_PIN.binary_name,
         "wanted_files": list(wanted_files),
@@ -364,18 +428,25 @@ def _prove_cuda_runtime_artifact(
     *,
     journal_path: str | Path | None = None,
 ) -> ProofResult:
-    from solstone.think.providers import oci_image
-
+    artifact_key = llama_server_artifact_key()
+    artifact_pin = cuda_artifact_pin_for_current_platform(pin)
+    if artifact_pin is None:
+        return ProofResult(
+            status="missing-or-mismatched",
+            reason_code="cuda_runtime_pin_missing",
+            cache_hit=False,
+        )
     arch = _oci_arch()
     wanted_files = pin.wanted_files_for_arch(arch)
-    return prove_cuda_sidecar(
+    return prove_manifest(
+        artifact_manifest_path(_cuda_binary_dir_for_pin(artifact_key, artifact_pin)),
         provider=LOCAL_PROVIDER_NAME,
-        image_ref=pin.image_ref,
-        arch=arch,
-        wanted_files=wanted_files,
-        target_dir=cuda_binary_dir(),
-        pin_identity=_cuda_pin_identity(arch, wanted_files),
-        verifier=oci_image.verify_sidecar_install,
+        pin_identity=_cuda_pin_identity(
+            arch,
+            wanted_files,
+            artifact_key=artifact_key,
+            artifact_pin=artifact_pin,
+        ),
         journal_path=journal_path,
     )
 
@@ -385,6 +456,8 @@ def probe_cuda_runtime_artifact_trust(
     *,
     journal_path: str | Path | None = None,
 ) -> ArtifactTrust:
+    if cuda_artifact_pin_for_current_platform(pin) is not None:
+        return ArtifactTrust.TRUSTED
     try:
         result = _prove_cuda_runtime_artifact(pin, journal_path=journal_path)
     except Exception:
@@ -437,7 +510,11 @@ def target_fingerprint(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
     selected_model = normalize_model_id(model_id)
     choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
     runtime_pin = (
-        _cuda_pin_identity() if choice.backend == "cuda" else _vulkan_pin_identity()
+        _cuda_pin_identity(
+            artifact_pin=require_cuda_artifact_pin_for_current_platform()
+        )
+        if choice.backend == "cuda"
+        else _vulkan_pin_identity()
     )
     return {
         "provider": LOCAL_PROVIDER_NAME,
@@ -499,6 +576,36 @@ def _write_vulkan_manifest(
         target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
         source={"pin_identity": _vulkan_pin_identity(artifact_key, pin)},
         inventory=_runtime_inventory(install_dir, exclude_names={pin["filename"]}),
+        attempt_id=attempt_status["attempt_id"] if attempt_status else None,
+    )
+    write_manifest(artifact_manifest_path(install_dir), manifest)
+
+
+def _write_cuda_manifest(
+    *,
+    artifact_key: str,
+    artifact_pin: CudaArtifactPin,
+    arch: str,
+    wanted_files: tuple[str, ...],
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any] | None = None,
+    root: Path | None = None,
+) -> None:
+    install_dir = root or _cuda_binary_dir_for_pin(artifact_key, artifact_pin)
+    fingerprint = fingerprint or target_fingerprint()
+    manifest = build_manifest(
+        provider=LOCAL_PROVIDER_NAME,
+        unit="llama-server-cuda",
+        target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
+        source={
+            "pin_identity": _cuda_pin_identity(
+                arch,
+                wanted_files,
+                artifact_key=artifact_key,
+                artifact_pin=artifact_pin,
+            )
+        },
+        inventory=_runtime_inventory(install_dir, exclude_names=set()),
         attempt_id=attempt_status["attempt_id"] if attempt_status else None,
     )
     write_manifest(artifact_manifest_path(install_dir), manifest)
@@ -605,6 +712,22 @@ def _safe_extract_tarball(tarball: Path, dest: Path) -> None:
         archive.extractall(dest, filter="data")
 
 
+def _download_verify_extract_tarball(
+    *,
+    url: str,
+    filename: str,
+    sha256: str,
+    staging: Path,
+    on_progress: Callable[[int, int | None], None],
+) -> None:
+    tarball = staging / filename
+    _download_file(url, tarball, on_progress=on_progress)
+    _write_local_status(transition_state(_read_local_status(), new_state="verifying"))
+    _verify_sha256(tarball, sha256)
+    _safe_extract_tarball(tarball, staging)
+    tarball.unlink(missing_ok=True)
+
+
 def _find_extracted_binary(dest: Path, binary_name: str) -> Path:
     direct = dest / binary_name
     if direct.exists():
@@ -639,6 +762,79 @@ def _clear_macos_quarantine(path: Path) -> None:
         )
     except OSError:
         return
+
+
+def _cuda_artifact_filename(artifact_pin: CudaArtifactPin) -> str:
+    return artifact_pin.url.rsplit("/", 1)[-1]
+
+
+def _verify_cuda_runtime_tree(
+    root: Path,
+    *,
+    wanted_files: tuple[str, ...],
+) -> None:
+    missing: list[str] = []
+    for wanted in wanted_files:
+        if not (root / wanted).is_file():
+            missing.append(wanted)
+    if not (root / "licenses").is_dir():
+        missing.append("licenses/")
+    if not (root / "provenance.json").is_file():
+        missing.append("provenance.json")
+    if missing:
+        raise LocalProviderError(
+            "cuda_runtime_incomplete",
+            "CUDA runtime artifact is missing required paths: " + ", ".join(missing),
+        )
+
+
+def _is_legacy_cuda_oci_tree(path: Path) -> bool:
+    if not path.is_dir() or path.is_symlink():
+        return False
+    if not _HEX64_RE.fullmatch(path.name):
+        return False
+    sidecar = path / _LEGACY_OCI_SIDECAR_NAME
+    if not sidecar.is_file():
+        return False
+    try:
+        record = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    image_ref = record.get("image_ref")
+    files = record.get("files")
+    return (
+        isinstance(image_ref, str)
+        and image_ref.endswith(f"@sha256:{path.name}")
+        and isinstance(files, dict)
+    )
+
+
+def _cleanup_legacy_cuda_oci_dirs(
+    *,
+    artifact_key: str,
+    keep_dir: Path,
+) -> None:
+    root = cache_root() / "cuda" / artifact_key
+    if not root.is_dir():
+        return
+    keep_resolved = keep_dir.resolve()
+    for candidate in root.iterdir():
+        try:
+            if not candidate.is_dir():
+                continue
+            if candidate.resolve() == keep_resolved:
+                continue
+            if not _is_legacy_cuda_oci_tree(candidate):
+                continue
+            shutil.rmtree(candidate)
+        except Exception:
+            LOG.warning(
+                "failed to remove legacy CUDA OCI install tree: %s",
+                candidate,
+                exc_info=True,
+            )
 
 
 def probe_binary_runnable(binary_path: str | Path) -> tuple[bool, str | None]:
@@ -677,7 +873,10 @@ def install_llama_server(
 
     choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
     if choice.backend == "cuda":
-        return _install_cuda_llama_server(attempt_status=attempt_status)
+        return _install_cuda_llama_server(
+            attempt_status=attempt_status,
+            fingerprint=fingerprint,
+        )
 
     artifact_key = llama_server_artifact_key()
     pin = pin_for_current_platform()
@@ -690,18 +889,18 @@ def install_llama_server(
     staging = Path(
         tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=install_dir.parent)
     )
-    tarball = staging / pin["filename"]
 
     try:
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")
         )
-        _download_file(url, tarball, on_progress=_record_local_progress)
-        _write_local_status(
-            transition_state(_read_local_status(), new_state="verifying")
+        _download_verify_extract_tarball(
+            url=url,
+            filename=pin["filename"],
+            sha256=pin["sha256"],
+            staging=staging,
+            on_progress=_record_local_progress,
         )
-        _verify_sha256(tarball, pin["sha256"])
-        _safe_extract_tarball(tarball, staging)
         extracted = _find_extracted_binary(staging, pin["binary_name"])
         final_path = staging / pin["binary_name"]
         if attempt_status is not None:
@@ -711,7 +910,6 @@ def install_llama_server(
             for item in inner_dir.iterdir():
                 shutil.move(str(item), str(staging / item.name))
             inner_dir.rmdir()
-        tarball.unlink(missing_ok=True)
         _chmod_executable(final_path)
         _clear_macos_quarantine(staging)
         _write_vulkan_manifest(
@@ -742,30 +940,51 @@ def install_llama_server(
 def _install_cuda_llama_server(
     *,
     attempt_status: InstallStatus | None = None,
+    fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from solstone.think.providers import oci_image
-
+    artifact_key = llama_server_artifact_key()
+    artifact_pin = require_cuda_artifact_pin_for_current_platform(CUDA_SERVER_PIN)
+    install_dir = _cuda_binary_dir_for_pin(artifact_key, artifact_pin)
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=install_dir.parent)
+    )
     try:
         arch = _oci_arch()
         wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")
         )
-        oci_image.pull_and_install(
-            CUDA_SERVER_PIN.image_ref,
-            arch,
-            wanted_files,
-            cuda_binary_dir(),
-            policy=CUDA_SERVER_PIN.signature_policy,
+        _download_verify_extract_tarball(
+            url=artifact_pin.url,
+            filename=_cuda_artifact_filename(artifact_pin),
+            sha256=artifact_pin.sha256,
+            staging=staging,
+            on_progress=_record_local_progress,
         )
-        _write_local_status(
-            transition_state(_read_local_status(), new_state="verifying")
+        _verify_cuda_runtime_tree(staging, wanted_files=wanted_files)
+        final_path = staging / CUDA_SERVER_PIN.binary_name
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status)
+        _chmod_executable(final_path)
+        _clear_macos_quarantine(staging)
+        _write_cuda_manifest(
+            artifact_key=artifact_key,
+            artifact_pin=artifact_pin,
+            arch=arch,
+            wanted_files=wanted_files,
+            attempt_status=attempt_status,
+            fingerprint=fingerprint,
+            root=staging,
         )
         if attempt_status is not None:
             assert_install_attempt_current(attempt_status)
-        _chmod_executable(cuda_binary_path())
+        publish_staged_tree(staging, install_dir)
+        _cleanup_legacy_cuda_oci_dirs(artifact_key=artifact_key, keep_dir=install_dir)
         return _read_local_status()
     except Exception as exc:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
         _write_local_status(
             transition_state(
                 _read_local_status(),
@@ -959,7 +1178,13 @@ def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
     )
     vulkan_payload = _proof_result_payload(vulkan_proof)
 
-    cuda_binary = cuda_binary_path()
+    cuda_artifact_pin = cuda_artifact_pin_for_current_platform(CUDA_SERVER_PIN)
+    cuda_binary = (
+        _cuda_binary_dir_for_pin(llama_server_artifact_key(), cuda_artifact_pin)
+        / CUDA_SERVER_PIN.binary_name
+        if cuda_artifact_pin is not None
+        else None
+    )
     cuda_proof = _prove_cuda_runtime_artifact(CUDA_SERVER_PIN)
     cuda_payload = _proof_result_payload(cuda_proof)
     model_proof = prove_manifest(
@@ -977,7 +1202,7 @@ def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
         "vulkan_binary_installed": vulkan_proof.ready,
         "cuda_binary_installed": cuda_proof.ready,
         "vulkan_binary_path": str(vulkan_binary_path),
-        "cuda_binary_path": str(cuda_binary),
+        "cuda_binary_path": str(cuda_binary) if cuda_binary is not None else None,
         "binary_path": str(vulkan_binary_path),
         "model_path": str(gguf_path),
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
@@ -1104,11 +1329,14 @@ def ensure_artifacts_installed(model_id: str) -> LocalArtifacts:
 __all__ = [
     "CUDA_SERVER_PIN",
     "LLAMA_SERVER_PINS",
+    "CudaArtifactPin",
     "CudaServerPin",
     "LocalArtifacts",
     "has_persisted_installed_cuda_target",
     "llama_server_artifact_key",
     "pin_for_current_platform",
+    "cuda_artifact_pin_for_current_platform",
+    "require_cuda_artifact_pin_for_current_platform",
     "binary_path_for_pin",
     "cuda_binary_dir",
     "cuda_binary_path",

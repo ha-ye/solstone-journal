@@ -260,7 +260,7 @@ def test_migration_api_removes_legacy_status_fields(tmp_path, monkeypatch) -> No
     assert data["providers"]["local"] == {"vulkan_device_index": "1"}
 
 
-def test_legacy_local_vulkan_adoption_when_cuda_artifact_absent_on_covered_host(
+def test_legacy_local_vulkan_not_promoted_when_cuda_pin_selected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -318,7 +318,7 @@ def test_legacy_local_vulkan_adoption_when_cuda_artifact_absent_on_covered_host(
     monkeypatch.setattr(
         local_install,
         "probe_cuda_runtime_artifact_trust",
-        lambda _pin, **_kwargs: local_cuda.ArtifactTrust.ABSENT,
+        lambda _pin, **_kwargs: local_cuda.ArtifactTrust.TRUSTED,
     )
     monkeypatch.setattr(
         local_install,
@@ -343,14 +343,10 @@ def test_legacy_local_vulkan_adoption_when_cuda_artifact_absent_on_covered_host(
     result = install_state.migrate_legacy_provider_artifact_truth(journal_path=tmp_path)
 
     status = read_install_status(name="local", journal_path=tmp_path)
-    target = json.loads(str(status["target_fingerprint_json"]))
-    assert result["actions"][0]["action"] == "promoted"
-    assert status["install_state"] == "installed"
-    assert target["backend"] == "vulkan"
-    assert target["backend_reason"] == (
-        "compute_cap sm_121 covered; driver CUDA 16 >= 13; "
-        "no trusted CUDA runtime artifact present"
-    )
+    assert result["actions"][0]["action"] == "not-promoted"
+    assert result["actions"][0]["reason_code"] == "manifest_missing"
+    assert status["install_state"] == "idle"
+    assert status["target_fingerprint_json"] is None
 
 
 def test_two_process_stale_transition_one_writer_wins(tmp_path, monkeypatch) -> None:
