@@ -83,7 +83,6 @@ from solstone.apps.utils import log_app_action
 from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
-    DISCOVERY_CLUSTER_NOT_FOUND,
     ENTITY_BLOCKED,
     ENTITY_NOT_FOUND,
     FILE_NOT_FOUND,
@@ -97,7 +96,6 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
     SPEAKER_COMMAND_FAILED,
-    SPEAKER_IDENTIFY_PARTIAL,
     SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
     SPEAKER_OWNER_CENTROID_REQUIRED,
@@ -2222,7 +2220,7 @@ def api_cluster_presence(cluster_id: int) -> Any:
     presence = get_cluster_presence(cluster_id)
     if presence is None:
         return error_response(
-            DISCOVERY_CLUSTER_NOT_FOUND,
+            SPEAKER_REVIEW_UNAVAILABLE,
             detail=f"Cluster {cluster_id} was not found. Run a discovery scan first.",
         )
     return jsonify(presence)
@@ -2234,7 +2232,8 @@ def _identify_result_response(result: dict) -> Any:
         return jsonify(result)
     if status == "partial":
         return error_response(
-            SPEAKER_IDENTIFY_PARTIAL,
+            SPEAKER_COMMAND_FAILED,
+            status=409,
             detail=result.get("detail"),
             extra={
                 "status": "partial",

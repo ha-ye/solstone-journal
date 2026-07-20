@@ -1365,7 +1365,7 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
 
     assert partial_voice.status_code == 409
     body = partial_voice.get_json()
-    assert body["reason_code"] == "speaker_identify_partial"
+    assert body["reason_code"] == "speaker_command_failed"
     assert body["status"] == "partial"
     assert body["completed"] == ["voiceprints"]
     assert body["failed"] == ["segments", "sentinel"]
@@ -1465,7 +1465,7 @@ def test_cluster_presence_route_returns_not_found(speakers_env, monkeypatch):
 
     assert response.status_code == 404
     body = response.get_json()
-    assert body["reason_code"] == "discovery_cluster_not_found"
+    assert body["reason_code"] == "speaker_review_unavailable"
     assert body["detail"] == "Cluster 404 was not found. Run a discovery scan first."
 
 

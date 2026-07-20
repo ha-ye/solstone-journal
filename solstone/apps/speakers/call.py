@@ -48,13 +48,13 @@ from typing import Any
 import typer
 
 from solstone.convey.reasons import (
-    DISCOVERY_CLUSTER_NOT_FOUND,
     ENTITY_BLOCKED,
     INVALID_DAY,
     INVALID_SEGMENT_OR_STREAM,
     SPEAKER_COMMAND_FAILED,
     SPEAKER_OWNER_CENTROID_REQUIRED,
     SPEAKER_OWNER_IDENTITY_REQUIRED,
+    SPEAKER_REVIEW_UNAVAILABLE,
     SPEAKER_SENTENCE_MISSING,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
@@ -656,7 +656,7 @@ def presence(
             f"/app/speakers/api/discovery/cluster/{cluster_id}/presence",
         )
     except ConveyClientError as err:
-        if err.reason_code == DISCOVERY_CLUSTER_NOT_FOUND.code:
+        if err.reason_code == SPEAKER_REVIEW_UNAVAILABLE.code:
             typer.echo(f"Cluster {cluster_id} was not found.", err=True)
             typer.echo(
                 "Run 'sol call speakers discover' to produce valid cluster ids.",
