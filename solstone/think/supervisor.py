@@ -3969,6 +3969,21 @@ def _write_provider_ready_side_effects(
             )
         elif plan.backend == "mlx":
             local_server.clear_local_context_window()
+        expected_fingerprint = plan.desired_fingerprint_sha256
+        if (
+            _task_queue is not None
+            and isinstance(expected_fingerprint, str)
+            and expected_fingerprint
+        ):
+            _task_queue.submit(
+                [
+                    "journal",
+                    "brain",
+                    "refresh",
+                    "--expected-fingerprint",
+                    expected_fingerprint,
+                ]
+            )
         return
 
     if state.provider == "parakeet":

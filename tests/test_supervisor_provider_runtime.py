@@ -21,6 +21,7 @@ import pytest
 
 from solstone.think import supervisor
 from solstone.think.providers.artifact_proof import ReadinessOutcome
+from solstone.think.providers.brain_state import build_active_brain_fingerprint
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.runtime_health import (
     RUNTIME_PHASES,
@@ -82,6 +83,7 @@ def runtime_state_reset(
     )
     monkeypatch.setattr(supervisor, "_provider_startup_gate", None)
     monkeypatch.setattr(supervisor, "_parakeet_admission_retry_epoch", 0)
+    monkeypatch.setattr(supervisor, "_task_queue", None)
     supervisor._SERVICE_STATE.clear()
     yield
     executor = supervisor._provider_runtime_executor
@@ -109,9 +111,13 @@ def _future_with(result: Any) -> concurrent.futures.Future:
 class _FakeTaskQueue:
     def __init__(self) -> None:
         self.ready_calls = 0
+        self.submitted: list[tuple[list[str], tuple[Any, ...], dict[str, Any]]] = []
 
     def set_ready(self) -> None:
         self.ready_calls += 1
+
+    def submit(self, cmd: list[str], *args: Any, **kwargs: Any) -> None:
+        self.submitted.append((cmd, args, kwargs))
 
 
 class _FakeReservation:
@@ -286,6 +292,159 @@ def _parakeet_plan(backend: str = "cpu") -> supervisor.ParakeetServerLaunchPlan:
         desired_fingerprint_sha256="fp-parakeet",
         placement="gpu" if backend == "vulkan" else "cpu",
     )
+
+
+def test_local_ready_side_effects_submit_brain_refresh_once(monkeypatch) -> None:
+    from solstone.think.providers import local_server
+
+    plan = _local_plan()
+    state = supervisor.ProviderRuntimeState("local")
+    state.latest_plan = plan
+    queue = _FakeTaskQueue()
+    context_windows: list[int] = []
+
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(local_server, "reset_parallel_slots_cache", lambda: None)
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda tokens: context_windows.append(tokens),
+    )
+
+    supervisor._write_provider_ready_side_effects(
+        state,
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={},
+        ),
+    )
+
+    assert context_windows == [plan.context_tokens]
+    assert queue.submitted == [
+        (
+            [
+                "journal",
+                "brain",
+                "refresh",
+                "--expected-fingerprint",
+                plan.desired_fingerprint_sha256,
+            ],
+            (),
+            {},
+        )
+    ]
+
+
+def test_parakeet_ready_side_effects_do_not_submit_brain_refresh(monkeypatch) -> None:
+    from solstone.think.providers import parakeet_server
+
+    plan = _parakeet_plan("vulkan")
+    state = supervisor.ProviderRuntimeState("parakeet")
+    state.latest_plan = plan
+    queue = _FakeTaskQueue()
+    placements: list[str] = []
+
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        parakeet_server,
+        "write_parakeet_placement",
+        lambda placement: placements.append(placement),
+    )
+
+    supervisor._write_provider_ready_side_effects(
+        state,
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"placement": "gpu"},
+        ),
+    )
+
+    assert placements == ["gpu"]
+    assert queue.submitted == []
+
+
+def test_local_ready_without_local_launch_plan_does_not_submit_brain_refresh(
+    monkeypatch,
+) -> None:
+    state = supervisor.ProviderRuntimeState("local")
+    state.latest_plan = _parakeet_plan()
+    queue = _FakeTaskQueue()
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+
+    supervisor._write_provider_ready_side_effects(
+        state,
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={},
+        ),
+    )
+
+    assert queue.submitted == []
+
+
+def test_local_ready_side_effects_allow_missing_task_queue(monkeypatch) -> None:
+    from solstone.think.providers import local_server
+
+    plan = _local_plan()
+    state = supervisor.ProviderRuntimeState("local")
+    state.latest_plan = plan
+    context_windows: list[int] = []
+
+    monkeypatch.setattr(supervisor, "_task_queue", None)
+    monkeypatch.setattr(local_server, "reset_parallel_slots_cache", lambda: None)
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda tokens: context_windows.append(tokens),
+    )
+
+    supervisor._write_provider_ready_side_effects(
+        state,
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={},
+        ),
+    )
+
+    assert context_windows == [plan.context_tokens]
+
+
+def test_supervisor_bundled_fingerprint_matches_brain_preflight(monkeypatch) -> None:
+    target = {
+        "provider": "local",
+        "runtime": "llama.cpp",
+        "backend": "vulkan",
+        "runtime_pin": {"kind": "test-runtime", "revision": "1"},
+        "model_pin": {"kind": "test-model", "revision": "1"},
+    }
+    if sys.platform == "darwin":
+        from solstone.think.providers import mlx_install
+
+        monkeypatch.setattr(mlx_install, "target_fingerprint", lambda: target)
+    else:
+        from solstone.think.providers import local_install
+
+        monkeypatch.setattr(
+            local_install,
+            "target_fingerprint",
+            lambda _model_id=supervisor.LOCAL_MODEL: target,
+        )
+
+    _target_json, supervisor_sha = supervisor._target_fingerprint_pair(target)
+    result = build_active_brain_fingerprint(
+        {
+            "providers": {"active": {"provider": "local", "model": "local/bundled"}},
+            "env": {},
+        },
+        hmac_key=b"supervisor-brain-fingerprint-test",
+    )
+
+    assert result["ok"] is True
+    assert result["bundled_runtime_fingerprint_sha256"] == supervisor_sha
 
 
 def _runtime_record(
