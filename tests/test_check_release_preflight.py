@@ -148,6 +148,27 @@ def test_mismatched_zig_reports_expected_actual_and_repair() -> None:
     assert "ziglang==0.16.0" in failures[0].repair
 
 
+def test_missing_cargo_deny_reports_force_install_repair() -> None:
+    failures = preflight.check_cargo_deny(which=lambda _name: None)
+
+    assert failures
+    assert failures[0].expected == preflight.EXPECTED_CARGO_DENY_VERSION
+    assert failures[0].actual == "not found"
+    assert failures[0].repair == "cargo install cargo-deny@0.20.2 --locked --force"
+
+
+def test_mismatched_cargo_deny_reports_expected_actual_and_repair() -> None:
+    failures = preflight.check_cargo_deny(
+        which=lambda _name: "/usr/bin/cargo-deny",
+        runner=lambda *_args, **_kwargs: _completed("cargo-deny 0.19.9"),
+    )
+
+    assert failures
+    assert failures[0].expected == preflight.EXPECTED_CARGO_DENY_VERSION
+    assert failures[0].actual == "cargo-deny 0.19.9"
+    assert failures[0].repair == "cargo install cargo-deny@0.20.2 --locked --force"
+
+
 def test_dirty_local_status_names_offending_paths() -> None:
     failures = preflight.check_local_clean_status(
         " M core/Cargo.toml\n?? scratch.txt\n"

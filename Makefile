@@ -28,7 +28,6 @@ RUST_MANIFEST := core/Cargo.toml
 IOS_TARGET := aarch64-apple-ios
 REQUIRE_CARGO := command -v cargo >/dev/null 2>&1 || { echo "cargo is required for Rust checks; install cargo and retry" >&2; exit 1; }
 REQUIRE_RUSTUP := command -v rustup >/dev/null 2>&1 || { echo "rustup is required for the iOS gate; install rustup and retry" >&2; exit 1; }
-REQUIRE_CARGO_DENY := command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny is required for Rust dependency policy; install cargo-deny and retry" >&2; exit 1; }
 # Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
@@ -169,13 +168,14 @@ check-rust-ios:
 
 check-rust-deny:
 	@$(REQUIRE_CARGO)
-	@$(REQUIRE_CARGO_DENY)
-	cargo deny --manifest-path $(RUST_MANIFEST) --locked check bans licenses sources
+	@python3 scripts/check_release_preflight.py cargo-deny
+	cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline check bans licenses sources
 
 audit:
 	@$(REQUIRE_CARGO)
-	@$(REQUIRE_CARGO_DENY)
-	cargo deny --manifest-path $(RUST_MANIFEST) --locked check advisories
+	@python3 scripts/check_release_preflight.py cargo-deny
+	@cargo deny --manifest-path $(RUST_MANIFEST) fetch db || { echo "ERROR: RustSec advisory refresh failed; no current advisory result was produced. Restore network access and rerun 'make audit'." >&2; exit 1; }
+	cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline check advisories
 
 # Setup skill symlinks
 skills:
@@ -562,7 +562,9 @@ ci: install-checks
 	@echo "=== Running tests ==="
 	@$(MAKE) test
 	@echo ""
-	@echo "All CI checks passed!"
+	@echo "All CI checks passed; evidence classes:"
+	@echo "  GNU-host checks: fmt, MSRV, clippy, tests, dependency policy"
+	@echo "  iOS cross-target canary: check-rust-ios"
 
 verify: install-checks
 	@echo "=== Running tests ==="

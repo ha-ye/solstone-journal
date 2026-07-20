@@ -18,7 +18,17 @@ wildcards = "deny"
 allow-wildcard-paths = true
 deny = [{ name = "pyo3" }, { name = "pyo3-ffi" }, { name = "cpython" }]
 
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "aarch64-apple-ios",
+]
+
 [sources]
 # Protects Rust dependencies from unapproved registries.
 unknown-registry = "deny"
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

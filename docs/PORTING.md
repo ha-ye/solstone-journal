@@ -36,6 +36,17 @@ required toolchain, target, and linker behavior in checked-in repository release
 paths, not in a local shell profile. If a dependency cannot satisfy a supported
 target, document the blocker and stop the conversion before merging it.
 
+| Evidence | Repository command | Class | Notes |
+|----------|--------------------|-------|-------|
+| Rust formatting | `make check-rust-fmt` | GNU-host check | Host source-format evidence only. |
+| Rust MSRV | `make check-rust-msrv` | GNU-host check | Verifies the pinned MSRV rail without changing `rust-version`. |
+| Rust lint | `make check-rust-clippy` | GNU-host check | Runs the existing clippy `-D warnings` gate. |
+| Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host. |
+| Rust dependency policy | `make check-rust-deny` | GNU-host check | Locked, offline bans/licenses/sources policy over the supported cargo-deny graph. |
+| Rust advisories | `make audit` | GNU-host check | Refreshes the advisory DB, then performs a locked offline advisory check. |
+| iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate. |
+| No-upload release rail | `scripts/release.sh --dry-run-all-hosts` | Structural only — known gap | Builds and structurally validates Linux x86_64 musl, Linux aarch64 musl, and macOS arm64 artifacts. No retained install/smoke evidence exists on any native host; that gap is deferred to the provenance wave. |
+
 ## Owner Timezone
 
 The Python owner-timezone fallback is effectively `identity.timezone` from

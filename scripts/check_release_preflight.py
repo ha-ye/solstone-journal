@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 EXPECTED_ZIG_VERSION = "0.16.0"
+EXPECTED_CARGO_DENY_VERSION = "0.20.2"
 TOOLCHAIN_FILE = "rust-toolchain.toml"
 COMPONENT_BINARIES = {
     "rustfmt": "rustfmt",
@@ -255,6 +256,50 @@ def check_zig(
     return []
 
 
+def check_cargo_deny(
+    expected: str = EXPECTED_CARGO_DENY_VERSION,
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Runner = subprocess.run,
+) -> list[Failure]:
+    cargo_deny = which("cargo-deny")
+    repair = f"cargo install cargo-deny@{expected} --locked --force"
+    if cargo_deny is None:
+        return [
+            Failure(
+                error="cargo-deny is not on PATH",
+                expected=expected,
+                actual="not found",
+                repair=repair,
+            )
+        ]
+    result = runner(
+        [cargo_deny, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual = (
+        result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
+    )
+    parts = actual.split()
+    if (
+        result.returncode != 0
+        or len(parts) < 2
+        or parts[0] != "cargo-deny"
+        or parts[1] != expected
+    ):
+        return [
+            Failure(
+                error="cargo-deny version does not match the Rust dependency policy baseline",
+                expected=expected,
+                actual=actual,
+                repair=repair,
+            )
+        ]
+    return []
+
+
 def check_local_clean_status(status_output: str) -> list[Failure]:
     paths = [line for line in status_output.splitlines() if line.strip()]
     if not paths:
@@ -382,6 +427,15 @@ def _cmd_msrv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cargo_deny(_args: argparse.Namespace) -> int:
+    failures = check_cargo_deny()
+    if failures:
+        _format_failures(failures)
+        return 1
+    print(f"cargo-deny {EXPECTED_CARGO_DENY_VERSION} ok")
+    return 0
+
+
 def _cmd_remote_state(args: argparse.Namespace) -> int:
     status = args.status_file.read_text(encoding="utf-8")
     failures = check_remote_state(
@@ -409,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
     msrv = subparsers.add_parser("msrv")
     msrv.add_argument("--toolchain", required=True)
     msrv.set_defaults(func=_cmd_msrv)
+
+    cargo_deny = subparsers.add_parser("cargo-deny")
+    cargo_deny.set_defaults(func=_cmd_cargo_deny)
 
     remote = subparsers.add_parser("remote-state")
     remote.add_argument("--label", required=True)

@@ -142,6 +142,10 @@ if [[ "$MODE" != "dry-run-linux" ]]; then
     GIT_REF=$(git rev-parse HEAD)
 fi
 
+echo "==> running Rust advisory audit"
+make audit
+echo
+
 # 1. Local lockstep artifacts: root + journal leaves + models
 echo "==> [1/5] building local lockstep artifacts"
 python3 scripts/render_packaging.py --check

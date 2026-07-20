@@ -14,6 +14,9 @@ edition = "2024"
 rust-version = "1.95"
 license = "AGPL-3.0-only"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 [workspace.dependencies]
 solstone-core-cli = { path = "crates/solstone-core-cli" }
 solstone-core-indexer = { path = "crates/solstone-core-indexer" }
