@@ -30,6 +30,7 @@ from solstone.think.providers.brain_state import (
     BRAIN_REASON_TO_AGGREGATE,
     COMPONENT_ORDER,
     DEFAULT_READY_EVIDENCE_TTL,
+    PROVIDER_ENV_BY_NAME,
     BrainEvidenceComponent,
     BrainProbeOutcome,
     BrainStateConflictError,
@@ -37,7 +38,6 @@ from solstone.think.providers.brain_state import (
     BrainStateRecord,
     abandon_brain_refresh,
     begin_brain_refresh,
-    brain_fingerprint_key_path,
     brain_refresh_lease_path,
     brain_state_path,
     build_active_brain_fingerprint,
@@ -70,11 +70,9 @@ RefreshOutcome = Literal["busy", "stale_expected_fingerprint", "lost_fence"]
 _REFRESH_EXIT_3: frozenset[str] = frozenset(
     {"busy", "stale_expected_fingerprint", "lost_fence"}
 )
-_CLOUD_PROVIDER_ENV = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
+# The bundled-runtime fingerprint field is content-only; HMAC affects secret-bearing
+# fingerprint components, not this read-only fence value.
+_FENCE_DUMMY_HMAC_KEY = b"\x00" * 32
 _BYO_REASON_MAP = {
     "local_endpoint_unreachable": "endpoint_unreachable",
     "local_endpoint_contract_failed": "endpoint_contract_failed",
@@ -325,18 +323,8 @@ def _config_env_value(config: Mapping[str, Any], env_key: str) -> str:
     return os.environ.get(env_key, "")
 
 
-def _fingerprint_key() -> bytes | None:
-    try:
-        return brain_fingerprint_key_path().read_bytes()
-    except OSError:
-        return None
-
-
-def _current_fingerprint_result(config: Mapping[str, Any]) -> dict[str, Any] | None:
-    key = _fingerprint_key()
-    if key is None:
-        return None
-    return build_active_brain_fingerprint(config, hmac_key=key)
+def _current_fingerprint_result(config: Mapping[str, Any]) -> dict[str, Any]:
+    return build_active_brain_fingerprint(config, hmac_key=_FENCE_DUMMY_HMAC_KEY)
 
 
 def _current_bundled_runtime_fingerprint(config: Mapping[str, Any]) -> str | None:
@@ -489,7 +477,7 @@ def _lane_prerequisite(
     if lane == "bundled":
         return _bundled_prerequisite(config, now)
     if lane == "byo-cloud":
-        env_key = _CLOUD_PROVIDER_ENV.get(provider)
+        env_key = PROVIDER_ENV_BY_NAME.get(provider)
         if env_key and not _config_env_value(config, env_key):
             return _failed_component(
                 now, "provider_key_missing"
@@ -680,9 +668,11 @@ def _run_refresh(args: argparse.Namespace) -> int:
         render(view, json_output=args.json)
         return brain_exit_code(aggregate_state=view.aggregate_state)
 
-    lane = view.active_lane
-    provider = view.active_provider
-    model = view.active_model
+    checking_inspection = inspect_brain_state(now)
+    checking_view = _view_from_inspection(checking_inspection, now)
+    lane = checking_view.active_lane
+    provider = checking_view.active_provider
+    model = checking_view.active_model
     if not lane or not provider or not model:
         try:
             record = abandon_brain_refresh(permit, "probe_internal_error", now)

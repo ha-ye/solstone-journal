@@ -308,11 +308,104 @@ def test_status_renders_all_projection_states_without_writes_or_provider_calls(
         held.release()
 
 
+@pytest.mark.parametrize(
+    ("name", "prepare", "expected_text", "expected_exit"),
+    [
+        (
+            "ready",
+            lambda journal, monkeypatch: _write_ready_record(journal, _cloud_config()),
+            "Brain ready:",
+            0,
+        ),
+        (
+            "blocked",
+            lambda journal, monkeypatch: (
+                _write_config(journal, _none_config()),
+                begin_brain_refresh(NOW, journal_path=journal),
+            ),
+            "Brain blocked: no thinking engine chosen",
+            1,
+        ),
+        (
+            "unknown",
+            lambda journal, monkeypatch: _write_config(
+                journal, _invalid_endpoint_config()
+            ),
+            "Brain unknown: configuration invalid",
+            2,
+        ),
+        (
+            "unhealthy",
+            lambda journal, monkeypatch: _write_unhealthy_record(journal),
+            "Brain unhealthy: provider response invalid (generate)",
+            1,
+        ),
+        (
+            "checking",
+            lambda journal, monkeypatch: monkeypatch.setattr(
+                brain_cli,
+                "_held_permit",
+                _prepare_held_check(journal),
+                raising=False,
+            ),
+            "Brain checking: brain check in progress",
+            2,
+        ),
+    ],
+)
+def test_status_human_renders_key_state_classes(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    prepare,
+    expected_text: str,
+    expected_exit: int,
+) -> None:
+    del name
+    prepare(brain_journal, monkeypatch)
+    _forbid_provider_calls(monkeypatch)
+
+    code = brain_cli._run_status(_args(json=False))
+    out = capsys.readouterr().out
+
+    assert code == expected_exit
+    assert expected_text in out
+
+    held = getattr(brain_cli, "_held_permit", None)
+    if held is not None:
+        held.release()
+
+
 def _prepare_interrupted_check(journal: Path) -> None:
     _write_config(journal, _cloud_config())
     permit = begin_brain_refresh(NOW, journal_path=journal)
     assert permit is not None
     permit.release()
+
+
+def _prepare_held_check(journal: Path):
+    _write_config(journal, _cloud_config())
+    permit = begin_brain_refresh(NOW, journal_path=journal)
+    assert permit is not None
+    return permit
+
+
+def _write_unhealthy_record(journal: Path) -> None:
+    _write_config(journal, _cloud_config())
+    permit = begin_brain_refresh(NOW, journal_path=journal)
+    assert permit is not None
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": _component(),
+            "lane_prerequisites": _component(),
+            "generate": brain_cli._failed_component(NOW, "provider_response_invalid"),
+            "cogitate": _component(),
+        },
+        NOW,
+        journal_path=journal,
+    )
 
 
 def _fake_runtime_inspection(
@@ -357,10 +450,17 @@ class _FakeProviderModule:
         return self.result
 
 
+class _ReasonedProviderError(RuntimeError):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
 def _patch_generate_and_cogitate(
     monkeypatch: pytest.MonkeyPatch,
     *,
     generate_result: dict[str, Any] | None = None,
+    generate_exc: BaseException | None = None,
     cogitate_result: str | None = "OK",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     generate_calls: list[dict[str, Any]] = []
@@ -368,6 +468,8 @@ def _patch_generate_and_cogitate(
 
     def fake_generate(*args: Any, **kwargs: Any) -> dict[str, Any]:
         generate_calls.append({"args": args, "kwargs": kwargs})
+        if generate_exc is not None:
+            raise generate_exc
         return generate_result or {"text": "OK", "finish_reason": "stop"}
 
     monkeypatch.setattr(brain_cli, "generate_with_result", fake_generate)
@@ -518,6 +620,199 @@ def test_refresh_generate_failure_does_not_suppress_cogitate(
     assert record["evidence"]["cogitate"]["status"] == "ok"
 
 
+@pytest.mark.parametrize(
+    ("generate_result", "generate_exc", "expected_reason", "expected_exit"),
+    [
+        ({"text": "", "finish_reason": "max_tokens"}, None, "probe_output_starved", 2),
+        ({"text": "", "finish_reason": "stop"}, None, "provider_response_invalid", 1),
+        (None, _ReasonedProviderError("network_unreachable"), "network_unreachable", 1),
+        (
+            None,
+            _ReasonedProviderError("context_window_exceeded"),
+            "probe_internal_error",
+            2,
+        ),
+    ],
+)
+def test_refresh_generate_mapping_branches(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    generate_result: dict[str, Any] | None,
+    generate_exc: BaseException | None,
+    expected_reason: str,
+    expected_exit: int,
+) -> None:
+    _write_config(brain_journal, _cloud_config())
+    generate_calls, cogitate_calls = _patch_generate_and_cogitate(
+        monkeypatch,
+        generate_result=generate_result,
+        generate_exc=generate_exc,
+    )
+
+    code = brain_cli._run_refresh(_args(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    record = json.loads(brain_state_path(journal_path=brain_journal).read_text())
+
+    assert code == expected_exit
+    assert payload["reason_code"] == expected_reason
+    assert len(generate_calls) == 1
+    assert len(cogitate_calls) == 1
+    assert record["evidence"]["generate"]["reason_code"] == expected_reason
+    assert record["evidence"]["cogitate"]["status"] == "ok"
+
+
+def test_refresh_uses_current_identity_after_begin_with_missing_key(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_config(brain_journal, _bundled_config())
+    monkeypatch.setattr(
+        brain_state_module,
+        "_bundled_runtime_fingerprint_sha",
+        lambda: RUNTIME_FP,
+    )
+    _write_ready_record(brain_journal, _bundled_config())
+    brain_fingerprint_key_path(journal_path=brain_journal).unlink()
+    _write_config(
+        brain_journal,
+        {
+            "providers": {"active": {"provider": "openai", "model": "gpt-5.4-mini"}},
+            "env": {"OPENAI_API_KEY": "current-key"},
+        },
+    )
+    monkeypatch.setattr(
+        brain_cli,
+        "inspect_runtime_health",
+        lambda _provider: pytest.fail("stale bundled lane was used"),
+    )
+    generate_calls, cogitate_calls = _patch_generate_and_cogitate(monkeypatch)
+
+    code = brain_cli._run_refresh(_args(json=True))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["provider"] == "openai"
+    assert len(generate_calls) == 1
+    assert len(cogitate_calls) == 1
+    assert cogitate_calls[0]["provider"] == "openai"
+
+
+def test_refresh_excludes_inactive_providers(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_config(
+        brain_journal,
+        {
+            "providers": {"active": {"provider": "openai", "model": "gpt-5.4-mini"}},
+            "env": {
+                "OPENAI_API_KEY": "active-key",
+                "ANTHROPIC_API_KEY": "inactive-key",
+                "GOOGLE_API_KEY": "inactive-key",
+            },
+        },
+    )
+    generate_calls: list[dict[str, Any]] = []
+    cogitate_calls: list[dict[str, Any]] = []
+
+    def fake_generate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        from solstone.think.models import resolve_provider
+
+        provider, model = resolve_provider("generate")
+        generate_calls.append({"provider": provider, "model": model, "kwargs": kwargs})
+        return {"text": "OK", "finish_reason": "stop"}
+
+    def fake_module(provider: str) -> _FakeProviderModule:
+        assert provider == "openai"
+        return _FakeProviderModule(cogitate_calls)
+
+    monkeypatch.setattr(brain_cli, "generate_with_result", fake_generate)
+    monkeypatch.setattr(brain_cli, "get_provider_module", fake_module)
+
+    code = brain_cli._run_refresh(_args(json=True))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["provider"] == "openai"
+    assert len(generate_calls) == 1
+    assert generate_calls[0]["provider"] == "openai"
+    assert generate_calls[0]["model"] == "gpt-5.4-mini"
+    assert cogitate_calls[0]["provider"] == "openai"
+
+
+def test_byo_endpoint_generate_uses_served_model_post_not_get_probe(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import httpx
+
+    from solstone.think.providers import local_admission, local_endpoint
+
+    class NullAdmission:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def release(self) -> None:
+            return None
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "OK"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    posts: list[dict[str, Any]] = []
+    _write_config(brain_journal, _endpoint_config())
+    monkeypatch.setattr(
+        local_endpoint,
+        "probe_local_endpoint",
+        lambda *_args, **_kwargs: pytest.fail("GET / endpoint probe was used"),
+    )
+    monkeypatch.setattr(
+        local_admission,
+        "acquire_local_slot",
+        lambda *_args, **_kwargs: NullAdmission(),
+    )
+
+    def fake_post(url: str, **kwargs: Any) -> FakeResponse:
+        posts.append({"url": url, "kwargs": kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    cogitate_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        brain_cli,
+        "get_provider_module",
+        lambda _provider: _FakeProviderModule(cogitate_calls),
+    )
+
+    code = brain_cli._run_refresh(_args(json=True))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["lane"] == "byo-endpoint"
+    assert len(posts) == 1
+    assert posts[0]["url"] == "https://brain.example.test/v1/chat/completions"
+    assert posts[0]["kwargs"]["json"]["model"] == "served-model"
+    assert len(cogitate_calls) == 1
+    assert cogitate_calls[0]["provider"] == "local"
+
+
 def test_refresh_none_lane_persists_blocked_without_provider_calls(
     brain_journal: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -620,16 +915,6 @@ def test_expected_fingerprint_match_proceeds_and_ready_short_circuits(
     )
     monkeypatch.setattr(
         brain_cli,
-        "_expected_fingerprint_matches",
-        lambda expected: expected == RUNTIME_FP,
-    )
-    monkeypatch.setattr(
-        brain_cli,
-        "_current_bundled_runtime_fingerprint",
-        lambda _config: RUNTIME_FP,
-    )
-    monkeypatch.setattr(
-        brain_cli,
         "inspect_runtime_health",
         lambda _provider: _fake_runtime_inspection(),
     )
@@ -640,6 +925,7 @@ def test_expected_fingerprint_match_proceeds_and_ready_short_circuits(
     )
     generate_calls, cogitate_calls = _patch_generate_and_cogitate(monkeypatch)
 
+    assert not brain_fingerprint_key_path(journal_path=brain_journal).exists()
     first = brain_cli._run_refresh(_args(json=True, expected_fingerprint=RUNTIME_FP))
     capsys.readouterr()
     second = brain_cli._run_refresh(_args(json=True, expected_fingerprint=RUNTIME_FP))
@@ -648,6 +934,59 @@ def test_expected_fingerprint_match_proceeds_and_ready_short_circuits(
     assert first == 0
     assert second == 0
     assert payload["aggregate_state"] == "ready"
+    assert brain_fingerprint_key_path(journal_path=brain_journal).exists()
+    assert len(generate_calls) == 1
+    assert len(cogitate_calls) == 1
+
+
+def test_f1_f2_supersession_runs_new_fingerprint_once(
+    brain_journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fp1 = "1" * 64
+    fp2 = "2" * 64
+    current_fp = {"value": fp1}
+    _write_config(brain_journal, _bundled_config())
+    monkeypatch.setattr(
+        brain_state_module,
+        "_bundled_runtime_fingerprint_sha",
+        lambda: current_fp["value"],
+    )
+    monkeypatch.setattr(
+        brain_cli,
+        "inspect_runtime_health",
+        lambda _provider: _fake_runtime_inspection(desired=current_fp["value"]),
+    )
+    monkeypatch.setattr(
+        brain_state_module,
+        "inspect_runtime_health",
+        lambda _provider, *, journal_path=None: _fake_runtime_inspection(
+            desired=current_fp["value"]
+        ),
+    )
+    real_probe_outcome = brain_cli._probe_outcome
+
+    def f1_probe_outcome(**_kwargs: Any) -> BrainProbeOutcome:
+        current_fp["value"] = fp2
+        return _ready_outcome()
+
+    monkeypatch.setattr(brain_cli, "_probe_outcome", f1_probe_outcome)
+
+    first = brain_cli._run_refresh(_args(json=True, expected_fingerprint=fp1))
+    first_payload = json.loads(capsys.readouterr().out)
+
+    assert first == 3
+    assert first_payload["reason_code"] == "lost_fence"
+
+    monkeypatch.setattr(brain_cli, "_probe_outcome", real_probe_outcome)
+    generate_calls, cogitate_calls = _patch_generate_and_cogitate(monkeypatch)
+
+    second = brain_cli._run_refresh(_args(json=True, expected_fingerprint=fp2))
+    second_payload = json.loads(capsys.readouterr().out)
+
+    assert second == 0
+    assert second_payload["aggregate_state"] == "ready"
     assert len(generate_calls) == 1
     assert len(cogitate_calls) == 1
 
