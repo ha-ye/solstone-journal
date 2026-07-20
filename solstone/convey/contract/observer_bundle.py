@@ -20,7 +20,7 @@ from solstone.convey.contract.assemble import CALLOSUM_REGISTRY, build_document
 from solstone.observe import protocol
 
 INITIAL_BUNDLE_SEMVER = "1.0.0"
-BUNDLE_SEMVER = "1.0.1"
+BUNDLE_SEMVER = "1.0.2"
 GENERATOR_IDENTITY = "solstone.convey.contract.observer_bundle.v1"
 BUNDLE_SCHEMA_IDENTITY = "solstone.observer-client-contract-bundle.schema.v1"
 SCHEMA_DIALECT_URI = "https://json-schema.org/draft/2020-12/schema"
@@ -104,11 +104,6 @@ _SOURCE_INPUTS: tuple[tuple[str, Path, str], ...] = (
         "bundle.recording",
         Path("solstone/convey/contract/observer_bundle_recording.py"),
         "fixture_vector_builder",
-    ),
-    (
-        "bundle.recording_fixture_journal",
-        Path("tests/fixtures/journal"),
-        "recording_fixture_tree",
     ),
     (
         "openapi.assembler",
@@ -323,7 +318,7 @@ def build_bundle_files(root: Path | None = None) -> dict[Path, str]:
 
     repo_root = _repo_root(root)
     projection = build_projection_document()
-    fixtures, vectors = build_fixture_and_vector_payloads(repo_root, projection)
+    fixtures, vectors = build_fixture_and_vector_payloads(projection)
     consumer_audit = build_consumer_audit_payload()
 
     payload_texts = {
@@ -882,6 +877,8 @@ def _sha256_path(path: Path) -> str:
             return _sha256_regular_at_no_follow(parent_fd, leaf_name, leaf_stat)
         if not stat.S_ISDIR(mode):
             raise ObserverBundleError(f"generator input is not regular: {path}")
+        # Directory inputs are supported for defensive/future generator-input trees.
+        # Current declared inputs are files, but verification may inspect older or tampered manifests.
         root_fd = _open_dir_at_no_follow(parent_fd, leaf_name, leaf_stat)
     finally:
         os.close(parent_fd)

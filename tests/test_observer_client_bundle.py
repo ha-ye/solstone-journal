@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -115,11 +114,6 @@ EXPECTED_GENERATOR_INPUTS = [
         "fixture_vector_builder",
     ),
     (
-        "bundle.recording_fixture_journal",
-        "tests/fixtures/journal",
-        "recording_fixture_tree",
-    ),
-    (
         "extension.observer_sse_error_frame",
         "solstone/apps/observer/contract.py",
         "code_adjacent_extension",
@@ -156,6 +150,42 @@ EXPECTED_GENERATOR_INPUTS = [
     ("producer.root_sse", "solstone/convey/root.py", "producer"),
     ("reason_codes", "solstone/convey/reasons.py", "vocabulary_source"),
 ]
+
+EXPECTED_GENERATOR_INPUT_IDS = {
+    "bundle.projection_builder",
+    "bundle.recording",
+    "extension.observer_sse_error_frame",
+    "extension.root_chat_native_subset",
+    "fragment.chat",
+    "fragment.link",
+    "fragment.observer",
+    "fragment.root",
+    "openapi.assembler",
+    "producer.chat_routes",
+    "producer.chat_sol_initiated_copy",
+    "producer.chat_sol_initiated_events",
+    "producer.chat_stream",
+    "producer.observer_routes",
+    "producer.observer_utils",
+    "producer.protocol",
+    "producer.root_sse",
+    "reason_codes",
+}
+
+EXPECTED_BUNDLE_PAYLOAD_SHA256 = {
+    observer_bundle.CONSUMER_AUDIT_REL: (
+        "f3562062aeb971c9dc95ae5d14333566b28431758bcd232c33c093757df7bc18"
+    ),
+    observer_bundle.FIXTURES_REL: (
+        "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8"
+    ),
+    observer_bundle.PROJECTION_REL: (
+        "8a2b7037552edf710597f2ffa6fdc5aa715311df4ea8cf168e70abe4231c64ca"
+    ),
+    observer_bundle.VECTORS_REL: (
+        "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec"
+    ),
+}
 
 
 def _generator_input_class_cases() -> list[tuple[str, str, str]]:
@@ -547,17 +577,14 @@ def _bundle_dir_with_files(tmp_path: Path, files: dict[Path, str]) -> Path:
 
 
 def _copy_manifest_source_inputs(repo: Path, manifest: dict[str, Any]) -> None:
-    source_root = Path.cwd()
+    source_root = observer_bundle._repo_root(None)
     for item in manifest["generator_inputs"]:
         source = source_root / item["path"]
         if not source.exists():
             continue
         destination = repo / item["path"]
-        if source.is_dir():
-            shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
-        else:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(source.read_bytes())
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
 
 
 def _description_patch_candidate(
@@ -680,7 +707,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         },
     )
 
-    assert manifest["bundle_semver"] == "1.0.1"
+    assert manifest["bundle_semver"] == "1.0.2"
     assert projection["info"]["version"] == "9.8.7"
     assert manifest["openapi_document_version"] == "9.8.7"
     assert manifest["openapi_spec_version"] == "3.1.9"
@@ -688,7 +715,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         manifest["bundle_semver"],
         manifest["openapi_document_version"],
         manifest["openapi_spec_version"],
-    } == {"1.0.1", "9.8.7", "3.1.9"}
+    } == {"1.0.2", "9.8.7", "3.1.9"}
 
 
 def test_observer_client_bundle_manifest_file_inventory(
@@ -702,7 +729,7 @@ def test_observer_client_bundle_manifest_file_inventory(
         "vectors.json",
     ]
 
-    assert manifest["bundle_semver"] == "1.0.1"
+    assert manifest["bundle_semver"] == "1.0.2"
     assert manifest["openapi_document_version"] == "1.0.0"
     assert manifest["openapi_spec_version"] == "3.1.0"
     assert manifest["observer_protocol_version"] == 2
@@ -752,6 +779,101 @@ def test_observer_client_bundle_manifest_file_inventory(
     assert [item["id"] for item in vectors["vectors"]] == EXPECTED_VECTOR_IDS
     for vector in vectors["vectors"]:
         assert set(vector["pointer_hashes"]) == set(vector["pointers"])
+
+
+def test_observer_client_bundle_pins_exact_generator_inputs(
+    bundle_files: dict[Path, str],
+) -> None:
+    manifest = _json_file(bundle_files, observer_bundle.MANIFEST_REL)
+    repo_root = observer_bundle._repo_root(None)
+    fixture_tree = Path("tests/fixtures/journal")
+
+    assert {item["id"] for item in manifest["generator_inputs"]} == (
+        EXPECTED_GENERATOR_INPUT_IDS
+    )
+    assert len(manifest["generator_inputs"]) == 18
+    for item in manifest["generator_inputs"]:
+        rel_path = Path(item["path"])
+        assert rel_path != fixture_tree
+        assert fixture_tree not in rel_path.parents
+        assert not (repo_root / rel_path).is_dir()
+
+
+def test_observer_client_bundle_pins_non_manifest_payload_hashes(
+    bundle_files: dict[Path, str],
+) -> None:
+    repo_root = observer_bundle._repo_root(None)
+
+    for rel_path, expected_sha in EXPECTED_BUNDLE_PAYLOAD_SHA256.items():
+        assert _sha256_text((repo_root / rel_path).read_text(encoding="utf-8")) == (
+            expected_sha
+        )
+        assert _sha256_text(bundle_files[rel_path]) == expected_sha
+
+
+def test_observer_client_bundle_old_fixture_tree_absence_and_residue_do_not_affect_outputs(
+    tmp_path: Path,
+) -> None:
+    source_inputs = {
+        "generator_inputs": [
+            {"path": rel_path}
+            for _input_id, rel_path, _role in EXPECTED_GENERATOR_INPUTS
+        ]
+    }
+    clean_root = tmp_path / "clean-repo"
+    residue_root = tmp_path / "residue-repo"
+    _copy_manifest_source_inputs(clean_root, source_inputs)
+    _copy_manifest_source_inputs(residue_root, source_inputs)
+    assert not (clean_root / "tests" / "fixtures" / "journal").exists()
+
+    residue_journal = residue_root / "tests" / "fixtures" / "journal"
+    (residue_journal / "health" / "locks").mkdir(parents=True)
+    (residue_journal / "health" / "locks" / "entity-trust.lock").touch()
+    (residue_journal / "indexer").mkdir(parents=True)
+    (residue_journal / "indexer" / "journal.sqlite").write_bytes(
+        b"ignored sqlite residue"
+    )
+
+    # The recording path cannot observe this synthetic root: build_bundle_files(root)
+    # uses root only for manifest generator-input hashing, while recording spins the
+    # Flask app from installed code against a fresh temp journal.
+    clean_files = observer_bundle.build_bundle_files(clean_root)
+    residue_files = observer_bundle.build_bundle_files(residue_root)
+
+    for rel_path, expected_sha in EXPECTED_BUNDLE_PAYLOAD_SHA256.items():
+        assert _sha256_text(clean_files[rel_path]) == expected_sha
+        assert _sha256_text(residue_files[rel_path]) == expected_sha
+
+    clean_input_bytes = observer_bundle.render_json(
+        _manifest(clean_files)["generator_inputs"]
+    ).encode("utf-8")
+    residue_input_bytes = observer_bundle.render_json(
+        _manifest(residue_files)["generator_inputs"]
+    ).encode("utf-8")
+    assert residue_input_bytes == clean_input_bytes
+
+
+def test_observer_client_bundle_prepare_recording_journal_starts_empty(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "journal"
+
+    journal = observer_bundle_recording._prepare_recording_journal(destination)
+
+    entries = list(journal.rglob("*"))
+    assert {
+        path.relative_to(journal).as_posix()
+        for path in entries
+        if path != journal / "config"
+    } == {"config/journal.json"}
+    assert json.loads(
+        (journal / "config" / "journal.json").read_text(encoding="utf-8")
+    ) == {"setup": {"completed_at": 1700000000000}}
+    assert all(not path.is_symlink() for path in entries)
+    assert journal == destination.resolve()
+
+    with pytest.raises(FileExistsError):
+        observer_bundle_recording._prepare_recording_journal(destination)
 
 
 def test_observer_client_bundle_consumer_audit_snapshot(
@@ -1475,12 +1597,8 @@ def test_observer_client_bundle_rejects_each_generator_input_class_source_mutati
     _copy_manifest_source_inputs(repo, manifest)
 
     source_path = repo / rel_path
-    if source_path.is_dir() and not source_path.is_symlink():
-        mutation_path = source_path / ".observer-bundle-source-mutation"
-        mutation_path.write_text(f"{role}:{input_id}\n", encoding="utf-8")
-    else:
-        with source_path.open("ab") as handle:
-            handle.write(f"\n# observer bundle source mutation: {role}\n".encode())
+    with source_path.open("ab") as handle:
+        handle.write(f"\n# observer bundle source mutation: {role}\n".encode())
 
     with pytest.raises(observer_bundle.BundleVerificationError, match=input_id):
         observer_bundle_verification.verify_committed_bundle(repo)
@@ -2118,7 +2236,7 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     _commit_bundle(equal_repo, bundle_files, "bundle")
     _assert_history_failure(
         equal_repo,
-        _description_patch_candidate(bundle_files, "1.0.1"),
+        _description_patch_candidate(bundle_files, "1.0.2"),
         "without a version bump",
     )
 
@@ -2128,6 +2246,45 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     _set_bundle_version(previous, "1.1.0")
     _commit_bundle(downgrade_repo, previous, "minor bundle")
     _assert_history_failure(downgrade_repo, bundle_files, "downgraded")
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_failure"),
+    [
+        ("1.0.1", "without a version bump"),
+        ("1.0.2", None),
+    ],
+)
+def test_observer_client_bundle_history_fixture_input_removal_requires_patch_bump(
+    bundle_files: dict[Path, str],
+    tmp_path: Path,
+    version: str,
+    expected_failure: str | None,
+) -> None:
+    source_root = observer_bundle._repo_root(None)
+    baseline_revision = "d0c7318f3"
+    baseline = {}
+    for rel_path in sorted(bundle_files):
+        baseline[rel_path] = subprocess.run(
+            ["git", "show", f"{baseline_revision}:{rel_path.as_posix()}"],
+            cwd=source_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    repo = tmp_path / version
+    _init_git_repo(repo)
+    _commit_bundle(repo, baseline, "1.0.1 bundle")
+    candidate = _clone_bundle_files(bundle_files)
+    _set_bundle_version(candidate, version)
+
+    failures = observer_bundle_compatibility.check_bundle_compatibility(repo, candidate)
+
+    if expected_failure is None:
+        assert failures == []
+    else:
+        assert failures
+        assert expected_failure in failures[0]
 
 
 def test_observer_client_bundle_history_major_and_mixed_insufficient_bumps_fail(
@@ -2320,7 +2477,7 @@ def test_observer_client_bundle_history_semantic_vector_change_is_never_patch(
 
     _assert_history_failure(
         repo,
-        _semantic_status_fixture_candidate(bundle_files, "1.0.2"),
+        _semantic_status_fixture_candidate(bundle_files, "1.1.0"),
         "major change",
         enforce_current_contract=False,
     )

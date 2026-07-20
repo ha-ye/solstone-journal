@@ -8,7 +8,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import shutil
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -32,12 +31,12 @@ from solstone.observe.processing_record import SCHEMA as PROCESSING_SCHEMA
 
 
 def build_fixture_and_vector_payloads(
-    root: Path, projection: dict[str, Any]
+    projection: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build fixture and vector payloads, validating fixture schemas."""
 
     fixtures = _example_fixtures(projection)
-    recorded_fixtures, vectors = _record_behavior_vectors(root)
+    recorded_fixtures, vectors = _record_behavior_vectors()
     fixtures.extend(recorded_fixtures)
     declared_fixtures = _declared_negative_fixtures()
     fixtures.extend(declared_fixtures)
@@ -141,15 +140,13 @@ def _example_fixtures(projection: dict[str, Any]) -> list[dict[str, Any]]:
     return fixtures
 
 
-def _record_behavior_vectors(
-    root: Path,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     fixtures: list[dict[str, Any]] = []
     vectors: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="solstone-observer-bundle-") as tmp_text:
         tmp = Path(tmp_text)
-        journal = _prepare_recording_journal(root, tmp / "journal")
+        journal = _prepare_recording_journal(tmp / "journal")
         with _recording_env(journal):
             from solstone.apps.observer import routes as observer_routes
             from solstone.convey import bridge as convey_bridge
@@ -1128,8 +1125,8 @@ def _parse_sse_error(chunk: str) -> dict[str, Any]:
     return json.loads(lines[1].removeprefix("data: "))
 
 
-def _prepare_recording_journal(root: Path, destination: Path) -> Path:
-    shutil.copytree(root / "tests" / "fixtures" / "journal", destination, symlinks=True)
+def _prepare_recording_journal(destination: Path) -> Path:
+    destination.mkdir(parents=True, exist_ok=False)
     _mark_setup_complete(destination)
     return destination.resolve()
 
