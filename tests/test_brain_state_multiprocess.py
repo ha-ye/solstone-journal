@@ -92,7 +92,7 @@ else:
 
         projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
         assert projection["aggregate_state"] == "unknown"
-        assert projection["reason_code"] == "checking_permit_lost"
+        assert projection["reason_code"] == "brain_check_interrupted"
 
         free = subprocess.run(
             [sys.executable, "-c", contender_code],

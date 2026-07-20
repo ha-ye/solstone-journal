@@ -16,6 +16,9 @@ from solstone.think.providers import brain_state as brain_state_module
 from solstone.think.providers.brain_state import (
     BRAIN_AGGREGATE_STATES,
     BRAIN_COMPONENT_STATUSES,
+    BRAIN_EVIDENCE_REASON_CODES,
+    BRAIN_LANES,
+    BRAIN_PROJECTION_ONLY_REASON_CODES,
     BRAIN_REASON_CODES,
     BRAIN_REASON_TO_AGGREGATE,
     CHECKING_TTL,
@@ -32,6 +35,7 @@ from solstone.think.providers.brain_state import (
     inspect_brain_state,
     project_brain_state,
     record_brain_runtime_failure,
+    runtime_phase_reason,
     validate_brain_state_record,
 )
 
@@ -166,7 +170,66 @@ def _write_ready_record(journal: Path, config: dict[str, Any]) -> None:
     finish_brain_refresh(permit, _ready_outcome(), NOW, journal_path=journal)
 
 
+def _current_fingerprint(journal: Path, config: dict[str, Any]) -> str:
+    key = brain_fingerprint_key_path(journal_path=journal).read_bytes()
+    result = build_active_brain_fingerprint(config, hmac_key=key)
+    assert result["fingerprint_sha256"] is not None
+    return result["fingerprint_sha256"]
+
+
+def _health_snapshot(journal: Path) -> dict[str, tuple[int, bytes]]:
+    root = journal / "health"
+    if not root.exists():
+        return {}
+    snapshot: dict[str, tuple[int, bytes]] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            snapshot[path.relative_to(root).as_posix()] = (
+                path.stat().st_mtime_ns,
+                path.read_bytes(),
+            )
+    return snapshot
+
+
 def test_vocabularies_and_reason_mapping_are_closed() -> None:
+    expected_reasons = {
+        "brain_check_in_progress",
+        "thinking_engine_not_chosen",
+        "provider_key_missing",
+        "endpoint_configuration_incomplete",
+        "gpu_unavailable",
+        "local_runtime_not_ready",
+        "local_artifact_not_ready",
+        "attestation_not_verified",
+        "provider_key_invalid",
+        "model_not_found",
+        "provider_quota_exceeded",
+        "provider_unavailable",
+        "network_unreachable",
+        "endpoint_unreachable",
+        "endpoint_contract_failed",
+        "chat_timeout",
+        "provider_response_invalid",
+        "cogitate_terminal_error",
+        "attestation_rejected",
+        "attestation_expired",
+        "local_server_unhealthy",
+        "configuration_invalid",
+        "fingerprint_key_unavailable",
+        "brain_record_missing",
+        "brain_record_invalid",
+        "brain_record_unavailable",
+        "brain_record_stale",
+        "brain_check_interrupted",
+        "brain_config_changed",
+        "brain_run_superseded",
+        "probe_internal_error",
+        "probe_output_starved",
+        "local_runtime_state_invalid",
+        "local_runtime_state_unavailable",
+        "local_runtime_state_stale",
+        "local_runtime_fingerprint_mismatch",
+    }
     assert BRAIN_AGGREGATE_STATES == {
         "ready",
         "checking",
@@ -181,10 +244,17 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
         "unknown",
         "not_attempted",
     }
+    assert BRAIN_LANES == {"none", "bundled", "spp", "byo-cloud", "byo-endpoint"}
+    assert BRAIN_REASON_CODES == expected_reasons
     assert not (BRAIN_REASON_CODES & BRAIN_AGGREGATE_STATES)
     assert not (BRAIN_REASON_CODES & BRAIN_COMPONENT_STATUSES)
     assert set(BRAIN_REASON_TO_AGGREGATE) == BRAIN_REASON_CODES
     assert set(BRAIN_REASON_TO_AGGREGATE.values()) <= BRAIN_AGGREGATE_STATES
+    evidence_reasons = frozenset().union(*BRAIN_EVIDENCE_REASON_CODES.values())
+    assert len(evidence_reasons) == 26
+    assert len(BRAIN_PROJECTION_ONLY_REASON_CODES) == 10
+    assert evidence_reasons | BRAIN_PROJECTION_ONLY_REASON_CODES == BRAIN_REASON_CODES
+    assert not (evidence_reasons & BRAIN_PROJECTION_ONLY_REASON_CODES)
 
 
 def test_closed_schema_rejects_lanes_matrix(tmp_path: Path) -> None:
@@ -194,6 +264,17 @@ def test_closed_schema_rejects_lanes_matrix(tmp_path: Path) -> None:
     )
     raw["lanes"] = {}
 
+    with pytest.raises(BrainStateValidationError):
+        validate_brain_state_record(raw)
+
+    raw = _read_raw_record(tmp_path)
+    raw["active_lane"] = "unknown"
+    with pytest.raises(BrainStateValidationError):
+        validate_brain_state_record(raw)
+
+    raw = _read_raw_record(tmp_path)
+    raw["aggregate_state"] = "unhealthy"
+    raw["reason_code"] = "runtime_failed"
     with pytest.raises(BrainStateValidationError):
         validate_brain_state_record(raw)
 
@@ -207,6 +288,39 @@ def test_none_lane_is_blocked_thinking_engine_not_chosen(tmp_path: Path) -> None
     assert projection["active_lane"] == "none"
     assert projection["aggregate_state"] == "blocked"
     assert projection["reason_code"] == "thinking_engine_not_chosen"
+
+
+def test_endpoint_configuration_incomplete_is_evidence_only() -> None:
+    evidence = {
+        "configuration": {
+            "status": "blocked",
+            "observed_at": NOW.isoformat(),
+            "reason_code": "endpoint_configuration_incomplete",
+        },
+        "lane_prerequisites": None,
+        "generate": None,
+        "cogitate": None,
+    }
+
+    record = validate_brain_state_record(
+        {
+            "schema_version": 1,
+            "revision": 1,
+            "aggregate_state": "blocked",
+            "reason_code": "endpoint_configuration_incomplete",
+            "active_lane": "byo-endpoint",
+            "active_provider": "local",
+            "active_model": "local/custom",
+            "fingerprint_sha256": "a" * 64,
+            "checking": None,
+            "evidence": evidence,
+            "runtime_failure_marker": None,
+            "diagnostic": {},
+            "updated_at": NOW.isoformat(),
+        }
+    )
+
+    assert record["reason_code"] == "endpoint_configuration_incomplete"
 
 
 def test_fingerprint_uses_config_env_not_process_env(
@@ -239,7 +353,7 @@ def test_ready_evidence_expires_at_boundary_is_not_ready(tmp_path: Path) -> None
     projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
 
     assert projection["aggregate_state"] == "unknown"
-    assert projection["reason_code"] == "evidence_expired"
+    assert projection["reason_code"] == "brain_record_stale"
 
 
 def test_ok_evidence_requires_expires_at() -> None:
@@ -279,7 +393,7 @@ def test_checking_cross_field_invariant_rejects_mismatches(tmp_path: Path) -> No
 
         raw = _read_raw_record(tmp_path)
         raw["aggregate_state"] = "unknown"
-        raw["reason_code"] = "runtime_not_ready"
+        raw["reason_code"] = "local_runtime_not_ready"
         with pytest.raises(BrainStateValidationError):
             validate_brain_state_record(raw)
     finally:
@@ -287,18 +401,30 @@ def test_checking_cross_field_invariant_rejects_mismatches(tmp_path: Path) -> No
 
 
 def test_runtime_failure_ingress_rejects_checking_reason(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        record_brain_runtime_failure("checking_active", NOW, journal_path=tmp_path)
+    result = record_brain_runtime_failure(
+        "brain_check_in_progress",
+        NOW,
+        expected_fingerprint_sha256="a" * 64,
+        component="lane_prerequisites",
+        journal_path=tmp_path,
+    )
+
+    assert result["accepted"] is False
+    assert result["rejected_reason"] == "reason_not_recordable"
 
 
 def test_diagnostic_string_must_be_declared_enum(tmp_path: Path) -> None:
-    with pytest.raises(BrainStateValidationError):
-        record_brain_runtime_failure(
-            "runtime_failed",
-            NOW,
-            diagnostic={"phase": "sk-secret-credential"},
-            journal_path=tmp_path,
-        )
+    result = record_brain_runtime_failure(
+        "local_server_unhealthy",
+        NOW,
+        expected_fingerprint_sha256="a" * 64,
+        component="lane_prerequisites",
+        diagnostic={"phase": "sk-secret-credential"},
+        journal_path=tmp_path,
+    )
+
+    assert result["accepted"] is False
+    assert result["rejected_reason"] == "reason_not_recordable"
 
 
 def test_bundled_runtime_health_ready_allows_ready_projection(
@@ -349,7 +475,194 @@ def test_inspect_brain_state_injects_bundled_runtime_health(
     assert inspection["projection"]["aggregate_state"] == "ready"
 
 
-def test_bundled_runtime_health_non_ready_branches(
+def test_inspect_brain_state_faults_do_not_modify_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases: list[tuple[str, Any, str]] = [
+        ("config-oserror", OSError("config unavailable"), "configuration_invalid"),
+        (
+            "config-corrupt",
+            brain_state_module.CorruptConfigError(tmp_path / "config" / "journal.json"),
+            "configuration_invalid",
+        ),
+    ]
+
+    for _name, exc, expected_reason in cases:
+        monkeypatch.setattr(
+            brain_state_module,
+            "read_journal_config",
+            lambda _journal_path=None, exc=exc: (_ for _ in ()).throw(exc),
+        )
+        before = _health_snapshot(tmp_path)
+        inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+        assert inspection["projection"]["aggregate_state"] == "unknown"
+        assert inspection["projection"]["reason_code"] == expected_reason
+        assert _health_snapshot(tmp_path) == before
+        monkeypatch.undo()
+
+    _write_ready_record(tmp_path, _cloud_config())
+    before = _health_snapshot(tmp_path)
+    monkeypatch.setattr(
+        brain_state_module,
+        "_read_fingerprint_key",
+        lambda _path: (_ for _ in ()).throw(OSError("key unavailable")),
+    )
+    inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+    assert inspection["projection"]["reason_code"] == "fingerprint_key_unavailable"
+    assert _health_snapshot(tmp_path) == before
+    monkeypatch.undo()
+
+    _write_config(tmp_path, _cloud_config())
+    before = _health_snapshot(tmp_path)
+    monkeypatch.setattr(
+        brain_state_module,
+        "read_json",
+        lambda _path, **_kwargs: (_ for _ in ()).throw(OSError("record unavailable")),
+    )
+    inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+    assert inspection["projection"]["reason_code"] == "brain_record_unavailable"
+    assert _health_snapshot(tmp_path) == before
+    monkeypatch.undo()
+
+    _write_config(tmp_path, _cloud_config())
+    brain_state_path(journal_path=tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    brain_state_path(journal_path=tmp_path).write_bytes(b"{")
+    before = _health_snapshot(tmp_path)
+    inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+    assert inspection["projection"]["reason_code"] == "brain_record_invalid"
+    assert _health_snapshot(tmp_path) == before
+    brain_state_path(journal_path=tmp_path).unlink()
+
+    _patch_bundled_runtime(monkeypatch)
+    _write_ready_record(tmp_path, _bundled_config())
+    for runtime_status, expected_reason in (
+        ("corrupt", "local_runtime_state_invalid"),
+        ("unavailable", "local_runtime_state_unavailable"),
+    ):
+        before = _health_snapshot(tmp_path)
+        monkeypatch.setattr(
+            brain_state_module,
+            "inspect_runtime_health",
+            lambda _provider, *, journal_path=None, runtime_status=runtime_status: (
+                _runtime_inspection(
+                    status=runtime_status,
+                    record_present=False,
+                )
+            ),
+        )
+        inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+        assert inspection["projection"]["reason_code"] == expected_reason
+        assert _health_snapshot(tmp_path) == before
+        monkeypatch.undo()
+        _patch_bundled_runtime(monkeypatch)
+
+    _write_config(tmp_path, _cloud_config())
+    permit = begin_brain_refresh(NOW, journal_path=tmp_path)
+    assert permit is not None
+    try:
+        before = _health_snapshot(tmp_path)
+        monkeypatch.setattr(
+            brain_state_module,
+            "probe_file_lease_held",
+            lambda _path: (_ for _ in ()).throw(OSError("lease unavailable")),
+        )
+        inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+        assert inspection["projection"]["reason_code"] == "brain_check_interrupted"
+        assert _health_snapshot(tmp_path) == before
+    finally:
+        permit.release()
+
+
+def test_byo_cloud_inspection_never_reads_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_ready_record(tmp_path, _cloud_config())
+
+    def fail_runtime(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("runtime inspector should not be called")
+
+    monkeypatch.setattr(brain_state_module, "inspect_runtime_health", fail_runtime)
+
+    inspection = inspect_brain_state(NOW, journal_path=tmp_path)
+
+    assert inspection["projection"]["aggregate_state"] == "ready"
+
+
+def test_bundled_runtime_health_phase_lattice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_bundled_runtime(monkeypatch)
+    config = _bundled_config()
+    _write_ready_record(tmp_path, config)
+    record = validate_brain_state_record(_read_raw_record(tmp_path))
+    key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    cases = {
+        "not-desired": "local_runtime_not_ready",
+        "observing": "local_runtime_not_ready",
+        "artifact-not-ready": "local_artifact_not_ready",
+        "host-blocked": "local_runtime_not_ready",
+        "starting": "local_runtime_not_ready",
+        "warming": "local_runtime_not_ready",
+        "backoff": "local_runtime_not_ready",
+        "retry-requested": "local_runtime_not_ready",
+        "ready": None,
+        "ready-proof-unavailable": "local_runtime_state_unavailable",
+        "stop-deferred": "local_runtime_not_ready",
+        "stopping": "local_runtime_not_ready",
+        "stopped": "local_runtime_not_ready",
+        "failed": "local_server_unhealthy",
+        "cleanup-failed": "local_server_unhealthy",
+        "state-corrupt": "local_runtime_state_invalid",
+        "state-unavailable": "local_runtime_state_unavailable",
+    }
+
+    for phase, expected_reason in cases.items():
+        projection = project_brain_state(
+            record,
+            NOW,
+            config=config,
+            hmac_key=key,
+            refresh_permit_active=False,
+            runtime_health=_runtime_inspection(phase=phase),
+        )
+        assert runtime_phase_reason(phase) == expected_reason
+        assert projection["reason_code"] == expected_reason
+        assert (projection["aggregate_state"] == "ready") is (expected_reason is None)
+
+
+def test_bundled_runtime_health_reason_overrides_and_disagreements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_bundled_runtime(monkeypatch)
+    config = _bundled_config()
+    _write_ready_record(tmp_path, config)
+    record = validate_brain_state_record(_read_raw_record(tmp_path))
+    key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    cases = [
+        ("host-blocked", "gpu-unavailable", "gpu_unavailable"),
+        ("host-blocked", "gpu-probe-failed", "local_runtime_state_unavailable"),
+        ("artifact-not-ready", "artifact-missing", "local_artifact_not_ready"),
+        ("artifact-not-ready", "install-in-progress", "local_runtime_not_ready"),
+        ("ready", "artifact-missing", "local_runtime_state_invalid"),
+        ("ready", None, None),
+    ]
+
+    for phase, runtime_reason, expected_reason in cases:
+        runtime_health = _runtime_inspection(phase=phase)
+        assert runtime_health["record"] is not None
+        runtime_health["record"]["reason_code"] = runtime_reason
+        projection = project_brain_state(
+            record,
+            NOW,
+            config=config,
+            hmac_key=key,
+            refresh_permit_active=False,
+            runtime_health=runtime_health,
+        )
+        assert projection["reason_code"] == expected_reason
+
+
+def test_bundled_runtime_health_invalid_and_unavailable_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_bundled_runtime(monkeypatch)
@@ -360,27 +673,19 @@ def test_bundled_runtime_health_non_ready_branches(
     cases = [
         (
             _runtime_inspection(status="corrupt", record_present=False),
-            "runtime_state_unavailable",
+            "local_runtime_state_invalid",
         ),
         (
             _runtime_inspection(status="unavailable", record_present=False),
-            "runtime_state_unavailable",
+            "local_runtime_state_unavailable",
         ),
         (
-            _runtime_inspection(phase="stopped", desired=None),
-            "runtime_not_ready",
-        ),
-        (
-            _runtime_inspection(phase="ready-proof-unavailable"),
-            "runtime_ready_proof_unavailable",
-        ),
-        (
-            _runtime_inspection(phase="starting"),
-            "runtime_not_ready",
+            _runtime_inspection(phase="ready", desired=None),
+            "local_runtime_state_invalid",
         ),
         (
             _runtime_inspection(phase="ready", desired="c" * 64),
-            "runtime_state_unavailable",
+            "local_runtime_fingerprint_mismatch",
         ),
     ]
 
@@ -393,8 +698,65 @@ def test_bundled_runtime_health_non_ready_branches(
             refresh_permit_active=False,
             runtime_health=runtime_health,
         )
-        assert projection["aggregate_state"] != "ready"
+        assert projection["aggregate_state"] == "unknown"
         assert projection["reason_code"] == expected_reason
+
+
+def test_runtime_transition_in_progress_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_bundled_runtime(monkeypatch)
+    config = _bundled_config()
+    _write_ready_record(tmp_path, config)
+    record = validate_brain_state_record(_read_raw_record(tmp_path))
+    key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    for phase in ("observing", "starting", "warming", "retry-requested"):
+        projection = project_brain_state(
+            record,
+            NOW,
+            config=config,
+            hmac_key=key,
+            refresh_permit_active=False,
+            runtime_health=_runtime_inspection(phase=phase),
+        )
+        assert projection["runtime_transition_in_progress"] is True
+
+    runtime_health = _runtime_inspection(phase="artifact-not-ready")
+    assert runtime_health["record"] is not None
+    runtime_health["record"]["reason_code"] = "install-in-progress"
+    projection = project_brain_state(
+        record,
+        NOW,
+        config=config,
+        hmac_key=key,
+        refresh_permit_active=False,
+        runtime_health=runtime_health,
+    )
+    assert projection["runtime_transition_in_progress"] is True
+
+    projection = project_brain_state(
+        record,
+        NOW,
+        config=config,
+        hmac_key=key,
+        refresh_permit_active=False,
+        runtime_health=_runtime_inspection(phase="backoff"),
+    )
+    assert projection["runtime_transition_in_progress"] is False
+
+    cloud_config = _cloud_config()
+    _write_ready_record(tmp_path, cloud_config)
+    cloud_record = validate_brain_state_record(_read_raw_record(tmp_path))
+    cloud_key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    projection = project_brain_state(
+        cloud_record,
+        NOW,
+        config=cloud_config,
+        hmac_key=cloud_key,
+        refresh_permit_active=False,
+        runtime_health=_runtime_inspection(phase="starting"),
+    )
+    assert projection["runtime_transition_in_progress"] is False
 
 
 def test_config_change_invalidates_prior_ready_without_refresh(tmp_path: Path) -> None:
@@ -413,7 +775,62 @@ def test_config_change_invalidates_prior_ready_without_refresh(tmp_path: Path) -
     )
 
     assert projection["aggregate_state"] == "unknown"
-    assert projection["reason_code"] == "stale_result_ignored"
+    assert projection["reason_code"] == "brain_config_changed"
+
+
+def test_unresolved_lane_begin_refresh_does_not_persist(tmp_path: Path) -> None:
+    _write_ready_record(tmp_path, _cloud_config())
+    state_path = brain_state_path(journal_path=tmp_path)
+    before_bytes = state_path.read_bytes()
+    before_revision = _read_raw_record(tmp_path)["revision"]
+    configs = [
+        {"providers": {"active": {"provider": "mystery", "model": "x"}}, "env": {}},
+        {
+            "providers": {
+                "active": {"provider": "local", "model": "local/custom"},
+                "local": {"endpoint_url": "https://brain.example.test/v1"},
+            },
+            "env": {},
+        },
+        {
+            **_local_endpoint_config(),
+            "services": {"confidential": {"prior_active": {"provider": "openai"}}},
+        },
+    ]
+
+    for config in configs:
+        _write_config(tmp_path, config)
+        assert (
+            begin_brain_refresh(NOW + timedelta(seconds=1), journal_path=tmp_path)
+            is None
+        )
+        assert state_path.read_bytes() == before_bytes
+        assert _read_raw_record(tmp_path)["revision"] == before_revision
+
+
+def test_runtime_failure_ingress_rejects_stale_fingerprint_without_write(
+    tmp_path: Path,
+) -> None:
+    config_f1 = _cloud_config(key="first")
+    _write_ready_record(tmp_path, config_f1)
+    state_path = brain_state_path(journal_path=tmp_path)
+    prior_bytes = state_path.read_bytes()
+    prior_revision = _read_raw_record(tmp_path)["revision"]
+    expected_f1 = _current_fingerprint(tmp_path, config_f1)
+
+    _write_config(tmp_path, _cloud_config(key="second"))
+    result = record_brain_runtime_failure(
+        "provider_unavailable",
+        NOW,
+        expected_fingerprint_sha256=expected_f1,
+        component="generate",
+        journal_path=tmp_path,
+    )
+
+    assert result["accepted"] is False
+    assert result["rejected_reason"] == "fingerprint_mismatch"
+    assert state_path.read_bytes() == prior_bytes
+    assert _read_raw_record(tmp_path)["revision"] == prior_revision
 
 
 def test_key_replacement_invalidates_prior_ready_record(tmp_path: Path) -> None:
@@ -427,7 +844,7 @@ def test_key_replacement_invalidates_prior_ready_record(tmp_path: Path) -> None:
     projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
 
     assert projection["aggregate_state"] == "unknown"
-    assert projection["reason_code"] == "stale_result_ignored"
+    assert projection["reason_code"] == "brain_config_changed"
 
 
 def test_mode_repair_uses_atomic_replace_for_brain_and_key(tmp_path: Path) -> None:
@@ -450,12 +867,17 @@ def test_runtime_failure_survives_older_refresh_finalization(tmp_path: Path) -> 
     permit = begin_brain_refresh(NOW, journal_path=tmp_path)
     assert permit is not None
 
-    failure = record_brain_runtime_failure(
-        "runtime_failed",
+    failure_result = record_brain_runtime_failure(
+        "local_server_unhealthy",
         NOW,
+        expected_fingerprint_sha256=permit.fingerprint_sha256,
+        component="lane_prerequisites",
         diagnostic={"phase": "failed"},
         journal_path=tmp_path,
     )
+    assert failure_result["accepted"] is True
+    failure = failure_result["record"]
+    assert failure is not None
     assert failure["aggregate_state"] == "unhealthy"
 
     with pytest.raises(BrainStateConflictError):
@@ -463,7 +885,7 @@ def test_runtime_failure_survives_older_refresh_finalization(tmp_path: Path) -> 
 
     projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
     assert projection["aggregate_state"] == "unhealthy"
-    assert projection["reason_code"] == "runtime_failed"
+    assert projection["reason_code"] == "local_server_unhealthy"
 
     newer = begin_brain_refresh(NOW, journal_path=tmp_path)
     assert newer is not None
@@ -472,6 +894,100 @@ def test_runtime_failure_survives_older_refresh_finalization(tmp_path: Path) -> 
         inspect_brain_state(NOW, journal_path=tmp_path)["projection"]["aggregate_state"]
         == "ready"
     )
+
+
+def test_runtime_failure_preserves_other_same_fingerprint_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _cloud_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+
+    generate_result = record_brain_runtime_failure(
+        "provider_unavailable",
+        NOW,
+        expected_fingerprint_sha256=expected,
+        component="generate",
+        journal_path=tmp_path,
+    )
+    assert generate_result["accepted"] is True
+    generate_record = generate_result["record"]
+    assert generate_record is not None
+    assert generate_record["evidence"]["generate"] is not None
+    assert generate_record["evidence"]["generate"]["status"] == "failed"
+    assert generate_record["evidence"]["cogitate"] is not None
+    assert generate_record["evidence"]["cogitate"]["status"] == "ok"
+
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    cogitate_result = record_brain_runtime_failure(
+        "cogitate_terminal_error",
+        NOW,
+        expected_fingerprint_sha256=expected,
+        component="cogitate",
+        journal_path=tmp_path,
+    )
+    assert cogitate_result["accepted"] is True
+    cogitate_record = cogitate_result["record"]
+    assert cogitate_record is not None
+    assert cogitate_record["evidence"]["generate"] is not None
+    assert cogitate_record["evidence"]["generate"]["status"] == "ok"
+    assert cogitate_record["evidence"]["cogitate"] is not None
+    assert cogitate_record["evidence"]["cogitate"]["status"] == "failed"
+
+
+def test_runtime_failure_drops_evidence_from_prior_fingerprint(tmp_path: Path) -> None:
+    config_f1 = _cloud_config(key="first")
+    _write_ready_record(tmp_path, config_f1)
+
+    config_f2 = _cloud_config(key="second")
+    _write_config(tmp_path, config_f2)
+    expected_f2 = _current_fingerprint(tmp_path, config_f2)
+    result = record_brain_runtime_failure(
+        "provider_unavailable",
+        NOW,
+        expected_fingerprint_sha256=expected_f2,
+        component="generate",
+        journal_path=tmp_path,
+    )
+
+    assert result["accepted"] is True
+    record = result["record"]
+    assert record is not None
+    assert record["fingerprint_sha256"] == expected_f2
+    assert record["evidence"]["configuration"] is None
+    assert record["evidence"]["lane_prerequisites"] is None
+    assert record["evidence"]["generate"] is not None
+    assert record["evidence"]["cogitate"] is None
+
+
+def test_runtime_failure_creates_or_replaces_missing_prior_record(
+    tmp_path: Path,
+) -> None:
+    config = _cloud_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    state_path = brain_state_path(journal_path=tmp_path)
+
+    for prior_bytes in (None, b"{"):
+        if prior_bytes is None:
+            state_path.unlink(missing_ok=True)
+        else:
+            state_path.write_bytes(prior_bytes)
+        result = record_brain_runtime_failure(
+            "provider_unavailable",
+            NOW,
+            expected_fingerprint_sha256=expected,
+            component="generate",
+            journal_path=tmp_path,
+        )
+
+        assert result["accepted"] is True
+        record = result["record"]
+        assert record is not None
+        assert record["revision"] == 1
+        assert record["evidence"]["configuration"] is None
+        assert record["evidence"]["generate"] is not None
 
 
 def test_accepted_mutations_increment_revision_exactly_once(tmp_path: Path) -> None:
@@ -487,12 +1003,19 @@ def test_accepted_mutations_increment_revision_exactly_once(tmp_path: Path) -> N
     )
     assert finished["revision"] == 2
 
-    failure = record_brain_runtime_failure(
-        "runtime_failed",
+    expected = finished["fingerprint_sha256"]
+    assert expected is not None
+    failure_result = record_brain_runtime_failure(
+        "local_server_unhealthy",
         NOW,
+        expected_fingerprint_sha256=expected,
+        component="lane_prerequisites",
         diagnostic={"phase": "failed"},
         journal_path=tmp_path,
     )
+    assert failure_result["accepted"] is True
+    failure = failure_result["record"]
+    assert failure is not None
     assert failure["revision"] == 3
 
     newer = begin_brain_refresh(NOW + timedelta(seconds=1), journal_path=tmp_path)
@@ -502,7 +1025,7 @@ def test_accepted_mutations_increment_revision_exactly_once(tmp_path: Path) -> N
 
     abandoned = abandon_brain_refresh(
         newer,
-        "runtime_not_ready",
+        "local_runtime_not_ready",
         NOW + timedelta(seconds=2),
         diagnostic={"phase": "starting"},
         journal_path=tmp_path,
@@ -587,14 +1110,19 @@ def test_brain_atomic_failure_preserves_prior_record_and_cleans_temp(
         "solstone.think.journal_io.atomic.os.replace", fail_brain_replace
     )
 
-    with pytest.raises(OSError):
-        record_brain_runtime_failure(
-            "runtime_failed",
-            NOW,
-            diagnostic={"phase": "failed"},
-            journal_path=tmp_path,
-        )
+    expected = _read_raw_record(tmp_path)["fingerprint_sha256"]
+    assert expected is not None
+    result = record_brain_runtime_failure(
+        "local_server_unhealthy",
+        NOW,
+        expected_fingerprint_sha256=expected,
+        component="lane_prerequisites",
+        diagnostic={"phase": "failed"},
+        journal_path=tmp_path,
+    )
 
+    assert result["accepted"] is False
+    assert result["rejected_reason"] == "state_unavailable"
     assert state_path.read_bytes() == prior_bytes
     assert _read_raw_record(tmp_path)["revision"] == prior_revision
     assert list(health_dir.glob(".tmp_*")) == []
@@ -645,7 +1173,7 @@ def test_future_timestamp_never_projects_ready(tmp_path: Path) -> None:
     projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
 
     assert projection["aggregate_state"] != "ready"
-    assert projection["reason_code"] == "clock_skew_detected"
+    assert projection["reason_code"] == "brain_record_invalid"
 
 
 def test_naive_timestamp_never_projects_ready(tmp_path: Path) -> None:
@@ -662,7 +1190,7 @@ def test_naive_timestamp_never_projects_ready(tmp_path: Path) -> None:
     inspection = inspect_brain_state(NOW, journal_path=tmp_path)
 
     assert inspection["projection"]["aggregate_state"] != "ready"
-    assert inspection["reason_code"] == "record_malformed"
+    assert inspection["reason_code"] == "brain_record_invalid"
 
 
 def test_internally_inconsistent_timestamp_never_projects_ready(
@@ -683,7 +1211,7 @@ def test_internally_inconsistent_timestamp_never_projects_ready(
     projection = inspect_brain_state(NOW, journal_path=tmp_path)["projection"]
 
     assert projection["aggregate_state"] != "ready"
-    assert projection["reason_code"] == "evidence_expired"
+    assert projection["reason_code"] == "brain_record_invalid"
 
 
 def test_clock_rollback_never_projects_ready(tmp_path: Path) -> None:
@@ -694,7 +1222,7 @@ def test_clock_rollback_never_projects_ready(tmp_path: Path) -> None:
     ]
 
     assert projection["aggregate_state"] != "ready"
-    assert projection["reason_code"] == "clock_skew_detected"
+    assert projection["reason_code"] == "brain_record_invalid"
 
 
 def test_secret_material_never_persists_in_brain_record(tmp_path: Path) -> None:
