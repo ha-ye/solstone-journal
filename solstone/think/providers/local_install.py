@@ -98,7 +98,7 @@ class CudaServerPin:
         if cpu_wanted_files is None:
             raise LocalProviderError(
                 "unsupported_platform",
-                f"No CUDA wanted-files set for OCI architecture {arch}",
+                f"No CUDA wanted-files set for runtime architecture {arch}",
             )
         return self.shared_wanted_files + cpu_wanted_files
 
@@ -286,7 +286,7 @@ def binary_path_for_pin(
     return binary_install_dir(artifact_key, pin) / pin["binary_name"]
 
 
-def _oci_arch() -> str:
+def _cuda_runtime_arch() -> str:
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64", "x64"}:
         return "amd64"
@@ -294,7 +294,7 @@ def _oci_arch() -> str:
         return "arm64"
     raise LocalProviderError(
         "unsupported_platform",
-        f"No OCI platform architecture mapping for machine {machine}",
+        f"No CUDA runtime architecture mapping for machine {machine}",
     )
 
 
@@ -405,7 +405,7 @@ def _cuda_pin_identity(
 ) -> dict[str, Any]:
     artifact_key = artifact_key or llama_server_artifact_key()
     artifact_pin = artifact_pin or require_cuda_artifact_pin_for_current_platform()
-    arch = arch or _oci_arch()
+    arch = arch or _cuda_runtime_arch()
     wanted_files = wanted_files or CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     return {
         "unit": "llama-server-cuda",
@@ -436,7 +436,7 @@ def _prove_cuda_runtime_artifact(
             reason_code="cuda_runtime_pin_missing",
             cache_hit=False,
         )
-    arch = _oci_arch()
+    arch = _cuda_runtime_arch()
     wanted_files = pin.wanted_files_for_arch(arch)
     return prove_manifest(
         artifact_manifest_path(_cuda_binary_dir_for_pin(artifact_key, artifact_pin)),
@@ -803,11 +803,20 @@ def _is_legacy_cuda_oci_tree(path: Path) -> bool:
     if not isinstance(record, dict):
         return False
     image_ref = record.get("image_ref")
+    arch = record.get("arch")
     files = record.get("files")
     return (
         isinstance(image_ref, str)
         and image_ref.endswith(f"@sha256:{path.name}")
+        and isinstance(arch, str)
+        and arch in CUDA_SERVER_PIN.cpu_wanted_files_by_arch
         and isinstance(files, dict)
+        and all(
+            isinstance(name, str)
+            and isinstance(digest, str)
+            and _HEX64_RE.fullmatch(digest) is not None
+            for name, digest in files.items()
+        )
     )
 
 
@@ -816,23 +825,38 @@ def _cleanup_legacy_cuda_oci_dirs(
     artifact_key: str,
     keep_dir: Path,
 ) -> None:
-    root = cache_root() / "cuda" / artifact_key
-    if not root.is_dir():
-        return
-    keep_resolved = keep_dir.resolve()
-    for candidate in root.iterdir():
-        try:
-            if not candidate.is_dir():
-                continue
-            if candidate.resolve() == keep_resolved:
-                continue
-            if not _is_legacy_cuda_oci_tree(candidate):
-                continue
-            shutil.rmtree(candidate)
-        except Exception:
+    root: Path | None = None
+    try:
+        root = cache_root() / "cuda" / artifact_key
+        if not root.is_dir():
+            return
+        keep_resolved = keep_dir.resolve()
+        for candidate in root.iterdir():
+            try:
+                if not candidate.is_dir():
+                    continue
+                if candidate.resolve() == keep_resolved:
+                    continue
+                if not _is_legacy_cuda_oci_tree(candidate):
+                    continue
+                shutil.rmtree(candidate)
+            except Exception:
+                LOG.warning(
+                    "failed to remove legacy CUDA OCI install tree: %s",
+                    candidate,
+                    exc_info=True,
+                )
+    except Exception:
+        if root is None:
             LOG.warning(
-                "failed to remove legacy CUDA OCI install tree: %s",
-                candidate,
+                "failed to scan legacy CUDA OCI install trees for artifact key: %s",
+                artifact_key,
+                exc_info=True,
+            )
+        else:
+            LOG.warning(
+                "failed to scan legacy CUDA OCI install trees under: %s",
+                root,
                 exc_info=True,
             )
 
@@ -950,7 +974,7 @@ def _install_cuda_llama_server(
         tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=install_dir.parent)
     )
     try:
-        arch = _oci_arch()
+        arch = _cuda_runtime_arch()
         wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")

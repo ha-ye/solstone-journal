@@ -70,48 +70,6 @@ def _fetch_token(client: httpx.Client, repo: str) -> str:
         ) from exc
 
 
-def _fetch_image_manifest(
-    client: httpx.Client,
-    repo: str,
-    digest: str,
-    arch: str,
-    token: str,
-) -> dict[str, Any]:
-    headers = _registry_headers(token)
-    top = _fetch_manifest_json(client, repo, f"sha256:{digest}", headers)
-    manifests = top.get("manifests")
-    if isinstance(manifests, list):
-        selected_digest = _select_arch_manifest(manifests, arch)
-        return _fetch_manifest_json(client, repo, selected_digest, headers)
-    if isinstance(top.get("layers"), list):
-        return top
-    raise OciImageError(
-        "manifest_fetch_failed", "OCI manifest response was not an index or image"
-    )
-
-
-def _fetch_manifest_json(
-    client: httpx.Client,
-    repo: str,
-    digest: str,
-    headers: dict[str, str],
-) -> dict[str, Any]:
-    url = f"https://{_GHCR_HOST}/v2/{repo}/manifests/{digest}"
-    try:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict):
-            raise ValueError("manifest JSON was not an object")
-        return data
-    except OciImageError:
-        raise
-    except Exception as exc:
-        raise OciImageError(
-            "manifest_fetch_failed", f"failed to fetch OCI manifest {digest}: {exc}"
-        ) from exc
-
-
 def _select_arch_manifest(manifests: list[Any], arch: str) -> str:
     for entry in manifests:
         if not isinstance(entry, dict):

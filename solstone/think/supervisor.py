@@ -1333,6 +1333,7 @@ class ProviderRuntimeState:
     desired_fingerprint: str | None = None
     latest_plan: LocalServerLaunchPlan | ParakeetServerLaunchPlan | None = None
     latest_phase: RuntimePhase = "stopped"
+    replacement_artifact_not_ready_fingerprint: str | None = None
     boot_required: bool = False
     startup_terminal: bool = False
     next_truth_at: float = 0.0
@@ -4872,6 +4873,8 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             state.provider,
         )
         return True
+    if observation.phase != "artifact-not-ready":
+        state.replacement_artifact_not_ready_fingerprint = None
     fingerprint_changed = (
         observation.desired_fingerprint_sha256 != state.desired_fingerprint
     )
@@ -4965,6 +4968,9 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
         and observation.phase == "artifact-not-ready"
         and state.latest_phase in {"ready", "ready-proof-unavailable"}
     ):
+        state.replacement_artifact_not_ready_fingerprint = (
+            observation.desired_fingerprint_sha256
+        )
         _write_provider_runtime(
             state,
             phase=observation.phase,
@@ -5369,6 +5375,15 @@ def _handle_provider_probe_result(state: ProviderRuntimeState) -> bool:
             "proof-observation-unavailable",
             {"error": str(exc)},
         )
+    if (
+        state.replacement_artifact_not_ready_fingerprint is not None
+        and outcome.status == "ready"
+    ):
+        # Keep the replacement artifact failure visible while the old child is
+        # healthy. Probe submissions still run, and unhealthy probe outcomes
+        # flow through below; exited children are surfaced by handle_runner_exits().
+        state.next_probe_at = time.monotonic() + PROVIDER_PROBE_INTERVAL_SECONDS
+        return True
     if fence is not None and not _provider_fence_matches(state, fence):
         _write_provider_runtime(
             state,

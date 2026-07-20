@@ -2562,6 +2562,7 @@ def test_local_artifact_failure_before_replacement_keeps_old_child_and_retries(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    from solstone.think.providers import local_server
     from solstone.think.providers.install_state import (
         begin_or_replace_install_attempt,
         read_install_status,
@@ -2627,9 +2628,12 @@ def test_local_artifact_failure_before_replacement_keeps_old_child_and_retries(
         boot_required=True,
     )
     state.next_truth_at = 10**12
-    state.next_probe_at = 10**12
     state.truth_fence = supervisor._provider_fence(state, 1)
     state.truth_future = _future_with(failed_observation)
+    state.probe_fence = supervisor._provider_fence(state, 1)
+    state.probe_future = _future_with(
+        supervisor._probe_outcome("ready", "probe-ready", {"port": 45678})
+    )
     monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
 
     asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
@@ -2645,6 +2649,28 @@ def test_local_artifact_failure_before_replacement_keeps_old_child_and_retries(
     record = read_runtime_health("local")
     assert record["phase"] == "artifact-not-ready"
     assert record["reason_code"] == "artifact-missing"
+    assert record["process"]["ref"] == old_managed.ref
+    assert state.probe_future is None
+
+    probe_calls: list[int] = []
+
+    def failed_probe(port: int) -> tuple[str, str]:
+        probe_calls.append(port)
+        return local_server.STATE_FAILED, "timed out"
+
+    monkeypatch.setattr(local_server, "_probe_health", failed_probe)
+    state.next_probe_at = 0.0
+    supervisor.write_service_port("local", 45678)
+
+    asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
+    assert state.probe_future is not None
+    asyncio.run(supervisor._reconcile_provider_runtime("local", [old_managed]))
+
+    assert probe_calls == [45678]
+    record = read_runtime_health("local")
+    assert record["phase"] == "ready-proof-unavailable"
+    assert record["reason_code"] == "proof-observation-unavailable"
+    assert record["detail"]["error"] == "timed out"
     assert record["process"]["ref"] == old_managed.ref
 
     retry_observation = supervisor.ProviderTruthObservation(

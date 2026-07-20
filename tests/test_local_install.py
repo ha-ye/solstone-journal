@@ -11,6 +11,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 
@@ -557,17 +558,19 @@ def test_download_file_writes_dest_and_replaces_tmp(tmp_path, monkeypatch):
         ("arm64", "arm64"),
     ],
 )
-def test_oci_arch_mapping(machine: str, arch: str, monkeypatch: pytest.MonkeyPatch):
+def test_cuda_runtime_arch_mapping(
+    machine: str, arch: str, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
 
-    assert local_install._oci_arch() == arch
+    assert local_install._cuda_runtime_arch() == arch
 
 
-def test_oci_arch_unsupported_raises(monkeypatch: pytest.MonkeyPatch):
+def test_cuda_runtime_arch_unsupported_raises(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(local_install.platform, "machine", lambda: "riscv64")
 
     with pytest.raises(local_install.LocalProviderError) as exc_info:
-        local_install._oci_arch()
+        local_install._cuda_runtime_arch()
 
     assert exc_info.value.reason_code == "unsupported_platform"
 
@@ -1228,9 +1231,80 @@ def test_install_llama_server_cuda_failure_leaves_legacy_oci_tree(
     assert legacy_dir.exists()
 
 
-def test_local_install_owner_path_has_no_oci_registry_or_cosign_entrypoint(
+def test_install_llama_server_cuda_preserves_partial_legacy_oci_sidecar(
     tmp_path,
     monkeypatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    artifact_key = local_install.llama_server_artifact_key()
+    legacy_digest = "a" * 64
+    legacy_dir = (
+        tmp_path
+        / "cache"
+        / "providers"
+        / "local"
+        / "cuda"
+        / artifact_key
+        / legacy_digest
+    )
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / ".oci-install.json").write_text(
+        json.dumps(
+            {
+                "image_ref": f"ghcr.io/acme/runtime@sha256:{legacy_digest}",
+                "files": {"llama-server": "b" * 64},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tarball = _write_cuda_runtime_tarball(tmp_path)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+
+    local_install.install_llama_server()
+
+    assert legacy_dir.exists()
+    assert local_install.cuda_binary_path().is_file()
+
+
+def test_install_llama_server_cuda_cleanup_failure_does_not_fail_published_install(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _force_cuda_backend(monkeypatch)
+    tarball = _write_cuda_runtime_tarball(tmp_path)
+    _patch_tarball_download(monkeypatch, tarball)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    real_publish = local_install.publish_staged_tree
+    real_resolve = Path.resolve
+
+    def publish_and_break_cleanup(staging: Path, target: Path) -> None:
+        real_publish(staging, target)
+
+        def fail_target_resolve(path: Path, *args: object, **kwargs: object) -> Path:
+            if path == target:
+                raise OSError("resolve failed")
+            return real_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", fail_target_resolve)
+
+    monkeypatch.setattr(local_install, "publish_staged_tree", publish_and_break_cleanup)
+
+    result = local_install.install_llama_server()
+
+    assert result["install_state"] == "verifying"
+    assert _local_status()["install_state"] == "verifying"
+    assert local_install.cuda_binary_path().is_file()
+
+
+@pytest.mark.parametrize("flow", ["llama_server", "model", "install_local"])
+def test_local_install_owner_paths_have_no_oci_registry_or_cosign_entrypoint(
+    tmp_path,
+    monkeypatch,
+    flow: str,
 ) -> None:
     source = Path(local_install.__file__).read_text(encoding="utf-8")
     assert "solstone.think.providers import oci_image" not in source
@@ -1238,19 +1312,94 @@ def test_local_install_owner_path_has_no_oci_registry_or_cosign_entrypoint(
     assert "verify_image_signature" not in source
     assert "cosign" not in source
 
+    def reject_oci_registry_url(url: object) -> None:
+        parsed = urlparse(str(url))
+        if (
+            parsed.hostname == "ghcr.io"
+            or parsed.path.startswith("/v2/")
+            or "scope=repository:" in parsed.query
+        ):
+            raise AssertionError(f"OCI registry access must not run: {url}")
+
     def fail_cosign(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
         if cmd and cmd[0] == "cosign":
             raise AssertionError("cosign must not run in the owner install path")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    class RegistryTrapClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> RegistryTrapClient:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, url: object, *_args: object, **_kwargs: object) -> object:
+            reject_oci_registry_url(url)
+            raise AssertionError(f"unexpected httpx.Client.get during install: {url}")
+
+        def stream(
+            self, _method: str, url: object, *_args: object, **_kwargs: object
+        ) -> object:
+            reject_oci_registry_url(url)
+            raise AssertionError(
+                f"unexpected httpx.Client.stream during install: {url}"
+            )
+
+    def fail_httpx_stream(
+        _method: str, url: object, *_args: object, **_kwargs: object
+    ) -> object:
+        reject_oci_registry_url(url)
+        raise AssertionError(f"unexpected live httpx.stream during install: {url}")
+
     _init_journal(tmp_path, monkeypatch)
     _force_cuda_backend(monkeypatch)
     tarball = _write_cuda_runtime_tarball(tmp_path)
-    _patch_tarball_download(monkeypatch, tarball)
+
+    def fake_download(url: str, dest: Path, **kwargs: object) -> None:
+        reject_oci_registry_url(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.name.endswith(".tar.gz"):
+            shutil.copyfile(tarball, dest)
+        else:
+            dest.write_text(dest.name, encoding="utf-8")
+        on_progress = kwargs.get("on_progress")
+        if on_progress is not None:
+            on_progress(dest.stat().st_size, dest.stat().st_size)
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
     monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
     monkeypatch.setattr(subprocess, "run", fail_cosign)
+    monkeypatch.setattr("httpx.Client", RegistryTrapClient)
+    monkeypatch.setattr("httpx.stream", fail_httpx_stream)
+    monkeypatch.setattr(
+        fit_report, "build_local_fit_report", lambda _model_id: _fit("ok")
+    )
 
-    local_install.install_llama_server()
+    if flow == "llama_server":
+        local_install.install_llama_server()
+    elif flow == "model":
+        local_install.install_model(LOCAL_MODEL)
+    else:
+        readiness_calls = 0
+
+        def fake_readiness(model_id: str) -> ReadinessOutcome:
+            nonlocal readiness_calls
+            readiness_calls += 1
+            return _fake_local_readiness(
+                binary_installed=readiness_calls > 1,
+                model_installed=readiness_calls > 1,
+                binary_path=local_install.cuda_binary_path(),
+                model_path=local_install.model_path(model_id),
+                mmproj_path=local_install.mmproj_path(model_id),
+                backend="cuda",
+                backend_reason="test cuda",
+            )
+
+        monkeypatch.setattr(local_install, "inspect_readiness", fake_readiness)
+        local_install.install_local(LOCAL_MODEL)
 
 
 def test_probe_binary_runnable_returns_true_for_zero_exit(tmp_path):
@@ -1765,7 +1914,7 @@ def test_inspect_readiness_cuda_uses_manifest_full_set(
     _force_cuda_backend(monkeypatch)
     binary = local_install.cuda_binary_path()
     binary.parent.mkdir(parents=True, exist_ok=True)
-    arch = local_install._oci_arch()
+    arch = local_install._cuda_runtime_arch()
     wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
     for name in wanted_files:
         member = binary.parent / name
