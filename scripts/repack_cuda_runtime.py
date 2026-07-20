@@ -45,7 +45,7 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +91,6 @@ REPO_REF_RE = re.compile(
 
 @dataclass(frozen=True)
 class NormalizedRef:
-    input_ref: str
     repo: str
     tag: str
     build_tag: str
@@ -122,7 +121,7 @@ class FileInventory:
 @dataclass(frozen=True)
 class RepackArtifact:
     arch: str
-    artifact_name: str
+    release_tag: str
     stage_dir: Path
     tarball_path: Path
     sidecar_path: Path
@@ -154,7 +153,6 @@ def parse_image_ref(image_ref: str) -> NormalizedRef:
             "plain server-cuda is CUDA 12.8 and is not accepted",
         )
     return NormalizedRef(
-        input_ref=image_ref,
         repo=match.group("repo"),
         tag=tag,
         build_tag=str(tag_match.group("tag")),
@@ -208,8 +206,8 @@ def fetch_manifest_raw(
 def resolve_index_manifest(
     client: Any,
     normalized: NormalizedRef,
+    token: str,
 ) -> ManifestPayload:
-    token = _fetch_token(client, normalized.repo)
     by_tag = fetch_manifest_raw(client, normalized.repo, normalized.tag, token)
     if normalized.digest_ref is not None:
         if by_tag.digest_ref != normalized.digest_ref:
@@ -641,19 +639,24 @@ def copy_stage_files(
     notices: dict[str, bytes],
     provenance: dict[str, Any],
 ) -> None:
-    if stage_dir.exists():
-        shutil.rmtree(stage_dir)
-    stage_dir.mkdir(parents=True)
-    for item in inventory:
-        shutil.copy2(item.source_path, stage_dir / item.name)
-    licenses = stage_dir / "licenses"
-    licenses.mkdir()
-    for name, data in sorted(notices.items()):
-        (licenses / name).write_bytes(data)
-    (stage_dir / "provenance.json").write_text(
-        json.dumps(provenance, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
+        stage_dir.mkdir(parents=True)
+        for item in inventory:
+            shutil.copy2(item.source_path, stage_dir / item.name)
+        licenses = stage_dir / "licenses"
+        licenses.mkdir()
+        for name, data in sorted(notices.items()):
+            (licenses / name).write_bytes(data)
+        (stage_dir / "provenance.json").write_text(
+            json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        raise OciImageError(
+            "artifact_write_failed", f"failed to stage artifact files: {exc}"
+        ) from exc
 
 
 def tar_mode(path: Path) -> int:
@@ -699,10 +702,15 @@ def write_deterministic_tar(
 
 
 def write_sidecar(tarball_path: Path) -> Path:
-    sha = _sha256_file(tarball_path)
-    sidecar = tarball_path.with_suffix(tarball_path.suffix + ".sha256")
-    sidecar.write_text(f"{sha}  {tarball_path.name}\n", encoding="utf-8")
-    return sidecar
+    try:
+        sha = _sha256_file(tarball_path)
+        sidecar = tarball_path.with_suffix(tarball_path.suffix + ".sha256")
+        sidecar.write_text(f"{sha}  {tarball_path.name}\n", encoding="utf-8")
+        return sidecar
+    except Exception as exc:
+        raise OciImageError(
+            "artifact_write_failed", f"failed to write artifact sidecar: {exc}"
+        ) from exc
 
 
 def artifact_basename(build_tag: str, arch: str) -> str:
@@ -726,6 +734,7 @@ def repack_arch(
     arch: str,
     output_dir: Path,
     timestamp: int,
+    token: str,
     verifier: str,
     notices: dict[str, bytes],
     expected_eula_sha256: str,
@@ -734,7 +743,6 @@ def repack_arch(
     stderr: Any,
 ) -> RepackArtifact:
     wanted_files = validate_arch(arch)
-    token = _fetch_token(client, normalized.repo)
     with tempfile.TemporaryDirectory(dir=output_dir) as temp:
         work = Path(temp)
         rootfs = work / "rootfs"
@@ -775,13 +783,65 @@ def repack_arch(
         sidecar = write_sidecar(tarball)
         return RepackArtifact(
             arch=arch,
-            artifact_name=basename,
+            release_tag=normalized.build_tag,
             stage_dir=stage_dir,
             tarball_path=tarball,
             sidecar_path=sidecar,
             tarball_sha256=_sha256_file(tarball),
             provenance=provenance,
         )
+
+
+def remove_published_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def publish_artifacts(
+    artifacts: Sequence[RepackArtifact],
+    output_dir: Path,
+) -> list[RepackArtifact]:
+    final_artifacts: list[RepackArtifact] = []
+    final_paths: list[Path] = []
+    for artifact in artifacts:
+        final_stage = output_dir / artifact.stage_dir.name
+        final_tarball = output_dir / artifact.tarball_path.name
+        final_sidecar = output_dir / artifact.sidecar_path.name
+        final_paths.extend([final_stage, final_tarball, final_sidecar])
+        final_artifacts.append(
+            replace(
+                artifact,
+                stage_dir=final_stage,
+                tarball_path=final_tarball,
+                sidecar_path=final_sidecar,
+            )
+        )
+
+    existing = [path for path in final_paths if path.exists() or path.is_symlink()]
+    if existing:
+        names = ", ".join(path.name for path in existing)
+        raise OciImageError(
+            "artifact_write_failed", f"artifact output already exists: {names}"
+        )
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for source, final in zip(artifacts, final_artifacts, strict=True):
+            shutil.move(str(source.stage_dir), final.stage_dir)
+            shutil.move(str(source.tarball_path), final.tarball_path)
+            shutil.move(str(source.sidecar_path), final.sidecar_path)
+        return final_artifacts
+    except Exception as exc:
+        for path in reversed(final_paths):
+            try:
+                remove_published_path(path)
+            except OSError:
+                pass
+        raise OciImageError(
+            "artifact_write_failed", f"failed to publish artifacts: {exc}"
+        ) from exc
 
 
 def ensure_client(client: Any | None) -> tuple[Any, bool]:
@@ -811,33 +871,48 @@ def repack_cuda_runtime(
     if not verifier:
         raise OciImageError("invalid_verifier", "verifier is required")
     normalized = parse_image_ref(image_ref)
-    output_dir.mkdir(parents=True, exist_ok=True)
     root = repo_root or repo_root_from_script()
     notices = load_notice_files(root, expected_eula_sha256)
     git, git_warnings = git_commit(root)
     http_client, created = ensure_client(client)
     try:
-        index = resolve_index_manifest(http_client, normalized)
-        artifacts: list[RepackArtifact] = []
-        for arch in arches:
-            print(f"repacking {arch} from {normalized.upstream_image_ref}", file=stderr)
-            artifacts.append(
-                repack_arch(
-                    client=http_client,
-                    normalized=normalized,
-                    index=index,
-                    arch=arch,
-                    output_dir=output_dir,
-                    timestamp=build_timestamp_epoch,
-                    verifier=verifier,
-                    notices=notices,
-                    expected_eula_sha256=expected_eula_sha256,
-                    git=git,
-                    git_warnings=git_warnings,
-                    stderr=stderr,
-                )
-            )
-        return artifacts
+        token = _fetch_token(http_client, normalized.repo)
+        index = resolve_index_manifest(http_client, normalized, token)
+        try:
+            output_dir.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=output_dir.parent) as temp:
+                staging_output = Path(temp) / "outputs"
+                staging_output.mkdir()
+                artifacts: list[RepackArtifact] = []
+                for arch in arches:
+                    print(
+                        f"repacking {arch} from {normalized.upstream_image_ref}",
+                        file=stderr,
+                    )
+                    artifacts.append(
+                        repack_arch(
+                            client=http_client,
+                            normalized=normalized,
+                            index=index,
+                            arch=arch,
+                            output_dir=staging_output,
+                            timestamp=build_timestamp_epoch,
+                            token=token,
+                            verifier=verifier,
+                            notices=notices,
+                            expected_eula_sha256=expected_eula_sha256,
+                            git=git,
+                            git_warnings=git_warnings,
+                            stderr=stderr,
+                        )
+                    )
+                return publish_artifacts(artifacts, output_dir)
+        except OciImageError:
+            raise
+        except Exception as exc:
+            raise OciImageError(
+                "artifact_write_failed", f"failed to prepare artifact staging: {exc}"
+            ) from exc
     finally:
         if created:
             http_client.close()
@@ -865,14 +940,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def print_pin_snippet(artifacts: Sequence[RepackArtifact]) -> None:
     payload = {
-        "artifacts": [
-            {
-                "arch": artifact.arch,
-                "sha256": artifact.tarball_sha256,
-                "tarball": artifact.tarball_path.name,
-            }
-            for artifact in artifacts
-        ]
+        artifact.arch: {
+            "binary_name": CUDA_SERVER_PIN.binary_name,
+            "filename": artifact.tarball_path.name,
+            "release_tag": artifact.release_tag,
+            "sha256": artifact.tarball_sha256,
+        }
+        for artifact in artifacts
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
 

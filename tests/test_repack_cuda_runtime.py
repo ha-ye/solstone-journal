@@ -6,23 +6,39 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import socket
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
 
 from scripts import repack_cuda_runtime as runtime
-from solstone.think.providers.oci_image import OciImageError
+from solstone.think.providers.oci_image import OciImageError, _extract_layer
 
 REPO = "ggml-org/llama.cpp"
 TAG = "server-cuda13-b10068"
 IMAGE_REF = f"ghcr.io/{REPO}:{TAG}"
 ARCH = "amd64"
+SECOND_ARCH = "arm64"
 TIMESTAMP = 1_800_000_000
 REVISION = "abcdef1234567890"
 EULA_BYTES = b"fixture NVIDIA CUDA EULA\n"
 LLAMA_LICENSE_BYTES = b"MIT License\n\nCopyright (c) 2023-2026 The ggml authors\n"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def block_real_network() -> Iterator[None]:
+    patch = pytest.MonkeyPatch()
+
+    def blocked_connect(*_args, **_kwargs):
+        raise AssertionError("real network disabled in repack CUDA runtime tests")
+
+    patch.setattr(socket.socket, "connect", blocked_connect)
+    patch.setattr(socket.socket, "connect_ex", blocked_connect)
+    yield
+    patch.undo()
 
 
 def _sha256(data: bytes) -> str:
@@ -73,10 +89,12 @@ class _Registry:
         manifests: dict[str, bytes],
         blobs: dict[str, bytes],
         *,
+        layer_refs: tuple[str, ...],
         corrupt_blob: str | None = None,
     ) -> None:
         self.manifests = manifests
         self.blobs = blobs
+        self.layer_refs = layer_refs
         self.corrupt_blob = corrupt_blob
         self.requests: list[httpx.Request] = []
 
@@ -189,6 +207,7 @@ def _registry(
     omit: str | None = None,
     ambiguous: bool = False,
     missing_revision: bool = False,
+    second_arch_missing_revision: bool = False,
     unexpected_cpu: bool = False,
     unexpected_sibling: bool = True,
     eula_bytes: bytes = EULA_BYTES,
@@ -235,29 +254,63 @@ def _registry(
     }
     manifest_bytes = _json_bytes(manifest)
     manifest_ref = _digest_ref(manifest_bytes)
-    index = {
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [
-            {
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "digest": manifest_ref,
-                "platform": {"architecture": ARCH, "os": "linux"},
-            }
-        ],
-    }
-    index_bytes = _json_bytes(index)
+    manifests = [
+        {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_ref,
+            "platform": {"architecture": ARCH, "os": "linux"},
+        }
+    ]
+    manifest_bodies = {manifest_ref: manifest_bytes}
     blobs = {
         config_ref: config_bytes,
         **{digest: data for digest, data in zip(layer_refs, layers, strict=True)},
     }
+    if second_arch_missing_revision:
+        second_config = {
+            "config": {
+                "Env": [
+                    "NV_CUDA_CUDART_VERSION=13.3.29-1",
+                    "NV_LIBCUBLAS_VERSION=13.5.1.27-1",
+                ],
+                "Labels": {},
+            }
+        }
+        second_config_bytes = _json_bytes(second_config)
+        second_config_ref = _digest_ref(second_config_bytes)
+        second_manifest = {
+            **manifest,
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": second_config_ref,
+                "size": len(second_config_bytes),
+            },
+        }
+        second_manifest_bytes = _json_bytes(second_manifest)
+        second_manifest_ref = _digest_ref(second_manifest_bytes)
+        manifests.append(
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": second_manifest_ref,
+                "platform": {"architecture": SECOND_ARCH, "os": "linux"},
+            }
+        )
+        manifest_bodies[second_manifest_ref] = second_manifest_bytes
+        blobs[second_config_ref] = second_config_bytes
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": manifests,
+    }
+    index_bytes = _json_bytes(index)
     return _Registry(
         {
             TAG: index_bytes,
             _digest_ref(index_bytes): index_bytes,
-            manifest_ref: manifest_bytes,
+            **manifest_bodies,
         },
         blobs,
+        layer_refs=tuple(layer_refs),
         corrupt_blob=layer_refs[0] if corrupt_layer else None,
     )
 
@@ -275,18 +328,19 @@ def _run(
     tmp_path: Path,
     registry: _Registry,
     *,
+    arches: tuple[str, ...] = (ARCH,),
     timestamp: int = TIMESTAMP,
     expected_eula: bytes = EULA_BYTES,
     repo_eula: bytes = EULA_BYTES,
     monkeypatch: pytest.MonkeyPatch | None = None,
-) -> tuple[runtime.RepackArtifact, io.StringIO]:
+) -> tuple[list[runtime.RepackArtifact], io.StringIO]:
     if monkeypatch is not None:
         monkeypatch.setattr(runtime, "git_commit", lambda _root: ("f" * 40, []))
     stderr = io.StringIO()
     with registry.client() as client:
         artifacts = runtime.repack_cuda_runtime(
             image_ref=IMAGE_REF,
-            arches=(ARCH,),
+            arches=arches,
             build_timestamp_epoch=timestamp,
             verifier="pytest",
             output_dir=tmp_path / "out",
@@ -295,7 +349,42 @@ def _run(
             repo_root=_repo_root(tmp_path, repo_eula),
             stderr=stderr,
         )
+    return artifacts, stderr
+
+
+def _run_one(
+    tmp_path: Path,
+    registry: _Registry,
+    *,
+    timestamp: int = TIMESTAMP,
+    expected_eula: bytes = EULA_BYTES,
+    repo_eula: bytes = EULA_BYTES,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> tuple[runtime.RepackArtifact, io.StringIO]:
+    artifacts, stderr = _run(
+        tmp_path,
+        registry,
+        timestamp=timestamp,
+        expected_eula=expected_eula,
+        repo_eula=repo_eula,
+        monkeypatch=monkeypatch,
+    )
     return artifacts[0], stderr
+
+
+def _assert_no_artifacts(output_dir: Path) -> None:
+    assert not list(output_dir.glob("*.tar.gz"))
+    assert not list(output_dir.glob("*.sha256"))
+
+
+def _extract_rootfs(tmp_path: Path, registry: _Registry) -> Path:
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir(parents=True)
+    for index, layer_ref in enumerate(registry.layer_refs, start=1):
+        layer_path = tmp_path / f"layer-{index}.tar.gz"
+        layer_path.write_bytes(registry.blobs[layer_ref])
+        _extract_layer(layer_path, rootfs)
+    return rootfs
 
 
 def _read_stage_provenance(artifact: runtime.RepackArtifact) -> dict:
@@ -314,7 +403,7 @@ def _tar_member_bytes(tarball: Path, name: str) -> bytes:
 def test_end_to_end_fixture_run_and_drift_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    artifact, stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
 
     assert artifact.tarball_path.is_file()
     assert artifact.stage_dir.is_dir()
@@ -323,7 +412,7 @@ def test_end_to_end_fixture_run_and_drift_policy(
     assert "libbonus.so.1" in stderr.getvalue()
 
     with pytest.raises(OciImageError) as exc_info:
-        _run(
+        _run_one(
             tmp_path / "cpu",
             _registry(unexpected_cpu=True),
             monkeypatch=monkeypatch,
@@ -333,7 +422,7 @@ def test_end_to_end_fixture_run_and_drift_policy(
 
     missing = _wanted_files()[0]
     with pytest.raises(OciImageError) as missing_exc:
-        _run(
+        _run_one(
             tmp_path / "missing",
             _registry(omit=missing),
             monkeypatch=monkeypatch,
@@ -345,7 +434,7 @@ def test_end_to_end_fixture_run_and_drift_policy(
 def test_symlink_cell_packages_resolved_bytes_and_records_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, _stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    artifact, _stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
     provenance = _read_stage_provenance(artifact)
     entry = next(
         item for item in provenance["files"] if item["name"] == "libcudart.so.13"
@@ -367,19 +456,28 @@ def test_symlink_cell_packages_resolved_bytes_and_records_source(
 def test_unmodified_bytes_generalized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, _stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    registry = _registry()
+    artifact, _stderr = _run_one(tmp_path, registry, monkeypatch=monkeypatch)
     provenance = _read_stage_provenance(artifact)
+    rootfs = _extract_rootfs(tmp_path / "independent", registry)
+    staged_runtime_files = {
+        path.name
+        for path in artifact.stage_dir.iterdir()
+        if path.is_file() and path.name != "provenance.json"
+    }
 
+    assert staged_runtime_files == {entry["name"] for entry in provenance["files"]}
     for entry in provenance["files"]:
         staged = artifact.stage_dir / entry["name"]
-        assert _sha256(staged.read_bytes()) == entry["sha256"]
-        assert staged.stat().st_size == entry["size"]
+        source = rootfs / entry["resolved_source_path"]
+        assert source.is_file()
+        assert _sha256(staged.read_bytes()) == _sha256(source.read_bytes())
 
 
 def test_whiteout_observability(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, _stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    artifact, _stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
 
     assert (artifact.stage_dir / "libllama-common.so.0").read_bytes() == b"upper common"
     assert (artifact.stage_dir / "libllama.so.0").read_bytes() == b"upper libllama"
@@ -392,25 +490,26 @@ def test_whiteout_observability(
 
 def test_abort_cells(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(OciImageError) as corrupt_exc:
-        _run(
+        _run_one(
             tmp_path / "corrupt",
             _registry(corrupt_layer=True),
             monkeypatch=monkeypatch,
         )
     assert corrupt_exc.value.reason_code == "sha256_mismatch"
     assert "sha256:" in str(corrupt_exc.value)
-    assert not any((tmp_path / "corrupt" / "out").glob("*.tar.gz"))
+    _assert_no_artifacts(tmp_path / "corrupt" / "out")
 
     with pytest.raises(OciImageError) as revision_exc:
-        _run(
+        _run_one(
             tmp_path / "revision",
             _registry(missing_revision=True),
             monkeypatch=monkeypatch,
         )
     assert revision_exc.value.reason_code == "revision_label_missing"
+    _assert_no_artifacts(tmp_path / "revision" / "out")
 
     with pytest.raises(OciImageError) as ambiguous_exc:
-        _run(
+        _run_one(
             tmp_path / "ambiguous",
             _registry(ambiguous=True),
             monkeypatch=monkeypatch,
@@ -418,11 +517,22 @@ def test_abort_cells(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert ambiguous_exc.value.reason_code == "wanted_file_ambiguous"
     assert "usr/lib/libggml.so.0" in str(ambiguous_exc.value)
     assert "opt/libggml.so.0" in str(ambiguous_exc.value)
+    _assert_no_artifacts(tmp_path / "ambiguous" / "out")
+
+    with pytest.raises(OciImageError) as multi_exc:
+        _run(
+            tmp_path / "multi",
+            _registry(second_arch_missing_revision=True),
+            arches=(ARCH, SECOND_ARCH),
+            monkeypatch=monkeypatch,
+        )
+    assert multi_exc.value.reason_code == "revision_label_missing"
+    _assert_no_artifacts(tmp_path / "multi" / "out")
 
 
 def test_eula_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(OciImageError) as sha_exc:
-        _run(
+        _run_one(
             tmp_path / "sha",
             _registry(eula_bytes=b"changed eula\n"),
             expected_eula=EULA_BYTES,
@@ -430,30 +540,33 @@ def test_eula_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         )
     assert sha_exc.value.reason_code == "eula_sha_mismatch"
     assert "trigger CLO re-check" in str(sha_exc.value)
+    _assert_no_artifacts(tmp_path / "sha" / "out")
 
     with pytest.raises(OciImageError) as diff_exc:
-        _run(
+        _run_one(
             tmp_path / "diff",
             _registry(second_eula_bytes=b"different eula\n"),
             monkeypatch=monkeypatch,
         )
     assert diff_exc.value.reason_code == "eula_sha_mismatch"
     assert "differ" in str(diff_exc.value)
+    _assert_no_artifacts(tmp_path / "diff" / "out")
 
     with pytest.raises(OciImageError) as repo_exc:
-        _run(
+        _run_one(
             tmp_path / "repo",
             _registry(),
             repo_eula=b"wrong committed eula\n",
             monkeypatch=monkeypatch,
         )
     assert repo_exc.value.reason_code == "eula_sha_mismatch"
+    _assert_no_artifacts(tmp_path / "repo" / "out")
 
 
 def test_determinism(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    first, _stderr = _run(tmp_path / "one", _registry(), monkeypatch=monkeypatch)
-    second, _stderr = _run(tmp_path / "two", _registry(), monkeypatch=monkeypatch)
-    third, _stderr = _run(
+    first, _stderr = _run_one(tmp_path / "one", _registry(), monkeypatch=monkeypatch)
+    second, _stderr = _run_one(tmp_path / "two", _registry(), monkeypatch=monkeypatch)
+    third, _stderr = _run_one(
         tmp_path / "three",
         _registry(),
         timestamp=TIMESTAMP + 1,
@@ -474,7 +587,7 @@ def test_determinism(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_provenance_and_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, _stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    artifact, _stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
     provenance = _read_stage_provenance(artifact)
 
     assert set(provenance) == {
@@ -515,7 +628,7 @@ def test_provenance_and_sidecar(
 def test_notices_and_staged_license_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact, _stderr = _run(tmp_path, _registry(), monkeypatch=monkeypatch)
+    artifact, _stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
 
     notice_block = Path(
         "tests/fixtures/repack_cuda_runtime/cuda_notice_block.md"
@@ -538,19 +651,30 @@ def test_notices_and_staged_license_files(
         ).read_bytes()
 
 
+def test_pin_snippet_matches_local_install_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    artifact, _stderr = _run_one(tmp_path, _registry(), monkeypatch=monkeypatch)
+
+    runtime.print_pin_snippet([artifact])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload == {
+        ARCH: {
+            "binary_name": runtime.CUDA_SERVER_PIN.binary_name,
+            "filename": artifact.tarball_path.name,
+            "release_tag": "b10068",
+            "sha256": artifact.tarball_sha256,
+        }
+    }
+
+
 def test_no_network_fetch_layer_is_injected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = _registry()
-    original = runtime.ensure_client
-    calls: list[object] = []
 
-    def ensure_client(client):
-        calls.append(client)
-        return original(client)
+    _run_one(tmp_path, registry, monkeypatch=monkeypatch)
 
-    monkeypatch.setattr(runtime, "ensure_client", ensure_client)
-    _run(tmp_path, registry, monkeypatch=monkeypatch)
-
-    assert calls and calls[0] is not None
+    assert registry.requests
     assert all(request.url.host == "ghcr.io" for request in registry.requests)
