@@ -3071,7 +3071,7 @@
       .catch((err) => {
         window.logError?.(err, { context: 'speakers-quality' });
         qualityPanel.innerHTML = window.SurfaceState.error({
-          heading: "Couldn't load voice quality",
+          heading: COPY.SPK_OVERVIEW_QUALITY_ERROR_HEADING,
           desc: window.CONVEY_COPY.RELOAD_HINT,
           serverMessage: err?.serverMessage || err?.message || '',
           detail: err,

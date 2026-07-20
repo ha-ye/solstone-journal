@@ -174,11 +174,59 @@ def test_quality_counts_each_bucket_exactly(speakers_env):
     assert result["corrections_window_count"] == 1
 
 
+def test_quality_counts_medium_acoustic_demotion_without_double_counting(
+    speakers_env,
+):
+    env = speakers_env()
+    _create_labeled_segment(
+        env,
+        "20240110",
+        "090000_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice",
+                "confidence": "medium",
+                "acoustic_margin_declined": True,
+            }
+        ],
+    )
+
+    result = get_speaker_quality_status()
+
+    assert result["tier_histogram"]["medium_statements"] == 1
+    assert result["tier_histogram"]["margin_declined_statements"] == 0
+    assert (
+        sum(
+            result["tier_histogram"][field]
+            for field in (
+                "high_statements",
+                "medium_statements",
+                "margin_declined_statements",
+                "unlabeled_sentence_statements",
+            )
+        )
+        == 1
+    )
+    assert result["demotions_by_class"]["acoustic_margin_declined"] == {
+        "high_statements": 0,
+        "medium_statements": 1,
+        "none_statements": 0,
+        "total_statements": 1,
+    }
+    assert (
+        result["demotions_by_class"]["owner_margin_declined"]["total_statements"] == 0
+    )
+
+
 def test_quality_fresh_journal_is_prebootstrap_zero_payload(speakers_env):
     env = speakers_env()
+    awareness_dir = env.journal / "awareness"
+    assert not awareness_dir.exists()
 
     fresh = get_speaker_quality_status()
 
+    assert not awareness_dir.exists()
     assert fresh["owner_voice"]["bootstrap_state"] == "pre_bootstrap"
     assert fresh["tier_histogram"] == {
         "high_statements": 0,
@@ -285,12 +333,15 @@ def test_quality_teaching_copy_is_wired_to_quality_panel() -> None:
     text = _workspace_text()
     teaching_block = _js_function_block(text, "qualityTeachingLine")
     ready_block = _js_function_block(text, "renderQualityReady")
+    load_block = _js_function_block(text, "loadQuality")
 
     assert "corrections_window_count" in teaching_block
     assert "COPY.SPK_OVERVIEW_QUALITY_TEACHING_ZERO" in teaching_block
     assert "COPY.SPK_OVERVIEW_QUALITY_TEACHING_LABEL" in teaching_block
     assert "qualityPanel.innerHTML" in ready_block
     assert "${qualityTeachingLine(data)}" in ready_block
+    assert "COPY.SPK_OVERVIEW_QUALITY_ERROR_HEADING" in load_block
+    assert "Couldn't load voice quality" not in text
 
     quality_copy = {
         name: value
@@ -300,6 +351,9 @@ def test_quality_teaching_copy_is_wired_to_quality_panel() -> None:
     assert quality_copy["SPK_OVERVIEW_QUALITY_TEACHING_LABEL"] == "teaching changes"
     assert quality_copy["SPK_OVERVIEW_QUALITY_TEACHING_ZERO"] == (
         "no recent teaching changes"
+    )
+    assert quality_copy["SPK_OVERVIEW_QUALITY_ERROR_HEADING"] == (
+        "couldn't load voice quality"
     )
     assert all(
         "error rate" not in str(value).lower() for value in quality_copy.values()

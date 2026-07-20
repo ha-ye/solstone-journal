@@ -33,6 +33,7 @@ SPK_OVERVIEW_QUALITY_SKIPPED_LABEL = "set aside for now"
 SPK_OVERVIEW_QUALITY_TEACHING_LABEL = "teaching changes"
 SPK_OVERVIEW_QUALITY_TEACHING_ZERO = "no recent teaching changes"
 SPK_OVERVIEW_QUALITY_UNREADABLE_WARNING = "some local speaker files could not be read"
+SPK_OVERVIEW_QUALITY_ERROR_HEADING = "couldn't load voice quality"
 SPK_OVERVIEW_KNOWN_VOICES_HEADER = "known voices"
 SPK_OVERVIEW_KNOWN_VOICES_SORTS = ["recent", "most samples", "alphabetical"]
 SPK_OVERVIEW_CARD_SAMPLES_LABEL = "samples"

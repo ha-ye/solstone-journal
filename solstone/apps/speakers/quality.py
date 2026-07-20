@@ -20,7 +20,7 @@ from solstone.apps.speakers.owner import (
 )
 from solstone.think.awareness import get_current
 from solstone.think.entities.journal import get_journal_principal
-from solstone.think.utils import day_dirs, iter_segments
+from solstone.think.utils import day_dirs, get_journal, iter_segments
 
 SPEAKER_QUALITY_WINDOW_DAYS = 30
 _CONFIDENCE_CLASSES = {"high", "medium", None}
@@ -213,11 +213,20 @@ def _count_unreadable(counters: dict[str, Any], field: str) -> None:
     unreadable_files["total_window_count"] += 1
 
 
-def _owner_voice_state() -> dict[str, Any]:
+def _load_awareness_voiceprint() -> dict[str, Any]:
+    current_path = Path(get_journal()) / "awareness" / "current.json"
+    # get_current() creates the awareness dir; this read-only surface must not write.
+    if not current_path.exists():
+        return {}
+
     voiceprint = get_current().get("voiceprint", {})
     if not isinstance(voiceprint, dict):
-        voiceprint = {}
+        return {}
+    return voiceprint
 
+
+def _owner_voice_state() -> dict[str, Any]:
+    voiceprint = _load_awareness_voiceprint()
     status = str(voiceprint.get("status", "none"))
     centroid = load_owner_centroid()
     if centroid is not None:
