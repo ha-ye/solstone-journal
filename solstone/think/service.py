@@ -411,8 +411,6 @@ def _foreign_launcher_match(
     label = data.get("Label")
     if not isinstance(label, str) or not label:
         return None
-    if _contains_control_char(label):
-        return None
     if not _is_foreign_launcher_label(label):
         return None
     if not _keepalive_is_persistent(data.get("KeepAlive")):
