@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,17 @@ from solstone.think.entities import entity_slug
 
 # Default stream name for test fixtures
 STREAM = "test"
+
+
+def journal_tree_hash(journal_root: Path) -> dict[str, str]:
+    """Return stable content hashes for every file under a journal root."""
+    return {
+        path.relative_to(journal_root).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(journal_root.rglob("*"))
+        if path.is_file()
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -331,6 +343,76 @@ def speakers_env(tmp_path, monkeypatch):
 
             return paths[0]
 
+        def create_screen_json(
+            self,
+            day: str,
+            segment_key: str,
+            attendees: list[str],
+            *,
+            stream: str | None = None,
+            malformed: bool = False,
+        ) -> Path:
+            """Create byte-realistic screen talent output for a segment."""
+            flat_dir, chronicle_dir = self._segment_dirs(
+                day,
+                segment_key,
+                stream=stream,
+            )
+            paths = []
+            for segment_dir in (flat_dir, chronicle_dir):
+                agents_dir = segment_dir / "talents"
+                agents_dir.mkdir(parents=True, exist_ok=True)
+                screen_path = agents_dir / "screen.json"
+                if malformed:
+                    screen_path.write_bytes(b"{not json")
+                else:
+                    screen_path.write_text(
+                        json.dumps(
+                            {
+                                "narrative": "Meeting participants were visible.",
+                                "entities": [
+                                    {
+                                        "type": "Person",
+                                        "name": name,
+                                        "role": "attendee",
+                                        "context": "Visible in participant tile.",
+                                    }
+                                    for name in attendees
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                paths.append(screen_path)
+
+            return paths[0]
+
+        def create_meetings_md(
+            self,
+            day: str,
+            participants: list[str],
+            *,
+            malformed: bool = False,
+        ) -> Path:
+            """Create byte-realistic daily meetings talent output."""
+            chronicle_day = self.journal / "chronicle" / day
+            chronicle_day.mkdir(parents=True, exist_ok=True)
+            flat_day = self.journal / day
+            if not flat_day.exists():
+                flat_day.symlink_to(chronicle_day, target_is_directory=True)
+            agents_dir = chronicle_day / "talents"
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            meetings_path = agents_dir / "meetings.md"
+            if malformed:
+                meetings_path.write_bytes(b"\xff\xfe\xfa")
+            else:
+                meetings_path.write_text(
+                    f"**Participants:** {', '.join(participants)}\n",
+                    encoding="utf-8",
+                )
+
+            return meetings_path
+
         def create_facet_relationship(
             self,
             facet: str,
@@ -388,6 +470,7 @@ def speakers_env(tmp_path, monkeypatch):
             *,
             stream: str = "import.granola",
             embeddings: np.ndarray | None = None,
+            setting: str | None = None,
         ) -> Path:
             """Create an import segment with conversation_transcript and embeddings.
 
@@ -401,6 +484,7 @@ def speakers_env(tmp_path, monkeypatch):
                 speakers: List of (speaker_name, text) tuples for each sentence
                 stream: Import stream name (default: import.granola)
                 embeddings: Optional pre-built embeddings array (num_sentences x 256)
+                setting: Optional setting field for imported_audio.jsonl header
             """
             flat_dir, chronicle_dir = self._segment_dirs(
                 day,
@@ -440,9 +524,10 @@ def speakers_env(tmp_path, monkeypatch):
                     "\n".join(ct_lines) + "\n"
                 )
 
-            audio_lines = [
-                json.dumps({"raw": "imported_audio.flac", "model": "medium.en"})
-            ]
+            audio_header = {"raw": "imported_audio.flac", "model": "medium.en"}
+            if setting is not None:
+                audio_header["setting"] = setting
+            audio_lines = [json.dumps(audio_header)]
             for i, (_speaker, text) in enumerate(speakers):
                 offset = i * 5
                 abs_seconds = base_seconds + offset

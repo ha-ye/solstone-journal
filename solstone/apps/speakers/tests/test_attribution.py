@@ -1142,6 +1142,336 @@ def test_unmatched_sentences_get_null(speakers_env):
 
 
 # ---------------------------------------------------------------------------
+# Candidate evidence persistence
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_evidence_persisted_for_resolved_entities_only(speakers_env):
+    from solstone.apps.speakers.attribution import process_attributed_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "094000_300",
+        np.vstack([_normalized([1.0, 0.0])]),
+    )
+    env.create_screen_json(
+        "20240101",
+        "094000_300",
+        ["Alice Test", "No Match Zyxq"],
+        stream=STREAM,
+    )
+
+    process_attributed_segment(
+        "20240101",
+        STREAM,
+        "094000_300",
+        commit=True,
+        read_only=False,
+    )
+
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / STREAM
+        / "094000_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert data["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["screen"]}
+    ]
+    assert "candidate_evidence_gaps" not in data
+
+
+def test_candidate_evidence_merges_channels_in_canonical_order(speakers_env):
+    from solstone.apps.speakers.attribution import process_attributed_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    env.create_import_segment(
+        "20240101",
+        "094500_300",
+        [("", "Hello.")],
+        stream=STREAM,
+        embeddings=np.vstack([_normalized([1.0, 0.0])]),
+        setting="Meeting with Alice Test",
+    )
+    env.create_screen_json("20240101", "094500_300", ["Alice Test"], stream=STREAM)
+
+    process_attributed_segment(
+        "20240101",
+        STREAM,
+        "094500_300",
+        commit=True,
+        read_only=False,
+    )
+
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / STREAM
+        / "094500_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert data["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["screen", "setting"]}
+    ]
+
+
+def test_candidate_evidence_sort_is_deterministic(speakers_env):
+    from solstone.apps.speakers.attribution import process_attributed_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Bob Test")
+    env.create_entity("Alice Test")
+    env.create_import_segment(
+        "20240101",
+        "095000_300",
+        [("", "Hello.")],
+        stream=STREAM,
+        embeddings=np.vstack([_normalized([1.0, 0.0])]),
+        setting="Meeting with Bob Test and Alice Test",
+    )
+    env.create_screen_json(
+        "20240101",
+        "095000_300",
+        ["Bob Test", "Alice Test"],
+        stream=STREAM,
+    )
+    env.create_meetings_md("20240101", ["Bob Test"])
+    env.create_speakers_json("20240101", "095000_300", ["Bob Test"])
+
+    process_attributed_segment(
+        "20240101",
+        STREAM,
+        "095000_300",
+        commit=True,
+        read_only=False,
+    )
+
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / STREAM
+        / "095000_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert data["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["screen", "setting"]},
+        {
+            "entity_id": "bob_test",
+            "sources": ["screen", "meeting_day", "setting", "speakers"],
+        },
+    ]
+
+
+def test_process_attributed_segment_writes_evidence_only_refresh(speakers_env):
+    from solstone.apps.speakers.attribution import process_attributed_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    env.create_entity("Bob Test")
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "095500_300",
+        np.vstack([_normalized([1.0, 0.0])]),
+    )
+    env.create_screen_json("20240101", "095500_300", ["Alice Test"], stream=STREAM)
+
+    first = process_attributed_segment(
+        "20240101",
+        STREAM,
+        "095500_300",
+        commit=True,
+        read_only=False,
+    )
+    assert first["changed_count"] == 1
+
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / STREAM
+        / "095500_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    before_bytes = labels_path.read_bytes()
+    env.create_screen_json(
+        "20240101",
+        "095500_300",
+        ["Alice Test", "Bob Test"],
+        stream=STREAM,
+    )
+
+    second = process_attributed_segment(
+        "20240101",
+        STREAM,
+        "095500_300",
+        commit=True,
+        read_only=False,
+    )
+
+    assert second["status"] == "unchanged"
+    assert second["changes"] == []
+    assert second["changed_count"] == 0
+    assert labels_path.read_bytes() != before_bytes
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert data["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["screen"]},
+        {"entity_id": "bob_test", "sources": ["screen"]},
+    ]
+
+
+def test_legacy_speaker_labels_without_candidate_evidence_still_load(speakers_env):
+    from solstone.apps.speakers.attribution import _read_speaker_labels
+    from solstone.apps.speakers.routes import _load_speaker_labels
+
+    env = speakers_env()
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "alice_test",
+            "confidence": "high",
+            "method": "acoustic",
+        }
+    ]
+    env.create_speaker_labels(
+        "20240101",
+        "100000_300",
+        labels,
+        metadata={"owner_centroid_last_refreshed_at": None, "voiceprint_versions": {}},
+    )
+    seg_dir = env.journal / "chronicle" / "20240101" / STREAM / "100000_300"
+
+    assert _read_speaker_labels(seg_dir) == {
+        "labels": labels,
+        "owner_centroid_last_refreshed_at": None,
+        "voiceprint_versions": {},
+    }
+    assert _load_speaker_labels(seg_dir) == {
+        "labels": labels,
+        "owner_centroid_last_refreshed_at": None,
+        "voiceprint_versions": {},
+    }
+
+
+def test_candidate_evidence_records_malformed_gaps_and_keeps_siblings(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    env.create_import_segment(
+        "20240101",
+        "100500_300",
+        [("", "Hello.")],
+        stream=STREAM,
+        embeddings=np.vstack([_normalized([1.0, 0.0])]),
+        setting="Meeting with Alice Test",
+    )
+    env.create_screen_json(
+        "20240101",
+        "100500_300",
+        [],
+        stream=STREAM,
+        malformed=True,
+    )
+
+    result = attribute_segment("20240101", STREAM, "100500_300")
+
+    assert result["metadata"]["candidate_evidence_gaps"] == [
+        {"source": "screen", "reason": "malformed_json"}
+    ]
+    assert result["metadata"]["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["setting"]}
+    ]
+
+    env.create_import_segment(
+        "20240101",
+        "101000_300",
+        [("", "Hello.")],
+        stream=STREAM,
+        embeddings=np.vstack([_normalized([1.0, 0.0])]),
+        setting="Meeting with Alice Test",
+    )
+
+    no_gap = attribute_segment("20240101", STREAM, "101000_300")
+
+    assert no_gap["metadata"]["candidate_evidence_gaps"] == []
+    assert no_gap["metadata"]["candidate_evidence"] == [
+        {"entity_id": "alice_test", "sources": ["setting"]}
+    ]
+
+
+def test_speaker_labels_container_preserves_unrelated_keys_and_drops_stub_markers(
+    tmp_path,
+):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    labels_path.write_text(
+        json.dumps(
+            {
+                "labels": [],
+                "skipped": True,
+                "reason": "no_embeddings",
+                "unrelated": {"keep": True},
+                "candidate_evidence_gaps": [
+                    {"source": "screen", "reason": "malformed_json"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "alice_test",
+            "confidence": "high",
+            "method": "acoustic",
+        }
+    ]
+    save_speaker_labels(
+        tmp_path,
+        labels,
+        {
+            "owner_centroid_last_refreshed_at": "2026-03-15T12:00:00Z",
+            "voiceprint_versions": {"alice_test": 1},
+        },
+    )
+
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert data["labels"] == labels
+    assert data["unrelated"] == {"keep": True}
+    assert "skipped" not in data
+    assert "reason" not in data
+    assert data["candidate_evidence"] == []
+    assert "candidate_evidence_gaps" not in data
+
+
+# ---------------------------------------------------------------------------
 # Output: save_speaker_labels
 # ---------------------------------------------------------------------------
 

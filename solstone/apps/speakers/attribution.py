@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 logger = logging.getLogger(__name__)
+CHANNEL_ORDER = ("screen", "meeting_day", "setting", "speakers")
 VOICEPRINT_ACCUMULATION_METHODS = {
     "structural_single_speaker",
     "structural_setting",
@@ -223,72 +224,132 @@ def _parse_setting_names(setting: str) -> list[str]:
     return names
 
 
-def _load_setting_field(seg_dir: Path) -> str | None:
-    """Read the setting field from the first line of imported_audio.jsonl."""
+def _load_setting_field_with_gaps(
+    seg_dir: Path,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Read the setting field and report present-but-unreadable gaps."""
     jsonl_path = seg_dir / "imported_audio.jsonl"
     if not jsonl_path.exists():
-        return None
+        return None, []
     try:
         with open(jsonl_path, encoding="utf-8") as f:
             first_line = f.readline().strip()
-        if first_line:
-            return json.loads(first_line).get("setting")
-    except Exception:
-        pass
-    return None
+    except OSError:
+        return None, [{"source": "setting", "reason": "unreadable"}]
+    except UnicodeDecodeError:
+        return None, [{"source": "setting", "reason": "malformed_json"}]
+
+    if not first_line:
+        return None, []
+    try:
+        data = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None, [{"source": "setting", "reason": "malformed_json"}]
+    if not isinstance(data, dict):
+        return None, []
+    setting = data.get("setting")
+    return (setting if isinstance(setting, str) else None), []
 
 
-def _extract_screen_participants(seg_dir: Path) -> list[str]:
-    """Extract attendee names from structured screen.json agent output."""
+def _load_setting_field(seg_dir: Path) -> str | None:
+    """Read the setting field from the first line of imported_audio.jsonl."""
+    return _load_setting_field_with_gaps(seg_dir)[0]
+
+
+def _extract_screen_participants_with_gaps(
+    seg_dir: Path,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Extract attendee names and report present-but-malformed screen output."""
     screen_path = seg_dir / "talents" / "screen.json"
     if not screen_path.exists():
-        return []
+        return [], []
     try:
         data = json.loads(screen_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning(
             "speaker attribution: failed to read screen participants from %s",
             screen_path,
             exc_info=True,
         )
-        return []
+        return [], [{"source": "screen", "reason": "malformed_json"}]
     if not isinstance(data, dict) or not isinstance(data.get("entities"), list):
         logger.warning(
             "speaker attribution: malformed screen participants in %s",
             screen_path,
         )
-        return []
-    return [
+        return [], [{"source": "screen", "reason": "wrong_shape"}]
+    names = [
         entity["name"].strip()
-        for entity in data.get("entities", [])
+        for entity in data["entities"]
         if isinstance(entity, dict)
         and entity.get("type") == "Person"
         and entity.get("role") == "attendee"
         and isinstance(entity.get("name"), str)
         and entity["name"].strip()
     ]
+    return names, []
+
+
+def _extract_screen_participants(seg_dir: Path) -> list[str]:
+    """Extract attendee names from structured screen.json agent output."""
+    return _extract_screen_participants_with_gaps(seg_dir)[0]
+
+
+def _extract_meeting_participants_with_gaps(
+    day: str, segment_key: str
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Extract participant names and report unreadable daily meetings output."""
+    meetings_path = day_path(day) / "talents" / "meetings.md"
+    if not meetings_path.exists():
+        return [], []
+    try:
+        content = meetings_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return [], [{"source": "meeting_day", "reason": "unreadable"}]
+
+    names: list[str] = []
+    part_re = re.compile(
+        r"\*\*Participants?\s*[:–—\-]\*\*\s*(.*)"
+        r"|\*\*Participants?\*\*\s*[:–—\-]\s*(.*)",
+        re.IGNORECASE,
+    )
+    for line in content.splitlines():
+        m = part_re.search(line)
+        if m:
+            participant_text = m.group(1) or m.group(2) or ""
+            for name in re.split(r"[,;]", participant_text):
+                name = name.strip().strip("*").strip()
+                if name and len(name) > 1:
+                    names.append(name)
+    return names, []
 
 
 def _extract_meeting_participants(day: str, segment_key: str) -> list[str]:
     """Extract participant names from daily meetings.md."""
-    meetings_path = day_path(day) / "talents" / "meetings.md"
-    if not meetings_path.exists():
-        return []
-    try:
-        content = meetings_path.read_text(encoding="utf-8")
-    except Exception:
-        return []
+    return _extract_meeting_participants_with_gaps(day, segment_key)[0]
 
-    names: list[str] = []
-    part_re = re.compile(r"\*\*Participants?\*\*\s*[:–—\-]\s*(.*)", re.IGNORECASE)
-    for line in content.splitlines():
-        m = part_re.search(line)
-        if m:
-            for name in re.split(r"[,;]", m.group(1)):
-                name = name.strip().strip("*").strip()
-                if name and len(name) > 1:
-                    names.append(name)
-    return names
+
+def _assemble_candidate_evidence(
+    name_channels: dict[str, set[str]],
+    name_entity_ids: dict[str, str],
+) -> list[dict]:
+    """Return deterministic per-entity evidence from resolved names."""
+    entity_sources: dict[str, set[str]] = defaultdict(set)
+    for name, entity_id in name_entity_ids.items():
+        entity_sources[entity_id].update(name_channels.get(name, set()))
+
+    channel_rank = {channel: index for index, channel in enumerate(CHANNEL_ORDER)}
+    return [
+        {
+            "entity_id": entity_id,
+            "sources": sorted(
+                sources,
+                key=lambda source: channel_rank[source],
+            ),
+        }
+        for entity_id, sources in sorted(entity_sources.items())
+        if sources
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +549,27 @@ def attribute_segment(
     # ================================
     # LAYER 2: Structural heuristics
     # ================================
+    evidence_gaps: list[dict[str, str]] = []
     speakers = load_segment_speakers(seg_dir)
-    setting = _load_setting_field(seg_dir)
+    setting, setting_gaps = _load_setting_field_with_gaps(seg_dir)
+    evidence_gaps.extend(setting_gaps)
     setting_names = _parse_setting_names(setting) if setting else []
-    screen_names = _extract_screen_participants(seg_dir)
-    meeting_names = _extract_meeting_participants(day, segment_key)
+    screen_names, screen_gaps = _extract_screen_participants_with_gaps(seg_dir)
+    evidence_gaps.extend(screen_gaps)
+    meeting_names, meeting_gaps = _extract_meeting_participants_with_gaps(
+        day, segment_key
+    )
+    evidence_gaps.extend(meeting_gaps)
+
+    name_channels: dict[str, set[str]] = defaultdict(set)
+    for channel, names in (
+        ("screen", screen_names),
+        ("meeting_day", meeting_names),
+        ("setting", setting_names),
+        ("speakers", speakers),
+    ):
+        for name in names:
+            name_channels[name].add(channel)
 
     # Deduplicate, preserve order
     candidate_names: list[str] = list(
@@ -501,6 +578,7 @@ def attribute_segment(
 
     # Resolve candidates to entities
     candidate_entities: dict[str, dict] = {}
+    name_entity_ids: dict[str, str] = {}
     resolution_scope = ResolutionScope.journal()
     resolution_origin = ResolutionOrigin(
         lane="apps.speakers.attribution",
@@ -518,6 +596,9 @@ def attribute_segment(
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             candidate_entities[resolution.entity["id"]] = resolution.entity
+            name_entity_ids[name] = resolution.entity["id"]
+
+    candidate_evidence = _assemble_candidate_evidence(name_channels, name_entity_ids)
 
     # 2a: single-listed-speaker — all non-owner sentences belong to them
     if len(speakers) == 1:
@@ -764,6 +845,8 @@ def attribute_segment(
         "metadata": {
             "owner_centroid_last_refreshed_at": owner_refreshed_at,
             "voiceprint_versions": voiceprint_versions,
+            "candidate_evidence": candidate_evidence,
+            "candidate_evidence_gaps": evidence_gaps,
         },
     }
 
@@ -1031,6 +1114,9 @@ def _speaker_labels_payload(
     metadata: dict[str, Any],
     current: dict | None,
 ) -> dict:
+    result = dict(current) if isinstance(current, dict) else {}
+    result.pop("skipped", None)
+    result.pop("reason", None)
     prepared_labels = labels
 
     corrected = _load_corrections_by_sentence(seg_dir)
@@ -1081,13 +1167,18 @@ def _speaker_labels_payload(
     ]
     merged_labels.extend(user_only)
 
-    return {
-        "labels": merged_labels,
-        "owner_centroid_last_refreshed_at": metadata.get(
-            "owner_centroid_last_refreshed_at"
-        ),
-        "voiceprint_versions": metadata.get("voiceprint_versions", {}),
-    }
+    result["labels"] = merged_labels
+    result["owner_centroid_last_refreshed_at"] = metadata.get(
+        "owner_centroid_last_refreshed_at"
+    )
+    result["voiceprint_versions"] = metadata.get("voiceprint_versions", {})
+    result["candidate_evidence"] = metadata.get("candidate_evidence") or []
+    gaps = metadata.get("candidate_evidence_gaps") or []
+    if gaps:
+        result["candidate_evidence_gaps"] = gaps
+    else:
+        result.pop("candidate_evidence_gaps", None)
+    return result
 
 
 def save_speaker_labels(
@@ -1193,6 +1284,16 @@ def _speaker_label_changes(
     return changes
 
 
+def _speaker_evidence_changed(current: dict | None, updated: dict) -> bool:
+    if not isinstance(current, dict):
+        return True
+    return (
+        current.get("candidate_evidence") != updated.get("candidate_evidence")
+        or current.get("candidate_evidence_gaps", [])
+        != updated.get("candidate_evidence_gaps", [])
+    )
+
+
 def process_attributed_segment(
     day: str,
     stream: str,
@@ -1247,8 +1348,9 @@ def process_attributed_segment(
         segment_key=segment_key,
         source=source,
     )
+    evidence_changed = _speaker_evidence_changed(current, updated)
 
-    should_write = commit and (current is None or bool(changes))
+    should_write = commit and (current is None or bool(changes) or evidence_changed)
     accumulated: dict[str, int] = {}
     if should_write:
         save_speaker_labels(seg_dir, labels, metadata)
