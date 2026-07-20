@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.cogitate_contract import (
+    COGITATE_DIAGNOSTIC_PREAMBLE,
     COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
 )
@@ -98,6 +99,7 @@ def assemble_prompt(
     config: dict[str, Any],
     *,
     sol_tool_name: str | None = None,
+    diagnostic: bool = False,
 ) -> tuple[str, str | None]:
     """Combine config fields into a single prompt string and system instruction.
 
@@ -121,14 +123,19 @@ def assemble_prompt(
 
     prompt_body = "\n\n".join(parts) if parts else ""
     system_instruction = config.get("system_instruction") or None
-    if sol_tool_name:
+    if diagnostic:
+        parts = [COGITATE_DIAGNOSTIC_PREAMBLE.rstrip("\n")]
+        if system_instruction:
+            parts.append(system_instruction)
+        system_instruction = "\n\n".join(parts)
+    elif sol_tool_name:
         hint = cogitate_sol_tool_hint(sol_tool_name)
         parts = [COGITATE_RUNTIME_PREAMBLE.rstrip("\n")]
         if system_instruction:
             parts.append(system_instruction)
         parts.append(hint)
         system_instruction = "\n\n".join(parts)
-    if config.get("read_scope"):
+    if config.get("read_scope") and not diagnostic:
         scope_hint = (
             "Limit filesystem reads to today's segment dir unless the task explicitly requires broader history. "
             "If you need broader scope, state what and why in your reasoning."

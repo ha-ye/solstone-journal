@@ -8,6 +8,7 @@ import pytest
 from solstone.think import cogitate_contract
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
+    COGITATE_DIAGNOSTIC_PREAMBLE,
     COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
     FUTURE_ACCESS_TIERS,
@@ -66,7 +67,13 @@ def test_prompt_body_unchanged_under_cogitate_injection():
 
 
 def test_cogitate_vocabulary_lock():
-    assert COGITATE_ACCESS_TIERS == ("normal", "system-read", "outbound", "synthesis")
+    assert COGITATE_ACCESS_TIERS == (
+        "normal",
+        "system-read",
+        "outbound",
+        "synthesis",
+        "diagnostic",
+    )
     assert COGITATE_READ_TOOL_NAMES == (
         "read_file",
         "list_directory",
@@ -92,6 +99,8 @@ def test_access_tier_capability_mapping_matches_vocabulary():
         ({"schedule": "daily"}, True),
         ({"schedule": "weekly"}, True),
         ({"schedule": "activity"}, True),
+        ({"diagnostic": True}, True),
+        ({"diagnostic": False}, False),
         ({"schedule": "segment"}, False),
         ({"schedule": "none"}, False),
         ({}, False),
@@ -108,6 +117,7 @@ def test_expects_emit_final(config, expected):
         ("system-read", (True, True, False)),
         ("outbound", (True, False, True)),
         ("synthesis", (True, False, False)),
+        ("diagnostic", (False, False, False)),
     ],
 )
 def test_capabilities_for_access_tier_real_tiers(tier, expected):
@@ -133,6 +143,23 @@ def test_cogitate_runtime_preamble_content_guard():
     assert "node_modules" in COGITATE_RUNTIME_PREAMBLE
     assert "emit_final" in COGITATE_RUNTIME_PREAMBLE
     assert "finish tool" in COGITATE_RUNTIME_PREAMBLE
+
+
+def test_diagnostic_preamble_omits_journal_tooling():
+    _, system = assemble_prompt(
+        {"system_instruction": "X", "read_scope": ["chronicle/<day>"]},
+        sol_tool_name="sol",
+        diagnostic=True,
+    )
+
+    assert system is not None
+    assert system.startswith(COGITATE_DIAGNOSTIC_PREAMBLE)
+    assert "emit_final" in system
+    assert "X" in system
+    assert "read_file" not in system
+    assert "grep_search" not in system
+    assert "through the `sol` tool" not in system
+    assert "Limit filesystem reads" not in system
     assert "through a `sol` domain command" in COGITATE_RUNTIME_PREAMBLE
     assert "no MCP tools" in COGITATE_RUNTIME_PREAMBLE
     assert "no bare `journal ...` commands" in COGITATE_RUNTIME_PREAMBLE

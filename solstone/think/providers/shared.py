@@ -382,6 +382,13 @@ USAGE_KEYS = frozenset(
 # GenerateResult
 # ---------------------------------------------------------------------------
 
+CANNED_GENERATE_PROMPT = "Reply with the single word OK."
+CANNED_GENERATE_MAX_OUTPUT_TOKENS = 512
+CANNED_GENERATE_THINKING_BUDGET = 0
+CANNED_GENERATE_NUM_RETRIES = 0
+CANNED_GENERATE_TIMEOUT_S = 30
+CannedGenerateVerdict = Literal["pass", "starved", "invalid"]
+
 
 class GenerateResult(TypedDict, total=False):
     """Result from provider run_generate/run_agenerate functions.
@@ -403,6 +410,43 @@ class GenerateResult(TypedDict, total=False):
         dict
     ]  # Out-of-band truncation metadata when the bundled-local input was clipped
     inference: Optional[dict]  # Content-free local inference timing/admission record
+
+
+def _has_reasoning_usage(result: GenerateResult) -> bool:
+    thinking = result.get("thinking")
+    if isinstance(thinking, list) and bool(thinking):
+        return True
+    usage = result.get("usage")
+    if not isinstance(usage, dict):
+        return False
+    for key, value in usage.items():
+        if "reasoning" not in str(key):
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)) and value > 0:
+            return True
+    return False
+
+
+def classify_canned_generate(result: GenerateResult) -> CannedGenerateVerdict:
+    """Classify a canned generate result without using brain-state vocabulary.
+
+    Brain refresh maps this later as: pass -> generate ok, starved ->
+    probe_output_starved, invalid -> provider_response_invalid.
+    """
+
+    finish_reason = result.get("finish_reason")
+    if finish_reason == "max_tokens":
+        return "starved"
+
+    text = (result.get("text") or "").strip()
+    if text:
+        return "pass"
+
+    if _has_reasoning_usage(result) or finish_reason not in {"stop"}:
+        return "starved"
+    return "invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -470,12 +514,19 @@ def safe_raw(
 
 
 __all__ = [
+    "CANNED_GENERATE_MAX_OUTPUT_TOKENS",
+    "CANNED_GENERATE_NUM_RETRIES",
+    "CANNED_GENERATE_PROMPT",
+    "CANNED_GENERATE_THINKING_BUDGET",
+    "CANNED_GENERATE_TIMEOUT_S",
+    "CannedGenerateVerdict",
     "Event",
     "GenerateResult",
     "JSONEventCallback",
     "RUNTIME_REASON_CODES",
     "ThinkingEvent",
     "USAGE_KEYS",
+    "classify_canned_generate",
     "classify_provider_error",
     "safe_raw",
 ]

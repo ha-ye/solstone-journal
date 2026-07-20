@@ -57,6 +57,11 @@ from solstone.think.providers.local_admission import (
 )
 from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS
 from solstone.think.providers.shared import (
+    CANNED_GENERATE_MAX_OUTPUT_TOKENS,
+    CANNED_GENERATE_NUM_RETRIES,
+    CANNED_GENERATE_PROMPT,
+    CANNED_GENERATE_THINKING_BUDGET,
+    CANNED_GENERATE_TIMEOUT_S,
     USAGE_KEYS,
     GenerateResult,
     JSONEventCallback,
@@ -86,7 +91,6 @@ _LOCAL_OUTPUT_RESERVE_TOKENS = LOCAL_MIN_CONTEXT_TOKENS // 4
 _LOCAL_CONDENSER_MAX_TOKENS = LOCAL_MIN_CONTEXT_TOKENS * 11 // 16
 _LOCAL_CONDENSER_KEEP_FIRST = 4
 _GENERATE_NUM_RETRIES = 2
-_PROBE_MAX_OUTPUT_TOKENS = 16
 _GEMINI_MAX_OUTPUT_TOKENS = 65_535
 _ANTHROPIC_THINKING_BUFFER = 1_000
 _SCHEMA_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -174,9 +178,36 @@ def _session_identity(value: Any) -> tuple[str, uuid.UUID]:
         )
 
 
-def _build_llm(provider: str, model: str) -> Any:
+def _is_diagnostic_cogitate(config: dict[str, Any]) -> bool:
+    return config.get("diagnostic") is True
+
+
+def _effective_access_tier(config: dict[str, Any]) -> str:
+    if _is_diagnostic_cogitate(config):
+        return "diagnostic"
+    return str(config.get("access_tier", "normal"))
+
+
+def _llm_num_retries(config: dict[str, Any]) -> int:
+    if _is_diagnostic_cogitate(config):
+        return CANNED_GENERATE_NUM_RETRIES
+    return LLM_NUM_RETRIES
+
+
+def _cogitate_budgets(config: dict[str, Any]) -> tuple[int, float, float]:
+    max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
+    cost_cap = float(
+        config.get("max_run_cost_usd", DEFAULT_RUN_COST_CAP_USD)
+        or DEFAULT_RUN_COST_CAP_USD
+    )
+    timeout_seconds = float(config.get("timeout_seconds", 600) or 600)
+    return max_turns, cost_cap, timeout_seconds
+
+
+def _build_llm(provider: str, model: str, *, num_retries: int | None = None) -> Any:
     from openhands.sdk import LLM
 
+    retry_count = LLM_NUM_RETRIES if num_retries is None else num_retries
     if provider == "local":
         from solstone.think.providers.local_endpoint import resolve_local_endpoint
         from solstone.think.services.spp_transport import confidential_egress_base_url
@@ -190,7 +221,7 @@ def _build_llm(provider: str, model: str) -> Any:
                 api_key=endpoint.credential or "EMPTY",
                 native_tool_calling=False,
                 timeout=LLM_TIMEOUT_S,
-                num_retries=LLM_NUM_RETRIES,
+                num_retries=retry_count,
                 retry_min_wait=1,
                 retry_max_wait=2,
                 retry_multiplier=1.0,
@@ -207,7 +238,7 @@ def _build_llm(provider: str, model: str) -> Any:
             api_key="EMPTY",
             native_tool_calling=False,
             timeout=LLM_TIMEOUT_S,
-            num_retries=LLM_NUM_RETRIES,
+            num_retries=retry_count,
             max_input_tokens=local_server.LOCAL_MIN_CONTEXT_TOKENS,
             max_output_tokens=_LOCAL_OUTPUT_RESERVE_TOKENS,
             input_cost_per_token=0,
@@ -223,7 +254,7 @@ def _build_llm(provider: str, model: str) -> Any:
         "api_key": _resolve_provider_key(provider),
         "native_tool_calling": True,
         "timeout": LLM_TIMEOUT_S,
-        "num_retries": LLM_NUM_RETRIES,
+        "num_retries": retry_count,
     }
     if provider == "openai":
         llm_kwargs["reasoning_summary"] = "auto"
@@ -1579,19 +1610,17 @@ async def run_cogitate(
             from openhands.sdk.tool.registry import register_tool
             from openhands.sdk.tool.spec import Tool
 
+        diagnostic = _is_diagnostic_cogitate(config)
         wants_emit_final = expects_emit_final(config)
-        max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
-        cost_cap = float(
-            config.get("max_run_cost_usd", DEFAULT_RUN_COST_CAP_USD)
-            or DEFAULT_RUN_COST_CAP_USD
-        )
+        max_turns, cost_cap, timeout_seconds = _cogitate_budgets(config)
         session_id, conversation_id = _session_identity(config.get("session_id"))
         prompt_body, system_instruction = assemble_prompt(
             config,
-            sol_tool_name="sol",
+            sol_tool_name=None if diagnostic else "sol",
+            diagnostic=diagnostic,
         )
         allowed_roots = _resolve_allowed_roots(config)
-        access_tier = str(config.get("access_tier", "normal"))
+        access_tier = _effective_access_tier(config)
         outbound_approval = config.get("outbound_approval")
         caps = capabilities_for_access_tier(access_tier)
         policy = CogitatePolicy(
@@ -1603,7 +1632,7 @@ async def run_cogitate(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )
         journal = Path(get_journal())
-        llm = _build_llm(provider, model)
+        llm = _build_llm(provider, model, num_retries=_llm_num_retries(config))
         usage_start = _usage_snapshot(llm)
         tool_specs = []
         sol_executor = None
@@ -1675,7 +1704,6 @@ async def run_cogitate(
         if sol_executor is not None:
             sol_executor.bind_conversation(conversation)
         conversation.send_message(prompt_body)
-        timeout_seconds = float(config.get("timeout_seconds", 600) or 600)
         wall_clock_s = _wall_clock_deadline_s(timeout_seconds)
         wall_clock_exceeded = False
         with _suppress_litellm_cost_warnings():
@@ -1885,6 +1913,7 @@ def run_generate(
     thinking_budget: int | None = None,
     json_schema: dict | None = None,
     timeout_s: float = 120,
+    num_retries: int = _GENERATE_NUM_RETRIES,
     **kwargs: Any,
 ) -> GenerateResult:
     if kwargs:
@@ -1901,6 +1930,7 @@ def run_generate(
         thinking_budget=thinking_budget,
         json_schema=json_schema,
         timeout_s=timeout_s,
+        num_retries=num_retries,
     )
 
 
@@ -1966,18 +1996,18 @@ def _validation_reason(exc: BaseException, provider: str) -> str:
 
 def _probe(provider: str, model: str, api_key: str) -> None:
     _run_generate(
-        "Reply OK",
+        CANNED_GENERATE_PROMPT,
         model,
         provider=provider,
         temperature=None,
-        max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS,
+        max_output_tokens=CANNED_GENERATE_MAX_OUTPUT_TOKENS,
         system_instruction=None,
         json_output=False,
-        thinking_budget=None,
+        thinking_budget=CANNED_GENERATE_THINKING_BUDGET,
         json_schema=None,
-        timeout_s=10,
+        timeout_s=CANNED_GENERATE_TIMEOUT_S,
         api_key=api_key,
-        num_retries=0,
+        num_retries=CANNED_GENERATE_NUM_RETRIES,
     )
 
 

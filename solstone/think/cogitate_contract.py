@@ -25,9 +25,23 @@ You are a solstone cogitate talent running inside the live system. This runtime 
 - Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no shell composition (pipes, redirects, chaining, or command substitution; one command per call), no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
 """
 
+COGITATE_DIAGNOSTIC_PREAMBLE = """\
+You are a bounded solstone diagnostic cogitate check. This runtime contract is authoritative; do not assume capabilities beyond it.
+
+- The only available tool is `emit_final`. Call it exactly once with a concise, non-empty diagnostic result.
+- No journal access is available: no `sol` command line, no read tools, no submit tools, no shell commands, no browser or web access, and no delegating to sub-agents.
+- Do not claim that you read or changed journal state. This check returns its final content in memory only.
+"""
+
 # Locked cogitate access-tier vocabulary (the C1 contract). Downstream milestones
 # key per-talent assignment, enforcement, redesign, and lint off these names.
-COGITATE_ACCESS_TIERS = ("normal", "system-read", "outbound", "synthesis")
+COGITATE_ACCESS_TIERS = (
+    "normal",
+    "system-read",
+    "outbound",
+    "synthesis",
+    "diagnostic",
+)
 
 # `code-agent` is a documented FUTURE tier — NOT part of the current cogitate
 # runtime (it needs write access, broad tools, and a repo cwd, deliberately out of
@@ -59,6 +73,7 @@ _ACCESS_TIER_CAPABILITIES: dict[str, AccessCapabilities] = {
     # For synthesis talents (weekly_reflection, partner) whose source of record
     # is `sol call journal` / `sol call activities`, not the raw journal tree.
     "synthesis": AccessCapabilities(sol=True, reads=False, submit=False),
+    "diagnostic": AccessCapabilities(sol=False, reads=False, submit=False),
 }
 
 _missing_access_tiers = set(COGITATE_ACCESS_TIERS) - set(_ACCESS_TIER_CAPABILITIES)
@@ -81,15 +96,16 @@ def capabilities_for_access_tier(tier: str) -> AccessCapabilities:
 
 def expects_emit_final(config: dict[str, Any]) -> bool:
     """Select emit_final vs the built-in finish tool for providers and inventory."""
-    return bool(config.get("output_path")) or config.get("schedule") in {
-        "daily",
-        "weekly",
-        "activity",
-    }
+    return (
+        config.get("diagnostic") is True
+        or bool(config.get("output_path"))
+        or config.get("schedule") in {"daily", "weekly", "activity"}
+    )
 
 
 __all__ = [
     "AccessCapabilities",
+    "COGITATE_DIAGNOSTIC_PREAMBLE",
     "COGITATE_RUNTIME_PREAMBLE",
     "COGITATE_ACCESS_TIERS",
     "COGITATE_READ_TOOL_NAMES",

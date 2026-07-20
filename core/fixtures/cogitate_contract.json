@@ -3,9 +3,15 @@
     "normal",
     "system-read",
     "outbound",
-    "synthesis"
+    "synthesis",
+    "diagnostic"
   ],
   "capabilities": {
+    "diagnostic": {
+      "reads": false,
+      "sol": false,
+      "submit": false
+    },
     "normal": {
       "reads": true,
       "sol": true,

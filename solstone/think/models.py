@@ -1167,6 +1167,7 @@ def generate_with_result(
     json_schema: dict | None = None,
     thinking_budget: Optional[int] = None,
     timeout_s: Optional[float] = None,
+    num_retries: int | None = None,
     inference_retry_index: int = 0,
     local_exclusive_admission: bool = False,
 ) -> dict:
@@ -1198,6 +1199,8 @@ def generate_with_result(
         Token budget for model thinking (ignored by providers that don't support it).
     timeout_s : float, optional
         Request timeout in seconds.
+    num_retries : int, optional
+        Provider transport retry count for backends that expose one.
     Returns
     -------
     dict
@@ -1229,6 +1232,8 @@ def generate_with_result(
             provider_options["local_exclusive_admission"] = True
     else:
         provider_options = {"provider": provider}
+        if num_retries is not None:
+            provider_options["num_retries"] = num_retries
     result = provider_mod.run_generate(
         contents=contents,
         model=model,

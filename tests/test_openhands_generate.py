@@ -12,6 +12,10 @@ from PIL import Image
 
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import ProviderKeyMissingError
+from solstone.think.providers.shared import (
+    CANNED_GENERATE_MAX_OUTPUT_TOKENS,
+    CANNED_GENERATE_NUM_RETRIES,
+)
 from tests.openhands_fakes import install_fake_openhands
 
 
@@ -382,26 +386,24 @@ async def test_run_agenerate_transport_kwargs_do_not_shadow_llm_timeout(
     assert "timeout" not in getattr(llm, transport_attr)
 
 
-def test_validation_probe_uses_minimum_output_budget(fake_openhands):
-    assert openhands._PROBE_MAX_OUTPUT_TOKENS == 16
-
+def test_validation_probe_uses_canned_generate_transport_contract(fake_openhands):
     assert openhands.validate_key("openai", "key") == {"valid": True}
-    assert (
-        fake_openhands.LLM.instances[-1].max_output_tokens
-        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    assert fake_openhands.LLM.instances[-1].max_output_tokens == (
+        CANNED_GENERATE_MAX_OUTPUT_TOKENS
     )
+    assert fake_openhands.LLM.instances[-1].num_retries == CANNED_GENERATE_NUM_RETRIES
 
     assert openhands.validate_key("google", "key") == {"valid": True}
-    assert (
-        fake_openhands.LLM.instances[-1].max_output_tokens
-        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    assert fake_openhands.LLM.instances[-1].max_output_tokens == (
+        CANNED_GENERATE_MAX_OUTPUT_TOKENS
     )
+    assert fake_openhands.LLM.instances[-1].num_retries == CANNED_GENERATE_NUM_RETRIES
 
     assert openhands.validate_key("anthropic", "key") == {"valid": True}
-    assert (
-        fake_openhands.LLM.instances[-1].max_output_tokens
-        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    assert fake_openhands.LLM.instances[-1].max_output_tokens == (
+        CANNED_GENERATE_MAX_OUTPUT_TOKENS
     )
+    assert fake_openhands.LLM.instances[-1].num_retries == CANNED_GENERATE_NUM_RETRIES
 
 
 def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
@@ -422,6 +424,22 @@ def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     }
     assert openhands.validate_model("google", "missing", "key")["reason_code"] == (
         "model_not_found"
+    )
+
+    class LLMAuthenticationError(RuntimeError):
+        pass
+
+    def invalid_key(*_args):
+        raise LLMAuthenticationError("invalid")
+
+    monkeypatch.setattr(openhands, "_probe", invalid_key)
+    assert openhands.validate_key("google", "bad")["reason_code"] == (
+        "provider_key_invalid"
+    )
+    assert openhands.validate_key("google", "bad")["valid"] is False
+    assert (
+        openhands.validate_model("google", "gemini-flash-latest", "bad")["reason_code"]
+        == "provider_key_invalid"
     )
 
 
