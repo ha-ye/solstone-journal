@@ -206,5 +206,66 @@ def test_remote_state_reports_ref_mismatch_and_dirty_tree() -> None:
     assert len(failures) == 2
     assert failures[0].expected == "abc123"
     assert failures[0].actual == "def456"
-    assert failures[0].repair == "git fetch origin && git checkout abc123"
+    assert (
+        failures[0].repair
+        == "python3 scripts/check_release_preflight.py remote-state --help"
+    )
     assert "remote.txt" in failures[1].actual
+
+
+def test_expected_lane_tool_evidence_uses_grounded_release_pins() -> None:
+    source = preflight.expected_lane_tool_evidence("source")
+    linux = preflight.expected_lane_tool_evidence("linux-aarch64-musl")
+    macos = preflight.expected_lane_tool_evidence("macos-arm64")
+
+    assert source["python"] == pins.PYTHON_SOURCE_LINUX_VERSION
+    assert "zig" not in source
+    assert linux["zig"] == pins.ZIG_PIN
+    assert macos["python"] == pins.PYTHON_MACOS_VERSION
+    assert macos["swift"] == pins.MACOS_SWIFT_PIN
+    assert macos["codesign"] == pins.MACOS_CODESIGN_PUBLIC_PIN
+
+
+def test_lane_tool_skew_fails_closed() -> None:
+    evidence = preflight.expected_lane_tool_evidence("macos-arm64")
+    evidence["swift"] = "swift 6.3.3"
+
+    failures = preflight.check_lane_tool_evidence("macos-arm64", evidence)
+
+    assert failures
+    assert failures[0].error == "release lane tool swift is not pinned"
+    assert failures[0].expected == pins.MACOS_SWIFT_PIN
+
+
+def test_collect_lane_tools_normalizes_macos_observations() -> None:
+    outputs = {
+        "python": "Python 3.14.6",
+        "rustc": pins.RUSTC_VERSION_BANNER,
+        "cargo": pins.CARGO_VERSION_PIN,
+        "uv": pins.UV_PIN,
+        "maturin": pins.MATURIN_PIN,
+        "cargo-deny": pins.CARGO_DENY_PIN,
+        "xcodebuild": f"Xcode {pins.MACOS_XCODE_VERSION}\nBuild version {pins.MACOS_XCODE_BUILD}\n",
+        "swift": pins.MACOS_SWIFT_PIN + "\n",
+        "xcrun": pins.MACOS_NOTARYTOOL_PIN,
+    }
+
+    def which(name: str) -> str | None:
+        if name == "codesign":
+            return pins.MACOS_CODESIGN_PATH
+        return f"/tools/{name}" if name in outputs else None
+
+    def runner(argv, **_kwargs) -> subprocess.CompletedProcess[str]:
+        name = Path(argv[0]).name
+        if argv[0] == "python":
+            name = "python"
+        return _completed(outputs[name])
+
+    evidence = preflight.collect_lane_tool_evidence(
+        "macos-arm64",
+        which=which,
+        runner=runner,
+        python_executable="python",
+    )
+
+    assert evidence == preflight.expected_lane_tool_evidence("macos-arm64")

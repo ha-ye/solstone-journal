@@ -14,7 +14,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -22,12 +22,69 @@ for _path in (str(ROOT), str(_SCRIPTS_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from scripts.release_tool_pins import CARGO_DENY_VERSION, ZIG_VERSION  # noqa: E402
+from scripts.release_tool_pins import (  # noqa: E402
+    CARGO_DENY_PIN,
+    CARGO_DENY_VERSION,
+    CARGO_VERSION_PIN,
+    MACOS_CODESIGN_PATH,
+    MACOS_CODESIGN_PUBLIC_PIN,
+    MACOS_NOTARYTOOL_PIN,
+    MACOS_SWIFT_PIN,
+    MACOS_XCODE_BUILD,
+    MACOS_XCODE_PIN,
+    MACOS_XCODE_VERSION,
+    MATURIN_PIN,
+    PYTHON_MACOS_VERSION,
+    PYTHON_SOURCE_LINUX_VERSION,
+    RUSTC_VERSION_BANNER,
+    UV_PIN,
+    ZIG_PIN,
+    ZIG_VERSION,
+)
 
 TOOLCHAIN_FILE = "rust-toolchain.toml"
 COMPONENT_BINARIES = {
     "rustfmt": "rustfmt",
     "clippy": "cargo-clippy",
+}
+LaneName = Literal[
+    "source",
+    "linux-x86_64-musl",
+    "linux-aarch64-musl",
+    "macos-arm64",
+]
+LANE_TOOL_KEYS: dict[LaneName, tuple[str, ...]] = {
+    "source": ("python", "rustc", "cargo", "uv", "maturin", "cargo-deny"),
+    "linux-x86_64-musl": (
+        "python",
+        "rustc",
+        "cargo",
+        "uv",
+        "maturin",
+        "cargo-deny",
+        "zig",
+    ),
+    "linux-aarch64-musl": (
+        "python",
+        "rustc",
+        "cargo",
+        "uv",
+        "maturin",
+        "cargo-deny",
+        "zig",
+    ),
+    "macos-arm64": (
+        "python",
+        "rustc",
+        "cargo",
+        "uv",
+        "maturin",
+        "cargo-deny",
+        "xcode",
+        "swift",
+        "codesign",
+        "notarytool",
+    ),
 }
 
 
@@ -306,6 +363,165 @@ def check_cargo_deny(
     return []
 
 
+def expected_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
+    if lane not in LANE_TOOL_KEYS:
+        raise ValueError(f"unknown release lane: {lane}")
+    common = {
+        "python": PYTHON_MACOS_VERSION
+        if lane == "macos-arm64"
+        else PYTHON_SOURCE_LINUX_VERSION,
+        "rustc": RUSTC_VERSION_BANNER,
+        "cargo": CARGO_VERSION_PIN,
+        "uv": UV_PIN,
+        "maturin": MATURIN_PIN,
+        "cargo-deny": CARGO_DENY_PIN,
+    }
+    if lane in {"linux-x86_64-musl", "linux-aarch64-musl"}:
+        common["zig"] = ZIG_PIN
+    if lane == "macos-arm64":
+        common.update(
+            {
+                "xcode": MACOS_XCODE_PIN,
+                "swift": MACOS_SWIFT_PIN,
+                "codesign": MACOS_CODESIGN_PUBLIC_PIN,
+                "notarytool": MACOS_NOTARYTOOL_PIN,
+            }
+        )
+    return {key: common[key] for key in LANE_TOOL_KEYS[lane]}
+
+
+def check_lane_tool_evidence(
+    lane: LaneName,
+    evidence: Mapping[str, str],
+) -> list[Failure]:
+    expected = expected_lane_tool_evidence(lane)
+    failures: list[Failure] = []
+    if set(evidence) != set(expected):
+        failures.append(
+            Failure(
+                error="release lane tool evidence keys do not match lane",
+                expected=", ".join(expected),
+                actual=", ".join(sorted(evidence)) or "<empty>",
+                repair=f"python3 scripts/check_release_preflight.py lane-tools --lane {lane}",
+            )
+        )
+    for key, expected_value in expected.items():
+        actual = evidence.get(key)
+        if actual != expected_value:
+            failures.append(
+                Failure(
+                    error=f"release lane tool {key} is not pinned",
+                    expected=expected_value,
+                    actual=str(actual),
+                    repair=f"python3 scripts/check_release_preflight.py lane-tools --lane {lane}",
+                )
+            )
+    return failures
+
+
+def _tool_output(
+    name: str,
+    args: Sequence[str],
+    *,
+    which: Callable[[str], str | None],
+    runner: Runner,
+) -> str:
+    path = which(name)
+    if path is None:
+        return "not found"
+    result = runner(
+        [path, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
+
+
+def _first_line(value: str) -> str:
+    return value.splitlines()[0].strip() if value.splitlines() else value.strip()
+
+
+def _xcode_evidence(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if (
+        f"Xcode {MACOS_XCODE_VERSION}" in lines
+        and f"Build version {MACOS_XCODE_BUILD}" in lines
+    ):
+        return MACOS_XCODE_PIN
+    return "; ".join(lines) or "not found"
+
+
+def collect_lane_tool_evidence(
+    lane: LaneName,
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Runner = subprocess.run,
+    python_executable: str = sys.executable,
+) -> dict[str, str]:
+    if lane not in LANE_TOOL_KEYS:
+        raise ValueError(f"unknown release lane: {lane}")
+    python_result = runner(
+        [python_executable, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    python_output = (
+        python_result.stdout.strip()
+        or python_result.stderr.strip()
+        or f"exit {python_result.returncode}"
+    )
+    evidence = {
+        "python": python_output.removeprefix("Python ").strip(),
+        "rustc": _tool_output("rustc", ["--version"], which=which, runner=runner),
+        "cargo": _tool_output("cargo", ["--version"], which=which, runner=runner),
+        "uv": _tool_output("uv", ["--version"], which=which, runner=runner),
+        "maturin": _tool_output("maturin", ["--version"], which=which, runner=runner),
+        "cargo-deny": _tool_output(
+            "cargo-deny", ["--version"], which=which, runner=runner
+        ),
+    }
+    if lane in {"linux-x86_64-musl", "linux-aarch64-musl"}:
+        zig = _tool_output("zig", ["version"], which=which, runner=runner)
+        evidence["zig"] = f"zig {zig}" if zig != "not found" else zig
+    if lane == "macos-arm64":
+        evidence["xcode"] = _xcode_evidence(
+            _tool_output("xcodebuild", ["-version"], which=which, runner=runner)
+        )
+        evidence["swift"] = _first_line(
+            _tool_output("swift", ["--version"], which=which, runner=runner)
+        )
+        codesign_path = which("codesign")
+        evidence["codesign"] = (
+            MACOS_CODESIGN_PUBLIC_PIN
+            if codesign_path == MACOS_CODESIGN_PATH
+            else codesign_path or "not found"
+        )
+        evidence["notarytool"] = _tool_output(
+            "xcrun", ["notarytool", "--version"], which=which, runner=runner
+        )
+    return {key: evidence[key] for key in LANE_TOOL_KEYS[lane]}
+
+
+def check_lane_tools(
+    lane: LaneName,
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Runner = subprocess.run,
+    python_executable: str = sys.executable,
+) -> list[Failure]:
+    return check_lane_tool_evidence(
+        lane,
+        collect_lane_tool_evidence(
+            lane,
+            which=which,
+            runner=runner,
+            python_executable=python_executable,
+        ),
+    )
+
+
 def check_local_clean_status(status_output: str) -> list[Failure]:
     paths = [line for line in status_output.splitlines() if line.strip()]
     if not paths:
@@ -348,7 +564,7 @@ def check_remote_state(
                 error=f"{label} is not on the release ref",
                 expected=expected_ref,
                 actual=actual_ref or "<empty>",
-                repair=f"git fetch origin && git checkout {expected_ref}",
+                repair="python3 scripts/check_release_preflight.py remote-state --help",
             )
         )
     for failure in check_local_clean_status(status_output):
@@ -442,6 +658,15 @@ def _cmd_cargo_deny(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lane_tools(args: argparse.Namespace) -> int:
+    failures = check_lane_tools(args.lane)
+    if failures:
+        _format_failures(failures)
+        return 1
+    print(f"{args.lane} release tool evidence ok")
+    return 0
+
+
 def _cmd_remote_state(args: argparse.Namespace) -> int:
     status = args.status_file.read_text(encoding="utf-8")
     failures = check_remote_state(
@@ -472,6 +697,14 @@ def main(argv: list[str] | None = None) -> int:
 
     cargo_deny = subparsers.add_parser("cargo-deny")
     cargo_deny.set_defaults(func=_cmd_cargo_deny)
+
+    lane_tools = subparsers.add_parser("lane-tools")
+    lane_tools.add_argument(
+        "--lane",
+        choices=tuple(LANE_TOOL_KEYS),
+        required=True,
+    )
+    lane_tools.set_defaults(func=_cmd_lane_tools)
 
     remote = subparsers.add_parser("remote-state")
     remote.add_argument("--label", required=True)
