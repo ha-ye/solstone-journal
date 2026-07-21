@@ -6,16 +6,19 @@
 Entity trust operations use one per-journal, process-reentrant lock. The fixed
 global lock order is:
 
-    trust -> speaker identify-ledger -> facet attached-store ->
+    trust -> facet attached-store ->
     (facet relationship / observations / voiceprints npz / activities
     locked_modify / speaker segment / speaker candidate tracker /
-    speaker dismissal store / speaker keep-separate store) owner locks ->
-    entity ambiguity store
+    speaker identify-ledger / speaker dismissal store / speaker keep-separate
+    store) owner locks -> entity ambiguity store
 
-Mutating speaker identify operations acquire trust -> identify-ledger -> owner
-locks (voiceprints / attribution / tracker / sentinel) -> new speaker stores,
-never inverted. The ambiguity-store lock is never acquired before the trust or
-owner locks. Preview and read-only paths must not acquire these locks at all.
+Mutating speaker identify operations hold the trust lock across planning,
+write-ahead prepare, phase execution, and commit/undo terminal events. The
+identify-ledger lock is acquired only around append-only ledger writes, and
+owner locks (voiceprints / attribution / tracker / sentinel / speaker stores)
+are acquired only by their owner primitives inside the trust lock, never
+inverted. The ambiguity-store lock is never acquired before the trust or owner
+locks. Preview and read-only paths must not acquire these locks at all.
 
 The trust lock is backed by ``journal_io.hold_lock`` at
 ``journal/health/locks/entity-trust``. ``hold_lock`` creates a persistent

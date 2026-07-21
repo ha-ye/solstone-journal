@@ -59,7 +59,11 @@ from solstone.think.speaker_candidate_pair_review_candidates import (
 from solstone.think.speaker_candidate_pair_review_candidates import (
     record_candidate_pair,
 )
-from solstone.think.speaker_keep_separate import record_keep_separate_assertion
+from solstone.think.speaker_keep_separate import (
+    pair_key,
+    record_keep_separate_assertion,
+    remove_operation_sources,
+)
 from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
@@ -363,6 +367,42 @@ def test_load_open_items_filters_keep_separate_speaker_name_variant(curation_jou
     items = load_open_items()
 
     assert [item for item in items if item.kind == KIND_SPEAKER_NAME_VARIANT] == []
+
+
+def test_load_open_items_resurfaces_expired_keep_separate_suppression(
+    curation_journal,
+):
+    operation_id = "idop_test"
+    record_keep_separate_assertion(
+        "alice",
+        "alice_johnson",
+        source_kind="explicit_create_near_match",
+        operation_id=operation_id,
+        detection_count=1,
+    )
+    row, created, suppressed = record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.934,
+    )
+
+    assert created is True
+    assert suppressed is True
+    assert row["status"] == "suppressed"
+    assert row["suppressed_by_keep_separate"] is True
+    assert [
+        item for item in load_open_items() if item.kind == KIND_SPEAKER_NAME_VARIANT
+    ] == []
+
+    remove_operation_sources(operation_id, [pair_key("alice", "alice_johnson")])
+
+    items = [
+        item for item in load_open_items() if item.kind == KIND_SPEAKER_NAME_VARIANT
+    ]
+    assert len(items) == 1
+    assert items[0].key == "alice|alice_johnson"
 
 
 def test_load_open_items_includes_speaker_candidate_pair(curation_journal):

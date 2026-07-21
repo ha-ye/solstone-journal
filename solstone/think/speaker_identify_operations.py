@@ -84,16 +84,17 @@ class OperationState:
     )
 
 
-def identify_operations_dir() -> Path:
-    """Return the speaker operation-ledger directory, creating it if needed."""
+def identify_operations_dir(*, create: bool = False) -> Path:
+    """Return the speaker operation-ledger directory."""
     path = Path(get_journal()) / "speakers"
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def identify_operations_path() -> Path:
+def identify_operations_path(*, create: bool = False) -> Path:
     """Return the speaker identify operation ledger path."""
-    return identify_operations_dir() / "identify-operations.jsonl"
+    return identify_operations_dir(create=create) / "identify-operations.jsonl"
 
 
 def operation_id_for_request(request_id: str) -> str:
@@ -132,7 +133,7 @@ def request_fingerprint(
 def append_event(event: dict[str, Any]) -> None:
     """Strict-validate and append one identify ledger event."""
     _validate_row(event)
-    path = identify_operations_path()
+    path = identify_operations_path(create=True)
     with trust_operation_lock():
         with hold_lock(path):
             append_jsonl(path, event)
@@ -454,6 +455,8 @@ def _terminal_status(events: list[dict[str, Any]]) -> str:
         return "undo_repair_required"
     if "undo_committed" in kinds:
         return "undone"
+    if "undo_prepared" in kinds or "undo_checkpoint" in kinds:
+        return "undoing"
     if "repair_required" in kinds:
         return "repair_required"
     if "committed" in kinds:
@@ -478,6 +481,13 @@ def _pending_phases(
             pending = report.get("pending_phases")
             if isinstance(pending, list):
                 return tuple(str(phase) for phase in pending)
+    if terminal == "undoing":
+        completed_undo = {
+            str(event["phase"])
+            for event in events
+            if event["event_kind"] == "undo_checkpoint"
+        }
+        return tuple(phase for phase in UNDO_PHASE_ORDER if phase not in completed_undo)
     return ()
 
 

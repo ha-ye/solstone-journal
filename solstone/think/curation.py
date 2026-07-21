@@ -357,14 +357,18 @@ def load_open_items() -> list[CurationItem]:
         )
 
     for row in speaker_store.load_candidates():
-        if row.get("status") != "open":
-            continue
         evidence = row.get("evidence", {})
         if not isinstance(evidence, dict):
             evidence = {}
         source_id = str(row.get("source_id") or "")
         target_id = str(row.get("target_id") or "")
         detection_count = _int_value(evidence.get("detection_count")) or 1
+        status = row.get("status")
+        suppressed_by_keep_separate = bool(row.get("suppressed_by_keep_separate"))
+        if status != "open" and not (
+            status == "suppressed" and suppressed_by_keep_separate
+        ):
+            continue
         if keep_separate_store.name_variant_pair_suppressed(
             source_id,
             target_id,

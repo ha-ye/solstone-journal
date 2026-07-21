@@ -2249,12 +2249,14 @@ def _operation_result_summary(result: dict[str, Any] | None) -> dict[str, Any] |
         for key in (
             "status",
             "operation_id",
+            "operation_state",
             "entity_id",
             "entity_created",
             "voiceprints_saved",
-            "retroactive_voiceprints_saved",
+            "retro_voiceprints_saved",
             "segments_updated",
             "sentences_attributed",
+            "corrections_appended",
             "keep_separate_assertions_recorded",
         )
         if key in result
@@ -2321,8 +2323,9 @@ def _operation_failure_extra(result: dict[str, Any]) -> dict[str, Any]:
     extra: dict[str, Any] = {
         "status": result.get("status"),
         "operation_id": result.get("operation_id"),
-        "operation_state": result.get("status"),
     }
+    if "operation_state" in result:
+        extra["operation_state"] = result.get("operation_state")
     for key in (
         "request_id",
         "completed_phases",
@@ -2351,7 +2354,7 @@ def _identify_result_response(result: dict) -> Any:
         "already_undone",
     }:
         return jsonify(result)
-    if status == "recoverable":
+    if status in {"recoverable", "in_progress", "undoing"}:
         return error_response(
             SPEAKER_IDENTIFY_RECOVERABLE,
             detail=result.get("detail"),
@@ -2395,7 +2398,12 @@ def _identify_result_response(result: dict) -> Any:
             detail=result["error"],
             status=400,
         )
-    return jsonify(result)
+    return error_response(
+        SPEAKER_COMMAND_FAILED,
+        detail=f"Unexpected speaker identify result status: {status or 'missing'}",
+        status=500,
+        extra=_operation_failure_extra(result),
+    )
 
 
 def _optional_request_id(data: dict[str, Any]) -> tuple[str | None, Any | None]:

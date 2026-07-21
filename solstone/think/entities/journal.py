@@ -473,7 +473,7 @@ def _scan_entity_reference_surfaces(
     _scan_activity_refs(root, entity_id, blocked)
     _scan_segment_speaker_refs(root, entity_id, operation_id, blocked)
     _scan_aka_crossrefs(root, entity_id, blocked)
-    _scan_edge_refs(root, entity_id, blocked)
+    _scan_edge_refs(root, entity_id, operation_id, blocked)
     _scan_jsonl_refs(
         root / "entities" / "ambiguities.jsonl",
         "ambiguity",
@@ -618,18 +618,90 @@ def _scan_aka_crossrefs(root: Path, entity_id: str, blocked: dict[str, int]) -> 
             blocked["aka_crossref"] += 1
 
 
-def _scan_edge_refs(root: Path, entity_id: str, blocked: dict[str, int]) -> None:
-    if not (root / "indexer" / "journal.sqlite").is_file():
+def _scan_edge_refs(
+    root: Path,
+    entity_id: str,
+    operation_id: str,
+    blocked: dict[str, int],
+) -> None:
+    db_path = root / "indexer" / "journal.sqlite"
+    if not db_path.is_file():
+        blocked["unreadable"] += 1
         return
     try:
-        from solstone.think.indexer.edges import count_entity_edges
+        import sqlite3
 
-        count = count_entity_edges(entity_id)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            own_label_paths = _operation_speaker_label_edge_paths(operation_id)
+            rows = conn.execute(
+                "SELECT DISTINCT path FROM edges WHERE src = ? OR dst = ?",
+                (entity_id, entity_id),
+            ).fetchall()
+        finally:
+            conn.close()
     except Exception:
         blocked["unreadable"] += 1
         return
-    if count:
-        blocked["edge"] += int(count)
+    outside_rows = [
+        str(row[0]) for row in rows if row and str(row[0]) not in own_label_paths
+    ]
+    if outside_rows:
+        blocked["edge"] += len(outside_rows)
+    _scan_edge_source_files(root, entity_id, blocked)
+
+
+def _operation_speaker_label_edge_paths(operation_id: str) -> set[str]:
+    try:
+        from solstone.think.speaker_identify_operations import fold_operation
+
+        state = fold_operation(operation_id)
+    except Exception:
+        return set()
+    if state is None:
+        return set()
+    checkpoint = state.phase_checkpoints.get("labels") or {}
+    keys = list(checkpoint.get("patched_sentence_keys", [])) + list(
+        checkpoint.get("inserted_sentence_keys", [])
+    )
+    paths: set[str] = set()
+    for key in keys:
+        try:
+            paths.add(
+                f"{key['day']}/{key['stream']}/{key['segment_key']}/"
+                "talents/speaker_labels.json"
+            )
+        except KeyError:
+            continue
+    return paths
+
+
+def _scan_edge_source_files(
+    root: Path,
+    entity_id: str,
+    blocked: dict[str, int],
+) -> None:
+    try:
+        from solstone.think.indexer.edges import discover_edge_files
+        from solstone.think.journal_io import MalformedPolicy, read_json, read_jsonl
+
+        edge_files = discover_edge_files(str(root))
+    except Exception:
+        blocked["unreadable"] += 1
+        return
+    for rel, abs_path in edge_files.items():
+        path = Path(abs_path)
+        try:
+            if path.suffix == ".json":
+                payload = read_json(path, on_error=MalformedPolicy.RAISE)
+                if _json_value_present(payload, entity_id):
+                    blocked["edge"] += 1
+            else:
+                rows = read_jsonl(path, on_error=MalformedPolicy.RAISE)
+                if _json_value_present(rows, entity_id):
+                    blocked["edge"] += 1
+        except Exception:
+            blocked["unreadable"] += 1
 
 
 def _scan_speaker_candidate_refs(

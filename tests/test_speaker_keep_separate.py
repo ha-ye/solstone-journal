@@ -24,6 +24,15 @@ def test_pair_key_is_order_independent(keep_journal):
     assert store.pair_key("alice", "bob") == store.pair_key("bob", "alice")
 
 
+def test_read_paths_do_not_create_speakers_dir(keep_journal):
+    assert store.load_events() == []
+    assert store.fold_assertions() == []
+    assert store.find_assertion("alice", "bob") is None
+    assert store.name_variant_pair_suppressed("alice", "bob", 1) is False
+    assert store.list_assertions() == []
+    assert not (keep_journal / "speakers").exists()
+
+
 def test_assertion_folds_present_with_watermark(keep_journal, monkeypatch):
     monkeypatch.setattr(store, "utc_now_iso", lambda: "2026-07-20T12:00:00Z")
 
@@ -140,7 +149,7 @@ def test_suppression_predicate_boundaries(keep_journal):
 
 
 def test_strict_malformed_row_raises(keep_journal):
-    store.keep_separate_path().write_text("not-json\n", encoding="utf-8")
+    store.keep_separate_path(create=True).write_text("not-json\n", encoding="utf-8")
 
     with pytest.raises(store.KeepSeparateStoreError):
         store.fold_assertions()

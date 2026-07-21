@@ -39,6 +39,14 @@ def test_identical_members_are_suppressed(dismissal_journal):
     assert store.cluster_dismissal_suppressed(list(reversed(members))) is True
 
 
+def test_read_paths_do_not_create_speakers_dir(dismissal_journal):
+    assert store.load_events() == []
+    assert store.fold_dismissals() == []
+    assert store.cluster_dismissal_suppressed(_members(1, 1)) is False
+    assert store.list_dismissals() == []
+    assert not (dismissal_journal / "speakers").exists()
+
+
 def test_grown_rescan_sharing_exactly_half_is_suppressed(dismissal_journal):
     store.record_cluster_dismissal(_members(1, 10), "quiet")
     candidate = _members(1, 5) + _members(100, 5)
@@ -97,7 +105,10 @@ def test_second_dismissal_appends_without_rewriting_first_event(dismissal_journa
 
 
 def test_strict_malformed_row_raises(dismissal_journal):
-    store.cluster_dismissals_path().write_text("not-json\n", encoding="utf-8")
+    store.cluster_dismissals_path(create=True).write_text(
+        "not-json\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(store.ClusterDismissalStoreError):
         store.fold_dismissals()

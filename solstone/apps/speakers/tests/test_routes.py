@@ -1359,7 +1359,7 @@ def test_discovery_identify_route_invalid_entity_type(speakers_env):
     assert not (env.journal / "entities" / "widget_person").exists()
 
 
-def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
+def test_discovery_identify_route_recoverable_and_retry(speakers_env, monkeypatch):
     from solstone.apps.speakers import discovery
     from solstone.think.entities.voiceprints import load_entity_voiceprints_file
 
@@ -1388,6 +1388,7 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
     body = recoverable.get_json()
     assert body["reason_code"] == "speaker_identify_recoverable"
     assert body["status"] == "recoverable"
+    assert body["operation_state"] == "in_progress"
     operation_id = body["operation_id"]
     assert body["request_id"] == request_id
     assert body["completed_phases"] == []
@@ -1406,6 +1407,9 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
     retry_body = retry.get_json()
     assert retry_body["status"] == "identified"
     assert retry_body["operation_id"] == operation_id
+    assert retry_body["operation_state"] == "committed"
+    assert "corrections_appended" in retry_body
+    assert "retro_voiceprints_saved" in retry_body
     assert len(load_entity_voiceprints_file("bob_smith")[1]) == 1
 
     replay = client.post(
@@ -1424,6 +1428,7 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
     conflict_body = conflict.get_json()
     assert conflict_body["reason_code"] == "speaker_identify_conflict"
     assert conflict_body["conflict_code"] == "request_fingerprint_mismatch"
+    assert conflict_body["operation_state"] == "committed"
 
     legacy_success = client.post(
         "/app/speakers/api/discovery/identify",
@@ -1446,6 +1451,76 @@ def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
     assert (
         legacy_recoverable.get_json()["reason_code"] == "speaker_identify_recoverable"
     )
+
+
+def test_discovery_identify_route_non_success_operation_states_are_errors(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    monkeypatch.setattr(
+        routes,
+        "identify_cluster",
+        lambda *args, **kwargs: {
+            "status": "in_progress",
+            "operation_id": "idop_route_in_progress",
+            "operation_state": "in_progress",
+            "completed_phases": ["entity"],
+            "pending_phases": ["labels"],
+        },
+    )
+    in_progress = client.post(
+        "/app/speakers/api/discovery/identify-cli",
+        json={"cluster_id": 1, "name": "Bob Smith"},
+    )
+
+    assert in_progress.status_code == 409
+    in_progress_body = in_progress.get_json()
+    assert in_progress_body["reason_code"] == "speaker_identify_recoverable"
+    assert in_progress_body["status"] == "in_progress"
+    assert in_progress_body["operation_state"] == "in_progress"
+
+    monkeypatch.setattr(
+        routes,
+        "undo_identify_operation",
+        lambda operation_id: {
+            "status": "undoing",
+            "operation_id": operation_id,
+            "operation_state": "undoing",
+            "completed_phases": ["labels"],
+            "pending_phases": ["corrections"],
+        },
+    )
+    undoing = client.post(
+        "/app/speakers/api/discovery/identify/undo",
+        json={"operation_id": "idop_route_undoing"},
+    )
+
+    assert undoing.status_code == 409
+    undoing_body = undoing.get_json()
+    assert undoing_body["reason_code"] == "speaker_identify_recoverable"
+    assert undoing_body["status"] == "undoing"
+    assert undoing_body["operation_state"] == "undoing"
+
+    monkeypatch.setattr(
+        routes,
+        "identify_cluster",
+        lambda *args, **kwargs: {
+            "status": "unexpected_state",
+            "operation_id": "idop_route_unknown",
+        },
+    )
+    unknown = client.post(
+        "/app/speakers/api/discovery/identify-cli",
+        json={"cluster_id": 1, "name": "Bob Smith"},
+    )
+
+    assert unknown.status_code == 500
+    assert unknown.get_json()["reason_code"] == "speaker_command_failed"
 
 
 def test_discovery_identify_operations_and_undo_routes(speakers_env):
@@ -1500,6 +1575,15 @@ def test_discovery_identify_operations_and_undo_routes(speakers_env):
     missing = client.get("/app/speakers/api/discovery/identify/operations/idop_missing")
     assert missing.status_code == 404
     assert missing.get_json()["reason_code"] == "speaker_identify_operation_not_found"
+
+    missing_undo = client.post(
+        "/app/speakers/api/discovery/identify/undo",
+        json={"operation_id": "idop_missing"},
+    )
+    assert missing_undo.status_code == 404
+    assert (
+        missing_undo.get_json()["reason_code"] == "speaker_identify_operation_not_found"
+    )
 
 
 def test_discovery_dismissals_and_keep_separate_list_routes_are_store_only(

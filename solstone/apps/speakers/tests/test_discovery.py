@@ -24,6 +24,14 @@ from solstone.apps.speakers.owner import OWNER_THRESHOLD
 from solstone.apps.speakers.tests.conftest import journal_tree_hash
 
 
+def _domain_tree_hash(journal: Path) -> dict[str, str]:
+    return {
+        path: digest
+        for path, digest in journal_tree_hash(journal).items()
+        if not path.endswith(".lock")
+    }
+
+
 def _make_speaker_embeddings(
     base_vector: list[float],
     count: int,
@@ -560,11 +568,11 @@ def test_cluster_presence_readonly_fallback_uses_legacy_sources_without_writes(
         10,
         [_cluster_record("20240101", "100000_300", source="imported_audio")],
     )
-    before = journal_tree_hash(env.journal)
+    before = _domain_tree_hash(env.journal)
 
     presence = get_cluster_presence(10)
 
-    assert journal_tree_hash(env.journal) == before
+    assert _domain_tree_hash(env.journal) == before
     assert presence is not None
     assert presence["evidence_complete"] is True
     assert {cand["entity_id"] for cand in presence["candidates"]["co_presence"]} == {
@@ -605,11 +613,11 @@ def test_cluster_presence_legacy_fallback_reports_speakers_gap_without_writes(
         14,
         [_cluster_record("20240101", "100500_300", source="imported_audio")],
     )
-    before = journal_tree_hash(env.journal)
+    before = _domain_tree_hash(env.journal)
 
     presence = get_cluster_presence(14)
 
-    assert journal_tree_hash(env.journal) == before
+    assert _domain_tree_hash(env.journal) == before
     assert presence is not None
     assert presence["evidence_complete"] is False
     assert presence["evidence_gaps"] == [
@@ -1192,6 +1200,9 @@ def test_identify_undo_restores_checkpoint_actuals_and_deletes_created_entity(
         request_id="undo-create",
     )
     operation_id = result["operation_id"]
+    from solstone.think.indexer.edges import rebuild_edges
+
+    rebuild_edges(str(env.journal))
 
     assert _load_voiceprint_count(env.journal, "yara_undo") == 1
     assert _speaker_labels_for_segment(env.journal, "20240101", "122000_300") == [
@@ -1233,10 +1244,10 @@ def test_identify_undo_restores_checkpoint_actuals_and_deletes_created_entity(
         _discovery_resolved_path().read_text(encoding="utf-8")
     )
 
-    before = journal_tree_hash(env.journal)
+    before = _domain_tree_hash(env.journal)
     second = undo_identify_operation(operation_id)
     assert second["status"] == "already_undone"
-    assert journal_tree_hash(env.journal) == before
+    assert _domain_tree_hash(env.journal) == before
 
 
 def test_identify_retro_manifest_removed_on_undo(speakers_env):
@@ -1276,7 +1287,7 @@ def test_identify_retro_manifest_removed_on_undo(speakers_env):
     state = fold_operation(result["operation_id"])
 
     assert result["voiceprints_saved"] == 1
-    assert result["retroactive_voiceprints_saved"] == 3
+    assert result["retro_voiceprints_saved"] == 3
     assert _load_voiceprint_count(env.journal, "bob_smith") == 4
     assert len(state.phase_checkpoints["direct_voiceprints"]["saved_keys"]) == 1
     assert len(state.phase_checkpoints["retro_tracker"]["saved_keys"]) == 3
@@ -1351,7 +1362,7 @@ def test_identify_near_match_validation_rejects_before_writes(
     (bad_type_path / "entity.json").write_text(json.dumps(bad_type), encoding="utf-8")
     env.create_entity("Bob Far")
     _create_identify_cluster(env, 47, "124500_300")
-    before = journal_tree_hash(env.journal)
+    before = _domain_tree_hash(env.journal)
 
     result = identify_cluster(
         47,
@@ -1363,7 +1374,7 @@ def test_identify_near_match_validation_rejects_before_writes(
 
     assert result["status"] == "invalid_request"
     assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == reason
-    assert journal_tree_hash(env.journal) == before
+    assert _domain_tree_hash(env.journal) == before
 
 
 def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_env):
@@ -1393,7 +1404,7 @@ def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_e
         for candidate in closest_resolution_candidates("Qzxqv Wvuty", entities, limit=3)
     }
     unshown = next(entity["id"] for entity in entities if entity["id"] not in shown)
-    before = journal_tree_hash(env.journal)
+    before = _domain_tree_hash(env.journal)
 
     result = identify_cluster(
         48,
@@ -1405,4 +1416,198 @@ def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_e
 
     assert result["status"] == "invalid_request"
     assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == "unshown"
-    assert journal_tree_hash(env.journal) == before
+    assert _domain_tree_hash(env.journal) == before
+
+
+def test_identify_replay_uses_stored_state_when_planning_now_fails(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _create_identify_cluster(env, 49, "125500_300")
+
+    first = identify_cluster(49, name="Bob Smith", request_id="cacheless-replay")
+    _discovery_cache_path().unlink()
+    before = _domain_tree_hash(env.journal)
+
+    replay = identify_cluster(49, name="Bob Smith", request_id="cacheless-replay")
+    conflict = identify_cluster(49, name="Alice Smith", request_id="cacheless-replay")
+
+    assert replay == first
+    assert conflict["status"] == "conflict"
+    assert conflict["conflict_code"] == "request_fingerprint_mismatch"
+    assert _domain_tree_hash(env.journal) == before
+
+
+def test_identify_does_not_return_success_for_operation_mid_undo(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import discovery
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _create_identify_cluster(env, 50, "130000_300")
+    result = identify_cluster(50, name="Bob Smith", request_id="mid-undo")
+    operation_id = result["operation_id"]
+
+    def fail_after_undo_labels(stage: str) -> None:
+        if stage == "after_undo_labels":
+            raise RuntimeError("forced undo interruption")
+
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        fail_after_undo_labels,
+    )
+    undo = undo_identify_operation(operation_id)
+
+    assert undo["status"] == "recoverable"
+    assert undo["operation_state"] == "undoing"
+    state = fold_operation(operation_id)
+    assert state.terminal_status == "undoing"
+
+    monkeypatch.setattr(discovery, "_maybe_inject_identify_fault", lambda stage: None)
+    replay = identify_cluster(50, name="Bob Smith", request_id="mid-undo")
+
+    assert replay["status"] == "undoing"
+    assert replay["operation_state"] == "undoing"
+    assert replay["operation_id"] == operation_id
+
+
+def test_retro_voiceprint_failure_does_not_checkpoint_or_confirm_tracker(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.think import entities as entity_api
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    env.create_entity("Bob Smith")
+    base = _make_speaker_embeddings([1.0, 0.0], 3)
+    retro_seg = _create_integer_labeled_segment(
+        env,
+        "20240102",
+        "130500_300",
+        base,
+    )
+    CandidateTracker().process_segment(
+        "20240102",
+        "130500_300",
+        "test",
+        "audio",
+        retro_seg,
+    )
+    env.create_segment(
+        "20240103",
+        "131000_300",
+        ["audio"],
+        embeddings=base[:1],
+    )
+    _write_discovery_cache(
+        env,
+        51,
+        [_cluster_record("20240103", "131000_300")],
+    )
+    real_save = entity_api.save_voiceprints_batch
+    calls = {"count": 0}
+
+    def fail_retro_save(entity_id, items):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("forced retro save failure")
+        return real_save(entity_id, items)
+
+    monkeypatch.setattr(entity_api, "save_voiceprints_batch", fail_retro_save)
+    first = identify_cluster(51, name="Bob Smith", request_id="retro-save-fails")
+
+    assert first["status"] == "recoverable"
+    state = fold_operation(first["operation_id"])
+    assert "retro_tracker" not in state.phase_checkpoints
+    assert _load_voiceprint_count(env.journal, "bob_smith") == 1
+    candidate = CandidateTracker().load_all_candidates()[0]
+    assert candidate.status == "pending"
+    assert candidate.confirmed_entity is None
+
+    monkeypatch.setattr(entity_api, "save_voiceprints_batch", real_save)
+    retry = identify_cluster(51, name="Bob Smith", request_id="retro-save-fails")
+
+    assert retry["status"] == "identified"
+    assert retry["retro_voiceprints_saved"] == 3
+    assert _load_voiceprint_count(env.journal, "bob_smith") == 4
+
+
+def test_undo_voiceprint_ambiguous_removal_emits_durable_repair(
+    speakers_env,
+):
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _create_identify_cluster(env, 52, "131500_300")
+    result = identify_cluster(52, name="Bob Smith", request_id="undo-ambiguous-vp")
+    operation_id = result["operation_id"]
+    path = env.journal / "entities" / "bob_smith" / "voiceprints.npz"
+    with np.load(path, allow_pickle=False) as data:
+        embeddings = data["embeddings"]
+        metadata = data["metadata"]
+    np.savez_compressed(
+        path,
+        embeddings=np.vstack([embeddings, embeddings[0].reshape(1, -1)]),
+        metadata=np.asarray([*metadata, metadata[0]], dtype=str),
+    )
+
+    undo = undo_identify_operation(operation_id)
+    state = fold_operation(operation_id)
+
+    assert undo["status"] == "undo_repair_required"
+    assert undo["operation_state"] == "undo_repair_required"
+    assert undo["phase"] == "voiceprints"
+    assert undo["repair_code"] == "voiceprint_removal_ambiguous"
+    assert state.terminal_status == "undo_repair_required"
+    assert state.undo_repair_required["repair_categories"] == {"voiceprints": 1}
+
+
+def test_created_entity_delete_blocks_when_edge_index_missing(speakers_env):
+    env = speakers_env()
+    _create_identify_cluster(env, 53, "132000_300")
+    result = identify_cluster(
+        53,
+        name="Edge Blocked",
+        create_new=True,
+        request_id="edge-index-missing",
+    )
+
+    undo = undo_identify_operation(result["operation_id"])
+
+    assert undo["status"] == "undone"
+    assert (env.journal / "entities" / "edge_blocked").exists()
+    entity_report = undo["undo_report"]["entity"]
+    assert entity_report["deleted"] is False
+    assert "unreadable" in entity_report["blocked_categories"]
+
+
+def test_identify_near_match_validation_rejects_duplicate_ids_before_writes(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Alice Smith")
+    _create_identify_cluster(env, 54, "132500_300")
+    before = _domain_tree_hash(env.journal)
+
+    result = identify_cluster(
+        54,
+        name="Qzxqv Wvuty",
+        create_new=True,
+        request_id="near-match-duplicate",
+        reviewed_near_match_entity_ids=["alice_smith", "alice_smith"],
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["invalid_reviewed_near_match_entity_ids"] == [
+        {"entity_id": "alice_smith", "reason": "duplicate"}
+    ]
+    assert _domain_tree_hash(env.journal) == before

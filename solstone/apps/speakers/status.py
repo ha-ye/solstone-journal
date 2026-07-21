@@ -212,12 +212,20 @@ def _pool_section() -> dict[str, Any]:
 
 
 def _clusters_section() -> dict[str, Any] | None:
+    from solstone.think.speaker_cluster_dismissals import cluster_dismissal_suppressed
+
     cache_path = Path(get_journal()) / "awareness" / "discovery_clusters.json"
     if not cache_path.exists():
         return None
     try:
         data = json.loads(cache_path.read_text())
-        clusters = data.get("clusters", [])
+        clusters = data.get("clusters", {})
+        if isinstance(clusters, dict):
+            clusters = {
+                cluster_id: members
+                for cluster_id, members in clusters.items()
+                if not cluster_dismissal_suppressed(members)
+            }
         return {
             "cached_at": data.get("version"),
             "count": len(clusters),

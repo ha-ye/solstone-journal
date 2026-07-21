@@ -977,14 +977,7 @@ class CandidateTracker:
                 not in existing_keys
             ]
             if items:
-                try:
-                    saved_total = save_voiceprints_batch(plan.entity_id, items)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to apply retroactive voiceprints for %s: %s",
-                        plan.entity_id,
-                        exc,
-                    )
+                saved_total = save_voiceprints_batch(plan.entity_id, items)
 
         candidate = self._candidates.get(int(plan.candidate_id))
         if candidate is None:

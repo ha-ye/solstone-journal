@@ -49,16 +49,17 @@ class FoldedClusterDismissal:
         return len(self.event_ids)
 
 
-def cluster_dismissals_dir() -> Path:
-    """Return the speaker dismissal directory, creating it if needed."""
+def cluster_dismissals_dir(*, create: bool = False) -> Path:
+    """Return the speaker dismissal directory."""
     path = Path(get_journal()) / "speakers"
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def cluster_dismissals_path() -> Path:
+def cluster_dismissals_path(*, create: bool = False) -> Path:
     """Return the speaker cluster-dismissal JSONL event-log path."""
-    return cluster_dismissals_dir() / "cluster-dismissals.jsonl"
+    return cluster_dismissals_dir(create=create) / "cluster-dismissals.jsonl"
 
 
 def record_cluster_dismissal(
@@ -88,7 +89,7 @@ def record_cluster_dismissal(
 def append_event(event: dict[str, Any]) -> None:
     """Strict-validate and append one cluster dismissal event."""
     _validate_row(event)
-    path = cluster_dismissals_path()
+    path = cluster_dismissals_path(create=True)
     with hold_lock(path):
         append_jsonl(path, event)
 

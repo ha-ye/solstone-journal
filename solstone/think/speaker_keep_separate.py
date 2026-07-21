@@ -48,16 +48,17 @@ class KeepSeparateAssertion:
         return len(self.sources)
 
 
-def keep_separate_dir() -> Path:
-    """Return the speaker keep-separate directory, creating it if needed."""
+def keep_separate_dir(*, create: bool = False) -> Path:
+    """Return the speaker keep-separate directory."""
     path = Path(get_journal()) / "speakers"
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def keep_separate_path() -> Path:
+def keep_separate_path(*, create: bool = False) -> Path:
     """Return the speaker keep-separate JSONL event-log path."""
-    return keep_separate_dir() / "keep-separate.jsonl"
+    return keep_separate_dir(create=create) / "keep-separate.jsonl"
 
 
 def pair_key(entity_id_a: str, entity_id_b: str) -> str:
@@ -98,7 +99,7 @@ def remove_operation_sources(
     if not isinstance(operation_id, str) or not operation_id:
         raise ValueError("operation_id must be a non-empty string")
     wanted = {str(key) for key in pair_keys}
-    path = keep_separate_path()
+    path = keep_separate_path(create=True)
     appended: list[dict[str, Any]] = []
     with hold_lock(path):
         events = _load_jsonl_rows(path)
@@ -126,7 +127,7 @@ def remove_operation_sources(
 def append_event(event: dict[str, Any]) -> None:
     """Strict-validate and append one keep-separate event."""
     _validate_row(event)
-    path = keep_separate_path()
+    path = keep_separate_path(create=True)
     with hold_lock(path):
         append_jsonl(path, event)
 

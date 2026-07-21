@@ -261,6 +261,47 @@ def test_status_unknown_section(speakers_env):
     assert "error" in result
 
 
+def test_status_clusters_filters_dismissed_clusters_read_side(speakers_env):
+    from solstone.apps.speakers.status import get_speakers_status
+    from solstone.think.speaker_cluster_dismissals import record_cluster_dismissal
+
+    env = speakers_env()
+    first_member = {
+        "day": "20240101",
+        "stream": "test",
+        "segment_key": "090000_300",
+        "source": "audio",
+        "sentence_id": 1,
+    }
+    second_member = {
+        "day": "20240101",
+        "stream": "test",
+        "segment_key": "091000_300",
+        "source": "audio",
+        "sentence_id": 1,
+    }
+    awareness_dir = env.journal / "awareness"
+    awareness_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = awareness_dir / "discovery_clusters.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": "test",
+                "clusters": {"1": [first_member], "2": [second_member]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = cache_path.read_bytes()
+
+    record_cluster_dismissal([first_member], "quiet")
+    result = get_speakers_status(section="clusters")
+
+    assert result["count"] == 1
+    assert set(result["clusters"]) == {"2"}
+    assert cache_path.read_bytes() == before
+
+
 def test_status_pool_section_reports_counts_and_summary(speakers_env):
     from solstone.apps.speakers.candidate_tracker import (
         CandidateProfile,

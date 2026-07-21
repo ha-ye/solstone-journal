@@ -84,20 +84,6 @@ def load_discovery_cache() -> dict[str, Any] | None:
     return data if isinstance(clusters, dict) else None
 
 
-def _write_resolved_cluster(cluster_id: int, entity_id: str, label: str) -> None:
-    path = _discovery_resolved_path(create=True)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        data = {}
-    data[str(cluster_id)] = {
-        "entity_id": entity_id,
-        "label": label,
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-    }
-    atomic_replace(path, json.dumps(data, indent=2, sort_keys=True))
-
-
 def _get_sentence_text(segment_dir: Path, source: str, sentence_id: int) -> str | None:
     """Return transcript text for a sentence ID from the source transcript."""
     jsonl_path = segment_dir / f"{source}.jsonl"
@@ -974,7 +960,13 @@ def _normalize_reviewed_near_match_ids(
             }
         entity_id = item.strip()
         if entity_id in seen:
-            continue
+            return [], {
+                "status": "invalid_request",
+                "error": "reviewed_near_match_entity_ids must be unique",
+                "invalid_reviewed_near_match_entity_ids": [
+                    {"entity_id": entity_id, "reason": "duplicate"}
+                ],
+            }
         seen.add(entity_id)
         result.append(entity_id)
     return result, None
@@ -1375,6 +1367,7 @@ def _append_repair_required(
         return {
             "status": "repair_required",
             "operation_id": operation_id,
+            "operation_state": state.terminal_status,
             "phase": repair.get("phase", phase),
             "repair_code": repair.get("repair_code", repair_code),
             "repair_categories": repair.get("repair_categories", {}),
@@ -1399,6 +1392,7 @@ def _append_repair_required(
     return {
         "status": "repair_required",
         "operation_id": operation_id,
+        "operation_state": "repair_required",
         "phase": phase,
         "repair_code": repair_code,
         "repair_categories": repair_categories,
@@ -1414,10 +1408,103 @@ def _recoverable_result(operation_id: str, detail: str) -> dict[str, Any]:
     return {
         "status": "recoverable",
         "operation_id": operation_id,
+        "operation_state": state.terminal_status if state else "not_prepared",
         "request_id": state.request_id if state else None,
         "completed_phases": list(state.completed_phases) if state else [],
         "pending_phases": list(state.pending_phases) if state else [],
         "detail": detail,
+    }
+
+
+def _stored_request_matches_raw(
+    prepared_plan: dict[str, Any],
+    *,
+    cluster_id: int,
+    name: str | None,
+    entity_id: str | None,
+    create_new: bool,
+    entity_type: str,
+    reviewed_near_match_entity_ids: Any,
+) -> bool:
+    reviewed_ids, reviewed_error = _normalize_reviewed_near_match_ids(
+        reviewed_near_match_entity_ids
+    )
+    if reviewed_error is not None:
+        return False
+    raw_request = {
+        "cluster_id": int(cluster_id),
+        "name": name.strip() if isinstance(name, str) and name.strip() else None,
+        "entity_id": (
+            entity_id.strip()
+            if isinstance(entity_id, str) and entity_id.strip()
+            else None
+        ),
+        "resolve_only": False,
+        "create_new": bool(create_new),
+        "entity_type": entity_type,
+        "reviewed_near_match_entity_ids": sorted(reviewed_ids),
+    }
+    return raw_request == prepared_plan.get("request")
+
+
+def _state_status_result(state: Any) -> dict[str, Any]:
+    if state.terminal_status == "committed" and state.result is not None:
+        return copy.deepcopy(state.result)
+    if state.terminal_status == "repair_required":
+        repair = state.repair_required or {}
+        return {
+            "status": "repair_required",
+            "operation_id": state.operation_id,
+            "operation_state": state.terminal_status,
+            "phase": repair.get("phase"),
+            "repair_code": repair.get("repair_code"),
+            "repair_categories": repair.get("repair_categories", {}),
+            "completed_phases": list(state.completed_phases),
+            "pending_phases": list(state.pending_phases),
+        }
+    if state.terminal_status == "undone":
+        return {
+            "status": "operation_already_undone",
+            "operation_id": state.operation_id,
+            "operation_state": state.terminal_status,
+        }
+    if state.terminal_status == "undo_repair_required":
+        repair = state.undo_repair_required or {}
+        return {
+            "status": "undo_repair_required",
+            "operation_id": state.operation_id,
+            "operation_state": state.terminal_status,
+            "phase": repair.get("phase"),
+            "repair_code": repair.get("repair_code"),
+            "repair_categories": repair.get("repair_categories", {}),
+            "undo_report": repair.get("undo_report"),
+        }
+    if state.terminal_status == "undoing":
+        return {
+            "status": "undoing",
+            "operation_id": state.operation_id,
+            "operation_state": state.terminal_status,
+            "completed_phases": list(state.completed_phases),
+            "pending_phases": list(state.pending_phases),
+            "undo_report": _aggregate_undo_report(state, status="undoing")[
+                "undo_report"
+            ],
+        }
+    return {
+        "status": "in_progress",
+        "operation_id": state.operation_id,
+        "operation_state": state.terminal_status,
+        "completed_phases": list(state.completed_phases),
+        "pending_phases": list(state.pending_phases),
+    }
+
+
+def _fingerprint_conflict_result(operation_id: str, state: Any) -> dict[str, Any]:
+    return {
+        "status": "conflict",
+        "operation_id": operation_id,
+        "operation_state": state.terminal_status,
+        "conflict_code": "request_fingerprint_mismatch",
     }
 
 
@@ -1825,14 +1912,18 @@ def _forward_success_result(
     return {
         "status": "identified",
         "operation_id": prepared_plan["operation_id"],
+        "operation_state": "committed",
         "entity_id": prepared_plan["target"]["entity_id"],
         "entity_name": prepared_plan["target"]["entity_name"],
         "entity_created": bool(entity.get("entity_created", False)),
         "voiceprints_saved": int(direct.get("saved_count", 0)),
-        "retroactive_voiceprints_saved": int(retro.get("voiceprints_saved_count", 0)),
+        "retro_voiceprints_saved": int(retro.get("voiceprints_saved_count", 0)),
         "segments_updated": int(labels.get("segment_count", 0)),
         "sentences_attributed": int(labels.get("patched_count", 0))
         + int(labels.get("inserted_count", 0)),
+        "corrections_appended": int(
+            checkpoints.get("corrections", {}).get("appended_count", 0)
+        ),
         "keep_separate_assertions_recorded": int(
             checkpoints.get("keep_separate", {}).get("recorded_count", 0)
         ),
@@ -1893,53 +1984,68 @@ def identify_cluster(
 
     request_id_value = request_id or f"server:{uuid.uuid4().hex}"
     operation_id = operation_id_for_request(request_id_value)
-    planned, early = _plan_identify(
-        cluster_id,
-        name=name,
-        entity_id=entity_id,
-        resolve_only=resolve_only,
-        create_new=create_new,
-        entity_type=entity_type,
-        request_id=request_id_value,
-        operation_id=operation_id,
-        reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
-    )
-    if early is not None:
+    if resolve_only:
+        _planned, early = _plan_identify(
+            cluster_id,
+            name=name,
+            entity_id=entity_id,
+            resolve_only=True,
+            create_new=create_new,
+            entity_type=entity_type,
+            request_id=request_id_value,
+            operation_id=operation_id,
+            reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+        )
+        assert early is not None
         return early
-    assert planned is not None
+
     try:
         with trust_operation_lock():
             state = fold_operation(operation_id)
             if state is not None:
-                if state.request_fingerprint != planned.request_fingerprint:
-                    return {
-                        "status": "conflict",
-                        "operation_id": operation_id,
-                        "conflict_code": "request_fingerprint_mismatch",
-                    }
-                if state.terminal_status == "committed" and state.result is not None:
-                    return state.result
-                if state.terminal_status == "repair_required":
-                    repair = state.repair_required or {}
-                    return {
-                        "status": "repair_required",
-                        "operation_id": operation_id,
-                        "phase": repair.get("phase"),
-                        "repair_code": repair.get("repair_code"),
-                        "repair_categories": repair.get("repair_categories", {}),
-                    }
-                if state.terminal_status == "undone":
-                    return {
-                        "status": "operation_already_undone",
-                        "operation_id": operation_id,
-                    }
-                if state.terminal_status == "undo_repair_required":
-                    return {
-                        "status": "undo_repair_required",
-                        "operation_id": operation_id,
-                    }
+                planned, early = _plan_identify(
+                    cluster_id,
+                    name=name,
+                    entity_id=entity_id,
+                    resolve_only=False,
+                    create_new=create_new,
+                    entity_type=entity_type,
+                    request_id=request_id_value,
+                    operation_id=operation_id,
+                    reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+                )
+                if early is None:
+                    assert planned is not None
+                    if state.request_fingerprint != planned.request_fingerprint:
+                        return _fingerprint_conflict_result(operation_id, state)
+                elif not _stored_request_matches_raw(
+                    state.prepared_plan,
+                    cluster_id=cluster_id,
+                    name=name,
+                    entity_id=entity_id,
+                    create_new=create_new,
+                    entity_type=entity_type,
+                    reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+                ):
+                    return _fingerprint_conflict_result(operation_id, state)
+                if state.terminal_status != "in_progress":
+                    return _state_status_result(state)
                 prepared_plan = state.prepared_plan
             else:
+                planned, early = _plan_identify(
+                    cluster_id,
+                    name=name,
+                    entity_id=entity_id,
+                    resolve_only=False,
+                    create_new=create_new,
+                    entity_type=entity_type,
+                    request_id=request_id_value,
+                    operation_id=operation_id,
+                    reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+                )
+                if early is not None:
+                    return early
+                assert planned is not None
                 for other in fold_all_operations():
                     if (
                         other.operation_id == operation_id
@@ -1955,13 +2061,19 @@ def identify_cluster(
                         other.target_entity_id
                         == planned.prepared_plan["target"]["entity_id"]
                     ):
-                        return other.result or {
-                            "status": "identified",
-                            "operation_id": other.operation_id,
-                        }
+                        return (
+                            copy.deepcopy(other.result)
+                            if other.result
+                            else {
+                                "status": "identified",
+                                "operation_id": other.operation_id,
+                                "operation_state": "committed",
+                            }
+                        )
                     return {
                         "status": "conflict",
                         "operation_id": operation_id,
+                        "operation_state": "not_prepared",
                         "conflict_code": "member_set_target_conflict",
                         "conflicting_operation_id": other.operation_id,
                     }
@@ -2407,6 +2519,7 @@ def _undo_recoverable_result(operation_id: str, detail: str) -> dict[str, Any]:
     result = {
         "status": "recoverable",
         "operation_id": operation_id,
+        "operation_state": state.terminal_status if state else "not_found",
         "request_id": state.request_id if state else None,
         "detail": detail,
     }
@@ -2416,6 +2529,56 @@ def _undo_recoverable_result(operation_id: str, detail: str) -> dict[str, Any]:
             status="recoverable",
         )["undo_report"]
     return result
+
+
+def _append_undo_repair_required(
+    operation_id: str,
+    request_id: str,
+    phase: str,
+    *,
+    repair_code: str,
+    repair_categories: dict[str, int],
+) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import append_event, fold_operation
+
+    state = fold_operation(operation_id)
+    if state is not None and state.terminal_status == "undo_repair_required":
+        repair = state.undo_repair_required or {}
+        return {
+            "status": "undo_repair_required",
+            "operation_id": operation_id,
+            "operation_state": state.terminal_status,
+            "phase": repair.get("phase", phase),
+            "repair_code": repair.get("repair_code", repair_code),
+            "repair_categories": repair.get("repair_categories", {}),
+            "undo_report": repair.get("undo_report"),
+        }
+    report = (
+        _aggregate_undo_report(state, status="undo_repair_required")
+        if state is not None
+        else _empty_undo_report(operation_id, status="undo_repair_required")
+    )
+    event = _identify_event(
+        operation_id=operation_id,
+        request_id=request_id,
+        event_kind="undo_repair_required",
+        event_id=f"{operation_id}:undo_repair_required:{phase}",
+        phase=phase,
+        repair_code=repair_code,
+        repair_categories=repair_categories,
+        undo_report=report,
+    )
+    append_event(event)
+    _maybe_inject_identify_fault("after_undo_repair_required")
+    return {
+        "status": "undo_repair_required",
+        "operation_id": operation_id,
+        "operation_state": "undo_repair_required",
+        "phase": phase,
+        "repair_code": repair_code,
+        "repair_categories": repair_categories,
+        "undo_report": report.get("undo_report"),
+    }
 
 
 def undo_identify_operation(operation_id: str) -> dict[str, Any]:
@@ -2439,12 +2602,10 @@ def undo_identify_operation(operation_id: str) -> dict[str, Any]:
         result = copy.deepcopy(state.undo_report)
         result["status"] = "already_undone"
         return result
-    if state.terminal_status != "committed":
-        return {
-            "status": state.terminal_status,
-            "operation_id": operation_id,
-        }
+    if state.terminal_status not in {"committed", "undoing"}:
+        return _state_status_result(state)
 
+    current_phase = "undo_prepared"
     try:
         with trust_operation_lock():
             state = fold_operation(operation_id)
@@ -2458,6 +2619,8 @@ def undo_identify_operation(operation_id: str) -> dict[str, Any]:
                 result = copy.deepcopy(state.undo_report)
                 result["status"] = "already_undone"
                 return result
+            if state.terminal_status not in {"committed", "undoing"}:
+                return _state_status_result(state)
             undo_started_at = _append_undo_prepared_once(
                 operation_id,
                 state.request_id,
@@ -2467,6 +2630,7 @@ def undo_identify_operation(operation_id: str) -> dict[str, Any]:
                 state = fold_operation(operation_id)
                 if state is not None and phase in state.undo_phase_checkpoints:
                     continue
+                current_phase = phase
                 delta = _UNDO_PHASES[phase](state, undo_started_at)
                 _append_undo_checkpoint(operation_id, state.request_id, phase, delta)
                 _maybe_inject_identify_fault(f"after_undo_{phase}")
@@ -2485,7 +2649,25 @@ def undo_identify_operation(operation_id: str) -> dict[str, Any]:
             return report
     except LockTimeout:
         raise
+    except _IdentifyRepairRequired as exc:
+        return _append_undo_repair_required(
+            operation_id,
+            state.request_id if state else operation_id,
+            exc.phase,
+            repair_code=exc.repair_code,
+            repair_categories=exc.repair_categories,
+        )
     except Exception as exc:
         if isinstance(exc, LockTimeout):
             raise
+        from solstone.think.entities import VoiceprintRemovalError
+
+        if isinstance(exc, VoiceprintRemovalError):
+            return _append_undo_repair_required(
+                operation_id,
+                state.request_id if state else operation_id,
+                current_phase,
+                repair_code="voiceprint_removal_ambiguous",
+                repair_categories={"voiceprints": 1},
+            )
         return _undo_recoverable_result(operation_id, str(exc))

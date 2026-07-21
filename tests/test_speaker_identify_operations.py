@@ -265,6 +265,13 @@ def test_append_and_fold_prepared_resume_state(op_journal):
     assert state.phase_checkpoints["direct_voiceprints"]["counts"]["saved_count"] == 2
 
 
+def test_read_paths_do_not_create_speakers_dir(op_journal):
+    assert ledger.load_operations() == []
+    assert ledger.fold_operation("idop_missing") is None
+    assert ledger.fold_all_operations() == []
+    assert not (op_journal / "speakers").exists()
+
+
 def test_committed_fold_returns_stored_result(op_journal):
     prepared = _prepared_event()
     operation_id = str(prepared["operation_id"])
@@ -290,9 +297,45 @@ def test_committed_fold_returns_stored_result(op_journal):
     assert state.pending_phases == ()
 
 
+def test_undo_started_folds_as_undoing_not_committed(op_journal):
+    prepared = _prepared_event()
+    operation_id = str(prepared["operation_id"])
+    committed = {
+        "schema_version": ledger.IDENTIFY_OPERATION_SCHEMA_VERSION,
+        "event_id": f"{operation_id}:committed",
+        "operation_id": operation_id,
+        "request_id": prepared["request_id"],
+        "event_kind": "committed",
+        "ts": "2026-07-20T12:00:02Z",
+        "caller": "test",
+        "actor": None,
+        "result": {"status": "identified", "operation_id": operation_id},
+    }
+    undo_prepared = {
+        "schema_version": ledger.IDENTIFY_OPERATION_SCHEMA_VERSION,
+        "event_id": f"{operation_id}:undo_prepared",
+        "operation_id": operation_id,
+        "request_id": prepared["request_id"],
+        "event_kind": "undo_prepared",
+        "ts": "2026-07-20T12:00:03Z",
+        "caller": "test",
+        "actor": None,
+        "undo_started_at": "2026-07-20T12:00:03Z",
+    }
+
+    ledger.append_event(prepared)
+    ledger.append_event(committed)
+    ledger.append_event(undo_prepared)
+
+    state = ledger.fold_operation(operation_id)
+    assert state is not None
+    assert state.terminal_status == "undoing"
+    assert state.pending_phases == ledger.UNDO_PHASE_ORDER
+
+
 def test_identical_duplicate_event_id_folds_once(op_journal):
     prepared = _prepared_event()
-    path = ledger.identify_operations_path()
+    path = ledger.identify_operations_path(create=True)
     path.write_text(
         json.dumps(prepared) + "\n" + json.dumps(prepared) + "\n",
         encoding="utf-8",
@@ -307,7 +350,7 @@ def test_non_identical_duplicate_event_id_raises(op_journal):
     prepared = _prepared_event()
     changed = dict(prepared)
     changed["ts"] = "2026-07-20T12:00:09Z"
-    path = ledger.identify_operations_path()
+    path = ledger.identify_operations_path(create=True)
     path.write_text(
         json.dumps(prepared) + "\n" + json.dumps(changed) + "\n",
         encoding="utf-8",
@@ -318,7 +361,10 @@ def test_non_identical_duplicate_event_id_raises(op_journal):
 
 
 def test_strict_malformed_row_raises(op_journal):
-    ledger.identify_operations_path().write_text("not-json\n", encoding="utf-8")
+    ledger.identify_operations_path(create=True).write_text(
+        "not-json\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(ledger.IdentifyOperationError):
         ledger.load_operations()
