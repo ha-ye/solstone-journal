@@ -73,8 +73,9 @@ pub fn format_markdown(input: &str) -> MarkdownFormat {
         .into_iter()
         .map(|chunk| {
             let rendered = render_chunk(&chunk);
-            let markdown = if rendered.len() > MAX_CHUNK_CHARS {
-                render_header_stub(&chunk.headers, rendered.len())
+            let rendered_chars = rendered.chars().count();
+            let markdown = if rendered_chars > MAX_CHUNK_CHARS {
+                render_header_stub(&chunk.headers, rendered_chars)
             } else {
                 rendered
             };
@@ -88,7 +89,7 @@ fn sanitize_markdown(input: &str) -> (String, Vec<String>) {
     let mut clean = Vec::new();
     let mut dropped = 0usize;
     for line in input.split('\n') {
-        if line.len() > MAX_LINE_CHARS {
+        if line.chars().count() > MAX_LINE_CHARS {
             dropped += 1;
         } else {
             clean.push(line);
@@ -833,22 +834,92 @@ fn code_info(kind: &CodeBlockKind<'_>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use serde_json::Value;
-
-    use super::*;
 
     const MARKDOWN_FIXTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../fixtures/markdown_chunks.json"
     ));
-    const OVERSIZED_SIZE_NORMALIZATION: &str = "oversized_size";
-    const OVERSIZED_SIZE_TOKEN: &str = "normalizedsize";
+    pub(crate) const OVERSIZED_SIZE_NORMALIZATION: &str = "oversized_size";
+    pub(crate) const OVERSIZED_SIZE_TOKEN: &str = "normalizedsize";
+
+    pub(crate) fn markdown_fixture() -> Value {
+        serde_json::from_str(MARKDOWN_FIXTURE).expect("parse markdown chunks fixture")
+    }
+
+    pub(crate) fn token_comparison_enabled(case: &Value) -> bool {
+        case.get("token_comparison")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().expect("string item").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn rust_tokenize(text: &str) -> Vec<String> {
+        text.split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(|token| token.to_ascii_lowercase())
+            .collect()
+    }
+
+    pub(crate) fn normalize_tokens(tokens: Vec<String>, normalizations: &[String]) -> Vec<String> {
+        if normalizations
+            .iter()
+            .any(|normalization| normalization == OVERSIZED_SIZE_NORMALIZATION)
+        {
+            normalize_oversized_size_tokens(tokens)
+        } else {
+            tokens
+        }
+    }
+
+    fn normalize_oversized_size_tokens(tokens: Vec<String>) -> Vec<String> {
+        let mut normalized = Vec::new();
+        let mut i = 0;
+        while i < tokens.len() {
+            if i + 5 < tokens.len()
+                && tokens[i..i + 5] == ["content", "too", "large", "to", "index"]
+            {
+                normalized.extend_from_slice(&tokens[i..i + 5]);
+                let mut j = i + 5;
+                while j < tokens.len() && tokens[j] != "chars" {
+                    j += 1;
+                }
+                if j < tokens.len() {
+                    normalized.push(OVERSIZED_SIZE_TOKEN.to_string());
+                    normalized.push("chars".to_string());
+                    i = j + 1;
+                    continue;
+                }
+            }
+            normalized.push(tokens[i].clone());
+            i += 1;
+        }
+        normalized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{
+        markdown_fixture, normalize_tokens, rust_tokenize, strings, token_comparison_enabled,
+    };
+    use super::*;
 
     #[test]
     fn markdown_chunks_match_python_oracle_tokens() {
-        let fixture: Value =
-            serde_json::from_str(MARKDOWN_FIXTURE).expect("parse markdown chunks fixture");
+        let fixture = markdown_fixture();
         for case in fixture["cases"].as_array().expect("fixture cases") {
             let id = case["id"].as_str().expect("case id");
             let input = case["input"].as_str().expect("case input");
@@ -860,6 +931,9 @@ mod tests {
                 case["chunk_count"].as_u64().expect("chunk count") as usize,
                 "{id} chunk count"
             );
+            if !token_comparison_enabled(case) {
+                continue;
+            }
 
             for (idx, expected_chunk) in case["chunks"]
                 .as_array()
@@ -911,6 +985,40 @@ mod tests {
     }
 
     #[test]
+    fn non_ascii_bounds_count_characters_not_utf8_bytes() {
+        let under_line_bound = format!("# Accent\n\n{}\n", "é".repeat(MAX_LINE_CHARS - 1));
+        let formatted = format_markdown(&under_line_bound);
+        assert!(formatted.warnings.is_empty());
+        assert_eq!(formatted.chunks.len(), 1);
+        assert!(formatted.chunks[0].markdown.contains('é'));
+
+        let over_line_bound = format!(
+            "# Accent\n\n{}\n\nkept alpha\n",
+            "é".repeat(MAX_LINE_CHARS + 1)
+        );
+        let formatted = format_markdown(&over_line_bound);
+        assert_eq!(
+            formatted.warnings,
+            vec!["Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"]
+        );
+        assert_eq!(formatted.chunks.len(), 1);
+        assert!(formatted.chunks[0].markdown.contains("kept alpha"));
+        assert!(!formatted.chunks[0].markdown.contains('é'));
+
+        let multi_line = ["é".repeat(1300), "é".repeat(1300), "é".repeat(1300)].join("\n");
+        let formatted = format_markdown(&format!("# Accent\n\n{multi_line}\n"));
+        assert!(formatted.warnings.is_empty());
+        assert_eq!(formatted.chunks.len(), 1);
+        assert!(formatted.chunks[0].markdown.len() > MAX_CHUNK_CHARS);
+        assert!(formatted.chunks[0].markdown.chars().count() < MAX_CHUNK_CHARS);
+        assert!(
+            !formatted.chunks[0]
+                .markdown
+                .contains("[Content too large to index:")
+        );
+    }
+
+    #[test]
     fn oversized_chunks_become_header_stub() {
         let oversized_line = "alpha ".repeat(300);
         let input = format!(
@@ -926,60 +1034,5 @@ mod tests {
                 .contains("[Content too large to index:")
         );
         assert!(!formatted.chunks[0].markdown.contains("alpha alpha"));
-    }
-
-    fn strings(value: &Value) -> Vec<String> {
-        value
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| item.as_str().expect("string item").to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn rust_tokenize(text: &str) -> Vec<String> {
-        text.split(|ch: char| !ch.is_ascii_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(|token| token.to_ascii_lowercase())
-            .collect()
-    }
-
-    fn normalize_tokens(tokens: Vec<String>, normalizations: &[String]) -> Vec<String> {
-        if normalizations
-            .iter()
-            .any(|normalization| normalization == OVERSIZED_SIZE_NORMALIZATION)
-        {
-            normalize_oversized_size_tokens(tokens)
-        } else {
-            tokens
-        }
-    }
-
-    fn normalize_oversized_size_tokens(tokens: Vec<String>) -> Vec<String> {
-        let mut normalized = Vec::new();
-        let mut i = 0;
-        while i < tokens.len() {
-            if i + 5 < tokens.len()
-                && tokens[i..i + 5] == ["content", "too", "large", "to", "index"]
-            {
-                normalized.extend_from_slice(&tokens[i..i + 5]);
-                let mut j = i + 5;
-                while j < tokens.len() && tokens[j] != "chars" {
-                    j += 1;
-                }
-                if j < tokens.len() {
-                    normalized.push(OVERSIZED_SIZE_TOKEN.to_string());
-                    normalized.push("chars".to_string());
-                    i = j + 1;
-                    continue;
-                }
-            }
-            normalized.push(tokens[i].clone());
-            i += 1;
-        }
-        normalized
     }
 }

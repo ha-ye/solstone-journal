@@ -414,6 +414,11 @@ fn truncate_string(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::chunker::test_support::{
+        OVERSIZED_SIZE_NORMALIZATION, markdown_fixture, normalize_tokens, rust_tokenize, strings,
+        token_comparison_enabled,
+    };
+
     use super::*;
 
     #[test]
@@ -554,6 +559,47 @@ mod tests {
     }
 
     #[test]
+    fn markdown_producer_matches_python_oracle_tokens() {
+        let fixture = markdown_fixture();
+        for case in fixture["cases"].as_array().expect("fixture cases") {
+            if !token_comparison_enabled(case) {
+                continue;
+            }
+            let id = case["id"].as_str().expect("case id");
+            let input = case["input"].as_str().expect("case input");
+            let produced = produce_chunks(Family::Markdown, "20240101/talents/oracle.md", input);
+            assert_eq!(
+                produced.warnings,
+                strings(&case["warnings"]),
+                "{id} warnings"
+            );
+            assert_eq!(
+                produced.chunks.len(),
+                case["chunk_count"].as_u64().expect("chunk count") as usize,
+                "{id} chunk count"
+            );
+            for (idx, expected_chunk) in case["chunks"]
+                .as_array()
+                .expect("case chunks")
+                .iter()
+                .enumerate()
+            {
+                let normalizations = strings(&expected_chunk["normalizations"]);
+                let recorded_tokens = strings(&expected_chunk["tokens"]);
+                assert_eq!(
+                    normalize_tokens(
+                        rust_tokenize(&produced.chunks[idx].content),
+                        &normalizations
+                    ),
+                    recorded_tokens,
+                    "{id}:{idx} producer tokens"
+                );
+            }
+            assert_eq!(produced.agent_override, None, "{id} agent override");
+        }
+    }
+
+    #[test]
     fn markdown_producer_ports_grouping_rules() {
         let produced = produce_chunks(
             Family::Markdown,
@@ -561,11 +607,13 @@ mod tests {
             "# Tasks\n\nintro alpha\n\n- item one\n- item two\n",
         );
         assert_eq!(produced.chunks.len(), 2);
-        assert!(
-            produced
-                .chunks
-                .iter()
-                .all(|chunk| tokenizes_to(&chunk.content, &["tasks", "intro", "alpha", "item"]))
+        assert_eq!(
+            rust_tokenize(&produced.chunks[0].content),
+            ["tasks", "intro", "alpha", "item", "one"]
+        );
+        assert_eq!(
+            rust_tokenize(&produced.chunks[1].content),
+            ["tasks", "intro", "alpha", "item", "two"]
         );
         assert!(
             !produced
@@ -580,6 +628,14 @@ mod tests {
             "# Tasks\n\n- item one\n- item two\n",
         );
         assert_eq!(produced.chunks.len(), 2);
+        assert_eq!(
+            rust_tokenize(&produced.chunks[0].content),
+            ["tasks", "item", "one"]
+        );
+        assert_eq!(
+            rust_tokenize(&produced.chunks[1].content),
+            ["tasks", "item", "two"]
+        );
 
         let produced = produce_chunks(
             Family::Markdown,
@@ -588,7 +644,7 @@ mod tests {
         );
         assert_eq!(produced.chunks.len(), 1);
         assert_eq!(
-            tokens(&produced.chunks[0].content),
+            rust_tokenize(&produced.chunks[0].content),
             [
                 "definitions",
                 "alpha",
@@ -616,13 +672,13 @@ mod tests {
         );
         assert_eq!(produced.chunks.len(), 2);
         assert_eq!(
-            tokens(&produced.chunks[0].content),
+            rust_tokenize(&produced.chunks[0].content),
             [
                 "root", "matrix", "intro", "alpha", "name", "value", "beta", "one"
             ]
         );
         assert_eq!(
-            tokens(&produced.chunks[1].content),
+            rust_tokenize(&produced.chunks[1].content),
             [
                 "root", "matrix", "intro", "alpha", "name", "value", "gamma", "two"
             ]
@@ -649,7 +705,7 @@ mod tests {
             vec!["Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"]
         );
         assert_eq!(
-            tokens(&produced.chunks[0].content),
+            rust_tokenize(&produced.chunks[0].content),
             ["long", "kept", "alpha"]
         );
 
@@ -669,25 +725,21 @@ mod tests {
                 .contains("[Content too large to index:")
         );
         assert_eq!(
-            &tokens(&produced.chunks[0].content)[..6],
-            ["big", "content", "too", "large", "to", "index"]
+            normalize_tokens(
+                rust_tokenize(&produced.chunks[0].content),
+                &[OVERSIZED_SIZE_NORMALIZATION.to_string()]
+            ),
+            [
+                "big",
+                "content",
+                "too",
+                "large",
+                "to",
+                "index",
+                "normalizedsize",
+                "chars"
+            ]
         );
-    }
-
-    fn tokens(text: &str) -> Vec<String> {
-        text.split(|ch: char| !ch.is_ascii_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(|token| token.to_ascii_lowercase())
-            .collect()
-    }
-
-    fn tokenizes_to(text: &str, expected_prefix: &[&str]) -> bool {
-        tokens(text).starts_with(
-            &expected_prefix
-                .iter()
-                .map(|token| token.to_string())
-                .collect::<Vec<_>>(),
-        )
     }
 
     #[test]

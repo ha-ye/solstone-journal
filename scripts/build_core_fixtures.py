@@ -121,8 +121,11 @@ def build_edge_schema_fixture() -> dict[str, Any]:
         conn.close()
 
 
-def _markdown_fixture_cases() -> list[dict[str, str]]:
+def _markdown_fixture_cases() -> list[dict[str, Any]]:
     long_line = "z" * (markdown_formatter._MAX_LINE_CHARS + 1)
+    non_ascii_under_line_bound = "é" * (markdown_formatter._MAX_LINE_CHARS - 1)
+    non_ascii_over_line_bound = "é" * (markdown_formatter._MAX_LINE_CHARS + 1)
+    non_ascii_chunk_body = "\n".join(["é" * 1300] * 3)
     oversized_line = "alpha " * 300
     oversized_body = "\n".join([oversized_line] * 3)
     return [
@@ -238,6 +241,33 @@ def _markdown_fixture_cases() -> list[dict[str, str]]:
             "id": "inline_html",
             "input": "# Html\n\nalpha <span>beta</span> gamma\n",
         },
+        {
+            "id": "non_ascii_line_under_char_bound_over_byte_bound",
+            "input": f"# Accent\n\n{non_ascii_under_line_bound}\n",
+            "token_comparison": False,
+            "token_comparison_reason": (
+                "non-ASCII is outside the ASCII tokenizer-equivalence guarantee; "
+                "compare only chunk count and warnings"
+            ),
+        },
+        {
+            "id": "non_ascii_line_over_char_bound",
+            "input": f"# Accent\n\n{non_ascii_over_line_bound}\n\nkept ascii\n",
+            "token_comparison": False,
+            "token_comparison_reason": (
+                "non-ASCII is outside the ASCII tokenizer-equivalence guarantee; "
+                "compare only chunk count and warnings"
+            ),
+        },
+        {
+            "id": "non_ascii_chunk_under_char_bound_over_byte_bound",
+            "input": f"# Accent\n\n{non_ascii_chunk_body}\n",
+            "token_comparison": False,
+            "token_comparison_reason": (
+                "non-ASCII is outside the ASCII tokenizer-equivalence guarantee; "
+                "compare only chunk count and warnings"
+            ),
+        },
     ]
 
 
@@ -316,41 +346,49 @@ def _normalize_tokens(tokens: list[str], normalizations: list[str]) -> list[str]
 def build_markdown_chunks_fixture() -> dict[str, Any]:
     cases = []
     for case in _markdown_fixture_cases():
-        if not case["input"].isascii():
+        token_comparison = case.get("token_comparison", True)
+        if token_comparison and not case["input"].isascii():
             raise RuntimeError(f"markdown fixture case is not ASCII-only: {case['id']}")
         chunks, warnings = _format_markdown_with_warnings(case["input"])
-        rendered = [chunk["markdown"] for chunk in chunks]
-        tokens_by_chunk = _fts5_tokens(rendered)
-        chunk_entries = []
-        for markdown, tokens in zip(rendered, tokens_by_chunk, strict=True):
-            normalizations = (
-                [OVERSIZED_SIZE_NORMALIZATION]
-                if "[Content too large to index:" in markdown
-                else []
-            )
-            entry: dict[str, Any] = {
-                "markdown": markdown,
-                "tokens": _normalize_tokens(tokens, normalizations),
-            }
-            if normalizations:
-                entry["normalizations"] = normalizations
-            chunk_entries.append(entry)
-        cases.append(
-            {
-                "id": case["id"],
-                "input": case["input"],
-                "chunk_count": len(chunks),
-                "warnings": warnings,
-                "chunks": chunk_entries,
-            }
-        )
+        entry = {
+            "id": case["id"],
+            "input": case["input"],
+            "chunk_count": len(chunks),
+            "warnings": warnings,
+        }
+        if token_comparison:
+            rendered = [chunk["markdown"] for chunk in chunks]
+            tokens_by_chunk = _fts5_tokens(rendered)
+            chunk_entries = []
+            for markdown, tokens in zip(rendered, tokens_by_chunk, strict=True):
+                normalizations = (
+                    [OVERSIZED_SIZE_NORMALIZATION]
+                    if "[Content too large to index:" in markdown
+                    else []
+                )
+                chunk_entry: dict[str, Any] = {
+                    "markdown": markdown,
+                    "tokens": _normalize_tokens(tokens, normalizations),
+                }
+                if normalizations:
+                    chunk_entry["normalizations"] = normalizations
+                chunk_entries.append(chunk_entry)
+            entry["chunks"] = chunk_entries
+        else:
+            entry["token_comparison"] = False
+            entry["token_comparison_reason"] = case["token_comparison_reason"]
+        cases.append(entry)
 
     return {
         "fixture": "solstone-markdown-chunks",
         "fixture_version": 1,
         "generated_by": "make core-fixtures",
         "constraints": {
-            "ascii_only": True,
+            "token_comparison_cases_ascii_only": True,
+            "token_comparison_false_behavior": (
+                "non-ASCII cases record only chunk_count and warnings because "
+                "they are outside the ASCII tokenizer-equivalence guarantee"
+            ),
             "max_line_chars": markdown_formatter._MAX_LINE_CHARS,
             "max_chunk_chars": markdown_formatter._MAX_CHUNK_CHARS,
             "normalizations": {

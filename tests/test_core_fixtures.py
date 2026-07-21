@@ -58,7 +58,26 @@ def test_cogitate_core_fixture_matches_public_contract() -> None:
 def test_markdown_core_fixture_matches_formatter_contract() -> None:
     fixture = build_core_fixtures.build_markdown_chunks_fixture()
 
-    assert fixture["constraints"]["ascii_only"] is True
+    assert fixture["constraints"]["token_comparison_cases_ascii_only"] is True
+    assert {
+        case["id"] for case in fixture["cases"] if case.get("token_comparison") is False
+    } == {
+        "non_ascii_line_under_char_bound_over_byte_bound",
+        "non_ascii_line_over_char_bound",
+        "non_ascii_chunk_under_char_bound_over_byte_bound",
+    }
+    for case in fixture["cases"]:
+        if case.get("token_comparison") is False:
+            assert set(case) == {
+                "id",
+                "input",
+                "chunk_count",
+                "warnings",
+                "token_comparison",
+                "token_comparison_reason",
+            }
+        else:
+            assert case["input"].isascii()
     assert (
         fixture["constraints"]["max_line_chars"] == markdown_formatter._MAX_LINE_CHARS
     )
