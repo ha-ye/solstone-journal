@@ -24,10 +24,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+for _path in (str(ROOT), str(_SCRIPTS_DIR)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-from scripts.check_wheel_contents import release_artifacts  # noqa: E402
+from check_wheel_contents import release_artifacts  # noqa: E402
+
 from solstone.think.probe import (  # noqa: E402
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_TAGS,
