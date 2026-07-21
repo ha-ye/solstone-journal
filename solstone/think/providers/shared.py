@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any, Callable, Literal, Mapping, Optional, Union
 
 from typing_extensions import Required, TypedDict
@@ -390,6 +391,8 @@ CANNED_GENERATE_NUM_RETRIES = 0
 CANNED_GENERATE_TIMEOUT_S = 30
 CannedGenerateVerdict = Literal["pass", "starved", "invalid"]
 _MAX_SAFE_TOKEN_COUNT = 1_000_000_000_000
+_MAX_SAFE_FINISH_REASON_LENGTH = 64
+_UNKNOWN_FINISH_REASON = "unknown"
 
 
 class GenerateResult(TypedDict, total=False):
@@ -471,6 +474,21 @@ def _safe_token_counts(usage: Any) -> dict[str, int]:
     return token_counts
 
 
+_SAFE_FINISH_REASON_PATTERN = re.compile(r"^[a-z0-9_]+$")
+
+
+def _safe_finish_reason(value: Any) -> str | None:
+    """Reduce a provider finish value to a bounded safe token, or None."""
+    if not isinstance(value, str):
+        return None
+    if len(value) > _MAX_SAFE_FINISH_REASON_LENGTH:
+        return _UNKNOWN_FINISH_REASON
+    normalized = value.strip().lower()
+    if _SAFE_FINISH_REASON_PATTERN.fullmatch(normalized):
+        return normalized
+    return _UNKNOWN_FINISH_REASON
+
+
 def validate_generate_result_strict(
     result: GenerateResult,
     *,
@@ -495,12 +513,12 @@ def validate_generate_result_strict(
         result_model if isinstance(result_model, str) and result_model else model
     )
     finish_reason = result.get("finish_reason")
-    error_finish_reason = finish_reason if isinstance(finish_reason, str) else None
+    error_finish_reason = _safe_finish_reason(finish_reason)
 
     if finish_reason is not None and not isinstance(finish_reason, str):
         raise ProviderResponseInvalidError(
             "malformed_finish_reason",
-            finish_reason=str(finish_reason),
+            finish_reason=error_finish_reason,
             model=error_model,
             token_counts=token_counts,
         )

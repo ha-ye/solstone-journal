@@ -53,6 +53,8 @@ from solstone.think.models import (
     resolve_provider,
 )
 
+_FINISH_METADATA_MARKER = "zq7marker9x"
+
 
 def test_calc_token_cost_basic():
     """Test basic cost calculation with a known model."""
@@ -1338,6 +1340,14 @@ class TestValidateSchema:
         assert result["errors"][0]["constraint"] == "schema_validation"
 
 
+def _assert_exception_metadata_omits_marker(exc: BaseException, marker: str) -> None:
+    assert marker not in str(exc)
+    for value in vars(exc).values():
+        assert marker not in str(value)
+    for value in exc.args:
+        assert marker not in str(value)
+
+
 class TestGenerateJsonSchemaPlumbing:
     def test_finish_reason_predicate_json_rejects_any_non_stop(self):
         error = finish_reason_error(
@@ -1530,6 +1540,84 @@ class TestGenerateJsonSchemaPlumbing:
                 generate("hello", "test.context")
 
         assert exc_info.value.reason == "malformed_finish_reason"
+
+    def test_strict_validation_bounds_non_string_finish_metadata(self):
+        marker = _FINISH_METADATA_MARKER
+
+        with pytest.raises(ProviderResponseInvalidError) as exc_info:
+            models_module.validate_generate_result_strict(
+                {
+                    "text": "ok",
+                    "finish_reason": {"secret": {"nested": marker}},
+                },
+                json_output=False,
+            )
+
+        exc = exc_info.value
+        assert exc.reason == "malformed_finish_reason"
+        assert exc.finish_reason is None
+        _assert_exception_metadata_omits_marker(exc, marker)
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        [
+            str({"secret": _FINISH_METADATA_MARKER}).strip().lower(),
+            "a" * 65 + _FINISH_METADATA_MARKER,
+        ],
+    )
+    def test_finish_reason_error_bounds_unsafe_finish_tokens(self, finish_reason):
+        marker = _FINISH_METADATA_MARKER
+
+        error = finish_reason_error(
+            {"text": "partial", "finish_reason": finish_reason},
+            json_output=False,
+        )
+
+        assert isinstance(error, ProviderResponseInvalidError)
+        assert error.reason == "unknown"
+        assert error.finish_reason == "unknown"
+        _assert_exception_metadata_omits_marker(error, marker)
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        ["content_filter", "CONTENT_FILTER", " content_filter "],
+    )
+    def test_finish_reason_error_preserves_safe_finish_tokens(self, finish_reason):
+        result = {
+            "text": "partial",
+            "model": "provider-model",
+            "finish_reason": finish_reason,
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 2,
+                "reasoning_tokens": 3,
+                "total_tokens": 16,
+            },
+        }
+
+        error = finish_reason_error(result, json_output=False)
+
+        assert isinstance(error, ProviderResponseInvalidError)
+        assert error.reason == "content_filter"
+        assert error.finish_reason == "content_filter"
+        assert error.model == "provider-model"
+        assert error.token_counts == {
+            "input_tokens": 11,
+            "output_tokens": 2,
+            "reasoning_tokens": 3,
+            "total_tokens": 16,
+        }
+
+    def test_length_finish_classification_keeps_incomplete_text(self):
+        error = finish_reason_error(
+            {"text": "partial", "finish_reason": "max_tokens"},
+            json_output=False,
+        )
+
+        assert isinstance(error, IncompleteTextError)
+        assert error.reason == "max_tokens"
+        assert error.reason_code == "incomplete_text_length"
+        assert str(error) == "Text response incomplete (reason: max_tokens)"
 
     def test_json_length_finish_stays_incomplete_json_not_provider_invalid(self):
         provider_module = SimpleNamespace(

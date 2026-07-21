@@ -202,7 +202,12 @@ class IncompleteTextError(ValueError):
 
 
 class ProviderResponseInvalidError(ValueError):
-    """Raised when a provider response is unusable or malformed."""
+    """Raised when a provider response is unusable or malformed.
+
+    finish_reason is a normalized bounded token or None. token_counts carries
+    bounded scalar counts only. Raw responses, prompts, and output text are not
+    carried.
+    """
 
     reason_code = "provider_response_invalid"
 
@@ -976,12 +981,17 @@ def finish_reason_error(
             reason=finish_reason,
             partial_text=partial_text,
         )
-    from solstone.think.providers.shared import _safe_token_counts
+    from solstone.think.providers.shared import (
+        _UNKNOWN_FINISH_REASON,
+        _safe_finish_reason,
+        _safe_token_counts,
+    )
 
+    safe_finish_reason = _safe_finish_reason(finish_reason)
     result_model = result.get("model")
     return ProviderResponseInvalidError(
-        reason=str(finish_reason),
-        finish_reason=str(finish_reason),
+        reason=safe_finish_reason or _UNKNOWN_FINISH_REASON,
+        finish_reason=safe_finish_reason,
         model=result_model if isinstance(result_model, str) and result_model else None,
         token_counts=_safe_token_counts(result.get("usage")),
     )
