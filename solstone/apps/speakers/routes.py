@@ -126,6 +126,7 @@ from solstone.convey.utils import (
 )
 from solstone.think.awareness import get_current
 from solstone.think.entities import find_matching_entity
+from solstone.think.entities.history import trust_operation_lock
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
     get_journal_principal,
@@ -699,101 +700,114 @@ def _assign_attribution_impl(
         )
     speaker_id = str(speaker)
 
-    segment_dir = get_segment_path(day, segment_key, stream)
-    labels_data = _load_speaker_labels(segment_dir)
-    if not labels_data:
-        return error_response(
-            SPEAKER_REVIEW_UNAVAILABLE,
-            detail="No speaker labels found",
-        )
-
-    label = None
-    for item in labels_data.get("labels", []):
-        if item.get("sentence_id") == sentence_id_int:
-            label = item
-            break
-
     principal_id = _principal_id_or_none()
-    existing_speaker = label.get("speaker") if label else None
-    if existing_speaker == speaker_id and label.get("method") == "user_assigned":
-        response = {"status": "already_assigned"}
-        if speaker_id == principal_id:
-            response["owner_bootstrap_outcome"] = "not_attempted"
-        return success_response(response)
-    if existing_speaker:
-        return error_response(
-            SPEAKER_ATTRIBUTION_STATE_INVALID,
-            detail="Pick a sentence without a speaker.",
-        )
-
-    sentences, _ = _load_sentences(day, segment_key, source, stream=stream)
-    if not any(sentence.get("id") == sentence_id_int for sentence in sentences):
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Pick a different sentence with an embedding.",
-        )
-
-    emb = _get_sentence_embedding(
-        day, segment_key, source, sentence_id_int, stream=stream
-    )
-    if emb is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Pick a different sentence with an embedding.",
-        )
-
-    target_entity = _ensure_attribution_target(speaker_id)
-    if not target_entity:
-        return error_response(
-            SPEAKER_NOT_FOUND,
-            detail=f"Entity '{speaker_id}' not found",
-        )
-    if target_entity.get("blocked"):
-        return error_response(
-            ENTITY_BLOCKED,
-            detail="Choose an unblocked speaker.",
-        )
-
-    if speaker_id != principal_id and _check_owner_contamination(emb):
-        return error_response(
-            SPEAKER_OWNER_VOICE_TOO_CLOSE,
-            detail="Embedding too similar to owner voice; cannot save",
-        )
-
     try:
-        _save_voiceprint(
-            speaker_id, emb, day, segment_key, source, sentence_id_int, stream=stream
-        )
-    except LockTimeout as exc:
-        return _voiceprint_busy_response(exc)
+        with trust_operation_lock():
+            segment_dir = get_segment_path(day, segment_key, stream)
+            labels_data = _load_speaker_labels(segment_dir)
+            if not labels_data:
+                return error_response(
+                    SPEAKER_REVIEW_UNAVAILABLE,
+                    detail="No speaker labels found",
+                )
 
-    old_method = label.get("method") if label else None
-    try:
-        apply_label_patches(
-            segment_dir,
-            {
-                sentence_id_int: {
-                    "speaker": speaker_id,
-                    "confidence": "high",
-                    "method": "user_assigned",
-                }
-            },
-            allow_insert=True,
-        )
-    except LockTimeout as exc:
-        return _labels_busy_response(exc)
+            label = None
+            for item in labels_data.get("labels", []):
+                if item.get("sentence_id") == sentence_id_int:
+                    label = item
+                    break
 
-    try:
-        append_speaker_correction(
-            segment_dir,
-            {
-                "sentence_id": sentence_id_int,
-                "original_speaker": None,
-                "corrected_speaker": speaker_id,
-                "original_method": old_method,
-                "timestamp": now_ms(),
-            },
-        )
+            existing_speaker = label.get("speaker") if label else None
+            if (
+                existing_speaker == speaker_id
+                and label.get("method") == "user_assigned"
+            ):
+                response = {"status": "already_assigned"}
+                if speaker_id == principal_id:
+                    response["owner_bootstrap_outcome"] = "not_attempted"
+                return success_response(response)
+            if existing_speaker:
+                return error_response(
+                    SPEAKER_ATTRIBUTION_STATE_INVALID,
+                    detail="Pick a sentence without a speaker.",
+                )
+
+            sentences, _ = _load_sentences(day, segment_key, source, stream=stream)
+            if not any(sentence.get("id") == sentence_id_int for sentence in sentences):
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Pick a different sentence with an embedding.",
+                )
+
+            emb = _get_sentence_embedding(
+                day, segment_key, source, sentence_id_int, stream=stream
+            )
+            if emb is None:
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Pick a different sentence with an embedding.",
+                )
+
+            target_entity = _ensure_attribution_target(speaker_id)
+            if not target_entity:
+                return error_response(
+                    SPEAKER_NOT_FOUND,
+                    detail=f"Entity '{speaker_id}' not found",
+                )
+            if target_entity.get("blocked"):
+                return error_response(
+                    ENTITY_BLOCKED,
+                    detail="Choose an unblocked speaker.",
+                )
+
+            if speaker_id != principal_id and _check_owner_contamination(emb):
+                return error_response(
+                    SPEAKER_OWNER_VOICE_TOO_CLOSE,
+                    detail="Embedding too similar to owner voice; cannot save",
+                )
+
+            try:
+                _save_voiceprint(
+                    speaker_id,
+                    emb,
+                    day,
+                    segment_key,
+                    source,
+                    sentence_id_int,
+                    stream=stream,
+                )
+            except LockTimeout as exc:
+                return _voiceprint_busy_response(exc)
+
+            old_method = label.get("method") if label else None
+            try:
+                apply_label_patches(
+                    segment_dir,
+                    {
+                        sentence_id_int: {
+                            "speaker": speaker_id,
+                            "confidence": "high",
+                            "method": "user_assigned",
+                        }
+                    },
+                    allow_insert=True,
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
+
+            try:
+                append_speaker_correction(
+                    segment_dir,
+                    {
+                        "sentence_id": sentence_id_int,
+                        "original_speaker": None,
+                        "corrected_speaker": speaker_id,
+                        "original_method": old_method,
+                        "timestamp": now_ms(),
+                    },
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 
@@ -1664,84 +1678,107 @@ def api_confirm_attribution() -> Any:
     if not STREAM_RE.fullmatch(stream):
         return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
-    segment_dir = get_segment_path(day, segment_key, stream)
-    labels_data = _load_speaker_labels(segment_dir)
-    if not labels_data:
-        return error_response(
-            SPEAKER_REVIEW_UNAVAILABLE,
-            detail="No speaker labels found",
-        )
-
-    label = None
-    for item in labels_data.get("labels", []):
-        if item.get("sentence_id") == sentence_id:
-            label = item
-            break
-
-    if label is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence not found in labels",
-        )
-
-    speaker = label.get("speaker")
-    if not speaker:
-        return error_response(
-            SPEAKER_ATTRIBUTION_STATE_INVALID,
-            detail="sentence has no speaker assignment yet",
-        )
-
-    confidence = label.get("confidence")
-    if confidence == "high" and label.get("method") == "user_confirmed":
-        return success_response({"status": "already_confirmed"})
-    if confidence != "medium":
-        return error_response(
-            SPEAKER_ATTRIBUTION_STATE_INVALID,
-            detail="attribution is not medium confidence",
-        )
-
-    emb = _get_sentence_embedding(day, segment_key, source, sentence_id, stream=stream)
-    if emb is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence embedding not found",
-        )
-
     principal_id = _principal_id_or_none()
-    if speaker != principal_id and _check_owner_contamination(emb):
-        return error_response(
-            SPEAKER_OWNER_VOICE_TOO_CLOSE,
-            detail="Embedding too similar to owner voice — cannot save",
-        )
-
     try:
-        _save_voiceprint(
-            speaker, emb, day, segment_key, source, sentence_id, stream=stream
-        )
-    except LockTimeout as exc:
-        return _voiceprint_busy_response(exc)
+        with trust_operation_lock():
+            segment_dir = get_segment_path(day, segment_key, stream)
+            labels_data = _load_speaker_labels(segment_dir)
+            if not labels_data:
+                return error_response(
+                    SPEAKER_REVIEW_UNAVAILABLE,
+                    detail="No speaker labels found",
+                )
 
-    old_method = label.get("method")
-    try:
-        apply_label_patches(
-            segment_dir,
-            {sentence_id: {"confidence": "high", "method": "user_confirmed"}},
-            allow_insert=False,
-        )
-    except LockTimeout as exc:
-        return _labels_busy_response(exc)
+            label = None
+            for item in labels_data.get("labels", []):
+                if item.get("sentence_id") == sentence_id:
+                    label = item
+                    break
 
-    try:
-        append_speaker_correction(
-            segment_dir,
-            {
-                "sentence_id": sentence_id,
-                "original_speaker": speaker,
-                "corrected_speaker": speaker,
-                "original_method": old_method,
-                "timestamp": now_ms(),
-            },
-        )
+            if label is None:
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Sentence not found in labels",
+                )
+
+            speaker = label.get("speaker")
+            if not speaker:
+                return error_response(
+                    SPEAKER_ATTRIBUTION_STATE_INVALID,
+                    detail="sentence has no speaker assignment yet",
+                )
+
+            target_entity = _ensure_attribution_target(str(speaker))
+            if not target_entity:
+                return error_response(
+                    SPEAKER_NOT_FOUND,
+                    detail=f"Entity '{speaker}' not found",
+                )
+
+            confidence = label.get("confidence")
+            if confidence == "high" and label.get("method") == "user_confirmed":
+                return success_response({"status": "already_confirmed"})
+            if confidence != "medium":
+                return error_response(
+                    SPEAKER_ATTRIBUTION_STATE_INVALID,
+                    detail="attribution is not medium confidence",
+                )
+
+            emb = _get_sentence_embedding(
+                day,
+                segment_key,
+                source,
+                sentence_id,
+                stream=stream,
+            )
+            if emb is None:
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Sentence embedding not found",
+                )
+
+            if speaker != principal_id and _check_owner_contamination(emb):
+                return error_response(
+                    SPEAKER_OWNER_VOICE_TOO_CLOSE,
+                    detail="Embedding too similar to owner voice — cannot save",
+                )
+
+            try:
+                _save_voiceprint(
+                    speaker,
+                    emb,
+                    day,
+                    segment_key,
+                    source,
+                    sentence_id,
+                    stream=stream,
+                )
+            except LockTimeout as exc:
+                return _voiceprint_busy_response(exc)
+
+            old_method = label.get("method")
+            try:
+                apply_label_patches(
+                    segment_dir,
+                    {sentence_id: {"confidence": "high", "method": "user_confirmed"}},
+                    allow_insert=False,
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
+
+            try:
+                append_speaker_correction(
+                    segment_dir,
+                    {
+                        "sentence_id": sentence_id,
+                        "original_speaker": speaker,
+                        "corrected_speaker": speaker,
+                        "original_method": old_method,
+                        "timestamp": now_ms(),
+                    },
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 
@@ -1794,108 +1831,138 @@ def api_correct_attribution() -> Any:
     if not STREAM_RE.fullmatch(stream):
         return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
-    target_entity = _ensure_attribution_target(new_speaker)
-    if not target_entity:
-        return error_response(
-            SPEAKER_NOT_FOUND,
-            detail=f"Entity '{new_speaker}' not found",
-        )
-    if target_entity.get("blocked"):
-        return error_response(
-            ENTITY_BLOCKED,
-            detail=f"Entity '{new_speaker}' is blocked",
-        )
-
-    segment_dir = get_segment_path(day, segment_key, stream)
-    labels_data = _load_speaker_labels(segment_dir)
-    if not labels_data:
-        return error_response(
-            SPEAKER_REVIEW_UNAVAILABLE,
-            detail="No speaker labels found",
-        )
-
-    label = None
-    for item in labels_data.get("labels", []):
-        if item.get("sentence_id") == sentence_id:
-            label = item
-            break
-
-    if label is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence not found in labels",
-        )
-
-    old_speaker = label.get("speaker")
-    old_method = label.get("method")
-    if old_speaker == new_speaker:
-        return success_response({"status": "already_correct"})
-
-    emb = _get_sentence_embedding(day, segment_key, source, sentence_id, stream=stream)
-    if emb is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence embedding not found",
-        )
-
     principal_id = _principal_id_or_none()
-    if new_speaker != principal_id and _check_owner_contamination(emb):
-        return error_response(
-            SPEAKER_OWNER_VOICE_TOO_CLOSE,
-            detail="Embedding too similar to owner voice — cannot save",
-        )
-
     voiceprint_removal = VoiceprintRemovalResult(
         outcome="not_found",
-        entity_id=str(old_speaker or ""),
+        entity_id="",
         keys_removed=[],
         file_deleted=False,
         voiceprints_path=None,
     )
     try:
-        if old_speaker:
-            voiceprint_removal = _remove_voiceprint(
-                old_speaker, day, segment_key, source, sentence_id
+        with trust_operation_lock():
+            target_entity = _ensure_attribution_target(new_speaker)
+            if not target_entity:
+                return error_response(
+                    SPEAKER_NOT_FOUND,
+                    detail=f"Entity '{new_speaker}' not found",
+                )
+            if target_entity.get("blocked"):
+                return error_response(
+                    ENTITY_BLOCKED,
+                    detail=f"Entity '{new_speaker}' is blocked",
+                )
+
+            segment_dir = get_segment_path(day, segment_key, stream)
+            labels_data = _load_speaker_labels(segment_dir)
+            if not labels_data:
+                return error_response(
+                    SPEAKER_REVIEW_UNAVAILABLE,
+                    detail="No speaker labels found",
+                )
+
+            label = None
+            for item in labels_data.get("labels", []):
+                if item.get("sentence_id") == sentence_id:
+                    label = item
+                    break
+
+            if label is None:
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Sentence not found in labels",
+                )
+
+            old_speaker = label.get("speaker")
+            old_method = label.get("method")
+            if old_speaker == new_speaker:
+                return success_response({"status": "already_correct"})
+
+            emb = _get_sentence_embedding(
+                day,
+                segment_key,
+                source,
+                sentence_id,
+                stream=stream,
             )
+            if emb is None:
+                return error_response(
+                    SPEAKER_SENTENCE_MISSING,
+                    detail="Sentence embedding not found",
+                )
 
-        _save_voiceprint(
-            new_speaker,
-            emb,
-            day,
-            segment_key,
-            source,
-            sentence_id,
-            stream=stream,
-        )
-    except LockTimeout as exc:
-        return _voiceprint_busy_response(exc)
+            if new_speaker != principal_id and _check_owner_contamination(emb):
+                return error_response(
+                    SPEAKER_OWNER_VOICE_TOO_CLOSE,
+                    detail="Embedding too similar to owner voice — cannot save",
+                )
 
-    try:
-        apply_label_patches(
-            segment_dir,
-            {
-                sentence_id: {
-                    "speaker": new_speaker,
-                    "confidence": "high",
-                    "method": "user_corrected",
-                }
-            },
-            allow_insert=False,
-        )
-    except LockTimeout as exc:
-        return _labels_busy_response(exc)
+            try:
+                if old_speaker:
+                    voiceprint_removal = _remove_voiceprint(
+                        old_speaker,
+                        day,
+                        segment_key,
+                        source,
+                        sentence_id,
+                    )
 
-    try:
-        append_speaker_correction(
-            segment_dir,
-            {
-                "sentence_id": sentence_id,
-                "original_speaker": old_speaker,
-                "corrected_speaker": new_speaker,
-                "original_method": old_method,
-                "timestamp": now_ms(),
-            },
-        )
+                _save_voiceprint(
+                    new_speaker,
+                    emb,
+                    day,
+                    segment_key,
+                    source,
+                    sentence_id,
+                    stream=stream,
+                )
+            except LockTimeout as exc:
+                return _voiceprint_busy_response(exc)
+
+            try:
+                apply_label_patches(
+                    segment_dir,
+                    {
+                        sentence_id: {
+                            "speaker": new_speaker,
+                            "confidence": "high",
+                            "method": "user_corrected",
+                        }
+                    },
+                    allow_insert=False,
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
+
+            try:
+                append_speaker_correction(
+                    segment_dir,
+                    {
+                        "sentence_id": sentence_id,
+                        "original_speaker": old_speaker,
+                        "corrected_speaker": new_speaker,
+                        "original_method": old_method,
+                        "timestamp": now_ms(),
+                    },
+                )
+            except LockTimeout as exc:
+                return _labels_busy_response(exc)
+            if old_speaker is None:
+                voiceprint_removal = VoiceprintRemovalResult(
+                    outcome="not_found",
+                    entity_id="",
+                    keys_removed=[],
+                    file_deleted=False,
+                    voiceprints_path=None,
+                )
+            else:
+                voiceprint_removal = VoiceprintRemovalResult(
+                    outcome=voiceprint_removal.outcome,
+                    entity_id=str(old_speaker),
+                    keys_removed=voiceprint_removal.keys_removed,
+                    file_deleted=voiceprint_removal.file_deleted,
+                    voiceprints_path=voiceprint_removal.voiceprints_path,
+                )
     except LockTimeout as exc:
         return _labels_busy_response(exc)
 

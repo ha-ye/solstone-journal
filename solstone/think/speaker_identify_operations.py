@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
@@ -75,6 +76,8 @@ class OperationState:
     terminal_status: str
     result: dict[str, Any] | None
     undo_report: dict[str, Any] | None
+    undo_started_at: str | None
+    undo_committed_count: int
     phase_checkpoints: dict[str, dict[str, Any]]
     prepared_plan: dict[str, Any]
     repair_required: dict[str, Any] | None = None
@@ -163,6 +166,494 @@ def fold_all_operations() -> list[OperationState]:
         _fold_events(events)
         for _operation_id, events in sorted(grouped.items(), key=lambda item: item[0])
     ]
+
+
+UNDO_REPORT_CATEGORY_KEYS: dict[str, frozenset[str]] = {
+    "labels": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "removed_inserted_count",
+            "patched_existing_count",
+        }
+    ),
+    "corrections": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "appended_count",
+            "already_present_count",
+        }
+    ),
+    "voiceprints": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "removed_count",
+            "missing_count",
+            "metadata_mismatch_count",
+        }
+    ),
+    "tracker": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "restored_candidate_count",
+        }
+    ),
+    "sentinel": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "removed_count",
+            "restored_prior_count",
+        }
+    ),
+    "entity": frozenset(
+        {
+            "restored_count",
+            "skipped_count",
+            "skipped_reasons",
+            "deleted",
+            "blocked_categories",
+            "keep_separate_sources_removed_count",
+        }
+    ),
+}
+
+
+def is_fully_restored_identify_operation(state: OperationState) -> bool:
+    """Return whether an identify operation is demonstrably fully undone."""
+    if state.terminal_status != "undone":
+        return False
+    if state.repair_required or state.undo_repair_required:
+        return False
+    if state.undo_committed_count != 1:
+        return False
+    if set(state.undo_phase_checkpoints) != set(UNDO_PHASE_ORDER):
+        return False
+
+    undo_report = state.undo_report
+    if not isinstance(undo_report, dict):
+        return False
+    if set(undo_report) != {"status", "operation_id", "undo_report"}:
+        return False
+    if undo_report.get("status") != "undone":
+        return False
+    if undo_report.get("operation_id") != state.operation_id:
+        return False
+    categories = undo_report.get("undo_report")
+    if not isinstance(categories, dict):
+        return False
+    if set(categories) != set(UNDO_REPORT_CATEGORY_KEYS):
+        return False
+
+    for phase in UNDO_PHASE_ORDER:
+        category = categories.get(phase)
+        if not _valid_undo_category_shape(phase, category):
+            return False
+        phase_delta = state.undo_phase_checkpoints.get(phase)
+        if not isinstance(phase_delta, dict) or set(phase_delta) != {phase}:
+            return False
+        if phase_delta.get(phase) != category:
+            return False
+
+    return _restored_counts_match_forward_artifacts(state, categories)
+
+
+def get_identify_correction_artifact_signature(
+    row: dict[str, Any],
+    *,
+    day: str,
+    stream: str,
+    segment_key: str,
+) -> tuple[Any, ...]:
+    """Return the exact artifact signature for one correction row."""
+    return (
+        str(day),
+        str(stream),
+        str(segment_key),
+        row.get("sentence_id"),
+        row.get("correction_kind"),
+        row.get("operation_id"),
+        row.get("undo_of_operation_id"),
+        row.get("original_speaker"),
+        row.get("corrected_speaker"),
+        row.get("original_method"),
+        row.get("timestamp"),
+    )
+
+
+def get_expected_restored_correction_artifact_signatures(
+    state: OperationState,
+    *,
+    day: str,
+    stream: str,
+    segment_key: str,
+) -> Counter[tuple[Any, ...]]:
+    """Return expected correction artifacts for one restored operation and segment."""
+    expected: Counter[tuple[Any, ...]] = Counter()
+    if not is_fully_restored_identify_operation(state):
+        return expected
+    if not state.undo_started_at:
+        return expected
+
+    correction_checkpoint = state.phase_checkpoints.get("corrections")
+    appended_keys = _list_field(correction_checkpoint, "appended_keys")
+    if appended_keys is None:
+        return Counter()
+    rows_by_key = _prepared_correction_rows_by_key(state.prepared_plan)
+    labels_by_key = _prepared_label_entries_by_key(state.prepared_plan)
+    if rows_by_key is None or labels_by_key is None:
+        return Counter()
+
+    operation_id = state.operation_id
+    target_entity_id = state.target_entity_id
+    if not target_entity_id:
+        return Counter()
+
+    for key in appended_keys:
+        provenance = _sentence_key_tuple(key)
+        if provenance is None:
+            return Counter()
+        key_day, key_stream, key_segment_key, sentence_id = provenance
+        if (
+            key_day != str(day)
+            or key_stream != str(stream)
+            or key_segment_key != str(segment_key)
+        ):
+            continue
+
+        forward_row = rows_by_key.get(provenance)
+        label_entry = labels_by_key.get(provenance)
+        prior_speaker = _prior_speaker_for_label_entry(label_entry)
+        if forward_row is None or prior_speaker is _INVALID_PRIOR_SPEAKER:
+            return Counter()
+
+        expected.update(
+            [
+                (
+                    key_day,
+                    key_stream,
+                    key_segment_key,
+                    sentence_id,
+                    "identify",
+                    operation_id,
+                    None,
+                    forward_row.get("original_speaker"),
+                    forward_row.get("corrected_speaker"),
+                    forward_row.get("original_method"),
+                    forward_row.get("timestamp"),
+                ),
+                (
+                    key_day,
+                    key_stream,
+                    key_segment_key,
+                    sentence_id,
+                    "identify_undo",
+                    operation_id,
+                    operation_id,
+                    target_entity_id,
+                    prior_speaker,
+                    "user_identified",
+                    state.undo_started_at,
+                ),
+            ]
+        )
+
+    return expected
+
+
+_INVALID_PRIOR_SPEAKER = object()
+
+
+def _valid_undo_category_shape(category_name: str, category: Any) -> bool:
+    expected_keys = UNDO_REPORT_CATEGORY_KEYS[category_name]
+    if not isinstance(category, dict) or set(category) != expected_keys:
+        return False
+    for key, value in category.items():
+        if key.endswith("_count") and not _is_non_negative_int(value):
+            return False
+    if category.get("skipped_count") != 0:
+        return False
+    skipped_reasons = category.get("skipped_reasons")
+    if not _zero_skipped_reasons(skipped_reasons):
+        return False
+    if category_name == "entity":
+        if not isinstance(category.get("deleted"), bool):
+            return False
+        if category.get("blocked_categories") != []:
+            return False
+    return True
+
+
+def _zero_skipped_reasons(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for count in value.values():
+        if not _is_non_negative_int(count) or count != 0:
+            return False
+    return True
+
+
+def _is_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _restored_counts_match_forward_artifacts(
+    state: OperationState,
+    categories: dict[str, dict[str, Any]],
+) -> bool:
+    labels = state.phase_checkpoints.get("labels")
+    patched_sentence_keys = _list_field(labels, "patched_sentence_keys")
+    inserted_sentence_keys = _list_field(labels, "inserted_sentence_keys")
+    if patched_sentence_keys is None or inserted_sentence_keys is None:
+        return False
+    label_report = categories["labels"]
+    patched_count = len(patched_sentence_keys)
+    inserted_count = len(inserted_sentence_keys)
+    if label_report.get("patched_existing_count") != patched_count:
+        return False
+    if label_report.get("removed_inserted_count") != inserted_count:
+        return False
+    if label_report.get("restored_count") != patched_count + inserted_count:
+        return False
+
+    corrections = state.phase_checkpoints.get("corrections")
+    appended_keys = _list_field(corrections, "appended_keys")
+    if appended_keys is None:
+        return False
+    correction_report = categories["corrections"]
+    appended_count = len(appended_keys)
+    if correction_report.get("appended_count") != appended_count:
+        return False
+    if correction_report.get("restored_count") != appended_count:
+        return False
+    if correction_report.get("already_present_count") != 0:
+        return False
+
+    voiceprint_count = _expected_voiceprint_removal_count(state)
+    if voiceprint_count is None:
+        return False
+    voiceprint_report = categories["voiceprints"]
+    if voiceprint_report.get("removed_count") != voiceprint_count:
+        return False
+    if voiceprint_report.get("restored_count") != voiceprint_count:
+        return False
+    if voiceprint_report.get("missing_count") != 0:
+        return False
+    if voiceprint_report.get("metadata_mismatch_count") != 0:
+        return False
+
+    tracker = state.phase_checkpoints.get("retro_tracker")
+    if not isinstance(tracker, dict):
+        return False
+    tracker_expected = (
+        1
+        if tracker.get("matched") is True
+        and _is_non_negative_int(tracker.get("candidate_id"))
+        else 0
+    )
+    tracker_report = categories["tracker"]
+    if tracker_report.get("restored_candidate_count") != tracker_expected:
+        return False
+    if tracker_report.get("restored_count") != tracker_expected:
+        return False
+
+    sentinel = state.phase_checkpoints.get("sentinel")
+    if not isinstance(sentinel, dict) or not isinstance(sentinel.get("written"), bool):
+        return False
+    sentinel_expected = 1 if sentinel.get("written") is True else 0
+    sentinel_report = categories["sentinel"]
+    if sentinel_report.get("restored_count") != sentinel_expected:
+        return False
+    if (
+        sentinel_report.get("removed_count")
+        + sentinel_report.get("restored_prior_count")
+        != sentinel_expected
+    ):
+        return False
+
+    entity = state.phase_checkpoints.get("entity")
+    if not isinstance(entity, dict) or not isinstance(
+        entity.get("entity_created"), bool
+    ):
+        return False
+    entity_expected = 1 if entity.get("entity_created") is True else 0
+    entity_report = categories["entity"]
+    if entity_report.get("restored_count") != entity_expected:
+        return False
+    if (
+        entity.get("entity_created") is True
+        and entity_report.get("deleted") is not True
+    ):
+        return False
+    if (
+        entity.get("entity_created") is False
+        and entity_report.get("deleted") is not False
+    ):
+        return False
+
+    keep_separate = state.phase_checkpoints.get("keep_separate")
+    pair_keys = _list_field(keep_separate, "pair_keys")
+    if pair_keys is None:
+        return False
+    keep_separate_expected = len(pair_keys) if state.will_create else 0
+    if (
+        entity_report.get("keep_separate_sources_removed_count")
+        != keep_separate_expected
+    ):
+        return False
+
+    return True
+
+
+def _expected_voiceprint_removal_count(state: OperationState) -> int | None:
+    direct = state.phase_checkpoints.get("direct_voiceprints")
+    retro = state.phase_checkpoints.get("retro_tracker")
+    direct_saved_keys = _list_field(direct, "saved_keys")
+    retro_saved_keys = _list_field(retro, "saved_keys")
+    if direct_saved_keys is None or retro_saved_keys is None:
+        return None
+    seen: set[tuple[str, str, str, int]] = set()
+    for key in [*direct_saved_keys, *retro_saved_keys]:
+        tuple_key = _voiceprint_key_tuple(key)
+        if tuple_key is None:
+            return None
+        seen.add(tuple_key)
+    return len(seen)
+
+
+def _list_field(value: Any, field: str) -> list[Any] | None:
+    if not isinstance(value, dict):
+        return None
+    field_value = value.get(field)
+    return field_value if isinstance(field_value, list) else None
+
+
+def _voiceprint_key_tuple(value: Any) -> tuple[str, str, str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        day = value["day"]
+        segment_key = value["segment_key"]
+        source = value["source"]
+        sentence_id = value["sentence_id"]
+    except KeyError:
+        return None
+    if not all(isinstance(item, str) and item for item in (day, segment_key, source)):
+        return None
+    if not _is_non_negative_int(sentence_id):
+        return None
+    return (day, segment_key, source, sentence_id)
+
+
+def _sentence_key_tuple(value: Any) -> tuple[str, str, str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        day = value["day"]
+        stream = value["stream"]
+        segment_key = value["segment_key"]
+        sentence_id = value["sentence_id"]
+    except KeyError:
+        return None
+    if not all(isinstance(item, str) and item for item in (day, stream, segment_key)):
+        return None
+    if not _is_non_negative_int(sentence_id):
+        return None
+    return (day, stream, segment_key, sentence_id)
+
+
+def _prepared_correction_rows_by_key(
+    prepared_plan: dict[str, Any],
+) -> dict[tuple[str, str, str, int], dict[str, Any]] | None:
+    rows_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for segment in _prepared_segments(prepared_plan):
+        corrections = segment.get("corrections")
+        rows_to_append = _list_field(corrections, "rows_to_append")
+        if rows_to_append is None:
+            return None
+        for row in rows_to_append:
+            if not isinstance(row, dict):
+                return None
+            key = get_identify_correction_artifact_signature(
+                row,
+                day=segment.get("day"),
+                stream=segment.get("stream"),
+                segment_key=segment.get("segment_key"),
+            )[:4]
+            if not _valid_provenance_signature(key) or key in rows_by_key:
+                return None
+            rows_by_key[key] = row
+    return rows_by_key
+
+
+def _prepared_label_entries_by_key(
+    prepared_plan: dict[str, Any],
+) -> dict[tuple[str, str, str, int], dict[str, Any]] | None:
+    labels_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for segment in _prepared_segments(prepared_plan):
+        labels = segment.get("labels")
+        if not isinstance(labels, list):
+            return None
+        for label in labels:
+            if not isinstance(label, dict):
+                return None
+            key = get_identify_correction_artifact_signature(
+                label,
+                day=segment.get("day"),
+                stream=segment.get("stream"),
+                segment_key=segment.get("segment_key"),
+            )[:4]
+            if not _valid_provenance_signature(key) or key in labels_by_key:
+                return None
+            labels_by_key[key] = label
+    return labels_by_key
+
+
+def _prepared_segments(prepared_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    segments = prepared_plan.get("segments")
+    if not isinstance(segments, list):
+        return []
+    return [segment for segment in segments if isinstance(segment, dict)]
+
+
+def _valid_provenance_signature(value: tuple[Any, ...]) -> bool:
+    if len(value) != 4:
+        return False
+    day, stream, segment_key, sentence_id = value
+    return (
+        isinstance(day, str)
+        and bool(day)
+        and isinstance(stream, str)
+        and bool(stream)
+        and isinstance(segment_key, str)
+        and bool(segment_key)
+        and _is_non_negative_int(sentence_id)
+    )
+
+
+def _prior_speaker_for_label_entry(label_entry: dict[str, Any] | None) -> object:
+    if not isinstance(label_entry, dict):
+        return _INVALID_PRIOR_SPEAKER
+    prior_state = label_entry.get("prior_state")
+    if prior_state == "absent":
+        return None
+    if prior_state == "present":
+        prior_label = label_entry.get("prior_label")
+        if not isinstance(prior_label, dict) or "speaker" not in prior_label:
+            return _INVALID_PRIOR_SPEAKER
+        speaker = prior_label.get("speaker")
+        if speaker is not None and not isinstance(speaker, str):
+            return _INVALID_PRIOR_SPEAKER
+        return speaker
+    return _INVALID_PRIOR_SPEAKER
 
 
 def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
@@ -407,6 +898,9 @@ def _fold_events(events: list[dict[str, Any]]) -> OperationState:
     entity_type = (
         str(request.get("entity_type")) if request.get("entity_type") else None
     )
+    undo_committed_events = [
+        event for event in deduped if event["event_kind"] == "undo_committed"
+    ]
     return OperationState(
         operation_id=prepared["operation_id"],
         request_id=prepared["request_id"],
@@ -426,6 +920,8 @@ def _fold_events(events: list[dict[str, Any]]) -> OperationState:
         terminal_status=terminal,
         result=_last_payload(deduped, "committed", "result"),
         undo_report=_last_payload(deduped, "undo_committed", "undo_report"),
+        undo_started_at=_last_str_payload(deduped, "undo_prepared", "undo_started_at"),
+        undo_committed_count=len(undo_committed_events),
         phase_checkpoints=phase_checkpoints,
         prepared_plan=plan,
         repair_required=_last_event(deduped, "repair_required"),
@@ -506,6 +1002,16 @@ def _last_payload(
         return None
     payload = event.get(field)
     return payload if isinstance(payload, dict) else None
+
+
+def _last_str_payload(
+    events: list[dict[str, Any]], kind: str, field: str
+) -> str | None:
+    event = _last_event(events, kind)
+    if event is None:
+        return None
+    payload = event.get(field)
+    return payload if isinstance(payload, str) and payload else None
 
 
 def _member_tuple(member: dict[str, Any]) -> tuple[str, str, str, str, int]:

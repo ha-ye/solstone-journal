@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -138,6 +140,41 @@ def _load_corrections_count(journal: Path, day: str, segment_key: str) -> int:
     if not path.exists():
         return 0
     return len(json.loads(path.read_text(encoding="utf-8")).get("corrections", []))
+
+
+def _corrections_path(journal: Path, day: str, segment_key: str) -> Path:
+    return journal / day / "test" / segment_key / "talents" / "speaker_corrections.json"
+
+
+def _speaker_corrections_for_segment(
+    journal: Path,
+    day: str,
+    segment_key: str,
+) -> list[dict]:
+    path = _corrections_path(journal, day, segment_key)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8")).get("corrections", [])
+
+
+def _identify_ledger_lines_for_operation(
+    journal: Path,
+    operation_id: str,
+) -> list[bytes]:
+    path = journal / "speakers" / "identify-operations.jsonl"
+    lines = []
+    for line in path.read_bytes().splitlines():
+        row = json.loads(line)
+        if row.get("operation_id") == operation_id:
+            lines.append(line)
+    return lines
+
+
+def _canonical_row_bytes(rows: list[dict]) -> list[bytes]:
+    return [
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        for row in rows
+    ]
 
 
 def _write_discovery_cache(env, cluster_id: int, records: list[dict]) -> None:
@@ -1578,6 +1615,424 @@ def test_identify_undo_restores_checkpoint_actuals_and_deletes_created_entity(
     second = undo_identify_operation(operation_id)
     assert second["status"] == "already_undone"
     assert _domain_tree_hash(env.journal) == before
+
+
+def test_identify_recreate_after_full_undo_ignores_restored_prior_artifacts(
+    speakers_env,
+):
+    from solstone.think.indexer.edges import rebuild_edges
+    from solstone.think.speaker_identify_operations import (
+        fold_operation,
+        is_fully_restored_identify_operation,
+    )
+
+    env = speakers_env()
+    _create_identify_cluster(env, 68, "133000_300")
+
+    first = identify_cluster(
+        68,
+        name="Yara Undo",
+        create_new=True,
+        request_id="undo-cycle-a",
+    )
+    rebuild_edges(str(env.journal))
+    first_undo = undo_identify_operation(first["operation_id"])
+    assert first_undo["status"] == "undone"
+    assert not (env.journal / "entities" / "yara_undo").exists()
+
+    first_state = fold_operation(first["operation_id"])
+    first_ledger_lines = _identify_ledger_lines_for_operation(
+        env.journal,
+        first["operation_id"],
+    )
+    first_corrections = _speaker_corrections_for_segment(
+        env.journal,
+        "20240101",
+        "133000_300",
+    )
+    first_correction_rows = _canonical_row_bytes(first_corrections)
+    assert first_state is not None
+    assert is_fully_restored_identify_operation(first_state)
+
+    second = identify_cluster(
+        68,
+        name="Yara Undo",
+        create_new=True,
+        request_id="undo-cycle-b",
+    )
+    rebuild_edges(str(env.journal))
+
+    assert second["operation_id"] != first["operation_id"]
+    second_state_before_undo = fold_operation(second["operation_id"])
+    assert second_state_before_undo is not None
+    assert second_state_before_undo.request_id != first_state.request_id
+    assert second["entity_id"] == "yara_undo"
+
+    second_undo = undo_identify_operation(second["operation_id"])
+    assert second_undo["status"] == "undone"
+    assert not (env.journal / "entities" / "yara_undo").exists()
+
+    second_state = fold_operation(second["operation_id"])
+    assert second_state is not None
+    assert is_fully_restored_identify_operation(second_state)
+    pair_keys = second_state.phase_checkpoints["keep_separate"]["pair_keys"]
+    assert second_undo["undo_report"]["entity"][
+        "keep_separate_sources_removed_count"
+    ] == len(pair_keys)
+
+    assert (
+        _identify_ledger_lines_for_operation(env.journal, first["operation_id"])
+        == first_ledger_lines
+    )
+    final_corrections = _speaker_corrections_for_segment(
+        env.journal,
+        "20240101",
+        "133000_300",
+    )
+    assert _canonical_row_bytes(final_corrections[: len(first_corrections)]) == (
+        first_correction_rows
+    )
+    appended_after_cycle_one = final_corrections[len(first_corrections) :]
+    assert {row.get("operation_id") for row in appended_after_cycle_one} <= {
+        second["operation_id"]
+    }
+
+
+def test_fully_restored_identify_operation_rejects_adversarial_evidence(
+    speakers_env,
+):
+    from solstone.think.indexer.edges import rebuild_edges
+    from solstone.think.speaker_identify_operations import (
+        fold_operation,
+        is_fully_restored_identify_operation,
+    )
+
+    env = speakers_env()
+    _create_identify_cluster(env, 69, "133500_300")
+    result = identify_cluster(
+        69,
+        name="Matrix Undo",
+        create_new=True,
+        request_id="undo-matrix",
+    )
+    rebuild_edges(str(env.journal))
+    undo_identify_operation(result["operation_id"])
+
+    base = fold_operation(result["operation_id"])
+    assert base is not None
+    assert is_fully_restored_identify_operation(base)
+
+    def cloned():
+        return copy.deepcopy(base)
+
+    def sync_category(state, category, key, value):
+        state.undo_report["undo_report"][category][key] = value
+        state.undo_phase_checkpoints[category][category][key] = value
+
+    committed_only = replace(cloned(), terminal_status="committed")
+    assert not is_fully_restored_identify_operation(committed_only)
+
+    partial_skipped = cloned()
+    sync_category(partial_skipped, "labels", "skipped_count", 1)
+    sync_category(partial_skipped, "labels", "skipped_reasons", {"missing_label": 1})
+    assert not is_fully_restored_identify_operation(partial_skipped)
+
+    undo_repair = replace(cloned(), undo_repair_required={"repair_categories": {}})
+    assert not is_fully_restored_identify_operation(undo_repair)
+
+    missing_category = cloned()
+    missing_category.undo_report["undo_report"].pop("voiceprints")
+    assert not is_fully_restored_identify_operation(missing_category)
+
+    wrong_outer_operation = cloned()
+    wrong_outer_operation.undo_report["operation_id"] = "other-operation"
+    assert not is_fully_restored_identify_operation(wrong_outer_operation)
+
+    wrong_outer_status = cloned()
+    wrong_outer_status.undo_report["status"] = "partial"
+    assert not is_fully_restored_identify_operation(wrong_outer_status)
+
+    bool_count = cloned()
+    sync_category(bool_count, "labels", "restored_count", True)
+    assert not is_fully_restored_identify_operation(bool_count)
+
+    negative_count = cloned()
+    sync_category(negative_count, "labels", "restored_count", -1)
+    assert not is_fully_restored_identify_operation(negative_count)
+
+    restored_shortfall = cloned()
+    sync_category(restored_shortfall, "corrections", "restored_count", 0)
+    assert not is_fully_restored_identify_operation(restored_shortfall)
+
+    checkpoint_disagreement = cloned()
+    checkpoint_disagreement.undo_report["undo_report"]["labels"]["restored_count"] += 1
+    assert not is_fully_restored_identify_operation(checkpoint_disagreement)
+
+    entity_not_deleted = cloned()
+    sync_category(entity_not_deleted, "entity", "deleted", False)
+    assert not is_fully_restored_identify_operation(entity_not_deleted)
+
+
+@pytest.mark.parametrize(
+    "row_case",
+    [
+        "missing_operation_id",
+        "unknown_operation_id",
+        "non_restored_operation_id",
+        "borrowed_duplicate_artifact",
+        "artifact_mismatched_operation_id",
+    ],
+)
+def test_created_entity_delete_blocks_non_artifact_correction_rows(
+    speakers_env,
+    row_case,
+):
+    from solstone.think.indexer.edges import rebuild_edges
+
+    env = speakers_env()
+    _create_identify_cluster(env, 70, "134000_300")
+    _create_identify_cluster(env, 71, "134500_300")
+
+    first = identify_cluster(
+        70,
+        name="Yara Undo",
+        create_new=True,
+        request_id=f"{row_case}-first",
+    )
+    rebuild_edges(str(env.journal))
+    assert undo_identify_operation(first["operation_id"])["status"] == "undone"
+    first_corrections = _speaker_corrections_for_segment(
+        env.journal,
+        "20240101",
+        "134000_300",
+    )
+
+    second = identify_cluster(
+        70,
+        name="Yara Undo",
+        create_new=True,
+        request_id=f"{row_case}-second",
+    )
+    env.create_entity("Other Live")
+    live = identify_cluster(
+        71,
+        name="Other Live",
+        request_id=f"{row_case}-live",
+    )
+
+    row = {
+        "sentence_id": 1,
+        "original_speaker": None,
+        "corrected_speaker": "yara_undo",
+        "original_method": None,
+        "timestamp": 1700000000000,
+        "correction_kind": "identify",
+    }
+    if row_case == "missing_operation_id":
+        pass
+    elif row_case == "unknown_operation_id":
+        row["operation_id"] = "idop_unknown"
+    elif row_case == "non_restored_operation_id":
+        row["operation_id"] = live["operation_id"]
+    elif row_case == "borrowed_duplicate_artifact":
+        row = copy.deepcopy(first_corrections[0])
+    elif row_case == "artifact_mismatched_operation_id":
+        row = copy.deepcopy(first_corrections[0])
+        row["original_method"] = "borrowed"
+    else:
+        raise AssertionError(row_case)
+
+    corrections_path = _corrections_path(env.journal, "20240101", "134000_300")
+    payload = json.loads(corrections_path.read_text(encoding="utf-8"))
+    payload["corrections"].append(row)
+    corrections_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    rebuild_edges(str(env.journal))
+    undo = undo_identify_operation(second["operation_id"])
+
+    assert undo["status"] == "undone"
+    assert (env.journal / "entities" / "yara_undo").exists()
+    entity_report = undo["undo_report"]["entity"]
+    assert entity_report["deleted"] is False
+    assert entity_report["blocked_categories"] == ["segment_correction"]
+    assert entity_report["skipped_reasons"] == {"segment_correction": 1}
+
+
+def test_identify_delete_and_attribution_transaction_interleavings(
+    speakers_env,
+    monkeypatch,
+):
+    import threading
+
+    from flask import Flask
+
+    from solstone.apps.speakers import routes as speaker_routes
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.entities import journal as entity_journal
+    from solstone.think.indexer.edges import rebuild_edges
+
+    env = speakers_env()
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    def setup_scenario(
+        cluster_id,
+        identify_segment,
+        assign_segment,
+        name,
+        request_id,
+        reviewed_near_match_entity_ids=None,
+    ):
+        _create_identify_cluster(env, cluster_id, identify_segment)
+        result = identify_cluster(
+            cluster_id,
+            name=name,
+            create_new=True,
+            request_id=request_id,
+            reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+        )
+        assert result["status"] == "identified", result
+        env.create_segment("20240101", assign_segment, ["audio"])
+        env.create_speaker_labels("20240101", assign_segment, [])
+        rebuild_edges(str(env.journal))
+        return result
+
+    def post_assign(assign_segment, speaker):
+        with app.test_client() as client:
+            response = client.post(
+                "/app/speakers/api/assign-attribution",
+                json={
+                    "day": "20240101",
+                    "stream": "test",
+                    "segment_key": assign_segment,
+                    "source": "audio",
+                    "sentence_id": 1,
+                    "speaker": speaker,
+                },
+            )
+        return response.status_code, response.get_json()
+
+    attribution_first = setup_scenario(
+        72,
+        "135000_300",
+        "135500_300",
+        "Pavo Atrium",
+        "race-attribution-first",
+    )
+    save_entered = threading.Event()
+    release_save = threading.Event()
+    original_save_voiceprint = speaker_routes._save_voiceprint
+
+    def gated_save_voiceprint(*args, **kwargs):
+        save_entered.set()
+        assert release_save.wait(timeout=5)
+        return original_save_voiceprint(*args, **kwargs)
+
+    monkeypatch.setattr(speaker_routes, "_save_voiceprint", gated_save_voiceprint)
+    attribution_result = {}
+    deletion_result = {}
+    errors: list[BaseException] = []
+
+    def run_attribution_first_assign():
+        try:
+            attribution_result["assign"] = post_assign(
+                "135500_300",
+                "pavo_atrium",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_attribution_first_delete():
+        try:
+            deletion_result["undo"] = undo_identify_operation(
+                attribution_first["operation_id"]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    assign_thread = threading.Thread(target=run_attribution_first_assign)
+    assign_thread.start()
+    assert save_entered.wait(timeout=5)
+    delete_thread = threading.Thread(target=run_attribution_first_delete)
+    delete_thread.start()
+    release_save.set()
+    assign_thread.join(timeout=10)
+    delete_thread.join(timeout=10)
+    assert not assign_thread.is_alive()
+    assert not delete_thread.is_alive()
+    assert not errors
+    assert attribution_result["assign"][0] == 200
+    assert deletion_result["undo"]["undo_report"]["entity"]["deleted"] is False
+    assert set(
+        deletion_result["undo"]["undo_report"]["entity"]["blocked_categories"]
+    ) >= {"segment_label", "segment_correction", "unrecognized_file"}
+
+    monkeypatch.setattr(speaker_routes, "_save_voiceprint", original_save_voiceprint)
+    deletion_first = setup_scenario(
+        73,
+        "140000_300",
+        "140500_300",
+        "Qxv Delete",
+        "race-deletion-first",
+        reviewed_near_match_entity_ids=["pavo_atrium"],
+    )
+    original_scan = entity_journal._scan_entity_reference_surfaces
+    scan_reached = threading.Event()
+    release_delete = threading.Event()
+
+    def paused_scan(*args, **kwargs):
+        original_scan(*args, **kwargs)
+        scan_reached.set()
+        assert release_delete.wait(timeout=5)
+
+    monkeypatch.setattr(entity_journal, "_scan_entity_reference_surfaces", paused_scan)
+    deletion_first_result = {}
+    deletion_first_assign = {}
+    assign_started = threading.Event()
+    errors = []
+
+    def run_deletion_first_delete():
+        try:
+            deletion_first_result["undo"] = undo_identify_operation(
+                deletion_first["operation_id"]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_deletion_first_assign():
+        try:
+            assign_started.set()
+            deletion_first_assign["started"] = True
+            deletion_first_assign["assign"] = post_assign(
+                "140500_300",
+                "qxv_delete",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    delete_thread = threading.Thread(target=run_deletion_first_delete)
+    delete_thread.start()
+    assert scan_reached.wait(timeout=5), {
+        "errors": [repr(error) for error in errors],
+        "result": deletion_first_result,
+        "alive": delete_thread.is_alive(),
+    }
+    assign_thread = threading.Thread(target=run_deletion_first_assign)
+    assign_thread.start()
+    assert assign_started.wait(timeout=5)
+    release_delete.set()
+    delete_thread.join(timeout=10)
+    assign_thread.join(timeout=10)
+    assert not delete_thread.is_alive()
+    assert not assign_thread.is_alive()
+    assert not errors
+    assert deletion_first_result["undo"]["undo_report"]["entity"]["deleted"] is True
+    assert deletion_first_assign["assign"][0] == 404
+    assert deletion_first_assign["assign"][1]["reason_code"] == "speaker_not_found"
+    assert not (env.journal / "entities" / "qxv_delete").exists()
+    assert not (env.journal / "entities" / "qxv_delete" / "voiceprints.npz").exists()
+    assert _speaker_labels_for_segment(env.journal, "20240101", "140500_300") == []
+    assert _load_corrections_count(env.journal, "20240101", "140500_300") == 0
 
 
 def test_identify_retro_manifest_removed_on_undo(speakers_env):

@@ -12,7 +12,7 @@ Facet-specific data (description, timestamps) is stored in facet relationships.
 
 import json
 import shutil
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -468,12 +468,31 @@ def _scan_entity_reference_surfaces(
     blocked: dict[str, int],
 ) -> None:
     root = Path(get_journal())
+    try:
+        from solstone.think.speaker_identify_operations import fold_all_operations
+
+        identify_states = fold_all_operations()
+    except Exception:
+        blocked["unreadable"] += 1
+        identify_states = None
     _scan_facet_relationship_refs(root, entity_id, blocked)
     _scan_observation_refs(root, entity_id, blocked)
     _scan_activity_refs(root, entity_id, blocked)
-    _scan_segment_speaker_refs(root, entity_id, operation_id, blocked)
+    _scan_segment_speaker_refs(
+        root,
+        entity_id,
+        operation_id,
+        blocked,
+        identify_states=identify_states,
+    )
     _scan_aka_crossrefs(root, entity_id, blocked)
-    _scan_edge_refs(root, entity_id, operation_id, blocked)
+    _scan_edge_refs(
+        root,
+        entity_id,
+        operation_id,
+        blocked,
+        identify_states=identify_states,
+    )
     _scan_jsonl_refs(
         root / "entities" / "ambiguities.jsonl",
         "ambiguity",
@@ -515,7 +534,12 @@ def _scan_entity_reference_surfaces(
         blocked,
         predicate=lambda row, eid: _json_value_present(row, eid),
     )
-    _scan_identify_operation_refs(entity_id, operation_id, blocked)
+    _scan_identify_operation_refs(
+        entity_id,
+        operation_id,
+        blocked,
+        identify_states=identify_states,
+    )
 
 
 def _scan_facet_relationship_refs(
@@ -576,7 +600,20 @@ def _scan_segment_speaker_refs(
     entity_id: str,
     operation_id: str,
     blocked: dict[str, int],
+    *,
+    identify_states: list[Any] | None,
 ) -> None:
+    artifact_helpers = None
+    if identify_states is not None:
+        from solstone.think.speaker_identify_operations import (
+            get_expected_restored_correction_artifact_signatures,
+            get_identify_correction_artifact_signature,
+        )
+
+        artifact_helpers = (
+            get_expected_restored_correction_artifact_signatures,
+            get_identify_correction_artifact_signature,
+        )
     chronicle = root / "chronicle"
     for labels_path in sorted(chronicle.glob("*/*/*/talents/speaker_labels.json")):
         data = _read_json_object(labels_path, blocked)
@@ -594,16 +631,47 @@ def _scan_segment_speaker_refs(
         corrections = data.get("corrections", [])
         if not isinstance(corrections, list):
             continue
+        day = corr_path.parents[3].name
+        stream = corr_path.parents[2].name
+        segment_key = corr_path.parents[1].name
+        expected_artifacts: Counter[tuple[Any, ...]] = Counter()
+        if identify_states is not None and artifact_helpers is not None:
+            expected_for_state, _row_signature = artifact_helpers
+            for state in identify_states:
+                if state.operation_id == operation_id:
+                    continue
+                expected_artifacts.update(
+                    expected_for_state(
+                        state,
+                        day=day,
+                        stream=stream,
+                        segment_key=segment_key,
+                    )
+                )
         for row in corrections:
             if not isinstance(row, dict):
                 continue
             if row.get("operation_id") == operation_id:
                 continue
-            if (
+            if not (
                 row.get("original_speaker") == entity_id
                 or row.get("corrected_speaker") == entity_id
             ):
+                continue
+            if identify_states is None or artifact_helpers is None:
                 blocked["segment_correction"] += 1
+                continue
+            _expected_for_state, row_signature = artifact_helpers
+            signature = row_signature(
+                row,
+                day=day,
+                stream=stream,
+                segment_key=segment_key,
+            )
+            if expected_artifacts[signature] > 0:
+                expected_artifacts[signature] -= 1
+                continue
+            blocked["segment_correction"] += 1
 
 
 def _scan_aka_crossrefs(root: Path, entity_id: str, blocked: dict[str, int]) -> None:
@@ -623,6 +691,8 @@ def _scan_edge_refs(
     entity_id: str,
     operation_id: str,
     blocked: dict[str, int],
+    *,
+    identify_states: list[Any] | None,
 ) -> None:
     db_path = root / "indexer" / "journal.sqlite"
     if not db_path.is_file():
@@ -633,7 +703,10 @@ def _scan_edge_refs(
 
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
-            own_label_paths = _operation_speaker_label_edge_paths(operation_id)
+            own_label_paths = _operation_speaker_label_edge_paths(
+                operation_id,
+                identify_states=identify_states,
+            )
             rows = conn.execute(
                 "SELECT DISTINCT path FROM edges WHERE src = ? OR dst = ?",
                 (entity_id, entity_id),
@@ -651,13 +724,21 @@ def _scan_edge_refs(
     _scan_edge_source_files(root, entity_id, blocked)
 
 
-def _operation_speaker_label_edge_paths(operation_id: str) -> set[str]:
-    try:
-        from solstone.think.speaker_identify_operations import fold_operation
-
-        state = fold_operation(operation_id)
-    except Exception:
+def _operation_speaker_label_edge_paths(
+    operation_id: str,
+    *,
+    identify_states: list[Any] | None,
+) -> set[str]:
+    if identify_states is None:
         return set()
+    state = next(
+        (
+            candidate
+            for candidate in identify_states
+            if candidate.operation_id == operation_id
+        ),
+        None,
+    )
     if state is None:
         return set()
     checkpoint = state.phase_checkpoints.get("labels") or {}
@@ -738,16 +819,19 @@ def _scan_identify_operation_refs(
     entity_id: str,
     operation_id: str,
     blocked: dict[str, int],
+    *,
+    identify_states: list[Any] | None,
 ) -> None:
-    try:
-        from solstone.think.speaker_identify_operations import fold_all_operations
-
-        states = fold_all_operations()
-    except Exception:
-        blocked["unreadable"] += 1
+    if identify_states is None:
         return
-    for state in states:
+    from solstone.think.speaker_identify_operations import (
+        is_fully_restored_identify_operation,
+    )
+
+    for state in identify_states:
         if state.operation_id == operation_id:
+            continue
+        if is_fully_restored_identify_operation(state):
             continue
         if state.target_entity_id == entity_id:
             blocked["identify_operation"] += 1

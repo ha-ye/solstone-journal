@@ -2789,6 +2789,85 @@ def test_api_confirm_attribution_labels_busy(speakers_env, monkeypatch):
     assert resp.get_json()["reason_code"] == "speaker_labels_busy"
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/app/speakers/api/assign-attribution",
+            {
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "speaker": "alice_test",
+            },
+        ),
+        (
+            "/app/speakers/api/confirm-attribution",
+            {
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+            },
+        ),
+        (
+            "/app/speakers/api/correct-attribution",
+            {
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "new_speaker": "bob_test",
+            },
+        ),
+    ],
+)
+def test_attribution_outer_trust_lock_timeout_maps_to_labels_busy(
+    speakers_env,
+    monkeypatch,
+    path,
+    payload,
+):
+    from pathlib import Path
+
+    from flask import Flask
+
+    from solstone.apps.speakers import routes as speaker_routes
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.journal_io.errors import LockTimeout
+
+    speakers_env()
+
+    class BusyTrustLock:
+        def __enter__(self):
+            raise LockTimeout(Path("entity-trust.lock"), 0.0)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def busy_trust_operation_lock():
+        return BusyTrustLock()
+
+    monkeypatch.setattr(
+        speaker_routes,
+        "trust_operation_lock",
+        busy_trust_operation_lock,
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.post(path, json=payload)
+
+    assert resp.status_code == 503
+    assert resp.get_json()["reason_code"] == "speaker_labels_busy"
+
+
 def test_api_confirm_idempotent(speakers_env):
     """Confirming an already-confirmed attribution is a no-op success."""
     from flask import Flask
@@ -3216,7 +3295,8 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
         assert offer["available"] is True
         assert offer["statement_count"] == 1
         assert offer["segment_count"] == 1
-        assert not trust_lock.exists()
+        assert trust_lock.exists()
+        trust_lock_after_correction = trust_lock.read_bytes()
 
         other_after_correction = json.loads(other_labels_path.read_text())
         assert other_after_correction["labels"][0]["speaker"] == "alice_test"
@@ -3242,7 +3322,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
             "new_speaker": "alice_test",
             "bounded_to": "segments where these two appear",
         }
-        assert not trust_lock.exists()
+        assert trust_lock.read_bytes() == trust_lock_after_correction
         assert other_labels_path.read_bytes() == other_before_preview
         assert not other_corrections_path.exists()
 
@@ -3259,6 +3339,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
         assert committed_body["status"] == "applied"
         assert committed_body["statement_count"] == 1
         assert committed_body["segment_count"] == 1
+        assert trust_lock.read_bytes() == trust_lock_after_correction
 
         propagated = json.loads(other_labels_path.read_text())
         propagated_label = propagated["labels"][0]
@@ -3296,6 +3377,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
         assert other_labels_path.read_bytes() == other_after_commit
         assert user_labels_path.read_bytes() == user_after_commit
         assert bob_voiceprints.read_bytes() == bob_after_commit
+        assert trust_lock.read_bytes() == trust_lock_after_correction
         assert not other_corrections_path.exists()
         assert not user_corrections_path.exists()
 
