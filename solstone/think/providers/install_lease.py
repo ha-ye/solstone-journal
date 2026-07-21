@@ -124,9 +124,11 @@ def probe_install_lease_state(
     """
     validated = _validate_provider(provider)
     path = lease_path(validated, journal_path=journal_path)
-    fd: int | None = None
     try:
         fd = os.open(path, os.O_RDONLY)
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -135,11 +137,8 @@ def probe_install_lease_state(
             raise
         fcntl.flock(fd, fcntl.LOCK_UN)
         return "free"
-    except (FileNotFoundError, NotADirectoryError):
-        return "missing"
     finally:
-        if fd is not None:
-            os.close(fd)
+        os.close(fd)
 
 
 def probe_install_lease_free(
