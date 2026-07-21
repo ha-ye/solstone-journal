@@ -13,6 +13,7 @@ This module contains:
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Callable, Literal, Mapping, Optional, Union
 
 from typing_extensions import Required, TypedDict
@@ -439,6 +440,8 @@ def _coerce_token_count(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     count = int(value)
     if count < 0:

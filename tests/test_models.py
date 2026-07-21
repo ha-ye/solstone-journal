@@ -1467,6 +1467,30 @@ class TestGenerateJsonSchemaPlumbing:
         )
         mock_validate_schema.assert_not_called()
 
+    def test_strict_validation_omits_non_finite_token_counts(self):
+        result = {
+            "text": "   ",
+            "model": "provider-model",
+            "finish_reason": "stop",
+            "usage": {
+                "input_tokens": float("nan"),
+                "output_tokens": float("inf"),
+                "reasoning_tokens": 3,
+                "total_tokens": 14,
+            },
+        }
+
+        with pytest.raises(ProviderResponseInvalidError) as exc_info:
+            models_module.validate_generate_result_strict(result, json_output=False)
+
+        exc = exc_info.value
+        assert exc.reason == "blank_visible_output"
+        assert exc.model == "provider-model"
+        assert exc.token_counts == {
+            "reasoning_tokens": 3,
+            "total_tokens": 14,
+        }
+
     def test_missing_text_and_missing_finish_are_typed_provider_invalid(self):
         provider_module = SimpleNamespace(
             run_generate=MagicMock(return_value={"finish_reason": None})

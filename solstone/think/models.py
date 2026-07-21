@@ -202,7 +202,7 @@ class IncompleteTextError(ValueError):
 
 
 class ProviderResponseInvalidError(ValueError):
-    """Raised when a provider reports a non-success finish for plain text."""
+    """Raised when a provider response is unusable or malformed."""
 
     reason_code = "provider_response_invalid"
 
