@@ -382,7 +382,7 @@ def register_defaults() -> None:
     need_heartbeat = "heartbeat" not in _entries
     need_weekly = "weekly-agents" not in _entries
     need_cadence = "cadence" not in _entries
-    need_providers = "providers" not in _entries
+    need_brain = "brain" not in _entries
     need_facet_candidates = "facet-candidates" not in _entries
     need_rebuild_edges = "rebuild-edges" not in _entries
 
@@ -390,7 +390,7 @@ def register_defaults() -> None:
         not need_heartbeat
         and not need_weekly
         and not need_cadence
-        and not need_providers
+        and not need_brain
         and not need_facet_candidates
         and not need_rebuild_edges
     ):
@@ -423,9 +423,9 @@ def register_defaults() -> None:
             "max_runtime": "10m",
         }
 
-    if need_providers and "providers" not in raw:
-        additions["providers"] = {
-            "cmd": ["journal", "providers", "check"],
+    if need_brain and "brain" not in raw:
+        additions["brain"] = {
+            "cmd": ["journal", "brain", "refresh"],
             "every": "daily",
             "enabled": True,
             "max_runtime": "5m",

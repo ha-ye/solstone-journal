@@ -26,11 +26,13 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from solstone.think.callosum import CallosumConnection
 from solstone.think.models import calc_agent_cost
+from solstone.think.providers.brain_state import inspect_brain_state
 from solstone.think.runner import _atomic_symlink
 from solstone.think.talent import get_output_path
 from solstone.think.talents import TALENT_EXECUTION_MODULE
@@ -241,10 +243,11 @@ class CortexService:
         try:
             self.callosum.start(callback=self._handle_callosum_message)
             self.logger.info("Connected to Callosum message bus")
-            self.callosum.emit(
-                "supervisor", "request", cmd=["journal", "providers", "check"]
-            )
-            self.logger.info("Requested providers health check via supervisor")
+            if self._should_request_brain_refresh():
+                self.callosum.emit(
+                    "supervisor", "request", cmd=["journal", "brain", "refresh"]
+                )
+                self.logger.info("Requested brain health refresh via supervisor")
         except Exception as e:
             self.logger.error(f"Failed to connect to Callosum: {e}")
             sys.exit(1)
@@ -255,6 +258,16 @@ class CortexService:
             name="cortex-status",
             daemon=True,
         ).start()
+
+    def _should_request_brain_refresh(self) -> bool:
+        try:
+            inspection = inspect_brain_state(datetime.now(timezone.utc))
+        except Exception:
+            return True
+        projection = inspection["projection"]
+        if projection["aggregate_state"] in {"checking", "ready"}:
+            return False
+        return not projection["runtime_transition_in_progress"]
         self._spawn_worker = threading.Thread(
             target=self._run_spawn_worker,
             name="cortex-spawn-worker",
