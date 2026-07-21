@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import get_args
 
@@ -20,7 +22,11 @@ from solstone.convey import provider_readiness
 from solstone.think.brain_health import HEADLINES
 from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
 from solstone.think.providers.artifact_proof import ReadinessOutcome
-from solstone.think.providers.brain_state import BRAIN_REASON_CODES
+from solstone.think.providers.brain_state import (
+    BRAIN_REASON_CODES,
+    begin_brain_refresh,
+    finish_brain_refresh,
+)
 from solstone.think.providers.install_state import InstallState
 
 INSTALL_STATUS_FIELDS = {
@@ -64,6 +70,70 @@ def _write_config(journal_path, config: dict) -> None:
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
+    )
+
+
+def _spp_configured_provider_config() -> dict:
+    credential = "credential-secret"
+    endpoint_url = "https://spp.example.test/v1"
+    served_model_id = "confidential-model"
+    return {
+        "providers": {
+            "active": {"provider": "local", "model": LOCAL_MODEL},
+            "local": {
+                "endpoint_url": endpoint_url,
+                "served_model_id": served_model_id,
+                "credential": credential,
+            },
+        },
+        "services": {
+            "confidential": {
+                "enabled_at": "2026-05-24T00:00:00Z",
+                "account_id": "acct-secret",
+                "endpoint_url": endpoint_url,
+                "served_model_id": served_model_id,
+                "credential_created_at": "2026-05-24T00:00:00Z",
+                "credential_fingerprint_sha256": hashlib.sha256(
+                    credential.encode("utf-8")
+                ).hexdigest(),
+                "prior_active": {"provider": "google", "model": "gemini-3.5-flash"},
+                "prior_local_endpoint": None,
+            },
+        },
+    }
+
+
+def _write_ready_spp_brain_record(journal_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    permit = begin_brain_refresh(now, journal_path=journal_path)
+    assert permit is not None
+    component = {
+        "status": "ok",
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+    }
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": component,
+            "lane_prerequisites": component,
+            "generate": component,
+            "cogitate": component,
+        },
+        now,
+        journal_path=journal_path,
+    )
+
+
+def _journal_tree_snapshot(journal_path: Path) -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        (
+            path.relative_to(journal_path).as_posix(),
+            path.stat().st_mtime_ns,
+            path.stat().st_size,
+        )
+        for path in sorted(journal_path.rglob("*"))
+        if path.is_file()
     )
 
 
@@ -1271,27 +1341,15 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
 
 
 def test_get_providers_uses_canonical_spp_local_status_without_probe(
-    settings_client,
+    settings_client_with_journal,
     monkeypatch,
 ):
-    spp_readiness = {
-        "generate_ready": True,
-        "cogitate_ready": False,
-        "issues": ["cogitate_terminal_error"],
-    }
-    monkeypatch.setattr(
-        routes,
-        "build_brain_presentation",
-        lambda *_args, **_kwargs: _presentation(
-            spp_active=True,
-            spp_readiness=spp_readiness,
-            confidential_attestation={
-                "state": "verified",
-                "reason": None,
-                "observed_at": "2026-04-10T12:00:00Z",
-            },
-        ),
-    )
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(_spp_configured_provider_config())
+    _write_config(journal_path, config)
+    _write_ready_spp_brain_record(journal_path)
 
     def fail(*_args, **_kwargs):
         raise AssertionError("process-local readiness path called")
@@ -1306,21 +1364,28 @@ def test_get_providers_uses_canonical_spp_local_status_without_probe(
         "solstone.think.services.spp_transport.recheck_confidential_attestation",
         fail,
     )
+    monkeypatch.setattr("httpx.get", fail)
 
-    providers_response = settings_client.get("/app/thinking/api/providers")
-    local_response = settings_client.get("/app/thinking/api/providers/local/status")
+    before = _journal_tree_snapshot(journal_path)
+
+    providers_response = client.get("/app/thinking/api/providers")
+    local_response = client.get("/app/thinking/api/providers/local/status")
 
     assert providers_response.status_code == 200
     assert local_response.status_code == 200
+    payload = providers_response.get_json()
     expected = {
         "configured": True,
         "selected": True,
         "generate_ready": True,
-        "cogitate_ready": False,
-        "issues": ["cogitate_terminal_error"],
+        "cogitate_ready": True,
+        "issues": [],
     }
-    assert providers_response.get_json()["provider_status"]["local"] == expected
+    assert payload["brain"]["state"] == "ready"
+    assert payload["provider_status"]["local"] == expected
+    assert payload["active_lane"]["confidential_attestation"]["state"] == "verified"
     assert local_response.get_json() == expected
+    assert _journal_tree_snapshot(journal_path) == before
 
 
 def test_get_providers_brain_shape(settings_client, monkeypatch):

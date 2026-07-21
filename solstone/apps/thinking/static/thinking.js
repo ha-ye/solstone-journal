@@ -404,6 +404,9 @@
   function confidentialGlanceForAttestation(attestation, text, checkedLabel = '') {
     const glance = text?.glance || {};
     const stateName = attestation?.state || 'off';
+    if (stateName === 'off') {
+      return {label: '', value: '', detail: ''};
+    }
     if (stateName === 'verified') {
       const row = glance.confidential_verified || {};
       return {

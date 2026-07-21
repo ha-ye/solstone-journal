@@ -537,11 +537,6 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
     }
 
 
-def _default_provider_payload() -> dict[str, Any]:
-    local_model_id = local_bootstrap.accepted_request_model(None) or LOCAL_MODEL
-    return _provider_payload(get_journal_config(), local_model_id)
-
-
 def _local_model_error(model: str) -> Any:
     return error_response(
         INVALID_REQUEST_VALUE,
