@@ -108,6 +108,7 @@
     "openai": false
   },
   "byo_models": {},
+  "configuration_guidance": null,
   "key_validation": {},
   "local": {
     "install_error": null,
@@ -157,19 +158,14 @@
     ],
     "google": [
       {
-        "label": "Gemini Flash Latest",
-        "model": "gemini-flash-latest",
+        "label": "Gemini 3.5 Flash",
+        "model": "gemini-3.5-flash",
         "tier": "mid"
       },
       {
-        "label": "Gemini Flash Lite Latest",
-        "model": "gemini-flash-lite-latest",
+        "label": "Gemini 3.1 Flash Lite",
+        "model": "gemini-3.1-flash-lite",
         "tier": "lite"
-      },
-      {
-        "label": "Gemini Pro Latest",
-        "model": "gemini-pro-latest",
-        "tier": "top"
       }
     ],
     "openai": [

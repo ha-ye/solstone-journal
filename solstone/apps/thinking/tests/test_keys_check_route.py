@@ -174,7 +174,7 @@ def test_keys_same_value_validation_refresh_persists(tmp_path, monkeypatch):
             "setup": {"completed_at": 1700000000000},
             "env": {"GOOGLE_API_KEY": "same-key"},
             "providers": {
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {
                     "google": {
                         "valid": False,

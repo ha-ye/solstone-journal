@@ -27,7 +27,7 @@ def fake_openhands(monkeypatch):
 @pytest.mark.parametrize(
     ("provider", "model"),
     [
-        ("google", "gemini-flash-latest"),
+        ("google", "gemini-3.5-flash"),
         ("anthropic", "claude-sonnet-4-6"),
         ("openai", "gpt-5.5"),
     ],
@@ -59,7 +59,7 @@ def test_build_generate_llm_missing_env_raises_provider_key_missing(
 @pytest.mark.parametrize(
     ("provider", "model"),
     [
-        ("google", "gemini-flash-latest"),
+        ("google", "gemini-3.5-flash"),
         ("anthropic", "claude-sonnet-4-6"),
         ("openai", "gpt-5.5"),
     ],
@@ -88,7 +88,7 @@ def test_build_generate_llm_explicit_key_bypasses_env(
 @pytest.mark.parametrize(
     ("provider", "model"),
     [
-        ("google", "gemini-flash-latest"),
+        ("google", "gemini-3.5-flash"),
         ("anthropic", "claude-sonnet-4-6"),
         ("openai", "gpt-5.5"),
     ],
@@ -149,12 +149,12 @@ def test_generate_google_uses_openhands_chat_and_normalizes_result(monkeypatch):
     monkeypatch.setattr(
         openhands,
         "_build_generate_llm",
-        lambda *args, **kwargs: (llm, "gemini-flash-latest"),
+        lambda *args, **kwargs: (llm, "gemini-3.5-flash"),
     )
 
     result = openhands.run_generate(
         "hello",
-        "gemini-flash-latest",
+        "gemini-3.5-flash",
         provider="google",
         thinking_budget=128,
         json_schema={"title": "Reply", "type": "object"},
@@ -201,10 +201,10 @@ def test_generate_restores_process_logging_after_openhands_import(monkeypatch):
     monkeypatch.setattr(
         openhands,
         "_build_generate_llm",
-        lambda *args, **kwargs: (llm, "gemini-flash-latest"),
+        lambda *args, **kwargs: (llm, "gemini-3.5-flash"),
     )
 
-    openhands.run_generate("hello", "gemini-flash-latest", provider="google")
+    openhands.run_generate("hello", "gemini-3.5-flash", provider="google")
 
     assert restored == [baseline]
     assert openhands.os.environ["OPENHANDS_SUPPRESS_BANNER"] == "1"
@@ -260,7 +260,7 @@ def test_generate_provider_thinking_and_token_budget_mapping(caplog):
     assert openhands._parse_openai_effort("gpt-5.5-xhigh") == ("gpt-5.5", "xhigh")
     google_kwargs = openhands._generate_call_kwargs(
         "google",
-        "gemini-flash-latest",
+        "gemini-3.5-flash",
         temperature=None,
         json_output=False,
         json_schema=None,
@@ -321,7 +321,7 @@ async def test_agenerate_uses_async_openhands_transport(monkeypatch):
 
 
 def test_fake_openhands_completion_raises_on_duplicate_timeout(fake_openhands):
-    llm = fake_openhands.LLM(model="google/gemini-flash-latest", timeout=10)
+    llm = fake_openhands.LLM(model="google/gemini-3.5-flash", timeout=10)
 
     with pytest.raises(
         TypeError,
@@ -333,7 +333,7 @@ def test_fake_openhands_completion_raises_on_duplicate_timeout(fake_openhands):
 @pytest.mark.parametrize(
     ("provider", "model", "transport_attr"),
     [
-        ("google", "gemini-flash-latest", "last_completion_kwargs"),
+        ("google", "gemini-3.5-flash", "last_completion_kwargs"),
         ("anthropic", "claude-sonnet-4-6", "last_completion_kwargs"),
         ("openai", "gpt-5.5", "last_responses_kwargs"),
     ],
@@ -358,7 +358,7 @@ def test_run_generate_transport_kwargs_do_not_shadow_llm_timeout(
 @pytest.mark.parametrize(
     ("provider", "model", "transport_attr"),
     [
-        ("google", "gemini-flash-latest", "last_completion_kwargs"),
+        ("google", "gemini-3.5-flash", "last_completion_kwargs"),
         ("anthropic", "claude-sonnet-4-6", "last_completion_kwargs"),
         ("openai", "gpt-5.5", "last_responses_kwargs"),
     ],
@@ -438,7 +438,7 @@ def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     )
     assert openhands.validate_key("google", "bad")["valid"] is False
     assert (
-        openhands.validate_model("google", "gemini-flash-latest", "bad")["reason_code"]
+        openhands.validate_model("google", "gemini-3.5-flash", "bad")["reason_code"]
         == "provider_key_invalid"
     )
 
@@ -448,7 +448,7 @@ def test_async_entry_point_rejects_transport_specific_options():
         asyncio.run(
             openhands.run_agenerate(
                 "hello",
-                "gemini-flash-latest",
+                "gemini-3.5-flash",
                 provider="google",
                 client=object(),
             )

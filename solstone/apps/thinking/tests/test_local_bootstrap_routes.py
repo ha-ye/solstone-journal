@@ -43,7 +43,7 @@ def _settings_config() -> dict:
     return {
         "setup": {"completed_at": 1700000000000},
         "providers": {
-            "active": {"provider": "google", "model": "gemini-flash-latest"},
+            "active": {"provider": "google", "model": "gemini-3.5-flash"},
             "auth": {"google": "api_key", "openai": "api_key"},
         },
     }

@@ -69,7 +69,7 @@ def _base_config(**updates: Any) -> dict[str, Any]:
         "journal": {"name": "Before"},
         "env": {},
         "providers": {
-            "active": {"provider": "google", "model": "gemini-flash-latest"},
+            "active": {"provider": "google", "model": "gemini-3.5-flash"},
             "key_validation": {},
             "local": {},
         },
@@ -342,7 +342,7 @@ def _spp_disable_trigger(harness: JournalConfigEffectHarness) -> None:
     harness.seed(
         _base_config(
             providers={
-                "active": {"provider": "local", "model": "gemini-flash-latest"},
+                "active": {"provider": "local", "model": "gemini-3.5-flash"},
                 "local": {
                     "endpoint_url": "https://local.example/v1",
                     "served_model_id": "model",
@@ -612,7 +612,7 @@ JOURNAL_CONFIG_TRANSACTION_EFFECTS: tuple[JournalConfigEffectCase, ...] = (
             "/app/thinking/api/local/endpoint",
             config=_base_config(
                 providers={
-                    "active": {"provider": "local", "model": "gemini-flash-latest"},
+                    "active": {"provider": "local", "model": "gemini-3.5-flash"},
                     "local": {
                         "endpoint_url": "https://local.example/v1",
                         "served_model_id": "model",

@@ -243,7 +243,7 @@ def test_disable_confidential_restores_synchronously(
     config = _read_config(journal_copy)
     assert config["providers"]["active"] == {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
     assert config["providers"]["local"] == {}
     assert "confidential" not in config["services"]

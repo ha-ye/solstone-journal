@@ -219,6 +219,7 @@ def _node_render_script(body: str) -> str:
         extract_js_function(source, "setSelectedByoProvider"),
         extract_js_function(source, "selectedByoProvider"),
         extract_js_function(source, "changeByoProvider"),
+        extract_js_function(source, "renderConfigurationGuidance"),
         extract_js_function(source, "renderByoModelPanel"),
         _extract_js_function_exact(source, "renderByo"),
         extract_js_function(source, "bindOpenView"),
@@ -648,6 +649,45 @@ assert(new Set(cards.map((card) => card.children[0].children[0].name)).size === 
 assert(cards.every((card) => card.children[0].children[0].name === 'byoModelChoice'), 'radio input name should match BYO model group');
 assert(collectText(cards[1]).includes(text.tier_tag_current), 'active injected tier should show current tag');
 assert(collectText(cards[2]).includes(text.tier_tag_suggested), 'lite injected tier should show suggested tag');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_model_panel_renders_configuration_guidance() -> None:
+    _run_node(
+        _node_render_script(
+            """
+const state = {
+  selectedByoProvider: 'google',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  providers: {
+    active: {provider: 'google', model: 'gemini-3.5-flash'},
+    configuration_guidance: {
+      id: 'choose_exact_gemini_model',
+      heading: 'choose an exact Gemini model',
+      action: {label: 'choose model', href: '/app/thinking/#byoModelPanel'},
+    },
+    model_tiers: {
+      google: [
+        {tier: 'mid', label: 'Gemini 3.5 Flash', model: 'gemini-3.5-flash'},
+        {tier: 'lite', label: 'Gemini 3.1 Flash Lite', model: 'gemini-3.1-flash-lite'},
+      ],
+    },
+  },
+};
+
+renderByoModelPanel('google', {valid: true, timestamp: '2026-07-13T12:00:00Z'}, text);
+
+const notice = $('byoConfigurationGuidance');
+assert(notice.hidden === false, 'configuration guidance should be shown');
+assert(collectText(notice).includes('choose an exact Gemini model'), 'heading should render');
+assert(collectText(notice).includes('choose model'), 'action should render');
+assert(notice.children[2].href === '/app/thinking/#byoModelPanel', 'action href should target BYO model panel');
 console.log('PASS');
 """
         )

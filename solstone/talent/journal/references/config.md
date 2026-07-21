@@ -221,7 +221,7 @@ Brain choice is managed in the Thinking app. Your journal stores that choice in
   "providers": {
     "active": {
       "provider": "google",
-      "model": "gemini-flash-latest"
+      "model": "gemini-3.5-flash"
     },
     "local": {
       "endpoint_url": "http://127.0.0.1:8080",

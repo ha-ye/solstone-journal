@@ -361,10 +361,12 @@ class TestRunPendingTasks:
 
     def test_existing_tasks_keep_default_opt_ins(self):
         tasks = discover_tasks()
+        blocking_migrations = {
+            "thinking:001_migrate_provider_install_state",
+            "thinking:002_pin_google_model_aliases",
+        }
         existing = [
-            task
-            for task in tasks
-            if task.qualified_name != "thinking:001_migrate_provider_install_state"
+            task for task in tasks if task.qualified_name not in blocking_migrations
         ]
 
         assert len(existing) == 22
@@ -372,13 +374,11 @@ class TestRunPendingTasks:
         assert all(not task.blocks_supervisor_start for task in existing)
 
         migration = [
-            task
-            for task in tasks
-            if task.qualified_name == "thinking:001_migrate_provider_install_state"
+            task for task in tasks if task.qualified_name in blocking_migrations
         ]
-        assert len(migration) == 1
-        assert migration[0].retry_on_next_start is True
-        assert migration[0].blocks_supervisor_start is True
+        assert len(migration) == 2
+        assert all(task.retry_on_next_start is True for task in migration)
+        assert all(task.blocks_supervisor_start is True for task in migration)
 
 
 class TestRunTask:

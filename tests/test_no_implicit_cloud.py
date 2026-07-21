@@ -837,7 +837,7 @@ def test_explicit_local_type_default_neutralizes_cloud_context_pin(
                 "contexts": {
                     "talent.timeline.segment_summary": {
                         "provider": "google",
-                        "model": "gemini-flash-lite-latest",
+                        "model": "gemini-3.1-flash-lite",
                     },
                 },
             },
@@ -849,4 +849,4 @@ def test_explicit_local_type_default_neutralizes_cloud_context_pin(
     assert provider == "local"
     assert provider != "google"
     assert model == LOCAL_MODEL
-    assert model != "gemini-flash-lite-latest"
+    assert model != "gemini-3.1-flash-lite"

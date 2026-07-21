@@ -70,6 +70,7 @@ def _parse_family_anthropic(model: str) -> _Family | None:
 
 def _parse_family_gemini(model: str) -> _Family | None:
     model = model.lower()
+    # Vendor serves these aliases; owners may hold them, and pro-latest is manual.
     latest_aliases = {
         "gemini-flash-latest": _Family(key=("gemini", "flash"), version=(0, 0)),
         "gemini-pro-latest": _Family(key=("gemini", "pro"), version=(0, 0)),
@@ -126,7 +127,7 @@ def _find_pricing_fallback(model: str, provider_id: str) -> str | None:
     return best[1] if best else None
 
 
-GEMINI_FLASH = "gemini-flash-latest"
+GEMINI_FLASH = "gemini-3.5-flash"
 
 GPT_5 = "gpt-5.5"
 GPT_5_MINI = "gpt-5.4-mini"
@@ -564,7 +565,7 @@ def log_token_usage(
     Parameters
     ----------
     model : str
-        Model name (e.g., "gpt-5", "gemini-flash-latest")
+        Model name (e.g., "gpt-5", "gemini-3.5-flash")
     usage : dict
         Normalized usage dict with keys from USAGE_KEYS.
     context : str, optional
@@ -671,7 +672,7 @@ def get_model_provider(model: str) -> str:
     Parameters
     ----------
     model : str
-        Model name (e.g., "gpt-5", "gemini-flash-latest", "claude-sonnet-4-5")
+        Model name (e.g., "gpt-5", "gemini-3.5-flash", "claude-sonnet-4-5")
 
     Returns
     -------
@@ -704,7 +705,7 @@ def calc_token_cost(token_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     token_data : dict
         Token usage record from journal logs with structure:
         {
-            "model": "gemini-flash-latest",
+            "model": "gemini-3.5-flash",
             "usage": {
                 "input_tokens": 1500,
                 "output_tokens": 500,

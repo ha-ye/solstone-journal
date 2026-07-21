@@ -105,7 +105,7 @@ def test_calc_agent_cost_uses_resolved_model_version_from_usage():
         "model_version": "gemini-2.5-flash",
     }
 
-    cost = calc_agent_cost("gemini-flash-latest", usage)
+    cost = calc_agent_cost("gemini-3.5-flash", usage)
 
     assert cost is not None and cost > 0
 
@@ -259,7 +259,7 @@ def test_resolve_provider_contexts_are_inert(monkeypatch, tmp_path):
             "providers": {
                 "active": {
                     "provider": "google",
-                    "model": "gemini-flash-latest",
+                    "model": "gemini-3.5-flash",
                 },
                 "contexts": {
                     "test.openai": {
@@ -426,7 +426,7 @@ def test_resolve_provider_legacy_keys_are_inert(
             "providers": {
                 "active": {
                     "provider": "google",
-                    "model": "gemini-flash-latest",
+                    "model": "gemini-3.5-flash",
                     "tier": 1,
                     "backup": "anthropic",
                 },
@@ -435,7 +435,7 @@ def test_resolve_provider_legacy_keys_are_inert(
                     "observe.*": {"provider": "anthropic", "tier": 3},
                 },
                 "models": {
-                    "google": {"1": "gemini-pro-latest"},
+                    "google": {"1": "gemini-3.5-flash"},
                     "anthropic": {"3": "claude-haiku-4-5"},
                 },
             }
@@ -479,7 +479,7 @@ def test_resolve_provider_local_type_default_ignores_context_pins(
                 "contexts": {
                     "talent.timeline.segment_summary": {
                         "provider": "google",
-                        "model": "gemini-flash-lite-latest",
+                        "model": "gemini-3.1-flash-lite",
                     },
                 },
             }

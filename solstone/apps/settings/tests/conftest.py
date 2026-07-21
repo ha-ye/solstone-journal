@@ -47,7 +47,7 @@ def settings_env(tmp_path, monkeypatch):
                 "providers": {
                     "active": {
                         "provider": "google",
-                        "model": "gemini-flash-latest",
+                        "model": "gemini-3.5-flash",
                     },
                     "key_validation": {},
                 },

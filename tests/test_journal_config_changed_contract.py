@@ -31,7 +31,7 @@ def _base_config(**updates: Any) -> dict[str, Any]:
         "journal": {"name": "Before"},
         "env": {},
         "providers": {
-            "active": {"provider": "google", "model": "gemini-flash-latest"},
+            "active": {"provider": "google", "model": "gemini-3.5-flash"},
             "key_validation": {},
             "local": {},
         },
@@ -276,7 +276,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         _base_config(
             env={"GOOGLE_API_KEY": "google-key"},
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {
                     "google": {
                         "valid": True,
@@ -299,7 +299,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         _base_config(
             env={"GOOGLE_API_KEY": "google-key"},
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {"google": {"valid": True}},
                 "local": {},
             },
@@ -307,7 +307,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         _base_config(
             env={},
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {},
                 "local": {},
             },
@@ -324,7 +324,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         _base_config(
             env={"GOOGLE_API_KEY": "google-key"},
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {"google": {"valid": True}},
                 "local": {},
             },
@@ -344,7 +344,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         _base_config(),
         _base_config(
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {},
                 "local": {
                     "endpoint_url": "https://local.example",
@@ -362,7 +362,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         None,
         _base_config(
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {},
                 "local": {
                     "endpoint_url": "https://local.example",
@@ -373,7 +373,7 @@ ROUTE_CASES: tuple[RouteCase, ...] = (
         ),
         _base_config(
             providers={
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "key_validation": {},
                 "local": {},
             }

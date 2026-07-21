@@ -219,7 +219,7 @@ def test_onboarding_finalize_interleaves_with_provider_progress(
     seed_journal_config(
         {
             "providers": {
-                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "active": {"provider": "google", "model": "gemini-3.5-flash"},
                 "bundled": {},
             }
         },
@@ -244,7 +244,7 @@ def test_onboarding_finalize_interleaves_with_provider_progress(
     assert data["retention"] == {"raw_media": "days", "raw_media_days": 14}
     assert data["providers"]["active"] == {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
     from solstone.think.providers.install_state import read_install_status
 

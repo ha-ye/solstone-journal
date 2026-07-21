@@ -1624,7 +1624,7 @@ def test_prepare_config_substitutes_facet_and_activity_md_dir_for_daily_cogitate
                 "providers": {
                     "active": {
                         "provider": "google",
-                        "model": "gemini-flash-latest",
+                        "model": "gemini-3.5-flash",
                     }
                 }
             }

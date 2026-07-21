@@ -2542,9 +2542,7 @@ def test_build_provider_status_local_not_selected_is_inert(monkeypatch):
     monkeypatch.setattr(
         "solstone.think.models.get_config",
         lambda: {
-            "providers": {
-                "active": {"provider": "google", "model": "gemini-flash-latest"}
-            }
+            "providers": {"active": {"provider": "google", "model": "gemini-3.5-flash"}}
         },
     )
     monkeypatch.setattr(

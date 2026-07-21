@@ -32,7 +32,7 @@ def test_prepare_config_uses_active_local_and_ignores_legacy_context_pin(
     contexts = providers.setdefault("contexts", {})
     contexts["talent.timeline.segment_summary"] = {
         "provider": "google",
-        "model": "gemini-flash-lite-latest",
+        "model": "gemini-3.1-flash-lite",
     }
     _write_config(journal_copy, config)
 

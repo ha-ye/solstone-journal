@@ -18,6 +18,7 @@ from flask import Blueprint, current_app, jsonify, request
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import local_bootstrap, local_recovery, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
+from solstone.apps.thinking.google_model_pins import read_google_exact_model_advisory
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.utils import log_app_action
 from solstone.convey.readiness_snapshot import build_readiness_snapshot
@@ -518,6 +519,7 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         ),
         "active": active_settings,
         "model_tiers": MODEL_TIERS,
+        "configuration_guidance": read_google_exact_model_advisory(config),
         "byo_models": providers_config.get("byo_models", {}),
         "api_keys": _api_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),

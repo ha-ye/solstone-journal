@@ -105,7 +105,7 @@ def test_run_check_targeted_uses_active_routes(tmp_path, monkeypatch):
     _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _interface: ("google", "gemini-flash-latest"),
+        lambda _interface: ("google", "gemini-3.5-flash"),
     )
     gen_mock = MagicMock(return_value=("ok", "ok", None))
     monkeypatch.setattr(providers_cli, "_check_generate", gen_mock)
@@ -121,14 +121,14 @@ def test_run_check_targeted_uses_active_routes(tmp_path, monkeypatch):
         asyncio.run(providers_cli._run_check(_args(targeted=True, json=True)))
 
     assert exc_info.value.code == 0
-    gen_mock.assert_called_once_with("google", "gemini-flash-latest", 1)
-    cog_inner.assert_called_once_with("google", "gemini-flash-latest", 1)
+    gen_mock.assert_called_once_with("google", "gemini-3.5-flash", 1)
+    cog_inner.assert_called_once_with("google", "gemini-3.5-flash", 1)
     payload = json.loads((tmp_path / "health" / "talents.json").read_text())
     assert {
         (row["provider"], row["model"], row["interface"]) for row in payload["results"]
     } == {
-        ("google", "gemini-flash-latest", "generate"),
-        ("google", "gemini-flash-latest", "cogitate"),
+        ("google", "gemini-3.5-flash", "generate"),
+        ("google", "gemini-3.5-flash", "cogitate"),
     }
 
 
@@ -178,7 +178,7 @@ def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):
     _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _interface: ("google", "gemini-flash-latest"),
+        lambda _interface: ("google", "gemini-3.5-flash"),
     )
     lock_dir = tmp_path / "health"
     lock_dir.mkdir(parents=True, exist_ok=True)

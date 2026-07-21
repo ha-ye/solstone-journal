@@ -3,9 +3,9 @@
 
 """Presentation-layer model tiers.
 
-These are vendor-facing ids that need tending as vendors evolve. Google's
-``-latest`` aliases self-tend; the Anthropic/OpenAI rows are pinned family
-aliases. Nothing under ``solstone/think/`` should import this catalog.
+These are vendor-facing ids that need tending as vendors evolve. Provider rows
+use explicit model ids. Nothing under ``solstone/think/`` should import this
+catalog.
 """
 
 from __future__ import annotations
@@ -13,9 +13,8 @@ from __future__ import annotations
 # fmt: off
 MODEL_TIERS = {
     "google": [
-        {"tier": "top", "label": "Gemini Pro Latest", "model": "gemini-pro-latest"},
-        {"tier": "mid", "label": "Gemini Flash Latest", "model": "gemini-flash-latest"},
-        {"tier": "lite", "label": "Gemini Flash Lite Latest", "model": "gemini-flash-lite-latest"},
+        {"tier": "mid", "label": "Gemini 3.5 Flash", "model": "gemini-3.5-flash"},
+        {"tier": "lite", "label": "Gemini 3.1 Flash Lite", "model": "gemini-3.1-flash-lite"},
     ],
     "anthropic": [
         {"tier": "top", "label": "Claude Opus", "model": "claude-opus-4-8"},

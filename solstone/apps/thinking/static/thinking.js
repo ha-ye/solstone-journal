@@ -1470,6 +1470,7 @@
     setButtonText('byoCheckAgain', byoText.check_again || '');
     setText('byoModelHeading', byoText.model_heading || '');
     setText('byoModelSub', formatCopy(byoText.model_sub || '', {provider: providerName}));
+    renderConfigurationGuidance();
     setButtonText('byoCustomToggle', byoText.custom_toggle || '');
     $('byoCustomToggle')?.setAttribute('aria-expanded', state.byoCustomOpen ? 'true' : 'false');
     setHidden('byoCustomRow', !state.byoCustomOpen);
@@ -1650,6 +1651,26 @@
     if (modelMode) {
       renderByoModelPanel(provider, validation, byoText);
     }
+  }
+
+  function renderConfigurationGuidance() {
+    const guidance = state.providers.configuration_guidance;
+    const notice = $('byoConfigurationGuidance');
+    if (!notice) return;
+    notice.textContent = '';
+    if (!guidance) {
+      setHidden('byoConfigurationGuidance', true);
+      return;
+    }
+    const heading = document.createElement('strong');
+    heading.textContent = guidance.heading || '';
+    const action = guidance.action || {};
+    const link = document.createElement('a');
+    link.className = 'textlink';
+    link.href = action.href || '#byoModelPanel';
+    link.textContent = action.label || '';
+    notice.append(heading, ' ', link);
+    setHidden('byoConfigurationGuidance', false);
   }
 
   function localCopy() {

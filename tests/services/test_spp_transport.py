@@ -80,7 +80,7 @@ def _write_confidential_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 "credential_fingerprint_sha256": "fingerprint",
                 "prior_active": {
                     "provider": "google",
-                    "model": "gemini-flash-latest",
+                    "model": "gemini-3.5-flash",
                 },
                 "prior_local_endpoint": None,
             }

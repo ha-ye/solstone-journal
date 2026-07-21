@@ -10,10 +10,13 @@ from typing import get_args
 import pytest
 
 from solstone.apps.thinking import routes
+from solstone.apps.thinking.google_model_pins import THINKING_BYO_MODEL_HREF
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
+from solstone.convey import provider_readiness
 from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
 from solstone.think.providers.artifact_proof import ReadinessOutcome
+from solstone.think.providers.brain_state import BRAIN_REASON_CODES
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
 
@@ -186,7 +189,7 @@ def test_get_providers_reports_active_personal_cloud_lane(
     assert payload["active_lane"]["lane"] == "byo"
     assert payload["active"] == {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
 
 
@@ -264,7 +267,7 @@ def test_scout_enabled_google_provider_derives_byo_with_provenance(
     }
     config["providers"]["active"] = {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
     _write_config(journal_path, config)
 
@@ -312,7 +315,7 @@ def test_key_clear_pops_remembered_byo_model(
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
     config["providers"]["byo_models"] = {
-        "google": "gemini-pro-latest",
+        "google": "gemini-3.5-flash",
         "openai": "gpt-5.5",
     }
     _write_config(journal_path, config)
@@ -426,7 +429,7 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "served_model_id": "confidential-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "confidential-fingerprint-secret",
-        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
+        "prior_active": {"provider": "google", "model": "gemini-3.5-flash"},
         "prior_local_endpoint": None,
     }
     config.setdefault("providers", {}).setdefault("local", {})["credential"] = (
@@ -434,7 +437,7 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
     )
     config["providers"]["active"] = {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
     _write_config(journal_path, config)
 
@@ -526,7 +529,7 @@ def test_providers_payload_includes_model_tiers_and_byo_models_as_is(
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
     config["providers"]["byo_models"] = {
-        "google": "gemini-pro-latest",
+        "google": "gemini-3.5-flash",
         "unexpected": "kept-as-is",
     }
     _write_config(journal_path, config)
@@ -537,9 +540,44 @@ def test_providers_payload_includes_model_tiers_and_byo_models_as_is(
     payload = response.get_json()
     assert payload["model_tiers"] == MODEL_TIERS
     assert payload["byo_models"] == {
-        "google": "gemini-pro-latest",
+        "google": "gemini-3.5-flash",
         "unexpected": "kept-as-is",
     }
+    assert payload["configuration_guidance"] is None
+
+
+@pytest.mark.parametrize("slot", ["active", "byo", "prior"])
+def test_providers_payload_configuration_guidance_for_google_pro_alias(
+    settings_client_with_journal,
+    slot: str,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    if slot == "active":
+        config["providers"]["active"] = {
+            "provider": "google",
+            "model": "gemini-pro-latest",
+        }
+    elif slot == "byo":
+        config["providers"]["byo_models"] = {"google": "gemini-pro-latest"}
+    else:
+        config.setdefault("services", {})["confidential"] = {
+            "prior_active": {"provider": "google", "model": "gemini-pro-latest"}
+        }
+    _write_config(journal_path, config)
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    guidance = response.get_json()["configuration_guidance"]
+    assert guidance == {
+        "id": "choose_exact_gemini_model",
+        "heading": "choose an exact Gemini model",
+        "action": {"label": "choose model", "href": THINKING_BYO_MODEL_HREF},
+    }
+    assert guidance["id"] not in BRAIN_REASON_CODES
+    assert guidance["id"] not in provider_readiness.mapped_reason_codes()
 
 
 def test_think_layer_does_not_import_thinking_model_tiers():
@@ -642,7 +680,7 @@ def test_local_endpoint_override_derives_confidential_only_with_provenance(
         "served_model_id": "served-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "fingerprint",
-        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
+        "prior_active": {"provider": "google", "model": "gemini-3.5-flash"},
         "prior_local_endpoint": None,
     }
     _write_config(journal_path, config)
@@ -791,7 +829,7 @@ def test_byo_lane_with_top_level_model_writes_active_profile_and_memory(
     ("payload", "detail"),
     [
         (
-            {"lane": "local", "model": "gemini-pro-latest"},
+            {"lane": "local", "model": "gemini-3.5-flash"},
             "model is only valid with cloud BYO providers: anthropic, google, openai.",
         ),
         (
@@ -862,7 +900,7 @@ def test_byo_lane_fills_remembered_model_after_hygiene_pop(
     config = json.loads(config_path.read_text())
     config["providers"]["active"] = {
         "provider": "google",
-        "model": "gemini-pro-latest",
+        "model": "gemini-3.5-flash",
     }
     config["providers"]["byo_models"] = {"anthropic": "claude-opus-4-8"}
     _write_config(journal_path, config)
@@ -936,7 +974,7 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
         "served_model_id": "served-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "fingerprint",
-        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
+        "prior_active": {"provider": "google", "model": "gemini-3.5-flash"},
         "prior_local_endpoint": None,
     }
     _write_config(journal_path, config)
@@ -962,7 +1000,7 @@ def test_switch_from_byo_model_to_local_resolves_local_default(
         json={
             "lane": "byo",
             "provider": "google",
-            "model": "gemini-pro-latest",
+            "model": "gemini-3.5-flash",
         },
     )
     assert response.status_code == 200
@@ -981,7 +1019,7 @@ def test_switch_to_cloud_without_memory_resolves_provider_default(
     config = json.loads(config_path.read_text())
     config["providers"]["active"] = {
         "provider": "google",
-        "model": "gemini-pro-latest",
+        "model": "gemini-3.5-flash",
     }
     config["providers"].pop("byo_models", None)
     _write_config(journal_path, config)
@@ -1090,7 +1128,7 @@ def test_get_providers_scout_google_grandfather_is_zero_touch(
     }
     config["providers"]["active"] = {
         "provider": "google",
-        "model": "gemini-flash-latest",
+        "model": "gemini-3.5-flash",
     }
     _write_config(journal_path, config)
     before = config_path.read_bytes()

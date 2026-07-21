@@ -109,18 +109,18 @@ def test_validate_model_route_relays_success_and_does_not_write_config(
     ) as mock_validate:
         response = client.post(
             "/app/thinking/api/validate-model",
-            json={"provider": "google", "model": " gemini-pro-latest "},
+            json={"provider": "google", "model": " gemini-3.5-flash "},
         )
 
     assert response.status_code == 200
     assert response.get_json() == {
         "valid": True,
         "provider": "google",
-        "model": "gemini-pro-latest",
+        "model": "gemini-3.5-flash",
     }
     mock_validate.assert_called_once_with(
         "google",
-        "gemini-pro-latest",
+        "gemini-3.5-flash",
         "test-google-key",
     )
     assert config_path.read_bytes() == before
