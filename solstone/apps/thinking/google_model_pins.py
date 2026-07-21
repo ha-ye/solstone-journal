@@ -14,7 +14,14 @@ GOOGLE_ALIAS_PIN_MAP = {
 }
 GOOGLE_PRO_ALIAS = "gemini-pro-latest"
 GOOGLE_PROVIDER = "google"
-THINKING_BYO_MODEL_HREF = "/app/thinking/#byoModelPanel"
+GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD = "google_model_resolution_targets"
+GOOGLE_PRO_ALIAS_SLOT_PATHS = {
+    "active": "providers.active.model",
+    "remembered": "providers.byo_models.google",
+    "confidential_prior": "services.confidential.prior_active.model",
+}
+GOOGLE_PRO_ALIAS_SLOT_TOKENS = tuple(GOOGLE_PRO_ALIAS_SLOT_PATHS)
+THINKING_BYO_MODEL_HREF = "/app/thinking/#byo-setup"
 
 ChangedModelField = tuple[str, str, str]
 
@@ -70,21 +77,21 @@ def pin_google_model_aliases(config: dict[str, Any]) -> list[ChangedModelField]:
     return changed
 
 
-def read_google_pro_alias_paths(config: Mapping[str, Any]) -> list[str]:
-    """Return config field paths that hold the exact Google Pro alias."""
+def read_google_pro_alias_slots(config: Mapping[str, Any]) -> list[str]:
+    """Return slot tokens whose config fields hold the exact Google Pro alias."""
 
-    paths: list[str] = []
+    slots: list[str] = []
     providers = config.get("providers")
     if isinstance(providers, Mapping):
         if _google_profile_model(providers.get("active")) == GOOGLE_PRO_ALIAS:
-            paths.append("providers.active.model")
+            slots.append("active")
 
         byo_models = providers.get("byo_models")
         if (
             isinstance(byo_models, Mapping)
             and byo_models.get(GOOGLE_PROVIDER) == GOOGLE_PRO_ALIAS
         ):
-            paths.append("providers.byo_models.google")
+            slots.append("remembered")
 
     services = config.get("services")
     confidential = (
@@ -92,9 +99,18 @@ def read_google_pro_alias_paths(config: Mapping[str, Any]) -> list[str]:
     )
     if isinstance(confidential, Mapping):
         if _google_profile_model(confidential.get("prior_active")) == GOOGLE_PRO_ALIAS:
-            paths.append("services.confidential.prior_active.model")
+            slots.append("confidential_prior")
 
-    return paths
+    return slots
+
+
+def read_google_pro_alias_paths(config: Mapping[str, Any]) -> list[str]:
+    """Return config field paths that hold the exact Google Pro alias."""
+
+    return [
+        GOOGLE_PRO_ALIAS_SLOT_PATHS[slot]
+        for slot in read_google_pro_alias_slots(config)
+    ]
 
 
 def read_google_exact_model_advisory(
@@ -102,11 +118,13 @@ def read_google_exact_model_advisory(
 ) -> dict[str, Any] | None:
     """Return owner guidance when a saved Google Pro alias needs manual choice."""
 
-    if not read_google_pro_alias_paths(config):
+    slots = read_google_pro_alias_slots(config)
+    if not slots:
         return None
     return {
         "id": "choose_exact_gemini_model",
         "heading": "choose an exact Gemini model",
+        GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: slots,
         "action": {
             "label": "choose model",
             "href": THINKING_BYO_MODEL_HREF,

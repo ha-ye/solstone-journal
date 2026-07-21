@@ -19,6 +19,7 @@
     byoCustomOpen: false,
     byoCustomModel: '',
     byoCustomCheckedModel: '',
+    byoModelResolutionTargets: [],
     pendingSwitchTarget: '',
   };
   let copy = {};
@@ -48,6 +49,7 @@
     google: 'https://ai.google.dev/gemini-api/terms',
     openai: 'https://openai.com/policies/row-terms-of-use',
   };
+  const googleModelResolutionTargetsField = 'google_model_resolution_targets';
 
   function $(id) {
     return document.getElementById(id);
@@ -639,6 +641,9 @@
     provider,
     providerName,
     model,
+    modelLabel = '',
+    googleModelResolutionTargets = [],
+    restoreOnly = false,
     text,
     setMode,
     renderFn,
@@ -665,12 +670,23 @@
       return {status: 'probe_failed', probe};
     }
     try {
+      const body = {lane: 'byo', provider, model};
+      if (Array.isArray(googleModelResolutionTargets) && googleModelResolutionTargets.length > 0) {
+        body[googleModelResolutionTargetsField] = googleModelResolutionTargets;
+      }
       const providers = await apiFn('api/providers', {
         method: 'PUT',
-        body: JSON.stringify({lane: 'byo', provider, model}),
+        body: JSON.stringify(body),
       });
       applyProviders(providers);
       renderFn();
+      if (restoreOnly) {
+        showStatus(
+          formatCopy(text?.model_saved_restore || '', {label: modelLabel || model}),
+          'ok',
+        );
+        return {status: 'restored', providers};
+      }
       return {status: 'saved', providers};
     } catch (err) {
       renderFn();
@@ -1423,6 +1439,25 @@
     if (select) select.value = state.selectedByoProvider;
   }
 
+  function setByoModelResolutionTargets(targets) {
+    state.byoModelResolutionTargets = Array.isArray(targets)
+      ? targets.filter((target) => typeof target === 'string')
+      : [];
+  }
+
+  function clearByoModelResolutionTargets() {
+    state.byoModelResolutionTargets = [];
+  }
+
+  function hasConfidentialPriorResolutionTarget(targets = state.byoModelResolutionTargets) {
+    return Array.isArray(targets) && targets.includes('confidential_prior');
+  }
+
+  function restoreOnlyModelResolutionActive(targets = state.byoModelResolutionTargets) {
+    return hasConfidentialPriorResolutionTarget(targets)
+      && state.providers.active_lane?.lane === 'confidential';
+  }
+
   function resetByoDraft() {
     state.byoSelectedModel = '';
     state.byoCustomOpen = false;
@@ -1431,6 +1466,7 @@
   }
 
   function changeByoProvider(provider) {
+    clearByoModelResolutionTargets();
     setSelectedByoProvider(provider);
     resetByoDraft();
     const keyInput = $('byoKeyInput');
@@ -1537,7 +1573,10 @@
     }
 
     const selectedLabel = byoModelLabel(provider, selected, state.providers);
-    setButtonText('byoModelSave', formatCopy(byoText.model_save || '', {label: selectedLabel}));
+    const saveCopy = restoreOnlyModelResolutionActive()
+      ? byoText.model_save_restore
+      : byoText.model_save;
+    setButtonText('byoModelSave', formatCopy(saveCopy || '', {label: selectedLabel}));
     if ($('byoModelSave')) {
       $('byoModelSave').disabled = byoSaveDisabled(selected, selectedIsCustom, state.byoCustomCheckedModel);
     }
@@ -1653,6 +1692,21 @@
     }
   }
 
+  function openGoogleModelResolutionGuidance(guidance) {
+    resetByoDraft();
+    setByoModelResolutionTargets(guidance?.[googleModelResolutionTargetsField] || []);
+    setSelectedByoProvider('google');
+    const validation = state.keys.key_validation?.google;
+    if (byoModelStepAllowed('google', validation, !!state.providers.scout_enabled)) {
+      state.byoMode = 'model';
+      state.byoSelectedModel = preselectByoModel('google', state.providers);
+    } else {
+      state.byoMode = 'paste';
+    }
+    renderByo();
+    showView('byo-setup');
+  }
+
   function renderConfigurationGuidance() {
     const guidance = state.providers.configuration_guidance;
     const notice = $('byoConfigurationGuidance');
@@ -1667,8 +1721,12 @@
     const action = guidance.action || {};
     const link = document.createElement('a');
     link.className = 'textlink';
-    link.href = action.href || '#byoModelPanel';
+    link.href = action.href || '#byo-setup';
     link.textContent = action.label || '';
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      openGoogleModelResolutionGuidance(guidance);
+    });
     notice.append(heading, ' ', link);
     setHidden('byoConfigurationGuidance', false);
   }
@@ -2441,6 +2499,9 @@
     const provider = laneProvider('byo');
     const model = String(state.byoSelectedModel || '').trim();
     if (!model) return;
+    const googleModelResolutionTargets = state.byoModelResolutionTargets.slice();
+    const restoreOnly = restoreOnlyModelResolutionActive(googleModelResolutionTargets);
+    const modelLabel = byoModelLabel(provider, model, state.providers);
     const result = await runByoModelSaveFlow({
       apiFn: api,
       applyProviders: (providers) => {
@@ -2449,6 +2510,9 @@
       provider,
       providerName: providerLabel(provider),
       model,
+      modelLabel,
+      googleModelResolutionTargets,
+      restoreOnly,
       text: copy.byo_setup || {},
       setMode: (mode) => {
         state.byoMode = mode;
@@ -2457,8 +2521,11 @@
       showStatus: (message, tone) => setMessage(state.byoMode === 'paste' ? 'byoKeyStatus' : 'byoModelStatus', message, tone),
     });
     if (result.status === 'saved') {
+      clearByoModelResolutionTargets();
       showView('main');
       renderAll();
+    } else if (result.status === 'restored') {
+      clearByoModelResolutionTargets();
     }
   }
 
@@ -2542,6 +2609,7 @@
       return;
     }
     if (lane === 'byo') {
+      clearByoModelResolutionTargets();
       const provider = defaultByoProvider();
       setSelectedByoProvider(provider);
       resetByoDraft();

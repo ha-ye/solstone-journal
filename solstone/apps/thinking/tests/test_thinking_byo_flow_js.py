@@ -146,6 +146,7 @@ const document = {
 def _node_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
+        "const googleModelResolutionTargetsField = 'google_model_resolution_targets';",
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "byoReasonCopy"),
         extract_js_function(source, "byoModelStepAllowed"),
@@ -163,6 +164,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "runByoModelSaveFlow"),
         extract_js_function(source, "runByoCustomProbeFlow"),
         extract_js_function(source, "selectedByoProvider"),
+        extract_js_function(source, "clearByoModelResolutionTargets"),
         extract_js_function(source, "changeByoProvider"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
@@ -204,6 +206,7 @@ def _extract_js_function_exact(source: str, function_name: str) -> str:
 def _node_render_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
+        "const googleModelResolutionTargetsField = 'google_model_resolution_targets';",
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "byoReasonCopy"),
         extract_js_function(source, "byoModelStepAllowed"),
@@ -217,8 +220,13 @@ def _node_render_script(body: str) -> str:
         extract_js_function(source, "byoSaveDisabled"),
         extract_js_function(source, "resetByoDraft"),
         extract_js_function(source, "setSelectedByoProvider"),
+        extract_js_function(source, "setByoModelResolutionTargets"),
+        extract_js_function(source, "clearByoModelResolutionTargets"),
+        extract_js_function(source, "hasConfidentialPriorResolutionTarget"),
+        extract_js_function(source, "restoreOnlyModelResolutionActive"),
         extract_js_function(source, "selectedByoProvider"),
         extract_js_function(source, "changeByoProvider"),
+        extract_js_function(source, "openGoogleModelResolutionGuidance"),
         extract_js_function(source, "renderConfigurationGuidance"),
         extract_js_function(source, "renderByoModelPanel"),
         _extract_js_function_exact(source, "renderByo"),
@@ -236,6 +244,7 @@ def _node_render_script(body: str) -> str:
 def _node_api_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
+        "const googleModelResolutionTargetsField = 'google_model_resolution_targets';",
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "byoReasonCopy"),
         extract_js_function(source, "api"),
@@ -670,7 +679,8 @@ const state = {
     configuration_guidance: {
       id: 'choose_exact_gemini_model',
       heading: 'choose an exact Gemini model',
-      action: {label: 'choose model', href: '/app/thinking/#byoModelPanel'},
+      google_model_resolution_targets: ['confidential_prior'],
+      action: {label: 'choose model', href: '/app/thinking/#byo-setup'},
     },
     model_tiers: {
       google: [
@@ -687,7 +697,138 @@ const notice = $('byoConfigurationGuidance');
 assert(notice.hidden === false, 'configuration guidance should be shown');
 assert(collectText(notice).includes('choose an exact Gemini model'), 'heading should render');
 assert(collectText(notice).includes('choose model'), 'action should render');
-assert(notice.children[2].href === '/app/thinking/#byoModelPanel', 'action href should target BYO model panel');
+assert(notice.children[2].href === '/app/thinking/#byo-setup', 'action href should target BYO setup view');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_configuration_guidance_click_opens_model_step_for_reported_slots() -> None:
+    _run_node(
+        _node_render_script(
+            """
+let state;
+const shownViews = [];
+function showView(name) {
+  shownViews.push(name);
+}
+
+function runCase(target, providerState) {
+  nodes.clear();
+  hiddenCalls.length = 0;
+  shownViews.length = 0;
+  let prevented = 0;
+  state = {
+    selectedByoProvider: '',
+    byoMode: 'pick',
+    byoSelectedModel: '',
+    byoCustomOpen: false,
+    byoCustomModel: '',
+    byoCustomCheckedModel: '',
+    byoModelResolutionTargets: [],
+    providers: {
+      ...providerState,
+      active_lane: {lane: 'confidential'},
+      scout_enabled: false,
+      configuration_guidance: {
+        id: 'choose_exact_gemini_model',
+        heading: 'choose an exact Gemini model',
+        google_model_resolution_targets: [target],
+        action: {label: 'choose model', href: '/app/thinking/#byo-setup'},
+      },
+      model_tiers: {
+        google: [
+          {tier: 'mid', label: 'Gemini 3.5 Flash', model: 'gemini-3.5-flash'},
+          {tier: 'lite', label: 'Gemini 3.1 Flash Lite', model: 'gemini-3.1-flash-lite'},
+        ],
+      },
+    },
+    keys: {
+      api_keys: {google: true},
+      key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
+    },
+  };
+
+  renderConfigurationGuidance();
+  const link = $('byoConfigurationGuidance').children[2];
+  link.events.click({preventDefault: () => { prevented += 1; }});
+
+  assert(prevented === 1, `${target} click should prevent default`);
+  assert(JSON.stringify(shownViews) === JSON.stringify(['byo-setup']), `${target} should open BYO setup`);
+  assert(!shownViews.includes('lane-switch'), `${target} should not show lane-switch`);
+  assert(state.selectedByoProvider === 'google', `${target} should select Google`);
+  assert(state.byoMode === 'model', `${target} should enter model mode`);
+  assert(lastHidden('byoModelPanel') === false, `${target} should show model panel`);
+  assert(JSON.stringify(state.byoModelResolutionTargets) === JSON.stringify([target]), `${target} should keep targets`);
+}
+
+runCase('active', {active: {provider: 'google', model: 'gemini-pro-latest'}, byo_models: {}});
+runCase('remembered', {active: {provider: 'local', model: 'local/qwen3.5-4b'}, byo_models: {google: 'gemini-pro-latest'}});
+runCase('confidential_prior', {active: {provider: 'local', model: 'local/qwen3.5-4b'}, byo_models: {}});
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_configuration_guidance_click_falls_back_to_key_step() -> None:
+    _run_node(
+        _node_render_script(
+            """
+let state;
+const shownViews = [];
+function showView(name) {
+  shownViews.push(name);
+}
+
+function runCase(label, keys, scoutEnabled) {
+  nodes.clear();
+  hiddenCalls.length = 0;
+  shownViews.length = 0;
+  state = {
+    selectedByoProvider: '',
+    byoMode: 'pick',
+    byoSelectedModel: '',
+    byoCustomOpen: false,
+    byoCustomModel: '',
+    byoCustomCheckedModel: '',
+    byoModelResolutionTargets: [],
+    providers: {
+      active: {provider: 'local', model: 'local/qwen3.5-4b'},
+      active_lane: {lane: 'confidential'},
+      scout_enabled: scoutEnabled,
+      configuration_guidance: {
+        id: 'choose_exact_gemini_model',
+        heading: 'choose an exact Gemini model',
+        google_model_resolution_targets: ['confidential_prior'],
+        action: {label: 'choose model', href: '/app/thinking/#byo-setup'},
+      },
+      model_tiers: {
+        google: [{tier: 'lite', label: 'Gemini Lite', model: 'gemini-3.1-flash-lite'}],
+      },
+    },
+    keys,
+  };
+
+  renderConfigurationGuidance();
+  $('byoConfigurationGuidance').children[2].events.click({preventDefault: () => {}});
+
+  assert(JSON.stringify(shownViews) === JSON.stringify(['byo-setup']), `${label} should open BYO setup`);
+  assert(!shownViews.includes('lane-switch'), `${label} should not show lane-switch`);
+  assert(state.selectedByoProvider === 'google', `${label} should select Google`);
+  assert(state.byoMode === 'paste', `${label} should enter paste mode`);
+  assert(lastHidden('byoModelPanel') === true, `${label} should hide model panel`);
+  assert(lastHidden('byoPastePanel') === false, `${label} should show paste panel`);
+  assert(JSON.stringify(state.byoModelResolutionTargets) === JSON.stringify(['confidential_prior']), `${label} should keep targets`);
+}
+
+runCase('missing key', {api_keys: {}, key_validation: {}}, false);
+runCase(
+  'scout google',
+  {api_keys: {google: true}, key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}}},
+  true,
+);
 console.log('PASS');
 """
         )
@@ -1214,6 +1355,47 @@ async function main() {
 
   calls.length = 0;
   messages.length = 0;
+  providersApplied = null;
+  renders = 0;
+  const restored = await runByoModelSaveFlow({
+    apiFn: async (path, options) => {
+      calls.push({path, body: JSON.parse(options.body)});
+      if (path === 'api/validate-model') return {valid: true};
+      if (path === 'api/providers') return {active_lane: {lane: 'confidential'}};
+      throw new Error(`unexpected path ${path}`);
+    },
+    applyProviders: (providers) => { providersApplied = providers; },
+    provider: 'google',
+    providerName: 'Gemini',
+    model: 'gemini-3.5-pro',
+    modelLabel: 'Gemini 3.5 Pro',
+    googleModelResolutionTargets: ['confidential_prior'],
+    restoreOnly: true,
+    text,
+    setMode: (next) => { mode = next; },
+    renderFn: () => { renders += 1; },
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(restored.status === 'restored', 'restore-only success status');
+  assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify(['api/validate-model', 'api/providers']), 'restore-only should probe then write');
+  assert(
+    JSON.stringify(calls[1].body) === JSON.stringify({
+      lane: 'byo',
+      provider: 'google',
+      model: 'gemini-3.5-pro',
+      google_model_resolution_targets: ['confidential_prior'],
+    }),
+    'restore-only provider write body should carry targets',
+  );
+  assert(providersApplied.active_lane.lane === 'confidential', 'restore-only providers should apply');
+  assert(renders === 1, 'restore-only save should render after provider write');
+  assert(messages.at(-1).message === 'remembered Gemini 3.5 Pro. sol keeps thinking with confidential processing now.', 'restore-only copy');
+  assert(messages.at(-1).tone === 'ok', 'restore-only status tone');
+
+  calls.length = 0;
+  messages.length = 0;
+  renders = 0;
   const probeFail = await runByoModelSaveFlow({
     apiFn: async (path, options) => {
       calls.push({path, body: JSON.parse(options.body)});

@@ -10,7 +10,10 @@ from typing import get_args
 import pytest
 
 from solstone.apps.thinking import routes
-from solstone.apps.thinking.google_model_pins import THINKING_BYO_MODEL_HREF
+from solstone.apps.thinking.google_model_pins import (
+    GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
+    THINKING_BYO_MODEL_HREF,
+)
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.convey import provider_readiness
@@ -571,9 +574,15 @@ def test_providers_payload_configuration_guidance_for_google_pro_alias(
 
     assert response.status_code == 200
     guidance = response.get_json()["configuration_guidance"]
+    expected_targets = {
+        "active": ["active"],
+        "byo": ["remembered"],
+        "prior": ["confidential_prior"],
+    }[slot]
     assert guidance == {
         "id": "choose_exact_gemini_model",
         "heading": "choose an exact Gemini model",
+        GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: expected_targets,
         "action": {"label": "choose model", "href": THINKING_BYO_MODEL_HREF},
     }
     assert guidance["id"] not in BRAIN_REASON_CODES

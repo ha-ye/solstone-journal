@@ -18,7 +18,13 @@ from flask import Blueprint, current_app, jsonify, request
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import local_bootstrap, local_recovery, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
-from solstone.apps.thinking.google_model_pins import read_google_exact_model_advisory
+from solstone.apps.thinking.google_model_pins import (
+    GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
+    GOOGLE_PRO_ALIAS_SLOT_TOKENS,
+    GOOGLE_PROVIDER,
+    read_google_exact_model_advisory,
+    read_google_pro_alias_slots,
+)
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.utils import log_app_action
 from solstone.convey.readiness_snapshot import build_readiness_snapshot
@@ -100,6 +106,7 @@ AI_PROVIDER_TO_ENV = {
 }
 CLOUD_BYO_PROVIDERS = frozenset({"anthropic", "google", "openai"})
 LANES = {"byo", "confidential", "local"}
+GOOGLE_PRO_ALIAS_TARGETS_TEXT = ", ".join(sorted(GOOGLE_PRO_ALIAS_SLOT_TOKENS))
 GENERIC_THINKING_ERROR = (
     "something went wrong - try again, and if it persists, check the health dashboard"
 )
@@ -364,6 +371,34 @@ def _lane_for_provider(
     return "byo"
 
 
+def _local_endpoint_configured_for_config(config: dict[str, Any]) -> bool:
+    local_config = _read_local_provider_config(config)
+    endpoint_url = str(local_config.get("endpoint_url") or "").strip()
+    served_model_id = str(local_config.get("served_model_id") or "").strip()
+    return bool(endpoint_url and served_model_id)
+
+
+def _confidential_lane_active_for_config(config: dict[str, Any]) -> bool:
+    providers_config = config.get("providers")
+    if not isinstance(providers_config, dict):
+        providers_config = {}
+    active_config = providers_config.get("active")
+    if not isinstance(active_config, dict):
+        active_config = {}
+    provider = active_config.get("provider")
+    provider = provider if isinstance(provider, str) else ""
+    return (
+        _lane_for_provider(
+            provider,
+            local_endpoint_configured=_local_endpoint_configured_for_config(config),
+            confidential_provenance_present=(
+                spp.confidential_provenance_block(dict(config)) is not None
+            ),
+        )
+        == "confidential"
+    )
+
+
 def _active_lane_payload(
     active_settings: dict[str, Any],
     transcribe_config: dict[str, Any],
@@ -491,6 +526,35 @@ def _validate_top_level_model(
             detail="model must be a non-empty string.",
         )
     return model.strip()
+
+
+def _validate_google_model_resolution_targets(value: Any) -> list[str] | Any:
+    if not isinstance(value, list):
+        return error_response(
+            INVALID_CONFIG_VALUE,
+            detail=(
+                f"{GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD} must be a list of: "
+                f"{GOOGLE_PRO_ALIAS_TARGETS_TEXT}"
+            ),
+        )
+    targets: list[str] = []
+    unknown: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or item not in GOOGLE_PRO_ALIAS_SLOT_TOKENS:
+            unknown.append(str(item))
+            continue
+        if item not in targets:
+            targets.append(item)
+    if unknown:
+        return error_response(
+            INVALID_CONFIG_VALUE,
+            detail=(
+                "Invalid Google model resolution targets: "
+                f"{', '.join(sorted(unknown))}. Must be one of: "
+                f"{GOOGLE_PRO_ALIAS_TARGETS_TEXT}"
+            ),
+        )
+    return targets
 
 
 def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, Any]:
@@ -1309,6 +1373,31 @@ def _set_active_provider(
     config["providers"]["active"] = new_active
 
 
+def _update_confidential_prior_model(
+    config: dict[str, Any],
+    changed_fields: dict[str, Any],
+    model: str,
+) -> None:
+    services = config.get("services")
+    if isinstance(services, dict):
+        confidential = services.get("confidential")
+    else:
+        confidential = None
+    if not isinstance(confidential, dict):
+        return
+    prior_active = confidential.get("prior_active")
+    if not isinstance(prior_active, dict):
+        return
+    old_model = prior_active.get("model")
+    if old_model == model:
+        return
+    changed_fields["services.confidential.prior_active.model"] = {
+        "old": old_model,
+        "new": model,
+    }
+    prior_active["model"] = model
+
+
 def _lane_provider(request_data: dict[str, Any]) -> str | Any:
     lane = request_data["lane"]
     if lane not in LANES:
@@ -1357,7 +1446,12 @@ def update_providers() -> Any:
         request_data = request.get_json(silent=True)
         if not isinstance(request_data, dict) or not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-        unknown = set(request_data) - {"lane", "provider", "model"}
+        unknown = set(request_data) - {
+            "lane",
+            "provider",
+            "model",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
+        }
         if unknown:
             return error_response(
                 INVALID_CONFIG_VALUE,
@@ -1365,6 +1459,15 @@ def update_providers() -> Any:
             )
         if "lane" not in request_data:
             return error_response(MISSING_REQUIRED_FIELD, detail="lane")
+        has_resolution_targets = GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD in request_data
+        requested_targets: tuple[str, ...] = ()
+        if has_resolution_targets:
+            validated_targets = _validate_google_model_resolution_targets(
+                request_data[GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD]
+            )
+            if not isinstance(validated_targets, list):
+                return validated_targets
+            requested_targets = tuple(validated_targets)
 
         provider = _lane_provider(request_data)
         if not isinstance(provider, str):
@@ -1383,6 +1486,18 @@ def update_providers() -> Any:
             model = _validate_top_level_model(request_data["model"])
             if not isinstance(model, str):
                 return model
+        if has_resolution_targets and (
+            request_data["lane"] != "byo"
+            or provider != GOOGLE_PROVIDER
+            or model is None
+        ):
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=(
+                    f"{GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD} is only valid with "
+                    "Google BYO model saves."
+                ),
+            )
 
         def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
             providers_config = config.get("providers")
@@ -1391,6 +1506,12 @@ def update_providers() -> Any:
                 config["providers"] = providers_config
             old_providers = copy.deepcopy(providers_config)
             changed_fields: dict[str, Any] = {}
+            reported_targets = set(read_google_pro_alias_slots(config))
+            effective_targets = set(requested_targets) & reported_targets
+            restore_only = (
+                "confidential_prior" in requested_targets
+                and _confidential_lane_active_for_config(config)
+            )
             if model is not None:
                 _remember_byo_model(
                     config,
@@ -1399,13 +1520,17 @@ def update_providers() -> Any:
                     provider,
                     model,
                 )
-            _set_active_provider(
-                config,
-                old_providers,
-                changed_fields,
-                provider,
-                model,
-            )
+            # Active and remembered alias targets are satisfied by the existing writes.
+            if not restore_only:
+                _set_active_provider(
+                    config,
+                    old_providers,
+                    changed_fields,
+                    provider,
+                    model,
+                )
+            if model is not None and "confidential_prior" in effective_targets:
+                _update_confidential_prior_model(config, changed_fields, model)
             return JournalConfigMutation(
                 changed=bool(changed_fields),
                 value=changed_fields,

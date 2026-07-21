@@ -6,13 +6,26 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from solstone.apps.thinking.google_model_pins import (
+    GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
+    GOOGLE_PRO_ALIAS,
+)
 from solstone.convey import create_app
+from solstone.think.journal_io import LockTimeout
+from solstone.think.models import LOCAL_MODEL
+from solstone.think.providers.brain_state import (
+    begin_brain_refresh,
+    brain_fingerprint_key_path,
+    brain_state_path,
+    build_active_brain_fingerprint,
+    finish_brain_refresh,
+)
 from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from tests.helpers.journal_config import seed_journal_config
@@ -58,6 +71,32 @@ def _read_config(journal: Path) -> dict:
 def _write_config(payload: dict) -> None:
     payload.setdefault("setup", {"completed_at": 1700000000000})
     seed_journal_config(payload)
+
+
+def _ready_component(now: datetime) -> dict[str, str]:
+    return {
+        "status": "ok",
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+    }
+
+
+def _write_ready_brain_record(journal: Path) -> None:
+    now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    permit = begin_brain_refresh(now, journal_path=journal)
+    assert permit is not None
+    component = _ready_component(now)
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": component,
+            "lane_prerequisites": component,
+            "generate": component,
+            "cogitate": component,
+        },
+        now,
+        journal_path=journal,
+    )
 
 
 def _clear_confidential(journal: Path) -> None:
@@ -209,6 +248,343 @@ def test_enable_confidential_rejects_when_provenance_exists(thinking_client) -> 
 
     assert response.status_code == 400
     assert response.get_json()["reason_code"] == "invalid_operation_for_state"
+
+
+def test_google_prior_active_advisory_save_restores_without_hijacking_lane(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("prior-alias"))
+    _write_ready_brain_record(journal_copy)
+
+    before_config = _read_config(journal_copy)
+    key = brain_fingerprint_key_path(journal_path=journal_copy).read_bytes()
+    before_fingerprint = build_active_brain_fingerprint(before_config, hmac_key=key)
+    before_brain_bytes = brain_state_path(journal_path=journal_copy).read_bytes()
+    before = _providers(thinking_client)
+    assert before["active_lane"]["lane"] == "confidential"
+    assert before["active"] == {"provider": "local", "model": LOCAL_MODEL}
+    assert before["configuration_guidance"] is not None
+    assert before["configuration_guidance"][GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD] == [
+        "confidential_prior"
+    ]
+
+    exact_model = "gemini-3.5-flash"
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": exact_model,
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["confidential_prior"],
+        },
+    )
+
+    assert response.status_code == 200
+    after = response.get_json()
+    stored = _read_config(journal_copy)
+    assert after["active_lane"]["lane"] == "confidential"
+    assert after["active"] == {"provider": "local", "model": LOCAL_MODEL}
+    assert after["configuration_guidance"] is None
+    assert stored["providers"]["active"] == before_config["providers"]["active"]
+    assert stored["providers"]["local"] == before_config["providers"]["local"]
+    assert stored["providers"]["byo_models"]["google"] == exact_model
+    before_byo_models = before_config["providers"].get("byo_models", {})
+    after_byo_models = stored["providers"].get("byo_models", {})
+    assert {
+        key: value for key, value in after_byo_models.items() if key != "google"
+    } == {key: value for key, value in before_byo_models.items() if key != "google"}
+    before_confidential = before_config["services"]["confidential"]
+    after_confidential = stored["services"]["confidential"]
+    assert {
+        key: value for key, value in after_confidential.items() if key != "prior_active"
+    } == {
+        key: value
+        for key, value in before_confidential.items()
+        if key != "prior_active"
+    }
+    assert after_confidential["prior_active"]["provider"] == "google"
+    assert before_confidential["prior_active"]["model"] == GOOGLE_PRO_ALIAS
+    assert after_confidential["prior_active"]["model"] == exact_model
+    after_fingerprint = build_active_brain_fingerprint(stored, hmac_key=key)
+    assert before_fingerprint["active_lane"] == "spp"
+    assert after_fingerprint["active_lane"] == "spp"
+    assert (
+        before_fingerprint["fingerprint_sha256"]
+        == after_fingerprint["fingerprint_sha256"]
+    )
+    assert (
+        brain_state_path(journal_path=journal_copy).read_bytes() == before_brain_bytes
+    )
+
+
+def test_normal_byo_model_save_still_switches_when_confidential_active(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("normal-byo"))
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    stored = _read_config(journal_copy)
+    assert payload["active_lane"]["lane"] == "byo"
+    assert stored["providers"]["active"] == {
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+    }
+    assert (
+        stored["services"]["confidential"]["prior_active"]["model"] == GOOGLE_PRO_ALIAS
+    )
+
+
+def test_google_model_resolution_rejects_unknown_target_without_config_write(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("bad-token"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["not_real"],
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_config_value"
+    assert payload["detail"] == (
+        "Invalid Google model resolution targets: not_real. Must be one of: "
+        "active, confidential_prior, remembered"
+    )
+    assert config_path.read_bytes() == before
+    assert _providers(thinking_client)["configuration_guidance"] is not None
+
+
+def test_google_model_resolution_stale_confidential_target_remembers_without_hijack(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("stale-confidential-target"))
+    config = _read_config(journal_copy)
+    config["providers"]["byo_models"] = {}
+    config["services"]["confidential"]["prior_active"]["model"] = "gemini-3.5-flash"
+    _write_config(config)
+    before_config = _read_config(journal_copy)
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["confidential_prior"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    stored = _read_config(journal_copy)
+    assert payload["active_lane"]["lane"] == "confidential"
+    assert stored["providers"]["active"] == before_config["providers"]["active"]
+    assert stored["providers"]["local"] == before_config["providers"]["local"]
+    assert stored["providers"]["byo_models"]["google"] == "gemini-3.5-flash"
+    assert (
+        stored["services"]["confidential"]["prior_active"]
+        == before_config["services"]["confidential"]["prior_active"]
+    )
+    assert payload["configuration_guidance"] is None
+
+
+def test_google_model_resolution_stale_active_target_saves_normally(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "local",
+        "model": "local/qwen3.5-4b",
+    }
+    config["providers"]["byo_models"] = {}
+    config.setdefault("services", {}).pop("confidential", None)
+    config["providers"].pop("local", None)
+    _write_config(config)
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["active"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    stored = _read_config(journal_copy)
+    assert payload["active_lane"]["lane"] == "byo"
+    assert stored["providers"]["active"] == {
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+    }
+    assert stored["providers"]["byo_models"]["google"] == "gemini-3.5-flash"
+    assert payload["configuration_guidance"] is None
+
+
+def test_google_model_resolution_repeated_restore_request_is_noop(
+    thinking_client,
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actions: list[dict] = []
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.log_app_action",
+        lambda **kwargs: actions.append(kwargs),
+    )
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("repeat-restore"))
+    config_path = journal_copy / "config" / "journal.json"
+    request_payload = {
+        "lane": "byo",
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+        GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["confidential_prior"],
+    }
+
+    first = thinking_client.put("/app/thinking/api/providers", json=request_payload)
+
+    assert first.status_code == 200
+    assert len(actions) == 1
+    before_second = config_path.read_bytes()
+
+    second = thinking_client.put("/app/thinking/api/providers", json=request_payload)
+
+    assert second.status_code == 200
+    assert config_path.read_bytes() == before_second
+    assert len(actions) == 1
+    assert second.get_json()["configuration_guidance"] is None
+
+
+@pytest.mark.parametrize("reason_code", ["model_not_found", "key_missing"])
+def test_google_model_probe_failure_preserves_prior_alias(
+    thinking_client,
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    if reason_code == "key_missing":
+        config.get("env", {}).pop("GOOGLE_API_KEY", None)
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload(f"probe-{reason_code}"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+    if reason_code != "key_missing":
+        monkeypatch.setattr(
+            "solstone.apps.thinking.routes.validate_model",
+            lambda provider, model, api_key: {
+                "valid": False,
+                "reason_code": reason_code,
+                "error": "model did not answer",
+            },
+        )
+
+    response = thinking_client.post(
+        "/app/thinking/api/validate-model",
+        json={"provider": "google", "model": "gemini-3.5-flash"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["valid"] is False
+    assert payload["reason_code"] == reason_code
+    assert config_path.read_bytes() == before
+    assert _providers(thinking_client)["configuration_guidance"] is not None
+
+
+def test_google_model_resolution_lock_timeout_preserves_config_and_guidance(
+    thinking_client,
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _read_config(journal_copy)
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": GOOGLE_PRO_ALIAS,
+    }
+    _write_config(config)
+    spp.provision_confidential_handoff(_payload("lock-timeout"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.mutate_journal_config",
+        lambda apply: (_ for _ in ()).throw(
+            LockTimeout(path=config_path, timeout=0.01)
+        ),
+    )
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: ["confidential_prior"],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["reason_code"] == "config_busy"
+    assert config_path.read_bytes() == before
+    assert _providers(thinking_client)["configuration_guidance"] is not None
 
 
 def test_disable_confidential_restores_synchronously(

@@ -13,6 +13,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 ### Fixed
 
 - a model reply that comes back empty is now a failure everywhere: key and model checks, thinking-engine health, and daily analysis all agree, so one path no longer accepts a blank answer another path rejects.
+- choosing an exact Gemini model from Thinking's advisory now remembers it for when confidential processing is off, while sol keeps thinking with confidential processing now.
 
 ## [0.9.0] - 2026-07-19
 

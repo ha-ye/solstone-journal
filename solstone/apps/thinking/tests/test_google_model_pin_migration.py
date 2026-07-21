@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from solstone.apps.thinking.google_model_pins import (
+    GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
     GOOGLE_PRO_ALIAS,
     THINKING_BYO_MODEL_HREF,
     read_google_exact_model_advisory,
@@ -223,27 +224,45 @@ def test_migration_propagates_transaction_failures_without_partial_pin(
 
 
 @pytest.mark.parametrize(
-    "config",
+    ("config", "expected_targets"),
     [
-        {"providers": {"active": {"provider": "google", "model": GOOGLE_PRO_ALIAS}}},
-        {"providers": {"byo_models": {"google": GOOGLE_PRO_ALIAS}}},
-        {
-            "services": {
-                "confidential": {
-                    "prior_active": {"provider": "google", "model": GOOGLE_PRO_ALIAS}
+        (
+            {
+                "providers": {
+                    "active": {"provider": "google", "model": GOOGLE_PRO_ALIAS}
                 }
-            }
-        },
+            },
+            ["active"],
+        ),
+        (
+            {"providers": {"byo_models": {"google": GOOGLE_PRO_ALIAS}}},
+            ["remembered"],
+        ),
+        (
+            {
+                "services": {
+                    "confidential": {
+                        "prior_active": {
+                            "provider": "google",
+                            "model": GOOGLE_PRO_ALIAS,
+                        }
+                    }
+                }
+            },
+            ["confidential_prior"],
+        ),
     ],
 )
 def test_read_google_exact_model_advisory_is_content_free(
     config: dict[str, Any],
+    expected_targets: list[str],
 ) -> None:
     advisory = read_google_exact_model_advisory(config)
 
     assert advisory == {
         "id": "choose_exact_gemini_model",
         "heading": "choose an exact Gemini model",
+        GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: expected_targets,
         "action": {"label": "choose model", "href": THINKING_BYO_MODEL_HREF},
     }
     assert GOOGLE_PRO_ALIAS not in json.dumps(advisory)

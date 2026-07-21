@@ -354,7 +354,11 @@ def test_thinking_deck_copy_constants() -> None:
             "show what it costs per use yet."
         ),
         "model_save": "think with {label}",
+        "model_save_restore": "remember {label}",
         "model_saving": "checking {model} with your key…",
+        "model_saved_restore": (
+            "remembered {label}. sol keeps thinking with confidential processing now."
+        ),
         "probe_failed_save": ("your key works, but {model} didn't answer — {reason}."),
     }
     assert thinking_copy.LANE_SWITCH == {
