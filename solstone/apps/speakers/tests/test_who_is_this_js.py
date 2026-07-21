@@ -424,14 +424,16 @@ class FakeElement {
   }
   get textContent() {
     if (this.children.length) {
-      return this._text + this.children.map((child) => child.textContent).join('');
+      const ownText = this._text + this._html.replace(/<[^>]*>/g, '');
+      const childText = this.children.map((child) => child.textContent).join('');
+      return ownText + childText;
     }
     return this._text || this._html.replace(/<[^>]*>/g, '');
   }
   set textContent(value) {
+    this.replaceChildren();
     this._text = String(value ?? '');
     this._html = '';
-    this.replaceChildren();
   }
   get innerHTML() {
     return this._html;
@@ -654,6 +656,34 @@ function resolveApi(item, payload) {
   item.resolve(payload);
 }
 
+function queueApiResponse(queues, name, url) {
+  const item = deferred();
+  item.url = url;
+  queues[name].push(item);
+  return item.promise;
+}
+
+function dispatchHashChange(window) {
+  window.dispatchEvent({ type: 'hashchange', target: window });
+}
+
+function assertOwnerBannerVisible(document, expectedText = '') {
+  const target = document.getElementById('spkOwnerBanner');
+  assert.notStrictEqual(target.style.display, 'none');
+  assert.strictEqual(target.hidden, false);
+  assert(target.textContent.trim().length > 0);
+  if (expectedText) assert(target.textContent.includes(expectedText));
+  assert.strictEqual(document.activeElement, target);
+  return target;
+}
+
+function assertOwnerBannerHidden(document) {
+  const target = document.getElementById('spkOwnerBanner');
+  assert.strictEqual(target.style.display, 'none');
+  assert.strictEqual(target.innerHTML, '');
+  return target;
+}
+
 function speakerCopy() {
   return {
     SPK_ACTION_WHO_IS_THIS: 'who',
@@ -670,6 +700,12 @@ function speakerCopy() {
     SPK_OVERVIEW_QUALITY_ERROR_HEADING: 'quality failed',
     SPK_OVERVIEW_QUALITY_TEACHING_ZERO: 'teaching zero',
     SPK_THIS_IS_ME_GUIDANCE: 'guidance',
+    SPK_OWNER_TEACH_TITLE: 'teach title',
+    SPK_OWNER_TEACH_BODY: 'teach body',
+    SPK_OWNER_TEACH_LOADING: 'teach loading',
+    SPK_OWNER_TEACH_PROGRESS_TEMPLATE: '{count}/{minimum}',
+    SPK_OWNER_TEACH_START_LABEL: 'start',
+    SPK_OWNER_TEACH_PAUSE_LABEL: 'pause',
   };
 }
 
@@ -792,10 +828,12 @@ function makeWorkspaceContext(kind, options = {}) {
     segments: [],
     speakers: [],
     review: [],
+    ownerStatus: [],
   };
   const sheets = [];
   const fetchCalls = [];
   const apiCalls = [];
+  const windowListeners = {};
   const window = {
     SPEAKERS_CONTEXT: kind === 'overview'
       ? { isDay: false }
@@ -819,7 +857,14 @@ function makeWorkspaceContext(kind, options = {}) {
     Drawer: { preserveOpen(_node, render) { render(); } },
     GateDrawer: { render: () => '' },
     location: makeLocation(hash),
-    addEventListener() {},
+    addEventListener(type, handler) {
+      if (!windowListeners[type]) windowListeners[type] = [];
+      windowListeners[type].push(handler);
+    },
+    dispatchEvent(event) {
+      event.target = event.target || window;
+      (windowListeners[event.type] || []).forEach((handler) => handler(event));
+    },
     logError() {},
     formatDateShort: (day) => day,
     SpeakersWhoIsThis: {
@@ -850,9 +895,11 @@ function makeWorkspaceContext(kind, options = {}) {
   window.apiJson = (url) => {
     apiCalls.push({ url });
     if (url.includes('/api/owner/status')) {
+      if (config.deferOwnerStatus) return queueApiResponse(queues, 'ownerStatus', url);
       if (config.ownerStatusError) return Promise.reject(config.ownerStatusError);
       return Promise.resolve(ownerStatus);
     }
+    if (url.includes('/api/owner/detect')) return Promise.resolve({});
     if (url.includes('/api/review/')) return queueResponse(queues, 'review', url).then((r) => r.json());
     if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url).then((r) => r.json());
     throw new Error(`unexpected api ${url}`);
@@ -1374,7 +1421,274 @@ def test_workspace_non_today_this_is_me_routes_and_destination_focuses_owner_ban
           assert.strictEqual(destination.document.activeElement, target);
           assert.strictEqual(target.scrollIntoViewCalls.length, 1);
           assert.strictEqual(target.scrollIntoViewCalls[0].block, 'nearest');
-          assert.strictEqual(target.style.display, 'none');
+          assert.strictEqual(assertOwnerBannerVisible(destination.document, 'guidance'), target);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_handoff_keeps_banner_visible_for_confirmed_and_fallback() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          async function assertStatus(status) {
+            const harness = makeWorkspaceContext('day', {
+              hash: '#owner-teach',
+              ownerStatus: status,
+            });
+            await flush();
+            await flush();
+            assertOwnerBannerVisible(harness.document, 'guidance');
+          }
+
+          await assertStatus({ status: 'confirmed', centroid_metadata: {} });
+          await assertStatus({ status: 'unhandled_status' });
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_status_latest_authoritative_deferred_settles_old_first() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          function todayKey() {
+            const now = new Date();
+            return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+          }
+          const today = todayKey();
+          const harness = makeWorkspaceContext('day', {
+            day: today,
+            today,
+            hash: '#owner-teach',
+            deferOwnerStatus: true,
+          });
+          const { document, queues, window } = harness;
+          await flush();
+          await flush();
+          dispatchHashChange(window);
+          await flush();
+          assert.strictEqual(queues.ownerStatus.length, 2);
+
+          resolveApi(queues.ownerStatus[0], { status: 'candidate', samples: [] });
+          await flush();
+          await flush();
+          let target = assertOwnerBannerVisible(document, 'guidance');
+          assert(!target.textContent.includes('Is this your voice?'));
+
+          resolveApi(queues.ownerStatus[1], { status: 'no_cluster' });
+          await flush();
+          await flush();
+          target = assertOwnerBannerVisible(document, 'guidance');
+          assert(!target.textContent.includes('Is this your voice?'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_status_latest_authoritative_deferred_settles_new_first() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          function todayKey() {
+            const now = new Date();
+            return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+          }
+          const today = todayKey();
+          const harness = makeWorkspaceContext('day', {
+            day: today,
+            today,
+            hash: '#owner-teach',
+            deferOwnerStatus: true,
+          });
+          const { document, queues, window } = harness;
+          await flush();
+          await flush();
+          dispatchHashChange(window);
+          await flush();
+          assert.strictEqual(queues.ownerStatus.length, 2);
+
+          resolveApi(queues.ownerStatus[1], { status: 'no_cluster' });
+          await flush();
+          await flush();
+          let target = assertOwnerBannerVisible(document, 'guidance');
+          assert(!target.textContent.includes('Is this your voice?'));
+
+          resolveApi(queues.ownerStatus[0], { status: 'candidate', samples: [] });
+          await flush();
+          await flush();
+          target = assertOwnerBannerVisible(document, 'guidance');
+          assert(!target.textContent.includes('Is this your voice?'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_detection_followup_confirmed_keeps_banner() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day', {
+            hash: '#owner-teach',
+            deferOwnerStatus: true,
+          });
+          const { document, queues } = harness;
+          await flush();
+          await flush();
+
+          resolveApi(queues.ownerStatus[0], { status: 'needs_detection' });
+          await flush();
+          await flush();
+          assert.strictEqual(queues.ownerStatus.length, 2);
+          assertOwnerBannerVisible(document, 'teach loading');
+
+          resolveApi(queues.ownerStatus[1], { status: 'confirmed', centroid_metadata: {} });
+          await flush();
+          await flush();
+          assertOwnerBannerVisible(document, 'teach loading');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_detection_followup_no_cluster_keeps_banner() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day', {
+            hash: '#owner-teach',
+            deferOwnerStatus: true,
+          });
+          const { document, queues } = harness;
+          await flush();
+          await flush();
+
+          resolveApi(queues.ownerStatus[0], { status: 'needs_detection' });
+          await flush();
+          await flush();
+          assert.strictEqual(queues.ownerStatus.length, 2);
+          assertOwnerBannerVisible(document, 'teach loading');
+
+          resolveApi(queues.ownerStatus[1], { status: 'no_cluster' });
+          await flush();
+          await flush();
+          assertOwnerBannerVisible(document, 'teach loading');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_visible_outcome_replaces_guidance_without_refocus() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day', {
+            hash: '#owner-teach',
+            ownerStatus: { status: 'candidate', samples: [] },
+          });
+          const { document } = harness;
+          await flush();
+          await flush();
+
+          const target = assertOwnerBannerVisible(document, 'Is this your voice?');
+          assert(!target.textContent.includes('guidance'));
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_hashchange_owner_teach_begins_and_reuses_generation() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          function todayKey() {
+            const now = new Date();
+            return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+          }
+          const today = todayKey();
+          const harness = makeWorkspaceContext('day', {
+            day: today,
+            today,
+            hash: '',
+            deferOwnerStatus: true,
+          });
+          const { document, window } = harness;
+          await flush();
+          await flush();
+
+          window.location.hash = '#owner-teach';
+          dispatchHashChange(window);
+          await flush();
+          let target = assertOwnerBannerVisible(document, 'guidance');
+          const firstPanel = target.firstChild;
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+
+          dispatchHashChange(window);
+          await flush();
+          target = assertOwnerBannerVisible(document, 'guidance');
+          assert.strictEqual(target.firstChild, firstPanel);
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_hash_away_invalidates_late_status_settle() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day', {
+            hash: '#owner-teach',
+            deferOwnerStatus: true,
+          });
+          const { document, queues, window } = harness;
+          await flush();
+          await flush();
+
+          const target = assertOwnerBannerVisible(document, 'guidance');
+          const originalText = target.textContent;
+          const nextFocus = document.getElementById('spkSegmentList');
+          window.location.hash = '#seg-a';
+          nextFocus.focus();
+          dispatchHashChange(window);
+          await flush();
+
+          resolveApi(queues.ownerStatus[0], { status: 'candidate', samples: [] });
+          await flush();
+          await flush();
+          assert.strictEqual(document.activeElement, nextFocus);
+          assert.strictEqual(target.textContent, originalText);
+          assert(!target.textContent.includes('Is this your voice?'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_status_ordinary_load_still_hides_without_handoff() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          async function assertHidden(status) {
+            const harness = makeWorkspaceContext('day', {
+              hash: '',
+              ownerStatus: status,
+            });
+            await flush();
+            await flush();
+            assertOwnerBannerHidden(harness.document);
+          }
+
+          await assertHidden({ status: 'no_cluster' });
+          await assertHidden({ status: 'confirmed', centroid_metadata: {} });
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1395,11 +1709,10 @@ def test_workspace_owner_teach_route_state_failure_focuses_error_region() -> Non
           await flush();
 
           const target = document.getElementById('spkOwnerBanner');
-          assert.strictEqual(document.activeElement, target);
+          assert.strictEqual(assertOwnerBannerVisible(document, "Couldn't load owner status"), target);
           assert.strictEqual(target.scrollIntoViewCalls.length, 1);
           assert.strictEqual(target.scrollIntoViewCalls[0].block, 'nearest');
-          assert(target.innerHTML.includes("Couldn't load owner status"));
-          assert(target.innerHTML.includes('offline'));
+          assert(target.textContent.includes('offline'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )

@@ -1390,8 +1390,12 @@
   let ownerStatusData = null;
   let ownerTeachState = null;
   let ownerTeachPrincipalId = null;
+  // Teach-start intent drives sessions; handoff generation preserves explicit #owner-teach visibility.
   let ownerTeachStartRequested = false;
   let ownerTeachRequestId = 0;
+  let ownerTeachHandoffSeq = 0;
+  let ownerTeachHandoffGeneration = 0;
+  let ownerStatusRequestSeq = 0;
   let dayDiscoveryRequestSeq = 0;
   let segmentsRequestSeq = 0;
   let segmentSpeakersRequestSeq = 0;
@@ -1408,11 +1412,17 @@
     ownerBanner.scrollIntoView({ block: 'nearest' });
   }
 
+  function beginOwnerTeachHandoff() {
+    if (ownerTeachHandoffGeneration !== 0) return;
+    ownerTeachHandoffGeneration = ++ownerTeachHandoffSeq;
+    renderThisIsMeGuidance();
+    focusOwnerBanner();
+  }
+
   function initSpeakers() {
     ownerTeachStartRequested = window.location.hash.slice(1) === OWNER_TEACH_HASH;
     if (ownerTeachStartRequested) {
-      renderThisIsMeGuidance();
-      focusOwnerBanner();
+      beginOwnerTeachHandoff();
     }
     checkOwnerStatus();
     loadSegments();
@@ -1423,6 +1433,7 @@
         navigateToOwnerHelp();
         return;
       }
+      ownerTeachHandoffGeneration = 0;
       if (hash && !selectSegmentByKey(hash) && segments.length < segmentTotal) {
         loadUntilFound(hash);
       }
@@ -1562,8 +1573,7 @@
       logError: window.logError,
       formatDateShort: window.formatDateShort,
       onThisIsMe: () => {
-        renderThisIsMeGuidance();
-        focusOwnerBanner();
+        beginOwnerTeachHandoff();
         navigateToOwnerHelp();
       },
       onIdentified: ({ clusterId }) => {
@@ -1591,83 +1601,87 @@
     });
   }
 
-  function checkOwnerStatus() {
-    return window.apiJson('/app/speakers/api/owner/status')
-      .then(data => {
-        ownerStatusData = data;
-        if (data.status === 'confirmed') {
-          ownerDetectionInFlight = false;
-          const revealSource = ownerRevealPendingSource;
-          const reveal = ownerRevealDecision(ownerRevealShown, revealSource, data.status);
-          ownerRevealShown = reveal.nextLatchShown;
-          ownerTeachState = null;
-          ownerTeachStartRequested = false;
-          if (reveal.show) {
-            ownerRevealPendingSource = null;
-            hideDiscovery();
-            renderOwnerReveal(data, revealSource);
-            return data;
-          }
-          ownerRevealPendingSource = null;
-          hideOwnerBanner();
-          checkDiscovery();
-          return data;
-        }
-
-        if (ownerStatusStartsTeachSession(data)) {
-          hideDiscovery();
-          if (ownerTeachState?.active) {
-            ownerTeachState.statusData = data;
-            renderOwnerTeachSession();
-          } else if (ownerTeachStartRequested) {
-            startOwnerTeachSession(data);
-          } else {
-            renderOwnerNotReady(data);
-          }
-          if (data.status === 'needs_detection' && !ownerDetectionInFlight) {
-            ownerDetectionInFlight = true;
-            window.apiJson('/app/speakers/api/owner/detect', { method: 'POST' })
-              .then(() => {
-                ownerDetectionInFlight = false;
-                checkOwnerStatus();
-              })
-              .catch((err) => {
-                ownerDetectionInFlight = false;
-                renderOwnerBanner(`Couldn't analyze voice patterns — ${err.serverMessage}`);
-                window.logError(err, { context: 'speakers: owner detect failed' });
-              });
-          }
-          return data;
-        }
-
+  async function checkOwnerStatus() {
+    const requestSeq = ++ownerStatusRequestSeq;
+    const requestGeneration = ownerTeachHandoffGeneration;
+    const stale = () => requestSeq !== ownerStatusRequestSeq || requestGeneration !== ownerTeachHandoffGeneration;
+    try {
+      const data = await window.apiJson('/app/speakers/api/owner/status');
+      if (stale()) return;
+      ownerStatusData = data;
+      if (data.status === 'confirmed') {
         ownerDetectionInFlight = false;
-        if (data.status === 'no_cluster') {
-          ownerTeachState = null;
-          ownerTeachStartRequested = false;
-          hideDiscovery();
-          hideOwnerBanner();
-          return data;
-        }
-        if (data.status === 'candidate') {
-          ownerTeachState = null;
-          ownerTeachStartRequested = false;
-          hideDiscovery();
-          renderOwnerCandidate(data);
-          return data;
-        }
-
+        const revealSource = ownerRevealPendingSource;
+        const reveal = ownerRevealDecision(ownerRevealShown, revealSource, data.status);
+        ownerRevealShown = reveal.nextLatchShown;
         ownerTeachState = null;
         ownerTeachStartRequested = false;
-        hideOwnerBanner();
+        if (reveal.show) {
+          ownerRevealPendingSource = null;
+          hideDiscovery();
+          renderOwnerReveal(data, revealSource);
+          return data;
+        }
+        ownerRevealPendingSource = null;
+        hideOwnerBannerUnlessHandoff();
         checkDiscovery();
         return data;
-      })
-      .catch((err) => {
-        ownerDetectionInFlight = false;
+      }
+
+      if (ownerStatusStartsTeachSession(data)) {
         hideDiscovery();
-        renderOwnerBanner(`Couldn't load owner status — ${err.serverMessage}`);
-        window.logError(err, { context: 'speakers: checkOwnerStatus failed' });
-      });
+        if (ownerTeachState?.active) {
+          ownerTeachState.statusData = data;
+          renderOwnerTeachSession();
+        } else if (ownerTeachStartRequested) {
+          startOwnerTeachSession(data);
+        } else {
+          renderOwnerNotReady(data);
+        }
+        if (data.status === 'needs_detection' && !ownerDetectionInFlight) {
+          ownerDetectionInFlight = true;
+          window.apiJson('/app/speakers/api/owner/detect', { method: 'POST' })
+            .then(() => {
+              ownerDetectionInFlight = false;
+              checkOwnerStatus();
+            })
+            .catch((err) => {
+              ownerDetectionInFlight = false;
+              renderOwnerBanner(`Couldn't analyze voice patterns — ${err.serverMessage}`);
+              window.logError(err, { context: 'speakers: owner detect failed' });
+            });
+        }
+        return data;
+      }
+
+      ownerDetectionInFlight = false;
+      if (data.status === 'no_cluster') {
+        ownerTeachState = null;
+        ownerTeachStartRequested = false;
+        hideDiscovery();
+        hideOwnerBannerUnlessHandoff();
+        return data;
+      }
+      if (data.status === 'candidate') {
+        ownerTeachState = null;
+        ownerTeachStartRequested = false;
+        hideDiscovery();
+        renderOwnerCandidate(data);
+        return data;
+      }
+
+      ownerTeachState = null;
+      ownerTeachStartRequested = false;
+      hideOwnerBannerUnlessHandoff();
+      checkDiscovery();
+      return data;
+    } catch (err) {
+      if (stale()) return;
+      ownerDetectionInFlight = false;
+      hideDiscovery();
+      renderOwnerBanner(`Couldn't load owner status — ${err.serverMessage}`);
+      window.logError(err, { context: 'speakers: checkOwnerStatus failed' });
+    }
   }
 
   function renderOwnerBanner(message) {
@@ -1683,6 +1697,11 @@
   function hideOwnerBanner() {
     ownerBanner.style.display = 'none';
     ownerBanner.innerHTML = '';
+  }
+
+  function hideOwnerBannerUnlessHandoff() {
+    if (ownerTeachHandoffGeneration !== 0) return;
+    hideOwnerBanner();
   }
 
   function renderOwnerCandidate(data) {
@@ -1924,6 +1943,7 @@
       return;
     }
     ownerTeachStartRequested = true;
+    beginOwnerTeachHandoff();
     if (window.location.hash.slice(1) !== OWNER_TEACH_HASH) {
       window.location.hash = OWNER_TEACH_HASH;
     }
