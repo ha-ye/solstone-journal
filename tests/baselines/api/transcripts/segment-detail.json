@@ -219,7 +219,6 @@
     "TR_SPEAKER_NO_EMBEDDING": "voice sample unavailable",
     "TR_SPEAKER_OWNER_IDENTITY_REQUIRED": "set your identity before tagging yourself",
     "TR_SPEAKER_OWNER_TOO_CLOSE": "that voice is too close to yours to save there",
-    "TR_SPEAKER_PICKER_DISCOVERY_LINK": "open speaker discovery",
     "TR_SPEAKER_PICKER_EMPTY": "no known voices yet",
     "TR_SPEAKER_PICKER_NO_RESULTS": "no matching people",
     "TR_SPEAKER_PICKER_OWNER": "this is me",
@@ -229,6 +228,7 @@
     "TR_SPEAKER_PROPAGATION_APPLY": "apply changes",
     "TR_SPEAKER_PROPAGATION_DISMISS": "dismiss",
     "TR_SPEAKER_PROPAGATION_OFFER": "{count} more statements may need this change",
+    "TR_SPEAKER_SOMEONE_ELSE": "someone else…",
     "TR_SPEAKER_UNKNOWN_CHIP": "unknown voice"
   },
   "video_files": {},

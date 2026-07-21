@@ -3,7 +3,10 @@
 
 from pathlib import Path
 
-from solstone.apps.transcripts.copy import transcripts_copy_payload
+from solstone.apps.transcripts.copy import (
+    TR_SPEAKER_SOMEONE_ELSE,
+    transcripts_copy_payload,
+)
 from solstone.think.importers import health_schema
 
 
@@ -386,9 +389,35 @@ def test_workspace_html_speaker_picker_markup_and_data_contract():
     assert "payload?.speakers" in text
     assert "payload.success" not in text
     assert "voices.length > 7" in text
-    assert 'href="/app/speakers"' in text
-    assert "#new-voices" not in text
-    assert "Someone new" not in text
+    assert 'data-speaker-handoff="statement"' in text
+    assert "function speakerStatementHandoffUrl(trigger)" in text
+    assert "return `/app/speakers?${query}`;" in text
+    for param in (
+        "'voice_day'",
+        "'voice_stream'",
+        "'voice_segment_key'",
+        "'voice_source'",
+        "'voice_sentence_id'",
+    ):
+        assert param in text
+    assert "encodeURIComponent(value)" in text
+    handoff_branch = text.split(
+        "if (option.dataset.speakerHandoff === 'statement')",
+        1,
+    )[1].split("const target = {", 1)[0]
+    assert "navigateSpeakerStatementHandoff(trigger);" in handoff_branch
+    for mutating_route in (
+        "assign-attribution",
+        "correct-attribution",
+        "owner/tag-cli",
+        "propagate-correction",
+    ):
+        assert mutating_route not in handoff_branch
+    assert TR_SPEAKER_SOMEONE_ELSE == "someone else…"
+    assert "TR_SPEAKER_SOMEONE_ELSE: TR_COPY.TR_SPEAKER_SOMEONE_ELSE || ''" in text
+    assert "someone_else" in text
+    assert "speaker-picker-create" not in text
+    assert "create_new" not in text
 
 
 def test_workspace_html_speaker_picker_focus_and_touch_targets():

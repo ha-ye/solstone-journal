@@ -1935,10 +1935,6 @@ body.has-app-bar .tr-zoom {
   color: #6b7280;
 }
 
-.tr-speaker-picker-tail a {
-  color: #374151;
-}
-
 .tr-speaker-status {
   display: flex;
   align-items: center;
@@ -4362,7 +4358,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       TR_SPEAKER_PICKER_SEARCH_PLACEHOLDER: TR_COPY.TR_SPEAKER_PICKER_SEARCH_PLACEHOLDER || '',
       TR_SPEAKER_PICKER_OWNER: TR_COPY.TR_SPEAKER_PICKER_OWNER || '',
       TR_SPEAKER_PICKER_EMPTY: TR_COPY.TR_SPEAKER_PICKER_EMPTY || '',
-      TR_SPEAKER_PICKER_DISCOVERY_LINK: TR_COPY.TR_SPEAKER_PICKER_DISCOVERY_LINK || '',
+      TR_SPEAKER_SOMEONE_ELSE: TR_COPY.TR_SPEAKER_SOMEONE_ELSE || '',
       TR_SPEAKER_PICKER_NO_RESULTS: TR_COPY.TR_SPEAKER_PICKER_NO_RESULTS || '',
       TR_SPEAKER_UNKNOWN_CHIP: TR_COPY.TR_SPEAKER_UNKNOWN_CHIP || '',
       TR_SPEAKER_HEDGE_PROBABLE: TR_COPY.TR_SPEAKER_HEDGE_PROBABLE || '',
@@ -4547,7 +4543,14 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         name: String(voice.name || voice.entity_id || ''),
         entity_id: String(voice.entity_id || ''),
         isOwner: false
-      }))
+      })),
+      {
+        kind: 'someone_else',
+        name: trCopy('TR_SPEAKER_SOMEONE_ELSE'),
+        entity_id: '',
+        isOwner: false,
+        handoff: true
+      }
     ];
   }
 
@@ -4625,6 +4628,25 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     }
   }
 
+  function speakerStatementHandoffUrl(trigger) {
+    const pairs = [
+      ['voice_day', trigger.dataset.day || day || ''],
+      ['voice_stream', trigger.dataset.stream || selectedSegment?.stream || ''],
+      ['voice_segment_key', trigger.dataset.segmentKey || selectedSegment?.key || ''],
+      ['voice_source', trigger.dataset.speakerSource || ''],
+      ['voice_sentence_id', trigger.dataset.sentenceId || '']
+    ];
+    const query = pairs
+      .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+      .join('&');
+    return `/app/speakers?${query}`;
+  }
+
+  function navigateSpeakerStatementHandoff(trigger) {
+    closeSpeakerPicker({ restoreFocus: false });
+    window.location.href = speakerStatementHandoffUrl(trigger);
+  }
+
   function renderSpeakerPickerContent(popover, trigger, voices, query = '') {
     const showSearch = voices.length > 7;
     const options = speakerPickerOptions(voices, query);
@@ -4646,12 +4668,12 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
             data-speaker-option="${escapeHtml(option.kind)}"
             data-speaker-id="${escapeHtml(option.entity_id)}"
             data-speaker-name="${escapeHtml(option.name)}"
+            ${option.handoff ? 'data-speaker-handoff="statement"' : ''}
           >${escapeHtml(option.name)}</button>
         `).join('')}
       </div>
       <div class="tr-speaker-picker-tail">
         ${emptyText ? `<div>${escapeHtml(emptyText)}</div>` : ''}
-        <a href="/app/speakers">${escapeHtml(trCopy('TR_SPEAKER_PICKER_DISCOVERY_LINK'))}</a>
       </div>
     `;
 
@@ -4669,6 +4691,10 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       option.addEventListener('click', e => {
         e.preventDefault();
         e.stopPropagation();
+        if (option.dataset.speakerHandoff === 'statement') {
+          navigateSpeakerStatementHandoff(trigger);
+          return;
+        }
         const target = {
           isOwner: option.dataset.speakerOption === 'owner',
           entityId: option.dataset.speakerId || '',

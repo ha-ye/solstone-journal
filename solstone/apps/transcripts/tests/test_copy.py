@@ -11,6 +11,7 @@ from pathlib import Path
 from solstone.apps.transcripts.copy import (
     SPEAKER_LABEL_SOURCE_AMBIGUOUS_MESSAGE,
     SPEAKER_LABELS_UNAVAILABLE_MESSAGE,
+    TR_SPEAKER_SOMEONE_ELSE,
     transcripts_copy_payload,
     transcripts_copy_values,
 )
@@ -62,6 +63,10 @@ def test_copy_values_flatten_payload_values():
     assert sorted(transcripts_copy_values()) == sorted(
         value for value in payload.values() if isinstance(value, str)
     )
+
+
+def test_voice_handoff_copy_matches_locked_bytes():
+    assert TR_SPEAKER_SOMEONE_ELSE == "someone else…"
 
 
 def test_copy_avoids_surveillance_verbs():
