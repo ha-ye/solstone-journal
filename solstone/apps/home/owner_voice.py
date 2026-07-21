@@ -78,9 +78,11 @@ def _recurring_voice_need(_today: str) -> dict[str, Any] | None:
             for cluster_id, records in eligible_clusters
             if not cluster_dismissal_suppressed(records)
         ]
-    except ClusterDismissalStoreError:
+    except ClusterDismissalStoreError as exc:
         logger.warning(
-            "owner voice recurring need suppressed: dismissal store unreadable",
+            "owner voice recurring need suppressed: dismissal store unreadable "
+            "or candidate provenance invalid: %s",
+            exc,
             exc_info=True,
         )
         return None

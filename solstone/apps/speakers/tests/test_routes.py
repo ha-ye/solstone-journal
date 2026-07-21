@@ -1714,14 +1714,14 @@ def test_retired_voice_confirm_strings_absent():
     hits: list[tuple[str, str]] = []
     for root in (Path("solstone"), Path("tests")):
         for path in root.rglob("*"):
+            if "__pycache__" in path.parts:
+                continue
             if not path.is_file() or path.suffix not in {
                 ".py",
                 ".html",
                 ".js",
                 ".json",
             }:
-                continue
-            if Path("tests/baselines") in path.parents:
                 continue
             text = path.read_text(encoding="utf-8")
             for value in retired:

@@ -552,7 +552,7 @@ def test_owner_voice_recurring_selects_deterministically(tmp_path, monkeypatch):
             _discovery_record("20260718", "sys", "090000_300", sentence_id=1),
             _discovery_record("20260718", "sys", "090000_300", sentence_id=2),
             _discovery_record("20260718", "sys", "091000_300", sentence_id=1),
-            _discovery_record("20260718", "sys", "091000_300", sentence_id=2),
+            _discovery_record("20260718", "sys", "092000_300", sentence_id=1),
         ],
         "7": [
             _discovery_record("20260719", "mic", "090000_300", sentence_id=1),
@@ -689,7 +689,8 @@ def test_owner_voice_recurring_dismissal_store_error_fails_closed(
     with caplog.at_level(logging.WARNING, logger="solstone.apps.home.owner_voice"):
         assert build_owner_voice_needs("20260720") == []
 
-    assert "dismissal store unreadable" in caplog.text
+    assert "dismissal store unreadable or candidate provenance invalid" in caplog.text
+    assert "malformed cluster dismissal JSONL" in caplog.text
 
 
 def test_owner_voice_recurring_count_less_than_one_fails_closed(
@@ -703,15 +704,29 @@ def test_owner_voice_recurring_count_less_than_one_fails_closed(
         journal,
         {
             "1": [
-                {"day": "20260718", "stream": "mic", "segment_key": "090000_300"},
-                {"day": "20260718", "stream": "mic", "segment_key": "091000_300"},
-                {"day": "20260718", "stream": "mic", "segment_key": "092000_300"},
+                {
+                    "day": "20260718",
+                    "stream": "mic",
+                    "segment_key": "090000_300",
+                    "source": None,
+                    "sentence_id": 1,
+                },
+                {
+                    "day": "20260718",
+                    "stream": "mic",
+                    "segment_key": "091000_300",
+                    "source": None,
+                    "sentence_id": 1,
+                },
+                {
+                    "day": "20260718",
+                    "stream": "mic",
+                    "segment_key": "092000_300",
+                    "source": None,
+                    "sentence_id": 1,
+                },
             ]
         },
-    )
-    monkeypatch.setattr(
-        "solstone.apps.home.owner_voice.cluster_dismissal_suppressed",
-        lambda _records: False,
     )
     monkeypatch.setattr(
         "solstone.apps.home.owner_voice.load_owner_centroid",
