@@ -338,7 +338,7 @@ wheel-macos: parakeet-helper
 	rm -rf build/ *.egg-info/
 	$(UV) build --wheel -C--build-option=--plat-name=macosx_14_0_arm64
 	@echo "==> building macosx_14_0_arm64 solstone-core wheel"
-	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--target aarch64-apple-darwin" $(UV) build --package solstone-core --wheel
+	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core --wheel
 	@echo "==> signing and notarizing solstone-core"
 	@CORE_MAC_WHEEL=$$(ls dist/solstone_core-*-macosx_14_0_arm64.whl); \
 	CORE_TMP=$$(mktemp -d); \

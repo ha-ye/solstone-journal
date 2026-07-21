@@ -7,8 +7,10 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -86,6 +88,10 @@ def _assert_formatted_redacted(
         assert needle not in stderr
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def _rustc_lines(host: str = "x86_64-unknown-linux-gnu") -> list[str]:
     return checker.fixture_rustc_verbose(host).split("\n")
 
@@ -148,6 +154,36 @@ def test_macos_swift_pin_requires_exact_full_grounded_output() -> None:
         f"{exact} ",
     )
     assert all(observed != pins.MACOS_SWIFT_PIN for observed in skewed_observations)
+
+
+def test_build_system_pins_match_release_tool_pins() -> None:
+    root = _repo_root()
+    setuptools_projects = (
+        root / "pyproject.toml",
+        root / "packages" / "solstone-journal" / "pyproject.toml",
+        root / "packages" / "solstone-journal-cuda" / "pyproject.toml",
+        root / "packages" / "solstone-journal-models" / "pyproject.toml",
+    )
+    for path in setuptools_projects:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        assert data["build-system"]["requires"] == list(pins.SETUPTOOLS_BUILD_REQUIRES)
+
+    core_data = tomllib.loads(
+        (root / "packages" / "solstone-core" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert core_data["build-system"]["requires"] == [pins.MATURIN_REQUIREMENT]
+
+
+def test_all_macos_maturin_invocations_are_locked() -> None:
+    makefile = (_repo_root() / "Makefile").read_text(encoding="utf-8")
+    assignments = re.findall(
+        r'MATURIN_PEP517_ARGS="([^"]*aarch64-apple-darwin[^"]*)"', makefile
+    )
+
+    assert assignments
+    assert all("--locked" in args.split() for args in assignments)
 
 
 def _manifest_for_lane(release_dir: Path, lane: checker.LaneName) -> Path:
