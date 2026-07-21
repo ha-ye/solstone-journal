@@ -28,6 +28,8 @@ tests/fixtures/journal/chronicle/*/health/*.jsonl
 .sandbox.journal
 build/
 core/target/
+/dist/
+/target/
 tmp/
 /sol/
 .sol/
