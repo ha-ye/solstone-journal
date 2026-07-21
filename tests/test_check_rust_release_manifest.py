@@ -9,7 +9,9 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,6 +29,30 @@ def _errors(failures: list[checker.Failure]) -> set[str]:
 
 def _assert_error(failures: list[checker.Failure], error: str) -> None:
     assert error in _errors(failures)
+
+
+def _assert_redacted(
+    failures: list[checker.Failure], forbidden: tuple[str, ...]
+) -> None:
+    for failure in failures:
+        fields = (failure.error, failure.expected, failure.actual, failure.repair)
+        for needle in forbidden:
+            assert all(needle not in field for field in fields)
+
+
+def _assert_formatted_redacted(
+    failures: list[checker.Failure],
+    forbidden: tuple[str, ...],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    checker._format_failures(failures)
+    stderr = capsys.readouterr().err
+    for needle in forbidden:
+        assert needle not in stderr
+
+
+def _rustc_lines(host: str = "x86_64-unknown-linux-gnu") -> list[str]:
+    return checker.fixture_rustc_verbose(host).split("\n")
 
 
 def _candidate(
@@ -479,13 +505,316 @@ def test_rustc_verbose_rejects_malformed_spoof_and_mixed_labeled_lines(
     manifest = _manifest_for_lane(release_dir, "source")
     payload = _load_manifest(manifest)
     payload["rust"]["rustc_verbose"] = payload["rust"]["rustc_verbose"].replace(
-        "LLVM version: 21.0.0", "LLVM version: 22.0.0"
+        f"LLVM version: {checker.RUSTC_LLVM_PIN}", "LLVM version: 22.0.0"
     )
     _write_manifest(manifest, payload)
     failures = checker.validate_release_dir(
         release_dir, expected_source_commit=VALID_COMMIT
     )
-    _assert_error(failures, "Rust evidence differs outside permitted host field")
+    _assert_error(failures, "rustc_verbose is malformed")
+
+
+def test_rust_evidence_rejects_uniformly_wrong_toolchain_pins(tmp_path: Path) -> None:
+    release_dir = _candidate(tmp_path)
+    wrong_rustc = "\n".join(
+        [
+            "rustc 1.96.0 (111111111 2026-01-01)",
+            "binary: rustc",
+            "commit-hash: 1111111111111111111111111111111111111111",
+            "commit-date: 2026-01-01",
+            "host: x86_64-unknown-linux-gnu",
+            "release: 1.96.0",
+            "LLVM version: 21.0.0",
+        ]
+    )
+    for lane in checker.LANES:
+        manifest = _manifest_for_lane(release_dir, lane)
+        payload = _load_manifest(manifest)
+        payload["rust"]["rustc_verbose"] = wrong_rustc.replace(
+            "x86_64-unknown-linux-gnu", checker.LANE_HOSTS[lane]
+        )
+        payload["rust"]["cargo_version"] = "cargo 1.96.0 (222222222 2026-01-01)"
+        payload["dependency_policy"]["cargo_deny_version"] = "cargo-deny 0.1.0"
+        _write_manifest(manifest, payload)
+
+    failures = checker.validate_release_dir(
+        release_dir, expected_source_commit=VALID_COMMIT
+    )
+
+    _assert_error(failures, "rustc_verbose is malformed")
+    _assert_error(failures, "cargo_version is malformed")
+    _assert_error(failures, "cargo_deny_version is not pinned")
+
+
+def test_rustc_verbose_rejects_wrong_binary(tmp_path: Path) -> None:
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["rustc_verbose"] = payload["rust"]["rustc_verbose"].replace(
+        f"binary: {checker.RUSTC_BINARY_PIN}", "binary: rustdoc"
+    )
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_manifest_file(manifest)
+
+    _assert_error(failures, "rustc_verbose is malformed")
+
+
+def test_rustc_verbose_rejects_missing_duplicate_unknown_labels(
+    tmp_path: Path,
+) -> None:
+    cases: tuple[tuple[str, list[str]], ...] = (
+        ("missing", _rustc_lines()[:3] + _rustc_lines()[4:]),
+        (
+            "duplicate",
+            [
+                *_rustc_lines()[:4],
+                f"commit-date: {checker.RUSTC_COMMIT_DATE_PIN}",
+                *_rustc_lines()[5:],
+            ],
+        ),
+        (
+            "unknown",
+            [
+                *_rustc_lines()[:5],
+                "channel: stable",
+                _rustc_lines()[6],
+            ],
+        ),
+    )
+    for name, lines in cases:
+        release_dir = _candidate(tmp_path / name)
+        manifest = _manifest_for_lane(release_dir, "source")
+        payload = _load_manifest(manifest)
+        payload["rust"]["rustc_verbose"] = "\n".join(lines)
+        _write_manifest(manifest, payload)
+
+        failures = checker.validate_manifest_file(manifest)
+
+        _assert_error(failures, "rustc_verbose is malformed")
+
+
+def test_rustc_verbose_rejects_wrong_commit_date_release_llvm_and_bad_host(
+    tmp_path: Path,
+) -> None:
+    replacements = (
+        (
+            "commit",
+            f"commit-hash: {checker.RUSTC_COMMIT_HASH_PIN}",
+            "commit-hash: " + "b" * 40,
+        ),
+        (
+            "date",
+            f"commit-date: {checker.RUSTC_COMMIT_DATE_PIN}",
+            "commit-date: 2026-01-01",
+        ),
+        ("release", f"release: {checker.RUSTC_RELEASE_PIN}", "release: 1.96.0"),
+        ("llvm", f"LLVM version: {checker.RUSTC_LLVM_PIN}", "LLVM version: 21.0.0"),
+    )
+    for name, old, new in replacements:
+        release_dir = _candidate(tmp_path / name)
+        manifest = _manifest_for_lane(release_dir, "source")
+        payload = _load_manifest(manifest)
+        payload["rust"]["rustc_verbose"] = payload["rust"]["rustc_verbose"].replace(
+            old, new
+        )
+        _write_manifest(manifest, payload)
+
+        failures = checker.validate_manifest_file(manifest)
+
+        _assert_error(failures, "rustc_verbose is malformed")
+
+    release_dir = _candidate(tmp_path / "host")
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["rustc_verbose"] = checker.fixture_rustc_verbose("localhost")
+    _write_manifest(manifest, payload)
+    failures = checker.validate_manifest_file(manifest)
+    _assert_error(failures, "rustc_verbose contains disallowed content")
+    _assert_error(failures, "rustc host is not an allowed build host")
+
+
+def test_rustc_verbose_rejects_blank_interstitial_reordered_and_extra_lines(
+    tmp_path: Path,
+) -> None:
+    lines = _rustc_lines()
+    cases: tuple[tuple[str, list[str]], ...] = (
+        ("blank", [*lines[:3], "", *lines[3:]]),
+        ("reordered", [lines[0], lines[2], lines[1], *lines[3:]]),
+        ("extra", [*lines, "extra: public"]),
+    )
+    for name, rustc_lines in cases:
+        release_dir = _candidate(tmp_path / name)
+        manifest = _manifest_for_lane(release_dir, "source")
+        payload = _load_manifest(manifest)
+        payload["rust"]["rustc_verbose"] = "\n".join(rustc_lines)
+        _write_manifest(manifest, payload)
+
+        failures = checker.validate_manifest_file(manifest)
+
+        _assert_error(failures, "rustc_verbose is malformed")
+
+
+def test_rust_evidence_redacts_canaries_from_failures_and_formatted_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    token = "sk-abcdefghijklmnopqrstuvwx"
+    private_path = "/Users/jer/.cargo/bin"
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["rustc_verbose"] = "\n".join(
+        [*_rustc_lines(), f"leak: {token} {private_path}"]
+    )
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_release_dir(
+        release_dir, expected_source_commit=VALID_COMMIT
+    )
+
+    assert failures
+    _assert_error(failures, "rustc_verbose contains disallowed content")
+    _assert_redacted(failures, (token, private_path))
+    _assert_formatted_redacted(failures, (token, private_path), capsys)
+
+
+def test_cargo_and_cargo_deny_pins_are_enforced_without_echoing_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    token = "sk-abcdefghijklmnopqrstuvwx"
+    private_path = "/Users/jer/.cargo/bin"
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["cargo_version"] = f"cargo 1.96.0 ({token} 2026-01-01)"
+    payload["dependency_policy"]["cargo_deny_version"] = (
+        f"cargo-deny 0.1.0 {private_path} {token}"
+    )
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_manifest_file(manifest)
+
+    _assert_error(failures, "cargo_version is malformed")
+    _assert_error(failures, "cargo_deny_version is not pinned")
+    _assert_error(failures, "cargo_version contains disallowed content")
+    _assert_error(failures, "cargo_deny_version contains disallowed content")
+    _assert_redacted(failures, (token, private_path))
+    _assert_formatted_redacted(failures, (token, private_path), capsys)
+
+
+def test_cargo_and_cargo_deny_reject_surrounding_whitespace_and_control(
+    tmp_path: Path,
+) -> None:
+    cargo_variants = (
+        " " + checker.CARGO_VERSION_PIN,
+        checker.CARGO_VERSION_PIN + " ",
+        checker.CARGO_VERSION_PIN + "\n",
+        checker.CARGO_VERSION_PIN + "\t",
+        checker.CARGO_VERSION_PIN + "\x00",
+    )
+    for index, variant in enumerate(cargo_variants):
+        release_dir = _candidate(tmp_path / f"cargo-{index}")
+        manifest = _manifest_for_lane(release_dir, "source")
+        payload = _load_manifest(manifest)
+        payload["rust"]["cargo_version"] = variant
+        _write_manifest(manifest, payload)
+
+        failures = checker.validate_manifest_file(manifest)
+
+        _assert_error(failures, "cargo_version is malformed")
+        _assert_redacted(failures, (variant,))
+
+    cargo_deny_variants = (
+        " " + checker.CARGO_DENY_PIN,
+        checker.CARGO_DENY_PIN + " ",
+        checker.CARGO_DENY_PIN + "\n",
+        checker.CARGO_DENY_PIN + "\t",
+        checker.CARGO_DENY_PIN + "\x00",
+    )
+    for index, variant in enumerate(cargo_deny_variants):
+        release_dir = _candidate(tmp_path / f"deny-{index}")
+        manifest = _manifest_for_lane(release_dir, "source")
+        payload = _load_manifest(manifest)
+        payload["dependency_policy"]["cargo_deny_version"] = variant
+        _write_manifest(manifest, payload)
+
+        failures = checker.validate_manifest_file(manifest)
+
+        _assert_error(failures, "cargo_deny_version is not pinned")
+        _assert_redacted(failures, (variant,))
+
+
+def test_generate_rejects_cargo_and_cargo_deny_surrounding_whitespace_and_redacts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evidence = checker.fixture_evidence_by_lane()
+    cargo_evidence = dict(evidence)
+    cargo_evidence["source"] = replace(
+        evidence["source"], cargo_version=checker.CARGO_VERSION_PIN + " "
+    )
+
+    failures = checker.write_inert_candidate(
+        tmp_path / "gen-cargo",
+        include_models=False,
+        evidence_by_lane=cargo_evidence,
+    )
+
+    assert failures
+    _assert_error(failures, "cargo_version is malformed")
+
+    deny_evidence = dict(evidence)
+    deny_evidence["source"] = replace(
+        evidence["source"], cargo_deny_version=" " + checker.CARGO_DENY_PIN
+    )
+
+    failures = checker.write_inert_candidate(
+        tmp_path / "gen-deny",
+        include_models=False,
+        evidence_by_lane=deny_evidence,
+    )
+
+    assert failures
+    _assert_error(failures, "cargo_deny_version is not pinned")
+
+    private_path = "/Users/jer/.cargo"
+    token = "sk-abcdefghijklmnopqrstuvwx"
+    deny_canary_evidence = dict(evidence)
+    deny_canary_evidence["source"] = replace(
+        evidence["source"],
+        cargo_deny_version=f"{checker.CARGO_DENY_PIN} {private_path} {token}",
+    )
+
+    failures = checker.write_inert_candidate(
+        tmp_path / "gen-deny-canary",
+        include_models=False,
+        evidence_by_lane=deny_canary_evidence,
+    )
+
+    assert failures
+    _assert_error(failures, "cargo_deny_version is not pinned")
+    _assert_error(failures, "cargo_deny_version contains disallowed content")
+    _assert_redacted(failures, (private_path, token))
+    _assert_formatted_redacted(failures, (private_path, token), capsys)
+
+
+def test_rust_evidence_accepts_pinned_linux_and_macos_hosts() -> None:
+    cases: tuple[tuple[checker.LaneName, str], ...] = (
+        ("source", "x86_64-unknown-linux-gnu"),
+        ("macos-arm64", "aarch64-apple-darwin"),
+    )
+    for lane, host in cases:
+        rustc, cargo, failures = checker._validate_rust_for_lane(
+            lane,
+            {
+                "rustc_verbose": checker.fixture_rustc_verbose(host),
+                "cargo_version": checker.CARGO_VERSION_PIN,
+            },
+        )
+
+        assert failures == []
+        assert rustc is not None
+        assert rustc.host == host
+        assert cargo == checker.CARGO_RELEASE_PIN
 
 
 def test_native_tools_allowlists_by_lane() -> None:
@@ -776,6 +1105,93 @@ def test_build_and_promote_candidate_removes_ready_on_post_promotion_failure(
 
     _assert_error(failures, "artifact sha256 does not match manifest")
     assert not ready.exists()
+    assert not (tmp_path / "ready.quarantine").exists()
+
+
+def test_build_and_promote_candidate_quarantines_ready_when_post_promote_hook_raises(
+    tmp_path: Path,
+) -> None:
+    ready = tmp_path / "ready"
+
+    def fail_after_promote(_path: Path) -> None:
+        raise RuntimeError("hook boom")
+
+    with pytest.raises(RuntimeError, match="hook boom"):
+        _build_ready(tmp_path, hook=fail_after_promote)
+
+    assert not ready.exists()
+    assert not (tmp_path / "ready.staging").exists()
+    assert not (tmp_path / "ready.quarantine").exists()
+
+    ready, failures = _build_ready(tmp_path)
+    assert failures == []
+    assert ready.is_dir()
+
+
+def test_build_and_promote_candidate_quarantines_ready_when_final_validator_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "ready"
+
+    def fail_final_validator(
+        _release_dir: Path,
+        *,
+        expected_source_commit: str | None,
+        schema_path: Path = checker.SCHEMA_PATH,
+    ) -> list[checker.Failure]:
+        raise RuntimeError("validator boom")
+
+    monkeypatch.setattr(checker, "_final_validate_release_dir", fail_final_validator)
+    with pytest.raises(RuntimeError, match="validator boom"):
+        _build_ready(tmp_path)
+
+    assert not ready.exists()
+    assert not (tmp_path / "ready.staging").exists()
+    assert not (tmp_path / "ready.quarantine").exists()
+
+    monkeypatch.undo()
+    ready, failures = _build_ready(tmp_path)
+    assert failures == []
+    assert ready.is_dir()
+
+
+def test_build_and_promote_candidate_leaves_quarantine_not_ready_when_quarantine_delete_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "ready"
+    quarantine = tmp_path / "ready.quarantine"
+    hook_error = RuntimeError("hook boom")
+    real_rmtree = checker.shutil.rmtree
+
+    def fail_after_promote(_path: Path) -> None:
+        raise hook_error
+
+    def rmtree(path: Path, *args: Any, **kwargs: Any) -> None:
+        if Path(path) == quarantine:
+            raise OSError("delete failed")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(checker.shutil, "rmtree", rmtree)
+    with pytest.raises(
+        RuntimeError, match="release candidate quarantine could not be removed"
+    ) as exc_info:
+        _build_ready(tmp_path, hook=fail_after_promote)
+
+    assert exc_info.value.__cause__ is hook_error
+    assert not ready.exists()
+    assert not (tmp_path / "ready.staging").exists()
+    assert quarantine.is_dir()
+    assert checker.validate_release_dir(ready, expected_source_commit=VALID_COMMIT)
+    new_ready = tmp_path / "new-ready"
+    failures = checker.build_and_promote_candidate(
+        _source_dist(tmp_path / "retry"),
+        new_ready,
+        source_commit=VALID_COMMIT,
+        evidence_by_lane=checker.fixture_evidence_by_lane(),
+        include_models=False,
+    )
+    assert failures == []
+    assert new_ready.is_dir()
 
 
 def test_fixtures_mode_runs_without_tree_artifacts() -> None:

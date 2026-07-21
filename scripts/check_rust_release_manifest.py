@@ -52,6 +52,15 @@ RUSTC_FIRST_LINE_RE = re.compile(
 )
 RUSTC_LABEL_RE = re.compile(r"^(?P<label>[^:]+):\s*(?P<value>.+)$")
 CARGO_VERSION_RE = re.compile(r"^cargo\s+(?P<release>\S+)(?:\s+\(.+\))?$")
+RUSTC_VERSION_BANNER = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+RUSTC_BINARY_PIN = "rustc"
+RUSTC_COMMIT_HASH_PIN = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+RUSTC_COMMIT_DATE_PIN = "2026-07-14"
+RUSTC_RELEASE_PIN = "1.97.1"
+RUSTC_LLVM_PIN = "22.1.6"
+CARGO_VERSION_PIN = "cargo 1.97.1 (c980f4866 2026-06-30)"
+CARGO_RELEASE_PIN = "1.97.1"
+CARGO_DENY_PIN = "cargo-deny 0.20.2"
 RAW_ENV_RE = re.compile(r"(?i)\b[A-Z_][A-Z0-9_]{2,}=")
 SECRET_RE = re.compile(
     r"(?i)\b(secret|token|password|passwd|pwd|api[_-]?key|private[_-]?key|bearer|session|credential)\b"
@@ -410,6 +419,20 @@ def _validate_dependency_policy(payload: Mapping[str, Any]) -> list[Failure]:
     if not isinstance(policy, Mapping):
         return []
     failures: list[Failure] = []
+    cargo_deny_version = policy.get("cargo_deny_version")
+    if isinstance(cargo_deny_version, str):
+        failures.extend(
+            _validate_public_evidence_text("cargo_deny_version", cargo_deny_version)
+        )
+    if cargo_deny_version != CARGO_DENY_PIN:
+        failures.append(
+            _failure(
+                "cargo_deny_version is not pinned",
+                expected=f'cargo_deny_version == "{CARGO_DENY_PIN}"',
+                actual="redacted",
+                repair="supply the pinned cargo-deny version used for dependency policy",
+            )
+        )
     if policy.get("deterministic_gate") != "pass":
         failures.append(
             _failure(
@@ -562,6 +585,40 @@ def _private_ip_present(value: str) -> bool:
     return False
 
 
+def _validate_public_evidence_text(field: str, value: str) -> list[Failure]:
+    failures: list[Failure] = []
+
+    def add_failure() -> None:
+        failures.append(
+            _failure(
+                f"{field} contains disallowed content",
+                expected=f"{field} public pinned evidence",
+                actual="redacted",
+                repair="remove non-public evidence from Rust release evidence",
+            )
+        )
+
+    if CONTROL_RE.search(value.replace("\n", "")):
+        add_failure()
+    if RAW_ENV_RE.search(value):
+        add_failure()
+    if SECRET_RE.search(value):
+        add_failure()
+    if (
+        PRIVATE_HOST_RE.search(value)
+        or ABSOLUTE_PATH_RE.search(value)
+        or _private_ip_present(value)
+    ):
+        add_failure()
+    if EMAIL_RE.search(value):
+        add_failure()
+    if SIGNER_RE.search(value):
+        add_failure()
+    if UUID_RE.search(value):
+        add_failure()
+    return failures
+
+
 def validate_native_tools(lane: LaneName, tools: Mapping[str, Any]) -> list[Failure]:
     failures: list[Failure] = []
     allowed = NATIVE_TOOL_KEYS[lane]
@@ -680,85 +737,63 @@ def _normalize_native_tools(
     return dict(normalized), []
 
 
-def parse_rustc_verbose(text: str) -> tuple[RustcVerbose | None, list[Failure]]:
-    if not isinstance(text, str) or not text.strip():
+def parse_rustc_verbose(text: Any) -> tuple[RustcVerbose | None, list[Failure]]:
+    def malformed(expected: str) -> tuple[None, list[Failure]]:
         return None, [
             _failure(
                 "rustc_verbose is malformed",
-                expected="full rustc -Vv output",
-                actual=repr(text),
-                repair="supply complete rustc -Vv output for the lane",
+                expected=expected,
+                actual="redacted",
+                repair="supply the pinned rustc -Vv output for the lane",
             )
         ]
-    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
-    first_match = RUSTC_FIRST_LINE_RE.fullmatch(lines[0])
-    if first_match is None:
-        return None, [
-            _failure(
-                "rustc_verbose is malformed",
-                expected='first line like "rustc 1.97.1 (<hash> YYYY-MM-DD)"',
-                actual=lines[0],
-                repair="supply unmodified rustc -Vv output",
-            )
-        ]
+
+    if not isinstance(text, str) or not text:
+        return malformed("pinned rustc -Vv output")
+    if text != text.strip() or "\r" in text or "\t" in text or "\x00" in text:
+        return malformed(
+            "pinned rustc -Vv output without surrounding or control whitespace"
+        )
+    lines = text.split("\n")
+    if len(lines) != 7 or any(not line or CONTROL_RE.search(line) for line in lines):
+        return malformed("exactly 7 pinned rustc -Vv lines")
+    if lines[0] != RUSTC_VERSION_BANNER:
+        return malformed(RUSTC_VERSION_BANNER)
+
     labels: dict[str, str] = {}
-    for line in lines[1:]:
+    expected_labels: tuple[tuple[str, str | None], ...] = (
+        ("binary", RUSTC_BINARY_PIN),
+        ("commit-hash", RUSTC_COMMIT_HASH_PIN),
+        ("commit-date", RUSTC_COMMIT_DATE_PIN),
+        ("host", None),
+        ("release", RUSTC_RELEASE_PIN),
+        ("LLVM version", RUSTC_LLVM_PIN),
+    )
+    host: str | None = None
+    for line, (expected_label, pinned_value) in zip(
+        lines[1:], expected_labels, strict=True
+    ):
         match = RUSTC_LABEL_RE.fullmatch(line)
         if match is None:
-            return None, [
-                _failure(
-                    "rustc_verbose is malformed",
-                    expected="labeled rustc -Vv lines",
-                    actual=line,
-                    repair="supply unmodified rustc -Vv output",
-                )
-            ]
+            return malformed("pinned labeled rustc -Vv lines")
         label = match.group("label")
-        if label in labels:
-            return None, [
-                _failure(
-                    "rustc_verbose is malformed",
-                    expected=f"single {label}: line",
-                    actual="duplicate label",
-                    repair="supply unmodified rustc -Vv output",
-                )
-            ]
-        labels[label] = match.group("value")
-    required = {"release", "commit-hash", "commit-date", "host", "LLVM version"}
-    missing = sorted(required - set(labels))
-    if missing:
-        return None, [
-            _failure(
-                "rustc_verbose is malformed",
-                expected="required labels " + ", ".join(sorted(required)),
-                actual="missing " + ", ".join(missing),
-                repair="supply complete rustc -Vv output",
-            )
-        ]
-    release = labels["release"]
-    commit_hash = labels["commit-hash"]
-    commit_date = labels["commit-date"]
-    if (
-        release != first_match.group("version")
-        or not commit_hash.startswith(first_match.group("hash"))
-        or commit_date != first_match.group("date")
-        or not SOURCE_COMMIT_RE.fullmatch(commit_hash)
-    ):
-        return None, [
-            _failure(
-                "rustc_verbose is malformed",
-                expected="first line agrees with release, commit-hash, and commit-date labels",
-                actual=text,
-                repair="supply truthful unmodified rustc -Vv output",
-            )
-        ]
+        value = match.group("value")
+        if label != expected_label or (
+            pinned_value is not None and value != pinned_value
+        ):
+            return malformed(f"{expected_label}: pinned value")
+        labels[label] = value
+        if label == "host":
+            host = value
+    if host is None:
+        return malformed("host: build host")
     return (
         RustcVerbose(
-            first_line=lines[0],
-            release=release,
-            commit_hash=commit_hash,
-            commit_date=commit_date,
-            host=labels["host"],
+            first_line=RUSTC_VERSION_BANNER,
+            release=RUSTC_RELEASE_PIN,
+            commit_hash=RUSTC_COMMIT_HASH_PIN,
+            commit_date=RUSTC_COMMIT_DATE_PIN,
+            host=host,
             labels=labels,
         ),
         [],
@@ -770,29 +805,36 @@ def _cargo_release(value: Any) -> tuple[str | None, list[Failure]]:
         return None, [
             _failure(
                 "cargo_version is malformed",
-                expected="cargo version string",
-                actual=repr(value),
+                expected=CARGO_VERSION_PIN,
+                actual="redacted",
                 repair="supply complete cargo --version output",
             )
         ]
-    match = CARGO_VERSION_RE.fullmatch(value.strip())
-    if match is None:
+    if value != CARGO_VERSION_PIN:
         return None, [
             _failure(
                 "cargo_version is malformed",
-                expected='cargo version like "cargo 1.97.1 (...)"',
-                actual=value,
+                expected=CARGO_VERSION_PIN,
+                actual="redacted",
                 repair="supply complete cargo --version output",
             )
         ]
-    return match.group("release"), []
+    return CARGO_RELEASE_PIN, []
 
 
 def _validate_rust_for_lane(
     lane: LaneName, rust: Mapping[str, Any]
 ) -> tuple[RustcVerbose | None, str | None, list[Failure]]:
-    rustc, failures = parse_rustc_verbose(str(rust.get("rustc_verbose", "")))
-    cargo, cargo_failures = _cargo_release(rust.get("cargo_version"))
+    rustc_value = rust.get("rustc_verbose")
+    cargo_value = rust.get("cargo_version")
+    failures: list[Failure] = []
+    if isinstance(rustc_value, str):
+        failures.extend(_validate_public_evidence_text("rustc_verbose", rustc_value))
+    if isinstance(cargo_value, str):
+        failures.extend(_validate_public_evidence_text("cargo_version", cargo_value))
+    rustc, rustc_failures = parse_rustc_verbose(rustc_value)
+    cargo, cargo_failures = _cargo_release(cargo_value)
+    failures.extend(rustc_failures)
     failures.extend(cargo_failures)
     if rustc is not None and rustc.host != LANE_HOSTS[lane]:
         failures.append(
@@ -1445,16 +1487,22 @@ def generate_manifest(
                 repair="supply a real UTC advisory_checked_at timestamp",
             )
         )
+    if isinstance(evidence.cargo_deny_version, str):
+        failures.extend(
+            _validate_public_evidence_text(
+                "cargo_deny_version", evidence.cargo_deny_version
+            )
+        )
     if (
         not isinstance(evidence.cargo_deny_version, str)
-        or not evidence.cargo_deny_version.strip()
+        or evidence.cargo_deny_version != CARGO_DENY_PIN
     ):
         failures.append(
             _failure(
-                "cargo_deny_version is missing",
-                expected="non-empty cargo-deny version",
-                actual=repr(evidence.cargo_deny_version),
-                repair="supply the cargo-deny version used for dependency policy",
+                "cargo_deny_version is not pinned",
+                expected=f'cargo_deny_version == "{CARGO_DENY_PIN}"',
+                actual="redacted",
+                repair="supply the pinned cargo-deny version used for dependency policy",
             )
         )
     try:
@@ -1483,13 +1531,13 @@ def generate_manifest(
         "source_dirty": cohort.source_dirty,
         "cargo_lock_sha256": cargo_lock_sha256,
         "rust": {
-            "rustc_verbose": evidence.rustc_verbose.strip(),
-            "cargo_version": evidence.cargo_version.strip(),
+            "rustc_verbose": evidence.rustc_verbose,
+            "cargo_version": evidence.cargo_version,
         },
         "target": target,
         "native_tools": normalized_tools,
         "dependency_policy": {
-            "cargo_deny_version": evidence.cargo_deny_version.strip(),
+            "cargo_deny_version": evidence.cargo_deny_version,
             "deterministic_gate": cohort.deterministic_gate,
             "advisory_checked_at": advisory,
         },
@@ -1562,6 +1610,33 @@ def _default_cohort(source_commit: str) -> CohortInputs:
     )
 
 
+def _final_validate_release_dir(
+    release_dir: Path,
+    *,
+    expected_source_commit: str | None,
+    schema_path: Path = SCHEMA_PATH,
+) -> list[Failure]:
+    return validate_release_dir(
+        release_dir,
+        expected_source_commit=expected_source_commit,
+        schema_path=schema_path,
+    )
+
+
+def _quarantine_and_remove(ready_path: Path, quarantine: Path) -> Failure | None:
+    os.rename(ready_path, quarantine)
+    try:
+        shutil.rmtree(quarantine)
+    except Exception:
+        return _failure(
+            "release candidate quarantine could not be removed",
+            expected="quarantine removed after failed promotion",
+            actual="quarantine remains",
+            repair="inspect and remove the quarantine directory before retrying",
+        )
+    return None
+
+
 def build_and_promote_candidate(
     source_dist_dir: Path,
     ready_path: Path,
@@ -1621,11 +1696,22 @@ def build_and_promote_candidate(
                 repair="remove the stale staging directory after inspecting it",
             )
         )
+    quarantine = parent / f"{ready_path.name}.quarantine"
+    if quarantine.exists() or quarantine.is_symlink():
+        failures.append(
+            _failure(
+                "quarantine directory already exists",
+                expected=f"absent quarantine directory {quarantine}",
+                actual="present",
+                repair="remove the stale quarantine directory after inspecting it",
+            )
+        )
     if failures:
         return failures
     lock_path = parent / ".rust-release-candidate.lock"
     lock_file = lock_path.open("a+")
     promoted = False
+    succeeded = False
     try:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1654,6 +1740,15 @@ def build_and_promote_candidate(
                     expected=f"absent staging directory {staging}",
                     actual="present",
                     repair="remove the stale staging directory after inspecting it",
+                )
+            ]
+        if quarantine.exists() or quarantine.is_symlink():
+            return [
+                _failure(
+                    "quarantine directory already exists",
+                    expected=f"absent quarantine directory {quarantine}",
+                    actual="present",
+                    repair="remove the stale quarantine directory after inspecting it",
                 )
             ]
         staging.mkdir()
@@ -1687,23 +1782,37 @@ def build_and_promote_candidate(
             return failures
         os.rename(staging, ready_path)
         promoted = True
-        if _post_promote_hook is not None:
-            _post_promote_hook(ready_path)
-        failures = validate_release_dir(
-            ready_path,
-            expected_source_commit=source_commit,
-            schema_path=schema_path,
-        )
+        try:
+            if _post_promote_hook is not None:
+                _post_promote_hook(ready_path)
+            failures = _final_validate_release_dir(
+                ready_path,
+                expected_source_commit=source_commit,
+                schema_path=schema_path,
+            )
+        except BaseException as exc:
+            try:
+                residual = _quarantine_and_remove(ready_path, quarantine)
+            except BaseException as cleanup_exc:
+                raise cleanup_exc from exc
+            if residual is not None:
+                raise RuntimeError(
+                    "release candidate quarantine could not be removed"
+                ) from exc
+            raise
         if failures:
-            shutil.rmtree(ready_path, ignore_errors=True)
+            residual = _quarantine_and_remove(ready_path, quarantine)
+            if residual is not None:
+                failures = [*failures, residual]
             return failures
+        succeeded = True
         return []
     finally:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         finally:
             lock_file.close()
-        if not promoted and staging.exists():
+        if not succeeded and not promoted and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -1720,13 +1829,13 @@ def fixture_source_commit() -> str:
 def fixture_rustc_verbose(host: str) -> str:
     return "\n".join(
         [
-            "rustc 1.97.1 (aaaaaaaaa 2026-01-01)",
-            "binary: rustc",
-            "commit-hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "commit-date: 2026-01-01",
+            RUSTC_VERSION_BANNER,
+            f"binary: {RUSTC_BINARY_PIN}",
+            f"commit-hash: {RUSTC_COMMIT_HASH_PIN}",
+            f"commit-date: {RUSTC_COMMIT_DATE_PIN}",
             f"host: {host}",
-            "release: 1.97.1",
-            "LLVM version: 21.0.0",
+            f"release: {RUSTC_RELEASE_PIN}",
+            f"LLVM version: {RUSTC_LLVM_PIN}",
         ]
     )
 
@@ -1735,36 +1844,36 @@ def fixture_evidence_by_lane() -> dict[LaneName, LaneEvidence]:
     return {
         "source": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
-            cargo_version="cargo 1.97.1 (bbbbbbbbb 2026-01-01)",
+            cargo_version=CARGO_VERSION_PIN,
             native_tools={"uv": "uv 0.11.4", "maturin": "maturin 1.14.1"},
-            cargo_deny_version="cargo-deny 0.20.2",
+            cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "linux-x86_64-musl": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
-            cargo_version="cargo 1.97.1 (bbbbbbbbb 2026-01-01)",
+            cargo_version=CARGO_VERSION_PIN,
             native_tools={
                 "uv": "uv 0.11.4",
                 "maturin": "maturin 1.14.1",
                 "zig": "zig 0.16.0",
             },
-            cargo_deny_version="cargo-deny 0.20.2",
+            cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "linux-aarch64-musl": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
-            cargo_version="cargo 1.97.1 (bbbbbbbbb 2026-01-01)",
+            cargo_version=CARGO_VERSION_PIN,
             native_tools={
                 "uv": "uv 0.11.4",
                 "maturin": "maturin 1.14.1",
                 "zig": "zig 0.16.0",
             },
-            cargo_deny_version="cargo-deny 0.20.2",
+            cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "macos-arm64": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("aarch64-apple-darwin"),
-            cargo_version="cargo 1.97.1 (bbbbbbbbb 2026-01-01)",
+            cargo_version=CARGO_VERSION_PIN,
             native_tools={
                 "uv": "uv 0.11.4",
                 "maturin": "maturin 1.14.1",
@@ -1773,7 +1882,7 @@ def fixture_evidence_by_lane() -> dict[LaneName, LaneEvidence]:
                 "notarytool": "notarytool accepted",
                 "signing_mode": "signed-verified",
             },
-            cargo_deny_version="cargo-deny 0.20.2",
+            cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
     }
