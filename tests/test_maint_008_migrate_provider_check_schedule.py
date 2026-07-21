@@ -56,6 +56,17 @@ def _seed_cleanup_artifacts(journal: Path) -> Path:
     return day_log
 
 
+def _assert_cleanup_artifacts_intact(journal: Path, day_log: Path) -> None:
+    health = journal / "health"
+    assert (health / LEGACY_HEALTH_FILE).exists()
+    assert (health / f"{LEGACY_HEALTH_FILE}.lock").exists()
+    assert (health / "recheck.lock").exists()
+    assert (health / f".{LEGACY_HEALTH_FILE}.123.tmp").exists()
+    assert (health / "providers.log").is_symlink()
+    assert (health / "providers.log").exists()
+    assert day_log.exists()
+
+
 def test_migrates_matches_coalesces_and_cleans(tmp_path):
     schedules_path = _write_schedules(
         tmp_path,
@@ -197,3 +208,37 @@ def test_cleanup_failure_is_fatal_and_retryable_without_duplicate_brain(tmp_path
         }
     }
     assert (health / LEGACY_HEALTH_FILE).is_dir()
+
+
+def test_unreadable_schedules_file_does_not_cleanup_before_schedule_commit(tmp_path):
+    day_log = _seed_cleanup_artifacts(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    schedules_path = config_dir / "schedules.json"
+    schedules_path.mkdir()
+
+    summary = mod.run_migration(dry_run=False)
+
+    assert summary.errors == 1
+    assert summary.cleanup_deleted == 0
+    assert summary.installed_brain is False
+    assert summary.preserved_brain is False
+    assert schedules_path.is_dir()
+    _assert_cleanup_artifacts_intact(tmp_path, day_log)
+
+
+def test_malformed_schedules_file_does_not_cleanup_before_schedule_commit(tmp_path):
+    day_log = _seed_cleanup_artifacts(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    schedules_path = config_dir / "schedules.json"
+    schedules_path.write_text("{", encoding="utf-8")
+
+    summary = mod.run_migration(dry_run=False)
+
+    assert summary.errors == 1
+    assert summary.cleanup_deleted == 0
+    assert summary.installed_brain is False
+    assert summary.preserved_brain is False
+    assert schedules_path.read_text(encoding="utf-8") == "{"
+    _assert_cleanup_artifacts_intact(tmp_path, day_log)

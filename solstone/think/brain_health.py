@@ -356,12 +356,6 @@ def request_brain_refresh(*, surface: BrainSurface) -> bool:
         return False
 
 
-def brain_exit_status(state: str | None) -> Literal["ok", "warn"]:
-    if state in {"ready", "checking"}:
-        return "ok"
-    return "warn"
-
-
 __all__ = [
     "BrainAction",
     "BrainActionKind",
@@ -374,7 +368,6 @@ __all__ = [
     "HEADLINES",
     "LOCAL_RUNTIME_REASON_CODES",
     "brain_age",
-    "brain_exit_status",
     "brain_reason_text",
     "build_brain_snapshot",
     "render_brain_health_lines",

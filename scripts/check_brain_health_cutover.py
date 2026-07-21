@@ -22,6 +22,10 @@ CHECK_WORD = "check"
 PROVIDER_CHECK_TEXT = PROVIDER_WORD + " " + CHECK_WORD
 JOURNAL_PROVIDER_CHECK = "jour" + "nal " + PROVIDER_CHECK_TEXT
 SOL_PROVIDER_CHECK = "s" + "ol " + PROVIDER_CHECK_TEXT
+PROVIDER_CHECK_PREFIXES = (
+    tuple(JOURNAL_PROVIDER_CHECK.split()),
+    tuple(SOL_PROVIDER_CHECK.split()),
+)
 OWNER_LABELS = ("Provider " + "Readiness", "Agents " + "Health")
 LEGACY_QUOTED_KEYS = (
     '"' + "provider" + "_readiness" + '"',
@@ -101,10 +105,7 @@ def _contains_command_list(path: Path, text: str) -> bool:
                 item.value if isinstance(item, ast.Constant) else None
                 for item in node.elts[:3]
             ]
-            if values in (
-                ["journal", "providers", "check"],
-                ["sol", "providers", "check"],
-            ):
+            if tuple(values) in PROVIDER_CHECK_PREFIXES:
                 return True
         return False
     return COMMAND_LIST_RE.search(text) is not None

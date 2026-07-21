@@ -148,12 +148,10 @@ def run_migration(*, dry_run: bool) -> MigrationSummary:
         except (OSError, json.JSONDecodeError) as exc:
             summary.errors += 1
             print(f"[ERROR] read failed: {schedules_path}: {exc}")
-            _run_cleanup(summary, dry_run=dry_run)
             return summary
         if not isinstance(raw_obj, dict):
             summary.errors += 1
             print(f"[ERROR] malformed schedules: {schedules_path}")
-            _run_cleanup(summary, dry_run=dry_run)
             return summary
         raw = raw_obj
     else:
@@ -178,6 +176,7 @@ def run_migration(*, dry_run: bool) -> MigrationSummary:
             except (OSError, MalformedDataError, LockTimeout) as exc:
                 summary.errors += 1
                 print(f"[ERROR] write failed: {schedules_path}: {exc}")
+                return summary
 
     for name in sorted(matches):
         if name == "brain":
