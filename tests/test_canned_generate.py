@@ -16,6 +16,7 @@ from solstone.think.providers.shared import classify_canned_generate
         ({"text": "OK"}, "pass"),
         ({"text": "", "finish_reason": "stop"}, "invalid"),
         ({"text": "   ", "finish_reason": "stop"}, "invalid"),
+        ({"text": 123, "finish_reason": "stop"}, "invalid"),
         (
             {
                 "text": "",

@@ -68,6 +68,7 @@ from solstone.think.providers.shared import (
     JSONEventCallback,
     classify_provider_error,
     safe_raw,
+    validate_generate_result_strict,
 )
 from solstone.think.utils import get_journal, get_project_root, now_ms
 
@@ -2006,7 +2007,7 @@ def _validation_reason(exc: BaseException, provider: str) -> str:
 
 
 def _probe(provider: str, model: str, api_key: str) -> None:
-    _run_generate(
+    result = _run_generate(
         CANNED_GENERATE_PROMPT,
         model,
         provider=provider,
@@ -2019,6 +2020,11 @@ def _probe(provider: str, model: str, api_key: str) -> None:
         timeout_s=CANNED_GENERATE_TIMEOUT_S,
         api_key=api_key,
         num_retries=CANNED_GENERATE_NUM_RETRIES,
+    )
+    validate_generate_result_strict(
+        result,
+        json_output=False,
+        model=(result.get("model") or model) if isinstance(result, dict) else model,
     )
 
 

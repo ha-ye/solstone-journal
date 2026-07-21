@@ -443,6 +443,60 @@ def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     )
 
 
+def test_validation_probe_rejects_blank_canned_response_without_retry(monkeypatch):
+    calls: list[dict] = []
+
+    def blank_generate(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"text": "   ", "finish_reason": "stop", "model": "provider-model"}
+
+    monkeypatch.setattr(openhands, "_run_generate", blank_generate)
+
+    key_result = openhands.validate_key("google", "key")
+    model_result = openhands.validate_model("google", "gemini-3.5-flash", "key")
+
+    assert key_result["valid"] is False
+    assert key_result["reason_code"] == "provider_response_invalid"
+    assert model_result["valid"] is False
+    assert model_result["reason_code"] == "provider_response_invalid"
+    assert len(calls) == 2
+    assert all(
+        call["kwargs"]["num_retries"] == CANNED_GENERATE_NUM_RETRIES for call in calls
+    )
+
+
+def test_validation_probe_accepts_ok_canned_response_without_retry(monkeypatch):
+    calls: list[dict] = []
+
+    def ok_generate(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"text": "OK", "finish_reason": "stop", "model": "provider-model"}
+
+    monkeypatch.setattr(openhands, "_run_generate", ok_generate)
+
+    assert openhands.validate_model("google", "gemini-3.5-flash", "key") == {
+        "valid": True
+    }
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["num_retries"] == CANNED_GENERATE_NUM_RETRIES
+
+
+def test_validation_probe_keeps_starved_canned_response_behavior(monkeypatch):
+    calls: list[dict] = []
+
+    def starved_generate(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"text": "", "finish_reason": "max_tokens", "model": "provider-model"}
+
+    monkeypatch.setattr(openhands, "_run_generate", starved_generate)
+
+    assert openhands.validate_model("google", "gemini-3.5-flash", "key") == {
+        "valid": True
+    }
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["num_retries"] == CANNED_GENERATE_NUM_RETRIES
+
+
 def test_async_entry_point_rejects_transport_specific_options():
     with pytest.raises(TypeError, match="Unsupported generate options: client"):
         asyncio.run(

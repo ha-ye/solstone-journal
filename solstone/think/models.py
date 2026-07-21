@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 import frontmatter
 from jsonschema import Draft202012Validator
 
+from solstone.think.providers.shared import validate_generate_result_strict
 from solstone.think.schema_prep import prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
 
@@ -205,8 +206,18 @@ class ProviderResponseInvalidError(ValueError):
 
     reason_code = "provider_response_invalid"
 
-    def __init__(self, reason: str):
+    def __init__(
+        self,
+        reason: str,
+        *,
+        finish_reason: str | None = None,
+        model: str | None = None,
+        token_counts: dict[str, int] | None = None,
+    ):
         self.reason = reason
+        self.finish_reason = finish_reason
+        self.model = model
+        self.token_counts = dict(token_counts or {})
         super().__init__(f"Provider response did not finish cleanly (reason: {reason})")
 
 
@@ -952,32 +963,28 @@ def finish_reason_error(
     if not finish_reason or finish_reason == "stop":
         return None
 
+    text = result.get("text", "")
+    partial_text = text if isinstance(text, str) else ""
     if json_output:
         return IncompleteJSONError(
             reason=finish_reason,
-            partial_text=result.get("text", ""),
+            partial_text=partial_text,
         )
 
     if str(finish_reason).strip().lower() in _LENGTH_FINISH_REASONS:
         return IncompleteTextError(
             reason=finish_reason,
-            partial_text=result.get("text", ""),
+            partial_text=partial_text,
         )
-    return ProviderResponseInvalidError(reason=finish_reason)
+    from solstone.think.providers.shared import _safe_token_counts
 
-
-def _validate_json_response(result: Dict[str, Any], json_output: bool) -> None:
-    """Validate response for JSON output mode.
-
-    Raises IncompleteJSONError if finish_reason is a present non-stop value.
-    """
-    # Non-JSON generate() callers (planner, depict, importers, enrich, extract,
-    # transcribe, detect_*) keep today's leniency; the Batch boundary is strict.
-    if not json_output:
-        return
-    error = finish_reason_error(result, json_output=True)
-    if error is not None:
-        raise error
+    result_model = result.get("model")
+    return ProviderResponseInvalidError(
+        reason=str(finish_reason),
+        finish_reason=str(finish_reason),
+        model=result_model if isinstance(result_model, str) and result_model else None,
+        token_counts=_safe_token_counts(result.get("usage")),
+    )
 
 
 def _validate_schema(text: str, schema: dict) -> dict:
@@ -1138,7 +1145,7 @@ def generate(
 
     # Log token usage centrally (before validation so truncated responses
     # still get their usage recorded)
-    if result.get("usage"):
+    if isinstance(result, dict) and result.get("usage"):
         log_token_usage(
             model=result.get("model") or model,
             usage=result["usage"],
@@ -1146,8 +1153,11 @@ def generate(
             type="generate",
         )
 
-    # Validate JSON output if requested
-    _validate_json_response(result, json_output)
+    validate_generate_result_strict(
+        result,
+        json_output=json_output,
+        model=(result.get("model") or model) if isinstance(result, dict) else model,
+    )
 
     if json_schema is not None:
         validation = _validate_schema(result["text"], json_schema)
@@ -1250,7 +1260,7 @@ def generate_with_result(
 
     # Log token usage centrally (before validation so truncated responses
     # still get their usage recorded)
-    if result.get("usage"):
+    if isinstance(result, dict) and result.get("usage"):
         log_token_usage(
             model=result.get("model") or model,
             usage=result["usage"],
@@ -1258,8 +1268,11 @@ def generate_with_result(
             type="generate",
         )
 
-    # Validate JSON output if requested
-    _validate_json_response(result, json_output)
+    validate_generate_result_strict(
+        result,
+        json_output=json_output,
+        model=(result.get("model") or model) if isinstance(result, dict) else model,
+    )
 
     if json_schema is not None:
         result["schema_validation"] = _validate_schema(result["text"], json_schema)
@@ -1309,7 +1322,7 @@ async def agenerate_with_result(
         **provider_options,
     )
 
-    if result.get("usage"):
+    if isinstance(result, dict) and result.get("usage"):
         log_token_usage(
             model=result.get("model") or model,
             usage=result["usage"],
@@ -1317,7 +1330,11 @@ async def agenerate_with_result(
             type="generate",
         )
 
-    _validate_json_response(result, json_output)
+    validate_generate_result_strict(
+        result,
+        json_output=json_output,
+        model=(result.get("model") or model) if isinstance(result, dict) else model,
+    )
 
     if json_schema is not None:
         result["schema_validation"] = _validate_schema(result["text"], json_schema)
@@ -1406,7 +1423,7 @@ async def agenerate(
 
     # Log token usage centrally (before validation so truncated responses
     # still get their usage recorded)
-    if result.get("usage"):
+    if isinstance(result, dict) and result.get("usage"):
         log_token_usage(
             model=result.get("model") or model,
             usage=result["usage"],
@@ -1414,8 +1431,11 @@ async def agenerate(
             type="generate",
         )
 
-    # Validate JSON output if requested
-    _validate_json_response(result, json_output)
+    validate_generate_result_strict(
+        result,
+        json_output=json_output,
+        model=(result.get("model") or model) if isinstance(result, dict) else model,
+    )
 
     if json_schema is not None:
         validation = _validate_schema(result["text"], json_schema)

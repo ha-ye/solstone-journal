@@ -1358,18 +1358,173 @@ class TestGenerateJsonSchemaPlumbing:
 
     def test_finish_reason_predicate_plain_text_rejects_non_length(self):
         error = finish_reason_error(
-            {"text": "", "finish_reason": "content_filter"},
+            {
+                "text": "",
+                "model": "provider-model",
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "raw": object(),
+                },
+                "finish_reason": "content_filter",
+            },
             json_output=False,
         )
 
         assert isinstance(error, ProviderResponseInvalidError)
         assert error.reason_code == "provider_response_invalid"
+        assert error.finish_reason == "content_filter"
+        assert error.model == "provider-model"
+        assert error.token_counts == {"input_tokens": 1, "output_tokens": 2}
 
-    def test_validate_json_response_plain_text_leniency_is_unchanged(self):
-        models_module._validate_json_response(
+    def test_strict_validation_plain_text_finish_leniency_is_unchanged(self):
+        models_module.validate_generate_result_strict(
             {"text": "partial", "finish_reason": "max_tokens"},
             json_output=False,
         )
+
+    @pytest.mark.parametrize("text", ["", "   ", None, 123])
+    @pytest.mark.parametrize(
+        "entrypoint",
+        ["generate", "generate_with_result", "agenerate_with_result", "agenerate"],
+    )
+    def test_all_generate_entrypoints_reject_blank_clean_visible_output(
+        self,
+        entrypoint,
+        text,
+    ):
+        result = {
+            "text": text,
+            "model": "provider-model",
+            "finish_reason": "stop",
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 0,
+                "reasoning_tokens": 3,
+                "total_tokens": 14,
+                "raw_usage": object(),
+            },
+        }
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(return_value=result),
+            run_agenerate=AsyncMock(return_value=result),
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+            patch("solstone.think.models._validate_schema") as mock_validate_schema,
+        ):
+            with pytest.raises(ProviderResponseInvalidError) as exc_info:
+                if entrypoint == "generate":
+                    generate("hello", "test.context", json_schema={"type": "object"})
+                elif entrypoint == "generate_with_result":
+                    generate_with_result(
+                        "hello", "test.context", json_schema={"type": "object"}
+                    )
+                elif entrypoint == "agenerate_with_result":
+                    asyncio.run(
+                        agenerate_with_result(
+                            "hello",
+                            "test.context",
+                            json_schema={"type": "object"},
+                        )
+                    )
+                else:
+                    asyncio.run(
+                        agenerate(
+                            "hello", "test.context", json_schema={"type": "object"}
+                        )
+                    )
+
+        exc = exc_info.value
+        assert exc.reason == "blank_visible_output"
+        assert exc.finish_reason == "stop"
+        assert exc.model == "provider-model"
+        assert exc.token_counts == {
+            "input_tokens": 11,
+            "output_tokens": 0,
+            "reasoning_tokens": 3,
+            "total_tokens": 14,
+        }
+        assert not hasattr(exc, "usage")
+        assert not hasattr(exc, "text")
+        assert not hasattr(exc, "prompt")
+        assert not hasattr(exc, "response")
+        assert not hasattr(exc, "body")
+        mock_log_usage.assert_called_once_with(
+            model="provider-model",
+            usage=result["usage"],
+            context="test.context",
+            type="generate",
+        )
+        mock_validate_schema.assert_not_called()
+
+    def test_missing_text_and_missing_finish_are_typed_provider_invalid(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(return_value={"finish_reason": None})
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(ProviderResponseInvalidError) as exc_info:
+                generate("hello", "test.context")
+
+        assert exc_info.value.reason == "blank_visible_output"
+
+    def test_non_string_finish_metadata_is_typed_provider_invalid(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": "ok", "finish_reason": {"bad": "shape"}}
+            )
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(ProviderResponseInvalidError) as exc_info:
+                generate("hello", "test.context")
+
+        assert exc_info.value.reason == "malformed_finish_reason"
+
+    def test_json_length_finish_stays_incomplete_json_not_provider_invalid(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": "", "finish_reason": "max_tokens"}
+            )
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(IncompleteJSONError):
+                generate("hello", "test.context", json_output=True)
 
     def test_generate_forces_json_output_with_schema(self):
         schema = {"type": "object"}
@@ -1626,7 +1781,9 @@ class TestGenerateJsonSchemaPlumbing:
         assert exc_info.value.text == '{"field": "bad"}'
         assert exc_info.value.errors[0]["constraint"] == "type"
 
-    def test_generate_empty_schema_response_raises_schema_validation_error(self):
+    def test_generate_empty_schema_response_raises_provider_invalid_before_schema(
+        self,
+    ):
         provider_module = SimpleNamespace(
             run_generate=MagicMock(return_value={"text": "", "finish_reason": "stop"})
         )
@@ -1639,17 +1796,19 @@ class TestGenerateJsonSchemaPlumbing:
                 "solstone.think.providers.get_provider_module",
                 return_value=provider_module,
             ),
+            patch("solstone.think.models._validate_schema") as mock_validate_schema,
         ):
-            with pytest.raises(SchemaValidationError) as exc_info:
+            with pytest.raises(ProviderResponseInvalidError) as exc_info:
                 generate("hello", "test.context", json_schema={"type": "object"})
 
-        assert exc_info.value.text == ""
-        assert exc_info.value.preview == ""
-        assert exc_info.value.errors[0]["constraint"] == "json_parse"
+        assert exc_info.value.reason == "blank_visible_output"
+        mock_validate_schema.assert_not_called()
 
     def test_truncation_raises_before_schema_validation(self):
         provider_module = SimpleNamespace(
-            run_generate=MagicMock(return_value={"text": "{}", "finish_reason": "stop"})
+            run_generate=MagicMock(
+                return_value={"text": "{}", "finish_reason": "max_tokens"}
+            )
         )
 
         with (
@@ -1659,10 +1818,6 @@ class TestGenerateJsonSchemaPlumbing:
             patch(
                 "solstone.think.providers.get_provider_module",
                 return_value=provider_module,
-            ),
-            patch(
-                "solstone.think.models._validate_json_response",
-                side_effect=IncompleteJSONError("max_tokens", "{}"),
             ),
             patch("solstone.think.models._validate_schema") as mock_validate_schema,
         ):

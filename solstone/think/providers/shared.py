@@ -13,7 +13,7 @@ This module contains:
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Literal, Optional, Union
+from typing import Any, Callable, Literal, Mapping, Optional, Union
 
 from typing_extensions import Required, TypedDict
 
@@ -388,6 +388,7 @@ CANNED_GENERATE_THINKING_BUDGET = 0
 CANNED_GENERATE_NUM_RETRIES = 0
 CANNED_GENERATE_TIMEOUT_S = 30
 CannedGenerateVerdict = Literal["pass", "starved", "invalid"]
+_MAX_SAFE_TOKEN_COUNT = 1_000_000_000_000
 
 
 class GenerateResult(TypedDict, total=False):
@@ -429,6 +430,92 @@ def _has_reasoning_usage(result: GenerateResult) -> bool:
     return False
 
 
+def _is_blank_visible_output(result: GenerateResult) -> bool:
+    text = result.get("text")
+    return not isinstance(text, str) or not text.strip()
+
+
+def _coerce_token_count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    count = int(value)
+    if count < 0:
+        return None
+    return min(count, _MAX_SAFE_TOKEN_COUNT)
+
+
+def _safe_token_counts(usage: Any) -> dict[str, int]:
+    if not isinstance(usage, Mapping):
+        return {}
+
+    token_counts: dict[str, int] = {}
+    aliases = {
+        "input_tokens": ("input_tokens", "prompt_tokens"),
+        "output_tokens": ("output_tokens", "completion_tokens"),
+        "reasoning_tokens": ("reasoning_tokens",),
+        "total_tokens": ("total_tokens",),
+    }
+    for normalized_key, candidate_keys in aliases.items():
+        for key in candidate_keys:
+            if key not in usage:
+                continue
+            count = _coerce_token_count(usage.get(key))
+            if count is not None:
+                token_counts[normalized_key] = count
+            break
+    return token_counts
+
+
+def validate_generate_result_strict(
+    result: GenerateResult,
+    *,
+    json_output: bool,
+    model: str | None = None,
+) -> None:
+    """Validate provider result shape and visible output after usage logging."""
+    from solstone.think.models import (
+        ProviderResponseInvalidError,
+        finish_reason_error,
+    )
+
+    if not isinstance(result, Mapping):
+        raise ProviderResponseInvalidError(
+            "malformed_result",
+            model=model,
+        )
+
+    token_counts = _safe_token_counts(result.get("usage"))
+    result_model = result.get("model")
+    error_model = (
+        result_model if isinstance(result_model, str) and result_model else model
+    )
+    finish_reason = result.get("finish_reason")
+    error_finish_reason = finish_reason if isinstance(finish_reason, str) else None
+
+    if finish_reason is not None and not isinstance(finish_reason, str):
+        raise ProviderResponseInvalidError(
+            "malformed_finish_reason",
+            finish_reason=str(finish_reason),
+            model=error_model,
+            token_counts=token_counts,
+        )
+
+    if json_output:
+        error = finish_reason_error(result, json_output=True)
+        if error is not None:
+            raise error
+
+    if finish_reason in {None, "stop"} and _is_blank_visible_output(result):
+        raise ProviderResponseInvalidError(
+            "blank_visible_output",
+            finish_reason=error_finish_reason,
+            model=error_model,
+            token_counts=token_counts,
+        )
+
+
 def classify_canned_generate(result: GenerateResult) -> CannedGenerateVerdict:
     """Classify a canned generate result without using brain-state vocabulary.
 
@@ -440,8 +527,7 @@ def classify_canned_generate(result: GenerateResult) -> CannedGenerateVerdict:
     if finish_reason == "max_tokens":
         return "starved"
 
-    text = (result.get("text") or "").strip()
-    if text:
+    if not _is_blank_visible_output(result):
         return "pass"
 
     if _has_reasoning_usage(result) or finish_reason not in {"stop"}:
