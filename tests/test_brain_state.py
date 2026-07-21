@@ -713,15 +713,39 @@ def test_bundled_runtime_health_reason_overrides_and_disagreements(
     record = validate_brain_state_record(_read_raw_record(tmp_path))
     key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
     cases = [
-        ("host-blocked", "gpu-unavailable", "gpu_unavailable"),
-        ("host-blocked", "gpu-probe-failed", "local_runtime_state_unavailable"),
-        ("artifact-not-ready", "artifact-missing", "local_artifact_not_ready"),
-        ("artifact-not-ready", "install-in-progress", "local_runtime_not_ready"),
-        ("ready", "artifact-missing", "local_runtime_state_invalid"),
-        ("ready", None, None),
+        ("host-blocked", "gpu-unavailable", "gpu_unavailable", "blocked", False),
+        (
+            "host-blocked",
+            "gpu-probe-failed",
+            "local_runtime_state_unavailable",
+            "unknown",
+            False,
+        ),
+        (
+            "artifact-not-ready",
+            "artifact-missing",
+            "local_artifact_not_ready",
+            "blocked",
+            False,
+        ),
+        (
+            "artifact-not-ready",
+            "install-in-progress",
+            "local_runtime_not_ready",
+            "blocked",
+            True,
+        ),
+        ("ready", "artifact-missing", "local_runtime_state_invalid", "unknown", False),
+        ("ready", None, None, "ready", False),
     ]
 
-    for phase, runtime_reason, expected_reason in cases:
+    for (
+        phase,
+        runtime_reason,
+        expected_reason,
+        expected_state,
+        expected_progressing,
+    ) in cases:
         runtime_health = _runtime_inspection(phase=phase)
         assert runtime_health["record"] is not None
         runtime_health["record"]["reason_code"] = runtime_reason
@@ -734,6 +758,8 @@ def test_bundled_runtime_health_reason_overrides_and_disagreements(
             runtime_health=runtime_health,
         )
         assert projection["reason_code"] == expected_reason
+        assert projection["aggregate_state"] == expected_state
+        assert projection["runtime_transition_in_progress"] is expected_progressing
 
 
 def test_bundled_runtime_health_invalid_and_unavailable_records(

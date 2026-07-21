@@ -22,7 +22,11 @@ import pytest
 from solstone.think import supervisor
 from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.brain_state import build_active_brain_fingerprint
-from solstone.think.providers.install_state import InstallState
+from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    TERMINAL_STATES,
+    InstallState,
+)
 from solstone.think.providers.runtime_health import (
     RUNTIME_PHASES,
     ReasonCode,
@@ -236,6 +240,73 @@ def _local_readiness(
     )
 
 
+def _status_snapshot(
+    *,
+    install_state: InstallState = "downloading",
+    attempt_id: str | None = "attempt-live",
+    target_fingerprint_sha256: str | None = "fp-local",
+    revision: int = 7,
+) -> dict[str, Any]:
+    return {
+        "revision": revision,
+        "install_state": install_state,
+        "attempt_id": attempt_id,
+        "target_fingerprint_sha256": target_fingerprint_sha256,
+    }
+
+
+def _local_install_progress_detail(
+    *,
+    readiness_state: InstallState,
+    attempt_id: str,
+    revision: int,
+) -> dict[str, Any]:
+    return {
+        "readiness_status": "missing-or-mismatched",
+        "readiness_reason_code": "manifest_missing",
+        "install_state": readiness_state,
+        "install_acquisition_allowed": False,
+        "install_attempt_id": attempt_id,
+        "install_revision": revision,
+    }
+
+
+def _local_artifact_missing_detail(install_state: InstallState) -> dict[str, Any]:
+    return {
+        "readiness_status": "missing-or-mismatched",
+        "readiness_reason_code": "manifest_missing",
+        "install_state": install_state,
+        "install_acquisition_allowed": install_state == "idle",
+    }
+
+
+def _assert_local_observation(
+    observation: supervisor.ProviderTruthObservation | None,
+    *,
+    phase: RuntimePhase,
+    reason_code: ReasonCode,
+    desired_json: str,
+    desired_sha: str,
+    boot_required: bool,
+    detail: dict[str, Any],
+) -> None:
+    assert observation is not None
+    assert observation.phase == phase
+    assert observation.reason_code == reason_code
+    assert observation.desired_fingerprint_json == desired_json
+    assert observation.desired_fingerprint_sha256 == desired_sha
+    assert observation.boot_required is boot_required
+    assert observation.detail == detail
+    assert observation.plan is None
+
+
+def _patch_lease_state(monkeypatch, state: str) -> None:
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.probe_install_lease_state",
+        lambda _provider: state,
+    )
+
+
 def _local_plan() -> supervisor.LocalServerLaunchPlan:
     return supervisor.LocalServerLaunchPlan(
         backend="vulkan",
@@ -292,6 +363,456 @@ def _parakeet_plan(backend: str = "cpu") -> supervisor.ParakeetServerLaunchPlan:
         desired_fingerprint_sha256="fp-parakeet",
         placement="gpu" if backend == "vulkan" else "cpu",
     )
+
+
+@pytest.mark.parametrize("install_state", sorted(IN_FLIGHT_STATES))
+def test_local_readiness_block_observation_upgrades_live_inflight_states(
+    monkeypatch,
+    install_state: InstallState,
+) -> None:
+    target = {"provider": "local", "target": "live-install"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    before_status = _status_snapshot(
+        install_state=install_state,
+        attempt_id=f"attempt-{install_state}",
+        target_fingerprint_sha256=desired_sha,
+    )
+    after_status = dict(before_status)
+    statuses = [before_status, after_status]
+    target_calls = 0
+
+    def read_status(*, name: str):
+        assert name == "local"
+        return statuses.pop(0)
+
+    def target_fingerprint() -> dict[str, str]:
+        nonlocal target_calls
+        target_calls += 1
+        return target
+
+    monkeypatch.setattr(supervisor, "read_install_status", read_status)
+    _patch_lease_state(monkeypatch, "held")
+
+    observation = supervisor._local_readiness_block_observation(
+        readiness=_local_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state=install_state,
+        ),
+        fingerprint_json=desired_json,
+        fingerprint_sha256_value=desired_sha,
+        boot_required=True,
+        target_fingerprint=target_fingerprint,
+    )
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="install-in-progress",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_install_progress_detail(
+            readiness_state=install_state,
+            attempt_id=str(before_status["attempt_id"]),
+            revision=int(before_status["revision"]),
+        ),
+    )
+    assert statuses == []
+    assert target_calls == 1
+
+
+@pytest.mark.parametrize("install_state", sorted(TERMINAL_STATES))
+def test_local_readiness_block_observation_returns_shared_object_for_terminal_pregate(
+    monkeypatch,
+    install_state: InstallState,
+) -> None:
+    sentinel = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        detail={"sentinel": True},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_readiness_block_observation",
+        lambda **_kwargs: sentinel,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "read_install_status",
+        lambda **_kwargs: pytest.fail("canonical status read not expected"),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.probe_install_lease_state",
+        lambda _provider: pytest.fail("lease probe not expected"),
+    )
+
+    result = supervisor._local_readiness_block_observation(
+        readiness=_local_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state=install_state,
+        ),
+        fingerprint_json='{"provider":"local"}',
+        fingerprint_sha256_value="fp-local",
+        boot_required=True,
+        target_fingerprint=lambda: pytest.fail("target recompute not expected"),
+    )
+
+    assert result is sentinel
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "canonical-state",
+        "attempt-none",
+        "attempt-empty",
+        "target-mismatch",
+        "lease-free",
+        "lease-missing",
+    ],
+)
+def test_local_readiness_block_observation_returns_shared_object_for_failed_terms(
+    monkeypatch,
+    case: str,
+) -> None:
+    target = {"provider": "local", "target": "live-install"}
+    _desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    before_status = _status_snapshot(target_fingerprint_sha256=desired_sha)
+    lease_state = "held"
+    if case == "canonical-state":
+        before_status["install_state"] = "installed"
+    elif case == "attempt-none":
+        before_status["attempt_id"] = None
+    elif case == "attempt-empty":
+        before_status["attempt_id"] = ""
+    elif case == "target-mismatch":
+        before_status["target_fingerprint_sha256"] = "fp-other"
+    elif case == "lease-free":
+        lease_state = "free"
+    elif case == "lease-missing":
+        lease_state = "missing"
+    else:
+        raise AssertionError(case)
+
+    sentinel = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        detail={"sentinel": True},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_readiness_block_observation",
+        lambda **_kwargs: sentinel,
+    )
+    monkeypatch.setattr(
+        supervisor, "read_install_status", lambda *, name: before_status
+    )
+    _patch_lease_state(monkeypatch, lease_state)
+
+    result = supervisor._local_readiness_block_observation(
+        readiness=_local_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state="downloading",
+        ),
+        fingerprint_json='{"provider":"local"}',
+        fingerprint_sha256_value=desired_sha,
+        boot_required=True,
+        target_fingerprint=lambda: pytest.fail("target recompute not expected"),
+    )
+
+    assert result is sentinel
+
+
+def test_local_readiness_block_observation_maps_lease_probe_oserror(
+    monkeypatch,
+) -> None:
+    target = {"provider": "local", "target": "live-install"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    before_status = _status_snapshot(target_fingerprint_sha256=desired_sha)
+    monkeypatch.setattr(
+        supervisor, "read_install_status", lambda *, name: before_status
+    )
+
+    def fail_probe(_provider: str) -> str:
+        raise OSError("lease probe failed")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.probe_install_lease_state",
+        fail_probe,
+    )
+
+    observation = supervisor._local_readiness_block_observation(
+        readiness=_local_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state="downloading",
+        ),
+        fingerprint_json=desired_json,
+        fingerprint_sha256_value=desired_sha,
+        boot_required=True,
+        target_fingerprint=lambda: pytest.fail("target recompute not expected"),
+    )
+
+    _assert_local_observation(
+        observation,
+        phase="state-unavailable",
+        reason_code="proof-observation-unavailable",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail={
+            "readiness_status": "missing-or-mismatched",
+            "readiness_reason_code": "manifest_missing",
+            "error": "lease probe failed",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "race",
+    ["desired", "revision", "attempt", "install-state", "install-target"],
+)
+def test_local_readiness_block_observation_reports_races(
+    monkeypatch,
+    race: str,
+) -> None:
+    target = {"provider": "local", "target": "live-install"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    after_target = target
+    before_status = _status_snapshot(target_fingerprint_sha256=desired_sha)
+    after_status = dict(before_status)
+    if race == "desired":
+        after_target = {"provider": "local", "target": "new-install"}
+    elif race == "revision":
+        after_status["revision"] = int(before_status["revision"]) + 1
+    elif race == "attempt":
+        after_status["attempt_id"] = "attempt-new"
+    elif race == "install-state":
+        after_status["install_state"] = "verifying"
+    elif race == "install-target":
+        after_status["target_fingerprint_sha256"] = "fp-new-target"
+    else:
+        raise AssertionError(race)
+    statuses = [before_status, after_status]
+
+    def read_status(*, name: str):
+        assert name == "local"
+        return statuses.pop(0)
+
+    monkeypatch.setattr(supervisor, "read_install_status", read_status)
+    _patch_lease_state(monkeypatch, "held")
+
+    observation = supervisor._local_readiness_block_observation(
+        readiness=_local_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state="downloading",
+        ),
+        fingerprint_json=desired_json,
+        fingerprint_sha256_value=desired_sha,
+        boot_required=True,
+        target_fingerprint=lambda: after_target,
+    )
+
+    assert observation is not None
+    assert observation.phase == "observing"
+    assert observation.reason_code == "observation-raced"
+    assert observation.boot_required is True
+    assert observation.plan is None
+    _after_json, after_sha = supervisor._target_fingerprint_pair(after_target)
+    assert observation.detail == {
+        "before": supervisor._local_install_progress_identity(
+            desired_fingerprint_sha256=desired_sha,
+            install_status=before_status,
+        ),
+        "after": supervisor._local_install_progress_identity(
+            desired_fingerprint_sha256=after_sha,
+            install_status=after_status,
+        ),
+    }
+    assert statuses == []
+
+
+def _begin_downloading_local_install(target: dict[str, Any]) -> dict[str, Any]:
+    from solstone.think.providers.install_state import begin_or_replace_install_attempt
+
+    return begin_or_replace_install_attempt(
+        "local",
+        target,
+        initial_state="downloading",
+    )
+
+
+def test_mlx_local_observer_preserves_live_install_progress(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import mlx_install
+    from solstone.think.providers.install_lease import acquire_install_lease
+
+    target = {"provider": "local", "runtime": "mlx", "model": "mlx-test"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    status = _begin_downloading_local_install(target)
+    readiness = _local_readiness(
+        "missing-or-mismatched",
+        "manifest_missing",
+        install_state=status["install_state"],
+    )
+    forbidden_calls: list[str] = []
+
+    def fail_mlx_install(*_args, **_kwargs):
+        forbidden_calls.append("install_local_mlx")
+        pytest.fail("install_local_mlx not expected")
+
+    monkeypatch.setattr(mlx_install, "install_local_mlx", fail_mlx_install)
+    monkeypatch.setattr(mlx_install, "target_fingerprint", lambda: target)
+    monkeypatch.setattr(mlx_install, "inspect_readiness", lambda: readiness)
+    lease = acquire_install_lease("local")
+    assert lease is not None
+    try:
+        observation = supervisor._observe_mlx_local_provider_truth()
+    finally:
+        lease.release()
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="install-in-progress",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_install_progress_detail(
+            readiness_state=status["install_state"],
+            attempt_id=str(status["attempt_id"]),
+            revision=int(status["revision"]),
+        ),
+    )
+    assert forbidden_calls == []
+
+    observation = supervisor._observe_mlx_local_provider_truth()
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_artifact_missing_detail(status["install_state"]),
+    )
+    assert forbidden_calls == []
+
+
+def test_linux_local_observer_preserves_live_install_progress(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_cuda, local_install, local_server
+    from solstone.think.providers.install_lease import acquire_install_lease
+
+    target = {"provider": "local", "runtime": "llama.cpp", "target": "linux-test"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    status = _begin_downloading_local_install(target)
+    readiness = _local_readiness(
+        "missing-or-mismatched",
+        "manifest_missing",
+        install_state=status["install_state"],
+    )
+    forbidden_calls: list[str] = []
+
+    def fail_local_install(*_args, **_kwargs):
+        forbidden_calls.append("install_local")
+        pytest.fail("install_local not expected")
+
+    def fail_select_server_tier(*_args, **_kwargs):
+        forbidden_calls.append("select_server_tier")
+        pytest.fail("select_server_tier not expected")
+
+    def fail_probe_nvidia_gpu(*_args, **_kwargs):
+        forbidden_calls.append("probe_nvidia_gpu")
+        pytest.fail("probe_nvidia_gpu not expected")
+
+    monkeypatch.setattr(local_install, "install_local", fail_local_install)
+    monkeypatch.setattr(local_server, "select_server_tier", fail_select_server_tier)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", fail_probe_nvidia_gpu)
+    monkeypatch.setattr(local_install, "target_fingerprint", lambda _model: target)
+    monkeypatch.setattr(local_install, "inspect_readiness", lambda _model: readiness)
+    lease = acquire_install_lease("local")
+    assert lease is not None
+    try:
+        observation = supervisor._observe_linux_local_provider_truth()
+    finally:
+        lease.release()
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="install-in-progress",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_install_progress_detail(
+            readiness_state=status["install_state"],
+            attempt_id=str(status["attempt_id"]),
+            revision=int(status["revision"]),
+        ),
+    )
+    assert forbidden_calls == []
+
+    observation = supervisor._observe_linux_local_provider_truth()
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_artifact_missing_detail(status["install_state"]),
+    )
+    assert forbidden_calls == []
+
+
+def test_linux_local_observer_missing_lease_does_not_create_or_mutate_status(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_install
+    from solstone.think.providers.install_lease import lease_path
+    from solstone.think.providers.install_state import provider_status_path
+
+    target = {"provider": "local", "runtime": "llama.cpp", "target": "linux-test"}
+    desired_json, desired_sha = supervisor._target_fingerprint_pair(target)
+    status = _begin_downloading_local_install(target)
+    readiness = _local_readiness(
+        "missing-or-mismatched",
+        "manifest_missing",
+        install_state=status["install_state"],
+    )
+    monkeypatch.setattr(local_install, "target_fingerprint", lambda _model: target)
+    monkeypatch.setattr(local_install, "inspect_readiness", lambda _model: readiness)
+    status_path = provider_status_path("local")
+    lease = lease_path("local")
+    assert not lease.exists()
+    before_bytes = status_path.read_bytes()
+    before_mtime = status_path.stat().st_mtime_ns
+
+    observation = supervisor._observe_linux_local_provider_truth()
+
+    _assert_local_observation(
+        observation,
+        phase="artifact-not-ready",
+        reason_code="artifact-missing",
+        desired_json=desired_json,
+        desired_sha=desired_sha,
+        boot_required=True,
+        detail=_local_artifact_missing_detail(status["install_state"]),
+    )
+    assert not lease.exists()
+    assert status_path.read_bytes() == before_bytes
+    assert status_path.stat().st_mtime_ns == before_mtime
 
 
 def test_local_ready_side_effects_submit_brain_refresh_once(monkeypatch) -> None:

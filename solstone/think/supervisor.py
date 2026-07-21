@@ -68,9 +68,11 @@ from solstone.think.processing import (
     load_processing_settings,
 )
 from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
     InstallStatusMalformedError,
     canonical_fingerprint,
     fingerprint_sha256,
+    read_install_status,
 )
 from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
@@ -2328,6 +2330,115 @@ def _readiness_block_observation(
     )
 
 
+def _local_install_progress_identity(
+    *,
+    desired_fingerprint_sha256: str | None,
+    install_status: dict[str, Any],
+) -> str:
+    return canonical_fingerprint(
+        {
+            "desired_fingerprint_sha256": desired_fingerprint_sha256,
+            "install_revision": install_status["revision"],
+            "install_attempt_id": install_status["attempt_id"],
+            "install_state": install_status["install_state"],
+            "install_target_fingerprint_sha256": install_status[
+                "target_fingerprint_sha256"
+            ],
+        }
+    )
+
+
+def _local_readiness_block_observation(
+    *,
+    readiness: Any,
+    fingerprint_json: str | None,
+    fingerprint_sha256_value: str | None,
+    boot_required: bool,
+    target_fingerprint: Callable[[], dict[str, Any]],
+) -> ProviderTruthObservation | None:
+    blocked = _readiness_block_observation(
+        provider="local",
+        readiness=readiness,
+        fingerprint_json=fingerprint_json,
+        fingerprint_sha256_value=fingerprint_sha256_value,
+        boot_required=boot_required,
+    )
+    if blocked is None:
+        return None
+    if (
+        blocked.phase != "artifact-not-ready"
+        or blocked.reason_code != "artifact-missing"
+    ):
+        return blocked
+    if readiness.install.get("install_state") not in IN_FLIGHT_STATES:
+        return blocked
+
+    before_status = read_install_status(name="local")
+    if before_status["install_state"] not in IN_FLIGHT_STATES:
+        return blocked
+    attempt_id = before_status["attempt_id"]
+    if not attempt_id:
+        return blocked
+    if before_status["target_fingerprint_sha256"] != fingerprint_sha256_value:
+        return blocked
+
+    from solstone.think.providers.install_lease import probe_install_lease_state
+
+    try:
+        lease_state = probe_install_lease_state("local")
+    except OSError as exc:
+        return ProviderTruthObservation(
+            provider="local",
+            phase="state-unavailable",
+            reason_code="proof-observation-unavailable",
+            desired_fingerprint_json=fingerprint_json,
+            desired_fingerprint_sha256=fingerprint_sha256_value,
+            boot_required=boot_required,
+            detail={
+                "readiness_status": readiness.status,
+                "readiness_reason_code": readiness.reason_code,
+                "error": str(exc),
+            },
+        )
+    if lease_state != "held":
+        return blocked
+
+    after_status = read_install_status(name="local")
+    _after_json, after_sha = _target_fingerprint_pair(target_fingerprint())
+    before_identity = _local_install_progress_identity(
+        desired_fingerprint_sha256=fingerprint_sha256_value,
+        install_status=before_status,
+    )
+    after_identity = _local_install_progress_identity(
+        desired_fingerprint_sha256=after_sha,
+        install_status=after_status,
+    )
+    if before_identity != after_identity:
+        return _observation_raced(
+            "local",
+            before_identity,
+            after_identity,
+            boot_required=boot_required,
+        )
+
+    return ProviderTruthObservation(
+        provider="local",
+        phase="artifact-not-ready",
+        reason_code="install-in-progress",
+        desired_fingerprint_json=fingerprint_json,
+        desired_fingerprint_sha256=fingerprint_sha256_value,
+        boot_required=boot_required,
+        detail={
+            "readiness_status": readiness.status,
+            "readiness_reason_code": readiness.reason_code,
+            "install_state": before_status["install_state"],
+            "install_acquisition_allowed": False,
+            "install_attempt_id": attempt_id,
+            "install_revision": before_status["revision"],
+        },
+    )
+
+
 def _observation_raced(
     provider: ProviderName,
     before: str,
@@ -2558,12 +2669,12 @@ def _observe_mlx_local_provider_truth() -> ProviderTruthObservation:
 
     before_json, before_sha = _target_fingerprint_pair(mlx_install.target_fingerprint())
     readiness = mlx_install.inspect_readiness()
-    blocked = _readiness_block_observation(
-        provider="local",
+    blocked = _local_readiness_block_observation(
         readiness=readiness,
         fingerprint_json=before_json,
         fingerprint_sha256_value=before_sha,
         boot_required=True,
+        target_fingerprint=mlx_install.target_fingerprint,
     )
     if blocked is not None:
         return blocked
@@ -2597,12 +2708,12 @@ def _observe_linux_local_provider_truth() -> ProviderTruthObservation:
         local_install.target_fingerprint(LOCAL_MODEL)
     )
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
-    blocked = _readiness_block_observation(
-        provider="local",
+    blocked = _local_readiness_block_observation(
         readiness=readiness,
         fingerprint_json=before_json,
         fingerprint_sha256_value=before_sha,
         boot_required=True,
+        target_fingerprint=lambda: local_install.target_fingerprint(LOCAL_MODEL),
     )
     if blocked is not None:
         return blocked
