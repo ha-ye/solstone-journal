@@ -30,7 +30,6 @@ from scripts.check_release_preflight import (
 from scripts.check_rust_release_manifest import (
     LANES,
     NATIVE_TOOL_KEYS,
-    RFC3339_UTC_RE,
     SOURCE_COMMIT_RE,
     Failure,
     LaneEvidence,
@@ -49,6 +48,7 @@ from scripts.check_wheel_contents import (
 from scripts.record_macos_native_wheel import validate_macos_native_record
 from scripts.release_advisory_policy import (
     PolicyRun,
+    is_normalized_utc_timestamp,
     prepare_policy_run,
     validate_snapshot_identity,
 )
@@ -63,6 +63,7 @@ from scripts.release_install_smoke import (
     CANDIDATE,
     ENVROOT,
     PROOF_TARGETS,
+    RETAINED_PROOF_REPAIR,
     InstallProofError,
     candidate_file_entries,
     target_install_paths_from_ledger,
@@ -1271,15 +1272,28 @@ def _validate_proof_binding(
                     repair="bash scripts/release.sh --recover",
                 )
             )
-    proof_entries = {
-        (
-            str(entry.get("basename")),
-            int(entry.get("bytes", -1)),
-            str(entry.get("sha256")),
+    proof_entries: set[tuple[str, int, str]] = set()
+    for entry in proof.get("candidate_files", []):
+        if not isinstance(entry, Mapping):
+            continue
+        byte_count = entry.get("bytes", -1)
+        if type(byte_count) is not int or byte_count < 0:
+            failures.append(
+                _failure(
+                    "install proof candidate file byte count is invalid",
+                    expected="non-negative integer",
+                    actual=repr(byte_count),
+                    repair=RETAINED_PROOF_REPAIR,
+                )
+            )
+            continue
+        proof_entries.add(
+            (
+                str(entry.get("basename")),
+                byte_count,
+                str(entry.get("sha256")),
+            )
         )
-        for entry in proof.get("candidate_files", [])
-        if isinstance(entry, Mapping)
-    }
     try:
         expected_install_paths = target_install_paths_from_ledger(
             ledger,
@@ -2008,11 +2022,11 @@ def _validate_policy_payload(policy_run: Mapping[str, Any]) -> list[Failure]:
         "policy_checked_at",
     ):
         value = policy_run.get(key)
-        if not isinstance(value, str) or not RFC3339_UTC_RE.fullmatch(value):
+        if not is_normalized_utc_timestamp(value):
             failures.append(
                 _failure(
                     f"retained ledger {key} is invalid",
-                    expected="RFC3339 UTC timestamp",
+                    expected="RFC3339 UTC timestamp normalized with Z",
                     actual=repr(value),
                     repair="bash scripts/release.sh --recover",
                 )

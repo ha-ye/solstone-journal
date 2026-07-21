@@ -660,6 +660,25 @@ def test_recovery_rejects_garbage_retained_advisory_identity(
     )
 
 
+def test_recovery_rejects_impossible_retained_policy_timestamp(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger_path = report.evidence_dir / "ledger.json"
+    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    payload["policy_run"]["db_commit_timestamp"] = "2026-99-19T12:00:00Z"
+    ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert any(
+        failure.error == "retained ledger db_commit_timestamp is invalid"
+        for failure in exc.value.failures
+    )
+
+
 def test_recovery_has_no_service_surface() -> None:
     parameters = set(inspect.signature(driver.run_recover).parameters)
 

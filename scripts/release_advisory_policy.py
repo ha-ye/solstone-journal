@@ -60,6 +60,11 @@ SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 MAXIMUM_DB_FETCH_STALENESS_DELTA = timedelta(hours=24)
 MAXIMUM_DB_CONTENT_AGE_DELTA = timedelta(days=14)
 ARCHIVE_PREFIX = "advisory-db/"
+ADVISORY_DB_FETCH_REPAIR = (
+    "reacquire RELEASE_ADVISORY_DB_ROOT with cargo-deny --config <cfg> "
+    "--manifest-path core/Cargo.toml fetch db twice"
+)
+ADVISORY_CLOCK_REPAIR = f"check the system clock, then {ADVISORY_DB_FETCH_REPAIR}"
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,7 @@ def _validate_policy_run_receipt(policy_run: PolicyRun) -> list[Failure]:
         "policy_checked_at",
     ):
         value = getattr(policy_run, key)
-        if not _is_normalized_utc_timestamp(value):
+        if not is_normalized_utc_timestamp(value):
             failures.append(
                 _failure(
                     f"policy_run.{key} is invalid",
@@ -301,7 +306,7 @@ def _validate_source(
     return failures
 
 
-def _materialized_config_bytes(
+def materialized_config_bytes(
     base_bytes: bytes,
     *,
     db_root: Path,
@@ -352,7 +357,7 @@ def _write_materialized_config(
     db_root: Path,
     db_urls: Sequence[str],
 ) -> Path:
-    materialized = _materialized_config_bytes(
+    materialized = materialized_config_bytes(
         (root / "core" / "deny.toml").read_bytes(),
         db_root=db_root,
         db_urls=db_urls,
@@ -403,7 +408,7 @@ def _realpath(path: Path) -> Path:
     return path.resolve(strict=False)
 
 
-def _locate_advisory_snapshot(db_root: Path) -> Path:
+def locate_advisory_snapshot(db_root: Path) -> Path:
     try:
         entries = sorted(db_root.iterdir(), key=lambda path: path.name)
     except OSError as exc:
@@ -543,11 +548,11 @@ def _strip_one_trailing_newline(value: str) -> str:
     return value[:-1] if value.endswith("\n") else value
 
 
-def _git_db_commit(runner: Runner, db_root: Path) -> str:
+def _git_db_commit(runner: Runner, snapshot: Path) -> str:
     value = _strip_one_trailing_newline(
         _run(
             runner,
-            ["git", "-C", str(db_root), "rev-parse", "--verify", "HEAD^{commit}"],
+            ["git", "-C", str(snapshot), "rev-parse", "--verify", "HEAD^{commit}"],
         ).stdout
     )
     failures = validate_snapshot_identity(
@@ -565,7 +570,7 @@ def _git_db_commit_timestamp(runner: Runner, snapshot: Path) -> datetime:
     return _parse_utc(value, label="advisory db commit timestamp")
 
 
-def _advisory_check_argv(cargo_deny: str, config_path: Path, root: Path) -> list[str]:
+def advisory_check_argv(cargo_deny: str, config_path: Path, root: Path) -> list[str]:
     return [
         cargo_deny,
         "--config",
@@ -612,12 +617,12 @@ def _assert_scanned_snapshot(stderr: str, snapshot: Path) -> None:
         )
 
 
-def _default_archive_hasher(db_root: Path) -> str:
+def _default_archive_hasher(snapshot: Path) -> str:
     result = subprocess.run(
         [
             "git",
             "-C",
-            str(db_root),
+            str(snapshot),
             "archive",
             "--format=tar",
             f"--prefix={ARCHIVE_PREFIX}",
@@ -676,7 +681,7 @@ def _format_utc(value: datetime) -> str:
     )
 
 
-def _is_normalized_utc_timestamp(value: object) -> bool:
+def is_normalized_utc_timestamp(value: object) -> bool:
     if not isinstance(value, str) or not RFC3339_UTC_RE.fullmatch(value):
         return False
     try:
@@ -735,7 +740,7 @@ def _validate_acquisition_freshness(
                 "advisory fetch time is in the future",
                 expected="FETCH_HEAD mtime at or before policy check time",
                 actual=advisory_acquired_at,
-                repair="python3 scripts/check_rust_release_manifest.py",
+                repair=ADVISORY_CLOCK_REPAIR,
             )
         )
     elif policy_utc - fetch_acquired > MAXIMUM_DB_FETCH_STALENESS_DELTA:
@@ -747,7 +752,7 @@ def _validate_acquisition_freshness(
                     f"{_duration_label(MAXIMUM_DB_FETCH_STALENESS_DELTA)}"
                 ),
                 actual=advisory_acquired_at,
-                repair="python3 scripts/check_rust_release_manifest.py",
+                repair=ADVISORY_DB_FETCH_REPAIR,
             )
         )
     if db_commit_time > policy_utc:
@@ -756,7 +761,7 @@ def _validate_acquisition_freshness(
                 "advisory db commit timestamp is in the future",
                 expected="HEAD commit timestamp at or before policy check time",
                 actual=db_commit_timestamp,
-                repair="python3 scripts/check_rust_release_manifest.py",
+                repair=ADVISORY_CLOCK_REPAIR,
             )
         )
     elif policy_utc - db_commit_time > MAXIMUM_DB_CONTENT_AGE_DELTA:
@@ -816,7 +821,7 @@ def prepare_policy_run(
             db_urls=db_urls,
         )
 
-        snapshot = _locate_advisory_snapshot(db_root)
+        snapshot = locate_advisory_snapshot(db_root)
         _assert_snapshot_git_top_level(runner, snapshot)
         _assert_snapshot_clean(runner, snapshot)
         db_commit = _git_db_commit(runner, snapshot)
@@ -834,7 +839,7 @@ def prepare_policy_run(
         _validate_advisory_count(advisory_count)
         check_result = _run(
             runner,
-            _advisory_check_argv(cargo_deny, config_path, root),
+            advisory_check_argv(cargo_deny, config_path, root),
             cwd=root,
         )
         _assert_scanned_snapshot(check_result.stderr, snapshot)

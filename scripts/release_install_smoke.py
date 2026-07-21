@@ -55,6 +55,10 @@ TOP_LEVEL_KEYS = frozenset(
 PROOF_KIND = "solstone-native-install-proof"
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
+RETAINED_PROOF_REPAIR = (
+    "restore the retained install proof from unmodified release evidence; "
+    "--recover validates only and cannot repair mutated proof bytes"
+)
 SCRUBBED_COMMAND_ENV: Mapping[str, str] = {
     "PIP_NO_INDEX": "1",
     "PYTHONNOUSERSITE": "1",
@@ -1113,19 +1117,36 @@ def _validate_command_payload(label: str, value: Any) -> list[Failure]:
     return failures
 
 
-def _proof_candidate_entries(proof: Mapping[str, Any]) -> set[tuple[str, int, str]]:
+def _proof_candidate_entries(
+    proof: Mapping[str, Any],
+) -> tuple[set[tuple[str, int, str]], list[Failure]]:
     entries = proof.get("candidate_files", [])
     if not isinstance(entries, list):
-        return set()
-    return {
-        (
-            str(entry.get("basename")),
-            int(entry.get("bytes", -1)),
-            str(entry.get("sha256")),
+        return set(), []
+    parsed: set[tuple[str, int, str]] = set()
+    failures: list[Failure] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        byte_count = entry.get("bytes", -1)
+        if type(byte_count) is not int or byte_count < 0:
+            failures.append(
+                _failure(
+                    "install proof candidate file byte count is invalid",
+                    expected="non-negative integer",
+                    actual=repr(byte_count),
+                    repair=RETAINED_PROOF_REPAIR,
+                )
+            )
+            continue
+        parsed.add(
+            (
+                str(entry.get("basename")),
+                byte_count,
+                str(entry.get("sha256")),
+            )
         )
-        for entry in entries
-        if isinstance(entry, Mapping)
-    }
+    return parsed, failures
 
 
 def _candidate_entries_for_paths(paths: Sequence[Path]) -> set[tuple[str, int, str]]:
@@ -1153,7 +1174,9 @@ def _validate_proof_semantics(
     except InstallProofError as exc:
         return list(exc.failures)
     expected_entries = _candidate_entries_for_paths(install_paths)
-    if _proof_candidate_entries(proof) != expected_entries:
+    proof_entries, proof_entry_failures = _proof_candidate_entries(proof)
+    failures.extend(proof_entry_failures)
+    if proof_entries != expected_entries:
         failures.append(
             _failure(
                 "install proof candidate inventory does not match target install set",
@@ -1516,7 +1539,7 @@ def validate_install_proof(
                     "install proof candidate file byte count is invalid",
                     expected="non-negative integer",
                     actual=repr(entry["bytes"]),
-                    repair="python3 scripts/check_rust_release_manifest.py",
+                    repair=RETAINED_PROOF_REPAIR,
                 )
             )
         if not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(

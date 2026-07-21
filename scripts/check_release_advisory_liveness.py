@@ -24,9 +24,9 @@ from scripts.check_release_preflight import check_cargo_deny  # noqa: E402
 from scripts.check_rust_release_manifest import Failure  # noqa: E402
 from scripts.release_advisory_policy import (  # noqa: E402
     ReleasePolicyError,
-    _advisory_check_argv,
-    _locate_advisory_snapshot,
-    _materialized_config_bytes,
+    advisory_check_argv,
+    locate_advisory_snapshot,
+    materialized_config_bytes,
     prepare_policy_run,
 )
 
@@ -193,7 +193,7 @@ def _commit_all(repo: Path, *, message: str, commit_date: str) -> None:
 
 def _write_config(config_path: Path, db_root: Path) -> None:
     config_path.write_bytes(
-        _materialized_config_bytes(
+        materialized_config_bytes(
             (ROOT / "core" / "deny.toml").read_bytes(),
             db_root=db_root,
             db_urls=(LOGICAL_DB_URL,),
@@ -240,7 +240,7 @@ def _materialize(
             ],
             env=env,
         )
-    snapshot = _locate_advisory_snapshot(db_root)
+    snapshot = locate_advisory_snapshot(db_root)
     return MaterializedDb(
         case_root=case_root,
         source_repo=source_repo,
@@ -318,7 +318,7 @@ def _case_stale_snapshot_fails_binary(commit_date: str) -> None:
     db = _materialize("stale-binary", fixture_name="valid", commit_date=commit_date)
     _touch(db.snapshot / ".git" / "FETCH_HEAD", "20 days ago")
     result = _run(
-        _advisory_check_argv("cargo-deny", db.config_path, ROOT),
+        advisory_check_argv("cargo-deny", db.config_path, ROOT),
         check=False,
     )
     # Layer (c): this is cargo-deny's own stale check, not the rail's Python check.

@@ -582,6 +582,49 @@ def test_install_proof_validators_require_binding_arguments(tmp_path: Path) -> N
         smoke.validate_install_proof_bytes(smoke.canonical_json_bytes(proof))
 
 
+def test_install_proof_candidate_file_bad_bytes_returns_failure(
+    tmp_path: Path,
+) -> None:
+    candidate, paths, ledger, install_paths = _linux_context(tmp_path)
+    proof = smoke.build_install_proof(
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=ledger["candidate"]["candidate_digest"],
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        candidate_paths=paths,
+        ledger_payload=ledger,
+        observation=_observation(
+            env_root=tmp_path / "env",
+            candidate_dir=candidate,
+            install_paths=install_paths,
+            macos=False,
+        ),
+        recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
+    )
+    proof["candidate_files"][0]["bytes"] = "bad"
+
+    failures = smoke.validate_install_proof(
+        proof,
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=ledger["candidate"]["candidate_digest"],
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        ledger_payload=ledger,
+    )
+
+    assert any(
+        failure.error == "install proof candidate file byte count is invalid"
+        and "restore the retained install proof" in failure.repair
+        for failure in failures
+    )
+
+
 def _linux_context(
     tmp_path: Path,
 ) -> tuple[Path, list[Path], dict[str, Any], tuple[Path, ...]]:
