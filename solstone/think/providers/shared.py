@@ -385,6 +385,10 @@ USAGE_KEYS = frozenset(
 # ---------------------------------------------------------------------------
 
 CANNED_GENERATE_PROMPT = "Reply with the single word OK."
+CANNED_COGITATE_PROBE_PROMPT = (
+    "Call the emit_final tool exactly once with the content OK. "
+    "Do not reply with plain text and do not call any other tool."
+)
 CANNED_GENERATE_MAX_OUTPUT_TOKENS = 512
 CANNED_GENERATE_THINKING_BUDGET = 0
 CANNED_GENERATE_NUM_RETRIES = 0
@@ -623,6 +627,7 @@ def safe_raw(
 
 
 __all__ = [
+    "CANNED_COGITATE_PROBE_PROMPT",
     "CANNED_GENERATE_MAX_OUTPUT_TOKENS",
     "CANNED_GENERATE_NUM_RETRIES",
     "CANNED_GENERATE_PROMPT",

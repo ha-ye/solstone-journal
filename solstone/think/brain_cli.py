@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, cast
 
+from solstone.think.brain_health import brain_age, brain_reason_text
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import (
     AttestationFailedError,
@@ -52,6 +53,7 @@ from solstone.think.providers.runtime_health import (
     inspect_runtime_health,
 )
 from solstone.think.providers.shared import (
+    CANNED_COGITATE_PROBE_PROMPT,
     CANNED_GENERATE_MAX_OUTPUT_TOKENS,
     CANNED_GENERATE_NUM_RETRIES,
     CANNED_GENERATE_PROMPT,
@@ -97,34 +99,6 @@ class BrainView:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _parse_timestamp(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _age_text(now: datetime, observed_at: str | None) -> str | None:
-    observed = _parse_timestamp(observed_at)
-    if observed is None:
-        return None
-    seconds = max(0, int((now.astimezone(timezone.utc) - observed).total_seconds()))
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 48:
-        return f"{hours}h"
-    return f"{hours // 24}d"
 
 
 def brain_exit_code(
@@ -189,7 +163,7 @@ def _view_from_inspection(
         observed_at=observed_at,
         expires_at=expires_at,
         path=inspection["path"],
-        checked_age=_age_text(now, observed_at),
+        checked_age=brain_age(now, observed_at)[1],
     )
 
 
@@ -214,22 +188,6 @@ def _transient_view(
         path=str(brain_state_path()),
         refresh_outcome=outcome,
     )
-
-
-def _reason_text(reason_code: str | None) -> str:
-    if reason_code is None:
-        return "ok"
-    if reason_code == "thinking_engine_not_chosen":
-        return "no thinking engine chosen"
-    if reason_code == "configuration_invalid":
-        return "configuration invalid"
-    if reason_code == "stale_expected_fingerprint":
-        return "stale expected fingerprint"
-    if reason_code == "lost_fence":
-        return "refresh fence lost"
-    if reason_code == "busy":
-        return "check already running"
-    return reason_code.replace("_", " ")
 
 
 def _identity_text(view: BrainView) -> str:
@@ -265,7 +223,7 @@ def render(view: BrainView, *, json_output: bool) -> None:
         print(f"Brain ready: {_identity_text(view)}{suffix}")
         return
     label = view.aggregate_state
-    reason = _reason_text(view.reason_code)
+    reason = brain_reason_text(view.reason_code)
     component = f" ({view.failing_component})" if view.failing_component else ""
     print(f"Brain {label}: {reason}{component}")
 
@@ -556,7 +514,7 @@ def _cogitate_component(
 ) -> BrainEvidenceComponent:
     config = {
         "diagnostic": True,
-        "prompt": CANNED_GENERATE_PROMPT,
+        "prompt": CANNED_COGITATE_PROBE_PROMPT,
         "provider": provider,
         "model": model,
         "max_turns": 2,

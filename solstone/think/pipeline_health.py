@@ -1688,7 +1688,7 @@ def pipeline_status_message(summary: dict) -> dict | None:
         if seg.get("error"):
             return {
                 "status": summary.get("status", "stale"),
-                "message": "Segment thinking status unavailable",
+                "message": "Segment analysis status unavailable",
             }
         count = seg.get("not_thought", 0)
         plural = "s" if count != 1 else ""
