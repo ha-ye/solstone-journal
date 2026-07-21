@@ -12,7 +12,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from solstone.think.providers.install_state import PROVIDERS, ProviderName
 from solstone.think.utils import get_journal
@@ -112,6 +112,36 @@ def assert_install_lease_owned(
     return lease
 
 
+def probe_install_lease_state(
+    provider: str,
+    *,
+    journal_path: str | Path | None = None,
+) -> Literal["held", "free", "missing"]:
+    """Probe an existing provider lease with a trial flock.
+
+    The only sanctioned side effect is a transient flock on an existing lease
+    file; this function never creates the lease path.
+    """
+    validated = _validate_provider(provider)
+    path = lease_path(validated, journal_path=journal_path)
+    fd: int | None = None
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return "held"
+            raise
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return "free"
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def probe_install_lease_free(
     provider: str,
     *,
@@ -162,5 +192,6 @@ __all__ = [
     "assert_install_lease_owned",
     "lease_path",
     "probe_install_lease_free",
+    "probe_install_lease_state",
     "prune_unowned_lease_file",
 ]

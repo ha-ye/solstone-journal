@@ -9,10 +9,13 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from solstone.think.providers.install_lease import (
     acquire_install_lease,
     lease_path,
     probe_install_lease_free,
+    probe_install_lease_state,
     prune_unowned_lease_file,
 )
 
@@ -43,6 +46,59 @@ def test_context_release_paths(tmp_path, monkeypatch) -> None:
         assert probe_install_lease_free("local") is False
 
     assert probe_install_lease_free("local") is True
+
+
+def test_probe_install_lease_state_missing_does_not_create_path(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    path = lease_path("local")
+
+    assert probe_install_lease_state("local") == "missing"
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_probe_install_lease_state_free_existing_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    path = lease_path("local")
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+
+    assert probe_install_lease_state("local") == "free"
+    assert path.exists()
+
+
+def test_probe_install_lease_state_held_existing_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    lease = acquire_install_lease("local")
+    assert lease is not None
+    try:
+        assert probe_install_lease_state("local") == "held"
+    finally:
+        lease.release()
+
+    assert probe_install_lease_state("local") == "free"
+
+
+def test_probe_install_lease_state_propagates_unexpected_oserror(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    path = lease_path("local")
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+
+    from solstone.think.providers import install_lease
+
+    def fail_flock(_fd: int, _operation: int) -> None:
+        raise OSError("unexpected flock failure")
+
+    monkeypatch.setattr(install_lease.fcntl, "flock", fail_flock)
+
+    with pytest.raises(OSError, match="unexpected flock failure"):
+        probe_install_lease_state("local")
 
 
 def test_prune_unowned_lease_file(tmp_path, monkeypatch) -> None:
