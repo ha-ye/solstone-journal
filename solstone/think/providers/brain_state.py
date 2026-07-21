@@ -56,6 +56,7 @@ from solstone.think.providers.install_state import (
     fingerprint_sha256,
 )
 from solstone.think.providers.local_endpoint import (
+    confidential_fingerprint_provenance_block,
     confidential_provenance_block,
     normalize_local_endpoint_url,
 )
@@ -784,7 +785,7 @@ def build_active_brain_fingerprint(
             ),
         }
         if lane == "spp":
-            block = confidential_provenance_block(dict(config))
+            block = confidential_fingerprint_provenance_block(dict(config))
             components["confidential"] = (
                 _canonical_digest(block, hmac_key=hmac_key)
                 if block is not None

@@ -66,6 +66,29 @@ def confidential_provenance_block(config: dict[str, Any]) -> dict[str, Any] | No
     return provenance if isinstance(provenance, dict) else None
 
 
+_CONFIDENTIAL_RESTORE_ONLY_FIELDS = frozenset(
+    {
+        "prior_active",
+        "prior_local_endpoint",
+    }
+)
+
+
+def confidential_fingerprint_provenance_block(
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return confidential provenance fields that affect active SPP execution."""
+
+    provenance = confidential_provenance_block(config)
+    if provenance is None:
+        return None
+    return {
+        key: value
+        for key, value in provenance.items()
+        if key not in _CONFIDENTIAL_RESTORE_ONLY_FIELDS
+    }
+
+
 def _configured_byo_parallel_slots(local_config: dict[str, Any]) -> int:
     if "parallel_slots" not in local_config:
         return _DEFAULT_BYO_PARALLEL_SLOTS
@@ -321,6 +344,7 @@ __all__ = [
     "LOCAL_ENDPOINT_UNREACHABLE_COPY",
     "LocalEndpoint",
     "classify_byo_cogitate_error",
+    "confidential_fingerprint_provenance_block",
     "confidential_provenance_block",
     "is_byo_capacity_error",
     "is_byo_network_error",

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from typing import Any
 import pytest
 
 from solstone.think.journal_io import atomic_replace
+from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import brain_state as brain_state_module
 from solstone.think.providers.brain_state import (
     BRAIN_AGGREGATE_STATES,
@@ -66,6 +68,45 @@ def _local_endpoint_config() -> dict[str, Any]:
                 "served_model_id": "served-model",
                 "credential": "endpoint-secret",
             },
+        },
+        "env": {},
+    }
+
+
+def _spp_config(
+    *,
+    prior_model: str = "gemini-flash-latest",
+    account_id: str = "acct-a",
+) -> dict[str, Any]:
+    credential = "endpoint-secret"
+    endpoint_url = "https://brain.example.test/v1"
+    served_model_id = "served-model"
+    return {
+        "providers": {
+            "active": {"provider": "local", "model": LOCAL_MODEL},
+            "local": {
+                "endpoint_url": endpoint_url,
+                "served_model_id": served_model_id,
+                "credential": credential,
+            },
+        },
+        "services": {
+            "confidential": {
+                "enabled_at": "2026-01-02T03:04:05+00:00",
+                "account_id": account_id,
+                "endpoint_url": endpoint_url,
+                "served_model_id": served_model_id,
+                "credential_created_at": "2026-01-02T03:00:00+00:00",
+                "credential_fingerprint_sha256": hashlib.sha256(
+                    credential.encode("utf-8")
+                ).hexdigest(),
+                "prior_active": {"provider": "google", "model": prior_model},
+                "prior_local_endpoint": {
+                    "endpoint_url": "https://old-local.example.test/v1",
+                    "served_model_id": "old-served-model",
+                    "credential": "old-secret",
+                },
+            }
         },
         "env": {},
     }
@@ -827,6 +868,78 @@ def test_config_change_invalidates_prior_ready_without_refresh(tmp_path: Path) -
 
     assert projection["aggregate_state"] == "unknown"
     assert projection["reason_code"] == "brain_config_changed"
+
+
+def test_spp_fingerprint_ignores_confidential_restore_snapshots(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config(prior_model="gemini-flash-latest")
+    _write_ready_record(tmp_path, config)
+    record = validate_brain_state_record(_read_raw_record(tmp_path))
+    key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    before = build_active_brain_fingerprint(config, hmac_key=key)
+
+    pinned = json.loads(json.dumps(config))
+    confidential = pinned["services"]["confidential"]
+    confidential["prior_active"] = {
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+    }
+    confidential["prior_local_endpoint"] = {
+        "endpoint_url": "https://replacement.example.test/v1",
+        "served_model_id": "replacement-served-model",
+        "credential": "replacement-secret",
+    }
+    after = build_active_brain_fingerprint(pinned, hmac_key=key)
+
+    assert before["active_lane"] == "spp"
+    assert after["active_lane"] == "spp"
+    assert before["fingerprint_sha256"] == after["fingerprint_sha256"]
+    projection = project_brain_state(
+        record,
+        NOW,
+        config=pinned,
+        hmac_key=key,
+        refresh_permit_active=False,
+        runtime_health=None,
+    )
+    assert projection["aggregate_state"] == "ready"
+
+
+def test_spp_fingerprint_tracks_confidential_active_provenance() -> None:
+    key = b"k" * 32
+    before = build_active_brain_fingerprint(
+        _spp_config(account_id="acct-a"), hmac_key=key
+    )
+    after = build_active_brain_fingerprint(
+        _spp_config(account_id="acct-b"), hmac_key=key
+    )
+
+    assert before["active_lane"] == "spp"
+    assert after["active_lane"] == "spp"
+    assert before["fingerprint_sha256"] != after["fingerprint_sha256"]
+
+
+def test_active_model_changes_fingerprint_but_byo_memory_does_not() -> None:
+    key = b"k" * 32
+    config = {
+        "providers": {
+            "active": {"provider": "google", "model": "gemini-3.5-flash"},
+            "byo_models": {"google": "gemini-flash-latest"},
+        },
+        "env": {"GOOGLE_API_KEY": "google-secret"},
+    }
+    active_changed = json.loads(json.dumps(config))
+    active_changed["providers"]["active"]["model"] = "gemini-3.1-flash-lite"
+    remembered_changed = json.loads(json.dumps(config))
+    remembered_changed["providers"]["byo_models"]["google"] = "gemini-3.5-flash"
+
+    before = build_active_brain_fingerprint(config, hmac_key=key)
+    active_after = build_active_brain_fingerprint(active_changed, hmac_key=key)
+    remembered_after = build_active_brain_fingerprint(remembered_changed, hmac_key=key)
+
+    assert before["fingerprint_sha256"] != active_after["fingerprint_sha256"]
+    assert before["fingerprint_sha256"] == remembered_after["fingerprint_sha256"]
 
 
 def test_unresolved_lane_begin_refresh_does_not_persist(tmp_path: Path) -> None:
