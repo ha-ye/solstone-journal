@@ -346,6 +346,81 @@ main().catch((error) => { console.error(error.stack || error); process.exit(1); 
     )
 
 
+def test_byo_model_save_restore_copy_uses_confidential_response_lane() -> None:
+    _run_node(
+        _node_script(
+            """
+async function main() {
+  const messages = [];
+  let providersApplied = null;
+  const result = await runByoModelSaveFlow({
+    apiFn: async (path) => {
+      if (path === 'api/validate-model') return {valid: true};
+      if (path === 'api/providers') return {active_lane: {lane: 'confidential'}};
+      throw new Error(`unexpected path ${path}`);
+    },
+    applyProviders: (providers) => { providersApplied = providers; },
+    provider: 'google',
+    providerName: 'Gemini',
+    model: 'gemini-3.5-pro',
+    modelLabel: 'Gemini 3.5 Pro',
+    googleModelResolutionTargets: ['confidential_prior'],
+    restoreOnly: false,
+    text,
+    setMode: () => {},
+    renderFn: () => {},
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(providersApplied.active_lane.lane === 'confidential', 'providers should apply');
+  assert(result.status === 'restored', 'confidential response lane should use restore result');
+  assert(messages.at(-1).message === 'remembered Gemini 3.5 Pro. sol keeps thinking with confidential processing now.', 'confidential response lane should show restore copy');
+  assert(messages.at(-1).tone === 'ok', 'restore copy tone');
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+        )
+    )
+
+
+def test_byo_model_save_normal_copy_uses_non_confidential_response_lane() -> None:
+    _run_node(
+        _node_script(
+            """
+async function main() {
+  const messages = [];
+  let providersApplied = null;
+  const result = await runByoModelSaveFlow({
+    apiFn: async (path) => {
+      if (path === 'api/validate-model') return {valid: true};
+      if (path === 'api/providers') return {active_lane: {lane: 'byo'}};
+      throw new Error(`unexpected path ${path}`);
+    },
+    applyProviders: (providers) => { providersApplied = providers; },
+    provider: 'google',
+    providerName: 'Gemini',
+    model: 'gemini-3.5-pro',
+    modelLabel: 'Gemini 3.5 Pro',
+    googleModelResolutionTargets: ['confidential_prior'],
+    restoreOnly: true,
+    text,
+    setMode: () => {},
+    renderFn: () => {},
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(providersApplied.active_lane.lane === 'byo', 'providers should apply');
+  assert(result.status === 'saved', 'non-confidential response lane should use normal save result');
+  assert(!messages.some((entry) => entry.message.includes('sol keeps thinking with confidential processing now')), 'non-confidential response lane should not show restore copy');
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+        )
+    )
+
+
 def test_byo_key_check_failure_and_success_branches() -> None:
     _run_node(
         _node_script(

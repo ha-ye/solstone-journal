@@ -643,7 +643,6 @@
     model,
     modelLabel = '',
     googleModelResolutionTargets = [],
-    restoreOnly = false,
     text,
     setMode,
     renderFn,
@@ -680,7 +679,7 @@
       });
       applyProviders(providers);
       renderFn();
-      if (restoreOnly) {
+      if (providers?.active_lane?.lane === 'confidential') {
         showStatus(
           formatCopy(text?.model_saved_restore || '', {label: modelLabel || model}),
           'ok',
@@ -2500,7 +2499,6 @@
     const model = String(state.byoSelectedModel || '').trim();
     if (!model) return;
     const googleModelResolutionTargets = state.byoModelResolutionTargets.slice();
-    const restoreOnly = restoreOnlyModelResolutionActive(googleModelResolutionTargets);
     const modelLabel = byoModelLabel(provider, model, state.providers);
     const result = await runByoModelSaveFlow({
       apiFn: api,
@@ -2512,7 +2510,6 @@
       model,
       modelLabel,
       googleModelResolutionTargets,
-      restoreOnly,
       text: copy.byo_setup || {},
       setMode: (mode) => {
         state.byoMode = mode;

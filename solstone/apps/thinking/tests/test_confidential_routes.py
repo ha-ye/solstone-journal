@@ -73,6 +73,27 @@ def _write_config(payload: dict) -> None:
     seed_journal_config(payload)
 
 
+def _flatten_config_paths(value: object, prefix: str = "") -> dict[str, object]:
+    if isinstance(value, dict) and value:
+        flattened: dict[str, object] = {}
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            flattened.update(_flatten_config_paths(child, child_prefix))
+        return flattened
+    return {prefix: value}
+
+
+def _differing_config_paths(before: dict, after: dict) -> set[str]:
+    before_flat = _flatten_config_paths(before)
+    after_flat = _flatten_config_paths(after)
+    missing = object()
+    return {
+        path
+        for path in before_flat.keys() | after_flat.keys()
+        if before_flat.get(path, missing) != after_flat.get(path, missing)
+    }
+
+
 def _ready_component(now: datetime) -> dict[str, str]:
     return {
         "status": "ok",
@@ -259,6 +280,7 @@ def test_google_prior_active_advisory_save_restores_without_hijacking_lane(
         "provider": "google",
         "model": GOOGLE_PRO_ALIAS,
     }
+    config["providers"]["byo_models"] = {"anthropic": "claude-sonnet-4-6"}
     _write_config(config)
     spp.provision_confidential_handoff(_payload("prior-alias"))
     _write_ready_brain_record(journal_copy)
@@ -292,26 +314,16 @@ def test_google_prior_active_advisory_save_restores_without_hijacking_lane(
     assert after["active_lane"]["lane"] == "confidential"
     assert after["active"] == {"provider": "local", "model": LOCAL_MODEL}
     assert after["configuration_guidance"] is None
-    assert stored["providers"]["active"] == before_config["providers"]["active"]
-    assert stored["providers"]["local"] == before_config["providers"]["local"]
-    assert stored["providers"]["byo_models"]["google"] == exact_model
-    before_byo_models = before_config["providers"].get("byo_models", {})
-    after_byo_models = stored["providers"].get("byo_models", {})
-    assert {
-        key: value for key, value in after_byo_models.items() if key != "google"
-    } == {key: value for key, value in before_byo_models.items() if key != "google"}
-    before_confidential = before_config["services"]["confidential"]
-    after_confidential = stored["services"]["confidential"]
-    assert {
-        key: value for key, value in after_confidential.items() if key != "prior_active"
-    } == {
-        key: value
-        for key, value in before_confidential.items()
-        if key != "prior_active"
+    assert _differing_config_paths(before_config, stored) == {
+        "providers.byo_models.google",
+        "services.confidential.prior_active.model",
     }
-    assert after_confidential["prior_active"]["provider"] == "google"
-    assert before_confidential["prior_active"]["model"] == GOOGLE_PRO_ALIAS
-    assert after_confidential["prior_active"]["model"] == exact_model
+    assert (
+        before_config["services"]["confidential"]["prior_active"]["model"]
+        == GOOGLE_PRO_ALIAS
+    )
+    assert stored["services"]["confidential"]["prior_active"]["model"] == exact_model
+    assert stored["providers"]["byo_models"]["google"] == exact_model
     after_fingerprint = build_active_brain_fingerprint(stored, hmac_key=key)
     assert before_fingerprint["active_lane"] == "spp"
     assert after_fingerprint["active_lane"] == "spp"
