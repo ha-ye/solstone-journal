@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-from scripts.check_rust_release_manifest import Failure
+from scripts.check_rust_release_manifest import SOURCE_COMMIT_RE, Failure
 from scripts.release_tool_pins import CARGO_DENY_PIN
 
 PolicyMode = str
@@ -26,12 +26,14 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 TempPathFactory = Callable[[str], Path]
 Clock = Callable[[], datetime]
 ArchiveHasher = Callable[[Path], str]
+PathRemover = Callable[[Path], None]
 
 ADVISORY_TABLE_RE = re.compile(r"(?m)^\s*\[\s*advisories\s*\]\s*(?:#.*)?$")
 SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 MAXIMUM_DB_STALENESS = "24 hours"
 MAXIMUM_DB_STALENESS_DELTA = timedelta(hours=24)
 ARCHIVE_PREFIX = "advisory-db/"
+DB_ARCHIVE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,15 @@ class PolicyRun:
     advisory_acquired_at: str
     policy_checked_at: str
     result: str
+
+    def __post_init__(self) -> None:
+        failures = validate_snapshot_identity(
+            "policy_run",
+            db_commit=self.db_commit,
+            db_archive_sha256=self.db_archive_sha256,
+        )
+        if failures:
+            raise ReleasePolicyError(failures)
 
     def manifest_dependency_policy(self) -> dict[str, str]:
         return {
@@ -61,12 +72,62 @@ def _failure(error: str, *, expected: str, actual: str, repair: str) -> Failure:
     return Failure(error=error, expected=expected, actual=actual, repair=repair)
 
 
+def _actual_identity_value(value: object) -> str:
+    if isinstance(value, str) and value:
+        return value
+    if value == "":
+        return "<empty>"
+    return str(value)
+
+
+def validate_snapshot_identity(
+    label: str,
+    *,
+    db_commit: object,
+    db_archive_sha256: object,
+) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(db_commit, str) or not SOURCE_COMMIT_RE.fullmatch(db_commit):
+        failures.append(
+            _failure(
+                f"{label}.db_commit is invalid",
+                expected="exactly 40 or 64 lowercase hex characters",
+                actual=_actual_identity_value(db_commit),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if not isinstance(db_archive_sha256, str) or not DB_ARCHIVE_SHA256_RE.fullmatch(
+        db_archive_sha256
+    ):
+        failures.append(
+            _failure(
+                f"{label}.db_archive_sha256 is invalid",
+                expected="exactly 64 lowercase hex characters",
+                actual=_actual_identity_value(db_archive_sha256),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    return failures
+
+
 def _default_temp_path_factory(label: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=f"solstone-{label}-"))
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _unlink_path(path: Path) -> None:
+    path.unlink()
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path)
+
+
+def _remove_dir(path: Path) -> None:
+    path.rmdir()
 
 
 def _toml_string(value: str) -> str:
@@ -230,6 +291,27 @@ def _git_stdout(runner: Runner, db_root: Path, args: Sequence[str]) -> str:
     return _run(runner, ["git", "-C", str(db_root), *args]).stdout.strip()
 
 
+def _strip_one_trailing_newline(value: str) -> str:
+    return value[:-1] if value.endswith("\n") else value
+
+
+def _git_db_commit(runner: Runner, db_root: Path) -> str:
+    value = _strip_one_trailing_newline(
+        _run(
+            runner,
+            ["git", "-C", str(db_root), "rev-parse", "--verify", "HEAD^{commit}"],
+        ).stdout
+    )
+    failures = validate_snapshot_identity(
+        "advisory_snapshot",
+        db_commit=value,
+        db_archive_sha256="0" * 64,
+    )
+    if failures:
+        raise ReleasePolicyError(failures)
+    return value
+
+
 def _default_archive_hasher(db_root: Path) -> str:
     result = subprocess.run(
         [
@@ -299,16 +381,42 @@ def _cleanup_temp(
     config_path: Path | None,
     *,
     remove_tree: bool,
+    unlink_path: PathRemover = _unlink_path,
+    remove_tree_path: PathRemover = _remove_tree,
+    remove_dir: PathRemover = _remove_dir,
 ) -> None:
-    if remove_tree:
-        shutil.rmtree(temp_root, ignore_errors=True)
-        return
-    if config_path is not None:
-        config_path.unlink(missing_ok=True)
     try:
-        temp_root.rmdir()
-    except OSError:
-        pass
+        if remove_tree:
+            if temp_root.exists():
+                remove_tree_path(temp_root)
+            return
+        if config_path is not None and config_path.exists():
+            unlink_path(config_path)
+        if temp_root.exists():
+            remove_dir(temp_root)
+    except OSError as exc:
+        operation = (
+            "refresh temp removal" if remove_tree else "materialized config removal"
+        )
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    f"release advisory cleanup failed during {operation}",
+                    expected="owned release advisory temporary files removed",
+                    actual=type(exc).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            ]
+        ) from None
+
+
+def _combined_release_policy_error(
+    primary_error: ReleasePolicyError | None,
+    cleanup_error: ReleasePolicyError | None,
+) -> ReleasePolicyError | None:
+    if primary_error is not None and cleanup_error is not None:
+        return ReleasePolicyError([*primary_error.failures, *cleanup_error.failures])
+    return primary_error or cleanup_error
 
 
 def _validate_acquisition_freshness(
@@ -354,6 +462,9 @@ def prepare_policy_run(
     temp_path_factory: TempPathFactory = _default_temp_path_factory,
     clock: Clock = _utc_now,
     archive_hasher: ArchiveHasher = _default_archive_hasher,
+    cleanup_unlink: PathRemover = _unlink_path,
+    cleanup_rmtree: PathRemover = _remove_tree,
+    cleanup_rmdir: PathRemover = _remove_dir,
 ) -> PolicyRun:
     failures = _validate_source(advisory_source_id, db_urls)
     if failures:
@@ -397,6 +508,8 @@ def prepare_policy_run(
     temp_root = temp_path_factory("advisory-policy")
     resolved_db_root = db_root or (temp_root / "advisory-db")
     config_path: Path | None = None
+    result: PolicyRun | None = None
+    primary_error: ReleasePolicyError | None = None
     try:
         config_path = _write_materialized_config(
             root,
@@ -433,10 +546,15 @@ def prepare_policy_run(
                     )
                 ]
             )
-        db_commit = _git_stdout(
-            runner, resolved_db_root, ["rev-parse", "--verify", "HEAD^{commit}"]
-        )
+        db_commit = _git_db_commit(runner, resolved_db_root)
         db_archive_sha256 = archive_hasher(resolved_db_root)
+        failures = validate_snapshot_identity(
+            "advisory_snapshot",
+            db_commit=db_commit,
+            db_archive_sha256=db_archive_sha256,
+        )
+        if failures:
+            raise ReleasePolicyError(failures)
         if mode == "refresh-once":
             acquisition_text = _format_utc(clock())
         else:
@@ -464,7 +582,7 @@ def prepare_policy_run(
             acquired=acquired,
             policy_time=policy_time,
         )
-        return PolicyRun(
+        result = PolicyRun(
             advisory_source_id=advisory_source_id,
             db_commit=db_commit,
             db_archive_sha256=db_archive_sha256,
@@ -472,5 +590,24 @@ def prepare_policy_run(
             policy_checked_at=_format_utc(policy_time),
             result="pass",
         )
+    except ReleasePolicyError as exc:
+        primary_error = exc
     finally:
-        _cleanup_temp(temp_root, config_path, remove_tree=mode == "refresh-once")
+        cleanup_error: ReleasePolicyError | None = None
+        try:
+            _cleanup_temp(
+                temp_root,
+                config_path,
+                remove_tree=mode == "refresh-once",
+                unlink_path=cleanup_unlink,
+                remove_tree_path=cleanup_rmtree,
+                remove_dir=cleanup_rmdir,
+            )
+        except ReleasePolicyError as exc:
+            cleanup_error = exc
+        combined_error = _combined_release_policy_error(primary_error, cleanup_error)
+        if combined_error is not None:
+            raise combined_error
+    if result is None:
+        raise AssertionError("release advisory policy run did not produce a result")
+    return result

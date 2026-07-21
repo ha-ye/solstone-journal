@@ -18,7 +18,7 @@ from scripts.check_rust_release_manifest import (
     canonical_json_bytes,
     rust_artifact_targets,
 )
-from scripts.release_advisory_policy import PolicyRun
+from scripts.release_advisory_policy import PolicyRun, validate_snapshot_identity
 from scripts.release_digest import candidate_digest, file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
 
@@ -96,6 +96,87 @@ def _policy_run_payload(policy_run: PolicyRun) -> dict[str, str]:
     }
     if set(payload) != POLICY_RUN_KEYS:
         raise AssertionError("policy run payload key set drifted")
+    failures = validate_snapshot_identity(
+        "ledger.policy_run",
+        db_commit=payload["db_commit"],
+        db_archive_sha256=payload["db_archive_sha256"],
+    )
+    if failures:
+        raise LedgerError(failures)
+    return payload
+
+
+def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
+    failures: list[Failure] = []
+    if set(payload) != TOP_LEVEL_KEYS:
+        failures.append(
+            _failure(
+                "retained ledger top-level key set is invalid",
+                expected=", ".join(sorted(TOP_LEVEL_KEYS)),
+                actual=", ".join(sorted(str(key) for key in payload)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    policy_run = payload.get("policy_run")
+    if not isinstance(policy_run, Mapping):
+        failures.append(
+            _failure(
+                "retained ledger policy_run is invalid",
+                expected="policy_run object",
+                actual=str(policy_run),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    else:
+        if set(policy_run) != POLICY_RUN_KEYS:
+            failures.append(
+                _failure(
+                    "retained ledger policy_run key set is invalid",
+                    expected=", ".join(sorted(POLICY_RUN_KEYS)),
+                    actual=", ".join(sorted(str(key) for key in policy_run))
+                    or "<empty>",
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        failures.extend(
+            validate_snapshot_identity(
+                "ledger.policy_run",
+                db_commit=policy_run.get("db_commit"),
+                db_archive_sha256=policy_run.get("db_archive_sha256"),
+            )
+        )
+    failures.extend(validate_public_evidence_tree("ledger", payload))
+    return failures
+
+
+def read_retained_ledger(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LedgerError(
+            [
+                _failure(
+                    "retained ledger is not valid JSON",
+                    expected="JSON object",
+                    actual=str(exc),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            ]
+        ) from exc
+    if not isinstance(payload, dict):
+        raise LedgerError(
+            [
+                _failure(
+                    "retained ledger is not a JSON object",
+                    expected="JSON object",
+                    actual=type(payload).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            ]
+        )
+    failures = validate_retained_ledger(payload)
+    if failures:
+        raise LedgerError(failures)
     return payload
 
 
@@ -269,7 +350,7 @@ def write_ledger(
     finally:
         temp_path.unlink(missing_ok=True)
     readback = json.loads(output_path.read_text(encoding="utf-8"))
-    failures = validate_public_evidence_tree("ledger", readback)
+    failures = validate_retained_ledger(readback)
     if failures:
         raise LedgerError(failures)
     return output_path

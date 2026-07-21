@@ -11,9 +11,34 @@ import pytest
 import scripts.check_release_preflight as preflight
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
+from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_advisory_policy import PolicyRun
 
 SOURCE_COMMIT = "a" * 40
+MALFORMED_DB_COMMIT_CASES = (
+    ("short-39", "b" * 39),
+    ("short-63", "b" * 63),
+    ("long-41", "b" * 41),
+    ("long-65", "b" * 65),
+    ("uppercase", "B" * 40),
+    ("non-hex", "g" * 40),
+    ("empty", ""),
+    ("whitespace", " " + "b" * 40),
+    ("extra-line", "b" * 40 + "\nunexpected"),
+)
+MALFORMED_ARCHIVE_DIGEST_CASES = (
+    ("short", "c" * 63),
+    ("uppercase", "C" * 64),
+    ("non-hex", "g" * 64),
+    ("empty", ""),
+    ("extra-line", "c" * 64 + "\nunexpected"),
+)
+MALFORMED_DB_COMMITS = tuple(
+    pytest.param(value, id=name) for name, value in MALFORMED_DB_COMMIT_CASES
+)
+MALFORMED_ARCHIVE_DIGESTS = tuple(
+    pytest.param(value, id=name) for name, value in MALFORMED_ARCHIVE_DIGEST_CASES
+)
 
 
 def _policy() -> PolicyRun:
@@ -94,6 +119,25 @@ def _tool_evidence() -> dict[str, dict[str, str]]:
         lane: preflight.expected_lane_tool_evidence(lane)
         for lane in preflight.LANE_TOOL_KEYS
     }
+
+
+def _ledger_path(root: Path) -> Path:
+    return ledger.write_ledger(
+        evidence_root=root / "target" / "release-evidence",
+        version="1.2.3",
+        source_commit=SOURCE_COMMIT,
+        release_dir=_candidate(root),
+        core_lock_path=_core_lock(root),
+        tool_evidence=_tool_evidence(),
+        policy_run=_policy(),
+        native_records=_native_records(),
+    )
+
+
+def _mutate_retained_policy_run(path: Path, field: str, value: str) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["policy_run"][field] = value
+    path.write_bytes(canonical_json_bytes(payload))
 
 
 def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:
@@ -186,3 +230,48 @@ def test_ledger_requires_exactly_two_native_records(tmp_path: Path) -> None:
         )
 
     assert exc.value.failures[0].error == "macOS native record set is incomplete"
+
+
+@pytest.mark.parametrize("value", MALFORMED_DB_COMMITS)
+def test_retained_ledger_rejects_malformed_db_commit(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    path = _ledger_path(tmp_path)
+    _mutate_retained_policy_run(path, "db_commit", value)
+
+    with pytest.raises(ledger.LedgerError) as exc:
+        ledger.read_retained_ledger(path)
+
+    assert exc.value.failures[0].error == "ledger.policy_run.db_commit is invalid"
+    assert exc.value.failures[0].expected == "exactly 40 or 64 lowercase hex characters"
+    if value.startswith("B"):
+        assert exc.value.failures[0].actual == value
+
+
+def test_retained_ledger_accepts_sha256_db_commit(tmp_path: Path) -> None:
+    path = _ledger_path(tmp_path)
+    _mutate_retained_policy_run(path, "db_commit", "b" * 64)
+
+    payload = ledger.read_retained_ledger(path)
+
+    assert payload["policy_run"]["db_commit"] == "b" * 64
+
+
+@pytest.mark.parametrize("value", MALFORMED_ARCHIVE_DIGESTS)
+def test_retained_ledger_rejects_malformed_archive_digest(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    path = _ledger_path(tmp_path)
+    _mutate_retained_policy_run(path, "db_archive_sha256", value)
+
+    with pytest.raises(ledger.LedgerError) as exc:
+        ledger.read_retained_ledger(path)
+
+    assert (
+        exc.value.failures[0].error == "ledger.policy_run.db_archive_sha256 is invalid"
+    )
+    assert exc.value.failures[0].expected == "exactly 64 lowercase hex characters"
+    if value.startswith("C"):
+        assert exc.value.failures[0].actual == value
