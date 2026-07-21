@@ -1346,10 +1346,13 @@ def test_discovery_identify_route_name_create_flags_preserve_visible_paths(
     assert ambiguous.status_code == 400
     ambiguous_body = ambiguous.get_json()
     assert ambiguous_body["reason_code"] == "invalid_request_value"
+    assert ambiguous_body["invalid_request_code"] == "reviewed_near_match_set_mismatch"
     assert (
         ambiguous_body["detail"]
         == "reviewed_near_match_entity_ids must match shown near matches"
     )
+    assert "expected_reviewed_near_match_entity_ids" not in ambiguous_body
+    assert "actual_reviewed_near_match_entity_ids" not in ambiguous_body
     assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
     assert _journal_file_hashes(env.journal) == before_ambiguous
 

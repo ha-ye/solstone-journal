@@ -1392,6 +1392,10 @@
   let ownerTeachPrincipalId = null;
   let ownerTeachStartRequested = false;
   let ownerTeachRequestId = 0;
+  let dayDiscoveryRequestSeq = 0;
+  let segmentsRequestSeq = 0;
+  let segmentSpeakersRequestSeq = 0;
+  let reviewRequestSeq = 0;
   let ownerRevealPendingSource = null;
   let ownerRevealShown = false;
   let whoIsThisSheet = null;
@@ -1520,6 +1524,21 @@
     }
   }
 
+  async function refreshWhoIsThisDayContext() {
+    const activeSegment = selectedSegment;
+    const activeSource = selectedSource;
+    await Promise.all([
+      checkDiscovery({ throwOnError: true }),
+      loadSegments({ throwOnError: true }),
+    ]);
+    if (activeSegment && activeSource) {
+      await Promise.all([
+        loadSpeakers(activeSegment, { throwOnError: true }),
+        loadReview(activeSegment, activeSource, { throwOnError: true }),
+      ]);
+    }
+  }
+
   function ensureWhoIsThisSheet() {
     if (whoIsThisSheet) {
       whoIsThisSheet.setCopy(SPK_COPY);
@@ -1545,6 +1564,9 @@
       },
       onDismissed: ({ clusterId }) => {
         removeDiscoveryCluster(clusterId);
+      },
+      onFullyRestoredUndo: async () => {
+        await refreshWhoIsThisDayContext();
       },
     });
     return whoIsThisSheet;
@@ -2267,20 +2289,28 @@
       });
   }
 
-  function checkDiscovery() {
+  function checkDiscovery(options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = dayDiscoveryRequestSeq + 1;
+    dayDiscoveryRequestSeq = requestSeq;
     discoveryBanner.style.display = 'block';
     discoveryBanner.innerHTML = '<div class="spk-discovery-panel"><div class="spk-discovery-title"><span class="spk-spinner"></span> Discovering new voices…</div></div>';
-    fetch('/app/speakers/api/discovery/scan', { method: 'POST' })
+    return fetch('/app/speakers/api/discovery/scan', { method: 'POST' })
       .then(r => r.json())
       .then(data => {
+        if (requestSeq !== dayDiscoveryRequestSeq) return false;
         if (data.clusters && data.clusters.length > 0) {
           renderDiscovery(data.clusters);
         } else {
           hideDiscovery();
         }
+        return true;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (requestSeq !== dayDiscoveryRequestSeq) return false;
         hideDiscovery();
+        if (throwOnError) throw err;
+        return false;
       });
   }
 
@@ -2353,12 +2383,16 @@
     return SPK_COPY.SPK_OVERVIEW_CARD_SEGMENTS_LABEL || '';
   }
 
-  function loadSegments() {
+  function loadSegments(options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = segmentsRequestSeq + 1;
+    segmentsRequestSeq = requestSeq;
     updateSpeakerFilterIndicator();
     const fetchLimit = Math.max(segments.length, 20);
     return fetch(segmentsApiUrl(fetchLimit, 0))
       .then(r => r.json())
       .then(data => {
+        if (requestSeq !== segmentsRequestSeq) return false;
         setSegmentsStatus();
         segments = data.segments || [];
         segmentTotal = data.total || 0;
@@ -2367,50 +2401,66 @@
 	        if (window.location.hash && window.location.hash.slice(1) !== OWNER_TEACH_HASH) {
 	          const hashKey = window.location.hash.slice(1);
 	          if (!selectSegmentByKey(hashKey) && segments.length < segmentTotal) {
-	            loadUntilFound(hashKey);
+	            loadUntilFound(hashKey, requestSeq);
 	          }
 	        }
+        return true;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (requestSeq !== segmentsRequestSeq) return false;
         segmentList.innerHTML = '<li class="spk-empty">Failed to load segments</li>';
+        if (throwOnError) throw err;
+        return false;
       });
   }
 
   function loadMoreSegments() {
+    const requestSeq = segmentsRequestSeq + 1;
+    segmentsRequestSeq = requestSeq;
     const btn = document.getElementById('spkLoadMoreBtn');
     if (btn) btn.disabled = true;
-    fetch(segmentsApiUrl(20, segments.length))
+    return fetch(segmentsApiUrl(20, segments.length))
       .then(r => r.json())
       .then(data => {
+        if (requestSeq !== segmentsRequestSeq) return false;
         setSegmentsStatus();
         const newSegments = data.segments || [];
         segments = segments.concat(newSegments);
         segmentTotal = data.total || 0;
         renderSegmentList();
         updateLoadMore();
+        return true;
       })
       .catch(() => {
+        if (requestSeq !== segmentsRequestSeq) return false;
         if (btn) btn.disabled = false;
+        return false;
       });
   }
 
-  function loadUntilFound(key) {
-    window.apiJson(segmentsApiUrl(20, segments.length))
+  function loadUntilFound(key, requestSeq) {
+    const activeSeq = requestSeq || segmentsRequestSeq + 1;
+    segmentsRequestSeq = activeSeq;
+    return window.apiJson(segmentsApiUrl(20, segments.length))
       .then(data => {
+        if (activeSeq !== segmentsRequestSeq) return false;
         setSegmentsStatus();
         const newSegments = data.segments || [];
-        if (newSegments.length === 0) return;
+        if (newSegments.length === 0) return false;
         segments = segments.concat(newSegments);
         segmentTotal = data.total || 0;
         renderSegmentList();
         updateLoadMore();
         if (!selectSegmentByKey(key) && segments.length < segmentTotal) {
-          loadUntilFound(key);
+          return loadUntilFound(key, activeSeq);
         }
+        return true;
       })
       .catch((err) => {
+        if (activeSeq !== segmentsRequestSeq) return false;
         setSegmentsStatus("Couldn't load more segments", err.serverMessage);
         window.logError(err, { context: 'speakers: loadUntilFound failed' });
+        return false;
       });
   }
 
@@ -2605,21 +2655,35 @@
     loadReview(seg, selectedSource);
   }
 
-  function loadSpeakers(seg) {
+  function loadSpeakers(seg, options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = segmentSpeakersRequestSeq + 1;
+    segmentSpeakersRequestSeq = requestSeq;
     const container = document.getElementById('spkSpeakers');
-    if (!container) return;
+    if (!container) return Promise.resolve(false);
 
-    fetch(`/app/speakers/api/speakers/${day}/${seg.stream}/${seg.key}`)
+    return fetch(`/app/speakers/api/speakers/${day}/${seg.stream}/${seg.key}`)
       .then(r => r.json())
       .then(data => {
+        if (requestSeq !== segmentSpeakersRequestSeq) return false;
+        if (
+          selectedSegment
+          && (selectedSegment.key !== seg.key || selectedSegment.stream !== seg.stream)
+        ) {
+          return false;
+        }
         if (data.error) {
           container.innerHTML = `<div class="spk-empty">${escapeHtml(data.error)}</div>`;
-          return;
+          return false;
         }
         renderSpeakerCards(data);
+        return true;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (requestSeq !== segmentSpeakersRequestSeq) return false;
         container.innerHTML = '<div class="spk-empty">Failed to load speakers</div>';
+        if (throwOnError) throw err;
+        return false;
       });
   }
 
@@ -2669,7 +2733,10 @@
     container.innerHTML = html;
   }
 
-  function loadReview(seg, source) {
+  function loadReview(seg, source, options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = reviewRequestSeq + 1;
+    reviewRequestSeq = requestSeq;
     const container = document.getElementById('spkSentences');
     const isFirstPaint = Boolean(
       container
@@ -2683,6 +2750,17 @@
     setReviewStatus();
     return window.apiJson(`/app/speakers/api/review/${day}/${seg.stream}/${seg.key}/${source}`)
       .then(data => {
+        if (requestSeq !== reviewRequestSeq) return false;
+        if (
+          selectedSegment
+          && (
+            selectedSegment.key !== seg.key
+            || selectedSegment.stream !== seg.stream
+            || selectedSource !== source
+          )
+        ) {
+          return false;
+        }
         if (data.error) {
           const err = new Error(data.error);
           err.serverMessage = data.error;
@@ -2695,8 +2773,10 @@
         reviewSummary = data.summary || null;
         playingSentenceId = null;
         renderReview(data);
+        return true;
       })
       .catch((err) => {
+        if (requestSeq !== reviewRequestSeq) return false;
         window.logError(err, { context: 'speakers: loadReview failed' });
         if (container) {
           if (isFirstPaint) {
@@ -2710,6 +2790,8 @@
             setReviewStatus("Couldn't reload review — showing last known state.", err.serverMessage);
           }
         }
+        if (throwOnError) throw err;
+        return false;
       });
   }
 
@@ -3514,6 +3596,9 @@
   let mountedDayGridKey = null;
   let whoIsThisSheet = null;
   let discoveryClustersById = new Map();
+  let qualityRequestSeq = 0;
+  let knownRequestSeq = 0;
+  let overviewDiscoveryRequestSeq = 0;
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
@@ -3726,11 +3811,19 @@
     renderQualityReady(data);
   }
 
-  function loadQuality() {
-    fetch('/app/speakers/api/quality')
+  function loadQuality(options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = qualityRequestSeq + 1;
+    qualityRequestSeq = requestSeq;
+    return fetch('/app/speakers/api/quality')
       .then((response) => response.json())
-      .then(renderQuality)
+      .then((data) => {
+        if (requestSeq !== qualityRequestSeq) return false;
+        renderQuality(data);
+        return true;
+      })
       .catch((err) => {
+        if (requestSeq !== qualityRequestSeq) return false;
         window.logError?.(err, { context: 'speakers-quality' });
         qualityPanel.innerHTML = window.SurfaceState.error({
           heading: COPY.SPK_OVERVIEW_QUALITY_ERROR_HEADING,
@@ -3738,6 +3831,8 @@
           serverMessage: err?.serverMessage || err?.message || '',
           detail: err,
         });
+        if (throwOnError) throw err;
+        return false;
       });
   }
 
@@ -3773,12 +3868,24 @@
     }).join('')}</div>`;
   }
 
-  function loadKnown() {
+  function loadKnown(options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = knownRequestSeq + 1;
+    knownRequestSeq = requestSeq;
     const sort = sortSelect.value || COPY.SPK_OVERVIEW_KNOWN_VOICES_SORTS[0];
-    fetch(`/app/speakers/api/speakers/known?sort=${encodeURIComponent(sort)}`)
+    return fetch(`/app/speakers/api/speakers/known?sort=${encodeURIComponent(sort)}`)
       .then((response) => response.json())
-      .then(renderKnown)
-      .catch(() => renderKnown({speakers: []}));
+      .then((data) => {
+        if (requestSeq !== knownRequestSeq) return false;
+        renderKnown(data);
+        return true;
+      })
+      .catch((err) => {
+        if (requestSeq !== knownRequestSeq) return false;
+        renderKnown({speakers: []});
+        if (throwOnError) throw err;
+        return false;
+      });
   }
 
   function setupSort() {
@@ -3804,6 +3911,14 @@
     }
   }
 
+  async function refreshOverviewWhoIsThisContext() {
+    await Promise.all([
+      loadDiscovery({ throwOnError: true }),
+      loadKnown({ throwOnError: true }),
+      loadQuality({ throwOnError: true }),
+    ]);
+  }
+
   function ensureOverviewWhoIsThisSheet() {
     if (whoIsThisSheet) {
       whoIsThisSheet.setCopy(COPY);
@@ -3826,6 +3941,9 @@
       },
       onDismissed: ({ clusterId }) => {
         removeOverviewDiscoveryCluster(clusterId);
+      },
+      onFullyRestoredUndo: async () => {
+        await refreshOverviewWhoIsThisContext();
       },
     });
     return whoIsThisSheet;
@@ -3885,18 +4003,24 @@
     });
   }
 
-  function loadDiscovery() {
+  function loadDiscovery(options) {
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = overviewDiscoveryRequestSeq + 1;
+    overviewDiscoveryRequestSeq = requestSeq;
     return fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
       .then((response) => {
         if (!response.ok) throw new Error('scan failed');
         return response.json();
       })
       .then((data) => {
+        if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         renderDiscovery(data);
         return true;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         discoverySection.hidden = true;
+        if (throwOnError) throw err;
         return false;
       });
   }

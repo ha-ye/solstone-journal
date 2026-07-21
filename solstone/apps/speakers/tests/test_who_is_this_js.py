@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 WHO_IS_THIS_JS = (
     REPO_ROOT / "solstone" / "apps" / "speakers" / "static" / "who_is_this.js"
 )
+WORKSPACE_HTML = REPO_ROOT / "solstone" / "apps" / "speakers" / "workspace.html"
 
 
 def _node_or_skip() -> str:
@@ -267,6 +268,29 @@ function presence(overrides = {}) {
   };
 }
 
+function fullUndoResult(overrides = {}) {
+  return {
+    status: 'undone',
+    undo_report: {
+      labels: { restored_count: 1, skipped_count: 0 },
+      corrections: { restored_count: 1, skipped_count: 0 },
+      voiceprints: { restored_count: 1, skipped_count: 0 },
+      tracker: { restored_count: 1, skipped_count: 0 },
+      sentinel: { restored_count: 1, skipped_count: 0 },
+      entity: {
+        restored_count: 1,
+        skipped_count: 0,
+        blocked_categories: [],
+      },
+    },
+    ...overrides,
+  };
+}
+
+function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function makeHarness(options = {}) {
   const doc = new FakeDocument();
   const calls = [];
@@ -293,10 +317,513 @@ function makeHarness(options = {}) {
     onThisIsMe: options.onThisIsMe,
     onIdentified: options.onIdentified,
     onDismissed: options.onDismissed,
+    onFullyRestoredUndo: options.onFullyRestoredUndo,
   });
   const trigger = doc.createElement('button');
   doc.body.appendChild(trigger);
   return { doc, controller, trigger, calls, logs };
+}
+"""
+
+
+WORKSPACE_DOM_STUB = r"""
+const assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const workspaceHtml = fs.readFileSync(process.argv[1], 'utf8');
+const workspaceScripts = [...workspaceHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+  .map((match) => match[1]);
+
+function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function response(payload) {
+  return {
+    ok: true,
+    json: () => Promise.resolve(payload),
+  };
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function datasetKey(name) {
+  return name.slice(5).replace(/-([a-z])/g, (_match, char) => char.toUpperCase());
+}
+
+function parseAttrs(raw) {
+  const attrs = {};
+  String(raw || '').replace(/([a-zA-Z0-9_-]+)="([^"]*)"/g, (_match, name, value) => {
+    attrs[name] = value;
+    return '';
+  });
+  return attrs;
+}
+
+class FakeClassList {
+  constructor(node) {
+    this.node = node;
+  }
+  _set() {
+    return new Set(String(this.node.className || '').split(/\s+/).filter(Boolean));
+  }
+  add(...names) {
+    const classes = this._set();
+    names.forEach((name) => classes.add(name));
+    this.node.className = [...classes].join(' ');
+  }
+  remove(...names) {
+    const classes = this._set();
+    names.forEach((name) => classes.delete(name));
+    this.node.className = [...classes].join(' ');
+  }
+  contains(name) {
+    return this._set().has(name);
+  }
+}
+
+class FakeElement {
+  constructor(tagName, ownerDocument) {
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.ownerDocument = ownerDocument;
+    this.parentNode = null;
+    this.children = [];
+    this.attributes = {};
+    this.dataset = {};
+    this.listeners = {};
+    this.style = {};
+    this.className = '';
+    this.classList = new FakeClassList(this);
+    this.hidden = false;
+    this.disabled = false;
+    this.value = '';
+    this.href = '';
+    this.id = '';
+    this._html = '';
+    this._text = '';
+  }
+  get firstChild() {
+    return this.children[0] || null;
+  }
+  get textContent() {
+    if (this.children.length) {
+      return this._text + this.children.map((child) => child.textContent).join('');
+    }
+    return this._text || this._html.replace(/<[^>]*>/g, '');
+  }
+  set textContent(value) {
+    this._text = String(value ?? '');
+    this._html = '';
+    this.replaceChildren();
+  }
+  get innerHTML() {
+    return this._html;
+  }
+  set innerHTML(value) {
+    this._html = String(value ?? '');
+    this._text = '';
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+    parseKnownHtml(this, this._html);
+  }
+  setAttribute(name, value) {
+    const text = String(value);
+    this.attributes[name] = text;
+    if (name === 'class') this.className = text;
+    if (name === 'id') {
+      this.id = text;
+      this.ownerDocument.register(this);
+    }
+    if (name.startsWith('data-')) this.dataset[datasetKey(name)] = text;
+    if (name === 'href') this.href = text;
+  }
+  getAttribute(name) {
+    if (name === 'class') return this.className;
+    if (name === 'id') return this.id;
+    if (name === 'href') return this.href || null;
+    return Object.prototype.hasOwnProperty.call(this.attributes, name)
+      ? this.attributes[name]
+      : null;
+  }
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    if (child.id) this.ownerDocument.register(child);
+    return child;
+  }
+  insertBefore(child, reference) {
+    child.parentNode = this;
+    const index = this.children.indexOf(reference);
+    if (index === -1) this.children.push(child);
+    else this.children.splice(index, 0, child);
+    if (child.id) this.ownerDocument.register(child);
+    return child;
+  }
+  removeChild(child) {
+    this.children = this.children.filter((item) => item !== child);
+    child.parentNode = null;
+    return child;
+  }
+  replaceChildren(...nodes) {
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+    this._html = '';
+    this._text = '';
+    nodes.forEach((node) => this.appendChild(node));
+  }
+  remove() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  }
+  addEventListener(type, handler) {
+    if (!this.listeners[type]) this.listeners[type] = [];
+    this.listeners[type].push(handler);
+  }
+  dispatchEvent(event) {
+    event.target = event.target || this;
+    (this.listeners[event.type] || []).forEach((handler) => handler(event));
+  }
+  click() {
+    this.dispatchEvent({ type: 'click', target: this });
+  }
+  focus() {
+    this.ownerDocument.activeElement = this;
+  }
+  contains(node) {
+    if (node === this) return true;
+    return this.children.some((child) => child.contains(node));
+  }
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+  querySelectorAll(selector) {
+    const selectors = selector.split(',').map((part) => part.trim()).filter(Boolean);
+    const found = [];
+    const visit = (node) => {
+      node.children.forEach((child) => {
+        if (selectors.some((part) => child.matches(part))) found.push(child);
+        visit(child);
+      });
+    };
+    visit(this);
+    return found;
+  }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matches(selector)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+  matches(selector) {
+    if (selector.startsWith('.')) {
+      const classes = selector.slice(1).split('.');
+      const present = new Set(String(this.className || '').split(/\s+/).filter(Boolean));
+      return classes.every((name) => present.has(name));
+    }
+    if (selector.startsWith('#')) return this.id === selector.slice(1);
+    const dataMatch = selector.match(/^\[data-([a-z0-9-]+)="([^"]*)"\]$/);
+    if (dataMatch) {
+      return this.dataset[datasetKey(`data-${dataMatch[1]}`)] === dataMatch[2];
+    }
+    return this.tagName.toLowerCase() === selector.toLowerCase();
+  }
+}
+
+function applyAttrs(node, attrs) {
+  Object.entries(attrs).forEach(([name, value]) => node.setAttribute(name, value));
+}
+
+function appendParsedNode(parent, tagName, attrs) {
+  const node = parent.ownerDocument.createElement(tagName);
+  applyAttrs(node, attrs);
+  parent.appendChild(node);
+  return node;
+}
+
+function parseKnownHtml(parent, html) {
+  const discoveryPattern = /<div class="([^"]*(?:spk-discovery-card|spk-discovery-cluster)[^"]*)" data-cluster-id="([^"]+)"[\s\S]*?<button[^>]*class="([^"]*spk-who-trigger[^"]*)"[^>]*>/g;
+  let match;
+  while ((match = discoveryPattern.exec(html)) !== null) {
+    const card = appendParsedNode(parent, 'div', {
+      class: match[1],
+      'data-cluster-id': match[2],
+    });
+    appendParsedNode(card, 'button', { class: match[3] });
+  }
+
+  const segmentPattern = /<li class="([^"]*spk-segment[^"]*)"[\s\S]*?data-key="([^"]+)"[\s\S]*?>/g;
+  while ((match = segmentPattern.exec(html)) !== null) {
+    appendParsedNode(parent, 'li', {
+      class: match[1],
+      'data-key': match[2],
+    });
+  }
+
+  const tagPattern = /<([a-zA-Z0-9]+)([^>]*)>/g;
+  while ((match = tagPattern.exec(html)) !== null) {
+    const attrs = parseAttrs(match[2]);
+    if (!attrs.id) continue;
+    if (parent.querySelector(`#${attrs.id}`)) continue;
+    appendParsedNode(parent, match[1], attrs);
+  }
+
+  const sourceTabPattern = /<button class="([^"]*spk-source-tab[^"]*)" data-source="([^"]+)"/g;
+  while ((match = sourceTabPattern.exec(html)) !== null) {
+    appendParsedNode(parent, 'button', {
+      class: match[1],
+      'data-source': match[2],
+    });
+  }
+
+  const filterPattern = /<button class="([^"]*spk-filter-btn[^"]*)" data-filter="([^"]+)"/g;
+  while ((match = filterPattern.exec(html)) !== null) {
+    appendParsedNode(parent, 'button', {
+      class: match[1],
+      'data-filter': match[2],
+    });
+  }
+}
+
+class FakeDocument {
+  constructor(ids) {
+    this.body = new FakeElement('body', this);
+    this.activeElement = null;
+    this.readyState = 'complete';
+    this.byId = {};
+    ids.forEach((id) => this.createRoot(id));
+  }
+  createRoot(id) {
+    const node = this.createElement('div');
+    node.setAttribute('id', id);
+    this.body.appendChild(node);
+    return node;
+  }
+  register(node) {
+    if (node.id) this.byId[node.id] = node;
+  }
+  createElement(tagName) {
+    return new FakeElement(tagName, this);
+  }
+  getElementById(id) {
+    return this.byId[id] || null;
+  }
+  querySelector(selector) {
+    return this.body.querySelector(selector);
+  }
+  querySelectorAll(selector) {
+    if (selector === '[data-copy]') return [];
+    return this.body.querySelectorAll(selector);
+  }
+  addEventListener() {}
+}
+
+function queueResponse(queues, name, url, payloadForImmediate) {
+  if (payloadForImmediate) return Promise.resolve(response(payloadForImmediate));
+  const item = deferred();
+  item.url = url;
+  queues[name].push(item);
+  return item.promise;
+}
+
+function resolveFetch(item, payload) {
+  item.resolve(response(payload));
+}
+
+function resolveApi(item, payload) {
+  item.resolve(payload);
+}
+
+function speakerCopy() {
+  return {
+    SPK_ACTION_WHO_IS_THIS: 'who',
+    SPK_GRID_BODY: 'grid',
+    SPK_OVERVIEW_TODAY_LINK_LABEL: 'today',
+    SPK_OVERVIEW_KNOWN_VOICES_SORTS: ['recent'],
+    SPK_OVERVIEW_KNOWN_VOICES_EMPTY: 'known empty',
+    SPK_OVERVIEW_CARD_SAMPLES_LABEL: 'samples',
+    SPK_OVERVIEW_CARD_SEGMENTS_LABEL: 'segments',
+    SPK_OVERVIEW_CARD_LAST_HEARD_PREFIX: 'last',
+    SPK_OVERVIEW_CARD_STREAMS_PREFIX: 'streams',
+    SPK_OVERVIEW_QUALITY_READY: 'quality ready',
+    SPK_OVERVIEW_QUALITY_ERROR_HEADING: 'quality failed',
+    SPK_OVERVIEW_QUALITY_TEACHING_ZERO: 'teaching zero',
+    SPK_THIS_IS_ME_GUIDANCE: 'guidance',
+  };
+}
+
+function segment(key = 'seg-a') {
+  return {
+    key,
+    stream: 'test',
+    sources: ['audio'],
+    start: '10:00',
+    end: '10:05',
+    duration: 300,
+    speaker_count: 0,
+    attribution_total: 1,
+    attribution_needs_review: 1,
+    attribution_non_owner_total: 1,
+    attribution_null: 1,
+  };
+}
+
+function reviewPayload(name = '') {
+  return {
+    day: '20240101',
+    source: 'audio',
+    segment: segment(),
+    audio_file: '',
+    audio_mimetype: '',
+    has_labels: true,
+    all_entities: [],
+    summary: {},
+    sentences: [
+      {
+        id: 1,
+        offset: 0,
+        text: 'hello',
+        speaker_name: name,
+        speaker_entity_id: name ? 'undone_person' : '',
+        confidence: name ? 'high' : '',
+        method: name ? 'user_identified' : '',
+        needs_review: !name,
+      },
+    ],
+  };
+}
+
+function matchedSpeakers(name = '') {
+  return {
+    matched: name ? [{ entity_name: name, detected_name: name }] : [],
+    unmatched: [],
+  };
+}
+
+function makeWorkspaceContext(kind) {
+  const ids = kind === 'overview'
+    ? [
+        'speakersOverviewView',
+        'spkOverviewOwner',
+        'spkOverviewQuality',
+        'spkKnownVoices',
+        'spkKnownSort',
+        'spkNewVoicesSection',
+        'spkStatementHandoffNotice',
+        'spkDiscoveryClusters',
+        'spkTodayReview',
+        'spkDayGridCard',
+        'spkDayGridCopy',
+        'spkDayGridHost',
+        'spkDayGridLegend',
+      ]
+    : [
+        'speakersDayView',
+        'spkSegmentList',
+        'spkDetail',
+        'spkOwnerBanner',
+        'spkDiscoveryBanner',
+        'spkSegmentsStatus',
+        'spkFilterIndicator',
+      ];
+  const document = new FakeDocument(ids);
+  const queues = {
+    discovery: [],
+    known: [],
+    quality: [],
+    segments: [],
+    speakers: [],
+    review: [],
+  };
+  const sheets = [];
+  const fetchCalls = [];
+  const apiCalls = [];
+  const window = {
+    SPEAKERS_CONTEXT: kind === 'overview'
+      ? { isDay: false }
+      : { isDay: true, day: '20240101' },
+    SPEAKERS_STATE_PROMISE: Promise.resolve({
+      speaker_copy: speakerCopy(),
+      owner_status_routing_tokens: { candidate: 'candidate', confirmed: 'confirmed' },
+      not_in_new_voices_copy: 'not in new voices',
+      today: '20240101',
+      owner_min_statements: 3,
+    }),
+    AppServices: { escapeHtml },
+    SurfaceState: {
+      loading: ({ text }) => `<div>${escapeHtml(text)}</div>`,
+      error: ({ heading }) => `<div class="surface-state-retry">${escapeHtml(heading)}</div>`,
+      empty: ({ heading }) => `<div>${escapeHtml(heading)}</div>`,
+    },
+    CONVEY_COPY: { RELOAD_HINT: 'reload' },
+    RelativeTime: { formatTimestamp: () => 'recently' },
+    DayGrid: null,
+    location: { hash: kind === 'day' ? '#seg-a' : '', href: '' },
+    addEventListener() {},
+    logError() {},
+    formatDateShort: (day) => day,
+    SpeakersWhoIsThis: {
+      init(options) {
+        sheets.push(options);
+        return {
+          setCopy(copy) { this.copy = copy; },
+          open(args) { this.openArgs = args; },
+        };
+      },
+    },
+  };
+  window.fetch = (url, options) => {
+    fetchCalls.push({ url, options });
+    if (url.includes('/api/grid')) return Promise.resolve(response(null));
+    if (url.includes('/api/owner/status')) {
+      return Promise.resolve(response({ status: 'confirmed', centroid_metadata: {} }));
+    }
+    if (url.includes('/api/quality')) return queueResponse(queues, 'quality', url);
+    if (url.includes('/api/speakers/known')) return queueResponse(queues, 'known', url);
+    if (url.includes('/api/discovery/scan')) return queueResponse(queues, 'discovery', url);
+    if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url);
+    if (url.includes('/api/speakers/20240101/')) return queueResponse(queues, 'speakers', url);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  window.apiJson = (url) => {
+    apiCalls.push({ url });
+    if (url.includes('/api/owner/status')) {
+      return Promise.resolve({ status: 'confirmed', centroid_metadata: {} });
+    }
+    if (url.includes('/api/review/')) return queueResponse(queues, 'review', url).then((r) => r.json());
+    if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url).then((r) => r.json());
+    throw new Error(`unexpected api ${url}`);
+  };
+  const context = {
+    console,
+    document,
+    window,
+    fetch: window.fetch,
+    URLSearchParams,
+    Date,
+    setTimeout,
+    clearTimeout,
+    setImmediate,
+  };
+  vm.createContext(context);
+  vm.runInContext(kind === 'overview' ? workspaceScripts[2] : workspaceScripts[1], context);
+  return { context, document, window, queues, sheets, fetchCalls, apiCalls };
 }
 """
 
@@ -306,6 +833,17 @@ def _run_node(body: str) -> None:
     script = DOM_STUB + "\n" + textwrap.dedent(body)
     result = subprocess.run(
         [node, "-e", script, str(WHO_IS_THIS_JS)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _run_workspace_node(body: str) -> None:
+    node = _node_or_skip()
+    script = WORKSPACE_DOM_STUB + "\n" + textwrap.dedent(body)
+    result = subprocess.run(
+        [node, "-e", script, str(WORKSPACE_HTML)],
         capture_output=True,
         text=True,
     )
@@ -468,6 +1006,164 @@ def test_who_is_this_search_latest_query_wins_and_text_safety() -> None:
           assert(!bodyText.includes('Old Result'));
           assert.strictEqual(allByTag(doc.body, 'script').length, 0);
           assert.strictEqual(allByTag(doc.body, 'img').length, 0);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_full_undo_refreshes_known_quality_and_rediscovery() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], {
+            clusters: [
+              { cluster_id: 7, suggested_name: 'Initial Voice', size: 1, samples: [] },
+            ],
+          });
+          await flush();
+          await flush();
+
+          const discoveryContainer = document.getElementById('spkDiscoveryClusters');
+          discoveryContainer.querySelector('.spk-who-trigger').click();
+          assert.strictEqual(sheets.length, 1);
+          const sheetOptions = sheets[0];
+
+          sheetOptions.onIdentified({ clusterId: '7' });
+          await flush();
+          assert.strictEqual(queues.known.length, 2);
+          assert.strictEqual(queues.quality.length, 2);
+          assert.strictEqual(discoveryContainer.querySelector('[data-cluster-id="7"]'), null);
+
+          const refresh = sheetOptions.onFullyRestoredUndo();
+          await flush();
+          assert.strictEqual(queues.discovery.length, 2);
+          assert.strictEqual(queues.known.length, 3);
+          assert.strictEqual(queues.quality.length, 3);
+
+          resolveFetch(queues.discovery[1], {
+            clusters: [
+              { cluster_id: 7, suggested_name: 'Restored Voice', size: 1, samples: [] },
+            ],
+          });
+          resolveFetch(queues.known[2], { speakers: [] });
+          resolveFetch(queues.quality[2], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          await refresh;
+          await flush();
+
+          resolveFetch(queues.known[1], {
+            speakers: [
+              {
+                entity_id: 'undone_person',
+                name: 'Undone Person',
+                streams: [],
+                embedding_count: 1,
+                segment_count: 1,
+              },
+            ],
+          });
+          resolveFetch(queues.quality[1], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          await flush();
+          await flush();
+
+          assert(discoveryContainer.querySelector('[data-cluster-id="7"]'));
+          assert(document.getElementById('spkDiscoveryClusters').innerHTML.includes('Restored Voice'));
+          assert(!document.getElementById('spkKnownVoices').innerHTML.includes('Undone Person'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[0], {
+            clusters: [
+              { cluster_id: 7, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
+          resolveFetch(queues.segments[0], { segments: [segment()], total: 1 });
+          await flush();
+          await flush();
+          resolveFetch(queues.speakers[0], matchedSpeakers(''));
+          resolveFetch(queues.review[0], reviewPayload(''));
+          await flush();
+          await flush();
+
+          const discoveryBanner = document.getElementById('spkDiscoveryBanner');
+          discoveryBanner.querySelector('.spk-who-trigger').click();
+          assert.strictEqual(sheets.length, 1);
+          const sheetOptions = sheets[0];
+
+          sheetOptions.onIdentified({ clusterId: '7' });
+          await flush();
+          assert.strictEqual(queues.segments.length, 2);
+          assert.strictEqual(queues.review.length, 2);
+          assert.strictEqual(discoveryBanner.querySelector('[data-cluster-id="7"]'), null);
+
+          const refresh = sheetOptions.onFullyRestoredUndo();
+          await flush();
+          assert.strictEqual(queues.discovery.length, 2);
+          assert.strictEqual(queues.segments.length, 3);
+          resolveFetch(queues.discovery[1], {
+            clusters: [
+              { cluster_id: 7, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
+          resolveFetch(queues.segments[2], { segments: [segment()], total: 1 });
+          await flush();
+          await flush();
+
+          const explicitSpeakers = queues.speakers[queues.speakers.length - 1];
+          const explicitReview = queues.review[queues.review.length - 1];
+          resolveFetch(explicitSpeakers, matchedSpeakers(''));
+          resolveFetch(explicitReview, reviewPayload(''));
+          await refresh;
+          await flush();
+
+          resolveFetch(queues.segments[1], {
+            segments: [{ ...segment(), speaker_count: 1 }],
+            total: 1,
+          });
+          resolveFetch(queues.review[1], reviewPayload('Undone Person'));
+          if (queues.speakers.length > 1) {
+            resolveFetch(queues.speakers[1], matchedSpeakers('Undone Person'));
+          }
+          if (queues.review.length > 2) {
+            resolveFetch(queues.review[2], reviewPayload('Undone Person'));
+          }
+          await flush();
+          await flush();
+
+          assert(discoveryBanner.querySelector('[data-cluster-id="7"]'));
+          assert(!document.getElementById('spkSpeakers').innerHTML.includes('Undone Person'));
+          assert(!document.getElementById('spkSentences').innerHTML.includes('Undone Person'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -683,6 +1379,304 @@ def test_who_is_this_receipt_undo_full_partial_and_dismissals() -> None:
             ['not_a_person', 'quiet'],
           );
           assert.strictEqual(dismissed.length, 2);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_full_undo_refresh_callback_only_for_fully_restored() -> None:
+    _run_node(
+        """
+        (async () => {
+          const outcomes = [
+            {
+              name: 'full',
+              result: fullUndoResult(),
+              expectedRefreshes: 1,
+              expectedText: 'undo done',
+            },
+            {
+              name: 'partial',
+              result: fullUndoResult({
+                undo_report: {
+                  labels: { restored_count: 1, skipped_count: 1 },
+                  corrections: { restored_count: 0, skipped_count: 0 },
+                  voiceprints: { restored_count: 0, skipped_count: 0 },
+                  tracker: { restored_count: 0, skipped_count: 0 },
+                  sentinel: { restored_count: 0, skipped_count: 0 },
+                  entity: { restored_count: 0, skipped_count: 0, blocked_categories: [] },
+                },
+              }),
+              expectedRefreshes: 0,
+              expectedText: 'partial',
+            },
+            {
+              name: 'skipped',
+              result: fullUndoResult({
+                undo_report: {
+                  labels: { restored_count: 0, skipped_count: 0 },
+                  corrections: { restored_count: 0, skipped_count: 0 },
+                  voiceprints: { restored_count: 0, skipped_count: 0 },
+                  tracker: { restored_count: 0, skipped_count: 0 },
+                  sentinel: { restored_count: 0, skipped_count: 0 },
+                  entity: {
+                    restored_count: 0,
+                    skipped_count: 0,
+                    blocked_categories: ['keep_separate'],
+                  },
+                },
+              }),
+              expectedRefreshes: 0,
+              expectedText: 'partial',
+            },
+            {
+              name: 'repair-required',
+              result: fullUndoResult({ status: 'undo_repair_required' }),
+              expectedRefreshes: 0,
+              expectedText: 'partial',
+            },
+            {
+              name: 'failed',
+              result: fullUndoResult({ status: 'failed' }),
+              expectedRefreshes: 0,
+              expectedText: 'partial',
+            },
+            {
+              name: 'still-undoing',
+              result: fullUndoResult({ status: 'undoing' }),
+              expectedRefreshes: 0,
+              expectedText: 'partial',
+            },
+          ];
+
+          for (const outcome of outcomes) {
+            let refreshes = 0;
+            let undoCalls = 0;
+            let presenceLoads = 0;
+            const apiJson = (url) => {
+              if (url.includes('/presence')) {
+                presenceLoads += 1;
+                return Promise.resolve(presence());
+              }
+              if (url.includes('/identify/undo')) {
+                undoCalls += 1;
+                return Promise.resolve(outcome.result);
+              }
+              return Promise.resolve({});
+            };
+            const { doc, controller, trigger } = makeHarness({
+              apiJson,
+              onFullyRestoredUndo: async () => { refreshes += 1; },
+            });
+            await controller.open({ cluster: { cluster_id: 7 }, trigger });
+            controller.renderReceipt({ operation_id: `op-${outcome.name}`, entity_name: 'Alice' });
+            await controller.undoReceipt();
+
+            assert.strictEqual(undoCalls, 1, outcome.name);
+            assert.strictEqual(refreshes, outcome.expectedRefreshes, outcome.name);
+            assert(text(doc.body).includes(outcome.expectedText), outcome.name);
+            assert.strictEqual(
+              presenceLoads,
+              outcome.expectedRefreshes ? 2 : 1,
+              outcome.name,
+            );
+          }
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_request_ids_survive_retries_sort_reviewed_and_reset_after_undo() -> (
+    None
+):
+    _run_node(
+        """
+        (async () => {
+          const identifyCalls = [];
+          const apiJson = (url, request) => {
+            const body = request?.body ? JSON.parse(request.body) : null;
+            if (url.includes('/presence')) return Promise.resolve(presence());
+            if (url.includes('/identify/undo')) return Promise.resolve(fullUndoResult());
+            if (url.includes('/identify')) {
+              identifyCalls.push(body);
+              return Promise.reject(new Error('lost response'));
+            }
+            return Promise.resolve({});
+          };
+          const { controller, trigger } = makeHarness({
+            apiJson,
+            onFullyRestoredUndo: async () => {},
+          });
+          await controller.open({ cluster: { cluster_id: 7 }, trigger });
+
+          controller.enterPreview({
+            mode: 'create',
+            name: 'Alicia New',
+            reviewed_near_match_entity_ids: ['ally', 'alice'],
+          });
+          assert.strictEqual(controller.requestId, 'req-1');
+          controller.enterPreview({
+            mode: 'create',
+            name: 'Alicia New',
+            reviewed_near_match_entity_ids: ['alice', 'ally'],
+          });
+          assert.strictEqual(controller.requestId, 'req-1');
+
+          await controller.commitPreview();
+          await controller.commitPreview();
+          assert.strictEqual(identifyCalls.length, 2);
+          assert.strictEqual(identifyCalls[0].request_id, 'req-1');
+          assert.strictEqual(identifyCalls[1].request_id, 'req-1');
+
+          controller.renderReceipt({ operation_id: 'op-one', entity_name: 'Alicia New' });
+          await controller.undoReceipt();
+          assert.strictEqual(controller.requestId, '');
+          assert.strictEqual(controller.requestSignature, '');
+
+          controller.enterPreview({
+            mode: 'create',
+            name: 'Alicia New',
+            reviewed_near_match_entity_ids: ['alice', 'ally'],
+          });
+          assert.strictEqual(controller.requestId, 'req-2');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_full_undo_refresh_retry_is_read_only() -> None:
+    _run_node(
+        """
+        (async () => {
+          let undoCalls = 0;
+          let refreshCalls = 0;
+          let presenceLoads = 0;
+          const apiJson = (url) => {
+            if (url.includes('/presence')) {
+              presenceLoads += 1;
+              return Promise.resolve(presence());
+            }
+            if (url.includes('/identify/undo')) {
+              undoCalls += 1;
+              return Promise.resolve(fullUndoResult());
+            }
+            return Promise.resolve({});
+          };
+          const { doc, controller, trigger } = makeHarness({
+            apiJson,
+            onFullyRestoredUndo: async () => {
+              refreshCalls += 1;
+              if (refreshCalls === 1) throw new Error('refresh failed');
+            },
+          });
+          await controller.open({ cluster: { cluster_id: 7 }, trigger });
+          controller.renderReceipt({ operation_id: 'op-one', entity_name: 'Alice' });
+          await controller.undoReceipt();
+
+          assert.strictEqual(undoCalls, 1);
+          assert.strictEqual(refreshCalls, 1);
+          assert.strictEqual(presenceLoads, 1);
+          assert(text(doc.body).includes('load error'));
+
+          click(doc.body.querySelector('.spk-who-retry'));
+          await flush();
+          await flush();
+
+          assert.strictEqual(undoCalls, 1);
+          assert.strictEqual(refreshCalls, 2);
+          assert.strictEqual(presenceLoads, 2);
+          assert(text(doc.body).includes('undo done'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_stale_reviewed_set_refetches_resolve_only_gate() -> None:
+    _run_node(
+        """
+        (async () => {
+          const calls = [];
+          const apiJson = (url, request) => {
+            const body = request?.body ? JSON.parse(request.body) : null;
+            calls.push({ url, body });
+            if (url.includes('/presence')) return Promise.resolve(presence());
+            if (url.includes('/identify') && body?.resolve_only) {
+              return Promise.resolve({
+                status: 'no_match',
+                candidates: [
+                  { id: 'fresh_one', name: 'Fresh One' },
+                  { id: 'fresh_two', name: 'Fresh Two' },
+                ],
+              });
+            }
+            if (url.includes('/identify')) {
+              const err = new Error('stale set');
+              err.payload = {
+                reason_code: 'invalid_request_value',
+                invalid_request_code: 'reviewed_near_match_set_mismatch',
+              };
+              return Promise.reject(err);
+            }
+            return Promise.resolve({});
+          };
+          const { doc, controller, trigger } = makeHarness({ apiJson });
+          await controller.open({ cluster: { cluster_id: 7 }, trigger });
+          controller.enterPreview({
+            mode: 'create',
+            name: 'Alicia New',
+            reviewed_near_match_entity_ids: ['stale_one'],
+          });
+          await controller.commitPreview();
+
+          const identifyCalls = calls.filter((call) => call.url.includes('/identify'));
+          assert.strictEqual(identifyCalls.length, 2);
+          assert.strictEqual(identifyCalls[0].body.create_new, true);
+          assert.strictEqual(identifyCalls[1].body.resolve_only, true);
+          assert.strictEqual(controller.requestId, '');
+          assert(text(doc.body).includes('near band'));
+          assert(text(doc.body).includes('Fresh One'));
+          assert(text(doc.body).includes('Fresh Two'));
+          assert(!text(doc.body).includes('load error'));
+          assert(!text(doc.body).includes('stale set'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_invalid_request_without_stale_code_does_not_refetch() -> None:
+    _run_node(
+        """
+        (async () => {
+          const calls = [];
+          const apiJson = (url, request) => {
+            const body = request?.body ? JSON.parse(request.body) : null;
+            calls.push({ url, body });
+            if (url.includes('/presence')) return Promise.resolve(presence());
+            if (url.includes('/identify') && body?.resolve_only) {
+              throw new Error('resolve_only should not be called');
+            }
+            if (url.includes('/identify')) {
+              const err = new Error('name is unavailable');
+              err.payload = { reason_code: 'invalid_request_value' };
+              return Promise.reject(err);
+            }
+            return Promise.resolve({});
+          };
+          const { doc, controller, trigger } = makeHarness({ apiJson });
+          await controller.open({ cluster: { cluster_id: 7 }, trigger });
+          controller.enterPreview({
+            mode: 'create',
+            name: 'Blocked Person',
+            reviewed_near_match_entity_ids: ['stale_one'],
+          });
+          await controller.commitPreview();
+
+          const identifyCalls = calls.filter((call) => call.url.includes('/identify'));
+          assert.strictEqual(identifyCalls.length, 1);
+          assert.strictEqual(identifyCalls[0].body.create_new, true);
+          assert(text(doc.body).includes('load error'));
+          assert(!text(doc.body).includes('near band'));
+          assert(!text(doc.body).includes('name is unavailable'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )

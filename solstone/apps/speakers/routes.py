@@ -2495,7 +2495,10 @@ def _identify_result_response(result: dict) -> Any:
             detail=result.get("error"),
             extra={
                 key: result[key]
-                for key in ("invalid_reviewed_near_match_entity_ids",)
+                for key in (
+                    "invalid_request_code",
+                    "invalid_reviewed_near_match_entity_ids",
+                )
                 if key in result
             },
         )

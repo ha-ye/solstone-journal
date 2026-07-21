@@ -122,7 +122,7 @@
   function targetSignature(target) {
     if (!target) return '';
     const reviewed = Array.isArray(target.reviewed_near_match_entity_ids)
-      ? target.reviewed_near_match_entity_ids.join(',')
+      ? target.reviewed_near_match_entity_ids.map((item) => String(item)).sort().join(',')
       : '';
     return [
       target.mode || '',
@@ -203,6 +203,9 @@
       this.onDismissed = typeof this.options.onDismissed === 'function'
         ? this.options.onDismissed
         : function noop() {};
+      this.onFullyRestoredUndo = typeof this.options.onFullyRestoredUndo === 'function'
+        ? this.options.onFullyRestoredUndo
+        : async function noop() {};
       const debounceMs = Number(this.options.debounceMs);
       this.debounceMs = Number.isFinite(debounceMs) ? Math.max(0, debounceMs) : 150;
       this.requestIdFactory = typeof this.options.requestIdFactory === 'function'
@@ -785,6 +788,10 @@
       try {
         const result = await jsonRequest(this.apiJson, '/app/speakers/api/discovery/identify', payload);
         if (result?.status !== 'identified') {
+          if (this.shouldRefreshReviewedSet(result, target)) {
+            await this.refreshCreateNameGate(target.name);
+            return;
+          }
           this.logError(new Error(`unexpected identify status: ${result?.status || ''}`), {
             context: 'speakers-who-is-this:commit',
             result,
@@ -795,9 +802,31 @@
         this.renderReceipt(result);
         this.onIdentified({ clusterId: this.clusterId, cluster: this.cluster, result });
       } catch (error) {
+        if (this.shouldRefreshReviewedSet(error, target)) {
+          this.logError(error, { context: 'speakers-who-is-this:stale-reviewed-set' });
+          await this.refreshCreateNameGate(target.name);
+          return;
+        }
         this.logError(error, { context: 'speakers-who-is-this:commit' });
         this.renderLoadError(() => this.commitPreview());
       }
+    }
+
+    shouldRefreshReviewedSet(result, target) {
+      if (!target || target.mode !== 'create' || !target.name) return false;
+      const code = String(
+        result?.invalid_request_code
+        || result?.payload?.invalid_request_code
+        || ''
+      );
+      return code === 'reviewed_near_match_set_mismatch';
+    }
+
+    async refreshCreateNameGate(name) {
+      this.requestSignature = '';
+      this.requestId = '';
+      this.previewTarget = null;
+      await this.resolveCreateName(name);
     }
 
     renderReceipt(result, partialMessage) {
@@ -828,10 +857,10 @@
         });
         const summary = summarizeUndoReport(result);
         if (summary.fully_restored) {
+          this.requestSignature = '';
+          this.requestId = '';
           this.notice = copyText(this.copy, COPY.UNDO_DONE);
-          this.presence = null;
-          this.mainState = this.emptyMainState();
-          await this.loadPresence();
+          await this.refreshFullyRestoredUndo(result);
           return;
         }
         this.renderReceipt(this.receiptResult, copyText(this.copy, COPY.UNDO_PARTIAL, {
@@ -841,6 +870,27 @@
       } catch (error) {
         this.logError(error, { context: 'speakers-who-is-this:undo' });
         this.renderLoadError(() => this.undoReceipt());
+      }
+    }
+
+    async refreshFullyRestoredUndo(result) {
+      try {
+        await this.onFullyRestoredUndo({
+          clusterId: this.clusterId,
+          cluster: this.cluster,
+          result,
+        });
+        this.presence = null;
+        this.mainState = this.emptyMainState();
+        const refreshed = await this.loadPresence();
+        if (!refreshed) {
+          throw new Error('presence refresh failed');
+        }
+      } catch (error) {
+        this.logError(error, { context: 'speakers-who-is-this:full-undo-refresh' });
+        if (this.opened) {
+          this.renderLoadError(() => this.refreshFullyRestoredUndo(result));
+        }
       }
     }
 

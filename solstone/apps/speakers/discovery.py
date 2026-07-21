@@ -1145,6 +1145,7 @@ def _validate_near_matches_for_create(
         return [], {
             "status": "invalid_request",
             "error": "reviewed_near_match_entity_ids must match shown near matches",
+            "invalid_request_code": "reviewed_near_match_set_mismatch",
             "expected_reviewed_near_match_entity_ids": sorted(shown),
             "actual_reviewed_near_match_entity_ids": sorted(reviewed_set),
         }
