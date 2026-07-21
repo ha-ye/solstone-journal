@@ -26,7 +26,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from jsonschema import Draft202012Validator
 
@@ -87,6 +87,19 @@ _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR = 0.7
 MIN_INPUT_CHARS = 50
 # Minimum model output tokens before a degradation-checked talent run is flagged near-empty
 MIN_OUTPUT_TOKENS = 300
+_BRAIN_INGRESS_REASONS: frozenset[str] = frozenset(
+    {
+        "provider_key_invalid",
+        "model_not_found",
+        "provider_quota_exceeded",
+        "provider_unavailable",
+        "network_unreachable",
+        "endpoint_unreachable",
+        "chat_timeout",
+        "provider_response_invalid",
+        "cogitate_terminal_error",
+    }
+)
 
 
 class TalentHookError(RuntimeError):
@@ -1303,21 +1316,7 @@ def _classify_degraded(usage: dict | None, config: dict) -> dict | None:
     return None
 
 
-def _record_quota_failure(config: dict, exc: QuotaExhaustedError) -> int:
-    """Persist a quota failure row and return its reset time."""
-    reset_at_ms = now_ms() + (exc.retry_delay_ms or 0)
-    from solstone.think.providers import state
-
-    state.record_quota_failure(
-        str(config.get("provider") or ""),
-        str(config.get("model") or ""),
-        str(config.get("type") or ""),
-        reset_at_ms,
-    )
-    return reset_at_ms
-
-
-def _read_runtime_fingerprint_for_generate() -> str | None:
+def _read_runtime_fingerprint() -> str | None:
     from solstone.think.providers.brain_state import (
         read_active_brain_fingerprint_sha256,
     )
@@ -1325,35 +1324,62 @@ def _read_runtime_fingerprint_for_generate() -> str | None:
     try:
         return read_active_brain_fingerprint_sha256()
     except Exception as exc:
-        LOG.warning("Unable to read active brain fingerprint for generate: %s", exc)
+        LOG.warning("Unable to read active brain fingerprint: %s", exc)
         return None
 
 
-def _record_generate_provider_response_invalid(
-    expected_fingerprint_sha256: str | None,
+def _record_brain_runtime_failure(
+    reason_code: str,
+    component: Literal["generate", "cogitate"],
+    *,
+    expected_fingerprint_sha256: str | None = None,
 ) -> None:
+    if reason_code not in _BRAIN_INGRESS_REASONS:
+        return
+    from solstone.think.providers.brain_state import (
+        BRAIN_EVIDENCE_REASON_CODES,
+        record_brain_runtime_failure,
+    )
+
+    if reason_code not in BRAIN_EVIDENCE_REASON_CODES[component]:
+        return
+    expected_fingerprint_sha256 = (
+        expected_fingerprint_sha256 or _read_runtime_fingerprint()
+    )
     if not expected_fingerprint_sha256:
         LOG.warning(
-            "Unable to record provider_response_invalid runtime evidence: "
-            "active brain fingerprint unavailable"
+            "Unable to record %s runtime evidence: active brain fingerprint unavailable",
+            reason_code,
         )
         return
 
-    from solstone.think.providers.brain_state import record_brain_runtime_failure
-
     result = record_brain_runtime_failure(
-        "provider_response_invalid",
+        reason_code,
         datetime.now(timezone.utc),
         expected_fingerprint_sha256=expected_fingerprint_sha256,
-        component="generate",
+        component=component,
         diagnostic={},
     )
     if not result.get("accepted"):
         LOG.warning(
-            "Unable to record provider_response_invalid runtime evidence: %s%s",
+            "Unable to record %s runtime evidence: %s%s",
+            reason_code,
             result.get("rejected_reason"),
             f" ({result.get('error')})" if result.get("error") else "",
         )
+
+
+def _clean_stop_blank_response(exc: Exception) -> bool:
+    reason = getattr(exc, "reason", None)
+    finish_reason = getattr(exc, "finish_reason", None)
+    return reason == "blank_visible_output" and finish_reason in {None, "stop"}
+
+
+def _capture_runtime_fingerprint(config: dict) -> str | None:
+    expected_fingerprint_sha256 = _read_runtime_fingerprint()
+    if expected_fingerprint_sha256:
+        config["_brain_runtime_fingerprint_sha256"] = expected_fingerprint_sha256
+    return expected_fingerprint_sha256
 
 
 def _emit_provider_response_invalid_terminal(
@@ -1398,13 +1424,30 @@ async def _execute_with_tools(
 
     _raise_if_confidential_unverified()
     provider_mod = get_provider_module(provider)
+    expected_fingerprint_sha256 = _capture_runtime_fingerprint(config)
 
     # Wrapper to intercept finish event for post-processing
     def talent_emit_event(data: Event) -> None:
+        if (
+            data.get("event") == "error"
+            and data.get("terminal") is True
+            and data.get("reason_code") in {"agent_stuck", "no_output"}
+        ):
+            _record_brain_runtime_failure(
+                "cogitate_terminal_error",
+                "cogitate",
+                expected_fingerprint_sha256=expected_fingerprint_sha256,
+            )
+
         if data.get("event") == "finish":
             raw_result = data.get("result", "")
             result = _run_post_hooks(raw_result, config)
             if _expected_output_blank(config, raw_result, result):
+                _record_brain_runtime_failure(
+                    "cogitate_terminal_error",
+                    "cogitate",
+                    expected_fingerprint_sha256=expected_fingerprint_sha256,
+                )
                 _mark_terminal_error_evented(config)
                 emit_event(
                     {
@@ -1467,7 +1510,13 @@ async def _execute_with_tools(
         return
     except Exception as exc:
         if isinstance(exc, QuotaExhaustedError):
-            reset_at_ms = _record_quota_failure(config, exc)
+            _record_brain_runtime_failure(
+                "provider_quota_exceeded",
+                "cogitate",
+                expected_fingerprint_sha256=expected_fingerprint_sha256,
+            )
+            exc._brain_runtime_recorded = True
+            reset_at_ms = now_ms() + (exc.retry_delay_ms or 0)
             emit_event(
                 {
                     "event": "error",
@@ -1522,7 +1571,7 @@ async def _execute_generate(
     context = key_to_context(name)
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
     retries = 0
-    expected_fingerprint_sha256 = _read_runtime_fingerprint_for_generate()
+    expected_fingerprint_sha256 = _capture_runtime_fingerprint(config)
     try:
         gen_result = generate_with_result(
             contents=contents,
@@ -1536,13 +1585,23 @@ async def _execute_generate(
             timeout_s=timeout_s,
         )
     except ProviderResponseInvalidError as exc:
-        _record_generate_provider_response_invalid(expected_fingerprint_sha256)
+        if _clean_stop_blank_response(exc):
+            _record_brain_runtime_failure(
+                "provider_response_invalid",
+                "generate",
+                expected_fingerprint_sha256=expected_fingerprint_sha256,
+            )
         _emit_provider_response_invalid_terminal(config, emit_event, exc)
         return
     except Exception as exc:
         provider = config.get("provider", "google")
         if isinstance(exc, QuotaExhaustedError):
-            _record_quota_failure(config, exc)
+            _record_brain_runtime_failure(
+                "provider_quota_exceeded",
+                "generate",
+                expected_fingerprint_sha256=expected_fingerprint_sha256,
+            )
+            exc._brain_runtime_recorded = True
         if provider == NO_BRAIN_PROVIDER:
             raise
         if provider == "local":
@@ -1573,7 +1632,6 @@ async def _execute_generate(
                     name,
                 )
                 retry_kwargs["local_exclusive_admission"] = True
-            expected_fingerprint_sha256 = _read_runtime_fingerprint_for_generate()
             try:
                 gen_result = generate_with_result(
                     contents=contents,
@@ -1588,7 +1646,12 @@ async def _execute_generate(
                     **retry_kwargs,
                 )
             except ProviderResponseInvalidError as retry_exc:
-                _record_generate_provider_response_invalid(expected_fingerprint_sha256)
+                if _clean_stop_blank_response(retry_exc):
+                    _record_brain_runtime_failure(
+                        "provider_response_invalid",
+                        "generate",
+                        expected_fingerprint_sha256=expected_fingerprint_sha256,
+                    )
                 _emit_provider_response_invalid_terminal(
                     config,
                     emit_event,
@@ -1922,10 +1985,27 @@ async def main_async() -> None:
                 from solstone.think.models import IncompleteJSONError
 
                 provider = str(config.get("provider") or "") if config else ""
+                reason_code = classify_provider_error(e, provider)
+                if config and not getattr(e, "_brain_runtime_recorded", False):
+                    component: Literal["generate", "cogitate"] = (
+                        "cogitate" if config.get("type") == "cogitate" else "generate"
+                    )
+                    expected_fingerprint_sha256 = config.get(
+                        "_brain_runtime_fingerprint_sha256"
+                    )
+                    _record_brain_runtime_failure(
+                        reason_code,
+                        component,
+                        expected_fingerprint_sha256=(
+                            expected_fingerprint_sha256
+                            if isinstance(expected_fingerprint_sha256, str)
+                            else None
+                        ),
+                    )
                 event = {
                     "event": "error",
                     "error": str(e),
-                    "reason_code": classify_provider_error(e, provider),
+                    "reason_code": reason_code,
                     "provider": provider,
                     "trace": traceback.format_exc(),
                     "ts": now_ms(),
