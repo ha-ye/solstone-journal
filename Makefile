@@ -759,8 +759,8 @@ smoke-install-providers: .installed
 	  solstone/apps/settings/tests/test_providers_payload_extended.py \
 	  -v --tb=short --timeout=120
 
-release: ## Publish solstone to PyPI (production)
+release: ## Locked publication entrypoint
 	@bash scripts/release.sh
 
-release-test: ## Publish solstone to TestPyPI
+release-test: ## Locked test-publication entrypoint
 	@bash scripts/release.sh --test

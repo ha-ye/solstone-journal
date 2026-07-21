@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-from scripts.check_rust_release_manifest import SOURCE_COMMIT_RE, Failure
+from scripts.check_rust_release_manifest import SHA256_RE, SOURCE_COMMIT_RE, Failure
 from scripts.release_tool_pins import CARGO_DENY_PIN
 
 PolicyMode = str
@@ -33,7 +33,6 @@ SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 MAXIMUM_DB_STALENESS = "24 hours"
 MAXIMUM_DB_STALENESS_DELTA = timedelta(hours=24)
 ARCHIVE_PREFIX = "advisory-db/"
-DB_ARCHIVE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -96,7 +95,7 @@ def validate_snapshot_identity(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    if not isinstance(db_archive_sha256, str) or not DB_ARCHIVE_SHA256_RE.fullmatch(
+    if not isinstance(db_archive_sha256, str) or not SHA256_RE.fullmatch(
         db_archive_sha256
     ):
         failures.append(

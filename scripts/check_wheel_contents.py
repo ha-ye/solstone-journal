@@ -165,7 +165,7 @@ def _failure(
 def _core_rebuild_command(platform_tuple: CorePlatform) -> str:
     if platform_tuple[0] == "linux":
         return "bash scripts/release.sh --dry-run-linux"
-    return "bash scripts/release.sh --dry-run-all-hosts"
+    return "bash scripts/release.sh --candidate"
 
 
 def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
@@ -566,7 +566,7 @@ def _check_base_platform_helper(
     path: Path,
     wheel: zipfile.ZipFile,
 ) -> list[str]:
-    repair = "bash scripts/release.sh --dry-run-all-hosts"
+    repair = "bash scripts/release.sh --candidate"
     helpers = [
         info for info in wheel.infolist() if info.filename == PARAKEET_HELPER_MEMBER
     ]
@@ -777,6 +777,11 @@ def check_release_artifacts(
     models_decision: ModelsDecision,
 ) -> list[str]:
     errors: list[str] = []
+    repair = (
+        "bash scripts/release.sh --dry-run-linux"
+        if release_scope == "linux"
+        else "bash scripts/release.sh --candidate"
+    )
     for path, label in _release_artifact_members(
         dist_dir,
         release_scope=release_scope,
@@ -790,7 +795,7 @@ def check_release_artifacts(
                 f"missing release artifact for {label}",
                 expected=str(path),
                 actual="missing",
-                repair=f"bash scripts/release.sh --dry-run-{release_scope}",
+                repair=repair,
             )
         )
     return errors

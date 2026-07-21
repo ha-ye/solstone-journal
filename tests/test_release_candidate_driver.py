@@ -1,0 +1,1419 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import json
+import os
+import shutil
+import subprocess
+import zipfile
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import scripts.check_release_preflight as preflight
+import scripts.check_rust_release_manifest as checker
+import scripts.record_macos_native_wheel as native
+import scripts.release_candidate_driver as driver
+import scripts.release_tool_pins as pins
+from scripts.check_wheel_contents import (
+    PARAKEET_HELPER_MEMBER,
+    core_wheel_script_members,
+)
+from scripts.release_advisory_policy import PolicyRun
+from scripts.release_build_host import BuildHostResult, SourceBundle
+from scripts.release_install_smoke import (
+    SCRUBBED_COMMAND_ENV,
+    CommandResult,
+    InstallObservation,
+    build_install_proof,
+    expected_distribution_entries,
+    target_install_paths_from_ledger,
+    write_install_proof,
+)
+
+SOURCE_COMMIT = "a" * 40
+CORE_LOCK_CONTENT = "fixture lock\n"
+LOCK_SHA = hashlib.sha256(CORE_LOCK_CONTENT.encode("utf-8")).hexdigest()
+LINUX_X86_CORE = b"linux-x86-core"
+LINUX_AARCH64_CORE = b"linux-aarch64-core"
+MACOS_CORE = b"core-script"
+MACOS_HELPER = b"root-helper"
+
+
+class GuardedEnv(dict):
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "SOURCE_COMMIT":
+            raise AssertionError("driver must not read SOURCE_COMMIT")
+        return super().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "SOURCE_COMMIT":
+            raise AssertionError("driver must not read SOURCE_COMMIT")
+        return super().__getitem__(key)
+
+
+def _repo(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    (root / "core").mkdir(parents=True)
+    (root / "packages" / "solstone-journal-models").mkdir(parents=True)
+    (root / "core" / "Cargo.lock").write_text(CORE_LOCK_CONTENT, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nversion = "{checker._current_version()}"\n',
+        encoding="utf-8",
+    )
+    (root / "packages" / "solstone-journal-models" / "pyproject.toml").write_text(
+        '[project]\nname = "solstone-journal-models"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    return root
+
+
+def _env() -> GuardedEnv:
+    return GuardedEnv(
+        {
+            "EXPECTED_RELEASE_COMMIT": SOURCE_COMMIT,
+            "SOURCE_COMMIT": "b" * 40,
+            "RELEASE_MODEL_PACKAGES": "exclude",
+            "RELEASE_ADVISORY_MODE": "caller-provisioned",
+            "RELEASE_ADVISORY_SOURCE_NAME": "fixture",
+            "RELEASE_ADVISORY_DB_URL": "ssh://example.test/db.git",
+        }
+    )
+
+
+def _policy() -> PolicyRun:
+    return PolicyRun(
+        advisory_source_id="fixture",
+        db_commit="b" * 40,
+        db_archive_sha256="c" * 64,
+        advisory_acquired_at="2026-07-20T11:00:00Z",
+        policy_checked_at="2026-07-20T12:00:00Z",
+        result="pass",
+    )
+
+
+def _write_member_wheel(path: Path, member: str, content: bytes) -> None:
+    info = zipfile.ZipInfo(member)
+    info.create_system = 3
+    info.external_attr = 0o755 << 16
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(info, content)
+
+
+def _write_linux_core_wheels(dist_dir: Path) -> None:
+    content_by_lane = {
+        "linux-x86_64-musl": LINUX_X86_CORE,
+        "linux-aarch64-musl": LINUX_AARCH64_CORE,
+    }
+    for artifact, (lane, _target) in checker.rust_artifact_targets().items():
+        if lane not in content_by_lane:
+            continue
+        _write_member_wheel(
+            dist_dir / artifact,
+            f"{artifact.removesuffix('.whl')}.data/scripts/solstone-core",
+            content_by_lane[lane],
+        )
+
+
+def _macos_wheel_names() -> tuple[str, str]:
+    names = checker.expected_package_names(include_models=False)
+    root = next(
+        name
+        for name in names
+        if name.startswith("solstone-") and "macosx_14_0_arm64" in name
+    )
+    core = next(
+        name
+        for name in names
+        if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
+    )
+    return root, core
+
+
+def _facts(content: bytes) -> dict[str, Any]:
+    return {
+        "signed_binary_sha256": hashlib.sha256(content).hexdigest(),
+        "signer_pinned": True,
+        "team_pinned": True,
+        "hardened_runtime": True,
+        "trusted_timestamp": True,
+        "notarization_status": "accepted",
+        "tools": {
+            "xcode": pins.MACOS_XCODE_PIN,
+            "swift": pins.MACOS_SWIFT_PIN,
+            "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
+            "notarytool": pins.MACOS_NOTARYTOOL_PIN,
+        },
+    }
+
+
+def _write_macos_host_outputs(
+    output_dir: Path,
+    *,
+    mutate: str | None = None,
+) -> BuildHostResult:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    root_name, core_name = _macos_wheel_names()
+    root_wheel = output_dir / root_name
+    core_wheel = output_dir / core_name
+    if mutate == "wrong_tag":
+        root_wheel = output_dir / root_name.replace(
+            "macosx_14_0_arm64", "manylinux2014_x86_64"
+        )
+    root_bytes = MACOS_HELPER
+    core_bytes = MACOS_CORE
+    _write_member_wheel(root_wheel, PARAKEET_HELPER_MEMBER, root_bytes)
+    _write_member_wheel(
+        core_wheel,
+        "solstone_core-0.0.0.data/scripts/solstone-core",
+        core_bytes,
+    )
+    root_record = native.build_macos_native_record(
+        role="root",
+        wheel_path=root_wheel,
+        signing_facts=_facts(root_bytes),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=LOCK_SHA,
+    )
+    core_record = native.build_macos_native_record(
+        role="core",
+        wheel_path=core_wheel,
+        signing_facts=_facts(core_bytes),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=LOCK_SHA,
+    )
+    if mutate == "record_role":
+        root_record["role"] = "core"
+    if mutate == "member":
+        core_record["member"]["sha256"] = "0" * 64
+    if mutate == "tool":
+        core_record["tools"]["swift"] = "Apple Swift 6.3.3"
+    if mutate == "signing":
+        root_record["signing"]["team_pinned"] = False
+    if mutate == "notary":
+        root_record["notarization_status"] = "rejected"
+    if mutate == "wheel_hash":
+        root_record["wheel"]["sha256"] = "0" * 64
+    root_record_path = output_dir / "macos-native-root.json"
+    core_record_path = output_dir / "macos-native-core.json"
+    if mutate == "record_paths_swapped":
+        root_record_path, core_record_path = core_record_path, root_record_path
+    root_record_path.write_text(
+        json.dumps(root_record, sort_keys=True), encoding="utf-8"
+    )
+    core_record_path.write_text(
+        json.dumps(core_record, sort_keys=True), encoding="utf-8"
+    )
+    return BuildHostResult(
+        macos_wheels=(root_wheel, core_wheel),
+        native_records=(root_record_path, core_record_path),
+        tool_evidence=preflight.expected_presign_lane_tool_evidence("macos-arm64"),
+    )
+
+
+def _proof_observation(
+    target: str,
+    *,
+    env_root: Path,
+    candidate_dir: Path,
+    install_paths: tuple[Path, ...],
+    version: str,
+) -> InstallObservation:
+    (env_root / "bin").mkdir(parents=True, exist_ok=True)
+    (env_root / "bin" / "python").write_bytes(b"python")
+    (env_root / "bin" / "solstone-core").write_bytes(b"core")
+    members = [
+        {
+            "name": "solstone-core",
+            "path": env_root / "bin" / "solstone-core",
+            "sha256": {
+                "linux-x86_64-musl": hashlib.sha256(LINUX_X86_CORE).hexdigest(),
+                "linux-aarch64-musl": hashlib.sha256(LINUX_AARCH64_CORE).hexdigest(),
+                "macos-arm64": hashlib.sha256(MACOS_CORE).hexdigest(),
+            }[target],
+            "symlink": False,
+        }
+    ]
+    if target == "macos-arm64":
+        (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
+        members.append(
+            {
+                "name": "parakeet-helper",
+                "path": env_root / "bin" / "parakeet-helper",
+                "sha256": hashlib.sha256(MACOS_HELPER).hexdigest(),
+                "symlink": False,
+            }
+        )
+    return InstallObservation(
+        env_root=env_root,
+        preexisting_distributions=(),
+        install=CommandResult(
+            argv=(
+                str(env_root / "bin" / "python"),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--no-deps",
+                *(str(path) for path in install_paths),
+            ),
+            exit_code=0,
+            stdout="installed",
+            env=SCRUBBED_COMMAND_ENV,
+        ),
+        installed_distributions=expected_distribution_entries(install_paths),
+        installed_members=tuple(members),
+        smoke={
+            "solstone-core": CommandResult(
+                argv=(str(env_root / "bin" / "solstone-core"), "--version"),
+                exit_code=0,
+                stdout=f"solstone-core {version}",
+                env=SCRUBBED_COMMAND_ENV,
+            )
+        },
+    )
+
+
+def _services(
+    root: Path, *, native_mutation: str | None = None
+) -> driver.CandidateServices:
+    def clean_outputs(repo: Path, version: str) -> None:
+        for relative in (
+            "build",
+            "dist",
+            f"target/release-evidence/{version}",
+            f"target/release-transfer/{version}",
+        ):
+            path = repo / relative
+            if path.exists():
+                shutil.rmtree(path)
+
+    def build_local_dist(repo: Path, include_models: bool) -> None:
+        dist = repo / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        for name in driver._expected_local_dist_names(include_models=include_models):
+            (dist / name).write_bytes(b"fixture package")
+        _write_linux_core_wheels(repo / "dist")
+
+    def create_source_bundle(
+        _repo: Path, commit: str, output_path: Path
+    ) -> SourceBundle:
+        assert commit == SOURCE_COMMIT
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"bundle")
+        return SourceBundle(
+            path=output_path,
+            source_commit=SOURCE_COMMIT,
+            sha256=hashlib.sha256(b"bundle").hexdigest(),
+            bytes=len(b"bundle"),
+        )
+
+    def build_host(
+        source_bundle: SourceBundle, commit: str, output_dir: Path
+    ) -> BuildHostResult:
+        assert source_bundle.path.read_bytes() == b"bundle"
+        assert source_bundle.source_commit == SOURCE_COMMIT
+        assert source_bundle.sha256 == hashlib.sha256(b"bundle").hexdigest()
+        assert source_bundle.bytes == len(b"bundle")
+        assert commit == SOURCE_COMMIT
+        return _write_macos_host_outputs(output_dir, mutate=native_mutation)
+
+    def run_proof(**kwargs: Any) -> Path:
+        output_path = Path(kwargs["output_path"])
+        target = str(kwargs["target"])
+        install_paths = target_install_paths_from_ledger(
+            kwargs["ledger_payload"],
+            target=target,
+            candidate_dir=Path(kwargs["candidate_dir"]),
+        )
+        proof = build_install_proof(
+            **{key: value for key, value in kwargs.items() if key != "output_path"},
+            observation=_proof_observation(
+                target,
+                env_root=root / "env" / target,
+                candidate_dir=Path(kwargs["candidate_dir"]),
+                install_paths=install_paths,
+                version=str(kwargs["version"]),
+            ),
+            recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
+        )
+        return write_install_proof(output_path, proof)
+
+    def cleanup(paths: Sequence[Path]) -> None:
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists() or path.is_symlink():
+                path.unlink()
+
+    return driver.CandidateServices(
+        git_head=lambda _repo: SOURCE_COMMIT,
+        git_status=lambda _repo: "",
+        core_lock_sha256=lambda _repo: LOCK_SHA,
+        clean_outputs=clean_outputs,
+        build_local_dist=build_local_dist,
+        prepare_policy=lambda _repo, _env: _policy(),
+        coordinator_tool_evidence=lambda: {
+            lane: preflight.expected_lane_tool_evidence(lane)
+            for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
+        },
+        create_source_bundle=create_source_bundle,
+        build_host=build_host,
+        cleanup_transients=cleanup,
+        run_install_proof=run_proof,
+        transaction_hook=lambda _point: None,
+    )
+
+
+def _ready_paths(root: Path) -> tuple[Path, Path, Path, Path]:
+    version = checker._current_version()
+    ready_path = root / "dist" / "release-candidate" / version
+    payload_staging = ready_path.parent / f"{version}.payload-staging"
+    evidence_dir = root / "target" / "release-evidence" / version
+    evidence_staging = root / "target" / "release-evidence" / f"{version}.staging"
+    return ready_path, payload_staging, evidence_dir, evidence_staging
+
+
+def _assert_no_ready_cohort(root: Path) -> None:
+    ready_path, payload_staging, evidence_dir, evidence_staging = _ready_paths(root)
+    assert not ready_path.exists()
+    assert not payload_staging.exists()
+    assert not evidence_dir.exists()
+    assert not evidence_staging.exists()
+
+
+def _recover(root: Path) -> driver.CandidateReport:
+    return driver.run_recover(
+        root,
+        version=checker._current_version(),
+        source_commit=SOURCE_COMMIT,
+    )
+
+
+def _tree_snapshot(path: Path) -> dict[str, bytes]:
+    return {
+        item.relative_to(path).as_posix(): item.read_bytes()
+        for item in sorted(path.rglob("*"))
+        if item.is_file() and not item.is_symlink()
+    }
+
+
+def test_fake_all_host_candidate_and_recovery_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    first_root = _repo(tmp_path / "one")
+    second_root = _repo(tmp_path / "two")
+
+    first = driver.run_candidate(first_root, _env(), _services(first_root))
+    second = driver.run_candidate(second_root, _env(), _services(second_root))
+
+    assert first.heading == "candidate-proven"
+    assert second.heading == "candidate-proven"
+    assert not (
+        first_root / "target" / "release-transfer" / checker._current_version()
+    ).exists()
+    assert first.candidate_digest == second.candidate_digest
+    assert first.bundle_digest == second.bundle_digest
+    assert (
+        first.evidence_dir.joinpath("ledger.json").read_bytes()
+        == second.evidence_dir.joinpath("ledger.json").read_bytes()
+    )
+    assert sorted(path.name for path in first.release_dir.iterdir()) == sorted(
+        path.name for path in second.release_dir.iterdir()
+    )
+    release_names = {path.name for path in first.release_dir.iterdir()}
+    assert any(
+        name.startswith("solstone_core-") and "manylinux2014_x86_64" in name
+        for name in release_names
+    )
+    assert any(
+        name.startswith("solstone_core-") and "manylinux2014_aarch64" in name
+        for name in release_names
+    )
+    root_name, core_name = _macos_wheel_names()
+    with zipfile.ZipFile(first.release_dir / root_name) as wheel:
+        assert wheel.read(PARAKEET_HELPER_MEMBER) == b"root-helper"
+    with zipfile.ZipFile(first.release_dir / core_name) as wheel:
+        [member] = core_wheel_script_members(wheel)
+        assert wheel.read(member) == b"core-script"
+
+    recovered = _recover(first_root)
+    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.bundle_digest == first.bundle_digest
+
+
+def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    before_payload = _tree_snapshot(report.release_dir)
+    before_evidence = _tree_snapshot(report.evidence_dir)
+    (root / "pyproject.toml").unlink()
+    shutil.rmtree(root / "packages")
+
+    recovered = driver.run_recover(
+        root,
+        version=report.version,
+        source_commit=SOURCE_COMMIT,
+    )
+
+    assert recovered.heading == "retained-candidate-valid"
+    assert _tree_snapshot(report.release_dir) == before_payload
+    assert _tree_snapshot(report.evidence_dir) == before_evidence
+
+
+def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    driver.run_candidate(root, _env(), _services(root))
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_recover(root, version="", source_commit=SOURCE_COMMIT)
+    assert exc.value.failures[0].error == "retained release version selector is missing"
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_recover(
+            root,
+            version=checker._current_version(),
+            source_commit="b" * 40,
+        )
+    assert (
+        exc.value.failures[0].error
+        == "retained ledger source commit does not match selector"
+    )
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_recover(root, version="0.0.0", source_commit=SOURCE_COMMIT)
+    assert (
+        exc.value.failures[0].error == "retained ledger could not be read for selector"
+    )
+
+
+def test_recovery_has_no_service_surface() -> None:
+    parameters = set(inspect.signature(driver.run_recover).parameters)
+
+    assert parameters == {"root", "version", "source_commit"}
+
+
+def test_machine_report_is_canonical_sorted_and_not_publication_authorization(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    candidate = driver.run_candidate(root, _env(), _services(root))
+    retained = _recover(root)
+
+    for report in (candidate, retained):
+        text = driver.format_report(report)
+        payload = json.loads(text)
+        assert text.encode("utf-8") == checker.canonical_json_bytes(payload)
+        assert payload["verdict"] == report.heading
+        assert (
+            payload["publication_authorization"]
+            == "local candidate evidence only; not publication authorization"
+        )
+        payload_names = [item["name"] for item in payload["payload_inventory"]]
+        evidence_names = [item["name"] for item in payload["evidence_inventory"]]
+        assert payload_names == sorted(payload_names)
+        assert evidence_names == sorted(evidence_names)
+        assert payload["candidate_digest"] == driver.candidate_digest(
+            report.release_dir
+        )
+        assert (
+            payload["ledger_sha256"]
+            == driver.file_sha256_size(report.evidence_dir / "ledger.json")[0]
+        )
+        for target, entry in payload["proof_inventory"].items():
+            assert entry["sha256"] == payload["proof_sha256"][target]
+
+
+def test_dry_run_linux_validates_static_plan_without_files_or_services(
+    tmp_path: Path,
+) -> None:
+    before = sorted(tmp_path.rglob("*"))
+    output = driver.run_dry_run_linux(tmp_path, _env())
+
+    assert sorted(tmp_path.rglob("*")) == before
+    assert "validated" in output
+    assert "candidate-proven" not in output
+    assert "clean-source claim" in output
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["artifact", "model", "tool", "build-arg", "lockout"],
+)
+def test_dry_run_linux_rejects_bad_plan_cases(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    plan = driver.default_dry_run_plan(_env())
+    if mutation == "artifact":
+        plan = replace(plan, artifacts=plan.artifacts[:-1])
+    elif mutation == "model":
+        plan = replace(plan, models_decision="publish")
+    elif mutation == "tool":
+        tools = {lane: dict(values) for lane, values in plan.tool_evidence.items()}
+        tools["source"]["rustc"] = "rustc 0.0.0"
+        plan = replace(plan, tool_evidence=tools)
+    elif mutation == "build-arg":
+        args = dict(plan.linux_maturin_args)
+        args["x86_64-unknown-linux-musl"] = args["x86_64-unknown-linux-musl"].replace(
+            "--locked ", ""
+        )
+        plan = replace(plan, linux_maturin_args=args)
+    elif mutation == "lockout":
+        lockout = dict(plan.publication_lockout)
+        lockout["make release"] = False
+        plan = replace(plan, publication_lockout=lockout)
+
+    with pytest.raises(driver.DriverError):
+        driver.run_dry_run_linux(tmp_path, _env(), plan=plan)
+
+
+@pytest.mark.parametrize(
+    ("point", "exc_factory"),
+    [
+        ("after-payload-rename", RuntimeError),
+        ("between-renames", RuntimeError),
+        ("after-evidence-rename", RuntimeError),
+        ("after-payload-rename", KeyboardInterrupt),
+        ("between-renames", SystemExit),
+    ],
+)
+def test_candidate_transaction_rolls_back_payload_and_evidence_at_each_rename_point(
+    tmp_path: Path,
+    point: str,
+    exc_factory: type[BaseException],
+) -> None:
+    root = _repo(tmp_path)
+    foreign_payload = root / "dist" / "release-candidate" / "foreign"
+    foreign_evidence = root / "target" / "release-evidence" / "foreign"
+
+    def hook(actual_point: str) -> None:
+        if actual_point == point:
+            foreign_payload.mkdir(parents=True)
+            foreign_evidence.mkdir(parents=True)
+            (foreign_payload / "keep").write_text("payload", encoding="utf-8")
+            (foreign_evidence / "keep").write_text("evidence", encoding="utf-8")
+            raise exc_factory()
+
+    services = replace(_services(root), transaction_hook=hook)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert (foreign_payload / "keep").read_text(encoding="utf-8") == "payload"
+    assert (foreign_evidence / "keep").read_text(encoding="utf-8") == "evidence"
+    assert any(
+        failure.error == "release candidate finalization transaction failed"
+        for failure in exc.value.failures
+    )
+
+
+def test_candidate_transaction_aggregates_cleanup_errors(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    outside = tmp_path / "foreign"
+    outside.mkdir()
+    (outside / "keep").write_text("keep", encoding="utf-8")
+
+    def hook(point: str) -> None:
+        if point == "after-payload-rename":
+            ready_path, _payload_staging, _evidence_dir, _evidence_staging = (
+                _ready_paths(root)
+            )
+            shutil.rmtree(ready_path)
+            ready_path.symlink_to(outside, target_is_directory=True)
+            raise RuntimeError()
+
+    services = replace(_services(root), transaction_hook=hook)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert (outside / "keep").read_text(encoding="utf-8") == "keep"
+    assert any(
+        failure.error == "release candidate finalization transaction failed"
+        for failure in exc.value.failures
+    )
+    assert any("symlink residue" in failure.error for failure in exc.value.failures)
+
+
+@pytest.mark.parametrize("mutation", ["nested", "extra", "missing", "symlink"])
+def test_candidate_final_recheck_rejects_payload_inventory_mutations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "payload.whl").write_text("outside", encoding="utf-8")
+
+    def hook(point: str) -> None:
+        if point != "after-evidence-rename":
+            return
+        ready_path, _payload_staging, _evidence_dir, _evidence_staging = _ready_paths(
+            root
+        )
+        first_file = next(path for path in ready_path.iterdir() if path.is_file())
+        if mutation == "nested":
+            nested = ready_path / "nested"
+            nested.mkdir()
+            (nested / "extra.txt").write_text("extra", encoding="utf-8")
+        elif mutation == "extra":
+            (ready_path / "extra.whl").write_text("extra", encoding="utf-8")
+        elif mutation == "missing":
+            first_file.unlink()
+        elif mutation == "symlink":
+            first_file.unlink()
+            first_file.symlink_to(outside / "payload.whl")
+
+    services = replace(_services(root), transaction_hook=hook)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert any("payload" in failure.error for failure in exc.value.failures)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "temp", "directory", "proof-symlink"])
+def test_candidate_final_recheck_rejects_evidence_inventory_mutations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _repo(tmp_path)
+    outside = tmp_path / "outside-proof.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    def hook(point: str) -> None:
+        if point != "after-evidence-rename":
+            return
+        _ready_path, _payload_staging, evidence_dir, _evidence_staging = _ready_paths(
+            root
+        )
+        if mutation == "extra":
+            (evidence_dir / "extra.json").write_text("extra", encoding="utf-8")
+        elif mutation == "temp":
+            (evidence_dir / ".ledger.json.tmp").write_text("temp", encoding="utf-8")
+        elif mutation == "directory":
+            (evidence_dir / "extra-dir").mkdir()
+        elif mutation == "proof-symlink":
+            proof = evidence_dir / "proofs" / "macos-arm64.json"
+            proof.unlink()
+            proof.symlink_to(outside)
+
+    services = replace(_services(root), transaction_hook=hook)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert any(
+        "evidence" in failure.error or "proof" in failure.error
+        for failure in exc.value.failures
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "kind",
+        "product",
+        "version",
+        "source_commit",
+        "core_lock_sha256",
+        "rust_targets",
+        "proofs",
+        "redaction",
+        "policy_result",
+        "advisory_source_id",
+        "native_summary",
+    ],
+)
+def test_candidate_final_recheck_rejects_deep_ledger_binding_mutations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _repo(tmp_path)
+
+    def hook(point: str) -> None:
+        if point != "after-evidence-rename":
+            return
+        _ready_path, _payload_staging, evidence_dir, _evidence_staging = _ready_paths(
+            root
+        )
+        ledger_path = evidence_dir / "ledger.json"
+        payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+        if mutation == "kind":
+            payload["kind"] = "forged-ledger"
+        elif mutation == "product":
+            payload["product"] = "other"
+        elif mutation == "version":
+            payload["version"] = "0.0.0"
+        elif mutation == "source_commit":
+            payload["source_commit"] = "b" * 40
+        elif mutation == "core_lock_sha256":
+            payload["core_lock_sha256"] = "0" * 64
+        elif mutation == "rust_targets":
+            payload["rust_targets"] = []
+        elif mutation == "proofs":
+            payload["proofs"]["expected_targets"] = ["macos-arm64"]
+        elif mutation == "redaction":
+            payload["redaction"]["validator"] = "none"
+        elif mutation == "policy_result":
+            payload["policy_run"]["result"] = "fail"
+        elif mutation == "advisory_source_id":
+            payload["policy_run"]["advisory_source_id"] = ""
+        elif mutation == "native_summary":
+            payload["native_summary"]["macos_root_helper"]["wheel"]["sha256"] = "0" * 64
+        ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+
+    services = replace(_services(root), transaction_hook=hook)
+
+    with pytest.raises(driver.DriverError):
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+
+
+def test_candidate_final_recheck_rejects_clean_status_drift_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    calls = 0
+
+    def git_status(_repo: Path) -> str:
+        nonlocal calls
+        calls += 1
+        return " M late-change" if calls == 3 else ""
+
+    services = replace(_services(root), git_status=git_status)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert exc.value.failures[0].error == "release source tree is not clean"
+
+
+def test_candidate_final_recheck_rejects_core_lock_drift_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    calls = 0
+
+    def core_lock_sha256(_repo: Path) -> str:
+        nonlocal calls
+        calls += 1
+        return "0" * 64 if calls == 4 else LOCK_SHA
+
+    services = replace(_services(root), core_lock_sha256=core_lock_sha256)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert exc.value.failures[0].error == "core lock hash changed before finalization"
+
+
+def test_recovery_rejects_swapped_replayed_or_mutated_proofs(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    proof = report.evidence_dir / "proofs" / "macos-arm64.json"
+    payload = json.loads(proof.read_text(encoding="utf-8"))
+    payload["candidate_digest"] = "0" * 64
+    proof.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert any(
+        failure.error
+        == "install proof candidate_digest is not bound to retained candidate"
+        for failure in exc.value.failures
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("bash", "scripts/release.sh"),
+        ("bash", "scripts/release.sh", "--test"),
+        ("make", "release"),
+        ("make", "release-test"),
+    ],
+)
+def test_publication_entrypoints_fail_closed_before_external_seams(
+    tmp_path: Path, argv: Sequence[str]
+) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    log = tmp_path / "sentinel.log"
+    for name in (
+        "ssh",
+        "rsync",
+        "twine",
+        "uvx",
+        "gh",
+        "git",
+        "curl",
+        "uv",
+        "cargo",
+        "codesign",
+        "xcrun",
+    ):
+        path = sentinel_dir / name
+        path.write_text(
+            f'#!/bin/sh\necho {name} "$@" >> {log}\nexit 99\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+    env = {
+        "PATH": f"{sentinel_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+    }
+
+    result = subprocess.run(
+        list(argv),
+        cwd=Path(__file__).resolve().parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "publishing is locked out here; use the aggregate publisher after a release candidate is finalized"
+        in result.stderr
+    )
+    assert "release-publisher" not in result.stderr
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
+def test_deleted_all_hosts_mode_is_unknown_without_external_seams(
+    tmp_path: Path,
+) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    log = tmp_path / "sentinel.log"
+    for name in ("git", "ssh", "uv", "uvx", "cargo"):
+        path = sentinel_dir / name
+        path.write_text(
+            f'#!/bin/sh\necho {name} "$@" >> {log}\nexit 99\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "scripts/release.sh", "--dry-run-all-hosts"],
+        cwd=Path(__file__).resolve().parent.parent,
+        env={
+            "PATH": f"{sentinel_dir}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(tmp_path / "home"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "unknown argument: --dry-run-all-hosts" in result.stderr
+    assert not log.exists()
+
+
+def test_make_release_targets_have_no_prerequisites() -> None:
+    makefile = (Path(__file__).resolve().parent.parent / "Makefile").read_text(
+        encoding="utf-8"
+    )
+    for target in ("release", "release-test"):
+        line = next(
+            line for line in makefile.splitlines() if line.startswith(f"{target}:")
+        )
+        before_comment = line.split("##", 1)[0]
+        assert before_comment == f"{target}: "
+
+
+def test_candidate_rejects_models_and_identity_drift(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    env = _env()
+    env["RELEASE_MODEL_PACKAGES"] = "publish"
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, env, _services(root))
+    assert exc.value.failures[0].error == "release model package decision is invalid"
+
+    services = replace(_services(root), git_head=lambda _repo: "b" * 40)
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+    assert (
+        exc.value.failures[0].error
+        == "release source commit does not match EXPECTED_RELEASE_COMMIT"
+    )
+
+
+def test_default_services_have_no_fixture_lane_evidence() -> None:
+    services = driver.default_services()
+
+    assert not hasattr(services, "lane_evidence")
+    assert (
+        services.coordinator_tool_evidence is driver._default_coordinator_tool_evidence
+    )
+
+
+def test_tool_skew_is_rejected_before_any_build(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    build_called = False
+
+    def build_local_dist(_repo: Path, _include_models: bool) -> None:
+        nonlocal build_called
+        build_called = True
+
+    tools = {
+        lane: preflight.expected_lane_tool_evidence(lane)
+        for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
+    }
+    tools["source"] = {**tools["source"], "rustc": "rustc 0.0.0"}
+    services = replace(
+        _services(root),
+        coordinator_tool_evidence=lambda: tools,
+        build_local_dist=build_local_dist,
+    )
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert not build_called
+    assert any(
+        failure.error == "release lane tool rustc is not pinned"
+        for failure in exc.value.failures
+    )
+
+
+def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    env = _env()
+    env["RELEASE_MODEL_PACKAGES"] = "include"
+    report = driver.run_candidate(root, env, _services(root))
+    payload = json.loads((report.evidence_dir / "ledger.json").read_text())
+
+    assert payload["models"] == {"decision": "include", "package_version": "1.0.0"}
+    assert any(
+        item["name"].startswith("solstone_journal_models-")
+        for item in payload["candidate"]["files"]
+    )
+
+    (root / "packages" / "solstone-journal-models" / "pyproject.toml").write_text(
+        '[project]\nname = "solstone-journal-models"\nversion = "1.0.1"\n',
+        encoding="utf-8",
+    )
+    recovered = _recover(root)
+    assert recovered.heading == "retained-candidate-valid"
+
+
+@pytest.mark.parametrize(
+    ("include_models", "mutation"),
+    [
+        (False, "unselected"),
+        (True, "partial"),
+        (True, "changed"),
+    ],
+)
+def test_default_build_local_dist_rejects_models_inventory_drift(
+    tmp_path: Path,
+    include_models: bool,
+    mutation: str,
+) -> None:
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            dist = tmp_path / "dist"
+            dist.mkdir(parents=True, exist_ok=True)
+            names = set(
+                driver._expected_local_dist_names(include_models=include_models)
+            )
+            if mutation == "unselected":
+                names.update(
+                    name
+                    for name in checker.expected_package_names(include_models=True)
+                    if name.startswith("solstone_journal_models-")
+                )
+            elif mutation == "partial":
+                models = sorted(
+                    name
+                    for name in names
+                    if name.startswith("solstone_journal_models-")
+                )
+                names.remove(models[0])
+            elif mutation == "changed":
+                models = sorted(
+                    name
+                    for name in names
+                    if name.startswith("solstone_journal_models-")
+                )
+                names.remove(models[0])
+                names.add(models[0].replace("1.0.0", "1.0.1"))
+            for name in names:
+                (dist / name).write_bytes(b"package")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_build_local_dist(
+            tmp_path,
+            include_models=include_models,
+            runner=runner,
+        )
+
+    assert (
+        exc.value.failures[0].error
+        == "local release build artifact inventory does not match models decision"
+    )
+
+
+def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AMBIENT_RELEASE_TOKEN", "do-not-copy")
+    calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+    def runner(
+        argv: Sequence[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        calls.append((tuple(argv), dict(env)))
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            dist = tmp_path / "dist"
+            dist.mkdir(parents=True, exist_ok=True)
+            for name in driver._expected_local_dist_names(include_models=False):
+                (dist / name).write_bytes(b"package")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
+
+    assert calls[0][0] == ("python3", "scripts/render_packaging.py", "--check")
+    assert calls[1] == (
+        (
+            "uv",
+            "build",
+            "--all-packages",
+            "--exclude",
+            "solstone-journal-models",
+        ),
+        {
+            "MATURIN_PEP517_ARGS": driver.CORE_X86_64_MATURIN_ARGS,
+            "PATH": os.environ["PATH"],
+            "PYTHONNOUSERSITE": "1",
+        },
+    )
+    assert calls[2] == (
+        ("uv", "build", "--package", "solstone-core", "--wheel"),
+        {
+            "MATURIN_PEP517_ARGS": driver.CORE_AARCH64_MATURIN_ARGS,
+            "PATH": os.environ["PATH"],
+            "PYTHONNOUSERSITE": "1",
+        },
+    )
+    assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
+
+
+def test_default_build_local_dist_honors_include_models_build_selection(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            dist = tmp_path / "dist"
+            dist.mkdir(parents=True, exist_ok=True)
+            for name in driver._expected_local_dist_names(include_models=True):
+                (dist / name).write_bytes(b"package")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    driver._default_build_local_dist(tmp_path, include_models=True, runner=runner)
+
+    assert ("uv", "build", "--all-packages") in calls
+    assert all("--exclude" not in call for call in calls)
+
+
+def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    paths = [
+        root / "packages" / "solstone-journal" / "solstone_journal.egg-info",
+        root / "packages" / "solstone-journal-cuda" / "solstone_journal_cuda.egg-info",
+        root
+        / "packages"
+        / "solstone-journal-models"
+        / "solstone_journal_models.egg-info",
+        root / "target" / "release-transfer" / f".{version}.request-abc123",
+        root / "target" / "release-evidence" / f"{version}.staging",
+        root / "dist" / "release-candidate" / f"{version}.quarantine",
+    ]
+    for path in paths:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "marker").write_text("stale", encoding="utf-8")
+
+    driver._default_clean_outputs(root, version)
+
+    assert all(not path.exists() for path in paths)
+
+
+@pytest.mark.parametrize("relative", ["packages/solstone-journal/bad.egg-info", "dist"])
+def test_fresh_cleanup_preserves_symlink_targets_and_surfaces_residue(
+    tmp_path: Path, relative: str
+) -> None:
+    root = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    link = root / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_clean_outputs(root, checker._current_version())
+
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert link.is_symlink()
+    assert any("symlink residue" in failure.error for failure in exc.value.failures)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        driver.CORE_X86_64_MATURIN_ARGS.replace("--locked ", ""),
+        driver.CORE_X86_64_MATURIN_ARGS.replace("--zig ", ""),
+        driver.CORE_X86_64_MATURIN_ARGS.replace("--compatibility manylinux2014 ", ""),
+        driver.CORE_X86_64_MATURIN_ARGS.replace(
+            "--compatibility manylinux2014", "--compatibility manylinux_2_28"
+        ),
+        driver.CORE_X86_64_MATURIN_ARGS.replace(
+            "--target x86_64-unknown-linux-musl", ""
+        ),
+        driver.CORE_X86_64_MATURIN_ARGS.replace(
+            "x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"
+        ),
+    ],
+)
+def test_linux_maturin_contract_rejects_missing_or_wrong_tokens(args: str) -> None:
+    failures = driver.validate_linux_maturin_args(
+        args,
+        target="x86_64-unknown-linux-musl",
+    )
+    assert failures
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "record_role",
+        "record_paths_swapped",
+        "wrong_tag",
+        "member",
+        "tool",
+        "signing",
+        "notary",
+        "wheel_hash",
+    ],
+)
+def test_candidate_rejects_native_record_mismatches(
+    tmp_path: Path, mutation: str
+) -> None:
+    root = _repo(tmp_path)
+
+    with pytest.raises(driver.DriverError):
+        driver.run_candidate(root, _env(), _services(root, native_mutation=mutation))
+
+
+def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+
+    def cleanup(paths: Sequence[Path]) -> None:
+        root_name, _core_name = _macos_wheel_names()
+        wheel_path = root / "dist" / root_name
+        if wheel_path.exists():
+            _write_member_wheel(wheel_path, PARAKEET_HELPER_MEMBER, b"mutated-helper")
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists() or path.is_symlink():
+                path.unlink()
+
+    services = replace(services, cleanup_transients=cleanup)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert any(
+        failure.error == "macOS native record member does not match wheel"
+        for failure in exc.value.failures
+    )
+
+
+def test_candidate_rejects_coordinator_sourced_macos_tool_evidence(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+    base = services.coordinator_tool_evidence()
+    services = replace(
+        services,
+        coordinator_tool_evidence=lambda: {
+            **base,
+            "macos-arm64": preflight.expected_lane_tool_evidence("macos-arm64"),
+        },
+    )
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert (
+        exc.value.failures[0].error
+        == "macOS release tool evidence must be attested by the build host"
+    )
+
+
+def test_candidate_rejects_forged_host_macos_tool_evidence(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+
+    def build_host(
+        source_bundle: SourceBundle, commit: str, output_dir: Path
+    ) -> BuildHostResult:
+        result = _write_macos_host_outputs(output_dir)
+        tools = dict(result.tool_evidence)
+        tools["swift"] = "Apple Swift 6.3.3"
+        return BuildHostResult(
+            macos_wheels=result.macos_wheels,
+            native_records=result.native_records,
+            tool_evidence=tools,
+        )
+
+    services = replace(services, build_host=build_host)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert any(
+        failure.error == "pre-sign lane tool swift is not pinned"
+        for failure in exc.value.failures
+    )
+
+
+def test_candidate_derives_manifest_evidence_from_single_frozen_tool_observation(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    calls = 0
+
+    def coordinator_tool_evidence() -> dict[str, dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        return {
+            lane: preflight.expected_lane_tool_evidence(lane)
+            for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
+        }
+
+    services = replace(
+        _services(root), coordinator_tool_evidence=coordinator_tool_evidence
+    )
+    report = driver.run_candidate(root, _env(), services)
+    payload = json.loads((report.evidence_dir / "ledger.json").read_text())
+
+    assert calls == 1
+    assert payload["tool_evidence"]["source"]["maturin"] == pins.MATURIN_PIN
+
+
+def test_recovery_rejects_native_member_path_mutation_with_matching_hash(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger_path = report.evidence_dir / "ledger.json"
+    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    payload["native_members"]["linux-x86_64-musl"]["solstone-core"]["path"] = (
+        "forged/path/solstone-core"
+    )
+    ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert (
+        exc.value.failures[0].error
+        == "retained ledger native_members do not match finalized wheels"
+    )
+
+
+def test_recovery_rejects_empty_linux_native_member_set(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger_path = report.evidence_dir / "ledger.json"
+    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    payload["native_members"]["linux-x86_64-musl"] = {}
+    ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert any(
+        "native member set is invalid" in failure.error
+        for failure in exc.value.failures
+    )
+
+
+def test_recovery_rejects_self_consistent_native_member_forgery(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger_path = report.evidence_dir / "ledger.json"
+    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    forged = payload["native_members"]["linux-x86_64-musl"]["solstone-core"]
+    forged["path"] = "forged/path/solstone-core"
+    forged["sha256"] = "0" * 64
+    ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+    forged_ledger_sha = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+
+    for proof_path in sorted((report.evidence_dir / "proofs").glob("*.json")):
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        proof["ledger_sha256"] = forged_ledger_sha
+        if proof["target"] == "linux-x86_64-musl":
+            proof["installed_members"] = [
+                {
+                    "name": "solstone-core",
+                    "wheel_member_path": forged["path"],
+                    "installed_path": "ENVROOT/bin/solstone-core",
+                    "sha256": forged["sha256"],
+                }
+            ]
+        proof_path.write_bytes(checker.canonical_json_bytes(proof))
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert (
+        exc.value.failures[0].error
+        == "retained ledger native_members do not match finalized wheels"
+    )
