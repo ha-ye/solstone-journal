@@ -47,7 +47,11 @@ from scripts.check_wheel_contents import (
     check_dist,
 )
 from scripts.record_macos_native_wheel import validate_macos_native_record
-from scripts.release_advisory_policy import PolicyRun, prepare_policy_run
+from scripts.release_advisory_policy import (
+    PolicyRun,
+    prepare_policy_run,
+    validate_snapshot_identity,
+)
 from scripts.release_build_host import (
     BuildHostResult,
     ExternalBuildHostChannel,
@@ -56,7 +60,10 @@ from scripts.release_build_host import (
 )
 from scripts.release_digest import bundle_digest, candidate_digest, file_sha256_size
 from scripts.release_install_smoke import (
+    CANDIDATE,
+    ENVROOT,
     PROOF_TARGETS,
+    InstallProofError,
     candidate_file_entries,
     target_install_paths_from_ledger,
     validate_install_proof_bytes,
@@ -1199,18 +1206,42 @@ def _copy_macos_wheels(host_result: BuildHostResult, dist_dir: Path) -> None:
 
 def _expected_members(
     ledger: Mapping[str, Any], target: str
-) -> Mapping[str, Mapping[str, Any]]:
+) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
     native = ledger.get("native_members", {})
     if not isinstance(native, Mapping):
-        return {}
+        return {}, [
+            _failure(
+                "retained ledger native members are invalid",
+                expected="native_members object",
+                actual=type(native).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
     target_members = native.get(target)
     if not isinstance(target_members, Mapping):
-        return {}
-    return {
-        str(member_name): member
-        for member_name, member in target_members.items()
-        if isinstance(member, Mapping)
-    }
+        return {}, [
+            _failure(
+                "retained ledger target native members are invalid",
+                expected=f"{target} native member object",
+                actual=type(target_members).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    failures: list[Failure] = []
+    members: dict[str, Mapping[str, Any]] = {}
+    for member_name, member in target_members.items():
+        if not isinstance(member, Mapping):
+            failures.append(
+                _failure(
+                    "retained ledger native member is invalid",
+                    expected="native member object",
+                    actual=repr(member_name),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        members[str(member_name)] = member
+    return members, failures
 
 
 def _validate_proof_binding(
@@ -1263,7 +1294,8 @@ def _validate_proof_binding(
             )
             for entry in candidate_file_entries(expected_install_paths)
         }
-    except Exception:
+    except InstallProofError as exc:
+        failures.extend(exc.failures)
         expected_entries = set()
     if proof_entries != expected_entries:
         failures.append(
@@ -1274,7 +1306,8 @@ def _validate_proof_binding(
                 repair="bash scripts/release.sh --recover",
             )
         )
-    expected_members = _expected_members(ledger, target)
+    expected_members, expected_member_failures = _expected_members(ledger, target)
+    failures.extend(expected_member_failures)
     installed_members = proof.get("installed_members", [])
     if not isinstance(installed_members, list):
         installed_members = []
@@ -1315,12 +1348,12 @@ def _validate_proof_binding(
             )
         installed_path = member.get("installed_path")
         if not isinstance(installed_path, str) or not installed_path.startswith(
-            "ENVROOT/"
+            f"{ENVROOT}/"
         ):
             failures.append(
                 _failure(
                     "install proof installed path is invalid",
-                    expected="normalized installed executable path beneath ENVROOT",
+                    expected=f"normalized installed executable path beneath {ENVROOT}",
                     actual=repr(installed_path),
                     repair="bash scripts/release.sh --recover",
                 )
@@ -1942,6 +1975,13 @@ def _validate_policy_payload(policy_run: Mapping[str, Any]) -> list[Failure]:
                 repair="bash scripts/release.sh --recover",
             )
         )
+    failures.extend(
+        validate_snapshot_identity(
+            "retained ledger policy_run",
+            db_commit=policy_run.get("db_commit"),
+            db_archive_sha256=policy_run.get("db_archive_sha256"),
+        )
+    )
     snapshot = policy_run.get("db_snapshot_basename")
     if not _safe_retained_basename(snapshot):
         failures.append(
@@ -2150,7 +2190,7 @@ def _validate_deep_ledger_binding(
         )
         manifest_file_count = len(candidate_files) - package_file_count
         expected_candidate = {
-            "path": "CANDIDATE",
+            "path": CANDIDATE,
             "file_count": len(candidate_files),
             "package_file_count": package_file_count,
             "manifest_file_count": manifest_file_count,
@@ -2505,7 +2545,7 @@ def format_report(report: CandidateReport) -> str:
         "verdict": report.heading,
         "publication_authorization": "local candidate evidence only; not publication authorization",
         "version": report.version,
-        "release_dir": "CANDIDATE",
+        "release_dir": CANDIDATE,
         "evidence_dir": "EVIDENCE",
         "payload_files": report.payload_files,
         "candidate_digest": report.candidate_digest,
@@ -2822,6 +2862,17 @@ def run_recover(
                     "retained release version selector is missing",
                     expected="explicit retained release version",
                     actual="<missing>",
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        )
+    if not _safe_retained_basename(version):
+        raise DriverError(
+            [
+                _failure(
+                    "retained release version selector is unsafe",
+                    expected="safe retained release version basename",
+                    actual=repr(version),
                     repair="bash scripts/release.sh --recover",
                 )
             ]

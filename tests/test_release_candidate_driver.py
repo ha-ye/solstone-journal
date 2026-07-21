@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import inspect
 import json
@@ -59,6 +60,7 @@ LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
 LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
 MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
 MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
+ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
 
 
 class GuardedEnv(dict):
@@ -129,7 +131,10 @@ def _wheel_metadata(name: str) -> tuple[str, str]:
 def _write_metadata_wheel(path: Path) -> None:
     metadata_name, metadata = _wheel_metadata(path.name)
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr(metadata_name, metadata)
+        info = zipfile.ZipInfo(metadata_name, ZIP_DATE_TIME)
+        info.create_system = 3
+        info.external_attr = 0o644 << 16
+        wheel.writestr(info, metadata)
 
 
 def _write_linux_core_wheels(dist_dir: Path) -> None:
@@ -151,12 +156,16 @@ def _write_linux_core_wheels(dist_dir: Path) -> None:
 
 def _write_core_sdist(path: Path) -> None:
     version = checker._current_version()
-    with tarfile.open(path, "w:gz") as archive:
-        for member in sorted(CORE_REQUIRED_SDIST_MEMBERS):
-            content = b"x"
-            info = tarfile.TarInfo(f"solstone_core-{version}/{member}")
-            info.size = len(content)
-            archive.addfile(info, BytesIO(content))
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gzipped:
+            with tarfile.open(fileobj=gzipped, mode="w") as archive:
+                for member in sorted(CORE_REQUIRED_SDIST_MEMBERS):
+                    content = b"x"
+                    info = tarfile.TarInfo(f"solstone_core-{version}/{member}")
+                    info.size = len(content)
+                    info.mtime = 0
+                    info.mode = 0o644
+                    archive.addfile(info, BytesIO(content))
 
 
 def _write_models_wheel(path: Path) -> None:
@@ -169,12 +178,17 @@ def _write_models_wheel(path: Path) -> None:
     )
     with zipfile.ZipFile(path, "w") as wheel:
         metadata_name, metadata = _wheel_metadata(path.name)
-        wheel.writestr(metadata_name, metadata)
+        metadata_info = zipfile.ZipInfo(metadata_name, ZIP_DATE_TIME)
+        metadata_info.create_system = 3
+        metadata_info.external_attr = 0o644 << 16
+        wheel.writestr(metadata_info, metadata)
         for basename in sorted(EXPECTED_MODEL_SHA256):
-            wheel.write(
-                assets_dir / basename,
-                f"solstone_journal_models/assets/{basename}",
+            asset_info = zipfile.ZipInfo(
+                f"solstone_journal_models/assets/{basename}", ZIP_DATE_TIME
             )
+            asset_info.create_system = 3
+            asset_info.external_attr = 0o644 << 16
+            wheel.writestr(asset_info, (assets_dir / basename).read_bytes())
 
 
 def _macos_wheel_names() -> tuple[str, str]:
@@ -414,7 +428,18 @@ def _services(
             ),
             recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
         )
-        return write_install_proof(output_path, proof)
+        return write_install_proof(
+            output_path,
+            proof,
+            target=target,
+            version=str(kwargs["version"]),
+            source_commit=str(kwargs["source_commit"]),
+            core_lock_sha256=str(kwargs["core_lock_sha256"]),
+            candidate_digest=str(kwargs["candidate_digest"]),
+            ledger_sha256=str(kwargs["ledger_sha256"]),
+            candidate_dir=Path(kwargs["candidate_dir"]),
+            ledger_payload=kwargs["ledger_payload"],
+        )
 
     def cleanup(paths: Sequence[Path]) -> None:
         for path in paths:
@@ -595,6 +620,10 @@ def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
     assert exc.value.failures[0].error == "retained release version selector is missing"
 
     with pytest.raises(driver.DriverError) as exc:
+        driver.run_recover(root, version="../0.9.0", source_commit=SOURCE_COMMIT)
+    assert exc.value.failures[0].error == "retained release version selector is unsafe"
+
+    with pytest.raises(driver.DriverError) as exc:
         driver.run_recover(
             root,
             version=checker._current_version(),
@@ -609,6 +638,25 @@ def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
         driver.run_recover(root, version="0.0.0", source_commit=SOURCE_COMMIT)
     assert (
         exc.value.failures[0].error == "retained ledger could not be read for selector"
+    )
+
+
+def test_recovery_rejects_garbage_retained_advisory_identity(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger_path = report.evidence_dir / "ledger.json"
+    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    payload["policy_run"]["db_commit"] = "not-hex"
+    ledger_path.write_bytes(checker.canonical_json_bytes(payload))
+
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    assert any(
+        failure.error.endswith(".db_commit is invalid")
+        for failure in exc.value.failures
     )
 
 
@@ -1511,6 +1559,56 @@ def test_recovery_rejects_native_member_path_mutation_with_matching_hash(
     assert (
         exc.value.failures[0].error
         == "retained ledger native_members do not match finalized wheels"
+    )
+
+
+def test_proof_binding_surfaces_target_install_parse_failure(tmp_path: Path) -> None:
+    target = "linux-x86_64-musl"
+    digest = "a" * 64
+    ledger_sha256 = "b" * 64
+    ledger_payload = {
+        "source_commit": SOURCE_COMMIT,
+        "core_lock_sha256": LOCK_SHA,
+        "candidate": {"files": []},
+        "native_members": {
+            target: {
+                "solstone-core": {
+                    "path": "solstone_core-0.9.0.data/scripts/solstone-core",
+                    "sha256": "d" * 64,
+                    "bytes": 5,
+                }
+            }
+        },
+    }
+    proof = {
+        "target": target,
+        "source_commit": SOURCE_COMMIT,
+        "candidate_digest": digest,
+        "ledger_sha256": ledger_sha256,
+        "core_lock_sha256": LOCK_SHA,
+        "candidate_files": [],
+        "installed_members": [
+            {
+                "name": "solstone-core",
+                "wheel_member_path": ("solstone_core-0.9.0.data/scripts/solstone-core"),
+                "installed_path": "ENVROOT/bin/solstone-core",
+                "sha256": "d" * 64,
+            }
+        ],
+    }
+
+    failures = driver._validate_proof_binding(
+        proof,
+        target=target,
+        ledger=ledger_payload,
+        digest=digest,
+        ledger_sha256=ledger_sha256,
+        release_dir=tmp_path,
+    )
+
+    assert any(
+        failure.error == "install proof target install set is empty"
+        for failure in failures
     )
 
 

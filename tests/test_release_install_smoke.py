@@ -530,9 +530,56 @@ def test_written_install_proof_rejects_public_evidence_hazards(tmp_path: Path) -
     )
     proof["install"]["command"]["argv"].append("--flag=value")
 
-    failures = smoke.validate_install_proof(proof)
+    with pytest.raises(TypeError):
+        smoke.validate_install_proof(proof)
+
+    failures = smoke.validate_install_proof(
+        proof,
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=digest,
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        ledger_payload=ledger,
+    )
 
     assert failures
+
+
+def test_install_proof_validators_require_binding_arguments(tmp_path: Path) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    proof = smoke.build_install_proof(
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=digest,
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        candidate_paths=paths,
+        ledger_payload=ledger,
+        observation=_observation(
+            env_root=tmp_path / "env",
+            candidate_dir=candidate,
+            install_paths=install_paths,
+            macos=False,
+        ),
+        recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
+    )
+
+    with pytest.raises(TypeError):
+        smoke.validate_install_proof(proof)
+    with pytest.raises(TypeError):
+        smoke.validate_install_proof_bytes(smoke.canonical_json_bytes(proof))
 
 
 def _linux_context(

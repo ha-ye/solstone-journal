@@ -28,7 +28,7 @@ from scripts.check_wheel_contents import (
 )
 from scripts.release_advisory_policy import PolicyRun, validate_snapshot_identity
 from scripts.release_digest import candidate_digest, file_sha256_size
-from scripts.release_install_smoke import PROOF_TARGETS
+from scripts.release_install_smoke import CANDIDATE, PROOF_TARGETS
 from scripts.release_public_evidence import validate_public_evidence_tree
 
 TOP_LEVEL_KEYS = frozenset(
@@ -776,7 +776,7 @@ def build_ledger(
     core_lock_sha256, _core_lock_bytes = file_sha256_size(core_lock_path)
     files = _candidate_files(release_dir)
     candidate = {
-        "path": "CANDIDATE",
+        "path": CANDIDATE,
         "file_count": len(files),
         "package_file_count": sum(
             1

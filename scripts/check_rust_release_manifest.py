@@ -2340,7 +2340,18 @@ def run_fixtures_mode() -> list[Failure]:
                     ),
                     recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
                 )
-                write_install_proof(proofs_dir / f"{target}.json", proof)
+                write_install_proof(
+                    proofs_dir / f"{target}.json",
+                    proof,
+                    target=target,
+                    version=_current_version(),
+                    source_commit=source_commit,
+                    core_lock_sha256=file_sha256_size(cargo_lock_path)[0],
+                    candidate_digest=digest,
+                    ledger_sha256=ledger_sha256,
+                    candidate_dir=ready,
+                    ledger_payload=ledger_payload,
+                )
         except Exception as exc:
             return [
                 _failure(

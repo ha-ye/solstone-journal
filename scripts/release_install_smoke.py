@@ -988,8 +988,30 @@ def build_install_proof(
     return proof
 
 
-def write_install_proof(path: Path, proof: Mapping[str, Any]) -> Path:
-    failures = validate_install_proof(proof)
+def write_install_proof(
+    path: Path,
+    proof: Mapping[str, Any],
+    *,
+    target: str,
+    version: str,
+    source_commit: str,
+    core_lock_sha256: str,
+    candidate_digest: str,
+    ledger_sha256: str,
+    candidate_dir: Path,
+    ledger_payload: Mapping[str, Any],
+) -> Path:
+    failures = validate_install_proof(
+        proof,
+        target=target,
+        version=version,
+        source_commit=source_commit,
+        core_lock_sha256=core_lock_sha256,
+        candidate_digest=candidate_digest,
+        ledger_sha256=ledger_sha256,
+        candidate_dir=candidate_dir,
+        ledger_payload=ledger_payload,
+    )
     if failures:
         raise InstallProofError(failures)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1003,7 +1025,17 @@ def write_install_proof(path: Path, proof: Mapping[str, Any]) -> Path:
         os.rename(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
-    readback_failures = validate_install_proof_bytes(path.read_bytes())
+    readback_failures = validate_install_proof_bytes(
+        path.read_bytes(),
+        target=target,
+        version=version,
+        source_commit=source_commit,
+        core_lock_sha256=core_lock_sha256,
+        candidate_digest=candidate_digest,
+        ledger_sha256=ledger_sha256,
+        candidate_dir=candidate_dir,
+        ledger_payload=ledger_payload,
+    )
     if readback_failures:
         raise InstallProofError(readback_failures)
     return path
@@ -1266,14 +1298,14 @@ def _validate_proof_semantics(
 def validate_install_proof_bytes(
     data: bytes,
     *,
-    target: str | None = None,
-    version: str | None = None,
-    source_commit: str | None = None,
-    core_lock_sha256: str | None = None,
-    candidate_digest: str | None = None,
-    ledger_sha256: str | None = None,
-    candidate_dir: Path | None = None,
-    ledger_payload: Mapping[str, Any] | None = None,
+    target: str,
+    version: str,
+    source_commit: str,
+    core_lock_sha256: str,
+    candidate_digest: str,
+    ledger_sha256: str,
+    candidate_dir: Path,
+    ledger_payload: Mapping[str, Any],
 ) -> list[Failure]:
     import json
 
@@ -1326,14 +1358,14 @@ def validate_install_proof_bytes(
 def validate_install_proof(
     proof: Mapping[str, Any],
     *,
-    target: str | None = None,
-    version: str | None = None,
-    source_commit: str | None = None,
-    core_lock_sha256: str | None = None,
-    candidate_digest: str | None = None,
-    ledger_sha256: str | None = None,
-    candidate_dir: Path | None = None,
-    ledger_payload: Mapping[str, Any] | None = None,
+    target: str,
+    version: str,
+    source_commit: str,
+    core_lock_sha256: str,
+    candidate_digest: str,
+    ledger_sha256: str,
+    candidate_dir: Path,
+    ledger_payload: Mapping[str, Any],
 ) -> list[Failure]:
     failures: list[Failure] = []
     if set(proof) != TOP_LEVEL_KEYS:
@@ -1371,7 +1403,7 @@ def validate_install_proof(
         ("candidate_digest", candidate_digest),
         ("ledger_sha256", ledger_sha256),
     ):
-        if expected is not None and proof.get(key) != expected:
+        if proof.get(key) != expected:
             failures.append(
                 _failure(
                     f"install proof {key} is not bound to retained candidate",
@@ -1658,21 +1690,15 @@ def validate_install_proof(
         smoke = {}
     for name, value in smoke.items():
         failures.extend(_validate_command_payload(f"smoke {name}", value))
-    if (
-        ledger_payload is not None
-        and candidate_dir is not None
-        and target is not None
-        and version is not None
-    ):
-        failures.extend(
-            _validate_proof_semantics(
-                proof,
-                target=target,
-                version=version,
-                ledger_payload=ledger_payload,
-                candidate_dir=candidate_dir,
-            )
+    failures.extend(
+        _validate_proof_semantics(
+            proof,
+            target=target,
+            version=version,
+            ledger_payload=ledger_payload,
+            candidate_dir=candidate_dir,
         )
+    )
     failures.extend(validate_public_evidence_tree("install_proof", proof))
     return failures
 
@@ -1713,7 +1739,18 @@ def run_install_proof(
             observation=observation,
             recorded_at=resolved_services.clock(),
         )
-        return write_install_proof(output_path, proof)
+        return write_install_proof(
+            output_path,
+            proof,
+            target=target,
+            version=version,
+            source_commit=source_commit,
+            core_lock_sha256=core_lock_sha256,
+            candidate_digest=candidate_digest,
+            ledger_sha256=ledger_sha256,
+            candidate_dir=candidate_dir,
+            ledger_payload=ledger_payload,
+        )
     finally:
         resolved_services.cleanup_environment(env_root)
 
