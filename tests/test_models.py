@@ -1393,6 +1393,113 @@ class TestGenerateJsonSchemaPlumbing:
             json_output=False,
         )
 
+    @pytest.mark.parametrize("json_output", [True, False])
+    @pytest.mark.parametrize(
+        ("text_case", "expect_blank"),
+        [
+            ("nonblank", False),
+            ("empty", True),
+            ("spaces", True),
+            ("missing", True),
+            ("non_string", True),
+        ],
+    )
+    @pytest.mark.parametrize("finish_reason", ["stop", "STOP", " stop ", " STOP "])
+    def test_strict_validation_stop_finish_variants_blank_output_matrix(
+        self,
+        finish_reason,
+        text_case,
+        expect_blank,
+        json_output,
+    ):
+        result = {"finish_reason": finish_reason}
+        if text_case == "nonblank":
+            result["text"] = "complete text"
+        elif text_case == "empty":
+            result["text"] = ""
+        elif text_case == "spaces":
+            result["text"] = "   "
+        elif text_case == "non_string":
+            result["text"] = 123
+
+        if not expect_blank:
+            models_module.validate_generate_result_strict(
+                result,
+                json_output=json_output,
+            )
+            return
+
+        with pytest.raises(ProviderResponseInvalidError) as exc_info:
+            models_module.validate_generate_result_strict(
+                result,
+                json_output=json_output,
+            )
+
+        exc = exc_info.value
+        assert exc.reason == "blank_visible_output"
+        assert exc.finish_reason == "stop"
+
+    @pytest.mark.parametrize(
+        ("finish_reason", "expected_reason"),
+        [
+            ("length", "length"),
+            ("LENGTH", "length"),
+            (" length ", "length"),
+            ("max_tokens", "max_tokens"),
+            ("MAX_TOKENS", "max_tokens"),
+            (" max_tokens ", "max_tokens"),
+        ],
+    )
+    def test_strict_validation_json_length_finish_variants_use_safe_reason(
+        self,
+        finish_reason,
+        expected_reason,
+    ):
+        with pytest.raises(IncompleteJSONError) as exc_info:
+            models_module.validate_generate_result_strict(
+                {"text": "partial", "finish_reason": finish_reason},
+                json_output=True,
+            )
+
+        exc = exc_info.value
+        assert exc.reason == expected_reason
+        assert exc.reason_code == "incomplete_json_length"
+
+    def test_strict_validation_json_empty_finish_reason_is_unknown_non_stop(self):
+        # Empty finish strings are reduced to the fixed safe token before JSON
+        # or text classification; this intentionally replaces the old falsy
+        # short-circuit.
+        with pytest.raises(IncompleteJSONError) as exc_info:
+            models_module.validate_generate_result_strict(
+                {"text": "partial", "finish_reason": ""},
+                json_output=True,
+            )
+
+        assert exc_info.value.reason == "unknown"
+
+    @pytest.mark.parametrize(
+        "finish_reason",
+        [
+            str({"secret": _FINISH_METADATA_MARKER}).strip().lower(),
+            "a" * 65 + _FINISH_METADATA_MARKER,
+        ],
+    )
+    def test_strict_validation_json_unsafe_finish_reason_uses_unknown_without_raw_metadata(
+        self,
+        finish_reason,
+    ):
+        marker = _FINISH_METADATA_MARKER
+
+        with pytest.raises(IncompleteJSONError) as exc_info:
+            models_module.validate_generate_result_strict(
+                {"text": "partial", "finish_reason": finish_reason},
+                json_output=True,
+            )
+
+        exc = exc_info.value
+        assert exc.reason == "unknown"
+        _assert_exception_metadata_omits_marker(exc, marker)
+
     @pytest.mark.parametrize("text", ["", "   ", None, 123])
     @pytest.mark.parametrize(
         "entrypoint",

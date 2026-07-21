@@ -513,25 +513,27 @@ def validate_generate_result_strict(
         result_model if isinstance(result_model, str) and result_model else model
     )
     finish_reason = result.get("finish_reason")
-    error_finish_reason = _safe_finish_reason(finish_reason)
+    safe_finish_reason = _safe_finish_reason(finish_reason)
 
     if finish_reason is not None and not isinstance(finish_reason, str):
         raise ProviderResponseInvalidError(
             "malformed_finish_reason",
-            finish_reason=error_finish_reason,
+            finish_reason=safe_finish_reason,
             model=error_model,
             token_counts=token_counts,
         )
 
     if json_output:
-        error = finish_reason_error(result, json_output=True)
+        error = finish_reason_error(
+            {**result, "finish_reason": safe_finish_reason}, json_output=True
+        )
         if error is not None:
             raise error
 
-    if finish_reason in {None, "stop"} and _is_blank_visible_output(result):
+    if safe_finish_reason in {None, "stop"} and _is_blank_visible_output(result):
         raise ProviderResponseInvalidError(
             "blank_visible_output",
-            finish_reason=error_finish_reason,
+            finish_reason=safe_finish_reason,
             model=error_model,
             token_counts=token_counts,
         )
