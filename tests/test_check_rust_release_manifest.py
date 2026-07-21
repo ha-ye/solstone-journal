@@ -476,6 +476,23 @@ def test_rustc_verbose_allows_only_lane_bound_host_difference(tmp_path: Path) ->
     _assert_error(failures, "rustc host is not an allowed build host")
 
 
+def test_rustc_host_mismatch_redacts_host_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host = "buildhost01"
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["rustc_verbose"] = checker.fixture_rustc_verbose(host)
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_manifest_file(manifest)
+
+    _assert_error(failures, "rustc host is not an allowed build host")
+    _assert_redacted(failures, (host,))
+    _assert_formatted_redacted(failures, (host,), capsys)
+
+
 def test_rustc_verbose_rejects_malformed_spoof_and_mixed_labeled_lines(
     tmp_path: Path,
 ) -> None:

@@ -47,11 +47,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
 )
-RUSTC_FIRST_LINE_RE = re.compile(
-    r"^rustc (?P<version>\S+) \((?P<hash>[0-9a-f]{7,64}) (?P<date>\d{4}-\d{2}-\d{2})\)$"
-)
 RUSTC_LABEL_RE = re.compile(r"^(?P<label>[^:]+):\s*(?P<value>.+)$")
-CARGO_VERSION_RE = re.compile(r"^cargo\s+(?P<release>\S+)(?:\s+\(.+\))?$")
 RUSTC_VERSION_BANNER = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
 RUSTC_BINARY_PIN = "rustc"
 RUSTC_COMMIT_HASH_PIN = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
@@ -841,7 +837,7 @@ def _validate_rust_for_lane(
             _failure(
                 "rustc host is not an allowed build host",
                 expected=f"{lane} host {LANE_HOSTS[lane]}",
-                actual=rustc.host,
+                actual="redacted",
                 repair="supply the rustc -Vv output from the correct build lane",
             )
         )
