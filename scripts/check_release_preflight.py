@@ -29,6 +29,7 @@ from scripts.release_tool_pins import (  # noqa: E402
     MACOS_CODESIGN_PATH,
     MACOS_CODESIGN_PUBLIC_PIN,
     MACOS_NOTARYTOOL_PIN,
+    MACOS_SIGNING_MODE,
     MACOS_SWIFT_PIN,
     MACOS_XCODE_BUILD,
     MACOS_XCODE_PIN,
@@ -84,6 +85,13 @@ LANE_TOOL_KEYS: dict[LaneName, tuple[str, ...]] = {
         "swift",
         "codesign",
         "notarytool",
+        "signing_mode",
+    ),
+}
+PRESIGN_LANE_TOOL_KEYS: dict[LaneName, tuple[str, ...]] = {
+    **{lane: keys for lane, keys in LANE_TOOL_KEYS.items() if lane != "macos-arm64"},
+    "macos-arm64": tuple(
+        key for key in LANE_TOOL_KEYS["macos-arm64"] if key != "signing_mode"
     ),
 }
 
@@ -363,8 +371,12 @@ def check_cargo_deny(
     return []
 
 
-def expected_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
-    if lane not in LANE_TOOL_KEYS:
+def _expected_lane_tool_evidence(
+    lane: LaneName,
+    *,
+    keys_by_lane: Mapping[LaneName, tuple[str, ...]],
+) -> dict[str, str]:
+    if lane not in keys_by_lane:
         raise ValueError(f"unknown release lane: {lane}")
     common = {
         "python": PYTHON_MACOS_VERSION
@@ -385,9 +397,18 @@ def expected_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
                 "swift": MACOS_SWIFT_PIN,
                 "codesign": MACOS_CODESIGN_PUBLIC_PIN,
                 "notarytool": MACOS_NOTARYTOOL_PIN,
+                "signing_mode": MACOS_SIGNING_MODE,
             }
         )
-    return {key: common[key] for key in LANE_TOOL_KEYS[lane]}
+    return {key: common[key] for key in keys_by_lane[lane]}
+
+
+def expected_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
+    return _expected_lane_tool_evidence(lane, keys_by_lane=LANE_TOOL_KEYS)
+
+
+def expected_presign_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
+    return _expected_lane_tool_evidence(lane, keys_by_lane=PRESIGN_LANE_TOOL_KEYS)
 
 
 def check_lane_tool_evidence(
@@ -417,6 +438,101 @@ def check_lane_tool_evidence(
                 )
             )
     return failures
+
+
+def check_presign_lane_tool_evidence(
+    lane: LaneName,
+    evidence: Mapping[str, str],
+) -> list[Failure]:
+    expected = expected_presign_lane_tool_evidence(lane)
+    failures: list[Failure] = []
+    if set(evidence) != set(expected):
+        failures.append(
+            Failure(
+                error="pre-sign lane tool evidence keys do not match lane",
+                expected=", ".join(expected),
+                actual=", ".join(sorted(evidence)) or "<empty>",
+                repair=f"python3 scripts/check_release_preflight.py lane-tools --lane {lane}",
+            )
+        )
+    for key, expected_value in expected.items():
+        actual = evidence.get(key)
+        if actual != expected_value:
+            failures.append(
+                Failure(
+                    error=f"pre-sign lane tool {key} is not pinned",
+                    expected=expected_value,
+                    actual=str(actual),
+                    repair=f"python3 scripts/check_release_preflight.py lane-tools --lane {lane}",
+                )
+            )
+    return failures
+
+
+def finalize_macos_tool_evidence(
+    preflight_evidence: Mapping[str, str],
+    native_records: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, str] | None, list[Failure]]:
+    failures = check_presign_lane_tool_evidence("macos-arm64", preflight_evidence)
+    roles = {
+        str(record.get("role")): record
+        for record in native_records
+        if isinstance(record, Mapping)
+    }
+    if set(roles) != {"root", "core"}:
+        failures.append(
+            Failure(
+                error="macOS signed tool finalizer requires both native records",
+                expected="root and core native records",
+                actual=", ".join(sorted(roles)) or "<empty>",
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
+    for role, record in sorted(roles.items()):
+        signing = record.get("signing")
+        if record.get("signing_mode") != MACOS_SIGNING_MODE:
+            failures.append(
+                Failure(
+                    error="macOS native record signing_mode is not final",
+                    expected=MACOS_SIGNING_MODE,
+                    actual=repr(record.get("signing_mode")),
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+        if not isinstance(signing, Mapping) or any(
+            signing.get(key) is not True
+            for key in (
+                "signer_pinned",
+                "team_pinned",
+                "hardened_runtime",
+                "trusted_timestamp",
+            )
+        ):
+            failures.append(
+                Failure(
+                    error="macOS native record signing verification is incomplete",
+                    expected=f"{role} signed and timestamped native record",
+                    actual=repr(signing),
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+        if record.get("notarization_status") != "accepted":
+            failures.append(
+                Failure(
+                    error="macOS native record notarization is not accepted",
+                    expected="accepted",
+                    actual=repr(record.get("notarization_status")),
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+    if failures:
+        return None, failures
+    final = dict(preflight_evidence)
+    final["signing_mode"] = MACOS_SIGNING_MODE
+    final_failures = check_lane_tool_evidence("macos-arm64", final)
+    if final_failures:
+        return None, final_failures
+    return final, []
 
 
 def _tool_output(
@@ -501,7 +617,7 @@ def collect_lane_tool_evidence(
         evidence["notarytool"] = _tool_output(
             "xcrun", ["notarytool", "--version"], which=which, runner=runner
         )
-    return {key: evidence[key] for key in LANE_TOOL_KEYS[lane]}
+    return {key: evidence[key] for key in LANE_TOOL_KEYS[lane] if key in evidence}
 
 
 def check_lane_tools(
@@ -511,7 +627,7 @@ def check_lane_tools(
     runner: Runner = subprocess.run,
     python_executable: str = sys.executable,
 ) -> list[Failure]:
-    return check_lane_tool_evidence(
+    return check_presign_lane_tool_evidence(
         lane,
         collect_lane_tool_evidence(
             lane,
@@ -663,7 +779,7 @@ def _cmd_lane_tools(args: argparse.Namespace) -> int:
     if failures:
         _format_failures(failures)
         return 1
-    print(f"{args.lane} release tool evidence ok")
+    print(f"{args.lane} preflight-valid non-release tool evidence ok")
     return 0
 
 

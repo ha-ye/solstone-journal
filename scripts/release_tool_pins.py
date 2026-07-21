@@ -89,6 +89,7 @@ def fixture_native_tools(lane: LaneName) -> dict[str, str]:
             "uv": UV_PIN,
             "maturin": MATURIN_PIN,
             "xcode": MACOS_XCODE_PIN,
+            "swift": MACOS_SWIFT_PIN,
             "codesign": MACOS_CODESIGN_PUBLIC_PIN,
             "notarytool": MACOS_NOTARYTOOL_PIN,
             "signing_mode": MACOS_SIGNING_MODE,

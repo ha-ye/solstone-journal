@@ -217,6 +217,7 @@ def test_expected_lane_tool_evidence_uses_grounded_release_pins() -> None:
     source = preflight.expected_lane_tool_evidence("source")
     linux = preflight.expected_lane_tool_evidence("linux-aarch64-musl")
     macos = preflight.expected_lane_tool_evidence("macos-arm64")
+    macos_presign = preflight.expected_presign_lane_tool_evidence("macos-arm64")
 
     assert source["python"] == pins.PYTHON_SOURCE_LINUX_VERSION
     assert "zig" not in source
@@ -224,6 +225,8 @@ def test_expected_lane_tool_evidence_uses_grounded_release_pins() -> None:
     assert macos["python"] == pins.PYTHON_MACOS_VERSION
     assert macos["swift"] == pins.MACOS_SWIFT_PIN
     assert macos["codesign"] == pins.MACOS_CODESIGN_PUBLIC_PIN
+    assert macos["signing_mode"] == pins.MACOS_SIGNING_MODE
+    assert "signing_mode" not in macos_presign
 
 
 def test_lane_tool_skew_fails_closed() -> None:
@@ -268,4 +271,60 @@ def test_collect_lane_tools_normalizes_macos_observations() -> None:
         python_executable="python",
     )
 
-    assert evidence == preflight.expected_lane_tool_evidence("macos-arm64")
+    assert "signing_mode" not in evidence
+    assert preflight.check_presign_lane_tool_evidence("macos-arm64", evidence) == []
+    failures = preflight.check_presign_lane_tool_evidence(
+        "macos-arm64",
+        {**evidence, "signing_mode": pins.MACOS_SIGNING_MODE},
+    )
+    assert any(
+        failure.error == "pre-sign lane tool evidence keys do not match lane"
+        for failure in failures
+    )
+    assert (
+        preflight.check_lane_tool_evidence(
+            "macos-arm64",
+            {**evidence, "signing_mode": pins.MACOS_SIGNING_MODE},
+        )
+        == []
+    )
+
+
+def _native_record(role: str) -> dict[str, object]:
+    return {
+        "role": role,
+        "signing_mode": pins.MACOS_SIGNING_MODE,
+        "signing": {
+            "signer_pinned": True,
+            "team_pinned": True,
+            "hardened_runtime": True,
+            "trusted_timestamp": True,
+        },
+        "notarization_status": "accepted",
+    }
+
+
+def test_macos_tool_finalizer_requires_valid_native_records() -> None:
+    preflight_evidence = preflight.expected_presign_lane_tool_evidence("macos-arm64")
+
+    final, failures = preflight.finalize_macos_tool_evidence(
+        preflight_evidence,
+        (_native_record("root"), _native_record("core")),
+    )
+
+    assert failures == []
+    assert final is not None
+    assert final["signing_mode"] == pins.MACOS_SIGNING_MODE
+
+    bad_record = _native_record("root")
+    bad_record["notarization_status"] = "rejected"
+    final, failures = preflight.finalize_macos_tool_evidence(
+        preflight_evidence,
+        (bad_record, _native_record("core")),
+    )
+
+    assert final is None
+    assert any(
+        failure.error == "macOS native record notarization is not accepted"
+        for failure in failures
+    )
