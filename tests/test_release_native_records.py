@@ -1,0 +1,225 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import hashlib
+import json
+import zipfile
+from pathlib import Path
+
+import pytest
+
+import scripts.record_macos_native_wheel as native
+import scripts.release_tool_pins as pins
+from scripts.check_wheel_contents import PARAKEET_HELPER_MEMBER
+
+SOURCE_COMMIT = "a" * 40
+CORE_LOCK = "b" * 64
+
+
+def _write_member_wheel(path: Path, member: str, content: bytes) -> None:
+    info = zipfile.ZipInfo(member)
+    info.create_system = 3
+    info.external_attr = 0o755 << 16
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(info, content)
+
+
+def _root_wheel(tmp_path: Path, content: bytes = b"root-helper") -> Path:
+    path = tmp_path / "solstone-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    _write_member_wheel(path, PARAKEET_HELPER_MEMBER, content)
+    return path
+
+
+def _core_wheel(tmp_path: Path, content: bytes = b"core-script") -> Path:
+    path = tmp_path / "solstone_core-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    _write_member_wheel(path, "solstone_core-1.2.3.data/scripts/solstone-core", content)
+    return path
+
+
+def _facts(content: bytes) -> dict:
+    return {
+        "signed_binary_sha256": hashlib.sha256(content).hexdigest(),
+        "signer_pinned": True,
+        "team_pinned": True,
+        "hardened_runtime": True,
+        "trusted_timestamp": True,
+        "notarization_status": "accepted",
+        "tools": {
+            "xcode": pins.MACOS_XCODE_PIN,
+            "swift": pins.MACOS_SWIFT_PIN,
+            "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
+            "notarytool": pins.MACOS_NOTARYTOOL_PIN,
+        },
+    }
+
+
+def _facts_file(tmp_path: Path, facts: dict) -> Path:
+    path = tmp_path / "facts.json"
+    path.write_text(json.dumps(facts), encoding="utf-8")
+    return path
+
+
+def test_exactly_two_role_records_are_written_and_not_interchangeable(
+    tmp_path: Path,
+) -> None:
+    root_wheel = _root_wheel(tmp_path, b"root")
+    core_wheel = _core_wheel(tmp_path, b"core")
+
+    root = native.build_macos_native_record(
+        role="root",
+        wheel_path=root_wheel,
+        signing_facts=_facts(b"root"),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    core = native.build_macos_native_record(
+        role="core",
+        wheel_path=core_wheel,
+        signing_facts=_facts(b"core"),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+
+    assert {root["role"], core["role"]} == {"root", "core"}
+    assert native.validate_macos_native_record(
+        root,
+        role="core",
+        wheel_path=core_wheel,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    assert native.validate_macos_native_record(
+        core,
+        role="root",
+        wheel_path=root_wheel,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+
+
+def test_record_rejects_member_hash_signing_and_notary_mismatches(
+    tmp_path: Path,
+) -> None:
+    wheel = _root_wheel(tmp_path, b"root")
+    facts = _facts(b"different")
+
+    with pytest.raises(native.NativeRecordError) as exc:
+        native.build_macos_native_record(
+            role="root",
+            wheel_path=wheel,
+            signing_facts=facts,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+        )
+    assert any(
+        failure.error == "macOS signed binary hash does not match final wheel member"
+        for failure in exc.value.failures
+    )
+
+    facts = _facts(b"root")
+    facts["signer_pinned"] = False
+    facts["team_pinned"] = False
+    facts["notarization_status"] = "rejected"
+    with pytest.raises(native.NativeRecordError) as exc:
+        native.build_macos_native_record(
+            role="root",
+            wheel_path=wheel,
+            signing_facts=facts,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+        )
+    errors = {failure.error for failure in exc.value.failures}
+    assert "macOS signing fact signer_pinned is not pinned true" in errors
+    assert "macOS signing fact team_pinned is not pinned true" in errors
+    assert "macOS notarization status is not accepted" in errors
+
+
+def test_swift_abbreviated_and_suffix_skewed_evidence_is_rejected(
+    tmp_path: Path,
+) -> None:
+    wheel = _root_wheel(tmp_path, b"root")
+    for value in (
+        "6.3.3",
+        "swift 6.3.3",
+        "Apple Swift 6.3.3",
+        "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.102)",
+        "Apple Swift 6.3.3 (swiftlang-6.3.3.1.4 clang-2100.1.1.101)",
+    ):
+        facts = _facts(b"root")
+        facts["tools"]["swift"] = value
+        with pytest.raises(native.NativeRecordError) as exc:
+            native.build_macos_native_record(
+                role="root",
+                wheel_path=wheel,
+                signing_facts=facts,
+                source_commit=SOURCE_COMMIT,
+                core_lock_sha256=CORE_LOCK,
+            )
+        assert any(
+            failure.error == "macOS swift tool evidence is not pinned"
+            for failure in exc.value.failures
+        )
+
+
+def test_record_validation_rejects_wheel_hash_and_repacked_core_mismatch(
+    tmp_path: Path,
+) -> None:
+    wheel = _core_wheel(tmp_path, b"core")
+    record = native.build_macos_native_record(
+        role="core",
+        wheel_path=wheel,
+        signing_facts=_facts(b"core"),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    record["wheel"]["sha256"] = "0" * 64
+
+    failures = native.validate_macos_native_record(
+        record,
+        role="core",
+        wheel_path=wheel,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+
+    assert any(
+        failure.error == "macOS native record wheel does not match final wheel"
+        for failure in failures
+    )
+
+
+def test_record_writer_removes_atomic_temp_on_success_and_failure(
+    tmp_path: Path,
+) -> None:
+    wheel = _root_wheel(tmp_path, b"root")
+    output = tmp_path / "record.json"
+    native.write_macos_native_record(
+        role="root",
+        wheel_path=wheel,
+        signing_facts_path=_facts_file(tmp_path, _facts(b"root")),
+        output_path=output,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    assert output.exists()
+    assert not (tmp_path / ".record.json.tmp").exists()
+
+    with pytest.raises(native.NativeRecordError):
+        native.write_macos_native_record(
+            role="core",
+            wheel_path=wheel,
+            signing_facts_path=_facts_file(tmp_path, _facts(b"root")),
+            output_path=tmp_path / "bad.json",
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+        )
+    assert not (tmp_path / ".bad.json.tmp").exists()
+
+
+def test_signing_helper_removes_arbitrary_identity_override() -> None:
+    source = Path("scripts/sign-and-notarize-helper.sh").read_text(encoding="utf-8")
+
+    assert "CODESIGN_IDENTITY" not in source
+    assert "MACOS_SIGNER_IDENTITY" in source

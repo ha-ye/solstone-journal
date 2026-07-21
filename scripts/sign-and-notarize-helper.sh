@@ -14,36 +14,161 @@ if [ "$#" -ne 1 ]; then
 fi
 
 BINARY="$1"
-IDENTITY="${CODESIGN_IDENTITY:-Developer ID Application: sol pbc (7QCG8V4M6H)}"
 PROFILE="${NOTARY_KEYCHAIN_PROFILE:-sol-pbc-notary}"
 NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-$HOME/Library/Keychains/sol-signing.keychain-db}"
+
+eval "$(python3 - <<'PY'
+import shlex
+
+from scripts.release_tool_pins import (
+    MACOS_CODESIGN_PATH,
+    MACOS_CODESIGN_PUBLIC_PIN,
+    MACOS_NOTARYTOOL_PIN,
+    MACOS_SIGNER_IDENTITY,
+    MACOS_SWIFT_PIN,
+    MACOS_TEAM_IDENTIFIER,
+    MACOS_XCODE_BUILD,
+    MACOS_XCODE_PIN,
+    MACOS_XCODE_VERSION,
+)
+
+values = {
+    "CODESIGN_BIN": MACOS_CODESIGN_PATH,
+    "CODESIGN_PUBLIC_PIN": MACOS_CODESIGN_PUBLIC_PIN,
+    "IDENTITY": MACOS_SIGNER_IDENTITY,
+    "NOTARYTOOL_PIN": MACOS_NOTARYTOOL_PIN,
+    "SWIFT_PIN": MACOS_SWIFT_PIN,
+    "TEAM_ID": MACOS_TEAM_IDENTIFIER,
+    "XCODE_BUILD": MACOS_XCODE_BUILD,
+    "XCODE_PIN": MACOS_XCODE_PIN,
+    "XCODE_VERSION": MACOS_XCODE_VERSION,
+}
+for key, value in values.items():
+    print(f"{key}={shlex.quote(value)}")
+PY
+)"
 
 if [ ! -f "$BINARY" ]; then
     echo "error: not a regular file: $BINARY" >&2
     exit 1
 fi
 
-echo "==> codesigning $BINARY (identity: $IDENTITY)"
-codesign --force --options runtime --timestamp \
+if [ ! -x "$CODESIGN_BIN" ]; then
+    echo "error: pinned codesign path is not executable" >&2
+    exit 1
+fi
+
+XCODE_OUTPUT="$(xcodebuild -version 2>&1)" || {
+    echo "error: xcodebuild version check failed" >&2
+    exit 1
+}
+printf '%s\n' "$XCODE_OUTPUT" | grep -qx "Xcode $XCODE_VERSION" || {
+    echo "error: Xcode version does not match release policy" >&2
+    exit 1
+}
+printf '%s\n' "$XCODE_OUTPUT" | grep -qx "Build version $XCODE_BUILD" || {
+    echo "error: Xcode build does not match release policy" >&2
+    exit 1
+}
+
+SWIFT_OUTPUT="$(swift --version 2>&1)" || {
+    echo "error: swift version check failed" >&2
+    exit 1
+}
+SWIFT_FIRST_LINE="$(printf '%s\n' "$SWIFT_OUTPUT" | sed -n '1p')"
+if [ "$SWIFT_FIRST_LINE" != "$SWIFT_PIN" ]; then
+    echo "error: Swift version does not match release policy" >&2
+    exit 1
+fi
+
+NOTARYTOOL_OUTPUT="$(xcrun notarytool --version 2>&1)" || {
+    echo "error: notarytool version check failed" >&2
+    exit 1
+}
+if [ "$NOTARYTOOL_OUTPUT" != "$NOTARYTOOL_PIN" ]; then
+    echo "error: notarytool version does not match release policy" >&2
+    exit 1
+fi
+
+echo "==> codesigning $BINARY with repository-pinned identity" >&2
+"$CODESIGN_BIN" --force --options runtime --timestamp \
     --keychain "$NOTARY_KEYCHAIN" \
     --sign "$IDENTITY" \
-    "$BINARY"
+    "$BINARY" >/dev/null
 
-echo "==> verifying signature"
-codesign --verify --strict --verbose=2 "$BINARY"
+echo "==> verifying signature" >&2
+"$CODESIGN_BIN" --verify --strict --verbose=2 "$BINARY" >/dev/null
+DISPLAY_OUTPUT="$("$CODESIGN_BIN" -dv --verbose=4 "$BINARY" 2>&1)"
+
+SIGNER_PINNED=false
+TEAM_PINNED=false
+HARDENED_RUNTIME=false
+TRUSTED_TIMESTAMP=false
+case "$DISPLAY_OUTPUT" in
+    *"Authority=$IDENTITY"*) SIGNER_PINNED=true ;;
+esac
+case "$DISPLAY_OUTPUT" in
+    *"TeamIdentifier=$TEAM_ID"*) TEAM_PINNED=true ;;
+esac
+case "$DISPLAY_OUTPUT" in
+    *"runtime"*) HARDENED_RUNTIME=true ;;
+esac
+case "$DISPLAY_OUTPUT" in
+    *"Timestamp="*) TRUSTED_TIMESTAMP=true ;;
+esac
 
 ZIPDIR="$(mktemp -d)"
 trap 'rm -rf "$ZIPDIR"' EXIT
 ZIPPATH="$ZIPDIR/$(basename "$BINARY").zip"
 
-echo "==> packaging $BINARY for notarytool"
+echo "==> packaging $BINARY for notarytool" >&2
 ditto -c -k --keepParent "$BINARY" "$ZIPPATH"
 
-echo "==> submitting to notarytool (keychain profile: $PROFILE in $NOTARY_KEYCHAIN)"
-xcrun notarytool submit "$ZIPPATH" \
+echo "==> submitting to notarytool" >&2
+NOTARY_SUBMIT_OUTPUT="$(xcrun notarytool submit "$ZIPPATH" \
     --keychain-profile "$PROFILE" \
     --keychain "$NOTARY_KEYCHAIN" \
-    --wait
+    --wait 2>&1)" || {
+    echo "error: notarytool submission failed" >&2
+    exit 1
+}
+NOTARIZATION_STATUS="rejected"
+case "$NOTARY_SUBMIT_OUTPUT" in
+    *"status: Accepted"*|*"status: accepted"*) NOTARIZATION_STATUS="accepted" ;;
+esac
 
-echo "==> sign-and-notarize complete: $BINARY"
-echo "note: bare Mach-O binaries cannot be stapled; Gatekeeper performs an online check on first run."
+SIGNED_BINARY_SHA256="$(shasum -a 256 "$BINARY" | awk '{print $1}')"
+
+SIGNED_BINARY_SHA256="$SIGNED_BINARY_SHA256" \
+SIGNER_PINNED="$SIGNER_PINNED" \
+TEAM_PINNED="$TEAM_PINNED" \
+HARDENED_RUNTIME="$HARDENED_RUNTIME" \
+TRUSTED_TIMESTAMP="$TRUSTED_TIMESTAMP" \
+NOTARIZATION_STATUS="$NOTARIZATION_STATUS" \
+XCODE_PIN="$XCODE_PIN" \
+SWIFT_PIN="$SWIFT_PIN" \
+CODESIGN_PUBLIC_PIN="$CODESIGN_PUBLIC_PIN" \
+NOTARYTOOL_PIN="$NOTARYTOOL_PIN" \
+python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "signed_binary_sha256": os.environ["SIGNED_BINARY_SHA256"],
+    "signer_pinned": os.environ["SIGNER_PINNED"] == "true",
+    "team_pinned": os.environ["TEAM_PINNED"] == "true",
+    "hardened_runtime": os.environ["HARDENED_RUNTIME"] == "true",
+    "trusted_timestamp": os.environ["TRUSTED_TIMESTAMP"] == "true",
+    "notarization_status": os.environ["NOTARIZATION_STATUS"],
+    "tools": {
+        "xcode": os.environ["XCODE_PIN"],
+        "swift": os.environ["SWIFT_PIN"],
+        "codesign": os.environ["CODESIGN_PUBLIC_PIN"],
+        "notarytool": os.environ["NOTARYTOOL_PIN"],
+    },
+}
+print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+PY
+
+echo "==> sign-and-notarize complete: $BINARY" >&2
+echo "note: bare Mach-O binaries cannot be stapled; Gatekeeper performs an online check on first run." >&2

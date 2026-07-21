@@ -606,6 +606,14 @@ def _check_base_platform_helper(
     return errors
 
 
+def core_wheel_script_members(wheel: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    return [
+        info
+        for info in wheel.infolist()
+        if info.filename.endswith(".data/scripts/solstone-core")
+    ]
+
+
 def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     errors: list[str] = []
     size = path.stat().st_size
@@ -621,11 +629,7 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
 
     platform_tuple = CORE_TAG_PLATFORMS.get(tag)
     with zipfile.ZipFile(path) as wheel:
-        scripts = [
-            info
-            for info in wheel.infolist()
-            if info.filename.endswith(".data/scripts/solstone-core")
-        ]
+        scripts = core_wheel_script_members(wheel)
         if len(scripts) != 1:
             errors.append(
                 _failure(
