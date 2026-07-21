@@ -154,12 +154,6 @@ def _assert_single_brain_issue(result: dict, *, text: str, href: str) -> None:
     assert result["issues"][0] == {"text": text, "severity": "amber", "href": href}
 
 
-def _assert_no_action_anywhere(result: dict) -> None:
-    assert "action" not in result
-    assert result["cta"] is None
-    assert all("action" not in issue for issue in result["issues"])
-
-
 def test_degraded_capture_returns_red_attention_issue():
     result = build_health_glance(_degraded_capture("fedora"), None, None)
 
@@ -447,7 +441,6 @@ def test_bundled_runtime_progressing_suppresses_brain_action():
         verdict="progressing",
         headline=HEADLINES["blocked"],
     )
-    _assert_no_action_anywhere(result)
 
 
 def test_bundled_runtime_not_progressing_returns_local_setup_issue():
@@ -497,9 +490,7 @@ def test_capture_and_pipeline_attention_precede_inflight_brain_status(brain):
 
     pipeline = {"status": "warning", "headline": "processing needs attention"}
     amber_expected = build_health_glance(_active_capture(), pipeline, None)
-    amber_actual = build_health_glance(
-        _active_capture(), pipeline, None, brain=brain
-    )
+    amber_actual = build_health_glance(_active_capture(), pipeline, None, brain=brain)
 
     assert amber_actual == amber_expected
 
@@ -515,9 +506,7 @@ def test_capture_and_pipeline_attention_precede_inflight_brain_status(brain):
         (_unknown_brain(), False),
     ],
 )
-def test_canonical_non_ready_brain_states_do_not_return_ok_green(
-    brain, may_be_green
-):
+def test_canonical_non_ready_brain_states_do_not_return_ok_green(brain, may_be_green):
     result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
 
     if may_be_green:

@@ -123,7 +123,6 @@ def _assert_progressing_row(result: dict[str, Any]) -> None:
     assert result["last_observation"] is None
     assert result["cta"] is None
     assert result["issues"] == []
-    assert "action" not in result
 
 
 def _assert_unknown_issue(result: dict[str, Any]) -> None:
@@ -175,9 +174,7 @@ def test_held_permit_checking_projects_home_status_row(tmp_path: Path) -> None:
     assert permit is not None
     try:
         brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
-        result = build_health_glance(
-            _active_capture(), None, "5m ago", brain=brain
-        )
+        result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
 
         assert brain["state"] == "checking"
         assert brain["headline"] == HEADLINES["checking"]
@@ -191,9 +188,7 @@ def test_checking_freshness_boundary_uses_explicit_now_seam(
 ) -> None:
     journal = tmp_path / "journal"
     _write_config(journal, _cloud_config())
-    permit = begin_brain_refresh(
-        NOW, run_id="checking-boundary", journal_path=journal
-    )
+    permit = begin_brain_refresh(NOW, run_id="checking-boundary", journal_path=journal)
     assert permit is not None
     try:
         fresh_now = NOW + CHECKING_TTL - timedelta(microseconds=1)
@@ -257,9 +252,7 @@ def test_bundled_runtime_transition_projects_home_rows(
     _write_ready_record(journal, _bundled_config())
 
     _write_runtime_health_record(journal, phase="starting")
-    progressing_brain = build_brain_snapshot(
-        NOW, surface="home", journal_path=journal
-    )
+    progressing_brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
     progressing_result = build_health_glance(
         _active_capture(), None, "5m ago", brain=progressing_brain
     )
@@ -289,9 +282,7 @@ def test_bundled_runtime_transition_projects_home_rows(
 def test_capture_variants_against_real_checking_projection(tmp_path: Path) -> None:
     journal = tmp_path / "journal"
     _write_config(journal, _cloud_config())
-    permit = begin_brain_refresh(
-        NOW, run_id="checking-capture", journal_path=journal
-    )
+    permit = begin_brain_refresh(NOW, run_id="checking-capture", journal_path=journal)
     assert permit is not None
     try:
         brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)

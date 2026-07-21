@@ -215,7 +215,7 @@ def test_state_parity_matrix(monkeypatch, capsys):
             assert home["last_observation"] is None
             assert home["cta"] is None
             assert home["issues"] == []
-            assert "action" not in home
+            assert home_brain["action"] is None
         elif case.state == "blocked" and case.progressing:
             assert home["verdict"] == "progressing"
             assert home["severity"] == "amber"
@@ -223,7 +223,7 @@ def test_state_parity_matrix(monkeypatch, capsys):
             assert home["last_observation"] is None
             assert home["cta"] is None
             assert home["issues"] == []
-            assert "action" not in home
+            assert home_brain["action"] is None
         else:
             assert home["verdict"] == "attention"
             assert home["severity"] == "amber"

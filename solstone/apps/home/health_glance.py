@@ -67,17 +67,17 @@ def build_health_glance(
             "issues": [],
         }
 
-    brain_verdict = _brain_inflight_verdict(brain)
-    if brain_verdict is not None:
-        assert isinstance(brain, dict)
-        return {
-            "verdict": brain_verdict,
-            "severity": "amber",
-            "headline": brain["headline"],
-            "last_observation": None,
-            "cta": None,
-            "issues": [],
-        }
+    if isinstance(brain, dict):
+        brain_verdict = _brain_inflight_verdict(brain)
+        if brain_verdict is not None:
+            return {
+                "verdict": brain_verdict,
+                "severity": "amber",
+                "headline": brain["headline"],
+                "last_observation": None,
+                "cta": None,
+                "issues": [],
+            }
 
     if status == "active":
         return {
