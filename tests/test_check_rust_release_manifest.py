@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import scripts.check_rust_release_manifest as checker
+import scripts.release_tool_pins as pins
 
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "check_rust_release_manifest.py"
@@ -109,6 +110,44 @@ def _candidate(
     )
     assert failures == []
     return release_dir
+
+
+def test_release_manifest_imports_tool_pins_from_authoritative_module() -> None:
+    assert checker.RUSTC_VERSION_BANNER == pins.RUSTC_VERSION_BANNER
+    assert checker.RUSTC_BINARY_PIN == pins.RUSTC_BINARY_PIN
+    assert checker.RUSTC_COMMIT_HASH_PIN == pins.RUSTC_COMMIT_HASH_PIN
+    assert checker.RUSTC_COMMIT_DATE_PIN == pins.RUSTC_COMMIT_DATE_PIN
+    assert checker.RUSTC_RELEASE_PIN == pins.RUSTC_RELEASE_PIN
+    assert checker.RUSTC_LLVM_PIN == pins.RUSTC_LLVM_PIN
+    assert checker.CARGO_VERSION_PIN == pins.CARGO_VERSION_PIN
+    assert checker.CARGO_RELEASE_PIN == pins.CARGO_RELEASE_PIN
+    assert checker.CARGO_DENY_PIN == pins.CARGO_DENY_PIN
+
+    source = Path(checker.__file__).read_text(encoding="utf-8")
+    assert "RUSTC_VERSION_BANNER =" not in source
+    assert "CARGO_DENY_PIN =" not in source
+
+
+def test_macos_swift_pin_requires_exact_full_grounded_output() -> None:
+    exact = "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+
+    assert pins.MACOS_SWIFT_PIN == exact
+    assert checker.validate_public_evidence_text("swift", pins.MACOS_SWIFT_PIN) == []
+    assert not any(
+        line.startswith("MACOS_SWIFT_VERSION")
+        for line in Path(pins.__file__).read_text(encoding="utf-8").splitlines()
+    )
+
+    skewed_observations = (
+        "6.3.3",
+        "swift 6.3.3",
+        "Apple Swift 6.3.3",
+        "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.102)",
+        "Apple Swift 6.3.3 (swiftlang-6.3.3.1.4 clang-2100.1.1.101)",
+        f" {exact}",
+        f"{exact} ",
+    )
+    assert all(observed != pins.MACOS_SWIFT_PIN for observed in skewed_observations)
 
 
 def _manifest_for_lane(release_dir: Path, lane: checker.LaneName) -> Path:
@@ -1249,21 +1288,21 @@ def test_native_tools_allowlists_by_lane() -> None:
 
     failures = checker.validate_native_tools(
         "source",
-        {"uv": "uv 0.11.4", "maturin": "maturin 1.14.1", "zig": "zig 0.16.0"},
+        {"uv": pins.UV_PIN, "maturin": pins.MATURIN_PIN, "zig": pins.ZIG_PIN},
     )
     _assert_error(failures, "native_tools keys do not match lane allowlist")
 
-    failures = checker.validate_native_tools("source", {"uv": "uv 0.11.4"})
+    failures = checker.validate_native_tools("source", {"uv": pins.UV_PIN})
     _assert_error(failures, "native_tools keys do not match lane allowlist")
 
     failures = checker.validate_native_tools(
         "macos-arm64",
         {
-            "uv": "uv 0.11.4",
-            "maturin": "maturin 1.14.1",
-            "xcode": "Xcode 17.0",
-            "codesign": "codesign verified",
-            "notarytool": "notarytool accepted",
+            "uv": pins.UV_PIN,
+            "maturin": pins.MATURIN_PIN,
+            "xcode": pins.MACOS_XCODE_PIN,
+            "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
+            "notarytool": pins.MACOS_NOTARYTOOL_PIN,
             "signing_mode": "unsigned",
         },
     )
@@ -1274,7 +1313,7 @@ def test_native_tools_allowlists_by_lane() -> None:
     ("value", "error"),
     [
         (
-            "uv 0.11.4\nPATH=/tmp/bin",
+            f"{pins.UV_PIN}\nPATH=/tmp/bin",
             "native_tools value is not a normalized public single-line string",
         ),
         (
@@ -1306,7 +1345,7 @@ def test_native_tools_allowlists_by_lane() -> None:
     ],
 )
 def test_native_tools_rejects_canaries(value: str, error: str) -> None:
-    tools = {"uv": value, "maturin": "maturin 1.14.1"}
+    tools = {"uv": value, "maturin": pins.MATURIN_PIN}
 
     failures = checker.validate_native_tools("source", tools)
 

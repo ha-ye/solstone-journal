@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import scripts.check_release_preflight as preflight
+import scripts.release_tool_pins as pins
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -16,6 +17,15 @@ def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[
         stdout=stdout,
         stderr="",
     )
+
+
+def test_preflight_imports_release_tool_pins_from_authoritative_module() -> None:
+    assert preflight.ZIG_VERSION == pins.ZIG_VERSION
+    assert preflight.CARGO_DENY_VERSION == pins.CARGO_DENY_VERSION
+
+    source = Path(preflight.__file__).read_text(encoding="utf-8")
+    assert "EXPECTED_ZIG_VERSION =" not in source
+    assert "EXPECTED_CARGO_DENY_VERSION =" not in source
 
 
 def test_load_toolchain_spec(tmp_path: Path) -> None:
@@ -132,7 +142,7 @@ def test_missing_zig_reports_repair() -> None:
     failures = preflight.check_zig(which=lambda _name: None)
 
     assert failures
-    assert failures[0].expected == "zig 0.16.0"
+    assert failures[0].expected == f"zig {pins.ZIG_VERSION}"
     assert failures[0].actual == "not found"
 
 
@@ -143,18 +153,21 @@ def test_mismatched_zig_reports_expected_actual_and_repair() -> None:
     )
 
     assert failures
-    assert failures[0].expected == "0.16.0"
+    assert failures[0].expected == pins.ZIG_VERSION
     assert failures[0].actual == "0.15.0"
-    assert "ziglang==0.16.0" in failures[0].repair
+    assert f"ziglang=={pins.ZIG_VERSION}" in failures[0].repair
 
 
 def test_missing_cargo_deny_reports_force_install_repair() -> None:
     failures = preflight.check_cargo_deny(which=lambda _name: None)
 
     assert failures
-    assert failures[0].expected == preflight.EXPECTED_CARGO_DENY_VERSION
+    assert failures[0].expected == pins.CARGO_DENY_VERSION
     assert failures[0].actual == "not found"
-    assert failures[0].repair == "cargo install cargo-deny@0.20.2 --locked --force"
+    assert (
+        failures[0].repair
+        == f"cargo install cargo-deny@{pins.CARGO_DENY_VERSION} --locked --force"
+    )
 
 
 def test_mismatched_cargo_deny_reports_expected_actual_and_repair() -> None:
@@ -164,9 +177,12 @@ def test_mismatched_cargo_deny_reports_expected_actual_and_repair() -> None:
     )
 
     assert failures
-    assert failures[0].expected == preflight.EXPECTED_CARGO_DENY_VERSION
+    assert failures[0].expected == pins.CARGO_DENY_VERSION
     assert failures[0].actual == "cargo-deny 0.19.9"
-    assert failures[0].repair == "cargo install cargo-deny@0.20.2 --locked --force"
+    assert (
+        failures[0].repair
+        == f"cargo install cargo-deny@{pins.CARGO_DENY_VERSION} --locked --force"
+    )
 
 
 def test_dirty_local_status_names_offending_paths() -> None:

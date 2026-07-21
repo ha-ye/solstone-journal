@@ -31,6 +31,18 @@ for _path in (str(ROOT), str(_SCRIPTS_DIR)):
 
 from check_wheel_contents import release_artifacts  # noqa: E402
 
+from scripts.release_tool_pins import (  # noqa: E402
+    CARGO_DENY_PIN,
+    CARGO_RELEASE_PIN,
+    CARGO_VERSION_PIN,
+    RUSTC_BINARY_PIN,
+    RUSTC_COMMIT_DATE_PIN,
+    RUSTC_COMMIT_HASH_PIN,
+    RUSTC_LLVM_PIN,
+    RUSTC_RELEASE_PIN,
+    RUSTC_VERSION_BANNER,
+    fixture_native_tools,
+)
 from solstone.think.probe import (  # noqa: E402
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_TAGS,
@@ -47,15 +59,6 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
 )
-RUSTC_VERSION_BANNER = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
-RUSTC_BINARY_PIN = "rustc"
-RUSTC_COMMIT_HASH_PIN = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
-RUSTC_COMMIT_DATE_PIN = "2026-07-14"
-RUSTC_RELEASE_PIN = "1.97.1"
-RUSTC_LLVM_PIN = "22.1.6"
-CARGO_VERSION_PIN = "cargo 1.97.1 (c980f4866 2026-06-30)"
-CARGO_RELEASE_PIN = "1.97.1"
-CARGO_DENY_PIN = "cargo-deny 0.20.2"
 RAW_ENV_RE = re.compile(r"(?i)\b[A-Z_][A-Z0-9_]{2,}=")
 SECRET_RE = re.compile(
     r"(?i)\b(secret|token|password|passwd|pwd|api[_-]?key|private[_-]?key|bearer|session|credential)\b"
@@ -417,7 +420,7 @@ def _validate_dependency_policy(payload: Mapping[str, Any]) -> list[Failure]:
     cargo_deny_version = policy.get("cargo_deny_version")
     if isinstance(cargo_deny_version, str):
         failures.extend(
-            _validate_public_evidence_text("cargo_deny_version", cargo_deny_version)
+            validate_public_evidence_text("cargo_deny_version", cargo_deny_version)
         )
     if cargo_deny_version != CARGO_DENY_PIN:
         failures.append(
@@ -580,7 +583,7 @@ def _private_ip_present(value: str) -> bool:
     return False
 
 
-def _validate_public_evidence_text(field: str, value: str) -> list[Failure]:
+def validate_public_evidence_text(field: str, value: str) -> list[Failure]:
     failures: list[Failure] = []
 
     def add_failure() -> None:
@@ -825,9 +828,9 @@ def _validate_rust_for_lane(
     cargo_value = rust.get("cargo_version")
     failures: list[Failure] = []
     if isinstance(rustc_value, str):
-        failures.extend(_validate_public_evidence_text("rustc_verbose", rustc_value))
+        failures.extend(validate_public_evidence_text("rustc_verbose", rustc_value))
     if isinstance(cargo_value, str):
-        failures.extend(_validate_public_evidence_text("cargo_version", cargo_value))
+        failures.extend(validate_public_evidence_text("cargo_version", cargo_value))
     rustc, rustc_failures = parse_rustc_verbose(rustc_value)
     cargo, cargo_failures = _cargo_release(cargo_value)
     failures.extend(rustc_failures)
@@ -1485,7 +1488,7 @@ def generate_manifest(
         )
     if isinstance(evidence.cargo_deny_version, str):
         failures.extend(
-            _validate_public_evidence_text(
+            validate_public_evidence_text(
                 "cargo_deny_version", evidence.cargo_deny_version
             )
         )
@@ -1841,43 +1844,28 @@ def fixture_evidence_by_lane() -> dict[LaneName, LaneEvidence]:
         "source": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
             cargo_version=CARGO_VERSION_PIN,
-            native_tools={"uv": "uv 0.11.4", "maturin": "maturin 1.14.1"},
+            native_tools=fixture_native_tools("source"),
             cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "linux-x86_64-musl": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
             cargo_version=CARGO_VERSION_PIN,
-            native_tools={
-                "uv": "uv 0.11.4",
-                "maturin": "maturin 1.14.1",
-                "zig": "zig 0.16.0",
-            },
+            native_tools=fixture_native_tools("linux-x86_64-musl"),
             cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "linux-aarch64-musl": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("x86_64-unknown-linux-gnu"),
             cargo_version=CARGO_VERSION_PIN,
-            native_tools={
-                "uv": "uv 0.11.4",
-                "maturin": "maturin 1.14.1",
-                "zig": "zig 0.16.0",
-            },
+            native_tools=fixture_native_tools("linux-aarch64-musl"),
             cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),
         "macos-arm64": LaneEvidence(
             rustc_verbose=fixture_rustc_verbose("aarch64-apple-darwin"),
             cargo_version=CARGO_VERSION_PIN,
-            native_tools={
-                "uv": "uv 0.11.4",
-                "maturin": "maturin 1.14.1",
-                "xcode": "Xcode 17.0",
-                "codesign": "codesign verified",
-                "notarytool": "notarytool accepted",
-                "signing_mode": "signed-verified",
-            },
+            native_tools=fixture_native_tools("macos-arm64"),
             cargo_deny_version=CARGO_DENY_PIN,
             advisory_checked_at="2026-07-20T00:00:00Z",
         ),

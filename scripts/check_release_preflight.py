@@ -16,8 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-EXPECTED_ZIG_VERSION = "0.16.0"
-EXPECTED_CARGO_DENY_VERSION = "0.20.2"
+ROOT = Path(__file__).resolve().parent.parent
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+for _path in (str(ROOT), str(_SCRIPTS_DIR)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from scripts.release_tool_pins import CARGO_DENY_VERSION, ZIG_VERSION  # noqa: E402
+
 TOOLCHAIN_FILE = "rust-toolchain.toml"
 COMPONENT_BINARIES = {
     "rustfmt": "rustfmt",
@@ -220,7 +226,7 @@ def check_toolchain_targets(
 
 
 def check_zig(
-    expected: str = EXPECTED_ZIG_VERSION,
+    expected: str = ZIG_VERSION,
     *,
     which: Callable[[str], str | None] = shutil.which,
     runner: Runner = subprocess.run,
@@ -257,7 +263,7 @@ def check_zig(
 
 
 def check_cargo_deny(
-    expected: str = EXPECTED_CARGO_DENY_VERSION,
+    expected: str = CARGO_DENY_VERSION,
     *,
     which: Callable[[str], str | None] = shutil.which,
     runner: Runner = subprocess.run,
@@ -432,7 +438,7 @@ def _cmd_cargo_deny(_args: argparse.Namespace) -> int:
     if failures:
         _format_failures(failures)
         return 1
-    print(f"cargo-deny {EXPECTED_CARGO_DENY_VERSION} ok")
+    print(f"cargo-deny {CARGO_DENY_VERSION} ok")
     return 0
 
 
