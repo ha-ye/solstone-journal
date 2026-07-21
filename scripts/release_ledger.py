@@ -20,7 +20,6 @@ from scripts.check_rust_release_manifest import (
     SOURCE_COMMIT_RE,
     Failure,
     canonical_json_bytes,
-    expected_package_names,
     rust_artifact_targets,
 )
 from scripts.check_wheel_contents import (
@@ -284,7 +283,12 @@ def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Fa
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    if isinstance(candidate, Mapping) and decision in {"include", "exclude"}:
+    if (
+        isinstance(candidate, Mapping)
+        and decision in {"include", "exclude"}
+        and isinstance(package_version, str)
+        and package_version
+    ):
         raw_files = candidate.get("files")
         files = raw_files if isinstance(raw_files, Sequence) else ()
         package_names = {
@@ -294,15 +298,22 @@ def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Fa
             and isinstance(item.get("name"), str)
             and not str(item.get("name")).endswith(".rust-release-manifest.json")
         }
-        expected_packages = set(
-            expected_package_names(include_models=decision == "include")
-        )
-        if package_names != expected_packages:
+        model_names = {
+            name
+            for name in package_names
+            if name.startswith("solstone_journal_models-")
+        }
+        expected_models = {
+            f"solstone_journal_models-{package_version}.tar.gz",
+            f"solstone_journal_models-{package_version}-py3-none-any.whl",
+        }
+        expected_model_names = expected_models if decision == "include" else set()
+        if model_names != expected_model_names:
             failures.append(
                 _failure(
                     "retained ledger candidate inventory does not match models decision",
-                    expected=", ".join(sorted(expected_packages)),
-                    actual=", ".join(sorted(package_names)) or "<empty>",
+                    expected=", ".join(sorted(expected_model_names)) or "<no models>",
+                    actual=", ".join(sorted(model_names)) or "<no models>",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
@@ -589,12 +600,62 @@ def _root_wheel_name_from_record(
     return {"name": wheel["name"]}, []
 
 
+def _rust_targets_from_payload(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, tuple[str, Any]], list[Failure]]:
+    raw_targets = payload.get("rust_targets")
+    if not isinstance(raw_targets, list):
+        return {}, [
+            _failure(
+                "retained ledger Rust targets are invalid",
+                expected="rust_targets list",
+                actual=type(raw_targets).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    targets: dict[str, tuple[str, Any]] = {}
+    failures: list[Failure] = []
+    for index, item in enumerate(raw_targets):
+        if not isinstance(item, Mapping):
+            failures.append(
+                _failure(
+                    "retained ledger Rust target entry is invalid",
+                    expected=f"rust_targets[{index}] object",
+                    actual=type(item).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        artifact = item.get("artifact")
+        lane = item.get("lane")
+        if not isinstance(artifact, str) or not isinstance(lane, str):
+            failures.append(
+                _failure(
+                    "retained ledger Rust target entry is invalid",
+                    expected=f"rust_targets[{index}] artifact and lane strings",
+                    actual=repr(item),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        targets[artifact] = (lane, item)
+    return targets, failures
+
+
 def _native_members_from_wheels(
-    release_dir: Path, *, root_wheel_name: str
+    release_dir: Path,
+    *,
+    root_wheel_name: str,
+    rust_targets_by_artifact: Mapping[str, tuple[str, Any]] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     failures: list[Failure] = []
     members: dict[str, dict[str, dict[str, Any]]] = {}
-    for artifact, (lane, _target) in sorted(rust_artifact_targets().items()):
+    targets = (
+        rust_targets_by_artifact
+        if rust_targets_by_artifact is not None
+        else rust_artifact_targets()
+    )
+    for artifact, (lane, _target) in sorted(targets.items()):
         if lane == "source":
             continue
         core_member, core_failures = _core_member_from_wheel(release_dir / artifact)
@@ -661,9 +722,14 @@ def validate_native_members_against_release_dir(
         return failures
     if root_wheel_name is None:
         return []
+    rust_targets_by_artifact, target_failures = _rust_targets_from_payload(payload)
+    if target_failures:
+        return target_failures
     try:
         actual = _native_members_from_wheels(
-            release_dir, root_wheel_name=root_wheel_name
+            release_dir,
+            root_wheel_name=root_wheel_name,
+            rust_targets_by_artifact=rust_targets_by_artifact,
         )
     except LedgerError as exc:
         return list(exc.failures)

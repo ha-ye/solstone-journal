@@ -22,6 +22,7 @@ import scripts.check_release_preflight as preflight
 import scripts.check_rust_release_manifest as checker
 import scripts.record_macos_native_wheel as native
 import scripts.release_candidate_driver as driver
+import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_wheel_contents import (
     PARAKEET_HELPER_MEMBER,
@@ -100,11 +101,29 @@ def _policy() -> PolicyRun:
     )
 
 
+def _wheel_metadata(name: str) -> tuple[str, str]:
+    parts = name.removesuffix(".whl").split("-")
+    distribution = parts[0]
+    version = parts[1]
+    return (
+        f"{distribution}-{version}.dist-info/METADATA",
+        f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n",
+    )
+
+
+def _write_metadata_wheel(path: Path) -> None:
+    metadata_name, metadata = _wheel_metadata(path.name)
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(metadata_name, metadata)
+
+
 def _write_member_wheel(path: Path, member: str, content: bytes) -> None:
     info = zipfile.ZipInfo(member)
     info.create_system = 3
     info.external_attr = 0o755 << 16
     with zipfile.ZipFile(path, "w") as wheel:
+        metadata_name, metadata = _wheel_metadata(path.name)
+        wheel.writestr(metadata_name, metadata)
         wheel.writestr(info, content)
 
 
@@ -300,7 +319,11 @@ def _services(
         dist = repo / "dist"
         dist.mkdir(parents=True, exist_ok=True)
         for name in driver._expected_local_dist_names(include_models=include_models):
-            (dist / name).write_bytes(b"fixture package")
+            path = dist / name
+            if name.endswith(".whl"):
+                _write_metadata_wheel(path)
+            else:
+                path.write_bytes(b"fixture package")
         _write_linux_core_wheels(repo / "dist")
 
     def create_source_bundle(
@@ -469,6 +492,52 @@ def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
     assert recovered.heading == "retained-candidate-valid"
     assert _tree_snapshot(report.release_dir) == before_payload
     assert _tree_snapshot(report.evidence_dir) == before_evidence
+
+
+def test_recovery_ignores_current_release_metadata_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+
+    def fail_if_used(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("recovery read current release metadata")
+
+    monkeypatch.setattr(driver, "expected_package_names", fail_if_used)
+    monkeypatch.setattr(driver, "rust_artifact_targets", fail_if_used)
+    monkeypatch.setattr(driver, "validate_release_dir", fail_if_used)
+    monkeypatch.setattr(ledger, "rust_artifact_targets", fail_if_used)
+
+    recovered = driver.run_recover(
+        root,
+        version=report.version,
+        source_commit=SOURCE_COMMIT,
+    )
+
+    assert recovered.heading == "retained-candidate-valid"
+
+
+def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    before_payload = _tree_snapshot(report.release_dir)
+    before_evidence = _tree_snapshot(report.evidence_dir)
+    raw_dist_file = root / "dist" / "raw-build-output.whl"
+    raw_dist_file.write_bytes(b"raw")
+
+    driver._default_clean_outputs(root, "9.9.9")
+
+    assert not raw_dist_file.exists()
+    assert _tree_snapshot(report.release_dir) == before_payload
+    assert _tree_snapshot(report.evidence_dir) == before_evidence
+    recovered = driver.run_recover(
+        root,
+        version=report.version,
+        source_commit=SOURCE_COMMIT,
+    )
+    assert recovered.heading == "retained-candidate-valid"
 
 
 def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
@@ -1163,7 +1232,8 @@ def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(
         / "solstone_journal_models.egg-info",
         root / "target" / "release-transfer" / f".{version}.request-abc123",
         root / "target" / "release-evidence" / f"{version}.staging",
-        root / "dist" / "release-candidate" / f"{version}.quarantine",
+        root / "dist" / "release-candidate" / f"{version}.payload-staging.staging",
+        root / "dist" / "release-candidate" / f"{version}.payload-staging.quarantine",
     ]
     for path in paths:
         path.mkdir(parents=True, exist_ok=True)

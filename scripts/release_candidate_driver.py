@@ -283,10 +283,48 @@ def _owned_glob(
     return list(parent.glob(pattern)), []
 
 
+def _clean_raw_dist_outputs(root: Path) -> list[Failure]:
+    dist = root / "dist"
+    try:
+        entry = dist.lstat()
+    except FileNotFoundError:
+        return []
+    if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+        return _remove_owned_path(dist, label="dist")
+    failures: list[Failure] = []
+    try:
+        children = sorted(dist.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        return [
+            _failure(
+                "fresh release cleanup could not inspect raw dist outputs",
+                expected="readable dist directory",
+                actual=type(exc).__name__,
+                repair="bash scripts/release.sh --candidate",
+            )
+        ]
+    for child in children:
+        if child.name == "release-candidate":
+            continue
+        failures.extend(_remove_owned_path(child, label=f"dist/{child.name}"))
+    return failures
+
+
+def _payload_transient_paths(root: Path, version: str) -> tuple[Path, ...]:
+    ready_path = root / "dist" / "release-candidate" / version
+    payload_staging = ready_path.parent / f"{version}.payload-staging"
+    return (
+        ready_path,
+        payload_staging,
+        payload_staging.parent / f"{payload_staging.name}.staging",
+        payload_staging.parent / f"{payload_staging.name}.quarantine",
+    )
+
+
 def _default_clean_outputs(root: Path, version: str) -> None:
     failures: list[Failure] = []
-    for relative in ("build", "dist"):
-        failures.extend(_remove_owned_path(root / relative, label=relative))
+    failures.extend(_remove_owned_path(root / "build", label="build"))
+    failures.extend(_clean_raw_dist_outputs(root))
     root_egg_infos, root_glob_failures = _owned_glob(
         root, "*.egg-info", label="repository root"
     )
@@ -309,13 +347,10 @@ def _default_clean_outputs(root: Path, version: str) -> None:
         Path("target") / "release-evidence" / version,
         Path("target") / "release-evidence" / f"{version}.staging",
         Path("target") / "release-transfer" / version,
-        Path("dist") / "release-candidate" / version,
-        Path("dist") / "release-candidate" / f"{version}.payload-staging",
-        Path("dist") / "release-candidate" / f"{version}.staging",
-        Path("dist") / "release-candidate" / f"{version}.quarantine",
-        Path("dist") / "release-candidate" / f".{version}.lock",
     ):
         failures.extend(_remove_owned_relative(root, relative))
+    for path in _payload_transient_paths(root, version):
+        failures.extend(_remove_owned_path(path, label=path.name))
     transfer_parent = root / "target" / "release-transfer"
     request_siblings, request_failures = _owned_glob(
         transfer_parent,
@@ -1357,8 +1392,73 @@ def _expected_payload_file_names(*, include_models: bool) -> frozenset[str]:
     return frozenset(packages | manifests)
 
 
+def _safe_retained_basename(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in {".", ".."}
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+    )
+
+
+def _ledger_candidate_file_names(
+    ledger: Mapping[str, Any],
+) -> tuple[frozenset[str], list[Failure]]:
+    candidate = ledger.get("candidate")
+    if not isinstance(candidate, Mapping):
+        return frozenset(), [
+            _failure(
+                "retained ledger candidate inventory is invalid",
+                expected="candidate object",
+                actual=type(candidate).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    files = candidate.get("files")
+    if not isinstance(files, list):
+        return frozenset(), [
+            _failure(
+                "retained ledger candidate file list is invalid",
+                expected="candidate.files list",
+                actual=type(files).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    names: list[str] = []
+    failures: list[Failure] = []
+    for index, item in enumerate(files):
+        name = item.get("name") if isinstance(item, Mapping) else None
+        if not _safe_retained_basename(name):
+            failures.append(
+                _failure(
+                    "retained ledger candidate filename is invalid",
+                    expected=f"candidate.files[{index}].name safe basename",
+                    actual=repr(name),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        names.append(str(name))
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        failures.append(
+            _failure(
+                "retained ledger candidate file list has duplicate names",
+                expected="unique retained candidate file basenames",
+                actual=", ".join(duplicates),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    return frozenset(names), failures
+
+
 def _validate_flat_payload_inventory(
-    release_dir: Path, *, include_models: bool
+    release_dir: Path,
+    *,
+    include_models: bool | None = None,
+    expected_names: frozenset[str] | None = None,
 ) -> list[Failure]:
     failures: list[Failure] = []
     try:
@@ -1395,7 +1495,12 @@ def _validate_flat_payload_inventory(
             )
             continue
         names.add(path.name)
-    expected = _expected_payload_file_names(include_models=include_models)
+    if expected_names is None:
+        if include_models is None:
+            raise AssertionError("include_models is required without expected_names")
+        expected = _expected_payload_file_names(include_models=include_models)
+    else:
+        expected = expected_names
     if names != expected:
         failures.append(
             _failure(
@@ -1405,6 +1510,297 @@ def _validate_flat_payload_inventory(
                 repair="bash scripts/release.sh --recover",
             )
         )
+    return failures
+
+
+def _retained_rust_targets_by_artifact(
+    ledger: Mapping[str, Any],
+) -> tuple[dict[str, tuple[str, dict[str, Any]]], list[Failure]]:
+    raw_targets = ledger.get("rust_targets")
+    if not isinstance(raw_targets, list):
+        return {}, [
+            _failure(
+                "retained ledger Rust targets are invalid",
+                expected="rust_targets list",
+                actual=type(raw_targets).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    targets: dict[str, tuple[str, dict[str, Any]]] = {}
+    failures: list[Failure] = []
+    for index, item in enumerate(raw_targets):
+        if not isinstance(item, Mapping):
+            failures.append(
+                _failure(
+                    "retained ledger Rust target entry is invalid",
+                    expected=f"rust_targets[{index}] object",
+                    actual=type(item).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        artifact = item.get("artifact")
+        lane = item.get("lane")
+        if not _safe_retained_basename(artifact) or lane not in LANES:
+            failures.append(
+                _failure(
+                    "retained ledger Rust target entry is invalid",
+                    expected=f"rust_targets[{index}] artifact basename and lane",
+                    actual=repr(item),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        target = {
+            str(key): value
+            for key, value in item.items()
+            if key not in {"artifact", "lane"}
+        }
+        if str(artifact) in targets:
+            failures.append(
+                _failure(
+                    "retained ledger Rust targets contain duplicate artifacts",
+                    expected="one Rust target per retained artifact",
+                    actual=str(artifact),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        targets[str(artifact)] = (str(lane), target)
+    return targets, failures
+
+
+def _manifest_artifact_payload(
+    manifest_name: str, payload: Mapping[str, Any]
+) -> tuple[Mapping[str, Any] | None, str | None, list[Failure]]:
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        return (
+            None,
+            None,
+            [
+                _failure(
+                    "retained manifest must contain exactly one artifact",
+                    expected=f"{manifest_name} one artifact entry",
+                    actual=repr(artifacts),
+                    repair="bash scripts/release.sh --recover",
+                )
+            ],
+        )
+    artifact = artifacts[0]
+    if not isinstance(artifact, Mapping):
+        return (
+            None,
+            None,
+            [
+                _failure(
+                    "retained manifest artifact entry is invalid",
+                    expected=f"{manifest_name} artifact object",
+                    actual=type(artifact).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            ],
+        )
+    artifact_name = artifact.get("path")
+    if not _safe_retained_basename(artifact_name):
+        return (
+            artifact,
+            None,
+            [
+                _failure(
+                    "retained manifest artifact path is invalid",
+                    expected=f"{manifest_name} artifact basename",
+                    actual=repr(artifact_name),
+                    repair="bash scripts/release.sh --recover",
+                )
+            ],
+        )
+    return artifact, str(artifact_name), []
+
+
+def _expected_manifest_native_tools(
+    ledger: Mapping[str, Any], lane: str
+) -> Mapping[str, str] | None:
+    tool_evidence = ledger.get("tool_evidence")
+    if not isinstance(tool_evidence, Mapping):
+        return None
+    lane_tools = tool_evidence.get(lane)
+    if not isinstance(lane_tools, Mapping) or lane not in NATIVE_TOOL_KEYS:
+        return None
+    return {
+        key: str(lane_tools[key])
+        for key in NATIVE_TOOL_KEYS[lane]
+        if isinstance(lane_tools.get(key), str)
+    }
+
+
+def _validate_retained_manifest_files(
+    release_dir: Path,
+    ledger: Mapping[str, Any],
+) -> list[Failure]:
+    expected_names, failures = _ledger_candidate_file_names(ledger)
+    manifest_names = sorted(
+        name for name in expected_names if name.endswith(".rust-release-manifest.json")
+    )
+    if len(manifest_names) != 4:
+        failures.append(
+            _failure(
+                "retained payload manifest count is invalid",
+                expected="four retained Rust companion manifests",
+                actual=str(len(manifest_names)),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    rust_targets, target_failures = _retained_rust_targets_by_artifact(ledger)
+    failures.extend(target_failures)
+    dependency_policy = ledger.get("dependency_policy")
+    expected_scalars = {
+        "product": "solstone-core",
+        "version": ledger.get("version"),
+        "source_commit": ledger.get("source_commit"),
+        "source_dirty": False,
+        "cargo_lock_sha256": ledger.get("core_lock_sha256"),
+        "dependency_policy": dependency_policy,
+        "active_exceptions": [],
+    }
+    for manifest_name in manifest_names:
+        manifest_path = release_dir / manifest_name
+        try:
+            entry = manifest_path.lstat()
+        except OSError as exc:
+            failures.append(
+                _failure(
+                    "retained manifest could not be inspected",
+                    expected=f"{manifest_name} regular file",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        if not stat.S_ISREG(entry.st_mode):
+            failures.append(
+                _failure(
+                    "retained manifest is not a regular file",
+                    expected=f"{manifest_name} regular file",
+                    actual="non-regular",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            failures.append(
+                _failure(
+                    "retained manifest is not readable JSON",
+                    expected=f"{manifest_name} JSON object",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        if not isinstance(payload, Mapping):
+            failures.append(
+                _failure(
+                    "retained manifest is not a JSON object",
+                    expected=f"{manifest_name} object",
+                    actual=type(payload).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        for key, expected in expected_scalars.items():
+            if payload.get(key) != expected:
+                failures.append(
+                    _failure(
+                        f"retained manifest {key} is not bound to ledger",
+                        expected=repr(expected),
+                        actual=repr(payload.get(key)),
+                        repair="bash scripts/release.sh --recover",
+                    )
+                )
+        artifact, artifact_name, artifact_failures = _manifest_artifact_payload(
+            manifest_name, payload
+        )
+        failures.extend(artifact_failures)
+        if artifact is None or artifact_name is None:
+            continue
+        if manifest_name != f"{artifact_name}.rust-release-manifest.json":
+            failures.append(
+                _failure(
+                    "retained manifest filename is not the artifact companion name",
+                    expected=f"{artifact_name}.rust-release-manifest.json",
+                    actual=manifest_name,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        if artifact_name not in expected_names:
+            failures.append(
+                _failure(
+                    "retained manifest artifact is not in retained candidate inventory",
+                    expected="artifact named by ledger candidate files",
+                    actual=artifact_name,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        try:
+            artifact_sha256, artifact_bytes = file_sha256_size(
+                release_dir / artifact_name
+            )
+        except OSError as exc:
+            failures.append(
+                _failure(
+                    "retained manifest artifact could not be read",
+                    expected=artifact_name,
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        if (
+            artifact.get("sha256") != artifact_sha256
+            or artifact.get("bytes") != artifact_bytes
+        ):
+            failures.append(
+                _failure(
+                    "retained manifest artifact digest does not match final bytes",
+                    expected=f"{artifact_sha256}/{artifact_bytes}",
+                    actual=repr(artifact),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        retained_target = rust_targets.get(artifact_name)
+        if retained_target is None:
+            failures.append(
+                _failure(
+                    "retained manifest artifact has no retained Rust target",
+                    expected=artifact_name,
+                    actual="missing",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        lane, target = retained_target
+        if payload.get("target") != target:
+            failures.append(
+                _failure(
+                    "retained manifest target does not match ledger Rust target",
+                    expected=repr(target),
+                    actual=repr(payload.get("target")),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        expected_native_tools = _expected_manifest_native_tools(ledger, lane)
+        if payload.get("native_tools") != expected_native_tools:
+            failures.append(
+                _failure(
+                    "retained manifest native tools do not match ledger tool evidence",
+                    expected=repr(expected_native_tools),
+                    actual=repr(payload.get("native_tools")),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
     return failures
 
 
@@ -1642,6 +2038,7 @@ def _validate_deep_ledger_binding(
     ledger: Mapping[str, Any],
     policy_run: PolicyRun | None = None,
     check_local_models_version: bool = True,
+    validate_current_release_metadata: bool = True,
 ) -> list[Failure]:
     failures: list[Failure] = []
     try:
@@ -1715,19 +2112,20 @@ def _validate_deep_ledger_binding(
                     repair="bash scripts/release.sh --recover",
                 )
             )
-    expected_targets = [
-        {"lane": lane, "artifact": artifact, **target}
-        for artifact, (lane, target) in sorted(rust_artifact_targets().items())
-    ]
-    if ledger.get("rust_targets") != expected_targets:
-        failures.append(
-            _failure(
-                "retained ledger Rust targets are invalid",
-                expected=repr(expected_targets),
-                actual=repr(ledger.get("rust_targets")),
-                repair="bash scripts/release.sh --recover",
+    if validate_current_release_metadata:
+        expected_targets = [
+            {"lane": lane, "artifact": artifact, **target}
+            for artifact, (lane, target) in sorted(rust_artifact_targets().items())
+        ]
+        if ledger.get("rust_targets") != expected_targets:
+            failures.append(
+                _failure(
+                    "retained ledger Rust targets are invalid",
+                    expected=repr(expected_targets),
+                    actual=repr(ledger.get("rust_targets")),
+                    repair="bash scripts/release.sh --recover",
+                )
             )
-        )
     policy_payload = ledger.get("policy_run")
     if isinstance(policy_payload, Mapping):
         failures.extend(_validate_policy_payload(policy_payload))
@@ -1765,13 +2163,14 @@ def _validate_deep_ledger_binding(
                 repair="bash scripts/release.sh --recover",
             )
         )
-    model_failures = _validate_models_binding(
-        root,
-        release_dir,
-        ledger,
-        check_local_version=check_local_models_version,
-    )
-    failures.extend(model_failures)
+    if validate_current_release_metadata:
+        model_failures = _validate_models_binding(
+            root,
+            release_dir,
+            ledger,
+            check_local_version=check_local_models_version,
+        )
+        failures.extend(model_failures)
     native_member_failures = validate_native_members_against_release_dir(
         release_dir, ledger
     )
@@ -1935,6 +2334,7 @@ def _report(
     evidence_dir: Path,
     policy_run: PolicyRun | None = None,
     check_local_models_version: bool = True,
+    validate_current_release_metadata: bool = True,
 ) -> CandidateReport:
     inventory_failures = _validate_evidence_inventory(evidence_dir)
     if inventory_failures:
@@ -1946,12 +2346,19 @@ def _report(
         raise DriverError(exc.failures) from None
     models = ledger.get("models")
     include_models = isinstance(models, Mapping) and models.get("decision") == "include"
-    payload_failures = _validate_flat_payload_inventory(
-        release_dir, include_models=include_models
-    )
-    payload_failures.extend(
-        validate_release_dir(release_dir, expected_source_commit=source_commit)
-    )
+    if validate_current_release_metadata:
+        payload_failures = _validate_flat_payload_inventory(
+            release_dir, include_models=include_models
+        )
+        payload_failures.extend(
+            validate_release_dir(release_dir, expected_source_commit=source_commit)
+        )
+    else:
+        expected_names, payload_failures = _ledger_candidate_file_names(ledger)
+        payload_failures.extend(
+            _validate_flat_payload_inventory(release_dir, expected_names=expected_names)
+        )
+        payload_failures.extend(_validate_retained_manifest_files(release_dir, ledger))
     if payload_failures:
         raise DriverError(payload_failures)
     digest = candidate_digest(release_dir)
@@ -1966,6 +2373,7 @@ def _report(
         ledger=ledger,
         policy_run=policy_run,
         check_local_models_version=check_local_models_version,
+        validate_current_release_metadata=validate_current_release_metadata,
     )
     if ledger["candidate"]["candidate_digest"] != digest:
         deep_failures.append(
@@ -2415,6 +2823,7 @@ def run_recover(
         release_dir=release_dir,
         evidence_dir=evidence_dir,
         check_local_models_version=False,
+        validate_current_release_metadata=False,
     )
 
 
