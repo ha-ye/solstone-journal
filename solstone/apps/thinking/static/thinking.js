@@ -895,13 +895,15 @@
   }
 
   function localReadiness() {
-    const readiness = state.providers.ai_readiness?.local;
+    const readiness = state.providers.provider_status?.local;
     if (readiness) {
+      const ready = !!(readiness.generate_ready && readiness.cogitate_ready);
+      const issue = Array.isArray(readiness.issues) ? readiness.issues[0] : '';
       return {
-        status: readiness.status || '',
-        reason: readiness.reason_code || '',
-        summary: readiness.summary || '',
-        detail: readiness.detail || '',
+        status: ready ? 'ready' : 'blocked',
+        reason: ready ? 'ready' : (issue || ''),
+        summary: issue || '',
+        detail: '',
       };
     }
     if (state.localAvailability?.available === true) {
@@ -919,7 +921,8 @@
   }
 
   function localIsReady() {
-    return state.providers.ai_readiness?.local?.status === 'ready';
+    const readiness = state.providers.provider_status?.local;
+    return !!(readiness?.generate_ready && readiness?.cogitate_ready);
   }
 
   function localIsGpuBlocked() {
@@ -991,38 +994,60 @@
   }
 
   function renderGlance() {
-    const brain = activeBrain();
-    const glanceCopy = copy.glance || {};
+    const brain = state.providers.brain || {};
     const glance = $('brainGlance');
     const glanceLabel = $('thinkingActiveLane');
-    if (glance) glance.classList.toggle('none', brain.kind === 'none');
-    if (glanceLabel) glanceLabel.hidden = brain.kind === 'none';
-    if (brain.kind === 'byo') {
-      const key = `byo_${brain.byoKind || 'key'}`;
-      const row = glanceCopy[key] || {};
-      const model = brain.byoKind === 'key'
-        ? byoModelLabel(brain.provider, state.providers.active?.model || '', state.providers)
-        : '';
-      setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
-      setText('thinkingActiveValue', formatCopy(row.value, {provider: brain.providerLabel, model}));
-      setText('thinkingActiveDetail', formatCopy(row.detail, {provider: brain.providerLabel, model}));
-    } else if (brain.kind === 'local') {
-      const row = glanceCopy.local || {};
-      setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
-      setText('thinkingActiveValue', row.value || '');
-      setText('thinkingActiveDetail', row.detail || '');
-    } else if (brain.kind === 'confidential') {
-      const attestation = activeLanePayload().confidential_attestation || {};
-      const checked = confidentialCheckedLabel(attestation);
-      const row = confidentialGlanceForAttestation(attestation, copy, checked);
-      setText('thinkingActiveLane', row.label || '');
-      setText('thinkingActiveValue', row.value || '');
-      setText('thinkingActiveDetail', row.detail || '');
+    const identity = brain.identity || {};
+    const evidence = brain.evidence || {};
+    const component = brain.failing_component ? ` (${brain.failing_component})` : '';
+    if (glance) glance.classList.toggle('none', brain.state === 'unknown' && !brain.reason_code);
+    if (glanceLabel) glanceLabel.hidden = false;
+    setText('thinkingActiveLane', 'brain health');
+    setText('thinkingActiveValue', brain.headline || '');
+    if (identity.lane && identity.provider && identity.model) {
+      if (brain.state === 'ready') {
+        const checked = evidence.age_text ? `, checked ${evidence.age_text} ago` : '';
+        setText('thinkingActiveDetail', `${identity.lane} ${identity.provider}/${identity.model}${checked}`);
+      } else {
+        setText('thinkingActiveDetail', `${identity.lane} ${identity.provider}/${identity.model} — ${brain.reason_text || ''}${component}`);
+      }
+    } else if (identity.lane || identity.provider || identity.model) {
+      setText('thinkingActiveDetail', `${brain.reason_text || ''}${component}`);
     } else {
-      const row = glanceCopy.none || {};
-      setText('thinkingActiveValue', row.value || activeLaneLabel('none'));
-      setText('thinkingActiveDetail', row.detail || '');
+      setText('thinkingActiveDetail', '');
     }
+    renderBrainAction(brain.action || null);
+  }
+
+  function renderBrainAction(action) {
+    const button = $('brainCheckAction');
+    if (!button) return;
+    if (!action?.label) {
+      button.hidden = true;
+      button.onclick = null;
+      return;
+    }
+    button.hidden = false;
+    button.textContent = action.label;
+    if (action.href) {
+      button.onclick = () => {
+        window.location.href = action.href;
+      };
+      return;
+    }
+    if (action.refresh) {
+      button.onclick = () => requestBrainCheck().catch((err) => {
+        setMessage('thinkingActiveDetail', err.message, 'error');
+      });
+      return;
+    }
+    button.onclick = null;
+  }
+
+  async function requestBrainCheck() {
+    const response = await api('api/brain/check', {method: 'POST', body: '{}'});
+    if (response.brain) state.providers.brain = response.brain;
+    renderGlance();
   }
 
   function setCardActive(lane, active) {
@@ -1377,8 +1402,8 @@
     const sublines = {
       off: 'off — pick scout if you want us to cover Gemini',
       requested: "your request is in — we'll show your invite here the moment you're in",
-      invited: "you're in — turn it on so sol can think",
-      on: 'on — sol can think',
+      invited: "you're in — turn it on so thinking is available",
+      on: 'on — thinking available',
       ended: 'scout ended — check again if this looks wrong',
       manual_key_present: scoutCopy.manual_key_block || 'a Gemini key you manage is already set.',
       repair_needed: 'repair needed — try again from Thinking',

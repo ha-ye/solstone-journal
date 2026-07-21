@@ -15,9 +15,11 @@ import logging
 import os
 import platform
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from solstone.think.brain_health import HEADLINES
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,6 @@ _SECRET_VALUE_RE = re.compile(
 )
 _POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^\s;]+)")
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:\\[^\s;]+")
-_RESET_AT_RE = re.compile(r"(?:^|[;\s])reset_at_ms=(?P<value>\d+)")
 
 
 def _is_secret_key(key: str) -> bool:
@@ -82,33 +83,6 @@ def _bounded_redacted_text(value: Any, *, limit: int = 240) -> str | None:
     if len(clean) <= limit:
         return clean
     return clean[: limit - 1] + "…"
-
-
-def _reset_at_ms_from_operator_detail(operator_detail: Any) -> int | None:
-    if not isinstance(operator_detail, str):
-        return None
-    match = _RESET_AT_RE.search(operator_detail)
-    if match is None:
-        return None
-    try:
-        return int(match.group("value"))
-    except ValueError:
-        return None
-
-
-def _redacted_readiness_view(view: dict[str, Any]) -> dict[str, Any]:
-    operator_detail = _bounded_redacted_text(view.get("operator_detail"))
-    redacted = {
-        "provider": _bounded_redacted_text(view.get("provider"), limit=120),
-        "model": _bounded_redacted_text(view.get("model"), limit=160),
-        "reason_code": _bounded_redacted_text(view.get("reason_code"), limit=120),
-        "status": _bounded_redacted_text(view.get("status"), limit=80),
-        "severity": _bounded_redacted_text(view.get("severity"), limit=80),
-        "reset_at_ms": _reset_at_ms_from_operator_detail(operator_detail),
-        "summary": _bounded_redacted_text(view.get("summary")),
-        "operator_detail": operator_detail,
-    }
-    return {key: value for key, value in redacted.items() if value is not None}
 
 
 # -- Individual collectors ---------------------------------------------------
@@ -268,42 +242,31 @@ def collect_config() -> dict[str, Any]:
         return {}
 
 
-def collect_provider_readiness() -> dict[str, Any]:
-    """Return redacted provider-readiness diagnostics."""
+def collect_brain_health() -> dict[str, Any]:
+    """Return redacted brain-health diagnostics."""
     try:
-        from solstone.convey.readiness_snapshot import build_readiness_snapshot
+        from solstone.think.brain_health import (
+            build_brain_snapshot,
+            render_brain_health_lines,
+        )
 
-        snapshot = build_readiness_snapshot()
-        redacted = {
-            "summary": {
-                "status": _bounded_redacted_text(
-                    snapshot.get("summary", {}).get("status"), limit=80
-                ),
-                "severity": _bounded_redacted_text(
-                    snapshot.get("summary", {}).get("severity"), limit=80
-                ),
-                "active_groups": snapshot.get("summary", {}).get("active_groups"),
-                "blocked_count": snapshot.get("summary", {}).get("blocked_count"),
-            },
-            "interfaces": {
-                name: _redacted_readiness_view(view)
-                for name, view in (snapshot.get("interfaces") or {}).items()
-                if isinstance(view, dict)
-            },
-            "groups": [
-                _redacted_readiness_view(view)
-                for view in (snapshot.get("groups") or [])
-                if isinstance(view, dict)
-            ],
-        }
-        if snapshot.get("unavailable"):
-            redacted["unavailable"] = True
-        if isinstance(snapshot.get("local"), dict):
-            redacted["local"] = _redacted_readiness_view(snapshot["local"])
-        return _strip_secrets(redacted)
+        snapshot = build_brain_snapshot(datetime.now(timezone.utc), surface="support")
+        return _strip_secrets(
+            {
+                "snapshot": snapshot,
+                "lines": render_brain_health_lines(snapshot),
+            }
+        )
     except Exception:
-        logger.debug("provider readiness collection failed", exc_info=True)
-        return {"unavailable": True}
+        logger.debug("brain health collection failed", exc_info=True)
+        return {
+            "snapshot": {
+                "state": "unknown",
+                "headline": HEADLINES["unknown"],
+                "reason_code": "brain_record_unavailable",
+            },
+            "lines": ["Brain Health", f"  {HEADLINES['unknown']}"],
+        }
 
 
 # -- Public API --------------------------------------------------------------
@@ -348,9 +311,9 @@ def collect_all() -> dict[str, Any]:
         logger.debug("config collection failed: %s", exc)
 
     try:
-        diagnostics["provider_readiness"] = collect_provider_readiness()
+        diagnostics["brain_health"] = collect_brain_health()
     except Exception as exc:
-        logger.debug("provider readiness collection failed: %s", exc)
+        logger.debug("brain health collection failed: %s", exc)
 
     return diagnostics
 

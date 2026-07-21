@@ -485,8 +485,7 @@ def clear_local_endpoint() -> None:
 def local_readiness() -> None:
     """Show local provider readiness."""
 
-    response = _get_providers()
-    _echo_json(response.get("ai_readiness", {}).get("local", {}))
+    _echo_json(_request("GET", "/app/thinking/api/providers/local/status"))
 
 
 @local_app.command("status")

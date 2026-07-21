@@ -34,27 +34,6 @@ def _dash(value: object) -> object:
     return "—" if value is None else value
 
 
-_READINESS_SEVERITY_RANK = {
-    "ok": 0,
-    "neutral": 1,
-    "attention": 2,
-    "blocker": 3,
-}
-
-
-def _highest_severity_group(snapshot: dict) -> dict | None:
-    groups = snapshot.get("groups") or []
-    if not groups:
-        return None
-    return max(
-        groups,
-        key=lambda group: (
-            _READINESS_SEVERITY_RANK.get(group.get("severity", ""), -1),
-            group.get("semantic_key", ""),
-        ),
-    )
-
-
 def _render_summary(report: dict) -> None:
     capture = report["capture_health"]
     synthesis = report["synthesis_health"]
@@ -104,7 +83,7 @@ def _render_summary(report: dict) -> None:
             "awaiting thinking (status incomplete)"
         )
     elif backlog["errors"]:
-        typer.echo("  Segment thinking status unavailable")
+        typer.echo("  Segment analysis status unavailable")
     elif n > 0:
         typer.echo(f"  {n} {seg_word} across {m} {day_word} awaiting thinking")
     typer.echo("Consumer Signals")
@@ -115,31 +94,11 @@ def _render_summary(report: dict) -> None:
         f"  ledger_stale_items_count: {consumer_signal['ledger_stale_items_count']}"
     )
     typer.echo(f"  profile_entities_total: {consumer_signal['profile_entities_total']}")
-    snap = report["provider_readiness"]
-    typer.echo("Provider Readiness")
-    if snap.get("unavailable"):
-        typer.echo("  readiness status unavailable")
-    elif snap.get("summary", {}).get("active_groups", 0) == 0:
-        summary = snap.get("summary", {})
-        if summary.get("status") == "ready" or summary.get("severity") == "ok":
-            typer.echo("  all providers ready")
-        else:
-            typer.echo("  no active provider blockers")
-    else:
-        summary = snap.get("summary", {})
-        active = summary.get("active_groups", 0)
-        group_word = "provider group" if active == 1 else "provider groups"
-        top = _highest_severity_group(snap)
-        if top is not None:
-            typer.echo(f"  [{top.get('severity')}] {top.get('summary')}")
-        typer.echo(f"  {active} {group_word} need attention")
-        recovery = (top or {}).get("recovery_action")
-        if isinstance(recovery, dict) and recovery.get("label"):
-            href = recovery.get("href")
-            if href:
-                typer.echo(f"  → {recovery['label']}: {href}")
-            else:
-                typer.echo(f"  → {recovery['label']}")
+    brain = report.get("brain_health", {})
+    lines = brain.get("lines") if isinstance(brain, dict) else None
+    if isinstance(lines, list) and lines:
+        for line in lines:
+            typer.echo(str(line))
     typer.echo("Notes")
     if not report["notes"]:
         typer.echo("  none")

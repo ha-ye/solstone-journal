@@ -11,11 +11,12 @@ import argparse
 import asyncio
 import queue
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import psutil
 from blessed import Terminal
 
+from solstone.think.brain_health import build_brain_snapshot, render_brain_health_lines
 from solstone.think.callosum import CallosumConnection
 from solstone.think.utils import setup_cli
 
@@ -57,10 +58,10 @@ class ServiceManager:
         self.think_last_completed = {}  # Last think/completed event
         self.think_running = False  # Whether a think run is active
 
-        # Agents health tracking (from health/talents.json file)
-        self.agents_health = None  # Parsed talents.json dict, or None
-        self.agents_health_ts = 0.0  # Last time health file was read
-        self.AGENTS_HEALTH_INTERVAL = 30  # Seconds between file re-reads
+        # Brain health tracking
+        self.brain_health = None
+        self.brain_health_ts = 0.0
+        self.BRAIN_HEALTH_INTERVAL = 30
 
     def set_service_status(self, service: str, status_type: str) -> None:
         """Set per-service status with timestamp for auto-clear.
@@ -296,7 +297,7 @@ class ServiceManager:
                     if k not in ("tract", "event", "ts")
                 }
                 self.think_status = {}
-                self._load_agents_health()
+                self._load_brain_health()
 
     def format_uptime(self, seconds: int) -> str:
         """Format uptime in human-readable format.
@@ -636,12 +637,16 @@ class ServiceManager:
         # Still within grace period - show last active mode
         return self.displayed_mode
 
-    def _load_agents_health(self) -> None:
-        """Read and cache health/talents.json from the journal."""
-        self.agents_health_ts = time.time()
-        from solstone.think.providers import state
-
-        self.agents_health = state.read_health_status()
+    def _load_brain_health(self) -> None:
+        """Read and cache the active-brain health projection."""
+        self.brain_health_ts = time.time()
+        try:
+            self.brain_health = build_brain_snapshot(
+                datetime.now(timezone.utc),
+                surface="cli",
+            )
+        except Exception:
+            self.brain_health = None
 
     def render_observe_section(self) -> list[str]:
         """Render the observe status section with stable layout.
@@ -797,67 +802,24 @@ class ServiceManager:
 
         return output
 
-    def render_agents_health_section(self) -> list[str]:
-        """Render the agents health check section.
+    def render_brain_health_section(self) -> list[str]:
+        """Render the brain health section.
 
         Returns:
-            List of output lines for the agents health section
+            List of output lines for the brain health section
         """
         t = self.term
         output = []
 
         output.append("─" * t.width)
-        output.append(f"  {t.bold}Agents Health{t.normal}")
-
-        if self.agents_health is None:
-            output.append(t.dim + "  (no health check)" + t.normal)
+        if self.brain_health is None:
+            output.append(f"  {t.bold}Brain Health{t.normal}")
+            output.append(t.dim + "  (status unavailable)" + t.normal)
             return output
-
-        # Relative age from checked_at
-        checked_at = self.agents_health.get("checked_at", "")
-        if checked_at:
-            try:
-                checked_dt = datetime.fromisoformat(checked_at)
-                age = datetime.now(checked_dt.tzinfo) - checked_dt
-                age_seconds = max(0, int(age.total_seconds()))
-                if age_seconds < 60:
-                    age_str = f"{age_seconds}s ago"
-                elif age_seconds < 3600:
-                    age_str = f"{age_seconds // 60}m ago"
-                elif age_seconds < 86400:
-                    age_str = f"{age_seconds // 3600}h ago"
-                else:
-                    age_str = f"{age_seconds // 86400}d ago"
-                output.append(t.dim + f"  checked {age_str}" + t.normal)
-            except (ValueError, TypeError):
-                pass
-
-        # Summary counts
-        summary = self.agents_health.get("summary", {})
-        total = summary.get("total", 0)
-        passed = summary.get("passed", 0)
-        failed = summary.get("failed", 0)
-
-        if failed > 0:
-            failed_str = t.red + f"{failed} failed" + t.normal
-        else:
-            failed_str = "0 failed"
-        output.append(f"  {total} checks: {passed} passed, {failed_str}")
-
-        # List failures
-        if failed > 0:
-            for result in self.agents_health.get("results", []):
-                if not result.get("ok", True):
-                    provider = result.get("provider", "?")
-                    model = result.get("model", "?")
-                    interface = result.get("interface", "?")
-                    output.append(
-                        t.dim
-                        + t.red
-                        + f"  ✗ {provider}/{model} ({interface})"
-                        + t.normal
-                    )
-
+        lines = render_brain_health_lines(self.brain_health)
+        if lines:
+            output.append(f"  {t.bold}{lines[0]}{t.normal}")
+            output.extend(lines[1:])
         return output
 
     def render(self) -> str:
@@ -869,9 +831,9 @@ class ServiceManager:
         t = self.term
         output = []
 
-        # Periodically reload agents health file
-        if time.time() - self.agents_health_ts > self.AGENTS_HEALTH_INTERVAL:
-            self._load_agents_health()
+        # Periodically reload brain health
+        if time.time() - self.brain_health_ts > self.BRAIN_HEALTH_INTERVAL:
+            self._load_brain_health()
 
         # Clear and move to top
         output.append(t.home + t.clear)
@@ -923,8 +885,8 @@ class ServiceManager:
         tasks_output = self.render_tasks_table()
         output.extend(tasks_output)
 
-        # Agents health section
-        health_output = self.render_agents_health_section()
+        # Brain health section
+        health_output = self.render_brain_health_section()
         output.extend(health_output)
 
         # Crashed services (if any)

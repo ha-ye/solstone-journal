@@ -38,6 +38,7 @@ import shlex
 import sys
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from functools import partial
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.metadata import version as _pkg_version
@@ -147,6 +148,7 @@ OBSERVER_INGEST_HEALTH_CHECK = Check(
     "observer_ingest_health", "advisory", ("linux", "darwin")
 )
 ORPHAN_SEGMENT_PDF_CHECK = Check("orphan_segment_pdf", "advisory", ("linux", "darwin"))
+BRAIN_CHECK = Check("brain", "advisory", ("linux", "darwin"))
 _CAUGHT_UP_BACKLOG_FIX = (
     "solstone catches up on its own; reprocess a day from the health surface "
     "to prioritize it"
@@ -994,6 +996,26 @@ def task_pace_check(args: Args) -> CheckResult:
     return make_result(check, "warn", f"running long: {names}", _TASK_PACE_FIX)
 
 
+def brain_check(args: Args) -> CheckResult:
+    from solstone.think.brain_health import build_brain_snapshot
+
+    del args
+    check = BRAIN_CHECK
+    try:
+        snapshot = build_brain_snapshot(datetime.now(timezone.utc), surface="cli")
+    except Exception as exc:
+        return make_result(check, "warn", f"unknown: {exc}")
+    state = snapshot["state"]
+    headline = snapshot["headline"]
+    reason = snapshot["reason_text"]
+    component = snapshot["failing_component"] or "none"
+    age = snapshot["evidence"]["age_text"] or "unknown"
+    detail = f"{headline}; state={state}; reason={reason}; component={component}; evidence_age={age}"
+    if state in {"ready", "checking"}:
+        return make_result(check, "ok", detail)
+    return make_result(check, "warn", detail)
+
+
 def observer_ingest_health_check(args: Args) -> CheckResult:
     del args
     check = OBSERVER_INGEST_HEALTH_CHECK
@@ -1220,6 +1242,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (JOURNAL_CAUGHT_UP_CHECK, journal_caught_up_check),
     (JOURNAL_MAINT_TASKS_CHECK, journal_maint_tasks_check),
     (TASK_PACE_CHECK, task_pace_check),
+    (BRAIN_CHECK, brain_check),
     (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
     (ORPHAN_SEGMENT_PDF_CHECK, orphan_segment_pdf_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),

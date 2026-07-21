@@ -6,16 +6,13 @@ import logging
 import os
 import re
 import socket
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
 from solstone.convey import backlog_copy, state
 from solstone.convey.backlog_view import stuck_rows, verdict
-from solstone.convey.readiness_snapshot import (
-    build_readiness_snapshot,
-    unavailable_snapshot,
-)
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -29,6 +26,11 @@ from solstone.convey.reasons import (
     REPROCESS_UNREACHABLE,
 )
 from solstone.convey.utils import error_response
+from solstone.think.brain_health import (
+    HEADLINES,
+    build_brain_snapshot,
+    request_brain_refresh,
+)
 from solstone.think.callosum import callosum_send
 from solstone.think.reprocess import (
     FLAVOR_FROM_SCRATCH,
@@ -70,12 +72,40 @@ def _load_backlog() -> dict | None:
     return backlog if isinstance(backlog, dict) else None
 
 
-def _safe_readiness_snapshot() -> dict:
+def _safe_brain_snapshot() -> dict:
     try:
-        return build_readiness_snapshot()
+        return build_brain_snapshot(datetime.now(timezone.utc), surface="health")
     except Exception:
-        logger.exception("Failed to build health readiness snapshot")
-        return unavailable_snapshot()
+        logger.exception("Failed to build health brain snapshot")
+        return {
+            "state": "unknown",
+            "headline": HEADLINES["unknown"],
+            "reason_code": "brain_record_unavailable",
+            "reason_text": "brain record unavailable",
+            "failing_component": None,
+            "action": {"label": "check again", "refresh": True},
+            "identity": {"lane": None, "provider": None, "model": None},
+            "evidence": {
+                "observed_at": None,
+                "age_seconds": None,
+                "age_text": None,
+            },
+            "components": {
+                "generate": {
+                    "status": None,
+                    "reason_code": None,
+                    "reason_text": "unknown",
+                    "observed_at": None,
+                },
+                "cogitate": {
+                    "status": None,
+                    "reason_code": None,
+                    "reason_text": "unknown",
+                    "observed_at": None,
+                },
+            },
+            "progressing": False,
+        }
 
 
 def _build_agent_error_seed(scan: AgentFailureScan) -> list[dict]:
@@ -172,9 +202,18 @@ def api_info():
     return jsonify(
         {
             "hostname": stream_name(host=socket.gethostname()),
-            "readiness": _safe_readiness_snapshot(),
+            "brain": _safe_brain_snapshot(),
         }
     )
+
+
+@health_bp.post("/api/brain/check")
+def check_brain():
+    ok = request_brain_refresh(surface="health")
+    response = {"ok": ok, "brain": _safe_brain_snapshot()}
+    if not ok:
+        response["error"] = "check_not_started"
+    return jsonify(response)
 
 
 @health_bp.post("/api/retry-import")

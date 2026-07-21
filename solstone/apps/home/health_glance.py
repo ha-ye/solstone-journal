@@ -17,7 +17,7 @@ def build_health_glance(
     capture_health: Any,
     pipeline_status: Any,
     last_observe_relative: str | None,
-    thinking_blocked: bool = False,
+    brain: dict[str, Any] | None = None,
 ) -> dict:
     issues = []
 
@@ -33,14 +33,9 @@ def build_health_glance(
     if pipeline_issue is not None:
         issues.append(pipeline_issue)
 
-    if thinking_blocked:
-        issues.append(
-            {
-                "text": "sol needs a way to think",
-                "severity": "amber",
-                "href": "/app/thinking/",
-            }
-        )
+    brain_issue = _build_brain_issue(brain)
+    if brain_issue is not None:
+        issues.append(brain_issue)
 
     if issues:
         severity = (
@@ -134,6 +129,29 @@ def _build_pipeline_issue(pipeline_status: Any) -> dict | None:
         "severity": "amber",
         "href": _pipeline_href(pipeline_status.get("suggested_action")),
     }
+
+
+def _build_brain_issue(brain: Any) -> dict | None:
+    if not isinstance(brain, dict):
+        return None
+    if brain.get("state") in {"ready", "checking"}:
+        return None
+    if brain.get("state") == "blocked" and brain.get("progressing"):
+        return None
+    action = brain.get("action")
+    if not isinstance(action, dict) and brain.get("state") not in {
+        "blocked",
+        "unhealthy",
+        "unknown",
+    }:
+        return None
+    text = brain.get("headline")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    href = "/app/health/#brain"
+    if isinstance(action, dict) and isinstance(action.get("href"), str):
+        href = action["href"]
+    return {"text": text.strip(), "severity": "amber", "href": href}
 
 
 def _pipeline_href(suggested_action: Any) -> str:

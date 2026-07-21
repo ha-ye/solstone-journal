@@ -16,21 +16,21 @@
     "HEALTH_GLANCE_CATCHING_UP": "i'm catching up on {n} task(s) in the background. last update {age} ago.",
     "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
     "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
-    "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
-    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness. provider setup will be confirmed shortly.",
+    "HEALTH_GLANCE_BRAIN_ATTENTION": "{headline}",
     "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention: {service_names}.",
     "HEALTH_GLANCE_SERVICES_UNREACHABLE": "i couldn't reach my own services. check that your journal is running."
   };
 
-  let providerReadiness = null;
+  let brainSnapshot = null;
   let backlogCopy = {};
 
   fetch('/app/health/api/info')
     .then(r => r.json())
     .then(info => {
       state.localHost = info.hostname;
-      providerReadiness = info.readiness || providerReadiness;
+      brainSnapshot = info.brain || brainSnapshot;
       updateObserve();
+      renderBrainHealth();
       updateStatusSummary();
     })
     .catch(() => {
@@ -158,6 +158,8 @@
     logErrorBadge: document.getElementById('logErrorBadge'),
     logsConnectionNote: document.getElementById('logsConnectionNote'),
     logsSummaryBadge: document.getElementById('logsSummaryBadge'),
+    brainHealthStatus: document.getElementById('brainHealthStatus'),
+    brainCheckBtn: document.getElementById('brainCheckBtn'),
     logsAnnouncer: document.getElementById('logsAnnouncer'),
     logsCollapseIndicator: document.getElementById('logsCollapseIndicator'),
     connectionIndicator: document.getElementById('connectionIndicator'),
@@ -445,65 +447,6 @@
 	    return true;
 	  }
 
-  const READINESS_SEVERITY_RANK = {
-    ok: 0,
-    neutral: 1,
-    attention: 2,
-    blocker: 3,
-  };
-  const PROVIDER_LEVEL_REASON_CODES = new Set([
-    'thinking_engine_not_chosen',
-    'provider_key_missing',
-    'provider_key_invalid',
-    'provider_quota_exceeded',
-    'provider_unavailable',
-    'network_unreachable',
-    'chat_timeout',
-    'chat_pipeline_unavailable',
-    'unknown',
-    'no_output',
-  ]);
-
-  function readinessSeverity(value) {
-    return Object.hasOwn(READINESS_SEVERITY_RANK, value) ? value : 'neutral';
-  }
-
-  function semanticKey(reasonCode, provider, model) {
-    const code = reasonCode || '';
-    const providerName = provider || '';
-    const modelPart = PROVIDER_LEVEL_REASON_CODES.has(code) ? '' : (model || '');
-    return `${code}:${providerName}:${modelPart}`;
-  }
-
-  function topReadinessGroup(snapshot) {
-    const groups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
-    return groups
-      .filter(group => group && typeof group.summary === 'string')
-      .sort((a, b) => (
-        (READINESS_SEVERITY_RANK[readinessSeverity(b.severity)] || 0)
-        - (READINESS_SEVERITY_RANK[readinessSeverity(a.severity)] || 0)
-      ))[0] || null;
-  }
-
-  function readinessGlance(snapshot = providerReadiness) {
-    if (!snapshot || snapshot.unavailable) {
-      return { severity: 'neutral', unavailable: true, summary: '' };
-    }
-    const severity = readinessSeverity(snapshot.summary?.severity);
-    const group = ['blocker', 'attention'].includes(severity)
-      ? topReadinessGroup(snapshot)
-      : null;
-    return {
-      severity,
-      unavailable: false,
-      summary: group?.summary || '',
-      reason_code: group?.reason_code || null,
-      provider: group?.provider || null,
-      model: group?.model || null,
-      detail: group?.detail || '',
-    };
-  }
-
   function getAgentId(id) {
     return String(id).slice(-4);
   }
@@ -564,11 +507,10 @@
       };
     }
 
-    const readiness = readinessGlance(providerReadiness);
-    if (['blocker', 'attention'].includes(readiness.severity) && readiness.summary) {
+    if (brainSnapshot && ['blocked', 'unhealthy', 'unknown'].includes(brainSnapshot.state)) {
       return {
-        key: 'HEALTH_GLANCE_READINESS_BLOCKED',
-        vars: { summary: readiness.summary },
+        key: 'HEALTH_GLANCE_BRAIN_ATTENTION',
+        vars: { headline: brainSnapshot.headline || '' },
       };
     }
 
@@ -591,21 +533,14 @@
       };
     }
 
-	    if (state.services.size > 0 || state.crashed.size > 0) {
-	      if (readiness.unavailable) {
-	        return { key: 'HEALTH_GLANCE_READINESS_UNKNOWN', vars: {} };
-	      }
-	      return {
-	        key: 'HEALTH_GLANCE_OK',
-	        vars: { age: relativeTime(now - (state.lastEventTs || now)) },
-	      };
-	    }
+    if (state.services.size > 0 || state.crashed.size > 0) {
+      return {
+        key: 'HEALTH_GLANCE_OK',
+        vars: { age: relativeTime(now - (state.lastEventTs || now)) },
+      };
+    }
 
-	    if (readiness.unavailable) {
-	      return { key: 'HEALTH_GLANCE_READINESS_UNKNOWN', vars: {} };
-	    }
-
-	    return null;
+    return null;
 	  }
 
   function formatGlanceSentence(selection) {
@@ -638,6 +573,70 @@
       elements.glanceErrorsValue.textContent = String(errorsToday);
       elements.glanceErrorsLabel.textContent = (errorsToday === 1 ? 'error today' : 'errors today');
     }
+  }
+
+  function renderBrainHealth() {
+    const box = elements.brainHealthStatus;
+    if (!box) return;
+    const brain = brainSnapshot || {};
+    const identity = brain.identity || {};
+    const evidence = brain.evidence || {};
+    const component = brain.failing_component ? ` (${brain.failing_component})` : '';
+    const lines = [];
+    if (brain.headline) lines.push(brain.headline);
+    if (identity.lane && identity.provider && identity.model) {
+      if (brain.state === 'ready') {
+        const checked = evidence.age_text ? `, checked ${evidence.age_text} ago` : '';
+        lines.push(`${identity.lane} ${identity.provider}/${identity.model}${checked}`);
+      } else {
+        lines.push(`${identity.lane} ${identity.provider}/${identity.model} — ${brain.reason_text || ''}${component}`);
+      }
+    } else if (identity.lane || identity.provider || identity.model) {
+      lines.push(`${brain.reason_text || ''}${component}`);
+    }
+    box.innerHTML = '';
+    lines.forEach((line) => {
+      const p = document.createElement('p');
+      p.textContent = line;
+      box.appendChild(p);
+    });
+    const action = brain.action || null;
+    const button = elements.brainCheckBtn;
+    if (!button) return;
+    if (!action?.label) {
+      button.hidden = true;
+      button.onclick = null;
+      return;
+    }
+    button.textContent = action.label;
+    button.hidden = false;
+    if (action.href) {
+      button.onclick = () => {
+        window.location.href = action.href;
+      };
+    } else if (action.refresh) {
+      button.onclick = () => requestBrainCheck();
+    } else {
+      button.onclick = null;
+    }
+  }
+
+  function requestBrainCheck() {
+    const button = elements.brainCheckBtn;
+    if (button) button.disabled = true;
+    return fetch('/app/health/api/brain/check', {method: 'POST'})
+      .then(r => r.json())
+      .then(payload => {
+        brainSnapshot = payload.brain || brainSnapshot;
+        renderBrainHealth();
+        updateStatusSummary();
+      })
+      .catch(() => {
+        renderBrainHealth();
+      })
+      .finally(() => {
+        if (button) button.disabled = false;
+      });
   }
 
   function updateAllQuiet() {
@@ -727,7 +726,11 @@
   function recentErrorGroupKey(entry) {
     if (entry.key) return entry.key;
     if (entry.reason_code) {
-      return semanticKey(entry.reason_code, entry.provider, entry.model);
+      return [
+        entry.reason_code || '',
+        entry.provider || '',
+        entry.model || '',
+      ].join(':');
     }
     return [
       'fallback',
@@ -2636,8 +2639,9 @@
       .then(r => r.json())
       .then(info => {
         state.localHost = info.hostname;
-        providerReadiness = info.readiness || providerReadiness;
+        brainSnapshot = info.brain || brainSnapshot;
         updateObserve();
+        renderBrainHealth();
         updateStatusSummary();
         elements.vitalsCheckBtn.textContent = 'check now';
         elements.vitalsCheckBtn.disabled = false;

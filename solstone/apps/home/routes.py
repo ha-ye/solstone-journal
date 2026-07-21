@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -20,11 +20,11 @@ from solstone.apps.home.connections import build_connections_card
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you, needs_dedup_key
 from solstone.apps.home.owner_voice import build_owner_voice_needs
-from solstone.apps.home.thinking_readiness import _thinking_blocked
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.shell_data import _resolve_attention
 from solstone.convey.utils import DATE_RE, format_date, relative_time
 from solstone.think.awareness import get_current
+from solstone.think.brain_health import build_brain_snapshot
 from solstone.think.briefing import (
     briefing_meeting_count,
     briefing_needs_items,
@@ -920,12 +920,12 @@ def _build_pulse_context() -> dict[str, Any]:
         summary = read_steward_summary()
         if summary:
             pipeline_status = {**pipeline_status, **summary}
-    thinking_blocked = _thinking_blocked()
+    brain = build_brain_snapshot(datetime.now(timezone.utc), surface="home")
     health_glance = build_health_glance(
         capture_health,
         pipeline_status,
         last_observe_relative,
-        thinking_blocked=thinking_blocked,
+        brain=brain,
     )
 
     yesterday_processing = _summarize_yesterday_processing(yesterday, journal_age_days)

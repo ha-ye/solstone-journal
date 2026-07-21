@@ -392,7 +392,7 @@ SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_OFF: "Scout is off.",
     SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
     SCOUT_STATE_INVITED: "Scout is ready.",
-    SCOUT_STATE_ON: "Scout is on — sol can think.",
+    SCOUT_STATE_ON: "Scout is on — thinking is available.",
     SCOUT_STATE_ENDED: "Scout has ended.",
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }

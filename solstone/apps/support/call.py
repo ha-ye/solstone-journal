@@ -676,6 +676,13 @@ def diagnose(
                 icon = "✓" if status == "running" else "✗"
                 typer.echo(f"  {icon} {name}: {status}")
 
+        brain = data.get("brain_health", {})
+        lines = brain.get("lines") if isinstance(brain, dict) else None
+        if isinstance(lines, list) and lines:
+            typer.echo("")
+            for line in lines:
+                typer.echo(str(line))
+
         errors = data.get("recent_errors", [])
         if errors:
             typer.echo(f"\nRecent errors ({len(errors)}):")

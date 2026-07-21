@@ -27,7 +27,6 @@ from solstone.apps.thinking.google_model_pins import (
 )
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.utils import log_app_action
-from solstone.convey.readiness_snapshot import build_readiness_snapshot
 from solstone.convey.reasons import (
     CONFIG_BUSY,
     INVALID_CONFIG_VALUE,
@@ -40,6 +39,7 @@ from solstone.convey.reasons import (
 )
 from solstone.convey.utils import error_response
 from solstone.observe.transcribe.config import confidential_audio_enabled
+from solstone.think.brain_health import build_brain_snapshot, request_brain_refresh
 from solstone.think.journal_config import (
     JournalConfigMutation,
     mutate_journal_config,
@@ -566,15 +566,12 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
 
     providers_list = get_provider_list()
     local_status = local_bootstrap.get_state(local_model_id)
-    ai_readiness = build_readiness_snapshot(
-        local_model_id=local_model_id,
-        include_local=True,
-    )
+    brain = build_brain_snapshot(datetime.now(timezone.utc), surface="thinking")
 
     return {
         "providers": providers_list,
         "provider_status": build_provider_status(providers_list),
-        "ai_readiness": ai_readiness,
+        "brain": brain,
         "active_lane": _active_lane_payload(
             active_settings,
             config.get("transcribe", {})
@@ -1284,6 +1281,20 @@ def get_providers() -> Any:
     except Exception:
         logger.exception("error loading providers")
         return _thinking_operation_failed()
+
+
+@thinking_bp.post("/api/brain/check")
+def check_brain() -> Any:
+    ok = request_brain_refresh(surface="thinking")
+    try:
+        brain = build_brain_snapshot(datetime.now(timezone.utc), surface="thinking")
+    except Exception:
+        logger.exception("error loading brain health")
+        return _thinking_operation_failed()
+    response: dict[str, Any] = {"ok": ok, "brain": brain}
+    if not ok:
+        response["error"] = "check_not_started"
+    return jsonify(response)
 
 
 @thinking_bp.route("/api/providers/local/status")

@@ -142,4 +142,4 @@ class HealthReport:
     consumer_signal: ConsumerSignalHealth
     segment_backlog: SegmentBacklogHealth
     notes: tuple[HealthNote, ...]
-    provider_readiness: dict[str, Any]
+    brain_health: dict[str, Any]

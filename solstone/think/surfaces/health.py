@@ -17,11 +17,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from solstone.convey.readiness_snapshot import (
-    build_readiness_snapshot,
-    unavailable_snapshot,
-)
 from solstone.think.activities import load_activity_records
+from solstone.think.brain_health import (
+    HEADLINES,
+    build_brain_snapshot,
+    render_brain_health_lines,
+)
 from solstone.think.display_powersave import (
     display_powersave_detectable,
     last_display_powersave,
@@ -540,12 +541,20 @@ def _build_segment_backlog_health() -> SegmentBacklogHealth:
     )
 
 
-def _build_provider_readiness() -> dict[str, Any]:
+def _build_brain_health() -> dict[str, Any]:
     try:
-        return build_readiness_snapshot()
+        snapshot = build_brain_snapshot(_resolve_now(), surface="cli")
+        return {"snapshot": snapshot, "lines": render_brain_health_lines(snapshot)}
     except Exception:
-        logger.exception("error building provider readiness for health report")
-        return unavailable_snapshot()
+        logger.exception("error building brain health for health report")
+        return {
+            "snapshot": {
+                "state": "unknown",
+                "headline": HEADLINES["unknown"],
+                "reason_code": "brain_record_unavailable",
+            },
+            "lines": ["Brain Health", f"  {HEADLINES['unknown']}"],
+        }
 
 
 def _build_report(day_from: str, day_to: str) -> HealthReport:
@@ -580,7 +589,7 @@ def _build_report(day_from: str, day_to: str) -> HealthReport:
         consumer_signal=_build_consumer_signal_health(),
         segment_backlog=_build_segment_backlog_health(),
         notes=tuple(notes),
-        provider_readiness=_build_provider_readiness(),
+        brain_health=_build_brain_health(),
     )
 
 
