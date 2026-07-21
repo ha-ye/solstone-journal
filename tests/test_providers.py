@@ -69,6 +69,27 @@ def test_cloud_provider_status_never_carries_install_gate(
     )
 
 
+def test_local_provider_status_accepts_pre_resolved_row(monkeypatch) -> None:
+    sentinel = {
+        "configured": True,
+        "selected": True,
+        "generate_ready": False,
+        "cogitate_ready": True,
+        "issues": ["provider_unavailable"],
+    }
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_status_dict",
+        lambda: (_ for _ in ()).throw(AssertionError("local status probed")),
+    )
+
+    status = build_provider_status(
+        [{"name": "local", "label": "Local", "env_key": ""}],
+        local_status=sentinel,
+    )
+
+    assert status["local"] == sentinel
+
+
 def test_inert_upgrade_path_for_stale_bundled_config(
     tmp_path, monkeypatch, caplog
 ) -> None:

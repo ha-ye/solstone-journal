@@ -67,7 +67,7 @@ def test_guard_flags_unauthorized_brain_reader_import(tmp_path, capsys) -> None:
     _write(
         tmp_path,
         "solstone/think/work.py",
-        "from solstone.think.brain_health import build_brain_snapshot\n",
+        "from solstone.think.brain_health import build_brain_presentation\n",
     )
 
     assert _run(tmp_path) == 1
@@ -79,6 +79,71 @@ def test_guard_allows_declared_brain_reader_import(tmp_path) -> None:
         tmp_path,
         "solstone/think/top.py",
         "from solstone.think.brain_health import build_brain_snapshot\n",
+    )
+
+    assert _run(tmp_path) == 0
+
+
+def test_guard_flags_process_local_attestation_calls_with_aliases(
+    tmp_path,
+    capsys,
+) -> None:
+    _write(
+        tmp_path,
+        "solstone/apps/thinking/routes.py",
+        "\n".join(
+            [
+                "from solstone.think.services import spp as service_spp",
+                "from solstone.think.providers.local_endpoint import probe_local_endpoint as probe",
+                "from solstone.think.services.spp_transport import recheck_confidential_attestation as recheck",
+                "def bad(endpoint):",
+                "    service_spp.get_attestation_state()",
+                "    probe(endpoint)",
+                "    recheck()",
+            ]
+        ),
+    )
+
+    assert _run(tmp_path) == 1
+    output = capsys.readouterr().out
+    assert "unauthorized-process-local-attestation" in output
+    assert "solstone.think.services.spp.get_attestation_state" in output
+    assert "solstone.think.providers.local_endpoint.probe_local_endpoint" in output
+    assert (
+        "solstone.think.services.spp_transport.recheck_confidential_attestation"
+        in output
+    )
+
+
+def test_guard_allows_declared_process_local_attestation_callers(tmp_path) -> None:
+    _write(
+        tmp_path,
+        "solstone/think/brain_cli.py",
+        "\n".join(
+            [
+                "from solstone.think.services import spp",
+                "from solstone.think.services.spp_transport import recheck_confidential_attestation",
+                "def refresh():",
+                "    recheck_confidential_attestation()",
+                "    spp.get_attestation_state()",
+            ]
+        ),
+    )
+    _write(
+        tmp_path,
+        "solstone/think/providers/state.py",
+        "\n".join(
+            [
+                "from solstone.think.providers.local_endpoint import probe_local_endpoint",
+                "def status(endpoint):",
+                "    return probe_local_endpoint(endpoint)",
+            ]
+        ),
+    )
+    _write(
+        tmp_path,
+        "tests/test_bad.py",
+        "from solstone.think.services import spp\nspp.get_attestation_state()\n",
     )
 
     assert _run(tmp_path) == 0

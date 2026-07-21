@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import importlib
 import time
 from datetime import datetime, timedelta, timezone
@@ -407,6 +408,63 @@ def test_confidential_generate_stops_before_any_provider_dispatch(
     httpx_post.assert_not_called()
     httpx_get.assert_not_called()
     assert establish.call_count == 3
+
+
+def test_persisted_spp_brain_evidence_never_authorizes_generate_egress(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.providers.brain_state import (
+        begin_brain_refresh,
+        finish_brain_refresh,
+    )
+    from solstone.think.services import spp
+
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config()
+    config["providers"] = {
+        "active": {"provider": "local", "model": LOCAL_MODEL},
+    }
+    _add_local_endpoint(config)
+    config["services"]["confidential"]["credential_fingerprint_sha256"] = (
+        hashlib.sha256(b"confidential-credential").hexdigest()
+    )
+    _seed_journal_config(tmp_path, config)
+
+    now = datetime.now(timezone.utc)
+    permit = begin_brain_refresh(now, journal_path=tmp_path)
+    assert permit is not None
+    component = {
+        "status": "ok",
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+    }
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": component,
+            "lane_prerequisites": component,
+            "generate": component,
+            "cogitate": component,
+        },
+        now,
+        journal_path=tmp_path,
+    )
+    spp.delete_attestation_state()
+
+    establish = _install_failing_confidential_transport(monkeypatch)
+    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+    monkeypatch.setattr("httpx.get", httpx_get)
+
+    with pytest.raises(AttestationFailedError) as generate_exc:
+        models.generate("hello", "any.context")
+
+    _assert_attestation_failed(generate_exc.value)
+    httpx_post.assert_not_called()
+    httpx_get.assert_not_called()
+    establish.assert_called_once()
 
 
 def test_confidential_cogitate_stops_before_any_provider_dispatch(

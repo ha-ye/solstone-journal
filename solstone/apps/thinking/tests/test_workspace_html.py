@@ -188,7 +188,7 @@ def test_confidential_live_static_behavior_is_wired() -> None:
     assert 'role="button"' in card.group(1)
     assert 'tabindex="0"' in card.group(1)
     assert "api/confidential/enable" in js
-    assert "api/confidential/recheck" in js
+    assert "api/brain/check" in js
     assert "api/confidential/disable" in js
     assert "function openConsentTab(operation)" in js
     assert "confidentialProvenancePresent" in js
@@ -263,7 +263,12 @@ def test_thinking_deck_copy_constants() -> None:
         "confidential_verified": {
             "label": "sol is thinking with",
             "value": "confidential processing",
-            "detail": "{legs} · {substrate} · checked {checked}",
+            "detail": "confidential hardware verified · checked {checked}",
+        },
+        "confidential_available": {
+            "label": "available",
+            "value": "confidential processing",
+            "detail": "confidential processing is available.",
         },
         "confidential_blocked": {
             "label": "sol is holding",
@@ -460,8 +465,9 @@ def test_thinking_deck_copy_constants() -> None:
     }
     assert thinking_copy.CONFIDENTIAL_ATTESTATION_STATES == {
         "off": "",
+        "inactive": "confidential processing is available.",
         "verifying": "checking the hardware…",
-        "verified": "{legs} · {substrate} · checked {checked}",
+        "verified": "confidential hardware verified · checked {checked}",
         "failed": "couldn't verify the service — sol isn't sending.",
         "stale": "your journal needs to re-check the service before sending.",
         "unreachable": "can't reach confidential processing right now — sol isn't sending.",

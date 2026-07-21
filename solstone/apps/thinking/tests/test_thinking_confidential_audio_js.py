@@ -50,7 +50,7 @@ def test_confidential_audio_helpers_cover_state_matrix() -> None:
             """
 const confidentialCopy = copy.confidential;
 const beats = confidentialCopy.setup.trust_beats;
-const states = ['off', 'verifying', 'verified', 'failed', 'stale', 'unreachable'];
+const states = ['off', 'inactive', 'verifying', 'verified', 'failed', 'stale', 'unreachable'];
 const deferralStates = new Set(['verifying', 'failed', 'stale', 'unreachable']);
 
 assert(confidentialAudioSetting({}) === true, 'absent setting defaults on');

@@ -245,8 +245,21 @@ def test_state_parity_matrix(monkeypatch, capsys):
         monkeypatch.setattr(thinking_routes.local_bootstrap, "get_state", lambda _m: {})
         monkeypatch.setattr(
             thinking_routes,
-            "build_brain_snapshot",
-            lambda *_a, **_k: thinking_brain,
+            "build_brain_presentation",
+            lambda *_a, **_k: {
+                "brain": thinking_brain,
+                "spp_active": False,
+                "spp_readiness": {
+                    "generate_ready": False,
+                    "cogitate_ready": False,
+                    "issues": ["brain_record_missing"],
+                },
+                "confidential_attestation": {
+                    "state": "off",
+                    "reason": "confidential_not_configured",
+                    "observed_at": None,
+                },
+            },
         )
         thinking_payload = thinking_routes._provider_payload({}, "local/model")
         assert thinking_payload["brain"]["headline"] == HEADLINES[case.state]

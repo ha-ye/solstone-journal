@@ -5,8 +5,7 @@
   },
   "active_lane": {
     "confidential_attestation": {
-      "last_verified": null,
-      "provenance": null,
+      "observed_at": null,
       "reason": "confidential_not_configured",
       "state": "off"
     },

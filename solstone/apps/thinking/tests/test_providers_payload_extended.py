@@ -155,11 +155,36 @@ def _brain_payload(
     }
 
 
+def _presentation(
+    snapshot: dict[str, object] | None = None,
+    *,
+    spp_active: bool = False,
+    spp_readiness: dict[str, object] | None = None,
+    confidential_attestation: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "brain": snapshot or _brain_payload(),
+        "spp_active": spp_active,
+        "spp_readiness": spp_readiness
+        or {
+            "generate_ready": False,
+            "cogitate_ready": False,
+            "issues": ["brain_record_missing"],
+        },
+        "confidential_attestation": confidential_attestation
+        or {
+            "state": "off",
+            "reason": "confidential_not_configured",
+            "observed_at": None,
+        },
+    }
+
+
 def _patch_brain(monkeypatch, snapshot: dict[str, object] | None = None) -> None:
     monkeypatch.setattr(
         routes,
-        "build_brain_snapshot",
-        lambda *_args, **_kwargs: snapshot or _brain_payload(),
+        "build_brain_presentation",
+        lambda *_args, **_kwargs: _presentation(snapshot),
     )
 
 
@@ -501,10 +526,9 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "confidential_provenance_configured": True,
         "confidential_operation": None,
         "confidential_attestation": {
-            "state": "verifying",
-            "provenance": None,
-            "last_verified": None,
-            "reason": "attestation_not_yet_verified",
+            "state": "inactive",
+            "reason": "confidential_not_active",
+            "observed_at": None,
         },
     }
 
@@ -1244,6 +1268,59 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["provider_status"]["local"] == sentinel
+
+
+def test_get_providers_uses_canonical_spp_local_status_without_probe(
+    settings_client,
+    monkeypatch,
+):
+    spp_readiness = {
+        "generate_ready": True,
+        "cogitate_ready": False,
+        "issues": ["cogitate_terminal_error"],
+    }
+    monkeypatch.setattr(
+        routes,
+        "build_brain_presentation",
+        lambda *_args, **_kwargs: _presentation(
+            spp_active=True,
+            spp_readiness=spp_readiness,
+            confidential_attestation={
+                "state": "verified",
+                "reason": None,
+                "observed_at": "2026-04-10T12:00:00Z",
+            },
+        ),
+    )
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("process-local readiness path called")
+
+    monkeypatch.setattr("solstone.think.providers.state.local_status_dict", fail)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        fail,
+    )
+    monkeypatch.setattr("solstone.think.services.spp.get_attestation_state", fail)
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.recheck_confidential_attestation",
+        fail,
+    )
+
+    providers_response = settings_client.get("/app/thinking/api/providers")
+    local_response = settings_client.get("/app/thinking/api/providers/local/status")
+
+    assert providers_response.status_code == 200
+    assert local_response.status_code == 200
+    expected = {
+        "configured": True,
+        "selected": True,
+        "generate_ready": True,
+        "cogitate_ready": False,
+        "issues": ["cogitate_terminal_error"],
+    }
+    assert providers_response.get_json()["provider_status"]["local"] == expected
+    assert local_response.get_json() == expected
 
 
 def test_get_providers_brain_shape(settings_client, monkeypatch):

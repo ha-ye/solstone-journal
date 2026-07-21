@@ -136,9 +136,8 @@ def test_show_verbs_select_http_fields() -> None:
     assert providers_payload["active_lane"]["lane"] == "byo"
     assert providers_payload["active_lane"]["confidential_attestation"] == {
         "state": "off",
-        "provenance": None,
-        "last_verified": None,
         "reason": "confidential_not_configured",
+        "observed_at": None,
     }
 
 

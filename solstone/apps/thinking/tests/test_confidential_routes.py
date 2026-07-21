@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from solstone.apps.thinking import routes
 from solstone.apps.thinking.google_model_pins import (
     GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
     GOOGLE_PRO_ALIAS,
@@ -200,10 +201,9 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
     assert payload["active_lane"]["confidential_provenance_configured"] is True
     assert payload["active_lane"]["confidential_operation"]["phase"] == "not_verified"
     assert payload["active_lane"]["confidential_attestation"] == {
-        "state": "verifying",
-        "provenance": None,
-        "last_verified": None,
-        "reason": "attestation_not_yet_verified",
+        "state": "stale",
+        "reason": "brain_record_missing",
+        "observed_at": None,
     }
 
 
@@ -232,9 +232,8 @@ def test_enable_confidential_early_access_stays_off(
     assert payload["active_lane"]["confidential_provenance_configured"] is False
     assert payload["active_lane"]["confidential_attestation"] == {
         "state": "off",
-        "provenance": None,
-        "last_verified": None,
         "reason": "confidential_not_configured",
+        "observed_at": None,
     }
 
 
@@ -669,35 +668,107 @@ def test_disable_confidential_restores_synchronously(
     assert spp_transport._CONFIDENTIAL_BLOCK == provenance
 
 
-def test_recheck_confidential_rejects_when_off(thinking_client) -> None:
+def test_recheck_confidential_rejects_when_off(
+    thinking_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "request_brain_refresh",
+        Mock(side_effect=AssertionError("brain refresh attempted")),
+    )
     response = thinking_client.post("/app/thinking/api/confidential/recheck")
 
     assert response.status_code == 400
     assert response.get_json()["reason_code"] == "invalid_operation_for_state"
 
 
-def test_recheck_confidential_returns_refreshed_provider_state(
+def test_recheck_confidential_rejects_when_inactive_before_refresh(
+    thinking_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "build_brain_presentation",
+        lambda *_a, **_k: {
+            "brain": {},
+            "spp_active": False,
+            "spp_readiness": {
+                "generate_ready": False,
+                "cogitate_ready": False,
+                "issues": ["brain_record_missing"],
+            },
+            "confidential_attestation": {
+                "state": "inactive",
+                "reason": "confidential_not_active",
+                "observed_at": None,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "request_brain_refresh",
+        Mock(side_effect=AssertionError("brain refresh attempted")),
+    )
+
+    response = thinking_client.post("/app/thinking/api/confidential/recheck")
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_operation_for_state"
+
+
+def test_recheck_confidential_returns_brain_check_response(
     thinking_client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spp.provision_confidential_handoff(_payload("recheck"))
-
-    def recheck() -> None:
-        spp.record_attestation_failed("failed", "gpu_nonce_mismatch")
-
-    monkeypatch.setattr(spp_transport, "recheck_confidential_attestation", recheck)
+    brain = {
+        "state": "checking",
+        "headline": "checking how sol thinks",
+        "reason_code": "brain_check_in_progress",
+        "reason_text": "brain check in progress",
+        "failing_component": "configuration",
+        "action": None,
+        "identity": {
+            "lane": "spp",
+            "provider": "local",
+            "model": "local/qwen3.5-4b",
+        },
+        "evidence": {"observed_at": None, "age_seconds": None, "age_text": None},
+        "components": {
+            "generate": {
+                "status": None,
+                "reason_code": None,
+                "reason_text": "unknown",
+                "observed_at": None,
+            },
+            "cogitate": {
+                "status": None,
+                "reason_code": None,
+                "reason_text": "unknown",
+                "observed_at": None,
+            },
+        },
+        "progressing": True,
+    }
+    refresh_surfaces: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "request_brain_refresh",
+        lambda *, surface: refresh_surfaces.append(surface) or True,
+    )
+    monkeypatch.setattr(routes, "build_brain_snapshot", lambda *_a, **_k: brain)
+    monkeypatch.setattr(
+        spp_transport,
+        "recheck_confidential_attestation",
+        Mock(side_effect=AssertionError("legacy recheck attempted")),
+    )
 
     response = thinking_client.post("/app/thinking/api/confidential/recheck")
 
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["active_lane"]["confidential_enabled"] is True
-    assert payload["active_lane"]["confidential_attestation"] == {
-        "state": "failed",
-        "provenance": None,
-        "last_verified": None,
-        "reason": "attestation_failed",
-    }
+    assert response.get_json() == {"ok": True, "brain": brain}
+    assert refresh_surfaces == ["thinking"]
 
 
 def test_confidential_routes_and_provider_payload_are_secret_free(

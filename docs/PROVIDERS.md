@@ -152,6 +152,10 @@ recovery action for the active profile.
 - Missing local runtime, model files, RAM, endpoint readiness, or confidential
   attestation fails closed rather than falling back to cloud.
 
+Owner-facing brain health and Thinking readiness read canonical evidence from
+`health/brain.json`. Confidential SPP egress remains authorized only by the
+current process-local attestation state in `spp_transport`.
+
 ## Migration Boundary
 
 The Thinking maintenance task collapses legacy `providers.generate` and
