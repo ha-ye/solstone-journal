@@ -40,11 +40,11 @@ Guidance: `solstone/apps/health/talent/health/SKILL.md`
 
 Triggers: `speaker`, `voice`, `who was talking`, `identify speaker`, `voiceprint`, `tag-owner`, `build-from-tags`, `rebuild-owner`, `owner-ready`
 
-Read: `discover`, `resolve-names`, `status`
+Read: `discover`, `keep-separate-list`, `resolve-names`, `status`
 
 Write: `backfill`, `backfill-last-seen`, `bootstrap`, `link-import`, `merge-names`, `rebuild-owner`, `seed-from-imports`
 
-Other: `attribute-segment`, `build-from-tags`, `confirm-owner`, `correct`, `day-segments`, `detect`, `identify`, `owner-ready`, `presence`, `propagate-correction`, `reject-owner`, `sentences`, `suggest`, `tag-owner`, `wipe`
+Other: `attribute-segment`, `build-from-tags`, `confirm-owner`, `correct`, `day-segments`, `detect`, `dismiss-cluster`, `dismissals`, `identify`, `identify-operation`, `identify-operations`, `identify-undo`, `owner-ready`, `presence`, `propagate-correction`, `reject-owner`, `sentences`, `suggest`, `tag-owner`, `wipe`
 
 Guidance: `solstone/apps/speakers/talent/speakers/SKILL.md`
 

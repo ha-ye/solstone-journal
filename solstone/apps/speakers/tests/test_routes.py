@@ -3,6 +3,7 @@
 
 """Tests for speakers app - sentence-based embeddings."""
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -92,6 +93,22 @@ def _read_action_entries(journal_root):
         for line in log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _journal_file_hashes(journal_root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(journal_root).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(journal_root.rglob("*"))
+        if path.is_file() and not path.name.endswith(".lock")
+    }
+
+
+def _changed_paths(before: dict[str, str], after: dict[str, str]) -> set[str]:
+    return {
+        path for path in set(before) | set(after) if before.get(path) != after.get(path)
+    }
 
 
 def _speakers_client():
@@ -1273,6 +1290,8 @@ def test_discovery_identify_route_entity_id_only_and_result_mapping(
         "resolve_only": False,
         "create_new": False,
         "entity_type": "Person",
+        "request_id": None,
+        "reviewed_near_match_entity_ids": None,
     }
 
 
@@ -1342,76 +1361,221 @@ def test_discovery_identify_route_invalid_entity_type(speakers_env):
 
 def test_discovery_identify_route_partial_and_retry(speakers_env, monkeypatch):
     from solstone.apps.speakers import discovery
+    from solstone.think.entities.voiceprints import load_entity_voiceprints_file
 
     env = speakers_env()
     env.create_entity("Bob Smith")
     _write_discovery_cluster(env, 36, "110500_300")
     _write_discovery_cluster(env, 37, "111000_300")
     client = _convey_client(env.journal)
+    request_id = "route-retry-request"
 
-    def fail_after_voiceprints(stage: str) -> None:
-        if stage == "after_voiceprints":
-            raise RuntimeError("forced after voiceprints")
-
-    monkeypatch.setattr(
-        discovery,
-        "_maybe_inject_identify_fault",
-        fail_after_voiceprints,
-    )
-    partial_voice = client.post(
-        "/app/speakers/api/discovery/identify",
-        json={"cluster_id": 36, "name": "Bob Smith"},
-    )
-
-    assert partial_voice.status_code == 409
-    body = partial_voice.get_json()
-    assert body["reason_code"] == "speaker_command_failed"
-    assert body["status"] == "partial"
-    assert body["completed"] == ["voiceprints"]
-    assert body["failed"] == ["segments", "sentinel"]
+    def fail_after_prepared(stage: str) -> None:
+        if stage == "after_prepared":
+            raise RuntimeError("forced after prepared")
 
     monkeypatch.setattr(
         discovery,
         "_maybe_inject_identify_fault",
-        lambda stage: None,
+        fail_after_prepared,
     )
-    retry_voice = client.post(
+    recoverable = client.post(
         "/app/speakers/api/discovery/identify",
-        json={"cluster_id": 36, "name": "Bob Smith"},
-    )
-    assert retry_voice.status_code == 200
-    assert retry_voice.get_json()["status"] == "identified"
-
-    def fail_after_segments(stage: str) -> None:
-        if stage == "after_segments":
-            raise RuntimeError("forced after segments")
-
-    monkeypatch.setattr(
-        discovery,
-        "_maybe_inject_identify_fault",
-        fail_after_segments,
-    )
-    partial_segments = client.post(
-        "/app/speakers/api/discovery/identify",
-        json={"cluster_id": 37, "name": "Bob Smith"},
+        json={"cluster_id": 36, "name": "Bob Smith", "request_id": request_id},
     )
 
-    assert partial_segments.status_code == 409
-    body = partial_segments.get_json()
-    assert body["completed"] == ["voiceprints", "segments"]
-    assert body["failed"] == ["sentinel"]
+    assert recoverable.status_code == 409
+    body = recoverable.get_json()
+    assert body["reason_code"] == "speaker_identify_recoverable"
+    assert body["status"] == "recoverable"
+    operation_id = body["operation_id"]
+    assert body["request_id"] == request_id
+    assert body["completed_phases"] == []
+    assert "entity" in body["pending_phases"]
 
     monkeypatch.setattr(
         discovery,
         "_maybe_inject_identify_fault",
         lambda stage: None,
     )
-    retry_segments = client.post(
+    retry = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 36, "name": "Bob Smith", "request_id": request_id},
+    )
+    assert retry.status_code == 200
+    retry_body = retry.get_json()
+    assert retry_body["status"] == "identified"
+    assert retry_body["operation_id"] == operation_id
+    assert len(load_entity_voiceprints_file("bob_smith")[1]) == 1
+
+    replay = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 36, "name": "Bob Smith", "request_id": request_id},
+    )
+    assert replay.status_code == 200
+    assert replay.get_json() == retry_body
+    assert len(load_entity_voiceprints_file("bob_smith")[1]) == 1
+
+    conflict = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 37, "name": "Bob Smith", "request_id": request_id},
+    )
+    assert conflict.status_code == 409
+    conflict_body = conflict.get_json()
+    assert conflict_body["reason_code"] == "speaker_identify_conflict"
+    assert conflict_body["conflict_code"] == "request_fingerprint_mismatch"
+
+    legacy_success = client.post(
         "/app/speakers/api/discovery/identify",
         json={"cluster_id": 37, "name": "Bob Smith"},
     )
-    assert retry_segments.status_code == 200
-    assert retry_segments.get_json()["status"] == "identified"
+    assert legacy_success.status_code == 200
+    assert legacy_success.get_json()["status"] == "identified"
+
+    _write_discovery_cluster(env, 38, "111500_300")
+    monkeypatch.setattr(
+        discovery,
+        "_maybe_inject_identify_fault",
+        fail_after_prepared,
+    )
+    legacy_recoverable = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 38, "name": "Bob Smith"},
+    )
+    assert legacy_recoverable.status_code == 409
+    assert (
+        legacy_recoverable.get_json()["reason_code"] == "speaker_identify_recoverable"
+    )
+
+
+def test_discovery_identify_operations_and_undo_routes(speakers_env):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _write_discovery_cluster(env, 39, "112000_300")
+    client = _convey_client(env.journal)
+
+    identify = client.post(
+        "/app/speakers/api/discovery/identify-cli",
+        json={
+            "cluster_id": 39,
+            "name": "Bob Smith",
+            "request_id": "route-operation-roundtrip",
+        },
+    )
+
+    assert identify.status_code == 200
+    operation_id = identify.get_json()["operation_id"]
+
+    listing = client.get("/app/speakers/api/discovery/identify/operations")
+    assert listing.status_code == 200
+    listed = listing.get_json()
+    assert listed["total"] == 1
+    assert listed["operations"][0]["operation_id"] == operation_id
+    assert "prepared_plan" not in json.dumps(listed)
+    assert "Bob Smith" not in json.dumps(listed)
+
+    shown = client.get(
+        f"/app/speakers/api/discovery/identify/operations/{operation_id}"
+    )
+    assert shown.status_code == 200
+    shown_body = shown.get_json()
+    assert shown_body["operation"]["operation_id"] == operation_id
+    assert "prepared_plan" not in json.dumps(shown_body)
+    assert "Bob Smith" not in json.dumps(shown_body)
+
+    undo = client.post(
+        "/app/speakers/api/discovery/identify/undo",
+        json={"operation_id": operation_id},
+    )
+    assert undo.status_code == 200
+    assert undo.get_json()["status"] == "undone"
+
+    second_undo = client.post(
+        "/app/speakers/api/discovery/identify/undo",
+        json={"operation_id": operation_id},
+    )
+    assert second_undo.status_code == 200
+    assert second_undo.get_json()["status"] == "already_undone"
+
+    missing = client.get("/app/speakers/api/discovery/identify/operations/idop_missing")
+    assert missing.status_code == 404
+    assert missing.get_json()["reason_code"] == "speaker_identify_operation_not_found"
+
+
+def test_discovery_dismissals_and_keep_separate_list_routes_are_store_only(
+    speakers_env,
+):
+    from solstone.think.speaker_keep_separate import record_keep_separate_assertion
+
+    env = speakers_env()
+    _write_discovery_cluster(env, 40, "112500_300")
+    client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
+
+    dismissed = client.post(
+        "/app/speakers/api/discovery/dismiss",
+        json={"cluster_id": 40, "disposition": "quiet"},
+    )
+    record_keep_separate_assertion(
+        "alice",
+        "alice_johnson",
+        source_kind="explicit_create_near_match",
+        operation_id="idop_route_test",
+        detection_count=1,
+    )
+    dismissals = client.get("/app/speakers/api/discovery/dismissals")
+    keep_separate = client.get("/app/speakers/api/name-variants/keep-separate")
+    after = _journal_file_hashes(env.journal)
+
+    assert dismissed.status_code == 200
+    assert dismissed.get_json()["member_count"] == 1
+    assert dismissals.status_code == 200
+    assert dismissals.get_json()["total"] == 1
+    assert keep_separate.status_code == 200
+    assert keep_separate.get_json()["total"] == 1
+    assert _changed_paths(before, after) <= {
+        "speakers/cluster-dismissals.jsonl",
+        "speakers/keep-separate.jsonl",
+    }
+
+
+def test_api_suggest_filters_keep_separate_name_variant(speakers_env):
+    from solstone.think.speaker_keep_separate import record_keep_separate_assertion
+
+    env = speakers_env()
+    env.create_entity("Alice")
+    env.create_entity("Alice Test")
+    base = env.create_embedding([1.0, 0.0, 0.0])
+    similar = env.create_embedding([1.0, 0.01, 0.0])
+    _write_voiceprints(
+        env,
+        "alice",
+        [
+            (base, "20240101", "100000_300", "mic_audio", 1),
+            (similar, "20240101", "100005_300", "mic_audio", 2),
+        ],
+    )
+    _write_voiceprints(
+        env,
+        "alice_test",
+        [
+            (similar, "20240101", "101000_300", "mic_audio", 1),
+            (base, "20240101", "101005_300", "mic_audio", 2),
+        ],
+    )
+    record_keep_separate_assertion(
+        "alice",
+        "alice_test",
+        source_kind="explicit_create_near_match",
+        operation_id="idop_suggest_route",
+        detection_count=1,
+    )
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/suggest")
+
+    assert response.status_code == 200
+    assert all(item["type"] != "name_variant" for item in response.get_json()["items"])
 
 
 def test_workspace_discovery_identify_requests_create_new():

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solstone.think.journal_io import atomic_replace, hold_lock
+from solstone.think.speaker_keep_separate import name_variant_pair_suppressed
 from solstone.think.utils import get_journal
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,23 @@ def find_candidate(
     return None
 
 
+def _detection_count_from_row(row: dict[str, Any] | None) -> int:
+    if not isinstance(row, dict):
+        return 1
+    evidence = row.get("evidence")
+    if not isinstance(evidence, dict):
+        return 1
+    try:
+        return max(1, int(evidence.get("detection_count", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def detection_count_for_pair(id_a: str, id_b: str) -> int:
+    """Return the current detection count for a candidate pair, defaulting to 1."""
+    return _detection_count_from_row(find_candidate(load_candidates(), id_a, id_b))
+
+
 def locked_modify_candidates(
     fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -151,23 +169,30 @@ def record_name_variant_candidate(
     target_label: str,
     similarity: float,
     readiness: str = "ready",
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool, bool]:
     """Create or update one speaker name-variant candidate."""
     row: dict[str, Any] | None = None
     created = False
+    suppressed = False
 
     def mutate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal row, created
+        nonlocal row, created, suppressed
         existing = find_candidate(rows, source_id, target_id)
         now = utc_now_iso()
         if existing is None:
+            detection_count = 1
+            suppressed = name_variant_pair_suppressed(
+                source_id,
+                target_id,
+                detection_count,
+            )
             # Deterministic pairs reaching the recorder already met threshold and gates; "waiting" is reserved.
             row = {
                 "source_id": source_id,
                 "source_label": source_label,
                 "target_id": target_id,
                 "target_label": target_label,
-                "status": "open",
+                "status": "suppressed" if suppressed else "open",
                 "similarity": similarity,
                 "readiness": readiness,
                 "evidence": _evidence(
@@ -175,13 +200,16 @@ def record_name_variant_candidate(
                     target_label,
                     similarity,
                     readiness,
-                    1,
+                    detection_count,
                 ),
                 "first_surfaced": now,
                 "last_surfaced": now,
                 "created_at": now,
                 "updated_at": now,
             }
+            if suppressed:
+                row["suppressed_by_keep_separate"] = True
+                row["suppressed_detection_count"] = detection_count
             created = True
             return list(rows) + [row]
 
@@ -201,18 +229,36 @@ def record_name_variant_candidate(
         existing["similarity"] = similarity
         existing["readiness"] = readiness
         next_evidence = dict(evidence)
+        next_detection_count = detection_count + 1
         next_evidence.update(
             _evidence(
                 source_label,
                 target_label,
                 similarity,
                 readiness,
-                detection_count + 1,
+                next_detection_count,
             )
         )
         existing["evidence"] = next_evidence
         existing["last_surfaced"] = now
         existing["updated_at"] = now
+        status = str(existing.get("status") or "")
+        suppressed_now = name_variant_pair_suppressed(
+            source_id,
+            target_id,
+            next_detection_count,
+        )
+        if status not in {"accepted", "dismissed"}:
+            if suppressed_now:
+                existing["status"] = "suppressed"
+                existing["suppressed_by_keep_separate"] = True
+                existing["suppressed_detection_count"] = next_detection_count
+                suppressed = True
+            elif existing.get("suppressed_by_keep_separate") is True:
+                existing["status"] = "open"
+                existing.pop("suppressed_by_keep_separate", None)
+                existing.pop("suppressed_detection_count", None)
+                suppressed = False
         row = existing
         created = False
         return rows
@@ -222,7 +268,7 @@ def record_name_variant_candidate(
     if row is None:  # pragma: no cover - defensive assertion
         raise RuntimeError("record-name-variant-candidate produced no row")
 
-    return row, created
+    return row, created, suppressed
 
 
 def touch_updated(row: dict[str, Any]) -> None:

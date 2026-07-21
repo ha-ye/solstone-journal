@@ -213,8 +213,9 @@ def run_name_variants(args: list[str]) -> int:
     detection = detect_name_variant_candidates()
     created = 0
     updated = 0
+    suppressed = 0
     for candidate in detection.get("candidates", []):
-        _, was_created = record_name_variant_candidate(
+        _, was_created, was_suppressed = record_name_variant_candidate(
             source_id=candidate["source_id"],
             source_label=candidate["source_label"],
             target_id=candidate["target_id"],
@@ -222,17 +223,20 @@ def run_name_variants(args: list[str]) -> int:
             similarity=candidate["similarity"],
             readiness=candidate["readiness"],
         )
+        if was_suppressed:
+            suppressed += 1
         if was_created:
             created += 1
         else:
             updated += 1
 
     logger.info(
-        "speaker name variant candidates refreshed: journal=%s found=%d created=%d updated=%d path=%s",
+        "speaker name variant candidates refreshed: journal=%s found=%d created=%d updated=%d suppressed=%d path=%s",
         journal,
         len(detection.get("candidates", [])),
         created,
         updated,
+        suppressed,
         review_candidates_path(),
     )
     return 0

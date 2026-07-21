@@ -16,6 +16,7 @@ from solstone.apps.speakers.suggest import (
 from solstone.think.speaker_candidate_pair_review_candidates import (
     record_candidate_pair,
 )
+from solstone.think.speaker_keep_separate import record_keep_separate_assertion
 
 
 def create_meetings_md(env, day: str, content: str) -> Path:
@@ -134,6 +135,28 @@ def test_suggest_name_variant(speakers_env):
     assert suggestion["target"] == {"id": "alice_test", "name": "Alice Test"}
     assert suggestion["similarity"] > 0.90
     assert suggestion["readiness"] == "ready"
+
+
+def test_suggest_name_variant_respects_keep_separate(speakers_env):
+    env = speakers_env()
+    alice_dir = env.create_entity("Alice")
+    alice_test_dir = env.create_entity("Alice Test")
+
+    base = env.create_embedding([1.0, 0.0, 0.0])
+    similar = env.create_embedding([1.0, 0.01, 0.0])
+    _write_voiceprints(alice_dir, [base, similar])
+    _write_voiceprints(alice_test_dir, [similar, base])
+    record_keep_separate_assertion(
+        "alice",
+        "alice_test",
+        source_kind="explicit_create_near_match",
+        operation_id="idop_test",
+        detection_count=1,
+    )
+
+    results = suggest_opportunities()
+
+    assert all(item["type"] != "name_variant" for item in results)
 
 
 def test_suggest_speaker_candidate_pair_and_formats_it(speakers_env):

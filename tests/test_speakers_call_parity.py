@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -769,6 +770,21 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
         ["identify", "5", "Alice", "--create", "--entity-type", "Organization"],
     )
     resolve = runner.invoke(app, ["identify", "6", "Alice", "--resolve-only"])
+    with_request = runner.invoke(
+        app,
+        [
+            "identify",
+            "8",
+            "Alice",
+            "--create",
+            "--request-id",
+            "req-identify",
+            "--reviewed-near-match-entity-id",
+            "bob",
+            "--reviewed-near-match-entity-id",
+            "carol",
+        ],
+    )
     missing_target = runner.invoke(app, ["identify", "7"])
 
     _assert_json_stdout(
@@ -794,6 +810,10 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
             "has_voice": False,
         },
     )
+    _assert_json_stdout(
+        with_request,
+        {"status": "identified", "entity_id": "alice", "entity_created": True},
+    )
     assert missing_target.exit_code != 0
     assert seen == [
         {
@@ -803,6 +823,8 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
             "resolve_only": False,
             "create_new": False,
             "entity_type": "Person",
+            "request_id": None,
+            "reviewed_near_match_entity_ids": None,
         },
         {
             "cluster_id": 4,
@@ -811,6 +833,8 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
             "resolve_only": False,
             "create_new": False,
             "entity_type": "Person",
+            "request_id": None,
+            "reviewed_near_match_entity_ids": None,
         },
         {
             "cluster_id": 5,
@@ -819,6 +843,8 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
             "resolve_only": False,
             "create_new": True,
             "entity_type": "Organization",
+            "request_id": None,
+            "reviewed_near_match_entity_ids": None,
         },
         {
             "cluster_id": 6,
@@ -827,8 +853,141 @@ def test_identify_forwards_entity_id_create_resolve_only_and_no_match(
             "resolve_only": True,
             "create_new": False,
             "entity_type": "Person",
+            "request_id": None,
+            "reviewed_near_match_entity_ids": None,
+        },
+        {
+            "cluster_id": 8,
+            "name": "Alice",
+            "entity_id": None,
+            "resolve_only": False,
+            "create_new": True,
+            "entity_type": "Person",
+            "request_id": "req-identify",
+            "reviewed_near_match_entity_ids": ["bob", "carol"],
         },
     ]
+
+
+def test_identify_recoverable_cli_exits_with_retry_guidance(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        speakers_routes,
+        "identify_cluster",
+        lambda *_args, **_kwargs: {
+            "status": "recoverable",
+            "operation_id": "idop_retry",
+            "request_id": "req-retry",
+            "completed_phases": [],
+            "pending_phases": ["entity"],
+            "detail": "forced",
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        ["identify", "9", "Alice", "--request-id", "req-retry"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "forced" in result.stderr
+    assert "Retry with the same --request-id req-retry." in result.stderr
+    assert "sol call speakers identify-operations" in result.stderr
+    assert "sol call speakers identify-operation idop_retry" in result.stderr
+
+
+def test_identify_operation_dismissal_and_keep_separate_cli_verbs(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = SimpleNamespace(
+        operation_id="idop_123",
+        request_id="req-123",
+        terminal_status="committed",
+        target_entity_id="alice",
+        will_create=False,
+        entity_type="Person",
+        reviewed_near_match_entity_ids=(),
+        cluster_member_set=frozenset({("20240101", "test", "120000_300", "audio", 1)}),
+        completed_phases=("entity", "sentinel"),
+        pending_phases=(),
+        phase_checkpoints={"entity": {}, "sentinel": {}},
+        undo_phase_checkpoints={},
+        result={"status": "identified", "operation_id": "idop_123"},
+        undo_report=None,
+        repair_required=None,
+        undo_repair_required=None,
+    )
+    member = {
+        "day": "20240101",
+        "stream": "test",
+        "segment_key": "120000_300",
+        "source": "audio",
+        "sentence_id": 1,
+    }
+    monkeypatch.setattr(speakers_routes, "fold_all_operations", lambda: [state])
+    monkeypatch.setattr(
+        speakers_routes,
+        "fold_operation",
+        lambda operation_id: state if operation_id == "idop_123" else None,
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "undo_identify_operation",
+        lambda operation_id: {"status": "undone", "operation_id": operation_id},
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "load_discovery_cache",
+        lambda: {"clusters": {"7": [member]}},
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "record_cluster_dismissal",
+        lambda members, disposition: {
+            "dismiss_event_id": "cdev_123",
+            "disposition": disposition,
+            "member_count": len(members),
+        },
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "list_dismissals",
+        lambda: [{"dismissal_id": "cdev_123", "member_count": 1}],
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "list_assertions",
+        lambda: [{"assertion_id": "ksep_123", "source_count": 1}],
+    )
+
+    undo = runner.invoke(app, ["identify-undo", "idop_123"])
+    operations = runner.invoke(app, ["identify-operations"])
+    operation = runner.invoke(app, ["identify-operation", "idop_123"])
+    dismiss = runner.invoke(
+        app,
+        ["dismiss-cluster", "7", "--disposition", "quiet"],
+    )
+    dismissals = runner.invoke(app, ["dismissals"])
+    keep_separate = runner.invoke(app, ["keep-separate-list"])
+
+    _assert_json_stdout(undo, {"status": "undone", "operation_id": "idop_123"})
+    assert json.loads(operations.stdout)["operations"][0]["operation_id"] == "idop_123"
+    assert json.loads(operation.stdout)["operation"]["operation_id"] == "idop_123"
+    _assert_json_stdout(
+        dismiss,
+        {
+            "status": "dismissed",
+            "dismiss_event_id": "cdev_123",
+            "disposition": "quiet",
+            "member_count": 1,
+        },
+    )
+    assert json.loads(dismissals.stdout)["dismissals"][0]["dismissal_id"] == "cdev_123"
+    assert (
+        json.loads(keep_separate.stdout)["assertions"][0]["assertion_id"] == "ksep_123"
+    )
 
 
 def test_merge_names_success_simple_error_and_multi_key_error(

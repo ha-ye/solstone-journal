@@ -13,6 +13,7 @@ import solstone.think.facet_review_candidates as facet_store
 from solstone.think import (
     speaker_candidate_pair_review_candidates as speaker_pair_store,
 )
+from solstone.think import speaker_keep_separate as keep_separate_store
 from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
 from solstone.think.entities.ambiguities import load_ambiguities
@@ -363,6 +364,13 @@ def load_open_items() -> list[CurationItem]:
             evidence = {}
         source_id = str(row.get("source_id") or "")
         target_id = str(row.get("target_id") or "")
+        detection_count = _int_value(evidence.get("detection_count")) or 1
+        if keep_separate_store.name_variant_pair_suppressed(
+            source_id,
+            target_id,
+            detection_count,
+        ):
+            continue
         similarity = float(row["similarity"])
         speaker_evidence = dict(evidence)
         speaker_evidence["similarity"] = similarity

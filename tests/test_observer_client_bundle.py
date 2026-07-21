@@ -180,7 +180,7 @@ EXPECTED_BUNDLE_PAYLOAD_SHA256 = {
         "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8"
     ),
     observer_bundle.PROJECTION_REL: (
-        "8a2b7037552edf710597f2ffa6fdc5aa715311df4ea8cf168e70abe4231c64ca"
+        "28c055279ab7d80c809a43c5f710ccebc4da643fec3f8e6beae48823c17c46c5"
     ),
     observer_bundle.VECTORS_REL: (
         "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec"
@@ -707,7 +707,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         },
     )
 
-    assert manifest["bundle_semver"] == "1.0.2"
+    assert manifest["bundle_semver"] == observer_bundle.BUNDLE_SEMVER
     assert projection["info"]["version"] == "9.8.7"
     assert manifest["openapi_document_version"] == "9.8.7"
     assert manifest["openapi_spec_version"] == "3.1.9"
@@ -715,7 +715,7 @@ def test_observer_client_bundle_preserves_distinct_version_concepts() -> None:
         manifest["bundle_semver"],
         manifest["openapi_document_version"],
         manifest["openapi_spec_version"],
-    } == {"1.0.2", "9.8.7", "3.1.9"}
+    } == {observer_bundle.BUNDLE_SEMVER, "9.8.7", "3.1.9"}
 
 
 def test_observer_client_bundle_manifest_file_inventory(
@@ -729,7 +729,7 @@ def test_observer_client_bundle_manifest_file_inventory(
         "vectors.json",
     ]
 
-    assert manifest["bundle_semver"] == "1.0.2"
+    assert manifest["bundle_semver"] == observer_bundle.BUNDLE_SEMVER
     assert manifest["openapi_document_version"] == "1.0.0"
     assert manifest["openapi_spec_version"] == "3.1.0"
     assert manifest["observer_protocol_version"] == 2
@@ -2236,14 +2236,14 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     _commit_bundle(equal_repo, bundle_files, "bundle")
     _assert_history_failure(
         equal_repo,
-        _description_patch_candidate(bundle_files, "1.0.2"),
+        _description_patch_candidate(bundle_files, observer_bundle.BUNDLE_SEMVER),
         "without a version bump",
     )
 
     downgrade_repo = tmp_path / "downgrade"
     _init_git_repo(downgrade_repo)
     previous = _clone_bundle_files(bundle_files)
-    _set_bundle_version(previous, "1.1.0")
+    _set_bundle_version(previous, "2.1.0")
     _commit_bundle(downgrade_repo, previous, "minor bundle")
     _assert_history_failure(downgrade_repo, bundle_files, "downgraded")
 
@@ -2252,7 +2252,7 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     ("version", "expected_failure"),
     [
         ("1.0.1", "without a version bump"),
-        ("1.0.2", None),
+        ("2.0.0", None),
     ],
 )
 def test_observer_client_bundle_history_fixture_input_removal_requires_patch_bump(
@@ -2296,7 +2296,7 @@ def test_observer_client_bundle_history_major_and_mixed_insufficient_bumps_fail(
     _commit_bundle(closed_repo, bundle_files, "bundle")
     _assert_history_failure(
         closed_repo,
-        _closed_status_add_candidate(bundle_files, "1.1.0"),
+        _closed_status_add_candidate(bundle_files, "2.1.0"),
         "major change",
         enforce_current_contract=False,
     )
@@ -2304,7 +2304,7 @@ def test_observer_client_bundle_history_major_and_mixed_insufficient_bumps_fail(
     mixed_repo = tmp_path / "mixed"
     _init_git_repo(mixed_repo)
     _commit_bundle(mixed_repo, bundle_files, "bundle")
-    mixed = _operation_removed_candidate(bundle_files, "1.1.0")
+    mixed = _operation_removed_candidate(bundle_files, "2.1.0")
     projection = _payload(mixed, observer_bundle.PROJECTION_REL)
     projection["paths"]["/app/observer/ingest"]["post"]["responses"]["200"]["content"][
         "application/json"
@@ -2329,7 +2329,7 @@ def test_observer_client_bundle_history_extensible_addition_accepts_minor(
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
             repo,
-            _extensible_chat_add_candidate(bundle_files, "1.1.0"),
+            _extensible_chat_add_candidate(bundle_files, "2.1.0"),
             enforce_current_contract=False,
         )
         == []
@@ -2351,7 +2351,7 @@ def test_observer_client_bundle_history_vector_removed_requires_major(
         if vector["id"] != "observer.auth.handle"
     ]
     _set_payload(removed, observer_bundle.VECTORS_REL, vectors)
-    _set_bundle_version(removed, "1.1.0")
+    _set_bundle_version(removed, "2.1.0")
 
     _assert_history_failure(repo, removed, "major change")
 
@@ -2378,7 +2378,7 @@ def test_observer_client_bundle_history_does_not_apply_current_vector_policy_to_
     _set_payload(baseline, observer_bundle.VECTORS_REL, vectors)
     _commit_bundle(repo, baseline, "legacy vector policy")
     candidate = _clone_bundle_files(bundle_files)
-    _set_bundle_version(candidate, "2.0.0")
+    _set_bundle_version(candidate, "3.0.0")
 
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
@@ -2455,7 +2455,7 @@ def test_observer_client_bundle_history_new_independent_vector_accepts_minor(
     )
     vectors["vectors"] = sorted(vectors["vectors"], key=lambda item: item["id"])
     _set_payload(added, observer_bundle.VECTORS_REL, vectors)
-    _set_bundle_version(added, "1.1.0")
+    _set_bundle_version(added, "2.1.0")
 
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
@@ -2477,14 +2477,14 @@ def test_observer_client_bundle_history_semantic_vector_change_is_never_patch(
 
     _assert_history_failure(
         repo,
-        _semantic_status_fixture_candidate(bundle_files, "1.1.0"),
+        _semantic_status_fixture_candidate(bundle_files, "2.1.0"),
         "major change",
         enforce_current_contract=False,
     )
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
             repo,
-            _semantic_status_fixture_candidate(bundle_files, "2.0.0"),
+            _semantic_status_fixture_candidate(bundle_files, "3.0.0"),
             enforce_current_contract=False,
         )
         == []

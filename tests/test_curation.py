@@ -59,6 +59,7 @@ from solstone.think.speaker_candidate_pair_review_candidates import (
 from solstone.think.speaker_candidate_pair_review_candidates import (
     record_candidate_pair,
 )
+from solstone.think.speaker_keep_separate import record_keep_separate_assertion
 from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
@@ -341,6 +342,27 @@ def test_load_open_items_includes_speaker_name_variant(curation_journal):
     assert item.evidence["similarity"] == 0.934
     assert item.evidence["readiness"] == "ready"
     assert item.strength == 93
+
+
+def test_load_open_items_filters_keep_separate_speaker_name_variant(curation_journal):
+    record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.934,
+    )
+    record_keep_separate_assertion(
+        "alice",
+        "alice_johnson",
+        source_kind="explicit_create_near_match",
+        operation_id="idop_test",
+        detection_count=1,
+    )
+
+    items = load_open_items()
+
+    assert [item for item in items if item.kind == KIND_SPEAKER_NAME_VARIANT] == []
 
 
 def test_load_open_items_includes_speaker_candidate_pair(curation_journal):

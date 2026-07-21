@@ -412,6 +412,26 @@ SPEAKER_COMMAND_FAILED = Reason(
     "I couldn't finish that speaker command.",
     400,
 )
+SPEAKER_IDENTIFY_RECOVERABLE = Reason(
+    "speaker_identify_recoverable",
+    "I couldn't finish that speaker identify operation, but it can be retried.",
+    409,
+)
+SPEAKER_IDENTIFY_REPAIR_REQUIRED = Reason(
+    "speaker_identify_repair_required",
+    "I couldn't safely finish that speaker identify operation without repair.",
+    409,
+)
+SPEAKER_IDENTIFY_CONFLICT = Reason(
+    "speaker_identify_conflict",
+    "I couldn't run that speaker identify operation because it conflicts with existing state.",
+    409,
+)
+SPEAKER_IDENTIFY_OPERATION_NOT_FOUND = Reason(
+    "speaker_identify_operation_not_found",
+    "I couldn't find that speaker identify operation.",
+    404,
+)
 AWARENESS_BUSY = Reason(
     "awareness_busy",
     "I couldn't update what I know right now because it was busy. Try again in a moment.",

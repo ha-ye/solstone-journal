@@ -25,7 +25,13 @@ Commands:
     sol call speakers wipe [--commit] [--json]
     sol call speakers discover [--json]
     sol call speakers presence <cluster-id> [--json]
-    sol call speakers identify <cluster-id> <name> [--entity-id ID]
+    sol call speakers identify <cluster-id> <name> [--entity-id ID] [--request-id ID]
+    sol call speakers identify-undo <operation-id>
+    sol call speakers identify-operations
+    sol call speakers identify-operation <operation-id>
+    sol call speakers dismiss-cluster <cluster-id> --disposition <not_a_person|quiet>
+    sol call speakers dismissals
+    sol call speakers keep-separate-list
     sol call speakers merge-names <alias> <canonical>
     sol call speakers link-import <name> --entity-id <ID>
     sol call speakers seed-from-imports [--commit] [--json]
@@ -52,6 +58,10 @@ from solstone.convey.reasons import (
     INVALID_DAY,
     INVALID_SEGMENT_OR_STREAM,
     SPEAKER_COMMAND_FAILED,
+    SPEAKER_IDENTIFY_CONFLICT,
+    SPEAKER_IDENTIFY_OPERATION_NOT_FOUND,
+    SPEAKER_IDENTIFY_RECOVERABLE,
+    SPEAKER_IDENTIFY_REPAIR_REQUIRED,
     SPEAKER_OWNER_CENTROID_REQUIRED,
     SPEAKER_OWNER_IDENTITY_REQUIRED,
     SPEAKER_REVIEW_UNAVAILABLE,
@@ -83,6 +93,40 @@ def _exit_owner_centroid_required(err: ConveyClientError) -> None:
 
 def _exit_speaker_command_failed(err: ConveyClientError) -> None:
     typer.echo(err.detail or err.error, err=True)
+    raise typer.Exit(1) from err
+
+
+_IDENTIFY_OPERATION_FAILURE_CODES = {
+    SPEAKER_IDENTIFY_RECOVERABLE.code,
+    SPEAKER_IDENTIFY_REPAIR_REQUIRED.code,
+    SPEAKER_IDENTIFY_CONFLICT.code,
+    SPEAKER_IDENTIFY_OPERATION_NOT_FOUND.code,
+}
+
+
+def _exit_identify_operation_failed(
+    err: ConveyClientError,
+    *,
+    request_id: str | None = None,
+) -> None:
+    payload = err.payload if isinstance(err.payload, dict) else {}
+    operation_id = payload.get("operation_id")
+    retry_request_id = request_id or payload.get("request_id")
+    typer.echo(err.detail or err.error, err=True)
+    if retry_request_id:
+        typer.echo(
+            f"Retry with the same --request-id {retry_request_id}.",
+            err=True,
+        )
+    typer.echo(
+        "Inspect operations with: sol call speakers identify-operations",
+        err=True,
+    )
+    if operation_id:
+        typer.echo(
+            f"Inspect this operation with: sol call speakers identify-operation {operation_id}",
+            err=True,
+        )
     raise typer.Exit(1) from err
 
 
@@ -728,6 +772,14 @@ def identify(
     resolve_only: bool = typer.Option(
         False, "--resolve-only", help="Resolve without writing (dry run)."
     ),
+    request_id: str | None = typer.Option(
+        None, "--request-id", help="Stable request id for retry/resume."
+    ),
+    reviewed_near_match_entity_id: list[str] | None = typer.Option(
+        None,
+        "--reviewed-near-match-entity-id",
+        help="Reviewed near-match entity id to keep separate when creating.",
+    ),
 ) -> None:
     """Identify a discovered unknown speaker cluster."""
     if not name and not entity_id:
@@ -743,12 +795,103 @@ def identify(
                 "create_new": create,
                 "entity_type": entity_type,
                 "resolve_only": resolve_only,
+                "request_id": request_id,
+                "reviewed_near_match_entity_ids": reviewed_near_match_entity_id,
             },
+        )
+    except ConveyClientError as err:
+        if err.reason_code in _IDENTIFY_OPERATION_FAILURE_CODES:
+            _exit_identify_operation_failed(err, request_id=request_id)
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("identify-undo")
+@convey_cli
+def identify_undo(
+    operation_id: str = typer.Argument(..., help="Identify operation id to undo."),
+) -> None:
+    """Undo a committed speaker identify operation."""
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/discovery/identify/undo",
+            json_body={"operation_id": operation_id},
+        )
+    except ConveyClientError as err:
+        if err.reason_code in _IDENTIFY_OPERATION_FAILURE_CODES:
+            _exit_identify_operation_failed(err)
+        if err.reason_code == SPEAKER_COMMAND_FAILED.code:
+            _exit_speaker_command_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("identify-operations")
+@convey_cli
+def identify_operations() -> None:
+    """List redacted speaker identify operations."""
+    result = _request("GET", "/app/speakers/api/discovery/identify/operations")
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("identify-operation")
+@convey_cli
+def identify_operation(
+    operation_id: str = typer.Argument(..., help="Identify operation id to inspect."),
+) -> None:
+    """Show one redacted speaker identify operation."""
+    try:
+        result = _request(
+            "GET",
+            f"/app/speakers/api/discovery/identify/operations/{operation_id}",
+        )
+    except ConveyClientError as err:
+        if err.reason_code in _IDENTIFY_OPERATION_FAILURE_CODES:
+            _exit_identify_operation_failed(err)
+        raise
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("dismiss-cluster")
+@convey_cli
+def dismiss_cluster(
+    cluster_id: int = typer.Argument(..., help="Cluster ID from discovery output."),
+    disposition: str = typer.Option(
+        ...,
+        "--disposition",
+        help="Dismissal disposition: not_a_person or quiet.",
+    ),
+) -> None:
+    """Dismiss a current discovery cluster from listing surfaces."""
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/discovery/dismiss",
+            json_body={"cluster_id": cluster_id, "disposition": disposition},
         )
     except ConveyClientError as err:
         if err.reason_code == SPEAKER_COMMAND_FAILED.code:
             _exit_speaker_command_failed(err)
         raise
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("dismissals")
+@convey_cli
+def dismissals() -> None:
+    """List folded speaker cluster dismissals."""
+    result = _request("GET", "/app/speakers/api/discovery/dismissals")
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("keep-separate-list")
+@convey_cli
+def keep_separate_list() -> None:
+    """List folded speaker keep-separate assertions."""
+    result = _request("GET", "/app/speakers/api/name-variants/keep-separate")
     typer.echo(json.dumps(result, indent=2, default=str))
 
 

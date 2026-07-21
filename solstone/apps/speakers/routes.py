@@ -53,6 +53,8 @@ from solstone.apps.speakers.discovery import (
     discover_unknown_speakers,
     get_cluster_presence,
     identify_cluster,
+    load_discovery_cache,
+    undo_identify_operation,
 )
 from solstone.apps.speakers.encoder_config import (
     OWNER_BOOTSTRAP_MIN_STMTS,
@@ -96,6 +98,10 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
     SPEAKER_COMMAND_FAILED,
+    SPEAKER_IDENTIFY_CONFLICT,
+    SPEAKER_IDENTIFY_OPERATION_NOT_FOUND,
+    SPEAKER_IDENTIFY_RECOVERABLE,
+    SPEAKER_IDENTIFY_REPAIR_REQUIRED,
     SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
     SPEAKER_OWNER_CENTROID_REQUIRED,
@@ -123,6 +129,15 @@ from solstone.think.entities.journal import (
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.journal_io.npz import load_npz, update_npz
 from solstone.think.media import MIME_TYPES
+from solstone.think.speaker_cluster_dismissals import (
+    list_dismissals,
+    record_cluster_dismissal,
+)
+from solstone.think.speaker_identify_operations import (
+    fold_all_operations,
+    fold_operation,
+)
+from solstone.think.speaker_keep_separate import list_assertions
 from solstone.think.utils import (
     STREAM_RE,
     day_dirs,
@@ -2226,25 +2241,154 @@ def api_cluster_presence(cluster_id: int) -> Any:
     return jsonify(presence)
 
 
+def _operation_result_summary(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+    return {
+        key: result[key]
+        for key in (
+            "status",
+            "operation_id",
+            "entity_id",
+            "entity_created",
+            "voiceprints_saved",
+            "retroactive_voiceprints_saved",
+            "segments_updated",
+            "sentences_attributed",
+            "keep_separate_assertions_recorded",
+        )
+        if key in result
+    }
+
+
+def _undo_report_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(report, dict):
+        return None
+    summary = {
+        "status": report.get("status"),
+        "operation_id": report.get("operation_id"),
+    }
+    categories = report.get("undo_report")
+    if isinstance(categories, dict):
+        summary["undo_report"] = {
+            category: data
+            for category, data in categories.items()
+            if isinstance(data, dict)
+        }
+    return summary
+
+
+def _repair_summary(repair: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(repair, dict):
+        return None
+    return {
+        key: repair[key]
+        for key in (
+            "phase",
+            "repair_code",
+            "repair_categories",
+            "partial_report",
+            "undo_report",
+        )
+        if key in repair
+    }
+
+
+def _identify_operation_summary(state: Any) -> dict[str, Any]:
+    return {
+        "operation_id": state.operation_id,
+        "request_id": state.request_id,
+        "status": state.terminal_status,
+        "target_entity_id": state.target_entity_id,
+        "will_create": state.will_create,
+        "entity_type": state.entity_type,
+        "reviewed_near_match_entity_ids": list(state.reviewed_near_match_entity_ids),
+        "cluster_member_count": len(state.cluster_member_set),
+        "completed_phases": list(state.completed_phases),
+        "pending_phases": list(state.pending_phases),
+        "checkpoints": {
+            "forward": list(state.phase_checkpoints.keys()),
+            "undo": list(state.undo_phase_checkpoints.keys()),
+        },
+        "result": _operation_result_summary(state.result),
+        "undo_report": _undo_report_summary(state.undo_report),
+        "repair": _repair_summary(state.repair_required)
+        or _repair_summary(state.undo_repair_required),
+    }
+
+
+def _operation_failure_extra(result: dict[str, Any]) -> dict[str, Any]:
+    extra: dict[str, Any] = {
+        "status": result.get("status"),
+        "operation_id": result.get("operation_id"),
+        "operation_state": result.get("status"),
+    }
+    for key in (
+        "request_id",
+        "completed_phases",
+        "pending_phases",
+        "repair_categories",
+        "repair_code",
+        "phase",
+        "conflict_code",
+        "conflicting_operation_id",
+        "list_command",
+        "undo_report",
+    ):
+        if key in result:
+            extra[key] = result[key]
+    return extra
+
+
 def _identify_result_response(result: dict) -> Any:
     status = result.get("status")
-    if status in {"identified", "resolved", "ambiguous", "no_match"}:
+    if status in {
+        "identified",
+        "resolved",
+        "ambiguous",
+        "no_match",
+        "undone",
+        "already_undone",
+    }:
         return jsonify(result)
-    if status == "partial":
+    if status == "recoverable":
         return error_response(
-            SPEAKER_COMMAND_FAILED,
-            status=409,
+            SPEAKER_IDENTIFY_RECOVERABLE,
             detail=result.get("detail"),
-            extra={
-                "status": "partial",
-                "completed": result.get("completed", []),
-                "failed": result.get("failed", []),
-            },
+            extra=_operation_failure_extra(result),
+        )
+    if status in {"repair_required", "undo_repair_required"}:
+        return error_response(
+            SPEAKER_IDENTIFY_REPAIR_REQUIRED,
+            detail=result.get("repair_code") or result.get("detail"),
+            extra=_operation_failure_extra(result),
+        )
+    if status in {"conflict", "operation_already_undone"}:
+        return error_response(
+            SPEAKER_IDENTIFY_CONFLICT,
+            detail=result.get("conflict_code") or status,
+            extra=_operation_failure_extra(result),
+        )
+    if status == "not_found":
+        return error_response(
+            SPEAKER_IDENTIFY_OPERATION_NOT_FOUND,
+            detail=f"Operation {result.get('operation_id')} was not found.",
+            extra=_operation_failure_extra(result),
         )
     if result.get("not_found"):
         return error_response(SPEAKER_NOT_FOUND, detail=result["error"])
     if result.get("invalid_entity_type"):
         return error_response(INVALID_ENTITY_TYPE, detail=result["error"])
+    if status == "invalid_request":
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail=result.get("error"),
+            extra={
+                key: result[key]
+                for key in ("invalid_reviewed_near_match_entity_ids",)
+                if key in result
+            },
+        )
     if "error" in result:
         return error_response(
             INVALID_REQUEST_VALUE,
@@ -2252,6 +2396,18 @@ def _identify_result_response(result: dict) -> Any:
             status=400,
         )
     return jsonify(result)
+
+
+def _optional_request_id(data: dict[str, Any]) -> tuple[str | None, Any | None]:
+    request_id_value = data.get("request_id")
+    if request_id_value is None:
+        return None, None
+    if not isinstance(request_id_value, str) or not request_id_value.strip():
+        return None, error_response(
+            INVALID_REQUEST_VALUE,
+            detail="request_id must be a non-empty string",
+        )
+    return request_id_value.strip(), None
 
 
 @speakers_bp.route("/api/discovery/identify", methods=["POST"])
@@ -2266,6 +2422,8 @@ def api_discovery_identify() -> Any:
     resolve_only = bool(data.get("resolve_only", False))
     create_new = bool(data.get("create_new", False))
     entity_type = data.get("entity_type") or "Person"
+    request_id, request_id_error = _optional_request_id(data)
+    reviewed_near_match_entity_ids = data.get("reviewed_near_match_entity_ids")
 
     if cluster_id is None:
         return error_response(
@@ -2285,6 +2443,8 @@ def api_discovery_identify() -> Any:
             INVALID_REQUEST_VALUE,
             detail="cluster_id must be an integer",
         )
+    if request_id_error is not None:
+        return request_id_error
 
     try:
         result = identify_cluster(
@@ -2294,6 +2454,8 @@ def api_discovery_identify() -> Any:
             resolve_only=resolve_only,
             create_new=create_new,
             entity_type=entity_type,
+            request_id=request_id,
+            reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
         )
     except LockTimeout as exc:
         if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
@@ -2480,6 +2642,8 @@ def api_cli_discovery_identify() -> Any:
     resolve_only = bool(data.get("resolve_only", False))
     create_new = bool(data.get("create_new", False))
     entity_type = data.get("entity_type") or "Person"
+    request_id, request_id_error = _optional_request_id(data)
+    reviewed_near_match_entity_ids = data.get("reviewed_near_match_entity_ids")
 
     if cluster_id is None:
         return error_response(
@@ -2499,6 +2663,8 @@ def api_cli_discovery_identify() -> Any:
             INVALID_REQUEST_VALUE,
             detail="cluster_id must be an integer",
         )
+    if request_id_error is not None:
+        return request_id_error
 
     try:
         result = identify_cluster(
@@ -2508,6 +2674,8 @@ def api_cli_discovery_identify() -> Any:
             resolve_only=resolve_only,
             create_new=create_new,
             entity_type=entity_type,
+            request_id=request_id,
+            reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
         )
     except LockTimeout as exc:
         if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
@@ -2515,6 +2683,112 @@ def api_cli_discovery_identify() -> Any:
         return _voiceprint_busy_response(exc)
 
     return _identify_result_response(result)
+
+
+@speakers_bp.route("/api/discovery/identify/undo", methods=["POST"])
+def api_discovery_identify_undo() -> Any:
+    """Undo a committed discovery-cluster identify operation."""
+    data = request.get_json(silent=True) or {}
+    operation_id_value = data.get("operation_id")
+    if not isinstance(operation_id_value, str) or not operation_id_value.strip():
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="operation_id is required",
+        )
+
+    try:
+        result = undo_identify_operation(operation_id_value.strip())
+    except LockTimeout as exc:
+        if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
+            return _labels_busy_response(exc)
+        return _voiceprint_busy_response(exc)
+    return _identify_result_response(result)
+
+
+@speakers_bp.route("/api/discovery/identify/operations", methods=["GET"])
+def api_discovery_identify_operations() -> Any:
+    """Return redacted identify operation summaries."""
+    operations = [_identify_operation_summary(state) for state in fold_all_operations()]
+    return jsonify({"operations": operations, "total": len(operations)})
+
+
+@speakers_bp.route(
+    "/api/discovery/identify/operations/<operation_id>",
+    methods=["GET"],
+)
+def api_discovery_identify_operation(operation_id: str) -> Any:
+    """Return one redacted identify operation summary."""
+    state = fold_operation(operation_id)
+    if state is None:
+        return error_response(
+            SPEAKER_IDENTIFY_OPERATION_NOT_FOUND,
+            detail=f"Operation {operation_id} was not found.",
+            extra={
+                "status": "not_found",
+                "operation_id": operation_id,
+                "list_command": "sol call speakers identify-operations",
+            },
+        )
+    return jsonify({"operation": _identify_operation_summary(state)})
+
+
+@speakers_bp.route("/api/discovery/dismiss", methods=["POST"])
+def api_discovery_dismiss() -> Any:
+    """Record a read-side suppression dismissal for the current cluster members."""
+    data = request.get_json(silent=True) or {}
+    cluster_id = data.get("cluster_id")
+    disposition = data.get("disposition")
+    if cluster_id is None or not disposition:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="cluster_id and disposition are required",
+        )
+    try:
+        cluster_id = int(cluster_id)
+    except (TypeError, ValueError):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="cluster_id must be an integer",
+        )
+    cache = load_discovery_cache()
+    members = cache.get("clusters", {}).get(str(cluster_id)) if cache else None
+    if not members:
+        return error_response(
+            SPEAKER_REVIEW_UNAVAILABLE,
+            detail=f"Cluster {cluster_id} was not found. Run a discovery scan first.",
+        )
+    try:
+        event = record_cluster_dismissal(members, str(disposition))
+    except ValueError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    except LockTimeout as exc:
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail=str(exc),
+            status=503,
+        )
+    return jsonify(
+        {
+            "status": "dismissed",
+            "dismiss_event_id": event["dismiss_event_id"],
+            "disposition": event["disposition"],
+            "member_count": event["member_count"],
+        }
+    )
+
+
+@speakers_bp.route("/api/discovery/dismissals", methods=["GET"])
+def api_discovery_dismissals() -> Any:
+    """Return folded cluster dismissal summaries."""
+    dismissals = list_dismissals()
+    return jsonify({"dismissals": dismissals, "total": len(dismissals)})
+
+
+@speakers_bp.route("/api/name-variants/keep-separate", methods=["GET"])
+def api_name_variants_keep_separate() -> Any:
+    """Return folded keep-separate assertion summaries."""
+    assertions = list_assertions()
+    return jsonify({"assertions": assertions, "total": len(assertions)})
 
 
 @speakers_bp.route("/api/merge-names", methods=["POST"])

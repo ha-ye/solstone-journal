@@ -12,6 +12,8 @@ from datetime import time
 from pathlib import Path
 from typing import Any
 
+from solstone.think.speaker_keep_separate import name_variant_pair_suppressed
+from solstone.think.speaker_review_candidates import detection_count_for_pair
 from solstone.think.utils import day_dirs, get_journal, iter_segments, segment_parse
 
 logger = logging.getLogger(__name__)
@@ -258,6 +260,13 @@ def _name_variant() -> list[dict[str, Any]]:
 
     suggestions: list[dict[str, Any]] = []
     for pair in detect_name_variant_candidates().get("candidates", []):
+        detection_count = detection_count_for_pair(pair["source_id"], pair["target_id"])
+        if name_variant_pair_suppressed(
+            pair["source_id"],
+            pair["target_id"],
+            detection_count,
+        ):
+            continue
         suggestions.append(
             {
                 "type": "name_variant",

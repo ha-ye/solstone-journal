@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 import solstone.think.speaker_review_candidates as mod
+from solstone.think.speaker_keep_separate import record_keep_separate_assertion
 from solstone.think.speaker_review_candidates import (
     accept_candidate,
     candidate_key,
+    detection_count_for_pair,
     dismiss_candidate,
     find_candidate,
     load_candidates,
@@ -134,7 +136,7 @@ def test_record_name_variant_candidate_creates_exact_open_row(
 ):
     monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
 
-    row, created = record_name_variant_candidate(
+    row, created, suppressed = record_name_variant_candidate(
         source_id="alice",
         source_label="Alice",
         target_id="alice_johnson",
@@ -143,6 +145,7 @@ def test_record_name_variant_candidate_creates_exact_open_row(
     )
 
     assert created is True
+    assert suppressed is False
     assert row == {
         "source_id": "alice",
         "source_label": "Alice",
@@ -182,7 +185,7 @@ def test_record_name_variant_candidate_upserts_opposite_order_and_label_change(
         target_label="Alice Johnson",
         similarity=0.91,
     )
-    row, created = record_name_variant_candidate(
+    row, created, suppressed = record_name_variant_candidate(
         source_id="alice_johnson",
         source_label="Alice J.",
         target_id="alice",
@@ -191,6 +194,7 @@ def test_record_name_variant_candidate_upserts_opposite_order_and_label_change(
     )
 
     assert created is False
+    assert suppressed is False
     rows = load_candidates()
     assert rows == [row]
     assert row["source_id"] == "alice_johnson"
@@ -229,7 +233,7 @@ def test_record_name_variant_candidate_preserves_status_and_unknown_keys(
         similarity=0.91,
     )
     accept_candidate("alice", "alice_johnson")
-    accepted, _ = record_name_variant_candidate(
+    accepted, _, _ = record_name_variant_candidate(
         source_id="alice",
         source_label="Alice A.",
         target_id="alice_johnson",
@@ -239,7 +243,7 @@ def test_record_name_variant_candidate_preserves_status_and_unknown_keys(
     accepted["custom"] = "keep-me"
     accepted["evidence"]["custom_evidence"] = "keep-me-too"
     save_candidates([accepted])
-    dismissed, _ = record_name_variant_candidate(
+    dismissed, _, _ = record_name_variant_candidate(
         source_id="bob",
         source_label="Bob",
         target_id="bob_smith",
@@ -247,7 +251,7 @@ def test_record_name_variant_candidate_preserves_status_and_unknown_keys(
         similarity=0.94,
     )
     dismiss_candidate("bob", "bob_smith")
-    dismissed, _ = record_name_variant_candidate(
+    dismissed, _, _ = record_name_variant_candidate(
         source_id="bob",
         source_label="Bobby",
         target_id="bob_smith",
@@ -266,6 +270,59 @@ def test_record_name_variant_candidate_preserves_status_and_unknown_keys(
     assert accepted_after["evidence"]["summary"].startswith("Alice A.")
     assert dismissed_after["status"] == "dismissed"
     assert dismissed_after["evidence"]["summary"].startswith("Bobby")
+
+
+def test_record_name_variant_candidate_suppresses_then_resurfaces(
+    candidate_journal, monkeypatch
+):
+    times = iter(
+        [
+            "2026-06-03T17:30:00Z",
+            "2026-06-04T17:30:00Z",
+            "2026-06-05T17:30:00Z",
+            "2026-06-06T17:30:00Z",
+        ]
+    )
+    monkeypatch.setattr(mod, "utc_now_iso", lambda: next(times))
+    record_keep_separate_assertion(
+        "alice_johnson",
+        "alice",
+        source_kind="explicit_create_near_match",
+        operation_id="idop_test",
+        detection_count=2,
+    )
+
+    first, created, suppressed = record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.91,
+    )
+    second, _, still_suppressed = record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.92,
+    )
+    third, _, resurfaced_suppressed = record_name_variant_candidate(
+        source_id="alice",
+        source_label="Alice",
+        target_id="alice_johnson",
+        target_label="Alice Johnson",
+        similarity=0.93,
+    )
+
+    assert created is True
+    assert suppressed is True
+    assert first["status"] == "suppressed"
+    assert second["status"] == "suppressed"
+    assert still_suppressed is True
+    assert third["status"] == "open"
+    assert resurfaced_suppressed is False
+    assert "suppressed_by_keep_separate" not in third
+    assert detection_count_for_pair("alice_johnson", "alice") == 3
 
 
 def test_accept_candidate_sets_status_and_updated_at(candidate_journal, monkeypatch):
