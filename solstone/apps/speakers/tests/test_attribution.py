@@ -1937,6 +1937,327 @@ def test_owner_correction_output_preserves_public_label_overlay(tmp_path):
     assert data["labels"][0]["method"] == "user_corrected"
 
 
+def test_restore_label_rows_restores_present_prior_label(tmp_path):
+    from solstone.apps.speakers.attribution import restore_label_rows
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    expected = {
+        "sentence_id": 1,
+        "speaker": "target",
+        "confidence": "high",
+        "method": "user_identified",
+    }
+    prior = {
+        "sentence_id": 1,
+        "speaker": "prior",
+        "confidence": "high",
+        "method": "acoustic",
+    }
+    labels_path.write_text(json.dumps({"labels": [expected]}), encoding="utf-8")
+
+    report = restore_label_rows(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "expected_current_label": expected,
+                "prior_state": "present",
+                "prior_label": prior,
+            }
+        ],
+    )
+
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert report["restored_count"] == 1
+    assert report["patched_existing_count"] == 1
+    assert data["labels"] == [prior]
+
+
+def test_restore_label_rows_removes_absent_prior_row(tmp_path):
+    from solstone.apps.speakers.attribution import restore_label_rows
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    inserted = {
+        "sentence_id": 1,
+        "speaker": "target",
+        "confidence": "high",
+        "method": "user_identified",
+    }
+    labels_path.write_text(json.dumps({"labels": [inserted]}), encoding="utf-8")
+
+    report = restore_label_rows(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "expected_current_label": inserted,
+                "prior_state": "absent",
+                "prior_label": None,
+            }
+        ],
+    )
+
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert report["restored_count"] == 1
+    assert report["removed_inserted_count"] == 1
+    assert data["labels"] == []
+
+
+def test_restore_label_rows_skips_changed_current_label(tmp_path):
+    from solstone.apps.speakers.attribution import restore_label_rows
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    expected = {
+        "sentence_id": 1,
+        "speaker": "target",
+        "confidence": "high",
+        "method": "user_identified",
+    }
+    changed = {**expected, "speaker": "other"}
+    prior = {**expected, "speaker": "prior", "method": "acoustic"}
+    labels_path.write_text(json.dumps({"labels": [changed]}), encoding="utf-8")
+
+    report = restore_label_rows(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "expected_current_label": expected,
+                "prior_state": "present",
+                "prior_label": prior,
+            }
+        ],
+    )
+
+    data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert report["restored_count"] == 0
+    assert report["skipped_count"] == 1
+    assert report["skipped_reasons"] == {"missing": 0, "changed": 1}
+    assert data["labels"] == [changed]
+
+
+def test_restore_label_rows_rerun_is_noop_skip(tmp_path):
+    from solstone.apps.speakers.attribution import restore_label_rows
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    labels_path = talents_dir / "speaker_labels.json"
+    inserted = {
+        "sentence_id": 1,
+        "speaker": "target",
+        "confidence": "high",
+        "method": "user_identified",
+    }
+    restoration = {
+        "sentence_id": 1,
+        "expected_current_label": inserted,
+        "prior_state": "absent",
+        "prior_label": None,
+    }
+    labels_path.write_text(json.dumps({"labels": [inserted]}), encoding="utf-8")
+
+    first = restore_label_rows(tmp_path, [restoration])
+    second = restore_label_rows(tmp_path, [restoration])
+
+    assert first["restored_count"] == 1
+    assert second["restored_count"] == 0
+    assert second["skipped_reasons"] == {"missing": 1, "changed": 0}
+    assert json.loads(labels_path.read_text(encoding="utf-8"))["labels"] == []
+
+
+def test_identify_tagged_correction_overlays_speaker(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    (talents_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "corrections": [
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "alice",
+                        "corrected_speaker": "target",
+                        "original_method": "acoustic",
+                        "timestamp": 1,
+                        "operation_id": "idop_1",
+                        "correction_kind": "identify",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_speaker_labels(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+        {},
+    )
+
+    data = json.loads((talents_dir / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] == "target"
+    assert data["labels"][0]["method"] == "user_corrected"
+
+
+def test_identify_undo_correction_reverts_to_prior_speaker(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    (talents_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "corrections": [
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "alice",
+                        "corrected_speaker": "target",
+                        "original_method": "acoustic",
+                        "timestamp": 1,
+                        "operation_id": "idop_1",
+                        "correction_kind": "identify",
+                    },
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "target",
+                        "corrected_speaker": "prior",
+                        "original_method": "user_identified",
+                        "timestamp": 2,
+                        "operation_id": "idop_1",
+                        "undo_of_operation_id": "idop_1",
+                        "correction_kind": "identify_undo",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_speaker_labels(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+        {},
+    )
+
+    data = json.loads((talents_dir / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] == "prior"
+    assert data["labels"][0]["method"] == "user_corrected"
+
+
+def test_identify_undo_correction_with_null_reverts_to_unmatched(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    (talents_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "corrections": [
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": None,
+                        "corrected_speaker": "target",
+                        "original_method": None,
+                        "timestamp": 1,
+                        "operation_id": "idop_1",
+                        "correction_kind": "identify",
+                    },
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "target",
+                        "corrected_speaker": None,
+                        "original_method": "user_identified",
+                        "timestamp": 2,
+                        "operation_id": "idop_1",
+                        "undo_of_operation_id": "idop_1",
+                        "correction_kind": "identify_undo",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_speaker_labels(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "target",
+                "confidence": "high",
+                "method": "user_identified",
+            }
+        ],
+        {},
+    )
+
+    data = json.loads((talents_dir / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] is None
+    assert data["labels"][0]["confidence"] is None
+    assert data["labels"][0]["method"] is None
+
+
+def test_ordinary_null_correction_keeps_existing_behavior(tmp_path):
+    from solstone.apps.speakers.attribution import save_speaker_labels
+
+    talents_dir = tmp_path / "talents"
+    talents_dir.mkdir()
+    (talents_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "corrections": [
+                    {
+                        "sentence_id": 1,
+                        "original_speaker": "alice",
+                        "corrected_speaker": None,
+                        "original_method": "acoustic",
+                        "timestamp": 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_speaker_labels(
+        tmp_path,
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+        {},
+    )
+
+    data = json.loads((talents_dir / "speaker_labels.json").read_text())
+    assert data["labels"][0]["speaker"] == "alice"
+    assert data["labels"][0]["method"] == "acoustic"
+
+
 # ---------------------------------------------------------------------------
 # Voiceprint accumulation
 # ---------------------------------------------------------------------------

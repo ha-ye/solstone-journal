@@ -34,6 +34,7 @@ from solstone.apps.speakers.encoder_config import (
     STABILITY_THRESHOLD,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
+from solstone.apps.speakers.tests.conftest import journal_tree_hash
 from solstone.think.entities import save_voiceprints_batch
 
 STREAM = "test"
@@ -124,6 +125,11 @@ def _write_labeled_segment(
 def _voiceprint_count(entity_dir: Path) -> int:
     with np.load(entity_dir / "voiceprints.npz", allow_pickle=False) as data:
         return len(data["embeddings"])
+
+
+def _voiceprint_entries(entity_dir: Path) -> list[dict[str, object]]:
+    with np.load(entity_dir / "voiceprints.npz", allow_pickle=False) as data:
+        return [json.loads(str(item)) for item in data["metadata"]]
 
 
 def _only_candidate(tracker: CandidateTracker):
@@ -1029,6 +1035,60 @@ def test_retroactive_confirm_backfills_with_accumulate_guard(speakers_env, tmp_p
 
     assert saved == 3
     assert _voiceprint_count(alice_dir) == 8
+    candidate = _only_candidate(tracker)
+    assert candidate.status == "confirmed"
+    assert candidate.confirmed_entity == "alice_test"
+
+
+def test_plan_retroactive_confirm_writes_nothing(speakers_env, tmp_path):
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {7: np.stack([base] * 3)},
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+    before = journal_tree_hash(env.journal)
+
+    plan = tracker.plan_retroactive_confirm(base, "alice_test")
+
+    assert plan.matched is True
+    assert plan.candidate_id == _only_candidate(tracker).cand_id
+    assert len(plan.voiceprints_to_add) == 3
+    assert journal_tree_hash(env.journal) == before
+    candidate = _only_candidate(tracker)
+    assert candidate.status == "pending"
+    assert candidate.confirmed_entity is None
+
+
+def test_plan_retroactive_confirm_keys_match_applied_voiceprints(
+    speakers_env,
+    tmp_path,
+):
+    env = speakers_env()
+    _setup_owner(env)
+    alice_dir = env.create_entity("Alice Test")
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {7: np.stack([base] * 3)},
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    plan = tracker.plan_retroactive_confirm(base, "alice_test")
+    saved = tracker.apply_retroactive_confirm_plan(plan)
+
+    assert saved == 3
+    planned_metadata = [entry["metadata"] for entry in plan.voiceprints_to_add]
+    assert _voiceprint_entries(alice_dir) == planned_metadata
     candidate = _only_candidate(tracker)
     assert candidate.status == "confirmed"
     assert candidate.confirmed_entity == "alice_test"

@@ -12,12 +12,14 @@ Facet-specific data (description, timestamps) is stored in facet relationships.
 
 import json
 import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from solstone.think.entities.core import EntityDict, get_identity_names
 from solstone.think.entities.history import (
     EntityOperationContext,
+    iter_entity_history,
     save_entity_identity_with_history,
     trust_operation_lock,
 )
@@ -173,6 +175,7 @@ def create_journal_entity(
     aka: list[str] | None = None,
     emails: list[str] | None = None,
     *,
+    operation: EntityOperationContext | None = None,
     skip_principal: bool = False,
 ) -> EntityDict:
     """Create and persist a new journal-level entity.
@@ -212,7 +215,7 @@ def create_journal_entity(
         ):
             entity["is_principal"] = True
 
-        save_journal_entity(entity)
+        save_journal_entity(entity, operation=operation)
         return entity
 
 
@@ -351,6 +354,420 @@ def delete_journal_entity(entity_id: str) -> dict[str, Any]:
             shutil.rmtree(journal_dir)
 
         return {"success": True, "facets_deleted": facets_deleted}
+
+
+def delete_created_entity_if_unreferenced(
+    entity_id: str,
+    *,
+    operation_id: str,
+    expected_identity: dict[str, Any],
+    expected_history_refs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Delete an identify-created entity only when no outside references remain."""
+    with trust_operation_lock():
+        blocked: dict[str, int] = defaultdict(int)
+        current = load_journal_entity(entity_id)
+        if current is None:
+            return {
+                "deleted": True,
+                "blocked_categories": [],
+                "blocked_counts": {},
+            }
+        if _meaningful_identity(current) != _meaningful_identity(expected_identity):
+            blocked["concurrent_change"] += 1
+
+        _check_expected_history(
+            entity_id,
+            operation_id=operation_id,
+            expected_history_refs=expected_history_refs,
+            blocked=blocked,
+        )
+        _check_entity_dir_contents(entity_id, blocked)
+        _scan_entity_reference_surfaces(
+            entity_id,
+            operation_id=operation_id,
+            blocked=blocked,
+        )
+
+        if blocked:
+            blocked_counts = dict(sorted(blocked.items()))
+            return {
+                "deleted": False,
+                "blocked_categories": sorted(blocked_counts),
+                "blocked_counts": blocked_counts,
+            }
+
+        delete_journal_entity(entity_id)
+        return {
+            "deleted": True,
+            "blocked_categories": [],
+            "blocked_counts": {},
+        }
+
+
+def _meaningful_identity(entity: dict[str, Any]) -> dict[str, Any]:
+    fields = ("id", "name", "type", "aka", "emails", "is_principal", "blocked")
+    return {field: entity.get(field) for field in fields if field in entity}
+
+
+def _check_expected_history(
+    entity_id: str,
+    *,
+    operation_id: str,
+    expected_history_refs: list[dict[str, Any]],
+    blocked: dict[str, int],
+) -> None:
+    try:
+        events = list(iter_entity_history(entity_id))
+    except Exception:
+        blocked["unreadable"] += 1
+        return
+    expected_refs = {
+        (str(ref.get("version_id")), int(ref.get("seq")))
+        for ref in expected_history_refs
+        if ref.get("version_id") is not None and ref.get("seq") is not None
+    }
+    current_refs = {
+        (str(event.get("version_id")), int(event.get("seq")))
+        for event in events
+        if event.get("version_id") is not None and event.get("seq") is not None
+    }
+    if len(events) != 1 or current_refs != expected_refs:
+        blocked["concurrent_change"] += 1
+        return
+    event = events[0]
+    operation = event.get("operation")
+    if not isinstance(operation, dict):
+        blocked["concurrent_change"] += 1
+        return
+    if operation.get("operation_kind") != "speaker_identify":
+        blocked["concurrent_change"] += 1
+    if operation.get("operation_id") != operation_id:
+        blocked["concurrent_change"] += 1
+
+
+def _check_entity_dir_contents(entity_id: str, blocked: dict[str, int]) -> None:
+    entity_dir = Path(get_journal()) / "entities" / entity_id
+    if not entity_dir.exists():
+        return
+    allowed_files = {entity_dir / "entity.json"}
+    history_events = entity_dir / "history" / "events"
+    if history_events.is_dir():
+        allowed_files.update(history_events.glob("*.json"))
+    for path in entity_dir.rglob("*"):
+        if path.is_dir() or path.name.endswith(".lock"):
+            continue
+        if path not in allowed_files:
+            blocked["unrecognized_file"] += 1
+
+
+def _scan_entity_reference_surfaces(
+    entity_id: str,
+    *,
+    operation_id: str,
+    blocked: dict[str, int],
+) -> None:
+    root = Path(get_journal())
+    _scan_facet_relationship_refs(root, entity_id, blocked)
+    _scan_observation_refs(root, entity_id, blocked)
+    _scan_activity_refs(root, entity_id, blocked)
+    _scan_segment_speaker_refs(root, entity_id, operation_id, blocked)
+    _scan_aka_crossrefs(root, entity_id, blocked)
+    _scan_edge_refs(root, entity_id, blocked)
+    _scan_jsonl_refs(
+        root / "entities" / "ambiguities.jsonl",
+        "ambiguity",
+        entity_id,
+        blocked,
+        predicate=_ambiguity_refs_entity,
+    )
+    _scan_jsonl_refs(
+        root / "entities" / "review-candidates.jsonl",
+        "entity_review_candidate",
+        entity_id,
+        blocked,
+        predicate=lambda row, eid: (
+            row.get("source_slug") == eid or row.get("target_slug") == eid
+        ),
+    )
+    _scan_jsonl_refs(
+        root / "speakers" / "review-candidates.jsonl",
+        "speaker_review_candidate",
+        entity_id,
+        blocked,
+        predicate=lambda row, eid: (
+            row.get("source_id") == eid or row.get("target_id") == eid
+        ),
+    )
+    _scan_jsonl_refs(
+        root / "speakers" / "candidate-pair-review-candidates.jsonl",
+        "candidate_pair",
+        entity_id,
+        blocked,
+        predicate=lambda row, eid: _json_value_present(row, eid),
+    )
+    _scan_speaker_candidate_refs(root, entity_id, blocked)
+    _scan_keep_separate_refs(entity_id, blocked)
+    _scan_jsonl_refs(
+        root / "speakers" / "cluster-dismissals.jsonl",
+        "dismissal",
+        entity_id,
+        blocked,
+        predicate=lambda row, eid: _json_value_present(row, eid),
+    )
+    _scan_identify_operation_refs(entity_id, operation_id, blocked)
+
+
+def _scan_facet_relationship_refs(
+    root: Path,
+    entity_id: str,
+    blocked: dict[str, int],
+) -> None:
+    facets_dir = root / "facets"
+    if not facets_dir.is_dir():
+        return
+    for rel_dir in facets_dir.glob(f"*/entities/{entity_id}"):
+        if rel_dir.exists():
+            blocked["facet_relationship"] += 1
+
+
+def _scan_observation_refs(
+    root: Path,
+    entity_id: str,
+    blocked: dict[str, int],
+) -> None:
+    for path in sorted((root / "facets").glob("*/entities/*/observations.jsonl")):
+        if path.parent.name == entity_id:
+            blocked["observation"] += 1
+        _scan_jsonl_refs(
+            path,
+            "observation",
+            entity_id,
+            blocked,
+            predicate=lambda row, eid: _json_key_value_present(
+                row,
+                eid,
+                {"entity_id", "target_entity_id", "source_entity_id"},
+            ),
+        )
+
+
+def _scan_activity_refs(root: Path, entity_id: str, blocked: dict[str, int]) -> None:
+    keys = {
+        "entity_id",
+        "active_entities",
+        "owner_entity_id",
+        "counterparty_entity_id",
+        "from_entity_id",
+        "to_entity_id",
+    }
+    for path in sorted((root / "facets").glob("*/activities/*.jsonl")):
+        _scan_jsonl_refs(
+            path,
+            "activity",
+            entity_id,
+            blocked,
+            predicate=lambda row, eid: _json_key_value_present(row, eid, keys),
+        )
+
+
+def _scan_segment_speaker_refs(
+    root: Path,
+    entity_id: str,
+    operation_id: str,
+    blocked: dict[str, int],
+) -> None:
+    chronicle = root / "chronicle"
+    for labels_path in sorted(chronicle.glob("*/*/*/talents/speaker_labels.json")):
+        data = _read_json_object(labels_path, blocked)
+        if data is None:
+            continue
+        labels = data.get("labels", [])
+        if isinstance(labels, list):
+            for label in labels:
+                if isinstance(label, dict) and label.get("speaker") == entity_id:
+                    blocked["segment_label"] += 1
+    for corr_path in sorted(chronicle.glob("*/*/*/talents/speaker_corrections.json")):
+        data = _read_json_object(corr_path, blocked)
+        if data is None:
+            continue
+        corrections = data.get("corrections", [])
+        if not isinstance(corrections, list):
+            continue
+        for row in corrections:
+            if not isinstance(row, dict):
+                continue
+            if row.get("operation_id") == operation_id:
+                continue
+            if (
+                row.get("original_speaker") == entity_id
+                or row.get("corrected_speaker") == entity_id
+            ):
+                blocked["segment_correction"] += 1
+
+
+def _scan_aka_crossrefs(root: Path, entity_id: str, blocked: dict[str, int]) -> None:
+    for path in sorted((root / "entities").glob("*/entity.json")):
+        if path.parent.name == entity_id:
+            continue
+        data = _read_json_object(path, blocked)
+        if data is None:
+            continue
+        aka = data.get("aka")
+        if isinstance(aka, list) and entity_id in aka:
+            blocked["aka_crossref"] += 1
+
+
+def _scan_edge_refs(root: Path, entity_id: str, blocked: dict[str, int]) -> None:
+    if not (root / "indexer" / "journal.sqlite").is_file():
+        return
+    try:
+        from solstone.think.indexer.edges import count_entity_edges
+
+        count = count_entity_edges(entity_id)
+    except Exception:
+        blocked["unreadable"] += 1
+        return
+    if count:
+        blocked["edge"] += int(count)
+
+
+def _scan_speaker_candidate_refs(
+    root: Path,
+    entity_id: str,
+    blocked: dict[str, int],
+) -> None:
+    data = _read_json_object(root / "awareness" / "speaker_candidates.json", blocked)
+    if data is None:
+        return
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list):
+        return
+    for candidate in candidates:
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("confirmed_entity") == entity_id
+        ):
+            blocked["speaker_candidate"] += 1
+
+
+def _scan_keep_separate_refs(entity_id: str, blocked: dict[str, int]) -> None:
+    try:
+        from solstone.think.speaker_keep_separate import fold_assertions
+
+        for assertion in fold_assertions():
+            if entity_id in (assertion.entity_id_a, assertion.entity_id_b):
+                blocked["keep_separate"] += 1
+    except Exception:
+        blocked["unreadable"] += 1
+
+
+def _scan_identify_operation_refs(
+    entity_id: str,
+    operation_id: str,
+    blocked: dict[str, int],
+) -> None:
+    try:
+        from solstone.think.speaker_identify_operations import fold_all_operations
+
+        states = fold_all_operations()
+    except Exception:
+        blocked["unreadable"] += 1
+        return
+    for state in states:
+        if state.operation_id == operation_id:
+            continue
+        if state.target_entity_id == entity_id:
+            blocked["identify_operation"] += 1
+            continue
+        if entity_id in state.reviewed_near_match_entity_ids:
+            blocked["identify_operation"] += 1
+            continue
+        for assertion in state.prepared_plan.get("keep_separate_assertions", []):
+            if not isinstance(assertion, dict):
+                continue
+            if entity_id in (
+                assertion.get("entity_id_a"),
+                assertion.get("entity_id_b"),
+                assertion.get("planned_target_entity_id"),
+                assertion.get("reviewed_id"),
+            ):
+                blocked["identify_operation"] += 1
+                break
+
+
+def _scan_jsonl_refs(
+    path: Path,
+    category: str,
+    entity_id: str,
+    blocked: dict[str, int],
+    *,
+    predicate,
+) -> None:
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        blocked["unreadable"] += 1
+        return
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            blocked["unreadable"] += 1
+            continue
+        if isinstance(row, dict) and predicate(row, entity_id):
+            blocked[category] += 1
+
+
+def _read_json_object(path: Path, blocked: dict[str, int]) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        blocked["unreadable"] += 1
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ambiguity_refs_entity(row: dict[str, Any], entity_id: str) -> bool:
+    if row.get("resolved_entity_id") == entity_id:
+        return True
+    candidates = row.get("ranked_candidates")
+    return isinstance(candidates, list) and any(
+        isinstance(candidate, dict) and candidate.get("id") == entity_id
+        for candidate in candidates
+    )
+
+
+def _json_key_value_present(value: Any, entity_id: str, keys: set[str]) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in keys:
+                if child == entity_id:
+                    return True
+                if isinstance(child, list) and entity_id in child:
+                    return True
+            if _json_key_value_present(child, entity_id, keys):
+                return True
+    elif isinstance(value, list):
+        return any(_json_key_value_present(item, entity_id, keys) for item in value)
+    return False
+
+
+def _json_value_present(value: Any, entity_id: str) -> bool:
+    if value == entity_id:
+        return True
+    if isinstance(value, dict):
+        return any(_json_value_present(item, entity_id) for item in value.values())
+    if isinstance(value, list):
+        return any(_json_value_present(item, entity_id) for item in value)
+    return False
 
 
 def journal_entity_memory_path(entity_id: str) -> Path:

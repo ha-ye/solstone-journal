@@ -1226,6 +1226,27 @@ def _load_corrections_by_sentence(seg_dir: Path) -> dict[int, dict]:
     return corrected
 
 
+def _apply_correction_overlay(label: dict, correction: dict) -> bool:
+    speaker = correction.get("corrected_speaker")
+    if speaker is None:
+        if correction.get("correction_kind") != "identify_undo":
+            return False
+        label["speaker"] = None
+        label["confidence"] = None
+        label["method"] = None
+        return True
+
+    label["speaker"] = speaker
+    label["confidence"] = "high"
+    if correction.get("original_speaker") == speaker:
+        label["method"] = "user_confirmed"
+    elif correction.get("original_speaker") is None:
+        label["method"] = "user_assigned"
+    else:
+        label["method"] = "user_corrected"
+    return True
+
+
 def _speaker_labels_payload(
     seg_dir: Path,
     labels: list[dict],
@@ -1243,16 +1264,7 @@ def _speaker_labels_payload(
             sid = label.get("sentence_id")
             if sid is not None and int(sid) in corrected:
                 corr = corrected[int(sid)]
-                speaker = corr.get("corrected_speaker")
-                if speaker is not None:
-                    label["speaker"] = speaker
-                    label["confidence"] = "high"
-                    if corr.get("original_speaker") == speaker:
-                        label["method"] = "user_confirmed"
-                    elif corr.get("original_speaker") is None:
-                        label["method"] = "user_assigned"
-                    else:
-                        label["method"] = "user_corrected"
+                _apply_correction_overlay(label, corr)
         logger.info(
             "Preserved %d user corrections in %s",
             len(corrected),
@@ -1623,6 +1635,101 @@ def apply_label_patches(
         return base
 
     update_speaker_labels(seg_dir, transform)
+
+
+def restore_label_rows(
+    seg_dir: Path,
+    restorations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare-restore speaker label rows for identify undo."""
+    report: dict[str, Any] = {
+        "restored_count": 0,
+        "removed_inserted_count": 0,
+        "patched_existing_count": 0,
+        "skipped_count": 0,
+        "skipped_reasons": {"missing": 0, "changed": 0},
+    }
+    if not restorations:
+        return report
+
+    def transform(current: dict | None) -> dict | None:
+        if isinstance(current, dict):
+            base = dict(current)
+            labels_value = current.get("labels", [])
+            labels = [
+                dict(label) if isinstance(label, dict) else label
+                for label in (labels_value if isinstance(labels_value, list) else [])
+            ]
+        else:
+            base = {}
+            labels = []
+
+        labels_by_sid: dict[int, dict] = {}
+        for label in labels:
+            if not isinstance(label, dict):
+                continue
+            sid = _label_sentence_id(label)
+            if sid is not None:
+                labels_by_sid[sid] = label
+
+        changed = False
+        remove_sids: set[int] = set()
+        for restoration in restorations:
+            sid = int(restoration["sentence_id"])
+            expected = restoration.get("expected_current_label")
+            current_label = labels_by_sid.get(sid)
+            if current_label is None:
+                report["skipped_reasons"]["missing"] += 1
+                continue
+            if current_label != expected:
+                report["skipped_reasons"]["changed"] += 1
+                continue
+
+            prior_state = restoration.get("prior_state")
+            if prior_state == "absent":
+                remove_sids.add(sid)
+                report["removed_inserted_count"] += 1
+            elif prior_state == "present":
+                prior_label = restoration.get("prior_label")
+                if not isinstance(prior_label, dict):
+                    raise ValueError("present label restoration requires prior_label")
+                current_label.clear()
+                current_label.update(prior_label)
+                report["patched_existing_count"] += 1
+            else:
+                raise ValueError(
+                    f"unknown prior_state for label restore: {prior_state}"
+                )
+            report["restored_count"] += 1
+            changed = True
+
+        report["skipped_count"] = sum(report["skipped_reasons"].values())
+        if not changed:
+            return None
+
+        if remove_sids:
+            labels = [
+                label
+                for label in labels
+                if not (
+                    isinstance(label, dict)
+                    and (sid := _label_sentence_id(label)) is not None
+                    and sid in remove_sids
+                )
+            ]
+
+        labels = sorted(
+            labels,
+            key=lambda label: (
+                _label_sentence_id(label) is None if isinstance(label, dict) else True,
+                _label_sentence_id(label) if isinstance(label, dict) else 0,
+            ),
+        )
+        base["labels"] = labels
+        return base
+
+    update_speaker_labels(seg_dir, transform)
+    return report
 
 
 # ---------------------------------------------------------------------------

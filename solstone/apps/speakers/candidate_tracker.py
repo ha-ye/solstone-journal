@@ -40,7 +40,7 @@ from solstone.think.journal_io import (
     hold_lock,
     read_json,
 )
-from solstone.think.utils import get_journal
+from solstone.think.utils import get_journal, now_ms, segment_start_ts_ms
 
 # Synthetic cluster label for producer-proven solo speaker segments.
 SOLO_CLUSTER_LABEL: int = -1
@@ -128,6 +128,25 @@ class CandidateProfile:
         )
 
 
+@dataclass(frozen=True)
+class RetroactiveConfirmPlan:
+    """Read-only plan for confirming a candidate and backfilling voiceprints."""
+
+    matched: bool
+    match_score: float | None
+    candidate_id: int | None
+    entity_id: str
+    candidate_before: dict[str, Any] | None
+    candidate_after: dict[str, Any] | None
+    preexisting_voiceprint_keys: tuple[tuple[str, str, str, int], ...]
+    voiceprints_to_add: tuple[dict[str, Any], ...]
+    voiceprint_items_to_add: tuple[tuple[np.ndarray, dict[str, Any]], ...] = field(
+        default_factory=tuple,
+        repr=False,
+        compare=False,
+    )
+
+
 def _routes_helpers():
     from solstone.apps.speakers.routes import (
         _load_embeddings_file,
@@ -135,6 +154,116 @@ def _routes_helpers():
     )
 
     return _load_embeddings_file, _normalize_embedding
+
+
+def _empty_retroactive_plan(
+    entity_id: str,
+    *,
+    match_score: float | None = None,
+) -> RetroactiveConfirmPlan:
+    return RetroactiveConfirmPlan(
+        matched=False,
+        match_score=match_score,
+        candidate_id=None,
+        entity_id=entity_id,
+        candidate_before=None,
+        candidate_after=None,
+        preexisting_voiceprint_keys=(),
+        voiceprints_to_add=(),
+        voiceprint_items_to_add=(),
+    )
+
+
+def _entity_voiceprint_snapshot(
+    entity_id: str,
+    normalize_embedding: Callable[[np.ndarray], np.ndarray | None],
+) -> tuple[set[tuple[str, str, str, int]], int, np.ndarray | None]:
+    from solstone.think.entities import load_entity_voiceprints_file
+
+    result = load_entity_voiceprints_file(entity_id)
+    if result is None:
+        return set(), 0, None
+
+    embeddings, metadata = result
+    keys: set[tuple[str, str, str, int]] = set()
+    for meta in metadata:
+        try:
+            keys.add(
+                (
+                    str(meta["day"]),
+                    str(meta["segment_key"]),
+                    str(meta["source"]),
+                    int(meta["sentence_id"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    existing_norms = [
+        normalized
+        for embedding in embeddings
+        if (normalized := normalize_embedding(embedding)) is not None
+    ]
+    centroid = (
+        normalize_embedding(np.mean(existing_norms, axis=0)) if existing_norms else None
+    )
+    return keys, len(embeddings), centroid
+
+
+def _retroactive_owner_context() -> tuple[np.ndarray, float] | None:
+    from solstone.apps.speakers.attribution import load_owner_centroid
+
+    centroid_data = load_owner_centroid()
+    if centroid_data is None:
+        return None
+    return centroid_data.centroid, centroid_data.threshold
+
+
+def _is_principal_entity(entity_id: str) -> bool:
+    from solstone.think.entities import get_journal_principal
+
+    principal = get_journal_principal()
+    return bool(principal and principal.get("id") == entity_id)
+
+
+def _retroactive_segment_noisy(seg_dir: Path, source: str) -> bool:
+    from solstone.apps.speakers.attribution import (
+        NOISY_FLYWHEEL_OVERLAP_MAX,
+        _read_segment_overlap_fraction,
+    )
+
+    jsonl_path = seg_dir / f"{source}.jsonl"
+    return _read_segment_overlap_fraction(jsonl_path) > NOISY_FLYWHEEL_OVERLAP_MAX
+
+
+def _retroactive_outlier_min_samples() -> int:
+    from solstone.apps.speakers.attribution import VP_OUTLIER_MIN_SAMPLES
+
+    return VP_OUTLIER_MIN_SAMPLES
+
+
+def _retroactive_outlier_min_similarity() -> float:
+    from solstone.apps.speakers.attribution import VP_OUTLIER_MIN_SIMILARITY
+
+    return VP_OUTLIER_MIN_SIMILARITY
+
+
+def _retroactive_voiceprint_metadata(
+    day: str,
+    stream: str,
+    segment_key: str,
+    source: str,
+    sentence_id: int,
+) -> dict[str, Any]:
+    return {
+        "day": day,
+        "segment_key": segment_key,
+        "source": source,
+        "stream": stream,
+        "sentence_id": sentence_id,
+        "added_at": now_ms(),
+        "last_seen_ts": segment_start_ts_ms(day, segment_key),
+    }
 
 
 def _source_key(source_segment: dict[str, Any]) -> tuple[str, str, str, str, int]:
@@ -659,20 +788,91 @@ class CandidateTracker:
         candidate.confirmed_entity = None
         self.save()
 
-    def retroactive_confirm(self, centroid: np.ndarray, entity_id: str) -> int:
-        from solstone.apps.speakers.attribution import accumulate_voiceprints
+    def restore_confirmed_candidate(
+        self,
+        cand_id: int,
+        *,
+        expected_after: dict[str, Any],
+        candidate_before: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compare-restore a candidate confirmed by identify undo."""
+        report = {
+            "restored_count": 0,
+            "skipped_count": 0,
+            "skipped_reasons": {
+                "missing": 0,
+                "already_restored": 0,
+                "concurrent_change": 0,
+            },
+        }
+        with hold_lock(self.store_path):
+            self.load()
+            candidate = self._candidates.get(int(cand_id))
+            if candidate is None:
+                report["skipped_count"] += 1
+                report["skipped_reasons"]["missing"] += 1
+                return report
+            current = candidate.to_json()
+            if current == candidate_before:
+                report["skipped_count"] += 1
+                report["skipped_reasons"]["already_restored"] += 1
+                return report
+            if current != expected_after:
+                report["skipped_count"] += 1
+                report["skipped_reasons"]["concurrent_change"] += 1
+                return report
+            candidate.status = str(candidate_before.get("status", "pending"))
+            confirmed_entity = candidate_before.get("confirmed_entity")
+            candidate.confirmed_entity = (
+                str(confirmed_entity) if confirmed_entity is not None else None
+            )
+            self._write()
+            report["restored_count"] = 1
+            return report
 
+    def plan_retroactive_confirm(
+        self,
+        centroid: np.ndarray,
+        entity_id: str,
+    ) -> RetroactiveConfirmPlan:
+        """Plan retroactive confirmation without mutating tracker or voiceprints."""
         load_embeddings_file, normalize_embedding = _routes_helpers()
         normalized_centroid = normalize_embedding(centroid)
         if normalized_centroid is None:
-            return 0
+            return _empty_retroactive_plan(entity_id)
 
         cand_id, score = self._best_match(normalized_centroid)
         if cand_id is None or score < MERGE_THRESHOLD:
-            return 0
+            return _empty_retroactive_plan(entity_id, match_score=score)
 
         candidate = self._candidates[cand_id]
-        saved_total = 0
+        candidate_before = candidate.to_json()
+        candidate_after = dict(candidate_before)
+        candidate_after["status"] = "confirmed"
+        candidate_after["confirmed_entity"] = entity_id
+
+        preexisting_keys, existing_count, existing_centroid = (
+            _entity_voiceprint_snapshot(entity_id, normalize_embedding)
+        )
+        working_keys = set(preexisting_keys)
+        voiceprint_items: list[tuple[np.ndarray, dict[str, Any]]] = []
+        voiceprints_to_add: list[dict[str, Any]] = []
+
+        owner_context = _retroactive_owner_context()
+        if owner_context is None or _is_principal_entity(entity_id):
+            return RetroactiveConfirmPlan(
+                matched=True,
+                match_score=score,
+                candidate_id=cand_id,
+                entity_id=entity_id,
+                candidate_before=candidate_before,
+                candidate_after=candidate_after,
+                preexisting_voiceprint_keys=tuple(sorted(preexisting_keys)),
+                voiceprints_to_add=(),
+                voiceprint_items_to_add=(),
+            )
+        owner_centroid, owner_threshold = owner_context
+
         for source_segment in candidate.source_segments:
             day = str(source_segment["day"])
             segment_key = str(source_segment["segment_key"])
@@ -683,11 +883,14 @@ class CandidateTracker:
             seg_dir = segment_path(day, segment_key, stream, create=False)
             if not seg_dir.exists():
                 continue
+            if _retroactive_segment_noisy(seg_dir, source):
+                continue
+            emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
+            if emb_data is None:
+                continue
+            embeddings, statement_ids, _durations_s = emb_data
+            sid_to_idx = {int(sid): index for index, sid in enumerate(statement_ids)}
             if cluster_label == SOLO_CLUSTER_LABEL:
-                emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
-                if emb_data is None:
-                    continue
-                _embeddings, statement_ids, _durations_s = emb_data
                 sentence_ids = sorted(int(sid) for sid in statement_ids)
             else:
                 integer_labels = _load_integer_speaker_labels(seg_dir, source)
@@ -696,27 +899,101 @@ class CandidateTracker:
                     for sid, label in sorted(integer_labels.items())
                     if int(label) == cluster_label
                 ]
-            synthetic_labels = [
-                {
-                    "sentence_id": sid,
-                    "speaker": entity_id,
-                    "confidence": "high",
-                    "method": "acoustic_cluster",
-                }
-                for sid in sentence_ids
-            ]
-            if not synthetic_labels:
-                continue
-            saved = accumulate_voiceprints(
-                day,
-                stream,
-                segment_key,
-                synthetic_labels,
-                source,
-            )
-            saved_total += sum(saved.values())
 
+            for sid in sentence_ids:
+                idx = sid_to_idx.get(int(sid))
+                if idx is None:
+                    continue
+                normalized = normalize_embedding(embeddings[idx])
+                if normalized is None:
+                    continue
+                if float(np.dot(normalized, owner_centroid)) >= owner_threshold:
+                    continue
+                key = (day, segment_key, source, int(sid))
+                if key in working_keys:
+                    continue
+                if (
+                    existing_count >= _retroactive_outlier_min_samples()
+                    and existing_centroid is not None
+                    and float(np.dot(normalized, existing_centroid))
+                    < _retroactive_outlier_min_similarity()
+                ):
+                    continue
+                metadata = _retroactive_voiceprint_metadata(
+                    day,
+                    stream,
+                    segment_key,
+                    source,
+                    int(sid),
+                )
+                voiceprint_items.append((normalized, metadata))
+                voiceprints_to_add.append(
+                    {
+                        "key": {
+                            "day": day,
+                            "segment_key": segment_key,
+                            "source": source,
+                            "sentence_id": int(sid),
+                        },
+                        "metadata": metadata,
+                    }
+                )
+                working_keys.add(key)
+
+        return RetroactiveConfirmPlan(
+            matched=True,
+            match_score=score,
+            candidate_id=cand_id,
+            entity_id=entity_id,
+            candidate_before=candidate_before,
+            candidate_after=candidate_after,
+            preexisting_voiceprint_keys=tuple(sorted(preexisting_keys)),
+            voiceprints_to_add=tuple(voiceprints_to_add),
+            voiceprint_items_to_add=tuple(voiceprint_items),
+        )
+
+    def apply_retroactive_confirm_plan(self, plan: RetroactiveConfirmPlan) -> int:
+        """Apply a retroactive confirmation plan."""
+        if not plan.matched or plan.candidate_id is None:
+            return 0
+
+        saved_total = 0
+        if plan.voiceprint_items_to_add:
+            from solstone.think.entities import (
+                load_existing_voiceprint_keys,
+                save_voiceprints_batch,
+            )
+
+            existing_keys = load_existing_voiceprint_keys(plan.entity_id)
+            items = [
+                (embedding, metadata)
+                for embedding, metadata in plan.voiceprint_items_to_add
+                if (
+                    metadata.get("day"),
+                    metadata.get("segment_key"),
+                    metadata.get("source"),
+                    metadata.get("sentence_id"),
+                )
+                not in existing_keys
+            ]
+            if items:
+                try:
+                    saved_total = save_voiceprints_batch(plan.entity_id, items)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to apply retroactive voiceprints for %s: %s",
+                        plan.entity_id,
+                        exc,
+                    )
+
+        candidate = self._candidates.get(int(plan.candidate_id))
+        if candidate is None:
+            return saved_total
         candidate.status = "confirmed"
-        candidate.confirmed_entity = entity_id
+        candidate.confirmed_entity = plan.entity_id
         self.save()
         return saved_total
+
+    def retroactive_confirm(self, centroid: np.ndarray, entity_id: str) -> int:
+        plan = self.plan_retroactive_confirm(centroid, entity_id)
+        return self.apply_retroactive_confirm_plan(plan)

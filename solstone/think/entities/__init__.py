@@ -75,6 +75,7 @@ from solstone.think.entities.history import (
 from solstone.think.entities.journal import (
     block_journal_entity,
     create_journal_entity,
+    delete_created_entity_if_unreferenced,
     delete_journal_entity,
     ensure_journal_entity_memory,
     get_journal_principal,
@@ -157,9 +158,11 @@ from solstone.think.entities.saving import (
     update_facet_entity_identity,
 )
 from solstone.think.entities.voiceprints import (
+    VoiceprintRemovalError,
     load_entity_voiceprints_file,
     load_existing_voiceprint_keys,
     normalize_embedding,
+    remove_voiceprints_by_key,
     save_voiceprints_batch,
     voiceprint_file_path,
 )
@@ -183,6 +186,7 @@ __all__ = [
     "EntityNotFoundError",
     "EntityWriteError",
     "EntityAmbiguityError",
+    "VoiceprintRemovalError",
     # History
     "EntityHistoryError",
     "EntityHistoryRepairRequired",
@@ -196,6 +200,7 @@ __all__ = [
     # Journal
     "block_journal_entity",
     "create_journal_entity",
+    "delete_created_entity_if_unreferenced",
     "delete_journal_entity",
     "ensure_journal_entity_memory",
     "get_journal_principal",
@@ -233,6 +238,7 @@ __all__ = [
     "detach_facet_entity",
     "save_detected_entity",
     "save_entities",
+    "remove_voiceprints_by_key",
     "save_voiceprints_batch",
     "update_facet_entity_description",
     "update_facet_entity_identity",
