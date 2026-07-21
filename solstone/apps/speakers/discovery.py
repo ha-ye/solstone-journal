@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import uuid
 from collections import defaultdict
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -307,7 +310,18 @@ def discover_unknown_speakers() -> dict[str, Any]:
     tmp_path.rename(cache_path)
 
     result_clusters.sort(key=lambda cluster: cluster["size"], reverse=True)
-    return {"clusters": result_clusters}
+    from solstone.think.speaker_cluster_dismissals import (
+        cluster_dismissal_suppressed,
+    )
+
+    visible_clusters = [
+        cluster
+        for cluster in result_clusters
+        if not cluster_dismissal_suppressed(
+            cache_clusters.get(str(cluster["cluster_id"]), [])
+        )
+    ]
+    return {"clusters": visible_clusters}
 
 
 def _conversation_key(
@@ -499,22 +513,558 @@ def _maybe_inject_identify_fault(stage: str) -> None:
     return None
 
 
-def identify_cluster(
-    cluster_id: int,
-    name: str | None = None,
-    entity_id: str | None = None,
+@dataclass(frozen=True)
+class _PlannedIdentify:
+    operation_id: str
+    request_id: str
+    request_fingerprint: str
+    prepared_plan: dict[str, Any]
+
+
+class _IdentifyRepairRequired(RuntimeError):
+    def __init__(
+        self,
+        phase: str,
+        repair_code: str,
+        repair_categories: dict[str, int],
+    ) -> None:
+        super().__init__(repair_code)
+        self.phase = phase
+        self.repair_code = repair_code
+        self.repair_categories = repair_categories
+
+
+def _utc_iso() -> str:
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+
+
+def _copy_jsonable(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def _member_tuple(member: dict[str, Any]) -> tuple[str, str, str, str, int]:
+    return (
+        str(member["day"]),
+        str(member["stream"]),
+        str(member["segment_key"]),
+        str(member["source"]),
+        int(member["sentence_id"]),
+    )
+
+
+def _key_tuple(key: dict[str, Any]) -> tuple[str, str, str, int]:
+    return (
+        str(key["day"]),
+        str(key["segment_key"]),
+        str(key["source"]),
+        int(key["sentence_id"]),
+    )
+
+
+def _key_dict(day: str, segment_key: str, source: str, sentence_id: int) -> dict:
+    return {
+        "day": day,
+        "segment_key": segment_key,
+        "source": source,
+        "sentence_id": int(sentence_id),
+    }
+
+
+def _sentence_key(segment: dict[str, Any], sentence_id: int) -> dict[str, Any]:
+    return {
+        "day": segment["day"],
+        "stream": segment["stream"],
+        "segment_key": segment["segment_key"],
+        "sentence_id": int(sentence_id),
+    }
+
+
+def _canonical_members(cluster_members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "day": day,
+            "stream": stream,
+            "segment_key": segment_key,
+            "source": source,
+            "sentence_id": sentence_id,
+        }
+        for day, stream, segment_key, source, sentence_id in sorted(
+            _member_tuple(member) for member in cluster_members
+        )
+    ]
+
+
+def _load_segment_corrections(seg_dir: Path) -> list[dict[str, Any]]:
+    path = seg_dir / "talents" / "speaker_corrections.json"
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    corrections = data.get("corrections", []) if isinstance(data, dict) else []
+    return [row for row in corrections if isinstance(row, dict)]
+
+
+def _load_resolved_clusters() -> dict[str, Any]:
+    path = _discovery_resolved_path(create=False)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _replace_resolved_clusters(data: dict[str, Any]) -> None:
+    path = _discovery_resolved_path(create=True)
+    atomic_replace(path, json.dumps(data, indent=2, sort_keys=True))
+
+
+def _history_refs_for_entity(entity_id: str, operation_id: str) -> list[dict[str, Any]]:
+    from solstone.think.entities import iter_entity_history
+
+    refs: list[dict[str, Any]] = []
+    for event in iter_entity_history(entity_id):
+        operation = event.get("operation")
+        if not isinstance(operation, dict):
+            continue
+        if operation.get("operation_id") != operation_id:
+            continue
+        refs.append(
+            {
+                "version_id": event.get("version_id"),
+                "seq": event.get("seq"),
+                "path": (
+                    f"entities/{entity_id}/history/events/"
+                    f"{int(event['seq']):020d}-{event['version_id']}.json"
+                ),
+            }
+        )
+    return refs
+
+
+def _meaningful_identity(entity: dict[str, Any]) -> dict[str, Any]:
+    fields = ("id", "name", "type", "aka", "emails", "is_principal", "blocked")
+    return {field: entity.get(field) for field in fields if field in entity}
+
+
+def _identity_hash(entity: dict[str, Any] | None) -> str:
+    import hashlib
+
+    encoded = json.dumps(
+        _meaningful_identity(entity or {}),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _load_embedding_for_member(member: dict[str, Any]) -> Any | None:
+    (
+        load_embeddings_file,
+        _load_speaker_labels,
+        normalize_embedding,
+        _scan,
+        check_owner_contamination,
+    ) = _routes_helpers()
+    day = str(member["day"])
+    stream = str(member["stream"])
+    segment_key = str(member["segment_key"])
+    source = str(member["source"])
+    sentence_id = int(member["sentence_id"])
+    seg_dir = segment_path(day, segment_key, stream, create=False)
+    emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
+    if emb_data is None:
+        return None
+    embeddings, statement_ids, _durations = emb_data
+    for embedding, sid in zip(embeddings, statement_ids):
+        if int(sid) != sentence_id:
+            continue
+        normalized = normalize_embedding(embedding)
+        if normalized is None or check_owner_contamination(normalized):
+            return None
+        return normalized
+    return None
+
+
+def _planned_voiceprint_items(
+    entries: list[dict[str, Any]],
+) -> list[tuple[Any, dict[str, Any]]]:
+    items: list[tuple[Any, dict[str, Any]]] = []
+    for entry in entries:
+        embedding = _load_embedding_for_member(entry["source_member"])
+        if embedding is None:
+            raise _IdentifyRepairRequired(
+                "direct_voiceprints",
+                "source_embedding_unavailable",
+                {"direct_voiceprint": 1},
+            )
+        items.append((embedding, dict(entry["metadata"])))
+    return items
+
+
+def _entity_voiceprint_metadata(
+    entity_id: str,
+) -> dict[tuple[str, str, str, int], list[dict]]:
+    from solstone.think.entities import load_entity_voiceprints_file
+
+    loaded = load_entity_voiceprints_file(entity_id)
+    if loaded is None:
+        return {}
+    _embeddings, metadata = loaded
+    by_key: dict[tuple[str, str, str, int], list[dict]] = defaultdict(list)
+    for meta in metadata:
+        if not isinstance(meta, dict):
+            continue
+        try:
+            by_key[
+                (
+                    str(meta["day"]),
+                    str(meta["segment_key"]),
+                    str(meta["source"]),
+                    int(meta["sentence_id"]),
+                )
+            ].append(meta)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return by_key
+
+
+def _direct_voiceprint_plan(
+    target_id: str,
+    cluster_members: list[dict[str, Any]],
     *,
-    resolve_only: bool = False,
-    create_new: bool = False,
-    entity_type: str = "Person",
-) -> dict[str, Any]:
-    """Identify a discovered unknown speaker cluster."""
+    added_at: int,
+) -> tuple[dict[str, Any], list[tuple[Any, dict[str, Any]]]]:
+    from solstone.think.entities import load_existing_voiceprint_keys
+
+    existing_keys = load_existing_voiceprint_keys(target_id)
+    working_keys = set(existing_keys)
+    entries_to_add: list[dict[str, Any]] = []
+    items: list[tuple[Any, dict[str, Any]]] = []
+    for member in _canonical_members(cluster_members):
+        day, stream, segment_key, source, sentence_id = _member_tuple(member)
+        key = (day, segment_key, source, sentence_id)
+        if key in working_keys:
+            continue
+        embedding = _load_embedding_for_member(member)
+        if embedding is None:
+            continue
+        metadata = {
+            "day": day,
+            "segment_key": segment_key,
+            "source": source,
+            "stream": stream,
+            "sentence_id": sentence_id,
+            "added_at": added_at,
+        }
+        entries_to_add.append(
+            {
+                "key": _key_dict(day, segment_key, source, sentence_id),
+                "metadata": metadata,
+                "source_member": dict(member),
+            }
+        )
+        items.append((embedding, metadata))
+        working_keys.add(key)
+    return (
+        {
+            "preexisting_keys": [
+                _key_dict(day, segment_key, source, sentence_id)
+                for day, segment_key, source, sentence_id in sorted(existing_keys)
+            ],
+            "entries_to_add": entries_to_add,
+        },
+        items,
+    )
+
+
+def _segment_plans(
+    target_id: str,
+    cluster_members: list[dict[str, Any]],
+    *,
+    timestamp: int,
+    operation_id: str,
+) -> list[dict[str, Any]]:
+    _load_embeddings_file, load_speaker_labels, _normalize, _scan, _check = (
+        _routes_helpers()
+    )
+    grouped: dict[tuple[str, str, str], set[int]] = defaultdict(set)
+    sources_by_segment: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for member in cluster_members:
+        day, stream, segment_key, source, sentence_id = _member_tuple(member)
+        grouped[(day, stream, segment_key)].add(sentence_id)
+        sources_by_segment[(day, stream, segment_key)].add(source)
+
+    plans: list[dict[str, Any]] = []
+    for day, stream, segment_key in sorted(grouped):
+        seg_dir = day_path(day, create=False) / stream / segment_key
+        if not seg_dir.is_dir():
+            continue
+        labels_data = load_speaker_labels(seg_dir) or {"labels": []}
+        labels_by_sid: dict[int, dict[str, Any]] = {}
+        for label in labels_data.get("labels", []):
+            if not isinstance(label, dict):
+                continue
+            sentence_id = label.get("sentence_id")
+            if sentence_id is not None:
+                labels_by_sid[int(sentence_id)] = dict(label)
+
+        existing_corrections = _load_segment_corrections(seg_dir)
+        existing_keys = [
+            {
+                "sentence_id": int(correction["sentence_id"]),
+                "corrected_speaker": correction.get("corrected_speaker"),
+            }
+            for correction in existing_corrections
+            if correction.get("sentence_id") is not None
+        ]
+        existing_key_set = {
+            (key["sentence_id"], key.get("corrected_speaker")) for key in existing_keys
+        }
+        labels: list[dict[str, Any]] = []
+        rows_to_append: list[dict[str, Any]] = []
+        for sentence_id in sorted(grouped[(day, stream, segment_key)]):
+            prior = labels_by_sid.get(sentence_id)
+            intended = {
+                "sentence_id": sentence_id,
+                "speaker": target_id,
+                "confidence": "high",
+                "method": "user_identified",
+            }
+            labels.append(
+                {
+                    "sentence_id": sentence_id,
+                    "prior_state": "present" if prior is not None else "absent",
+                    "prior_label": copy.deepcopy(prior) if prior is not None else None,
+                    "intended_label": intended,
+                }
+            )
+            if (sentence_id, target_id) not in existing_key_set:
+                original = prior or {}
+                rows_to_append.append(
+                    {
+                        "sentence_id": sentence_id,
+                        "original_speaker": original.get("speaker"),
+                        "corrected_speaker": target_id,
+                        "original_method": original.get("method"),
+                        "timestamp": timestamp,
+                        "operation_id": operation_id,
+                        "correction_kind": "identify",
+                    }
+                )
+        plans.append(
+            {
+                "day": day,
+                "stream": stream,
+                "segment_key": segment_key,
+                "source": sorted(sources_by_segment[(day, stream, segment_key)])[0],
+                "sources": sorted(sources_by_segment[(day, stream, segment_key)]),
+                "labels": labels,
+                "corrections": {
+                    "existing_keys": existing_keys,
+                    "rows_to_append": rows_to_append,
+                },
+            }
+        )
+    return plans
+
+
+def _serializable_retro_plan(retro_plan: Any | None, entity_id: str) -> dict[str, Any]:
+    if retro_plan is None:
+        return {
+            "matched": False,
+            "match_score": None,
+            "candidate_id": None,
+            "candidate_before": None,
+            "candidate_after": None,
+            "preexisting_voiceprint_keys": [],
+            "voiceprints_to_add": [],
+        }
+    return {
+        "matched": bool(retro_plan.matched),
+        "match_score": retro_plan.match_score,
+        "candidate_id": retro_plan.candidate_id,
+        "candidate_before": _copy_jsonable(retro_plan.candidate_before),
+        "candidate_after": _copy_jsonable(retro_plan.candidate_after),
+        "preexisting_voiceprint_keys": [
+            _key_dict(day, segment_key, source, sentence_id)
+            for day, segment_key, source, sentence_id in retro_plan.preexisting_voiceprint_keys
+        ],
+        "voiceprints_to_add": [
+            _copy_jsonable(entry) for entry in retro_plan.voiceprints_to_add
+        ],
+        "entity_id": entity_id,
+    }
+
+
+def _retro_plan_from_prepared(prepared_plan: dict[str, Any]) -> Any:
+    from solstone.apps.speakers.candidate_tracker import RetroactiveConfirmPlan
+
+    retro = prepared_plan["retro_confirm"]
+    items: list[tuple[Any, dict[str, Any]]] = []
+    for entry in retro.get("voiceprints_to_add", []):
+        metadata = dict(entry["metadata"])
+        member = {
+            "day": metadata["day"],
+            "stream": metadata["stream"],
+            "segment_key": metadata["segment_key"],
+            "source": metadata["source"],
+            "sentence_id": metadata["sentence_id"],
+        }
+        embedding = _load_embedding_for_member(member)
+        if embedding is None:
+            raise _IdentifyRepairRequired(
+                "retro_tracker",
+                "source_embedding_unavailable",
+                {"retro_voiceprint": 1},
+            )
+        items.append((embedding, metadata))
+    return RetroactiveConfirmPlan(
+        matched=bool(retro.get("matched")),
+        match_score=retro.get("match_score"),
+        candidate_id=retro.get("candidate_id"),
+        entity_id=prepared_plan["target"]["entity_id"],
+        candidate_before=retro.get("candidate_before"),
+        candidate_after=retro.get("candidate_after"),
+        preexisting_voiceprint_keys=tuple(
+            _key_tuple(key) for key in retro.get("preexisting_voiceprint_keys", [])
+        ),
+        voiceprints_to_add=tuple(retro.get("voiceprints_to_add", [])),
+        voiceprint_items_to_add=tuple(items),
+    )
+
+
+def _current_name_variant_detection_count(entity_id_a: str, entity_id_b: str) -> int:
+    from solstone.think.speaker_review_candidates import find_candidate, load_candidates
+
+    row = find_candidate(load_candidates(), entity_id_a, entity_id_b)
+    if not row:
+        return 1
+    evidence = row.get("evidence")
+    if not isinstance(evidence, dict):
+        return 1
+    try:
+        return max(1, int(evidence.get("detection_count", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _normalize_reviewed_near_match_ids(
+    value: Any,
+) -> tuple[list[str], dict[str, Any] | None]:
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return [], {
+            "status": "invalid_request",
+            "error": "reviewed_near_match_entity_ids must be a list",
+        }
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return [], {
+                "status": "invalid_request",
+                "error": "reviewed_near_match_entity_ids must contain strings",
+            }
+        entity_id = item.strip()
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        result.append(entity_id)
+    return result, None
+
+
+def _validate_near_matches_for_create(
+    reviewed_ids: list[str],
+    *,
+    name: str,
+    target_id: str,
+    entities: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    from solstone.think.entities import closest_resolution_candidates
+    from solstone.think.speaker_keep_separate import pair_key
+
+    if not reviewed_ids:
+        return [], None
+    entities_list = [
+        entity for entity in entities.values() if not entity.get("blocked")
+    ]
+    shown = {
+        candidate.id
+        for candidate in closest_resolution_candidates(name, entities_list, limit=3)
+    }
+    invalid: list[dict[str, str]] = []
+    for reviewed_id in reviewed_ids:
+        entity = entities.get(reviewed_id)
+        reason = None
+        if reviewed_id == target_id:
+            reason = "self"
+        elif entity is None:
+            reason = "nonexistent"
+        elif entity.get("is_principal"):
+            reason = "principal"
+        elif entity.get("type") != "Person":
+            reason = "non_person"
+        elif reviewed_id not in shown:
+            reason = "unshown"
+        if reason is not None:
+            invalid.append({"entity_id": reviewed_id, "reason": reason})
+    if invalid:
+        return [], {
+            "status": "invalid_request",
+            "error": "invalid reviewed_near_match_entity_ids",
+            "invalid_reviewed_near_match_entity_ids": invalid,
+        }
+
+    assertions: list[dict[str, Any]] = []
+    for reviewed_id in reviewed_ids:
+        detection_count = _current_name_variant_detection_count(target_id, reviewed_id)
+        key = pair_key(target_id, reviewed_id)
+        left, right = key.split("|", maxsplit=1)
+        assertions.append(
+            {
+                "pair_key": key,
+                "entity_id_a": left,
+                "entity_id_b": right,
+                "planned_target_entity_id": target_id,
+                "reviewed_id": reviewed_id,
+                "prior_record": None,
+                "intended_record": {
+                    "pair_key": key,
+                    "entity_id_a": left,
+                    "entity_id_b": right,
+                    "source_kind": "explicit_create_near_match",
+                    "operation_id": None,
+                    "detection_count": detection_count,
+                },
+                "detection_count_used": detection_count,
+                "source_kind": "explicit_create_near_match",
+            }
+        )
+    return assertions, None
+
+
+def _plan_identify(
+    cluster_id: int,
+    *,
+    name: str | None,
+    entity_id: str | None,
+    resolve_only: bool,
+    create_new: bool,
+    entity_type: str,
+    request_id: str,
+    operation_id: str,
+    reviewed_near_match_entity_ids: Any,
+) -> tuple[_PlannedIdentify | None, dict[str, Any] | None]:
     import numpy as np
 
-    from solstone.apps.speakers.attribution import (
-        append_speaker_correction,
-        apply_label_patches,
-    )
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
     from solstone.think.entities import (
         EntityResolutionOutcome,
         ResolutionOrigin,
@@ -522,60 +1072,49 @@ def identify_cluster(
         closest_resolution_candidates,
         entity_slug,
         is_valid_entity_type,
-        load_existing_voiceprint_keys,
-        record_entity_resolution,
-        save_voiceprints_batch,
-    )
-    from solstone.think.entities.journal import (
-        create_journal_entity,
         load_all_journal_entities,
         load_journal_entity,
+        record_entity_resolution,
     )
-
-    (
-        load_embeddings_file,
-        load_speaker_labels,
-        normalize_embedding,
-        _scan,
-        check_owner_contamination,
-    ) = _routes_helpers()
 
     cache_path = _discovery_cache_path()
     if not cache_path.exists():
-        return {"error": "No discovery scan results. Run scan first."}
-
+        return None, {"error": "No discovery scan results. Run scan first."}
     cache_data = load_discovery_cache()
     if cache_data is None:
-        return {"error": "Invalid discovery cache. Run scan again."}
+        return None, {"error": "Invalid discovery cache. Run scan again."}
+    raw_members = cache_data.get("clusters", {}).get(str(cluster_id))
+    if not raw_members:
+        return None, {"error": f"Cluster {cluster_id} not found in scan results."}
 
-    cluster_members = cache_data.get("clusters", {}).get(str(cluster_id))
-    if not cluster_members:
-        return {"error": f"Cluster {cluster_id} not found in scan results."}
+    cluster_members = _canonical_members(raw_members)
+    reviewed_ids, reviewed_error = _normalize_reviewed_near_match_ids(
+        reviewed_near_match_entity_ids
+    )
+    if reviewed_error:
+        return None, reviewed_error
 
-    from solstone.apps.speakers.routes import _load_speaker_corrections
-
-    entity_created = False
-    will_create = False
     name_value = name.strip() if isinstance(name, str) else ""
     entity_id_value = entity_id.strip() if isinstance(entity_id, str) else ""
-
+    will_create = False
+    target_type = entity_type
     if entity_id_value:
         entity = load_journal_entity(entity_id_value)
         if not entity:
-            return {
+            return None, {
                 "error": f"Entity '{entity_id_value}' not found.",
                 "not_found": True,
             }
         target_id = entity_id_value
         target_name = entity.get("name", target_id)
+        target_type = str(entity.get("type") or entity_type)
     else:
         if not name_value:
-            return {"error": "name is required"}
+            return None, {"error": "name is required"}
         journal_entities = load_all_journal_entities()
         entities_list = [
             entity for entity in journal_entities.values() if not entity.get("blocked")
         ]
-
         resolution = record_entity_resolution(
             name_value,
             entities_list,
@@ -585,10 +1124,10 @@ def identify_cluster(
                 record_id=str(cluster_id),
                 field="name",
             ),
-            read_only=resolve_only,
+            read_only=True,
         )
         if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
-            return {
+            return None, {
                 "status": "ambiguous",
                 "ambiguity_id": resolution.ambiguity_id,
                 "candidates": [
@@ -598,9 +1137,10 @@ def identify_cluster(
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             target_id = resolution.entity["id"]
             target_name = resolution.entity.get("name", name_value)
+            target_type = str(resolution.entity.get("type") or entity_type)
         else:
             if resolve_only or not create_new:
-                return {
+                return None, {
                     "status": "no_match",
                     "candidates": [
                         candidate.to_dict()
@@ -615,205 +1155,1337 @@ def identify_cluster(
             target_name = name_value
 
     if resolve_only:
-        return {
+        return None, {
             "status": "resolved",
             "entity_id": target_id,
             "entity_name": target_name,
             "has_voice": _voiceprints_exist(target_id),
         }
-
-    if will_create:
-        if not is_valid_entity_type(entity_type):
-            return {
-                "error": f"Invalid entity type: {entity_type}",
-                "invalid_entity_type": True,
-            }
-        existing = load_journal_entity(target_id)
-        entity_created = existing is None
-        entity = existing or create_journal_entity(
-            entity_id=target_id,
-            name=name_value,
-            entity_type=entity_type,
-        )
-        target_name = entity.get("name", name_value)
-
-    completed: list[str] = []
-    try:
-        existing_keys = load_existing_voiceprint_keys(target_id)
-        vp_batch: list[tuple[np.ndarray, dict[str, Any]]] = []
-
-        for member in cluster_members:
-            day = member["day"]
-            stream = member["stream"]
-            seg_key = member["segment_key"]
-            source = member["source"]
-            sentence_id = int(member["sentence_id"])
-
-            vp_key = (day, seg_key, source, sentence_id)
-            if vp_key in existing_keys:
-                continue
-
-            seg_dir = segment_path(day, seg_key, stream, create=False)
-            emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
-            if emb_data is None:
-                continue
-
-            embeddings, statement_ids, _ = emb_data
-            emb_vec = None
-            for emb, sid in zip(embeddings, statement_ids):
-                if int(sid) == sentence_id:
-                    emb_vec = normalize_embedding(emb)
-                    break
-
-            if emb_vec is None or check_owner_contamination(emb_vec):
-                continue
-
-            vp_batch.append(
-                (
-                    emb_vec,
-                    {
-                        "day": day,
-                        "segment_key": seg_key,
-                        "source": source,
-                        "stream": stream,
-                        "sentence_id": sentence_id,
-                        "added_at": now_ms(),
-                    },
-                )
-            )
-            existing_keys.add(vp_key)
-
-        voiceprints_saved = (
-            save_voiceprints_batch(target_id, vp_batch) if vp_batch else 0
-        )
-        completed.append("voiceprints")
-        _maybe_inject_identify_fault("after_voiceprints")
-
-        segments_map: dict[tuple[str, str, str], list[int]] = defaultdict(list)
-        for member in cluster_members:
-            key = (member["day"], member["stream"], member["segment_key"])
-            segments_map[key].append(int(member["sentence_id"]))
-
-        segments_updated = 0
-        sentences_attributed = 0
-        timestamp = now_ms()
-
-        for (day, stream, seg_key), sentence_ids in segments_map.items():
-            seg_dir_check = day_path(day, create=False) / stream / seg_key
-            if not seg_dir_check.is_dir():
-                continue
-            seg_dir = seg_dir_check
-            labels_data = load_speaker_labels(seg_dir)
-            if labels_data is None:
-                labels_data = {
-                    "labels": [],
-                    "owner_centroid_last_refreshed_at": None,
-                    "voiceprint_versions": {},
-                }
-
-            labels_by_sid: dict[int, dict[str, Any]] = {}
-            for label in labels_data.get("labels", []):
-                sentence_id = label.get("sentence_id")
-                if sentence_id is not None:
-                    labels_by_sid[int(sentence_id)] = label
-
-            existing_correction_keys = {
-                (
-                    correction.get("sentence_id"),
-                    correction.get("corrected_speaker"),
-                )
-                for correction in _load_speaker_corrections(seg_dir)
-            }
-
-            updated = False
-            patches: dict[int, dict[str, Any]] = {}
-            for sentence_id in sorted(set(sentence_ids)):
-                original = labels_by_sid.get(sentence_id, {})
-                new_label = {
-                    "sentence_id": sentence_id,
-                    "speaker": target_id,
-                    "confidence": "high",
-                    "method": "user_identified",
-                }
-                if original != new_label:
-                    updated = True
-                    sentences_attributed += 1
-                    patches[sentence_id] = {
-                        "speaker": target_id,
-                        "confidence": "high",
-                        "method": "user_identified",
-                    }
-
-                correction_key = (sentence_id, target_id)
-                if correction_key in existing_correction_keys:
-                    continue
-
-                append_speaker_correction(
-                    seg_dir,
-                    {
-                        "sentence_id": sentence_id,
-                        "original_speaker": original.get("speaker"),
-                        "corrected_speaker": target_id,
-                        "original_method": original.get("method"),
-                        "timestamp": timestamp,
-                    },
-                )
-                existing_correction_keys.add(correction_key)
-
-            if updated:
-                apply_label_patches(seg_dir, patches, allow_insert=True)
-                segments_updated += 1
-
-        completed.append("segments")
-        _maybe_inject_identify_fault("after_segments")
-
-        if vp_batch:
-            try:
-                cluster_centroid = normalize_embedding(
-                    np.mean([embedding for embedding, _ in vp_batch], axis=0)
-                )
-                if cluster_centroid is not None:
-                    from solstone.apps.speakers.candidate_tracker import (
-                        CandidateTracker,
-                    )
-
-                    CandidateTracker().retroactive_confirm(cluster_centroid, target_id)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to retroactively confirm speaker candidate for %s: %s",
-                    target_id,
-                    exc,
-                )
-
-        _write_resolved_cluster(cluster_id, target_id, target_name)
-        completed.append("sentinel")
-    except Exception as exc:
-        from solstone.think.journal_io.errors import LockTimeout
-
-        if isinstance(exc, LockTimeout):
-            raise
-        if not completed:
-            raise
-        failed = [
-            category
-            for category in ("voiceprints", "segments", "sentinel")
-            if category not in completed
-        ]
-        return {
-            "status": "partial",
-            "completed": completed,
-            "failed": failed,
-            "detail": str(exc),
-            "entity_id": target_id,
-            "entity_name": target_name,
+    if reviewed_ids and not will_create:
+        return None, {
+            "status": "invalid_request",
+            "error": "reviewed_near_match_entity_ids is only valid for create",
+        }
+    if will_create and not is_valid_entity_type(entity_type):
+        return None, {
+            "error": f"Invalid entity type: {entity_type}",
+            "invalid_entity_type": True,
         }
 
+    journal_entities = load_all_journal_entities()
+    keep_separate_assertions, near_match_error = _validate_near_matches_for_create(
+        reviewed_ids,
+        name=name_value,
+        target_id=target_id,
+        entities=journal_entities,
+    )
+    if near_match_error:
+        return None, near_match_error
+
+    planned_at = _utc_iso()
+    added_at = now_ms()
+    direct_voiceprints, direct_items = _direct_voiceprint_plan(
+        target_id,
+        cluster_members,
+        added_at=added_at,
+    )
+    retro_plan = None
+    if direct_items:
+        _load_embeddings_file, _load_labels, normalize_embedding, _scan, _check = (
+            _routes_helpers()
+        )
+        centroid = normalize_embedding(
+            np.mean([embedding for embedding, _meta in direct_items], axis=0)
+        )
+        if centroid is not None:
+            retro_plan = CandidateTracker().plan_retroactive_confirm(
+                centroid,
+                target_id,
+            )
+
+    resolved = _load_resolved_clusters()
+    cluster_key = str(cluster_id)
+    intended_identity = {
+        "id": target_id,
+        "name": target_name,
+        "type": entity_type if will_create else target_type,
+    }
+    if not will_create:
+        intended_identity = load_journal_entity(target_id) or intended_identity
+    plan = {
+        "plan_schema_version": 1,
+        "operation_id": operation_id,
+        "request_id": request_id,
+        "planned_at": planned_at,
+        "request": {
+            "cluster_id": int(cluster_id),
+            "name": name_value or None,
+            "entity_id": entity_id_value or None,
+            "resolve_only": False,
+            "create_new": bool(create_new),
+            "entity_type": entity_type,
+            "reviewed_near_match_entity_ids": sorted(reviewed_ids),
+        },
+        "cluster": {
+            "cluster_id": int(cluster_id),
+            "member_count": len(cluster_members),
+            "members": cluster_members,
+        },
+        "target": {
+            "entity_id": target_id,
+            "entity_name": target_name,
+            "entity_type": entity_type if will_create else target_type,
+            "will_create": will_create,
+        },
+        "entity_identity": {
+            "prior_identity": None if will_create else load_journal_entity(target_id),
+            "intended_identity": intended_identity,
+            "expected_history_operation": {
+                "operation_kind": "speaker_identify",
+                "operation_id": operation_id,
+            },
+        },
+        "direct_voiceprints": direct_voiceprints,
+        "segments": _segment_plans(
+            target_id,
+            cluster_members,
+            timestamp=added_at,
+            operation_id=operation_id,
+        ),
+        "retro_confirm": _serializable_retro_plan(retro_plan, target_id),
+        "sentinel": {
+            "cluster_key": cluster_key,
+            "prior_entry": copy.deepcopy(resolved.get(cluster_key)),
+            "intended_entry": {
+                "entity_id": target_id,
+                "label": target_name,
+                "ts": planned_at,
+            },
+        },
+        "keep_separate_assertions": keep_separate_assertions,
+    }
+    for assertion in plan["keep_separate_assertions"]:
+        assertion["intended_record"]["operation_id"] = operation_id
+
+    from solstone.think.speaker_identify_operations import request_fingerprint
+
+    fingerprint = request_fingerprint(
+        cluster_members=cluster_members,
+        target_entity_id=target_id,
+        will_create=will_create,
+        entity_type=entity_type if will_create else target_type,
+        reviewed_near_match_entity_ids=reviewed_ids,
+    )
+    return (
+        _PlannedIdentify(
+            operation_id=operation_id,
+            request_id=request_id,
+            request_fingerprint=fingerprint,
+            prepared_plan=plan,
+        ),
+        None,
+    )
+
+
+def _identify_event(
+    *,
+    operation_id: str,
+    request_id: str,
+    event_kind: str,
+    ts: str | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import (
+        IDENTIFY_OPERATION_SCHEMA_VERSION,
+    )
+
+    return {
+        "schema_version": IDENTIFY_OPERATION_SCHEMA_VERSION,
+        "event_id": fields.pop("event_id"),
+        "operation_id": operation_id,
+        "request_id": request_id,
+        "event_kind": event_kind,
+        "ts": ts or _utc_iso(),
+        "caller": "apps.speakers.discovery.identify_cluster",
+        "actor": None,
+        **fields,
+    }
+
+
+def _append_prepared(planned: _PlannedIdentify) -> None:
+    from solstone.think.speaker_identify_operations import append_event
+
+    append_event(
+        _identify_event(
+            operation_id=planned.operation_id,
+            request_id=planned.request_id,
+            event_kind="prepared",
+            event_id=f"{planned.operation_id}:prepared",
+            ts=planned.prepared_plan["planned_at"],
+            request_fingerprint=planned.request_fingerprint,
+            prepared_plan=planned.prepared_plan,
+        )
+    )
+
+
+def _checkpoint_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "phase_status": "complete",
+        "completed_at": _utc_iso(),
+        "counts": {},
+        "skipped_reasons": {},
+    }
+    payload.update(checkpoint)
+    return payload
+
+
+def _append_forward_checkpoint(
+    operation_id: str,
+    request_id: str,
+    phase: str,
+    checkpoint: dict[str, Any],
+) -> None:
+    from solstone.think.speaker_identify_operations import append_event
+
+    append_event(
+        _identify_event(
+            operation_id=operation_id,
+            request_id=request_id,
+            event_kind="checkpoint",
+            event_id=f"{operation_id}:checkpoint:{phase}",
+            phase=phase,
+            checkpoint=_checkpoint_payload(checkpoint),
+        )
+    )
+
+
+def _append_repair_required(
+    operation_id: str,
+    request_id: str,
+    phase: str,
+    *,
+    repair_code: str,
+    repair_categories: dict[str, int],
+) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import append_event, fold_operation
+
+    state = fold_operation(operation_id)
+    if state is not None and state.terminal_status == "repair_required":
+        repair = state.repair_required or {}
+        return {
+            "status": "repair_required",
+            "operation_id": operation_id,
+            "phase": repair.get("phase", phase),
+            "repair_code": repair.get("repair_code", repair_code),
+            "repair_categories": repair.get("repair_categories", {}),
+        }
+    completed = list(state.completed_phases) if state else []
+    pending = list(state.pending_phases) if state else []
+    event = _identify_event(
+        operation_id=operation_id,
+        request_id=request_id,
+        event_kind="repair_required",
+        event_id=f"{operation_id}:repair_required:{phase}",
+        phase=phase,
+        repair_code=repair_code,
+        repair_categories=repair_categories,
+        partial_report={
+            "completed_phases": completed,
+            "pending_phases": pending,
+            "counts_by_phase": {},
+        },
+    )
+    append_event(event)
+    return {
+        "status": "repair_required",
+        "operation_id": operation_id,
+        "phase": phase,
+        "repair_code": repair_code,
+        "repair_categories": repair_categories,
+        "completed_phases": completed,
+        "pending_phases": pending,
+    }
+
+
+def _recoverable_result(operation_id: str, detail: str) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    state = fold_operation(operation_id)
+    return {
+        "status": "recoverable",
+        "operation_id": operation_id,
+        "request_id": state.request_id if state else None,
+        "completed_phases": list(state.completed_phases) if state else [],
+        "pending_phases": list(state.pending_phases) if state else [],
+        "detail": detail,
+    }
+
+
+def _phase_entity(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.think.entities import (
+        EntityOperationContext,
+        create_journal_entity,
+        load_journal_entity,
+    )
+
+    target = prepared_plan["target"]
+    identity_plan = prepared_plan["entity_identity"]
+    target_id = target["entity_id"]
+    will_create = bool(target["will_create"])
+    entity_created = False
+    if will_create:
+        expected_identity = identity_plan["intended_identity"]
+        current = load_journal_entity(target_id)
+        if current is None:
+            create_journal_entity(
+                entity_id=target_id,
+                name=str(expected_identity["name"]),
+                entity_type=str(expected_identity["type"]),
+                operation=EntityOperationContext(
+                    kind="create",
+                    caller="apps.speakers.discovery.identify_cluster",
+                    metadata={
+                        "operation_kind": "speaker_identify",
+                        "operation_id": prepared_plan["operation_id"],
+                    },
+                ),
+                skip_principal=True,
+            )
+            entity_created = True
+            current = load_journal_entity(target_id)
+        elif _meaningful_identity(current) != _meaningful_identity(expected_identity):
+            raise _IdentifyRepairRequired(
+                "entity",
+                "concurrent_change",
+                {"concurrent_change": 1},
+            )
+        else:
+            entity_created = True
+        history_refs = _history_refs_for_entity(
+            target_id,
+            prepared_plan["operation_id"],
+        )
+        if len(history_refs) != 1:
+            raise _IdentifyRepairRequired(
+                "entity",
+                "concurrent_change",
+                {"concurrent_change": 1},
+            )
+    else:
+        current = load_journal_entity(target_id)
+        history_refs = []
+
+    if current is None:
+        raise _IdentifyRepairRequired("entity", "entity_missing", {"entity": 1})
+    return {
+        "entity_id": target_id,
+        "entity_created": entity_created,
+        "identity_after_hash": _identity_hash(current),
+        "identity_after": _copy_jsonable(current),
+        "history_event_refs": history_refs,
+        "counts": {"entity_created": int(entity_created)},
+        "skipped_reasons": {},
+    }
+
+
+def _phase_keep_separate(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.think.speaker_keep_separate import (
+        find_assertion,
+        record_keep_separate_assertion,
+    )
+
+    recorded = 0
+    already = 0
+    pair_keys: list[str] = []
+    for assertion in prepared_plan.get("keep_separate_assertions", []):
+        pair_keys.append(str(assertion["pair_key"]))
+        folded = find_assertion(assertion["entity_id_a"], assertion["entity_id_b"])
+        source_present = False
+        if folded is not None:
+            source_present = any(
+                source.get("source_kind") == assertion["source_kind"]
+                and source.get("operation_id") == prepared_plan["operation_id"]
+                for source in folded.sources
+            )
+        if source_present:
+            already += 1
+            continue
+        record_keep_separate_assertion(
+            assertion["entity_id_a"],
+            assertion["entity_id_b"],
+            source_kind=assertion["source_kind"],
+            operation_id=prepared_plan["operation_id"],
+            detection_count=int(assertion["detection_count_used"]),
+        )
+        recorded += 1
+    return {
+        "pair_keys": sorted(set(pair_keys)),
+        "recorded_count": recorded,
+        "already_present_count": already,
+        "counts": {"recorded": recorded, "already_present": already},
+        "skipped_reasons": {},
+    }
+
+
+def _phase_direct_voiceprints(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.think.entities import save_voiceprints_batch
+
+    target_id = prepared_plan["target"]["entity_id"]
+    entries = prepared_plan["direct_voiceprints"]["entries_to_add"]
+    existing_metadata = _entity_voiceprint_metadata(target_id)
+    to_save_entries: list[dict[str, Any]] = []
+    saved_keys: list[dict[str, Any]] = []
+    skipped_existing = 0
+    for entry in entries:
+        key = _key_tuple(entry["key"])
+        rows = existing_metadata.get(key, [])
+        if rows:
+            if any(row == entry["metadata"] for row in rows):
+                saved_keys.append(dict(entry["key"]))
+                continue
+            raise _IdentifyRepairRequired(
+                "direct_voiceprints",
+                "voiceprint_metadata_mismatch",
+                {"voiceprint": 1},
+            )
+        to_save_entries.append(entry)
+    if to_save_entries:
+        save_voiceprints_batch(
+            target_id,
+            _planned_voiceprint_items(to_save_entries),
+        )
+        saved_keys.extend(dict(entry["key"]) for entry in to_save_entries)
+    skipped_existing = max(0, len(entries) - len(saved_keys))
+    return {
+        "saved_keys": sorted(saved_keys, key=lambda key: tuple(key.values())),
+        "saved_count": len(saved_keys),
+        "skipped_existing_count": skipped_existing,
+        "counts": {"saved": len(saved_keys)},
+        "skipped_reasons": {"existing": skipped_existing},
+    }
+
+
+def _phase_corrections(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.apps.speakers.attribution import append_speaker_correction
+
+    appended_keys: list[dict[str, Any]] = []
+    appended_count = 0
+    skipped_existing = 0
+    segment_count = 0
+    for segment in prepared_plan["segments"]:
+        seg_dir = segment_path(
+            segment["day"],
+            segment["segment_key"],
+            segment["stream"],
+            create=False,
+        )
+        existing = _load_segment_corrections(seg_dir)
+        segment_appended = 0
+        for row in segment["corrections"]["rows_to_append"]:
+            natural_match = [
+                existing_row
+                for existing_row in existing
+                if existing_row.get("sentence_id") == row["sentence_id"]
+                and existing_row.get("corrected_speaker") == row["corrected_speaker"]
+            ]
+            if natural_match:
+                if any(
+                    existing_row.get("operation_id") == prepared_plan["operation_id"]
+                    and existing_row.get("correction_kind") == "identify"
+                    for existing_row in natural_match
+                ):
+                    appended_keys.append(_sentence_key(segment, row["sentence_id"]))
+                    segment_appended += 1
+                else:
+                    skipped_existing += 1
+                continue
+            append_speaker_correction(seg_dir, dict(row))
+            existing.append(dict(row))
+            appended_keys.append(_sentence_key(segment, row["sentence_id"]))
+            appended_count += 1
+            segment_appended += 1
+        if segment_appended:
+            segment_count += 1
+    return {
+        "appended_keys": sorted(appended_keys, key=lambda item: tuple(item.values())),
+        "appended_count": len(appended_keys),
+        "skipped_existing_count": skipped_existing,
+        "segment_count": segment_count,
+        "counts": {"appended": len(appended_keys)},
+        "skipped_reasons": {"existing": skipped_existing},
+    }
+
+
+def _phase_labels(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.apps.speakers.attribution import apply_label_patches
+
+    _load_embeddings_file, load_speaker_labels, _normalize, _scan, _check = (
+        _routes_helpers()
+    )
+    patched_keys: list[dict[str, Any]] = []
+    inserted_keys: list[dict[str, Any]] = []
+    already_intended = 0
+    segment_count = 0
+    for segment in prepared_plan["segments"]:
+        seg_dir = segment_path(
+            segment["day"],
+            segment["segment_key"],
+            segment["stream"],
+            create=False,
+        )
+        labels_data = load_speaker_labels(seg_dir) or {"labels": []}
+        current_by_sid: dict[int, dict[str, Any]] = {}
+        for label in labels_data.get("labels", []):
+            if isinstance(label, dict) and label.get("sentence_id") is not None:
+                current_by_sid[int(label["sentence_id"])] = dict(label)
+
+        patches: dict[int, dict[str, Any]] = {}
+        actual_segment_changed = False
+        for item in segment["labels"]:
+            sid = int(item["sentence_id"])
+            current = current_by_sid.get(sid)
+            intended = item["intended_label"]
+            prior_state = item["prior_state"]
+            prior = item.get("prior_label")
+            changed_by_plan = prior != intended
+            if current == intended:
+                if changed_by_plan:
+                    if prior_state == "absent":
+                        inserted_keys.append(_sentence_key(segment, sid))
+                    else:
+                        patched_keys.append(_sentence_key(segment, sid))
+                    actual_segment_changed = True
+                else:
+                    already_intended += 1
+                continue
+            if prior_state == "absent" and current is None:
+                patches[sid] = {
+                    "speaker": intended["speaker"],
+                    "confidence": intended["confidence"],
+                    "method": intended["method"],
+                }
+                inserted_keys.append(_sentence_key(segment, sid))
+                actual_segment_changed = True
+                continue
+            if prior_state == "present" and current == prior:
+                patches[sid] = {
+                    "speaker": intended["speaker"],
+                    "confidence": intended["confidence"],
+                    "method": intended["method"],
+                }
+                patched_keys.append(_sentence_key(segment, sid))
+                actual_segment_changed = True
+                continue
+            raise _IdentifyRepairRequired(
+                "labels",
+                "concurrent_change",
+                {"segment_label": 1, "concurrent_change": 1},
+            )
+        if patches:
+            apply_label_patches(seg_dir, patches, allow_insert=True)
+        if actual_segment_changed:
+            segment_count += 1
+    return {
+        "patched_sentence_keys": sorted(
+            patched_keys, key=lambda item: tuple(item.values())
+        ),
+        "inserted_sentence_keys": sorted(
+            inserted_keys, key=lambda item: tuple(item.values())
+        ),
+        "patched_count": len(patched_keys),
+        "inserted_count": len(inserted_keys),
+        "skipped_already_intended_count": already_intended,
+        "segment_count": segment_count,
+        "counts": {"patched": len(patched_keys), "inserted": len(inserted_keys)},
+        "skipped_reasons": {"already_intended": already_intended},
+    }
+
+
+def _phase_retro_tracker(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    retro = prepared_plan["retro_confirm"]
+    if not retro.get("matched") or retro.get("candidate_id") is None:
+        return {
+            "matched": False,
+            "candidate_id": None,
+            "saved_keys": [],
+            "voiceprints_saved_count": 0,
+            "voiceprints_skipped_existing_count": 0,
+            "tracker_updated": False,
+            "counts": {},
+            "skipped_reasons": {},
+        }
+    target_id = prepared_plan["target"]["entity_id"]
+    existing_metadata = _entity_voiceprint_metadata(target_id)
+    saved_keys: list[dict[str, Any]] = []
+    skipped_existing = 0
+    for entry in retro.get("voiceprints_to_add", []):
+        key = _key_tuple(entry["key"])
+        rows = existing_metadata.get(key, [])
+        if not rows:
+            saved_keys.append(dict(entry["key"]))
+            continue
+        if any(row == entry["metadata"] for row in rows):
+            saved_keys.append(dict(entry["key"]))
+            continue
+        raise _IdentifyRepairRequired(
+            "retro_tracker",
+            "voiceprint_metadata_mismatch",
+            {"voiceprint": 1},
+        )
+    tracker = CandidateTracker()
+    candidate = {
+        item.cand_id: item.to_json() for item in tracker.load_all_candidates()
+    }.get(int(retro["candidate_id"]))
+    if candidate is None:
+        raise _IdentifyRepairRequired(
+            "retro_tracker",
+            "candidate_missing",
+            {"speaker_candidate": 1},
+        )
+    if candidate not in (retro.get("candidate_before"), retro.get("candidate_after")):
+        raise _IdentifyRepairRequired(
+            "retro_tracker",
+            "concurrent_change",
+            {"speaker_candidate": 1, "concurrent_change": 1},
+        )
+    tracker_updated = retro.get("candidate_before") != retro.get("candidate_after")
+    if tracker_updated or retro.get("voiceprints_to_add"):
+        tracker.apply_retroactive_confirm_plan(_retro_plan_from_prepared(prepared_plan))
+        existing_metadata = _entity_voiceprint_metadata(target_id)
+        saved_keys = [
+            dict(entry["key"])
+            for entry in retro.get("voiceprints_to_add", [])
+            if any(
+                row == entry["metadata"]
+                for row in existing_metadata.get(_key_tuple(entry["key"]), [])
+            )
+        ]
+    skipped_existing = max(
+        0, len(retro.get("voiceprints_to_add", [])) - len(saved_keys)
+    )
+    return {
+        "matched": True,
+        "candidate_id": int(retro["candidate_id"]),
+        "saved_keys": sorted(saved_keys, key=lambda key: tuple(key.values())),
+        "voiceprints_saved_count": len(saved_keys),
+        "voiceprints_skipped_existing_count": skipped_existing,
+        "tracker_updated": tracker_updated,
+        "counts": {"saved": len(saved_keys), "tracker_updated": int(tracker_updated)},
+        "skipped_reasons": {"existing": skipped_existing},
+    }
+
+
+def _phase_sentinel(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    sentinel = prepared_plan["sentinel"]
+    cluster_key = str(sentinel["cluster_key"])
+    prior = sentinel.get("prior_entry")
+    intended = sentinel["intended_entry"]
+    data = _load_resolved_clusters()
+    current = data.get(cluster_key)
+    if current == intended:
+        written = True
+    elif current == prior or (prior is None and current is None):
+        data[cluster_key] = intended
+        _replace_resolved_clusters(data)
+        written = True
+    else:
+        raise _IdentifyRepairRequired(
+            "sentinel",
+            "concurrent_change",
+            {"sentinel": 1, "concurrent_change": 1},
+        )
+    return {
+        "cluster_key": cluster_key,
+        "written": written,
+        "counts": {"written": int(written)},
+        "skipped_reasons": {},
+    }
+
+
+_FORWARD_PHASES = {
+    "entity": _phase_entity,
+    "keep_separate": _phase_keep_separate,
+    "direct_voiceprints": _phase_direct_voiceprints,
+    "corrections": _phase_corrections,
+    "labels": _phase_labels,
+    "retro_tracker": _phase_retro_tracker,
+    "sentinel": _phase_sentinel,
+}
+
+
+def _forward_success_result(
+    prepared_plan: dict[str, Any], checkpoints: dict[str, dict]
+) -> dict[str, Any]:
+    labels = checkpoints.get("labels", {})
+    direct = checkpoints.get("direct_voiceprints", {})
+    retro = checkpoints.get("retro_tracker", {})
+    entity = checkpoints.get("entity", {})
     return {
         "status": "identified",
-        "entity_id": target_id,
-        "entity_name": target_name,
-        "entity_created": entity_created,
-        "voiceprints_saved": voiceprints_saved,
-        "segments_updated": segments_updated,
-        "sentences_attributed": sentences_attributed,
+        "operation_id": prepared_plan["operation_id"],
+        "entity_id": prepared_plan["target"]["entity_id"],
+        "entity_name": prepared_plan["target"]["entity_name"],
+        "entity_created": bool(entity.get("entity_created", False)),
+        "voiceprints_saved": int(direct.get("saved_count", 0)),
+        "retroactive_voiceprints_saved": int(retro.get("voiceprints_saved_count", 0)),
+        "segments_updated": int(labels.get("segment_count", 0)),
+        "sentences_attributed": int(labels.get("patched_count", 0))
+        + int(labels.get("inserted_count", 0)),
+        "keep_separate_assertions_recorded": int(
+            checkpoints.get("keep_separate", {}).get("recorded_count", 0)
+        ),
     }
+
+
+def _execute_forward(prepared_plan: dict[str, Any]) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import (
+        FORWARD_PHASE_ORDER,
+        append_event,
+        fold_operation,
+    )
+
+    operation_id = prepared_plan["operation_id"]
+    request_id = prepared_plan["request_id"]
+    for phase in FORWARD_PHASE_ORDER:
+        state = fold_operation(operation_id)
+        if state is not None and phase in state.phase_checkpoints:
+            continue
+        checkpoint = _FORWARD_PHASES[phase](prepared_plan)
+        _append_forward_checkpoint(operation_id, request_id, phase, checkpoint)
+        _maybe_inject_identify_fault(f"after_{phase}")
+    state = fold_operation(operation_id)
+    checkpoints = state.phase_checkpoints if state else {}
+    result = _forward_success_result(prepared_plan, checkpoints)
+    append_event(
+        _identify_event(
+            operation_id=operation_id,
+            request_id=request_id,
+            event_kind="committed",
+            event_id=f"{operation_id}:committed",
+            result=result,
+        )
+    )
+    _maybe_inject_identify_fault("after_committed")
+    return result
+
+
+def identify_cluster(
+    cluster_id: int,
+    name: str | None = None,
+    entity_id: str | None = None,
+    *,
+    resolve_only: bool = False,
+    create_new: bool = False,
+    entity_type: str = "Person",
+    request_id: str | None = None,
+    reviewed_near_match_entity_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Identify a discovered unknown speaker cluster."""
+    from solstone.think.entities.history import trust_operation_lock
+    from solstone.think.journal_io.errors import LockTimeout
+    from solstone.think.speaker_identify_operations import (
+        fold_all_operations,
+        fold_operation,
+        operation_id_for_request,
+    )
+
+    request_id_value = request_id or f"server:{uuid.uuid4().hex}"
+    operation_id = operation_id_for_request(request_id_value)
+    planned, early = _plan_identify(
+        cluster_id,
+        name=name,
+        entity_id=entity_id,
+        resolve_only=resolve_only,
+        create_new=create_new,
+        entity_type=entity_type,
+        request_id=request_id_value,
+        operation_id=operation_id,
+        reviewed_near_match_entity_ids=reviewed_near_match_entity_ids,
+    )
+    if early is not None:
+        return early
+    assert planned is not None
+    try:
+        with trust_operation_lock():
+            state = fold_operation(operation_id)
+            if state is not None:
+                if state.request_fingerprint != planned.request_fingerprint:
+                    return {
+                        "status": "conflict",
+                        "operation_id": operation_id,
+                        "conflict_code": "request_fingerprint_mismatch",
+                    }
+                if state.terminal_status == "committed" and state.result is not None:
+                    return state.result
+                if state.terminal_status == "repair_required":
+                    repair = state.repair_required or {}
+                    return {
+                        "status": "repair_required",
+                        "operation_id": operation_id,
+                        "phase": repair.get("phase"),
+                        "repair_code": repair.get("repair_code"),
+                        "repair_categories": repair.get("repair_categories", {}),
+                    }
+                if state.terminal_status == "undone":
+                    return {
+                        "status": "operation_already_undone",
+                        "operation_id": operation_id,
+                    }
+                if state.terminal_status == "undo_repair_required":
+                    return {
+                        "status": "undo_repair_required",
+                        "operation_id": operation_id,
+                    }
+                prepared_plan = state.prepared_plan
+            else:
+                for other in fold_all_operations():
+                    if (
+                        other.operation_id == operation_id
+                        or other.terminal_status != "committed"
+                    ):
+                        continue
+                    if other.cluster_member_set != frozenset(
+                        _member_tuple(member)
+                        for member in planned.prepared_plan["cluster"]["members"]
+                    ):
+                        continue
+                    if (
+                        other.target_entity_id
+                        == planned.prepared_plan["target"]["entity_id"]
+                    ):
+                        return other.result or {
+                            "status": "identified",
+                            "operation_id": other.operation_id,
+                        }
+                    return {
+                        "status": "conflict",
+                        "operation_id": operation_id,
+                        "conflict_code": "member_set_target_conflict",
+                        "conflicting_operation_id": other.operation_id,
+                    }
+                _append_prepared(planned)
+                _maybe_inject_identify_fault("after_prepared")
+                prepared_plan = planned.prepared_plan
+            return _execute_forward(prepared_plan)
+    except LockTimeout:
+        raise
+    except _IdentifyRepairRequired as exc:
+        return _append_repair_required(
+            operation_id,
+            request_id_value,
+            exc.phase,
+            repair_code=exc.repair_code,
+            repair_categories=exc.repair_categories,
+        )
+    except Exception as exc:
+        if isinstance(exc, LockTimeout):
+            raise
+        return _recoverable_result(operation_id, str(exc))
+
+
+def _undo_category(**extras: Any) -> dict[str, Any]:
+    result = {
+        "restored_count": 0,
+        "skipped_count": 0,
+        "skipped_reasons": {},
+    }
+    result.update(extras)
+    return result
+
+
+def _empty_undo_report(operation_id: str, *, status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "operation_id": operation_id,
+        "undo_report": {
+            "labels": _undo_category(
+                removed_inserted_count=0,
+                patched_existing_count=0,
+            ),
+            "corrections": _undo_category(
+                appended_count=0,
+                already_present_count=0,
+            ),
+            "voiceprints": _undo_category(
+                removed_count=0,
+                missing_count=0,
+                metadata_mismatch_count=0,
+            ),
+            "tracker": _undo_category(restored_candidate_count=0),
+            "sentinel": _undo_category(
+                removed_count=0,
+                restored_prior_count=0,
+            ),
+            "entity": _undo_category(
+                deleted=False,
+                blocked_categories=[],
+                keep_separate_sources_removed_count=0,
+            ),
+        },
+    }
+
+
+def _append_undo_prepared_once(operation_id: str, request_id: str) -> str:
+    from solstone.think.speaker_identify_operations import append_event, load_operations
+
+    for event in load_operations():
+        if (
+            event["operation_id"] == operation_id
+            and event["event_kind"] == "undo_prepared"
+        ):
+            return str(event["undo_started_at"])
+    undo_started_at = _utc_iso()
+    append_event(
+        _identify_event(
+            operation_id=operation_id,
+            request_id=request_id,
+            event_kind="undo_prepared",
+            event_id=f"{operation_id}:undo_prepared",
+            undo_started_at=undo_started_at,
+        )
+    )
+    return undo_started_at
+
+
+def _append_undo_checkpoint(
+    operation_id: str,
+    request_id: str,
+    phase: str,
+    delta: dict[str, Any],
+) -> None:
+    from solstone.think.speaker_identify_operations import append_event
+
+    append_event(
+        _identify_event(
+            operation_id=operation_id,
+            request_id=request_id,
+            event_kind="undo_checkpoint",
+            event_id=f"{operation_id}:undo_checkpoint:{phase}",
+            phase=phase,
+            undo_report_delta=delta,
+        )
+    )
+
+
+def _label_plan_map(
+    prepared_plan: dict[str, Any],
+) -> dict[tuple[str, str, str, int], tuple[dict, dict]]:
+    result: dict[tuple[str, str, str, int], tuple[dict, dict]] = {}
+    for segment in prepared_plan["segments"]:
+        for label in segment["labels"]:
+            result[
+                (
+                    str(segment["day"]),
+                    str(segment["stream"]),
+                    str(segment["segment_key"]),
+                    int(label["sentence_id"]),
+                )
+            ] = (segment, label)
+    return result
+
+
+def _planned_correction_rows(
+    prepared_plan: dict[str, Any],
+) -> dict[tuple[str, str, str, int], tuple[dict, dict]]:
+    result: dict[tuple[str, str, str, int], tuple[dict, dict]] = {}
+    for segment in prepared_plan["segments"]:
+        for row in segment["corrections"]["rows_to_append"]:
+            result[
+                (
+                    str(segment["day"]),
+                    str(segment["stream"]),
+                    str(segment["segment_key"]),
+                    int(row["sentence_id"]),
+                )
+            ] = (segment, row)
+    return result
+
+
+def _undo_labels(state: Any, _undo_started_at: str) -> dict[str, Any]:
+    from solstone.apps.speakers.attribution import restore_label_rows
+
+    checkpoint = state.phase_checkpoints.get("labels")
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "labels"
+    ]
+    if not checkpoint:
+        return {"labels": report}
+    plan_map = _label_plan_map(state.prepared_plan)
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for key in list(checkpoint.get("patched_sentence_keys", [])) + list(
+        checkpoint.get("inserted_sentence_keys", [])
+    ):
+        map_key = (
+            str(key["day"]),
+            str(key["stream"]),
+            str(key["segment_key"]),
+            int(key["sentence_id"]),
+        )
+        item = plan_map.get(map_key)
+        if item is None:
+            report["skipped_count"] += 1
+            report["skipped_reasons"]["missing_plan"] = (
+                report["skipped_reasons"].get("missing_plan", 0) + 1
+            )
+            continue
+        segment, label = item
+        grouped[(segment["day"], segment["stream"], segment["segment_key"])].append(
+            {
+                "sentence_id": label["sentence_id"],
+                "expected_current_label": label["intended_label"],
+                "prior_state": label["prior_state"],
+                "prior_label": label.get("prior_label"),
+            }
+        )
+    for day, stream, segment_key in sorted(grouped):
+        seg_dir = segment_path(day, segment_key, stream, create=False)
+        if not seg_dir.is_dir():
+            count = len(grouped[(day, stream, segment_key)])
+            report["skipped_count"] += count
+            report["skipped_reasons"]["missing"] = (
+                report["skipped_reasons"].get("missing", 0) + count
+            )
+            continue
+        delta = restore_label_rows(seg_dir, grouped[(day, stream, segment_key)])
+        for key, value in delta.items():
+            if key == "skipped_reasons":
+                for reason, count in value.items():
+                    report["skipped_reasons"][reason] = report["skipped_reasons"].get(
+                        reason, 0
+                    ) + int(count)
+            elif isinstance(value, int):
+                report[key] = int(report.get(key, 0)) + value
+    return {"labels": report}
+
+
+def _undo_corrections(state: Any, undo_started_at: str) -> dict[str, Any]:
+    from solstone.apps.speakers.attribution import append_speaker_correction
+
+    checkpoint = state.phase_checkpoints.get("corrections")
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "corrections"
+    ]
+    if not checkpoint:
+        return {"corrections": report}
+    correction_map = _planned_correction_rows(state.prepared_plan)
+    label_map = _label_plan_map(state.prepared_plan)
+    for key in checkpoint.get("appended_keys", []):
+        map_key = (
+            str(key["day"]),
+            str(key["stream"]),
+            str(key["segment_key"]),
+            int(key["sentence_id"]),
+        )
+        planned = correction_map.get(map_key)
+        label_item = label_map.get(map_key)
+        if planned is None or label_item is None:
+            report["skipped_count"] += 1
+            report["skipped_reasons"]["missing_plan"] = (
+                report["skipped_reasons"].get("missing_plan", 0) + 1
+            )
+            continue
+        segment, _row = planned
+        _segment, label = label_item
+        seg_dir = segment_path(
+            segment["day"],
+            segment["segment_key"],
+            segment["stream"],
+            create=False,
+        )
+        existing = _load_segment_corrections(seg_dir)
+        if any(
+            row.get("operation_id") == state.operation_id
+            and row.get("correction_kind") == "identify_undo"
+            and int(row.get("sentence_id", -1)) == int(key["sentence_id"])
+            for row in existing
+        ):
+            report["already_present_count"] += 1
+            report["skipped_count"] += 1
+            report["skipped_reasons"]["already_present"] = (
+                report["skipped_reasons"].get("already_present", 0) + 1
+            )
+            continue
+        prior = label.get("prior_label") or {}
+        append_speaker_correction(
+            seg_dir,
+            {
+                "sentence_id": int(key["sentence_id"]),
+                "original_speaker": state.target_entity_id,
+                "corrected_speaker": prior.get("speaker"),
+                "original_method": "user_identified",
+                "timestamp": undo_started_at,
+                "operation_id": state.operation_id,
+                "undo_of_operation_id": state.operation_id,
+                "correction_kind": "identify_undo",
+            },
+        )
+        report["appended_count"] += 1
+        report["restored_count"] += 1
+    return {"corrections": report}
+
+
+def _voiceprint_removals_for_checkpoint(state: Any) -> list[dict[str, Any]]:
+    metadata_by_key: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for entry in state.prepared_plan["direct_voiceprints"]["entries_to_add"]:
+        metadata_by_key[_key_tuple(entry["key"])] = dict(entry["metadata"])
+    for entry in state.prepared_plan["retro_confirm"].get("voiceprints_to_add", []):
+        metadata_by_key[_key_tuple(entry["key"])] = dict(entry["metadata"])
+
+    keys: list[dict[str, Any]] = []
+    direct = state.phase_checkpoints.get("direct_voiceprints") or {}
+    retro = state.phase_checkpoints.get("retro_tracker") or {}
+    keys.extend(direct.get("saved_keys", []))
+    keys.extend(retro.get("saved_keys", []))
+
+    seen: set[tuple[str, str, str, int]] = set()
+    removals: list[dict[str, Any]] = []
+    for key in keys:
+        key_tuple = _key_tuple(key)
+        if key_tuple in seen or key_tuple not in metadata_by_key:
+            continue
+        seen.add(key_tuple)
+        removals.append(
+            {"key": dict(key), "expected_metadata": metadata_by_key[key_tuple]}
+        )
+    return removals
+
+
+def _undo_voiceprints(state: Any, _undo_started_at: str) -> dict[str, Any]:
+    from solstone.think.entities import remove_voiceprints_by_key
+
+    removals = _voiceprint_removals_for_checkpoint(state)
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "voiceprints"
+    ]
+    if not removals:
+        return {"voiceprints": report}
+    delta = remove_voiceprints_by_key(state.target_entity_id, removals)
+    report["removed_count"] = int(delta.get("removed_count", 0))
+    report["restored_count"] = report["removed_count"]
+    reasons = delta.get("skipped_reasons", {})
+    missing = int(reasons.get("missing", 0)) if isinstance(reasons, dict) else 0
+    mismatch = (
+        int(reasons.get("metadata_mismatch", 0)) if isinstance(reasons, dict) else 0
+    )
+    report["missing_count"] = missing
+    report["metadata_mismatch_count"] = mismatch
+    report["skipped_count"] = int(delta.get("skipped_count", 0))
+    report["skipped_reasons"] = {"missing": missing, "metadata_mismatch": mismatch}
+    return {"voiceprints": report}
+
+
+def _undo_tracker(state: Any, _undo_started_at: str) -> dict[str, Any]:
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    checkpoint = state.phase_checkpoints.get("retro_tracker")
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "tracker"
+    ]
+    if (
+        not checkpoint
+        or not checkpoint.get("matched")
+        or checkpoint.get("candidate_id") is None
+    ):
+        return {"tracker": report}
+    retro = state.prepared_plan["retro_confirm"]
+    delta = CandidateTracker().restore_confirmed_candidate(
+        int(checkpoint["candidate_id"]),
+        expected_after=retro["candidate_after"],
+        candidate_before=retro["candidate_before"],
+    )
+    report["restored_candidate_count"] = int(delta.get("restored_count", 0))
+    report["restored_count"] = report["restored_candidate_count"]
+    report["skipped_count"] = int(delta.get("skipped_count", 0))
+    reasons = delta.get("skipped_reasons", {})
+    report["skipped_reasons"] = reasons if isinstance(reasons, dict) else {}
+    return {"tracker": report}
+
+
+def _undo_sentinel(state: Any, _undo_started_at: str) -> dict[str, Any]:
+    checkpoint = state.phase_checkpoints.get("sentinel")
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "sentinel"
+    ]
+    if not checkpoint or not checkpoint.get("written"):
+        return {"sentinel": report}
+    sentinel = state.prepared_plan["sentinel"]
+    cluster_key = str(sentinel["cluster_key"])
+    intended = sentinel["intended_entry"]
+    prior = sentinel.get("prior_entry")
+    data = _load_resolved_clusters()
+    current = data.get(cluster_key)
+    if current == intended:
+        if prior is None:
+            data.pop(cluster_key, None)
+            report["removed_count"] = 1
+        else:
+            data[cluster_key] = prior
+            report["restored_prior_count"] = 1
+        _replace_resolved_clusters(data)
+        report["restored_count"] = 1
+        return {"sentinel": report}
+    if current == prior or (current is None and prior is None):
+        report["skipped_count"] = 1
+        report["skipped_reasons"] = {"already_restored": 1}
+        return {"sentinel": report}
+    report["skipped_count"] = 1
+    report["skipped_reasons"] = {"concurrent_change": 1}
+    return {"sentinel": report}
+
+
+def _undo_entity(state: Any, _undo_started_at: str) -> dict[str, Any]:
+    from solstone.think.entities import delete_created_entity_if_unreferenced
+    from solstone.think.speaker_keep_separate import remove_operation_sources
+
+    report = _empty_undo_report(state.operation_id, status="undone")["undo_report"][
+        "entity"
+    ]
+    if not state.will_create:
+        return {"entity": report}
+    keep_checkpoint = state.phase_checkpoints.get("keep_separate") or {}
+    pair_keys = keep_checkpoint.get("pair_keys", [])
+    tombstones = remove_operation_sources(state.operation_id, pair_keys)
+    report["keep_separate_sources_removed_count"] = len(tombstones)
+
+    entity_checkpoint = state.phase_checkpoints.get("entity") or {}
+    if not entity_checkpoint.get("entity_created"):
+        return {"entity": report}
+    delete_result = delete_created_entity_if_unreferenced(
+        state.target_entity_id,
+        operation_id=state.operation_id,
+        expected_identity=entity_checkpoint.get("identity_after")
+        or state.prepared_plan["entity_identity"]["intended_identity"],
+        expected_history_refs=entity_checkpoint.get("history_event_refs", []),
+    )
+    report["deleted"] = bool(delete_result.get("deleted"))
+    report["restored_count"] = int(bool(report["deleted"]))
+    report["blocked_categories"] = list(delete_result.get("blocked_categories", []))
+    if not report["deleted"] and report["blocked_categories"]:
+        report["skipped_count"] = 1
+        report["skipped_reasons"] = {
+            category: int(delete_result.get("blocked_counts", {}).get(category, 1))
+            for category in report["blocked_categories"]
+        }
+    return {"entity": report}
+
+
+_UNDO_PHASES = {
+    "labels": _undo_labels,
+    "corrections": _undo_corrections,
+    "voiceprints": _undo_voiceprints,
+    "tracker": _undo_tracker,
+    "sentinel": _undo_sentinel,
+    "entity": _undo_entity,
+}
+
+
+def _aggregate_undo_report(state: Any, *, status: str) -> dict[str, Any]:
+    report = _empty_undo_report(state.operation_id, status=status)
+    for phase in (
+        "labels",
+        "corrections",
+        "voiceprints",
+        "tracker",
+        "sentinel",
+        "entity",
+    ):
+        delta = state.undo_phase_checkpoints.get(phase)
+        if not isinstance(delta, dict):
+            continue
+        for category, value in delta.items():
+            if category in report["undo_report"] and isinstance(value, dict):
+                report["undo_report"][category] = value
+    return report
+
+
+def _undo_recoverable_result(operation_id: str, detail: str) -> dict[str, Any]:
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    state = fold_operation(operation_id)
+    result = {
+        "status": "recoverable",
+        "operation_id": operation_id,
+        "request_id": state.request_id if state else None,
+        "detail": detail,
+    }
+    if state is not None:
+        result["undo_report"] = _aggregate_undo_report(
+            state,
+            status="recoverable",
+        )["undo_report"]
+    return result
+
+
+def undo_identify_operation(operation_id: str) -> dict[str, Any]:
+    """Undo a committed speaker identify operation by operation id."""
+    from solstone.think.entities.history import trust_operation_lock
+    from solstone.think.journal_io.errors import LockTimeout
+    from solstone.think.speaker_identify_operations import (
+        UNDO_PHASE_ORDER,
+        append_event,
+        fold_operation,
+    )
+
+    state = fold_operation(operation_id)
+    if state is None:
+        return {
+            "status": "not_found",
+            "operation_id": operation_id,
+            "list_command": "sol call speakers identify-operations",
+        }
+    if state.terminal_status == "undone" and state.undo_report is not None:
+        result = copy.deepcopy(state.undo_report)
+        result["status"] = "already_undone"
+        return result
+    if state.terminal_status != "committed":
+        return {
+            "status": state.terminal_status,
+            "operation_id": operation_id,
+        }
+
+    try:
+        with trust_operation_lock():
+            state = fold_operation(operation_id)
+            if state is None:
+                return {
+                    "status": "not_found",
+                    "operation_id": operation_id,
+                    "list_command": "sol call speakers identify-operations",
+                }
+            if state.terminal_status == "undone" and state.undo_report is not None:
+                result = copy.deepcopy(state.undo_report)
+                result["status"] = "already_undone"
+                return result
+            undo_started_at = _append_undo_prepared_once(
+                operation_id,
+                state.request_id,
+            )
+            _maybe_inject_identify_fault("after_undo_prepared")
+            for phase in UNDO_PHASE_ORDER:
+                state = fold_operation(operation_id)
+                if state is not None and phase in state.undo_phase_checkpoints:
+                    continue
+                delta = _UNDO_PHASES[phase](state, undo_started_at)
+                _append_undo_checkpoint(operation_id, state.request_id, phase, delta)
+                _maybe_inject_identify_fault(f"after_undo_{phase}")
+            state = fold_operation(operation_id)
+            report = _aggregate_undo_report(state, status="undone")
+            append_event(
+                _identify_event(
+                    operation_id=operation_id,
+                    request_id=state.request_id,
+                    event_kind="undo_committed",
+                    event_id=f"{operation_id}:undo_committed",
+                    undo_report=report,
+                )
+            )
+            _maybe_inject_identify_fault("after_undo_committed")
+            return report
+    except LockTimeout:
+        raise
+    except Exception as exc:
+        if isinstance(exc, LockTimeout):
+            raise
+        return _undo_recoverable_result(operation_id, str(exc))

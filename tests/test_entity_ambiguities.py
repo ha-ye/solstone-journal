@@ -657,7 +657,7 @@ def test_audited_mutation_owners_use_record_entity_resolution() -> None:
         ("solstone.apps.speakers.bootstrap", "bootstrap_voiceprints"),
         ("solstone.apps.speakers.bootstrap", "merge_names"),
         ("solstone.apps.speakers.bootstrap", "seed_from_imports"),
-        ("solstone.apps.speakers.discovery", "identify_cluster"),
+        ("solstone.apps.speakers.discovery", "_plan_identify"),
         ("solstone.think.entities.seeding", "seed_entities"),
         ("solstone.think.merge", "_merge_entities"),
     ]

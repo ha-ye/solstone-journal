@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from solstone.apps.speakers.discovery import (
     _discovery_cache_path,
@@ -17,6 +18,7 @@ from solstone.apps.speakers.discovery import (
     get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
+    undo_identify_operation,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 from solstone.apps.speakers.tests.conftest import journal_tree_hash
@@ -187,6 +189,40 @@ def _create_identify_cluster(
             for sentence_id in range(1, sentence_count + 1)
         ],
     )
+
+
+def _speaker_labels_for_segment(
+    journal: Path, day: str, segment_key: str
+) -> list[dict]:
+    path = journal / day / "test" / segment_key / "talents" / "speaker_labels.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8")).get("labels", [])
+
+
+def _create_integer_labeled_segment(
+    env,
+    day: str,
+    segment_key: str,
+    embeddings: np.ndarray,
+    *,
+    cluster_label: int = 7,
+) -> Path:
+    seg_dir = env.create_segment(
+        day,
+        segment_key,
+        ["audio"],
+        embeddings=embeddings,
+    )
+    jsonl_path = seg_dir / "audio.jsonl"
+    rows = jsonl_path.read_text(encoding="utf-8").splitlines()
+    updated = [rows[0]]
+    for row in rows[1:]:
+        payload = json.loads(row)
+        payload["speaker"] = cluster_label
+        updated.append(json.dumps(payload))
+    jsonl_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    return seg_dir
 
 
 def test_load_discovery_cache_missing_is_read_only(tmp_path, monkeypatch):
@@ -926,10 +962,12 @@ def test_identify_matches_existing(speakers_env):
 
 def test_identify_ambiguous_name_returns_before_writes(speakers_env):
     from solstone.think.entities import (
+        ResolutionOrigin,
         ResolutionScope,
         load_all_journal_entities,
         load_ambiguities,
         record_ambiguity_choice,
+        record_entity_resolution,
     )
 
     env = speakers_env()
@@ -971,7 +1009,7 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
     result = identify_cluster(cluster_id, "Sarah")
 
     assert result["status"] == "ambiguous"
-    assert result["ambiguity_id"]
+    assert result["ambiguity_id"] == ""
     assert {candidate["id"] for candidate in result["candidates"]} == {
         "sarah_connor",
         "sarah_lee",
@@ -993,8 +1031,14 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
         assert not labels_path.exists()
         assert not corrections_path.exists()
     assert candidate_path.read_bytes() == candidate_before
-    assert load_ambiguities()[0]["normalized_query"] == "sarah"
+    assert load_ambiguities() == []
 
+    record_entity_resolution(
+        "Sarah",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+        origin=ResolutionOrigin(lane="test", field="name"),
+    )
     record_ambiguity_choice(
         "Sarah",
         "sarah_connor",
@@ -1030,7 +1074,8 @@ def test_identify_idempotent(speakers_env):
     second = identify_cluster(cluster_id, "Bob Smith")
 
     assert first["voiceprints_saved"] == 20
-    assert second["voiceprints_saved"] == 0
+    assert second["operation_id"] == first["operation_id"]
+    assert second["voiceprints_saved"] == 20
     assert _discovery_cache_path().exists()
     assert _discovery_resolved_path().exists()
     assert _load_voiceprint_count(env.journal, "bob_smith") == first_voiceprints
@@ -1055,3 +1100,309 @@ def test_identify_contamination_guard(speakers_env):
 
     assert result["voiceprints_saved"] == 0
     assert not (env.journal / "entities" / "bob_smith" / "voiceprints.npz").exists()
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "after_prepared",
+        "after_entity",
+        "after_keep_separate",
+        "after_direct_voiceprints",
+        "after_corrections",
+        "after_labels",
+        "after_retro_tracker",
+        "after_sentinel",
+        "after_committed",
+    ],
+)
+def test_identify_fault_resume_forward_stages(speakers_env, monkeypatch, stage):
+    from solstone.apps.speakers import discovery
+
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _create_identify_cluster(env, 40, "120000_300")
+    calls = {"failed": False}
+
+    def fail_once(seam: str) -> None:
+        if seam == stage and not calls["failed"]:
+            calls["failed"] = True
+            raise RuntimeError(f"forced {stage}")
+
+    monkeypatch.setattr(discovery, "_maybe_inject_identify_fault", fail_once)
+    first = identify_cluster(40, name="Bob Smith", request_id=f"req-{stage}")
+    assert first["status"] == "recoverable"
+
+    retry = identify_cluster(40, name="Bob Smith", request_id=f"req-{stage}")
+
+    assert retry["status"] == "identified"
+    assert _load_voiceprint_count(env.journal, "bob_smith") == 1
+    assert _load_corrections_count(env.journal, "20240101", "120000_300") == 1
+    assert _speaker_labels_for_segment(env.journal, "20240101", "120000_300") == [
+        {
+            "sentence_id": 1,
+            "speaker": "bob_smith",
+            "confidence": "high",
+            "method": "user_identified",
+        }
+    ]
+    resolved = json.loads(_discovery_resolved_path().read_text(encoding="utf-8"))
+    assert resolved["40"]["entity_id"] == "bob_smith"
+
+
+def test_identify_replay_fingerprint_conflict_and_member_target_dedup(speakers_env):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    env.create_entity("Alice Smith")
+    _create_identify_cluster(env, 41, "121000_300")
+    _write_discovery_cache(
+        env,
+        42,
+        [_cluster_record("20240101", "121000_300")],
+    )
+    _create_identify_cluster(env, 43, "121500_300")
+
+    first = identify_cluster(41, name="Bob Smith", request_id="stable-req")
+    replay = identify_cluster(41, name="Bob Smith", request_id="stable-req")
+    mismatch = identify_cluster(41, name="Alice Smith", request_id="stable-req")
+    dedup = identify_cluster(42, name="Bob Smith", request_id="dedup-req")
+    conflict = identify_cluster(42, name="Alice Smith", request_id="target-conflict")
+    different_members = identify_cluster(43, name="Alice Smith", request_id="fresh")
+
+    assert replay == first
+    assert mismatch["status"] == "conflict"
+    assert mismatch["conflict_code"] == "request_fingerprint_mismatch"
+    assert dedup == first
+    assert conflict["status"] == "conflict"
+    assert conflict["conflict_code"] == "member_set_target_conflict"
+    assert different_members["status"] == "identified"
+    assert different_members["entity_id"] == "alice_smith"
+
+
+def test_identify_undo_restores_checkpoint_actuals_and_deletes_created_entity(
+    speakers_env,
+):
+    env = speakers_env()
+    _create_identify_cluster(env, 44, "122000_300")
+
+    result = identify_cluster(
+        44,
+        name="Yara Undo",
+        create_new=True,
+        request_id="undo-create",
+    )
+    operation_id = result["operation_id"]
+
+    assert _load_voiceprint_count(env.journal, "yara_undo") == 1
+    assert _speaker_labels_for_segment(env.journal, "20240101", "122000_300") == [
+        {
+            "sentence_id": 1,
+            "speaker": "yara_undo",
+            "confidence": "high",
+            "method": "user_identified",
+        }
+    ]
+    assert _load_corrections_count(env.journal, "20240101", "122000_300") == 1
+    assert (
+        json.loads(_discovery_resolved_path().read_text(encoding="utf-8"))["44"][
+            "entity_id"
+        ]
+        == "yara_undo"
+    )
+
+    undo = undo_identify_operation(operation_id)
+
+    assert undo["status"] == "undone"
+    assert not (env.journal / "entities" / "yara_undo").exists()
+    assert _speaker_labels_for_segment(env.journal, "20240101", "122000_300") == []
+    corrections_path = (
+        env.journal
+        / "20240101"
+        / "test"
+        / "122000_300"
+        / "talents"
+        / "speaker_corrections.json"
+    )
+    corrections = json.loads(corrections_path.read_text(encoding="utf-8"))[
+        "corrections"
+    ]
+    assert len(corrections) == 2
+    assert corrections[-1]["correction_kind"] == "identify_undo"
+    assert corrections[-1]["corrected_speaker"] is None
+    assert "44" not in json.loads(
+        _discovery_resolved_path().read_text(encoding="utf-8")
+    )
+
+    before = journal_tree_hash(env.journal)
+    second = undo_identify_operation(operation_id)
+    assert second["status"] == "already_undone"
+    assert journal_tree_hash(env.journal) == before
+
+
+def test_identify_retro_manifest_removed_on_undo(speakers_env):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.think.speaker_identify_operations import fold_operation
+
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    env.create_entity("Bob Smith")
+    base = _make_speaker_embeddings([1.0, 0.0], 3)
+    retro_seg = _create_integer_labeled_segment(
+        env,
+        "20240102",
+        "123000_300",
+        base,
+    )
+    CandidateTracker().process_segment(
+        "20240102",
+        "123000_300",
+        "test",
+        "audio",
+        retro_seg,
+    )
+    env.create_segment(
+        "20240103",
+        "123500_300",
+        ["audio"],
+        embeddings=base[:1],
+    )
+    _write_discovery_cache(
+        env,
+        45,
+        [_cluster_record("20240103", "123500_300")],
+    )
+
+    result = identify_cluster(45, name="Bob Smith", request_id="retro-undo")
+    state = fold_operation(result["operation_id"])
+
+    assert result["voiceprints_saved"] == 1
+    assert result["retroactive_voiceprints_saved"] == 3
+    assert _load_voiceprint_count(env.journal, "bob_smith") == 4
+    assert len(state.phase_checkpoints["direct_voiceprints"]["saved_keys"]) == 1
+    assert len(state.phase_checkpoints["retro_tracker"]["saved_keys"]) == 3
+
+    undo = undo_identify_operation(result["operation_id"])
+
+    assert undo["status"] == "undone"
+    assert _load_voiceprint_count(env.journal, "bob_smith") == 0
+    candidate = CandidateTracker().load_all_candidates()[0]
+    assert candidate.status == "pending"
+    assert candidate.confirmed_entity is None
+
+
+def test_identify_create_records_keep_separate_near_match_assertions(speakers_env):
+    from solstone.think.speaker_keep_separate import find_assertion
+    from solstone.think.speaker_review_candidates import record_name_variant_candidate
+
+    env = speakers_env()
+    env.create_entity("Alice Smith")
+    record_name_variant_candidate(
+        source_id="alice_smith",
+        source_label="Alice Smith",
+        target_id="qzxqv_wvuty",
+        target_label="Qzxqv Wvuty",
+        similarity=0.97,
+    )
+    record_name_variant_candidate(
+        source_id="alice_smith",
+        source_label="Alice Smith",
+        target_id="qzxqv_wvuty",
+        target_label="Qzxqv Wvuty",
+        similarity=0.98,
+    )
+    _create_identify_cluster(env, 46, "124000_300")
+
+    result = identify_cluster(
+        46,
+        name="Qzxqv Wvuty",
+        create_new=True,
+        request_id="near-match-ok",
+        reviewed_near_match_entity_ids=["alice_smith"],
+    )
+
+    assert result["status"] == "identified"
+    assertion = find_assertion("qzxqv_wvuty", "alice_smith")
+    assert assertion is not None
+    assert assertion.dismissed_detection_count == 2
+
+
+@pytest.mark.parametrize(
+    ("reviewed_ids", "reason"),
+    [
+        (["missing_person"], "nonexistent"),
+        (["bad_type"], "non_person"),
+        (["owner_test"], "principal"),
+        (["qzxqv_wvuty"], "self"),
+    ],
+)
+def test_identify_near_match_validation_rejects_before_writes(
+    speakers_env,
+    reviewed_ids,
+    reason,
+):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0], entity_id="owner_test")
+    env.create_entity("Alice Smith")
+    env.create_entity("Alice Jones")
+    env.create_entity("Alice Johnson")
+    bad_type_path = env.create_entity("Bad Type")
+    bad_type = json.loads((bad_type_path / "entity.json").read_text(encoding="utf-8"))
+    bad_type["type"] = "Organization"
+    (bad_type_path / "entity.json").write_text(json.dumps(bad_type), encoding="utf-8")
+    env.create_entity("Bob Far")
+    _create_identify_cluster(env, 47, "124500_300")
+    before = journal_tree_hash(env.journal)
+
+    result = identify_cluster(
+        47,
+        name="Qzxqv Wvuty",
+        create_new=True,
+        request_id=f"near-match-{reason}",
+        reviewed_near_match_entity_ids=reviewed_ids,
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == reason
+    assert journal_tree_hash(env.journal) == before
+
+
+def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_env):
+    from solstone.think.entities import (
+        closest_resolution_candidates,
+        load_all_journal_entities,
+    )
+
+    env = speakers_env()
+    for name in (
+        "Alice Smith",
+        "Carol Jones",
+        "Delta Test",
+        "Echo Example",
+        "Frank Sample",
+        "Grace Person",
+    ):
+        env.create_entity(name)
+    _create_identify_cluster(env, 48, "125000_300")
+    entities = [
+        entity
+        for entity in load_all_journal_entities().values()
+        if not entity.get("blocked")
+    ]
+    shown = {
+        candidate.id
+        for candidate in closest_resolution_candidates("Qzxqv Wvuty", entities, limit=3)
+    }
+    unshown = next(entity["id"] for entity in entities if entity["id"] not in shown)
+    before = journal_tree_hash(env.journal)
+
+    result = identify_cluster(
+        48,
+        name="Qzxqv Wvuty",
+        create_new=True,
+        request_id="near-match-unshown",
+        reviewed_near_match_entity_ids=[unshown],
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == "unshown"
+    assert journal_tree_hash(env.journal) == before
