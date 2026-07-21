@@ -281,15 +281,6 @@ def _find_single(root: Path, name: str) -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _distribution_from_wheel_name(name: str) -> Mapping[str, str] | None:
-    if not name.endswith(".whl"):
-        return None
-    parts = name.removesuffix(".whl").split("-")
-    if len(parts) < 5:
-        return None
-    return {"name": parts[0].replace("_", "-"), "version": parts[1]}
-
-
 def _distribution_from_wheel_metadata(path: Path) -> Mapping[str, str] | None:
     try:
         with zipfile.ZipFile(path) as wheel:
@@ -318,17 +309,23 @@ def _distribution_from_wheel_metadata(path: Path) -> Mapping[str, str] | None:
 def expected_distribution_entries(
     paths: Sequence[Path],
 ) -> tuple[Mapping[str, str], ...]:
-    entries = [
-        entry
-        for path in paths
-        if (
-            entry := (
-                _distribution_from_wheel_metadata(path)
-                or _distribution_from_wheel_name(path.name)
+    entries: list[Mapping[str, str]] = []
+    failures: list[Failure] = []
+    for path in paths:
+        entry = _distribution_from_wheel_metadata(path)
+        if entry is None:
+            failures.append(
+                _failure(
+                    "install proof candidate wheel metadata is invalid",
+                    expected=f"{path.name} exactly one readable METADATA with Name and Version",
+                    actual="missing or malformed",
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
             )
-        )
-        is not None
-    ]
+            continue
+        entries.append(entry)
+    if failures:
+        raise InstallProofError(failures)
     return tuple(sorted(entries, key=lambda item: (item["name"], item["version"])))
 
 
@@ -681,9 +678,13 @@ def _validate_observation(
             )
         )
     failures.extend(_env_failures("install proof install", observation.install.env))
-    expected_distributions = _distribution_entries(
-        expected_distribution_entries(install_paths)
-    )
+    try:
+        expected_distributions = _distribution_entries(
+            expected_distribution_entries(install_paths)
+        )
+    except InstallProofError as exc:
+        failures.extend(exc.failures)
+        expected_distributions = set()
     actual_distributions = _distribution_entries(observation.installed_distributions)
     if actual_distributions != expected_distributions:
         failures.append(
@@ -1160,9 +1161,13 @@ def _validate_proof_semantics(
             )
         )
         distributions = []
-    expected_distributions = _distribution_entries(
-        expected_distribution_entries(install_paths)
-    )
+    try:
+        expected_distributions = _distribution_entries(
+            expected_distribution_entries(install_paths)
+        )
+    except InstallProofError as exc:
+        failures.extend(exc.failures)
+        expected_distributions = set()
     actual_distributions = _distribution_entries(
         [entry for entry in distributions if isinstance(entry, Mapping)]
     )

@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,22 @@ LEDGER_SHA = "c" * 64
 COHORT = "d" * 32
 
 
+def _wheel_metadata(name: str) -> tuple[str, str]:
+    parts = name.removesuffix(".whl").split("-")
+    distribution = parts[0]
+    version = parts[1]
+    return (
+        f"{distribution}-{version}.dist-info/METADATA",
+        f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n",
+    )
+
+
+def _write_metadata_wheel(path: Path) -> None:
+    metadata_name, metadata = _wheel_metadata(path.name)
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(metadata_name, metadata)
+
+
 def _candidate(tmp_path: Path) -> Path:
     candidate = tmp_path / "candidate"
     candidate.mkdir()
@@ -36,7 +53,7 @@ def _candidate(tmp_path: Path) -> Path:
             or name.startswith("solstone_journal-")
             or name.startswith("solstone_journal_cuda-")
         ):
-            (candidate / name).write_bytes(f"payload:{name}".encode("utf-8"))
+            _write_metadata_wheel(candidate / name)
     return candidate
 
 
@@ -265,12 +282,15 @@ def _runner(
 def _channel(
     target: str,
     runner: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    file_copier: Callable[[Path, Path], object] = shutil.copyfile,
 ) -> proof_host.ExternalProofHostChannel:
     return proof_host.ExternalProofHostChannel(
         target,
         ("adapter",),
         runner=runner,
         cohort_id_factory=lambda: COHORT,
+        file_copier=file_copier,
     )
 
 
@@ -330,6 +350,45 @@ def test_proof_host_transfers_target_install_set_and_accepts_valid_proof(
     assert COHORT in calls[-1][1]
     assert LEDGER_SHA in calls[-1][1]
     assert not any(tmp_path.glob(f"proofs/.{target}.proof-request-*"))
+
+
+def test_proof_host_rejects_candidate_copy_mutation_before_adapter(
+    tmp_path: Path,
+) -> None:
+    target = "linux-x86_64-musl"
+    candidate = _candidate(tmp_path)
+    ledger = _ledger(candidate)
+    calls: list[tuple[str, tuple[str, ...], Path | None]] = []
+
+    def mutating_copy(source: Path, destination: Path) -> object:
+        shutil.copyfile(source, destination)
+        destination.write_bytes(b"mutated candidate")
+        return None
+
+    channel = _channel(
+        target,
+        _runner(target=target, candidate=candidate, ledger=ledger, calls=calls),
+        file_copier=mutating_copy,
+    )
+
+    with pytest.raises(proof_host.ProofHostError) as exc:
+        channel.run_install_proof(
+            target=target,
+            version="1.0.0",
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=ledger["candidate"]["candidate_digest"],
+            ledger_sha256=LEDGER_SHA,
+            candidate_dir=candidate,
+            candidate_paths=tuple(candidate.iterdir()),
+            ledger_payload=ledger,
+            output_path=tmp_path / "proofs" / f"{target}.json",
+        )
+
+    assert (
+        exc.value.failures[0].error == "proof-host copied candidate wheel changed bytes"
+    )
+    assert calls == []
 
 
 @pytest.mark.parametrize("kind", ["directory", "file"])

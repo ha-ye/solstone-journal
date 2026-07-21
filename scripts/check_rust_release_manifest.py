@@ -227,7 +227,7 @@ def _schema_load_failure(exc: Exception) -> Failure:
         "schema file does not match canonical Rust release manifest schema",
         expected=f"{SCHEMA_PATH} SHA-256 {SCHEMA_SHA256}",
         actual=str(exc),
-        repair="restore schemas/rust-release-manifest/v1.json from the lode appendix",
+        repair="python3 scripts/check_rust_release_manifest.py",
     )
 
 
@@ -1880,6 +1880,15 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
         for name, (lane, _target) in rust_artifact_targets().items()
         if lane != "source"
     }
+
+    def metadata_member(name: str) -> tuple[str, str]:
+        parts = name.removesuffix(".whl").split("-")
+        distribution = parts[0]
+        version = parts[1]
+        dist_info = f"{distribution}-{version}.dist-info/METADATA"
+        metadata = f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n"
+        return dist_info, metadata
+
     for name in expected_package_names(include_models=include_models):
         path = dist_dir / name
         if name in core_wheel_names:
@@ -1889,6 +1898,8 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
             info.create_system = 3
             info.external_attr = 0o755 << 16
             with zipfile.ZipFile(path, "w") as wheel:
+                meta_name, metadata = metadata_member(name)
+                wheel.writestr(meta_name, metadata)
                 wheel.writestr(info, f"inert solstone-core for {name}\n")
             continue
         if (
@@ -1902,7 +1913,14 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
             info.create_system = 3
             info.external_attr = 0o755 << 16
             with zipfile.ZipFile(path, "w") as wheel:
+                meta_name, metadata = metadata_member(name)
+                wheel.writestr(meta_name, metadata)
                 wheel.writestr(info, f"inert parakeet-helper for {name}\n")
+            continue
+        if name.endswith(".whl"):
+            with zipfile.ZipFile(path, "w") as wheel:
+                meta_name, metadata = metadata_member(name)
+                wheel.writestr(meta_name, metadata)
             continue
         path.write_bytes(f"inert bytes for {name}\n".encode("utf-8"))
 

@@ -761,6 +761,7 @@ class ExternalProofHostChannel:
                         ]
                     )
                 _validate_regular_file(path, label="candidate wheel")
+                source_sha256, source_bytes = file_sha256_size(path)
                 _validate_directory_identities(
                     (request_identity, candidate_identity, output_identity)
                 )
@@ -772,6 +773,23 @@ class ExternalProofHostChannel:
                     request_candidate_dir / path.name,
                     label="request candidate wheel",
                 )
+                copied_sha256, copied_bytes = file_sha256_size(
+                    request_candidate_dir / path.name
+                )
+                _validate_directory_identities(
+                    (request_identity, candidate_identity, output_identity)
+                )
+                if copied_sha256 != source_sha256 or copied_bytes != source_bytes:
+                    raise ProofHostError(
+                        [
+                            _failure(
+                                "proof-host copied candidate wheel changed bytes",
+                                expected=f"{source_sha256}/{source_bytes}",
+                                actual=f"{copied_sha256}/{copied_bytes}",
+                                repair="bash scripts/release.sh --candidate",
+                            )
+                        ]
+                    )
             (request_dir / "ledger.json").write_bytes(
                 canonical_json_bytes(ledger_payload)
             )
@@ -862,6 +880,9 @@ class ExternalProofHostChannel:
                         )
                     ]
                 )
+            _validate_directory_identities(
+                (request_identity, candidate_identity, output_identity)
+            )
             proof_bytes = proof_path.read_bytes()
             _validate_directory_identities(
                 (request_identity, candidate_identity, output_identity)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -20,6 +21,22 @@ CORE_LOCK = "b" * 64
 LEDGER_SHA = "c" * 64
 
 
+def _wheel_metadata(name: str) -> tuple[str, str]:
+    parts = name.removesuffix(".whl").split("-")
+    distribution = parts[0]
+    version = parts[1]
+    return (
+        f"{distribution}-{version}.dist-info/METADATA",
+        f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n",
+    )
+
+
+def _write_metadata_wheel(path: Path) -> None:
+    metadata_name, metadata = _wheel_metadata(path.name)
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(metadata_name, metadata)
+
+
 def _candidate(tmp_path: Path) -> tuple[Path, list[Path]]:
     candidate = tmp_path / "candidate"
     candidate.mkdir()
@@ -34,7 +51,7 @@ def _candidate(tmp_path: Path) -> tuple[Path, list[Path]]:
             wanted.append(name)
     paths = [candidate / name for name in wanted]
     for path in paths:
-        path.write_bytes(f"payload:{path.name}".encode("utf-8"))
+        _write_metadata_wheel(path)
     return candidate, paths
 
 
@@ -163,6 +180,19 @@ def test_proof_targets_explicitly_match_release_lanes() -> None:
     assert smoke.proof_targets_match_lanes()
 
 
+def test_expected_distribution_entries_requires_wheel_metadata(tmp_path: Path) -> None:
+    wheel = tmp_path / "solstone-1.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"not a wheel")
+
+    with pytest.raises(smoke.InstallProofError) as exc:
+        smoke.expected_distribution_entries((wheel,))
+
+    assert (
+        exc.value.failures[0].error
+        == "install proof candidate wheel metadata is invalid"
+    )
+
+
 def test_install_proof_records_inventory_normalized_argv_and_paths(
     tmp_path: Path,
 ) -> None:
@@ -244,7 +274,7 @@ def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
     assert "proof candidate file is a symlink" in errors
 
     selected.unlink()
-    selected.write_bytes(f"payload:{selected.name}".encode("utf-8"))
+    _write_metadata_wheel(selected)
     ledger = _ledger_payload(candidate_digest(candidate), candidate)
     selected_entry = next(
         entry
