@@ -151,6 +151,33 @@ seek green.
 | `make pre-commit` | Install pre-commit hooks (optional). |
 | `make versions` | Print versions of Python, uv, and key deps. Diagnostic. |
 
+### Release rail
+
+DESTRUCTIVE: `bash scripts/release.sh --candidate` is fresh construction; before
+policy or build work it deletes prior raw build/dist outputs and that version's
+stale payload/evidence. It verifies the expected source commit and lock state,
+gathers target evidence through configured build/proof-host channels,
+pair-promotes payload and evidence, and prints canonical local readiness JSON.
+This is candidate evidence only, not publication authorization.
+
+`bash scripts/release.sh --recover <version> <source-commit>` is
+retained-byte-only, read-only validation. It preserves retained payload, ledger,
+and proofs, revalidates them, and reports `retained-candidate-valid`. It never
+rebuilds, refreshes advisories, contacts hosts, installs wheels, reads
+authentication, or uses the network.
+
+`bash scripts/release.sh --dry-run-linux` validates the Linux structural plan
+only. It emits no ready payload, manifest, ledger, proof, or clean-source claim.
+
+Candidate readiness means candidate payload, ledger, and per-target
+install/smoke proofs are locally consistent for the retained bytes. Proofs do
+not authorize publication and do not prove external distribution.
+
+The no-arg release path, `--test`, `make release`, and `make release-test` are
+temporarily locked out. They fail before any token, transport, build-host, git,
+upload, tag, or hosted-release seam is reached. Do not add publication behavior
+to this rail.
+
 ### Don't use
 
 | Target | Why not |
