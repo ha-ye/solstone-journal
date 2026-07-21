@@ -745,6 +745,7 @@ function makeWorkspaceContext(kind) {
   const document = new FakeDocument(ids);
   const queues = {
     discovery: [],
+    scan: [],
     known: [],
     quality: [],
     segments: [],
@@ -796,7 +797,8 @@ function makeWorkspaceContext(kind) {
     }
     if (url.includes('/api/quality')) return queueResponse(queues, 'quality', url);
     if (url.includes('/api/speakers/known')) return queueResponse(queues, 'known', url);
-    if (url.includes('/api/discovery/scan')) return queueResponse(queues, 'discovery', url);
+    if (url.includes('/api/discovery/cache')) return queueResponse(queues, 'discovery', url);
+    if (url.includes('/api/discovery/scan')) return queueResponse(queues, 'scan', url);
     if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url);
     if (url.includes('/api/speakers/20240101/')) return queueResponse(queues, 'speakers', url);
     throw new Error(`unexpected fetch ${url}`);
@@ -1111,6 +1113,7 @@ def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review(
           resolveFetch(queues.segments[0], { segments: [segment()], total: 1 });
           await flush();
           await flush();
+          assert.strictEqual(queues.scan.length, 1);
           resolveFetch(queues.speakers[0], matchedSpeakers(''));
           resolveFetch(queues.review[0], reviewPayload(''));
           await flush();
@@ -1139,6 +1142,14 @@ def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review(
           resolveFetch(queues.segments[2], { segments: [segment()], total: 1 });
           await flush();
           await flush();
+          assert.strictEqual(queues.scan.length, 2);
+          resolveFetch(queues.scan[1], {
+            clusters: [
+              { cluster_id: 7, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
+          await flush();
+          await flush();
 
           const explicitSpeakers = queues.speakers[queues.speakers.length - 1];
           const explicitReview = queues.review[queues.review.length - 1];
@@ -1158,10 +1169,16 @@ def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review(
           if (queues.review.length > 2) {
             resolveFetch(queues.review[2], reviewPayload('Undone Person'));
           }
+          resolveFetch(queues.scan[0], {
+            clusters: [
+              { cluster_id: 99, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
           await flush();
           await flush();
 
           assert(discoveryBanner.querySelector('[data-cluster-id="7"]'));
+          assert.strictEqual(discoveryBanner.querySelector('[data-cluster-id="99"]'), null);
           assert(!document.getElementById('spkSpeakers').innerHTML.includes('Undone Person'));
           assert(!document.getElementById('spkSentences').innerHTML.includes('Undone Person'));
         })().catch((error) => { console.error(error); process.exit(1); });

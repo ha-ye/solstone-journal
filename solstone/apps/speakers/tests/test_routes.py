@@ -1737,13 +1737,18 @@ def test_workspace_overview_voice_handoff_contract():
         "voice_sentence_id",
     ):
         assert param in template
-    assert "function openOverviewDiscoveryCluster(clusterId, trigger)" in template
+    assert (
+        "function openOverviewDiscoveryCluster(clusterId, trigger, options)" in template
+    )
     assert "const cluster = discoveryClustersById.get(key);" in template
     assert "if (!cluster) return false;" in template
-    assert "openOverviewDiscoveryCluster(context.voiceClusterId, null);" in template
+    assert "/app/speakers/api/discovery/cache" in template
+    assert "return openOverviewHandoffCluster(context.voiceClusterId);" in template
     assert "/app/speakers/api/discovery/resolve-statement" in template
     assert "if (result.status === 'hit')" in template
-    assert "else if (result.status === 'miss')" in template
+    assert (
+        "result.status === 'miss' || result.status === 'cache_unavailable'" in template
+    )
     assert "showStatementHandoffNotice();" in template
     assert 'id="spkStatementHandoffNotice"' in template
     assert "NOT_IN_NEW_VOICES_COPY = payload.not_in_new_voices_copy || '';" in template
@@ -1923,6 +1928,34 @@ def test_cluster_presence_route_returns_not_found(speakers_env, monkeypatch):
     body = response.get_json()
     assert body["reason_code"] == "speaker_review_unavailable"
     assert body["detail"] == "Cluster 404 was not found. Run a discovery scan first."
+
+
+def test_discovery_cache_route_reads_visible_cached_clusters_without_mutating(
+    speakers_env,
+):
+    from solstone.think.speaker_cluster_dismissals import record_cluster_dismissal
+
+    env = speakers_env()
+    _write_discovery_cluster(env, 40, "112500_300")
+    _write_discovery_cluster(env, 41, "113000_300")
+    cache_path = env.journal / "awareness" / "discovery_clusters.json"
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    record_cluster_dismissal(cache["clusters"]["40"], "quiet")
+    cache["clusters"]["42"] = [{"day": "20240101", "sentence_id": 1}]
+    cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
+
+    response = client.get("/app/speakers/api/discovery/cache")
+    after = _journal_file_hashes(env.journal)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "ok"
+    assert [cluster["cluster_id"] for cluster in payload["clusters"]] == [41]
+    assert payload["clusters"][0]["size"] == 1
+    assert payload["clusters"][0]["segment_count"] == 1
+    assert _changed_paths(before, after) == set()
 
 
 def test_resolve_statement_cluster_route_returns_resolution(speakers_env, monkeypatch):

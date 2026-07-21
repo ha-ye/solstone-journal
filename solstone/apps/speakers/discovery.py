@@ -122,6 +122,94 @@ def _build_cluster_sample(record: dict) -> dict:
     }
 
 
+def _serialize_discovery_cluster(
+    cluster_id: int,
+    members: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    normalized_members = [
+        normalized
+        for member in members
+        if (normalized := _normalized_cache_member(member)) is not None
+    ]
+    if not normalized_members:
+        return None
+    segment_keys = {
+        (
+            member["day"],
+            member["stream"],
+            member["segment_key"],
+        )
+        for member in normalized_members
+    }
+    samples: list[dict[str, Any]] = []
+    seen_segments: set[tuple[str, str, str]] = set()
+    for member in normalized_members:
+        segment = (
+            member["day"],
+            member["stream"],
+            member["segment_key"],
+        )
+        if segment in seen_segments:
+            continue
+        seen_segments.add(segment)
+        samples.append(_build_cluster_sample(member))
+        if len(samples) == 3:
+            break
+    if len(samples) < 3:
+        for member in normalized_members:
+            sample = _build_cluster_sample(member)
+            if sample in samples:
+                continue
+            samples.append(sample)
+            if len(samples) == 3:
+                break
+    return {
+        "cluster_id": int(cluster_id),
+        "size": len(normalized_members),
+        "segment_count": len(segment_keys),
+        "samples": samples,
+    }
+
+
+def _serialize_discovery_clusters(
+    clusters: dict[str, Any],
+) -> dict[str, Any]:
+    from solstone.think.speaker_cluster_dismissals import (
+        cluster_dismissal_suppressed,
+    )
+
+    rows: list[dict[str, Any]] = []
+    for raw_cluster_id, members in clusters.items():
+        try:
+            cluster_id = int(raw_cluster_id)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(members, list):
+            continue
+        normalized_members = [
+            normalized
+            for member in members
+            if (normalized := _normalized_cache_member(member)) is not None
+        ]
+        if not normalized_members:
+            continue
+        if cluster_dismissal_suppressed(normalized_members):
+            continue
+        row = _serialize_discovery_cluster(cluster_id, normalized_members)
+        if row is not None:
+            rows.append(row)
+    rows.sort(key=lambda cluster: (-int(cluster["size"]), int(cluster["cluster_id"])))
+    return {"clusters": rows}
+
+
+def read_discovery_cache_snapshot() -> dict[str, Any]:
+    """Return visible discovery clusters from the current cache without scanning."""
+    cache = load_discovery_cache()
+    if cache is None:
+        return {"status": "cache_unavailable", "clusters": []}
+    return {"status": "ok", **_serialize_discovery_clusters(cache.get("clusters", {}))}
+
+
 def _clear_discovery_cache() -> None:
     """Remove the cached discovery assignment file if present."""
     _discovery_cache_path().unlink(missing_ok=True)
@@ -230,7 +318,6 @@ def discover_unknown_speakers() -> dict[str, Any]:
         _clear_discovery_cache()
         return {"clusters": []}
 
-    result_clusters: list[dict[str, Any]] = []
     cache_clusters: dict[str, list[dict[str, Any]]] = {}
 
     for cid in sorted(set(labels[labels != -1])):
@@ -250,44 +337,13 @@ def discover_unknown_speakers() -> dict[str, Any]:
         centroid = normalize_embedding(np.mean(cluster_embeddings, axis=0))
         if centroid is None:
             continue
-
         similarities = np.dot(cluster_embeddings, centroid)
         sorted_positions = np.argsort(similarities)[::-1]
+        cache_clusters[str(int(cid))] = [
+            provenance[int(cluster_indices[int(pos)])] for pos in sorted_positions
+        ]
 
-        samples: list[dict[str, Any]] = []
-        seen_segments: set[tuple[str, str, str]] = set()
-
-        for pos in sorted_positions:
-            record = provenance[int(cluster_indices[int(pos)])]
-            seg_triplet = (record["day"], record["stream"], record["segment_key"])
-            if seg_triplet in seen_segments:
-                continue
-            seen_segments.add(seg_triplet)
-            samples.append(_build_cluster_sample(record))
-            if len(samples) == 3:
-                break
-
-        if len(samples) < 3:
-            for pos in sorted_positions:
-                record = provenance[int(cluster_indices[int(pos)])]
-                sample = _build_cluster_sample(record)
-                if sample in samples:
-                    continue
-                samples.append(sample)
-                if len(samples) == 3:
-                    break
-
-        result_clusters.append(
-            {
-                "cluster_id": int(cid),
-                "size": int(len(cluster_indices)),
-                "segment_count": len(segment_set),
-                "samples": samples,
-            }
-        )
-        cache_clusters[str(int(cid))] = [provenance[int(i)] for i in cluster_indices]
-
-    if not result_clusters:
+    if not cache_clusters:
         _clear_discovery_cache()
         return {"clusters": []}
 
@@ -304,19 +360,7 @@ def discover_unknown_speakers() -> dict[str, Any]:
         )
     tmp_path.rename(cache_path)
 
-    result_clusters.sort(key=lambda cluster: cluster["size"], reverse=True)
-    from solstone.think.speaker_cluster_dismissals import (
-        cluster_dismissal_suppressed,
-    )
-
-    visible_clusters = [
-        cluster
-        for cluster in result_clusters
-        if not cluster_dismissal_suppressed(
-            cache_clusters.get(str(cluster["cluster_id"]), [])
-        )
-    ]
-    return {"clusters": visible_clusters}
+    return _serialize_discovery_clusters(cache_clusters)
 
 
 def _conversation_key(

@@ -2295,15 +2295,38 @@
     dayDiscoveryRequestSeq = requestSeq;
     discoveryBanner.style.display = 'block';
     discoveryBanner.innerHTML = '<div class="spk-discovery-panel"><div class="spk-discovery-title"><span class="spk-spinner"></span> Discovering new voices…</div></div>';
-    return fetch('/app/speakers/api/discovery/scan', { method: 'POST' })
+    return fetch('/app/speakers/api/discovery/cache', { cache: 'no-store' })
       .then(r => r.json())
       .then(data => {
         if (requestSeq !== dayDiscoveryRequestSeq) return false;
-        if (data.clusters && data.clusters.length > 0) {
-          renderDiscovery(data.clusters);
-        } else {
-          hideDiscovery();
-        }
+        renderDiscoveryPayload(data);
+        return refreshDayDiscoveryScan({ requestSeq, throwOnError });
+      })
+      .catch((err) => {
+        if (requestSeq !== dayDiscoveryRequestSeq) return false;
+        hideDiscovery();
+        if (throwOnError) throw err;
+        return false;
+      });
+  }
+
+  function renderDiscoveryPayload(data) {
+    if (data.clusters && data.clusters.length > 0) {
+      renderDiscovery(data.clusters);
+    } else {
+      hideDiscovery();
+    }
+  }
+
+  function refreshDayDiscoveryScan({ requestSeq, throwOnError }) {
+    return fetch('/app/speakers/api/discovery/scan', { method: 'POST' })
+      .then(r => {
+        if (!r.ok) throw new Error('scan failed');
+        return r.json();
+      })
+      .then(data => {
+        if (requestSeq !== dayDiscoveryRequestSeq) return false;
+        renderDiscoveryPayload(data);
         return true;
       })
       .catch((err) => {
@@ -3599,6 +3622,7 @@
   let qualityRequestSeq = 0;
   let knownRequestSeq = 0;
   let overviewDiscoveryRequestSeq = 0;
+  let overviewHandoffSheetOpen = false;
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
@@ -3949,7 +3973,8 @@
     return whoIsThisSheet;
   }
 
-  function openOverviewWhoIsThis(cluster, trigger) {
+  function openOverviewWhoIsThis(cluster, trigger, options) {
+    if (options?.handoff) overviewHandoffSheetOpen = true;
     ensureOverviewWhoIsThisSheet().open({
       cluster,
       clusterId: cluster.cluster_id,
@@ -3957,11 +3982,11 @@
     });
   }
 
-  function openOverviewDiscoveryCluster(clusterId, trigger) {
+  function openOverviewDiscoveryCluster(clusterId, trigger, options) {
     const key = String(clusterId || '');
     const cluster = discoveryClustersById.get(key);
     if (!cluster) return false;
-    openOverviewWhoIsThis(cluster, trigger || null);
+    openOverviewWhoIsThis(cluster, trigger || null, options);
     return true;
   }
 
@@ -4007,9 +4032,9 @@
     const throwOnError = Boolean(options?.throwOnError);
     const requestSeq = overviewDiscoveryRequestSeq + 1;
     overviewDiscoveryRequestSeq = requestSeq;
-    return fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
+    return fetch('/app/speakers/api/discovery/cache', {cache: 'no-store'})
       .then((response) => {
-        if (!response.ok) throw new Error('scan failed');
+        if (!response.ok) throw new Error('discovery cache failed');
         return response.json();
       })
       .then((data) => {
@@ -4019,6 +4044,33 @@
       })
       .catch((err) => {
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
+        discoverySection.hidden = true;
+        if (throwOnError) throw err;
+        return false;
+      });
+  }
+
+  function refreshDiscoveryScan(options) {
+    if (overviewHandoffSheetOpen || hasOverviewHandoff()) {
+      return Promise.resolve(false);
+    }
+    const throwOnError = Boolean(options?.throwOnError);
+    const requestSeq = overviewDiscoveryRequestSeq + 1;
+    overviewDiscoveryRequestSeq = requestSeq;
+    return fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
+      .then((response) => {
+        if (!response.ok) throw new Error('scan failed');
+        return response.json();
+      })
+      .then((data) => {
+        if (requestSeq !== overviewDiscoveryRequestSeq) return false;
+        if (overviewHandoffSheetOpen) return false;
+        renderDiscovery(data);
+        return true;
+      })
+      .catch((err) => {
+        if (requestSeq !== overviewDiscoveryRequestSeq) return false;
+        if (overviewHandoffSheetOpen) return false;
         discoverySection.hidden = true;
         if (throwOnError) throw err;
         return false;
@@ -4047,25 +4099,43 @@
     return window.apiJson(`/app/speakers/api/discovery/resolve-statement?${params}`);
   }
 
+  function hasOverviewHandoff() {
+    const context = window.SPEAKERS_CONTEXT || {};
+    return Boolean(
+      context.voiceClusterId
+      || statementHandoffComplete(context.statementHandoff || {})
+    );
+  }
+
+  function openOverviewHandoffCluster(clusterId) {
+    if (!openOverviewDiscoveryCluster(clusterId, null, {handoff: true})) {
+      showStatementHandoffNotice();
+      return false;
+    }
+    return true;
+  }
+
   async function handleOverviewHandoff() {
     const context = window.SPEAKERS_CONTEXT || {};
     hideStatementHandoffNotice();
     if (context.voiceClusterId) {
-      openOverviewDiscoveryCluster(context.voiceClusterId, null);
-      return;
+      return openOverviewHandoffCluster(context.voiceClusterId);
     }
     const handoff = context.statementHandoff || {};
-    if (!statementHandoffComplete(handoff)) return;
+    if (!statementHandoffComplete(handoff)) return false;
     try {
       const result = await resolveStatementHandoff(handoff);
       if (result.status === 'hit') {
-        openOverviewDiscoveryCluster(result.cluster_id, null);
-      } else if (result.status === 'miss') {
+        return openOverviewHandoffCluster(result.cluster_id);
+      }
+      if (result.status === 'miss' || result.status === 'cache_unavailable') {
         showStatementHandoffNotice();
       }
     } catch (err) {
       window.logError?.(err, { context: 'speakers-statement-handoff' });
+      showStatementHandoffNotice();
     }
+    return false;
   }
 
   function hideDayGrid() {
@@ -4136,8 +4206,10 @@
     loadOwner();
     loadQuality();
     loadKnown();
-    loadDiscovery().then((loaded) => {
-      if (loaded) handleOverviewHandoff();
+    loadDiscovery().then(() => {
+      return handleOverviewHandoff();
+    }).then(() => {
+      refreshDiscoveryScan();
     });
   }
 

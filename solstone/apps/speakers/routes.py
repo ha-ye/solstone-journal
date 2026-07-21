@@ -55,6 +55,7 @@ from solstone.apps.speakers.discovery import (
     get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
+    read_discovery_cache_snapshot,
     resolve_statement_cluster,
     undo_identify_operation,
 )
@@ -2297,6 +2298,12 @@ def api_discovery_scan() -> Any:
     """Scan for recurring unknown speaker clusters."""
     result = discover_unknown_speakers()
     return jsonify(result)
+
+
+@speakers_bp.route("/api/discovery/cache", methods=["GET"])
+def api_discovery_cache() -> Any:
+    """Return visible cached discovery clusters without scanning."""
+    return jsonify(read_discovery_cache_snapshot())
 
 
 @speakers_bp.route("/api/discovery/cluster/<int:cluster_id>/presence", methods=["GET"])
