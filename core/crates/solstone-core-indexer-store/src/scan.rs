@@ -702,12 +702,14 @@ fn index_file(
     let facet = metadata.facet.to_lowercase();
     let agent = produced
         .agent_override
+        .clone()
         .unwrap_or_else(|| metadata.agent.clone())
         .to_lowercase();
     let stream_lookup = extract_stream(journal, rel);
     let stream = stream_lookup.stream;
     let bucket = time_bucket(rel);
-    let warnings: Vec<String> = stream_lookup.warning.into_iter().collect();
+    let mut warnings = produced.warnings;
+    warnings.extend(stream_lookup.warning);
 
     for (idx, chunk) in produced.chunks.iter().enumerate() {
         let content = chunk.content.trim();
@@ -1886,6 +1888,27 @@ mod tests {
             0
         );
         fs::remove_dir_all(root).expect("cleanup mtime root");
+    }
+
+    #[test]
+    fn scan_propagates_markdown_sanitize_warnings() {
+        let root = temp_root("markdown-sanitize-warning");
+        let rel = "20260717/talents/flow.md";
+        write(
+            &root,
+            &format!("chronicle/{rel}"),
+            &format!("# Flow\n\n{}\n\nkept alpha", "z".repeat(2049)),
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan markdown warning");
+        assert_eq!(report.indexed, 1);
+        assert_eq!(
+            report.warnings,
+            vec!["Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"]
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(chunk_content(&conn, rel), "# Flow\n\nkept alpha");
+        fs::remove_dir_all(root).expect("cleanup markdown warning root");
     }
 
     #[test]

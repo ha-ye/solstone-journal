@@ -35,6 +35,153 @@ INDEX_DB_EXCLUSION_RELS = (
     "indexer/journal.sqlite-shm",
 )
 
+MARKDOWN_PARITY_CORPUS_FILES = (
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_list_01.md",
+        "index_path": "20240102/talents/parity_intro_list_01.md",
+        "structure": "intro paragraph before ordinary list",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_list_02.md",
+        "index_path": "20240102/talents/parity_intro_list_02.md",
+        "structure": "intro paragraph before ordinary list",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_list_03.md",
+        "index_path": "20240102/talents/parity_intro_list_03.md",
+        "structure": "intro paragraph before ordinary list",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_table_01.md",
+        "index_path": "20240102/talents/parity_intro_table_01.md",
+        "structure": "intro paragraph before three-row table",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_table_02.md",
+        "index_path": "20240102/talents/parity_intro_table_02.md",
+        "structure": "intro paragraph before three-row table",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_intro_table_03.md",
+        "index_path": "20240102/talents/parity_intro_table_03.md",
+        "structure": "intro paragraph before three-row table",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_definition_2_of_4.md",
+        "index_path": "20240102/talents/parity_definition_2_of_4.md",
+        "structure": "definition-list 2-of-4 grouping boundary",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_definition_2_of_5.md",
+        "index_path": "20240102/talents/parity_definition_2_of_5.md",
+        "structure": "definition-list 2-of-5 non-grouping boundary",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_blockquote.md",
+        "index_path": "20240102/talents/parity_blockquote.md",
+        "structure": "multi-paragraph blockquote",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_fenced_code.md",
+        "index_path": "20240102/talents/parity_fenced_code.md",
+        "structure": "fenced code with info string",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_loose_nested_list.md",
+        "index_path": "20240102/talents/parity_loose_nested_list.md",
+        "structure": "loose nested list",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_multiblock_item.md",
+        "index_path": "20240102/talents/parity_multiblock_item.md",
+        "structure": "list item containing two paragraphs",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_list_item_code.md",
+        "index_path": "20240102/talents/parity_list_item_code.md",
+        "structure": "list item containing a fenced code block",
+    },
+    {
+        "fixture_path": "chronicle/20240102/talents/parity_overlong_line.md",
+        "index_path": "20240102/talents/parity_overlong_line.md",
+        "structure": "single over-2048-char neutral line plus searchable paragraph",
+    },
+    {
+        "fixture_path": "facets/work/news/parity_news_intro_list.md",
+        "index_path": "facets/work/news/parity_news_intro_list.md",
+        "structure": "work/news intro paragraph before ordinary list",
+    },
+    {
+        "fixture_path": "facets/work/news/parity_news_intro_table.md",
+        "index_path": "facets/work/news/parity_news_intro_table.md",
+        "structure": "work/news intro paragraph before three-row table",
+    },
+    {
+        "fixture_path": "facets/work/news/parity_news_definition.md",
+        "index_path": "facets/work/news/parity_news_definition.md",
+        "structure": "work/news definition-list 2-of-4 grouping boundary",
+    },
+    {
+        "fixture_path": "facets/work/news/parity_news_code.md",
+        "index_path": "facets/work/news/parity_news_code.md",
+        "structure": "work/news fenced code with info string",
+    },
+)
+
+MARKDOWN_PARITY_FULLTEXT_QUERY_CASES = (
+    {
+        "name": "markdown_parity_single_term",
+        "query": "paritysignal",
+        "filters": {},
+        "reference_total": 35,
+        "reference_distinct_paths": 18,
+        "rationale": "single-term query over all markdown parity corpus files",
+    },
+    {
+        "name": "markdown_parity_and",
+        "query": "paritysignal AND matrixanchor",
+        "filters": {},
+        "reference_total": 35,
+        "reference_distinct_paths": 18,
+        "rationale": "explicit AND query over repeated parity corpus vocabulary",
+    },
+    {
+        "name": "markdown_parity_phrase",
+        "query": '"chunk balance"',
+        "filters": {},
+        "reference_total": 35,
+        "reference_distinct_paths": 18,
+        "rationale": "quoted phrase query over parity corpus markdown structures",
+    },
+    {
+        "name": "markdown_parity_prefix_code_info",
+        "query": "paritycode*",
+        "filters": {},
+        "reference_total": 3,
+        "reference_distinct_paths": 3,
+        "rationale": "prefix query proving fenced-code info strings remain searchable",
+    },
+    {
+        "name": "markdown_parity_work_news",
+        "query": "paritysignal",
+        "filters": {"facet": "work", "agent": "news"},
+        "reference_total": 8,
+        "reference_distinct_paths": 4,
+        "rationale": "query plus real work/news metadata filters on parity corpus",
+    },
+)
+
+MARKDOWN_PARITY_METADATA_FILTER_CASES = (
+    {
+        "name": "markdown_parity_work_news",
+        "query": "paritysignal",
+        "filters": {"facet": "work", "agent": "news"},
+        "reference_total": 8,
+        "reference_distinct_paths": 4,
+        "rationale": "metadata path-set case combining parity query, facet, and agent",
+    },
+)
+
 FULLTEXT_QUERY_CASES = (
     {
         "name": "single_term_authentication",

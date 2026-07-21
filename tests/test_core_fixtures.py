@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts import build_core_fixtures
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY
+from solstone.think import markdown as markdown_formatter
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
     COGITATE_READ_TOOL_NAMES,
@@ -54,6 +55,21 @@ def test_cogitate_core_fixture_matches_public_contract() -> None:
     }
 
 
+def test_markdown_core_fixture_matches_formatter_contract() -> None:
+    fixture = build_core_fixtures.build_markdown_chunks_fixture()
+
+    assert fixture["constraints"]["ascii_only"] is True
+    assert (
+        fixture["constraints"]["max_line_chars"] == markdown_formatter._MAX_LINE_CHARS
+    )
+    assert (
+        fixture["constraints"]["max_chunk_chars"] == markdown_formatter._MAX_CHUNK_CHARS
+    )
+    assert {case["id"] for case in fixture["cases"]} == {
+        case["id"] for case in build_core_fixtures._markdown_fixture_cases()
+    }
+
+
 def test_committed_core_fixtures_are_current() -> None:
     for path, expected in build_core_fixtures.expected_outputs().items():
         assert path.read_text(encoding="utf-8") == expected
@@ -69,6 +85,7 @@ def test_core_fixtures_check_reports_stale_paths(
     callosum_path = fixture_dir / "callosum_registry.json"
     cogitate_path = fixture_dir / "cogitate_contract.json"
     edge_schema_path = fixture_dir / "edge_schema.json"
+    markdown_chunks_path = fixture_dir / "markdown_chunks.json"
 
     monkeypatch.setattr(build_core_fixtures, "ROOT", root)
     monkeypatch.setattr(build_core_fixtures, "FIXTURE_DIR", fixture_dir)
@@ -76,6 +93,9 @@ def test_core_fixtures_check_reports_stale_paths(
     monkeypatch.setattr(build_core_fixtures, "COGITATE_ARTIFACT_PATH", cogitate_path)
     monkeypatch.setattr(
         build_core_fixtures, "EDGE_SCHEMA_ARTIFACT_PATH", edge_schema_path
+    )
+    monkeypatch.setattr(
+        build_core_fixtures, "MARKDOWN_CHUNKS_ARTIFACT_PATH", markdown_chunks_path
     )
 
     build_core_fixtures.write_outputs()

@@ -16,6 +16,7 @@ pub(super) fn render(rel: &str, records: &[JsonObject]) -> ProducedChunks {
     ProducedChunks {
         chunks,
         agent_override: Some(file_stem(rel).to_lowercase()),
+        warnings: Vec::new(),
     }
 }
 

@@ -21,7 +21,7 @@ use std::path::Path;
 use glob::{MatchOptions, Pattern};
 use serde_json::{Map, Value};
 
-use crate::chunker::chunk_markdown;
+use crate::chunker::format_markdown;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
@@ -51,6 +51,7 @@ pub struct IndexChunk {
 pub struct ProducedChunks {
     pub chunks: Vec<IndexChunk>,
     pub agent_override: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,26 +244,34 @@ pub(crate) fn patterns_for_root(root: PatternRoot) -> impl Iterator<Item = &'sta
 
 pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
     match family {
-        Family::Markdown => ProducedChunks {
-            chunks: chunk_markdown(text)
-                .into_iter()
-                .map(|chunk| IndexChunk {
-                    content: chunk.markdown,
-                })
-                .collect(),
-            agent_override: None,
-        },
+        Family::Markdown => {
+            let formatted = format_markdown(text);
+            ProducedChunks {
+                chunks: formatted
+                    .chunks
+                    .into_iter()
+                    .map(|chunk| IndexChunk {
+                        content: chunk.markdown,
+                    })
+                    .collect(),
+                agent_override: None,
+                warnings: formatted.warnings,
+            }
+        }
         Family::Event => ProducedChunks {
             chunks: events::render(&parse_jsonl_objects(text)),
             agent_override: Some("event".to_string()),
+            warnings: Vec::new(),
         },
         Family::Activity => ProducedChunks {
             chunks: activities::render(&parse_jsonl_objects(text)),
             agent_override: Some("activity".to_string()),
+            warnings: Vec::new(),
         },
         Family::ActionLog => ProducedChunks {
             chunks: action_logs::render(&parse_jsonl_objects(text)),
             agent_override: Some("action".to_string()),
+            warnings: Vec::new(),
         },
         Family::StructuredImport => imports::render(&parse_jsonl_objects(text)),
         Family::AiChat => ai_chat::render(rel, &parse_jsonl_objects(text)),
@@ -273,6 +282,7 @@ pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
         Family::Observation => ProducedChunks {
             chunks: observations::render(&parse_jsonl_objects(text)),
             agent_override: Some("observation".to_string()),
+            warnings: Vec::new(),
         },
         Family::Documents => documents::render(&parse_json_object(text)),
         Family::Screen => screen::render(&parse_json_object(text)),
@@ -405,7 +415,6 @@ fn truncate_string(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunker::chunk_markdown;
 
     #[test]
     fn classifies_indexable_families() {
@@ -545,20 +554,140 @@ mod tests {
     }
 
     #[test]
-    fn markdown_producer_wraps_chunker_without_content_changes() {
-        let text = "# Title\n\nIntro\n\n## Section\n\nBody";
-        let expected: Vec<String> = chunk_markdown(text)
-            .into_iter()
-            .map(|chunk| chunk.markdown)
-            .collect();
-        let produced = produce_chunks(Family::Markdown, "20240101/talents/flow.md", text);
-        let got: Vec<String> = produced
-            .chunks
-            .into_iter()
-            .map(|chunk| chunk.content)
-            .collect();
-        assert_eq!(got, expected);
+    fn markdown_producer_ports_grouping_rules() {
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            "# Tasks\n\nintro alpha\n\n- item one\n- item two\n",
+        );
+        assert_eq!(produced.chunks.len(), 2);
+        assert!(
+            produced
+                .chunks
+                .iter()
+                .all(|chunk| tokenizes_to(&chunk.content, &["tasks", "intro", "alpha", "item"]))
+        );
+        assert!(
+            !produced
+                .chunks
+                .iter()
+                .any(|chunk| chunk.content.trim() == "# Tasks\n\nintro alpha")
+        );
+
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            "# Tasks\n\n- item one\n- item two\n",
+        );
+        assert_eq!(produced.chunks.len(), 2);
+
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            "# Definitions\n\n- **alpha:** value one\n- ordinary note.\n- **beta:** value two\n- ordinary other.\n",
+        );
+        assert_eq!(produced.chunks.len(), 1);
+        assert_eq!(
+            tokens(&produced.chunks[0].content),
+            [
+                "definitions",
+                "alpha",
+                "value",
+                "one",
+                "ordinary",
+                "note",
+                "beta",
+                "value",
+                "two",
+                "ordinary",
+                "other"
+            ]
+        );
         assert_eq!(produced.agent_override, None);
+        assert!(produced.warnings.is_empty());
+    }
+
+    #[test]
+    fn markdown_producer_ports_table_and_heading_rules() {
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            "# Root\n\n## Matrix\n\nintro alpha\n\n| Name | Value |\n| --- | --- |\n| beta | one |\n| gamma | two |\n",
+        );
+        assert_eq!(produced.chunks.len(), 2);
+        assert_eq!(
+            tokens(&produced.chunks[0].content),
+            [
+                "root", "matrix", "intro", "alpha", "name", "value", "beta", "one"
+            ]
+        );
+        assert_eq!(
+            tokens(&produced.chunks[1].content),
+            [
+                "root", "matrix", "intro", "alpha", "name", "value", "gamma", "two"
+            ]
+        );
+
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            "# Root\n\n## Empty\n\n| Name | Value |\n| --- | --- |\n",
+        );
+        assert!(produced.chunks.is_empty());
+    }
+
+    #[test]
+    fn markdown_producer_drops_overlong_lines_and_stubs_oversized_chunks() {
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            &format!("# Long\n\n{}\n\nkept alpha\n", "z".repeat(2049)),
+        );
+        assert_eq!(produced.chunks.len(), 1);
+        assert_eq!(
+            produced.warnings,
+            vec!["Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"]
+        );
+        assert_eq!(
+            tokens(&produced.chunks[0].content),
+            ["long", "kept", "alpha"]
+        );
+
+        let oversized_line = "alpha ".repeat(300);
+        let produced = produce_chunks(
+            Family::Markdown,
+            "20240101/talents/flow.md",
+            &format!(
+                "# Big\n\n{}\n{}\n{}",
+                oversized_line, oversized_line, oversized_line
+            ),
+        );
+        assert_eq!(produced.chunks.len(), 1);
+        assert!(
+            produced.chunks[0]
+                .content
+                .contains("[Content too large to index:")
+        );
+        assert_eq!(
+            &tokens(&produced.chunks[0].content)[..6],
+            ["big", "content", "too", "large", "to", "index"]
+        );
+    }
+
+    fn tokens(text: &str) -> Vec<String> {
+        text.split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(|token| token.to_ascii_lowercase())
+            .collect()
+    }
+
+    fn tokenizes_to(text: &str, expected_prefix: &[&str]) -> bool {
+        tokens(text).starts_with(
+            &expected_prefix
+                .iter()
+                .map(|token| token.to_string())
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]

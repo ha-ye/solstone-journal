@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use glob::{Pattern, glob};
 
-use crate::chunker::chunk_markdown;
+use crate::chunker::format_markdown;
 use crate::paths::resolve_journal_path;
 use crate::segment::time_bucket;
 use crate::stream::extract_stream;
@@ -87,8 +87,11 @@ pub fn build_segment_aggregate(journal: &Path, rel_segment: &str) -> SegmentAggr
         .unwrap_or_default()
         .to_string();
     let bucket = time_bucket(rel_segment);
+    let formatted = format_markdown(&content);
+    warnings.extend(formatted.warnings);
+
     let mut rows = Vec::new();
-    for chunk in chunk_markdown(&content) {
+    for chunk in formatted.chunks {
         let content = chunk.markdown.trim();
         if content.is_empty() {
             continue;
@@ -141,5 +144,83 @@ fn collect_globbed_paths(
             Ok(path) => paths.push(path),
             Err(error) => warnings.push(format!("segment aggregate glob failed: {error}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("solstone-core-indexer-aggregate-{name}-{stamp}"))
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().expect("test path should have parent"))
+            .expect("create parent");
+        fs::write(path, text).expect("write test file");
+    }
+
+    #[test]
+    fn aggregate_uses_markdown_formatter_cardinality_and_tokens() {
+        let root = temp_root("markdown-cardinality");
+        write(
+            &root,
+            "chronicle/20240102/default/090000_300/talents/audio.md",
+            "# Audio\n\nintro alpha\n\n- item one\n- item two\n",
+        );
+
+        let aggregate = build_segment_aggregate(&root, "20240102/default/090000_300");
+
+        assert!(aggregate.complete);
+        assert!(aggregate.warnings.is_empty());
+        assert_eq!(aggregate.rows.len(), 2);
+        assert_eq!(
+            tokens(&aggregate.rows[0].content),
+            ["audio", "intro", "alpha", "item", "one"]
+        );
+        assert_eq!(
+            tokens(&aggregate.rows[1].content),
+            ["audio", "intro", "alpha", "item", "two"]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup aggregate root");
+    }
+
+    #[test]
+    fn aggregate_retains_markdown_formatter_warnings() {
+        let root = temp_root("markdown-warning");
+        write(
+            &root,
+            "chronicle/20240102/default/090000_300/talents/audio.md",
+            &format!("# Audio\n\n{}\n\nkept alpha\n", "z".repeat(2049)),
+        );
+
+        let aggregate = build_segment_aggregate(&root, "20240102/default/090000_300");
+
+        assert_eq!(
+            aggregate.warnings,
+            vec!["Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"]
+        );
+        assert_eq!(aggregate.rows.len(), 1);
+        assert_eq!(
+            tokens(&aggregate.rows[0].content),
+            ["audio", "kept", "alpha"]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup aggregate root");
+    }
+
+    fn tokens(text: &str) -> Vec<String> {
+        text.split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(|token| token.to_ascii_lowercase())
+            .collect()
     }
 }

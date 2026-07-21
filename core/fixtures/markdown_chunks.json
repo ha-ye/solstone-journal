@@ -1,0 +1,556 @@
+{
+  "cases": [
+    {
+      "chunk_count": 0,
+      "chunks": [],
+      "id": "empty",
+      "input": "",
+      "warnings": []
+    },
+    {
+      "chunk_count": 0,
+      "chunks": [],
+      "id": "whitespace_only",
+      "input": " \n\t\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 0,
+      "chunks": [],
+      "id": "heading_only",
+      "input": "# Heading\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 0,
+      "chunks": [],
+      "id": "thematic_break_only",
+      "input": "---\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 0,
+      "chunks": [],
+      "id": "header_only_table",
+      "input": "| Name | Value |\n| --- | --- |\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Root\n\n## Child\n\nalpha paragraph\n",
+          "tokens": [
+            "root",
+            "child",
+            "alpha",
+            "paragraph"
+          ]
+        },
+        {
+          "markdown": "# Root\n\n## Child\n\n### Leaf\n\nbeta paragraph\n",
+          "tokens": [
+            "root",
+            "child",
+            "leaf",
+            "beta",
+            "paragraph"
+          ]
+        }
+      ],
+      "id": "nested_heading_context",
+      "input": "# Root\n\n## Child\n\nalpha paragraph\n\n### Leaf\n\nbeta paragraph\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Notes\n\nalpha paragraph\n",
+          "tokens": [
+            "notes",
+            "alpha",
+            "paragraph"
+          ]
+        },
+        {
+          "markdown": "# Notes\n\nbeta paragraph\n",
+          "tokens": [
+            "notes",
+            "beta",
+            "paragraph"
+          ]
+        }
+      ],
+      "id": "ordinary_paragraphs",
+      "input": "# Notes\n\nalpha paragraph\n\nbeta paragraph\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Tasks\n\n- alpha item\n",
+          "tokens": [
+            "tasks",
+            "alpha",
+            "item"
+          ]
+        },
+        {
+          "markdown": "# Tasks\n\n- beta item\n",
+          "tokens": [
+            "tasks",
+            "beta",
+            "item"
+          ]
+        }
+      ],
+      "id": "ordinary_list",
+      "input": "# Tasks\n\n- alpha item\n- beta item\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Tasks\n\nintro alpha\n\n- alpha item\n",
+          "tokens": [
+            "tasks",
+            "intro",
+            "alpha",
+            "alpha",
+            "item"
+          ]
+        },
+        {
+          "markdown": "# Tasks\n\nintro alpha\n\n- beta item\n",
+          "tokens": [
+            "tasks",
+            "intro",
+            "alpha",
+            "beta",
+            "item"
+          ]
+        }
+      ],
+      "id": "intro_list",
+      "input": "# Tasks\n\nintro alpha\n\n- alpha item\n- beta item\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Metrics\n\nintro alpha\n\n| Name | Value |\n| --- | --- |\n| alpha | one |\n",
+          "tokens": [
+            "metrics",
+            "intro",
+            "alpha",
+            "name",
+            "value",
+            "alpha",
+            "one"
+          ]
+        },
+        {
+          "markdown": "# Metrics\n\nintro alpha\n\n| Name | Value |\n| --- | --- |\n| beta | two |\n",
+          "tokens": [
+            "metrics",
+            "intro",
+            "alpha",
+            "name",
+            "value",
+            "beta",
+            "two"
+          ]
+        }
+      ],
+      "id": "intro_table",
+      "input": "# Metrics\n\nintro alpha\n\n| Name | Value |\n| --- | --- |\n| alpha | one |\n| beta | two |\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Definitions\n\n- **alpha:** value one\n- ordinary note.\n- **beta:** value two\n- ordinary other.\n",
+          "tokens": [
+            "definitions",
+            "alpha",
+            "value",
+            "one",
+            "ordinary",
+            "note",
+            "beta",
+            "value",
+            "two",
+            "ordinary",
+            "other"
+          ]
+        }
+      ],
+      "id": "definition_2_of_4",
+      "input": "# Definitions\n\n- **alpha:** value one\n- ordinary note.\n- **beta:** value two\n- ordinary other.\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 5,
+      "chunks": [
+        {
+          "markdown": "# Boundary\n\n- **alpha:** value one\n",
+          "tokens": [
+            "boundary",
+            "alpha",
+            "value",
+            "one"
+          ]
+        },
+        {
+          "markdown": "# Boundary\n\n- ordinary note.\n",
+          "tokens": [
+            "boundary",
+            "ordinary",
+            "note"
+          ]
+        },
+        {
+          "markdown": "# Boundary\n\n- **beta:** value two\n",
+          "tokens": [
+            "boundary",
+            "beta",
+            "value",
+            "two"
+          ]
+        },
+        {
+          "markdown": "# Boundary\n\n- ordinary other.\n",
+          "tokens": [
+            "boundary",
+            "ordinary",
+            "other"
+          ]
+        },
+        {
+          "markdown": "# Boundary\n\n- ordinary final.\n",
+          "tokens": [
+            "boundary",
+            "ordinary",
+            "final"
+          ]
+        }
+      ],
+      "id": "definition_2_of_5",
+      "input": "# Boundary\n\n- **alpha:** value one\n- ordinary note.\n- **beta:** value two\n- ordinary other.\n- ordinary final.\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "markdown": "# Boundary\n\n- **alpha:** value one\n",
+          "tokens": [
+            "boundary",
+            "alpha",
+            "value",
+            "one"
+          ]
+        },
+        {
+          "markdown": "# Boundary\n\n- ordinary note.\n",
+          "tokens": [
+            "boundary",
+            "ordinary",
+            "note"
+          ]
+        }
+      ],
+      "id": "definition_1_of_2",
+      "input": "# Boundary\n\n- **alpha:** value one\n- ordinary note.\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 3,
+      "chunks": [
+        {
+          "markdown": "# Matrix\n\n| Name | Value |\n| --- | --- |\n| alpha | one |\n",
+          "tokens": [
+            "matrix",
+            "name",
+            "value",
+            "alpha",
+            "one"
+          ]
+        },
+        {
+          "markdown": "# Matrix\n\n| Name | Value |\n| --- | --- |\n| beta | two |\n",
+          "tokens": [
+            "matrix",
+            "name",
+            "value",
+            "beta",
+            "two"
+          ]
+        },
+        {
+          "markdown": "# Matrix\n\n| Name | Value |\n| --- | --- |\n| gamma | three |\n",
+          "tokens": [
+            "matrix",
+            "name",
+            "value",
+            "gamma",
+            "three"
+          ]
+        }
+      ],
+      "id": "multi_row_table",
+      "input": "# Matrix\n\n| Name | Value |\n| --- | --- |\n| alpha | one |\n| beta | two |\n| gamma | three |\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Code\n\n```python\nprint('alpha')\n```\n",
+          "tokens": [
+            "code",
+            "python",
+            "print",
+            "alpha"
+          ]
+        }
+      ],
+      "id": "fenced_code_info",
+      "input": "# Code\n\n```python\nprint('alpha')\n```\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Quote\n\n> alpha quote\n> \n> beta quote\n",
+          "tokens": [
+            "quote",
+            "alpha",
+            "quote",
+            "beta",
+            "quote"
+          ]
+        }
+      ],
+      "id": "blockquote_multi_paragraph",
+      "input": "# Quote\n\n> alpha quote\n>\n> beta quote\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Long\n\nkept alpha\n",
+          "tokens": [
+            "long",
+            "kept",
+            "alpha"
+          ]
+        }
+      ],
+      "id": "overlong_line",
+      "input": "# Long\n\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n\nkept alpha\n",
+      "warnings": [
+        "Dropped 1 line(s) exceeding 2048 chars during markdown sanitization"
+      ]
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Big\n\n\n[Content too large to index: 5,407 chars]",
+          "normalizations": [
+            "oversized_size"
+          ],
+          "tokens": [
+            "big",
+            "content",
+            "too",
+            "large",
+            "to",
+            "index",
+            "normalizedsize",
+            "chars"
+          ]
+        }
+      ],
+      "id": "oversized_chunk",
+      "input": "# Big\n\nalpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha \nalpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha \nalpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha \n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Nested\n\n- parent alpha\n\n  - child beta\n",
+          "tokens": [
+            "nested",
+            "parent",
+            "alpha",
+            "child",
+            "beta"
+          ]
+        }
+      ],
+      "id": "loose_nested_list",
+      "input": "# Nested\n\n- parent alpha\n\n  - child beta\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Loose\n\n- first alpha\n\n  second beta\n",
+          "tokens": [
+            "loose",
+            "first",
+            "alpha",
+            "second",
+            "beta"
+          ]
+        }
+      ],
+      "id": "two_paragraph_list_item",
+      "input": "# Loose\n\n- first alpha\n\n  second beta\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Item Code\n\n- alpha before\n\n  ```python\n  print('beta')\n  ```\n",
+          "tokens": [
+            "item",
+            "code",
+            "alpha",
+            "before",
+            "python",
+            "print",
+            "beta"
+          ]
+        }
+      ],
+      "id": "list_item_fenced_code",
+      "input": "# Item Code\n\n- alpha before\n\n  ```python\n  print('beta')\n  ```\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Link\n\n[alpha](https://example.com/path/to-beta?q=gamma)\n",
+          "tokens": [
+            "link",
+            "alpha",
+            "https",
+            "example",
+            "com",
+            "path",
+            "to",
+            "beta",
+            "q",
+            "gamma"
+          ]
+        }
+      ],
+      "id": "inline_link",
+      "input": "# Link\n\n[alpha](https://example.com/path/to-beta?q=gamma)\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Image\n\n![alt text](images/pic-alpha.png \"title beta\")\n",
+          "tokens": [
+            "image",
+            "alt",
+            "text",
+            "images",
+            "pic",
+            "alpha",
+            "png",
+            "title",
+            "beta"
+          ]
+        }
+      ],
+      "id": "inline_image",
+      "input": "# Image\n\n![alt text](images/pic-alpha.png \"title beta\")\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Auto\n\n<https://example.com/path?q=gamma>\n",
+          "tokens": [
+            "auto",
+            "https",
+            "example",
+            "com",
+            "path",
+            "q",
+            "gamma"
+          ]
+        }
+      ],
+      "id": "autolink",
+      "input": "# Auto\n\n<https://example.com/path?q=gamma>\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Reference\n\n[alpha][ref]\n",
+          "tokens": [
+            "reference",
+            "alpha",
+            "ref"
+          ]
+        }
+      ],
+      "id": "reference_link",
+      "input": "# Reference\n\n[alpha][ref]\n\n[ref]: https://example.com/path \"title beta\"\n",
+      "warnings": []
+    },
+    {
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "markdown": "# Html\n\nalpha <span>beta</span> gamma\n",
+          "tokens": [
+            "html",
+            "alpha",
+            "span",
+            "beta",
+            "span",
+            "gamma"
+          ]
+        }
+      ],
+      "id": "inline_html",
+      "input": "# Html\n\nalpha <span>beta</span> gamma\n",
+      "warnings": []
+    }
+  ],
+  "constraints": {
+    "ascii_only": true,
+    "max_chunk_chars": 4096,
+    "max_line_chars": 2048,
+    "normalizations": {
+      "oversized_size": "replace content-too-large size number tokens with normalizedsize"
+    },
+    "tokenizer": "sqlite fts5(content) with fts5vocab(chunks, 'instance') ordered by doc, offset"
+  },
+  "fixture": "solstone-markdown-chunks",
+  "fixture_version": 1,
+  "generated_by": "make core-fixtures"
+}

@@ -90,6 +90,10 @@ MARKDOWN_SANITIZE_RE = re.compile(
     r"^WARNING:solstone\.think\.markdown:"
     r"Dropped \d+ line\(s\) exceeding \d+ chars during markdown sanitization$"
 )
+NATIVE_MARKDOWN_SANITIZE_RULE = "native_markdown_sanitize_drop"
+NATIVE_MARKDOWN_SANITIZE_RE = re.compile(
+    r"^warning: Dropped \d+ line\(s\) exceeding 2048 chars during markdown sanitization$"
+)
 EXCLUDED_SHADOW_TABLES = [
     "chunks_config",
     "chunks_content",
@@ -286,6 +290,11 @@ def _record_rule_hit(rule: dict[str, Any], line: str) -> None:
 def classify_stderr(stderr: str) -> dict[str, Any]:
     edge_rule = {"name": EDGE_SKIP_RULE, "count": 0, "examples": []}
     markdown_rule = {"name": MARKDOWN_SANITIZE_RULE, "count": 0, "examples": []}
+    native_markdown_rule = {
+        "name": NATIVE_MARKDOWN_SANITIZE_RULE,
+        "count": 0,
+        "examples": [],
+    }
     unclassified: list[str] = []
     for line in stderr.splitlines():
         if not line.strip():
@@ -294,9 +303,14 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
             _record_rule_hit(edge_rule, line)
         elif MARKDOWN_SANITIZE_RE.match(line):
             _record_rule_hit(markdown_rule, line)
+        elif NATIVE_MARKDOWN_SANITIZE_RE.match(line):
+            _record_rule_hit(native_markdown_rule, line)
         else:
             unclassified.append(line)
-    return {"rules": [edge_rule, markdown_rule], "unclassified": unclassified}
+    return {
+        "rules": [edge_rule, markdown_rule, native_markdown_rule],
+        "unclassified": unclassified,
+    }
 
 
 def _database_check(journal: Path) -> dict[str, Any]:
@@ -821,11 +835,12 @@ def _compare_metadata_case(
 
 
 def _compare_metadata_filters(
-    left_journal: Path, right_journal: Path
+    left_journal: Path,
+    right_journal: Path,
+    cases: tuple[dict[str, Any], ...] = METADATA_FILTER_CASES,
 ) -> dict[str, Any]:
     cases = [
-        _compare_metadata_case(left_journal, right_journal, case)
-        for case in METADATA_FILTER_CASES
+        _compare_metadata_case(left_journal, right_journal, case) for case in cases
     ]
     return {"passed": all(case["equal"] for case in cases), "cases": cases}
 
@@ -903,10 +918,13 @@ def _compare_fulltext_case(
     return report
 
 
-def _compare_fulltext(left_journal: Path, right_journal: Path) -> dict[str, Any]:
+def _compare_fulltext(
+    left_journal: Path,
+    right_journal: Path,
+    cases: tuple[dict[str, Any], ...] = FULLTEXT_QUERY_CASES,
+) -> dict[str, Any]:
     cases = [
-        _compare_fulltext_case(left_journal, right_journal, case)
-        for case in FULLTEXT_QUERY_CASES
+        _compare_fulltext_case(left_journal, right_journal, case) for case in cases
     ]
     return {"passed": all(case["passed"] for case in cases), "cases": cases}
 
@@ -915,6 +933,9 @@ def compare_functional(
     left_db: Path,
     right_db: Path,
     scratch_root: Path,
+    *,
+    fulltext_cases: tuple[dict[str, Any], ...] = FULLTEXT_QUERY_CASES,
+    metadata_cases: tuple[dict[str, Any], ...] = METADATA_FILTER_CASES,
 ) -> dict[str, Any]:
     left_direct, left_search = _snapshot_functional_side(
         left_db,
@@ -929,8 +950,12 @@ def compare_functional(
 
     files = _compare_functional_files(left_direct, right_direct)
     chunk_coverage = _compare_functional_coverage(left_direct, right_direct)
-    metadata_filters = _compare_metadata_filters(left_search, right_search)
-    fulltext = _compare_fulltext(left_search, right_search)
+    metadata_filters = _compare_metadata_filters(
+        left_search,
+        right_search,
+        metadata_cases,
+    )
+    fulltext = _compare_fulltext(left_search, right_search, fulltext_cases)
     edges = _compare_functional_edges(left_direct, right_direct)
 
     component_passes = {
@@ -971,6 +996,8 @@ def run_differential(
     seed: int | None = None,
     mode: str = "byte",
     copy_mode: str = "git",
+    fulltext_cases: tuple[dict[str, Any], ...] = FULLTEXT_QUERY_CASES,
+    metadata_cases: tuple[dict[str, Any], ...] = METADATA_FILTER_CASES,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"unknown differential mode: {mode!r}")
@@ -1026,6 +1053,8 @@ def run_differential(
             Path(commands[0]["checks"]["database"]["db_path"]),
             Path(commands[1]["checks"]["database"]["db_path"]),
             work_root / "functional",
+            fulltext_cases=fulltext_cases,
+            metadata_cases=metadata_cases,
         )
         report["classification"] = comparison["classification"]
         report["functional"] = comparison["functional"]

@@ -13,6 +13,7 @@ pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
         return ProducedChunks {
             chunks: Vec::new(),
             agent_override: None,
+            warnings: Vec::new(),
         };
     };
     let source = header
@@ -34,6 +35,7 @@ pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
     ProducedChunks {
         chunks,
         agent_override: Some(format!("import.{source}")),
+        warnings: Vec::new(),
     }
 }
 

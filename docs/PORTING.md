@@ -103,6 +103,9 @@ guaranteed to be UTF-8, so ports must not use `.to_str().unwrap()`.
 `scripts/build_core_fixtures.py` generates Rust-facing fixtures under
 `core/fixtures/`.
 
+`core/fixtures/markdown_chunks.json` pins Python markdown chunking/token output
+for the Rust markdown indexer port.
+
 `tests/verify_indexer_differential.py` runs the indexer differential harness and
 writes its report under the harness work directory unless `--report` is supplied.
 

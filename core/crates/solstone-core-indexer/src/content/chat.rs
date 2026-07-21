@@ -55,6 +55,7 @@ pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
     ProducedChunks {
         chunks,
         agent_override: Some("chat".to_string()),
+        warnings: Vec::new(),
     }
 }
 

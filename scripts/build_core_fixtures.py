@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY
+from solstone.think import markdown as markdown_formatter
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
     COGITATE_READ_TOOL_NAMES,
@@ -30,6 +32,9 @@ FIXTURE_DIR = ROOT / "core" / "fixtures"
 CALLOSUM_ARTIFACT_PATH = FIXTURE_DIR / "callosum_registry.json"
 COGITATE_ARTIFACT_PATH = FIXTURE_DIR / "cogitate_contract.json"
 EDGE_SCHEMA_ARTIFACT_PATH = FIXTURE_DIR / "edge_schema.json"
+MARKDOWN_CHUNKS_ARTIFACT_PATH = FIXTURE_DIR / "markdown_chunks.json"
+OVERSIZED_SIZE_NORMALIZATION = "oversized_size"
+OVERSIZED_SIZE_TOKEN = "normalizedsize"
 
 
 def build_callosum_registry_fixture() -> dict[str, Any]:
@@ -116,6 +121,253 @@ def build_edge_schema_fixture() -> dict[str, Any]:
         conn.close()
 
 
+def _markdown_fixture_cases() -> list[dict[str, str]]:
+    long_line = "z" * (markdown_formatter._MAX_LINE_CHARS + 1)
+    oversized_line = "alpha " * 300
+    oversized_body = "\n".join([oversized_line] * 3)
+    return [
+        {"id": "empty", "input": ""},
+        {"id": "whitespace_only", "input": " \n\t\n"},
+        {"id": "heading_only", "input": "# Heading\n"},
+        {"id": "thematic_break_only", "input": "---\n"},
+        {
+            "id": "header_only_table",
+            "input": "| Name | Value |\n| --- | --- |\n",
+        },
+        {
+            "id": "nested_heading_context",
+            "input": "# Root\n\n## Child\n\nalpha paragraph\n\n### Leaf\n\nbeta paragraph\n",
+        },
+        {
+            "id": "ordinary_paragraphs",
+            "input": "# Notes\n\nalpha paragraph\n\nbeta paragraph\n",
+        },
+        {
+            "id": "ordinary_list",
+            "input": "# Tasks\n\n- alpha item\n- beta item\n",
+        },
+        {
+            "id": "intro_list",
+            "input": "# Tasks\n\nintro alpha\n\n- alpha item\n- beta item\n",
+        },
+        {
+            "id": "intro_table",
+            "input": (
+                "# Metrics\n\nintro alpha\n\n"
+                "| Name | Value |\n| --- | --- |\n| alpha | one |\n| beta | two |\n"
+            ),
+        },
+        {
+            "id": "definition_2_of_4",
+            "input": (
+                "# Definitions\n\n"
+                "- **alpha:** value one\n"
+                "- ordinary note.\n"
+                "- **beta:** value two\n"
+                "- ordinary other.\n"
+            ),
+        },
+        {
+            "id": "definition_2_of_5",
+            "input": (
+                "# Boundary\n\n"
+                "- **alpha:** value one\n"
+                "- ordinary note.\n"
+                "- **beta:** value two\n"
+                "- ordinary other.\n"
+                "- ordinary final.\n"
+            ),
+        },
+        {
+            "id": "definition_1_of_2",
+            "input": "# Boundary\n\n- **alpha:** value one\n- ordinary note.\n",
+        },
+        {
+            "id": "multi_row_table",
+            "input": (
+                "# Matrix\n\n"
+                "| Name | Value |\n| --- | --- |\n"
+                "| alpha | one |\n| beta | two |\n| gamma | three |\n"
+            ),
+        },
+        {
+            "id": "fenced_code_info",
+            "input": "# Code\n\n```python\nprint('alpha')\n```\n",
+        },
+        {
+            "id": "blockquote_multi_paragraph",
+            "input": "# Quote\n\n> alpha quote\n>\n> beta quote\n",
+        },
+        {
+            "id": "overlong_line",
+            "input": f"# Long\n\n{long_line}\n\nkept alpha\n",
+        },
+        {
+            "id": "oversized_chunk",
+            "input": f"# Big\n\n{oversized_body}\n",
+        },
+        {
+            "id": "loose_nested_list",
+            "input": "# Nested\n\n- parent alpha\n\n  - child beta\n",
+        },
+        {
+            "id": "two_paragraph_list_item",
+            "input": "# Loose\n\n- first alpha\n\n  second beta\n",
+        },
+        {
+            "id": "list_item_fenced_code",
+            "input": "# Item Code\n\n- alpha before\n\n  ```python\n  print('beta')\n  ```\n",
+        },
+        {
+            "id": "inline_link",
+            "input": "# Link\n\n[alpha](https://example.com/path/to-beta?q=gamma)\n",
+        },
+        {
+            "id": "inline_image",
+            "input": '# Image\n\n![alt text](images/pic-alpha.png "title beta")\n',
+        },
+        {
+            "id": "autolink",
+            "input": "# Auto\n\n<https://example.com/path?q=gamma>\n",
+        },
+        {
+            "id": "reference_link",
+            "input": '# Reference\n\n[alpha][ref]\n\n[ref]: https://example.com/path "title beta"\n',
+        },
+        {
+            "id": "inline_html",
+            "input": "# Html\n\nalpha <span>beta</span> gamma\n",
+        },
+    ]
+
+
+class _WarningCapture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+def _format_markdown_with_warnings(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    logger = logging.getLogger(markdown_formatter.__name__)
+    handler = _WarningCapture()
+    logger.addHandler(handler)
+    try:
+        chunks, _meta = markdown_formatter.format_markdown(text)
+    finally:
+        logger.removeHandler(handler)
+    return chunks, handler.messages
+
+
+def _fts5_tokens(chunks: list[str]) -> list[list[str]]:
+    tokens: list[list[str]] = [[] for _chunk in chunks]
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE VIRTUAL TABLE chunks USING fts5(content)")
+        conn.executemany(
+            "INSERT INTO chunks(content) VALUES (?)",
+            [(chunk,) for chunk in chunks],
+        )
+        conn.execute("CREATE VIRTUAL TABLE vocab USING fts5vocab(chunks, 'instance')")
+        rows = conn.execute(
+            "SELECT doc, offset, term FROM vocab ORDER BY doc, offset"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for doc, _offset, term in rows:
+        tokens[int(doc) - 1].append(str(term))
+    return tokens
+
+
+def _normalize_oversized_size_tokens(tokens: list[str]) -> list[str]:
+    normalized: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if i + 5 < len(tokens) and tokens[i : i + 5] == [
+            "content",
+            "too",
+            "large",
+            "to",
+            "index",
+        ]:
+            normalized.extend(tokens[i : i + 5])
+            j = i + 5
+            while j < len(tokens) and tokens[j] != "chars":
+                j += 1
+            if j < len(tokens):
+                normalized.append(OVERSIZED_SIZE_TOKEN)
+                normalized.append("chars")
+                i = j + 1
+                continue
+        normalized.append(tokens[i])
+        i += 1
+    return normalized
+
+
+def _normalize_tokens(tokens: list[str], normalizations: list[str]) -> list[str]:
+    if OVERSIZED_SIZE_NORMALIZATION in normalizations:
+        tokens = _normalize_oversized_size_tokens(tokens)
+    return tokens
+
+
+def build_markdown_chunks_fixture() -> dict[str, Any]:
+    cases = []
+    for case in _markdown_fixture_cases():
+        if not case["input"].isascii():
+            raise RuntimeError(f"markdown fixture case is not ASCII-only: {case['id']}")
+        chunks, warnings = _format_markdown_with_warnings(case["input"])
+        rendered = [chunk["markdown"] for chunk in chunks]
+        tokens_by_chunk = _fts5_tokens(rendered)
+        chunk_entries = []
+        for markdown, tokens in zip(rendered, tokens_by_chunk, strict=True):
+            normalizations = (
+                [OVERSIZED_SIZE_NORMALIZATION]
+                if "[Content too large to index:" in markdown
+                else []
+            )
+            entry: dict[str, Any] = {
+                "markdown": markdown,
+                "tokens": _normalize_tokens(tokens, normalizations),
+            }
+            if normalizations:
+                entry["normalizations"] = normalizations
+            chunk_entries.append(entry)
+        cases.append(
+            {
+                "id": case["id"],
+                "input": case["input"],
+                "chunk_count": len(chunks),
+                "warnings": warnings,
+                "chunks": chunk_entries,
+            }
+        )
+
+    return {
+        "fixture": "solstone-markdown-chunks",
+        "fixture_version": 1,
+        "generated_by": "make core-fixtures",
+        "constraints": {
+            "ascii_only": True,
+            "max_line_chars": markdown_formatter._MAX_LINE_CHARS,
+            "max_chunk_chars": markdown_formatter._MAX_CHUNK_CHARS,
+            "normalizations": {
+                OVERSIZED_SIZE_NORMALIZATION: (
+                    "replace content-too-large size number tokens with "
+                    f"{OVERSIZED_SIZE_TOKEN}"
+                )
+            },
+            "tokenizer": (
+                "sqlite fts5(content) with fts5vocab(chunks, 'instance') "
+                "ordered by doc, offset"
+            ),
+        },
+        "cases": cases,
+    }
+
+
 def render_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -125,6 +377,7 @@ def expected_outputs() -> dict[Path, str]:
         CALLOSUM_ARTIFACT_PATH: render_json(build_callosum_registry_fixture()),
         COGITATE_ARTIFACT_PATH: render_json(build_cogitate_contract_fixture()),
         EDGE_SCHEMA_ARTIFACT_PATH: render_json(build_edge_schema_fixture()),
+        MARKDOWN_CHUNKS_ARTIFACT_PATH: render_json(build_markdown_chunks_fixture()),
     }
 
 

@@ -371,12 +371,32 @@ def test_stderr_classifier_allows_markdown_sanitize_warning() -> None:
     assert classified["unclassified"] == []
 
 
+def test_stderr_classifier_allows_native_markdown_sanitize_warning() -> None:
+    stderr = "\n".join(
+        [
+            "warning: Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
+            "warning: Dropped 5 line(s) exceeding 2048 chars during markdown sanitization",
+        ]
+    )
+    classified = harness.classify_stderr(stderr)
+    native_markdown_rule = next(
+        rule
+        for rule in classified["rules"]
+        if rule["name"] == harness.NATIVE_MARKDOWN_SANITIZE_RULE
+    )
+    assert native_markdown_rule["count"] == 2
+    assert native_markdown_rule["examples"] == stderr.splitlines()
+    assert classified["unclassified"] == []
+
+
 def test_stderr_classifier_rejects_markdown_near_misses() -> None:
     stderr = "\n".join(
         [
             "ERROR:solstone.think.markdown:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
             "WARNING:solstone.think.other:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
             "WARNING:solstone.think.markdown:Some unrelated warning",
+            "warning: Dropped 1 line(s) exceeding 4096 chars during markdown sanitization",
+            "warning: dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
             "WARNING:some.other.module:generic warning",
         ]
     )
