@@ -80,6 +80,8 @@ def load_discovery_cache() -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(data, dict):
+        return None
     clusters = data.get("clusters")
     return data if isinstance(clusters, dict) else None
 
@@ -321,6 +323,119 @@ def _conversation_key(
     return (day, stream, "__segment__", segment_key)
 
 
+@dataclass(frozen=True)
+class _ClusterConversationContext:
+    distinct_segments: tuple[tuple[str, str, str], ...]
+    first_record_by_segment: dict[tuple[str, str, str], dict[str, Any]]
+    segment_settings: dict[tuple[str, str, str], str | None]
+    conversation_keys: dict[tuple[str, str, str], tuple]
+    conversation_count: int
+
+
+def _normalized_cache_member(member: Any) -> dict[str, Any] | None:
+    if not isinstance(member, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for field in ("day", "stream", "segment_key", "source"):
+        value = member.get(field)
+        if not isinstance(value, str) or not value:
+            return None
+        normalized[field] = value
+    try:
+        normalized["sentence_id"] = int(member["sentence_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return normalized
+
+
+def _cluster_conversation_context(
+    members: list[dict[str, Any]],
+) -> _ClusterConversationContext:
+    distinct_segments: list[tuple[str, str, str]] = []
+    first_record_by_segment: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for member in members:
+        normalized = _normalized_cache_member(member)
+        if normalized is None:
+            continue
+        segment = (
+            normalized["day"],
+            normalized["stream"],
+            normalized["segment_key"],
+        )
+        if segment in first_record_by_segment:
+            continue
+        first_record_by_segment[segment] = normalized
+        distinct_segments.append(segment)
+
+    segment_settings: dict[tuple[str, str, str], str | None] = {}
+    conversation_keys: dict[tuple[str, str, str], tuple] = {}
+    for day, stream, segment_key in distinct_segments:
+        seg_dir = segment_path(day, segment_key, stream, create=False)
+        setting = _load_setting_field(seg_dir)
+        segment = (day, stream, segment_key)
+        segment_settings[segment] = setting
+        conversation_keys[segment] = _conversation_key(
+            day,
+            stream,
+            segment_key,
+            setting,
+        )
+
+    conversations = set(conversation_keys.values())
+    return _ClusterConversationContext(
+        distinct_segments=tuple(distinct_segments),
+        first_record_by_segment=first_record_by_segment,
+        segment_settings=segment_settings,
+        conversation_keys=conversation_keys,
+        conversation_count=len(conversations),
+    )
+
+
+def get_cluster_conversation_count(members: list[dict[str, Any]]) -> int:
+    """Return distinct conversation count for valid discovery-cache members."""
+    return _cluster_conversation_context(members).conversation_count
+
+
+def resolve_statement_cluster(
+    *,
+    day: str,
+    stream: str,
+    segment_key: str,
+    source: str,
+    sentence_id: int,
+) -> dict[str, Any]:
+    """Resolve one statement identity to a discovery cluster in the current cache."""
+    cache = load_discovery_cache()
+    if cache is None:
+        return {"status": "cache_unavailable", "cluster_id": None}
+
+    clusters = cache.get("clusters", {})
+    eligible: list[tuple[int, list[dict[str, Any]]]] = []
+    for raw_cluster_id, members in clusters.items():
+        try:
+            cluster_id = int(raw_cluster_id)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(members, list):
+            eligible.append((cluster_id, members))
+
+    for cluster_id, members in sorted(eligible, key=lambda item: item[0]):
+        for member in members:
+            normalized = _normalized_cache_member(member)
+            if normalized is None:
+                continue
+            if (
+                normalized["day"] == day
+                and normalized["stream"] == stream
+                and normalized["segment_key"] == segment_key
+                and normalized["source"] == source
+                and normalized["sentence_id"] == sentence_id
+            ):
+                return {"status": "hit", "cluster_id": cluster_id}
+
+    return {"status": "miss", "cluster_id": None}
+
+
 def _voiceprints_exist(entity_id: str) -> bool:
     return (Path(get_journal()) / "entities" / entity_id / "voiceprints.npz").exists()
 
@@ -349,32 +464,15 @@ def get_cluster_presence(cluster_id: int) -> dict[str, Any] | None:
     if cache is None:
         return None
     members = cache.get("clusters", {}).get(str(cluster_id))
-    if not members:
+    if not isinstance(members, list) or not members:
         return None
 
     _, load_speaker_labels, _, _, _ = _routes_helpers()
-
-    distinct_segments: list[tuple[str, str, str]] = []
-    first_record_by_segment: dict[tuple[str, str, str], dict] = {}
-    for member in members:
-        segment = (member["day"], member["stream"], member["segment_key"])
-        if segment in first_record_by_segment:
-            continue
-        first_record_by_segment[segment] = member
-        distinct_segments.append(segment)
-
-    segment_settings: dict[tuple[str, str, str], str | None] = {}
-    conversation_keys: dict[tuple[str, str, str], tuple] = {}
-    for day, stream, segment_key in distinct_segments:
-        seg_dir = segment_path(day, segment_key, stream, create=False)
-        setting = _load_setting_field(seg_dir)
-        segment_settings[(day, stream, segment_key)] = setting
-        conversation_keys[(day, stream, segment_key)] = _conversation_key(
-            day,
-            stream,
-            segment_key,
-            setting,
-        )
+    conversation_context = _cluster_conversation_context(members)
+    distinct_segments = list(conversation_context.distinct_segments)
+    first_record_by_segment = conversation_context.first_record_by_segment
+    segment_settings = conversation_context.segment_settings
+    conversation_keys = conversation_context.conversation_keys
 
     samples: list[dict[str, Any]] = []
     for segment in distinct_segments[:3]:
@@ -474,7 +572,6 @@ def get_cluster_presence(cluster_id: int) -> dict[str, Any] | None:
 
     days = {day for day, _stream, _segment_key in distinct_segments}
     streams = {stream for _day, stream, _segment_key in distinct_segments}
-    conversations = set(conversation_keys.values())
 
     return {
         "cluster_id": cluster_id,
@@ -483,7 +580,7 @@ def get_cluster_presence(cluster_id: int) -> dict[str, Any] | None:
             "segment_count": len(distinct_segments),
             "day_count": len(days),
             "streams": sorted(streams),
-            "conversation_count": len(conversations),
+            "conversation_count": conversation_context.conversation_count,
             "samples": samples,
         },
         "evidence_complete": len(evidence_gaps) == 0,

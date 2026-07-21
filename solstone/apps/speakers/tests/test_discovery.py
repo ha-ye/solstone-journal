@@ -15,9 +15,11 @@ from solstone.apps.speakers.discovery import (
     _discovery_cache_path,
     _discovery_resolved_path,
     discover_unknown_speakers,
+    get_cluster_conversation_count,
     get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
+    resolve_statement_cluster,
     undo_identify_operation,
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
@@ -241,6 +243,79 @@ def test_load_discovery_cache_missing_is_read_only(tmp_path, monkeypatch):
 
     assert load_discovery_cache() is None
     assert not (tmp_path / "awareness").exists()
+
+
+def test_load_discovery_cache_non_dict_top_level_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+    awareness_dir = tmp_path / "awareness"
+    awareness_dir.mkdir()
+    (awareness_dir / "discovery_clusters.json").write_text("[]\n", encoding="utf-8")
+
+    assert load_discovery_cache() is None
+
+
+def test_resolve_statement_cluster_distinguishes_hit_miss_and_unavailable(
+    speakers_env,
+):
+    env = speakers_env()
+
+    assert resolve_statement_cluster(
+        day="20240101",
+        stream="test",
+        segment_key="090000_300",
+        source="audio",
+        sentence_id=1,
+    ) == {"status": "cache_unavailable", "cluster_id": None}
+
+    _write_discovery_cache(
+        env,
+        8,
+        [_cluster_record("20240101", "090000_300", source="audio", sentence_id=12)],
+    )
+    _write_discovery_cache(
+        env,
+        9,
+        [_cluster_record("20240101", "090000_300", source="screen", sentence_id=12)],
+    )
+    _write_discovery_cache(
+        env,
+        3,
+        [_cluster_record("20240101", "091000_300", source="audio", sentence_id=1)],
+    )
+
+    assert resolve_statement_cluster(
+        day="20240101",
+        stream="test",
+        segment_key="090000_300",
+        source="screen",
+        sentence_id=12,
+    ) == {"status": "hit", "cluster_id": 9}
+    assert resolve_statement_cluster(
+        day="20240101",
+        stream="test",
+        segment_key="090000_300",
+        source="audio",
+        sentence_id=12,
+    ) == {"status": "hit", "cluster_id": 8}
+    assert resolve_statement_cluster(
+        day="20240101",
+        stream="test",
+        segment_key="090000_300",
+        source="imported_audio",
+        sentence_id=12,
+    ) == {"status": "miss", "cluster_id": None}
+
+    (_discovery_cache_path()).write_text("[]\n", encoding="utf-8")
+    assert resolve_statement_cluster(
+        day="20240101",
+        stream="test",
+        segment_key="090000_300",
+        source="audio",
+        sentence_id=12,
+    ) == {"status": "cache_unavailable", "cluster_id": None}
 
 
 def test_discover_no_owner_centroid(speakers_env):
@@ -497,13 +572,14 @@ def test_cluster_presence_conversation_grouping_setting_vs_no_setting(speakers_e
             [],
             metadata=_candidate_evidence(),
         )
+    shared_setting_records = [
+        _cluster_record("20240101", "093000_300", source="imported_audio"),
+        _cluster_record("20240101", "093500_300", source="imported_audio"),
+    ]
     _write_discovery_cache(
         env,
         8,
-        [
-            _cluster_record("20240101", "093000_300", source="imported_audio"),
-            _cluster_record("20240101", "093500_300", source="imported_audio"),
-        ],
+        shared_setting_records,
     )
 
     for segment_key in ("094000_300", "094500_300"):
@@ -514,13 +590,14 @@ def test_cluster_presence_conversation_grouping_setting_vs_no_setting(speakers_e
             [],
             metadata=_candidate_evidence(),
         )
+    no_setting_records = [
+        _cluster_record("20240101", "094000_300"),
+        _cluster_record("20240101", "094500_300"),
+    ]
     _write_discovery_cache(
         env,
         9,
-        [
-            _cluster_record("20240101", "094000_300"),
-            _cluster_record("20240101", "094500_300"),
-        ],
+        no_setting_records,
     )
 
     shared_setting = get_cluster_presence(8)
@@ -528,6 +605,8 @@ def test_cluster_presence_conversation_grouping_setting_vs_no_setting(speakers_e
 
     assert shared_setting is not None
     assert no_setting is not None
+    assert get_cluster_conversation_count(shared_setting_records) == 1
+    assert get_cluster_conversation_count(no_setting_records) == 2
     assert shared_setting["facts"]["conversation_count"] == 1
     assert no_setting["facts"]["conversation_count"] == 2
 
