@@ -594,7 +594,7 @@
         const cluster = this.cluster;
         const clusterId = this.clusterId;
         const trigger = this.trigger;
-        this.close();
+        this.close({ restoreFocus: false });
         this.onThisIsMe({ cluster, clusterId, trigger });
       }));
       append(actions, buttonEl(this.doc, 'spk-overview-btn spk-who-exit-not-person', copyText(this.copy, COPY.EXIT_NOT_PERSON), () => {

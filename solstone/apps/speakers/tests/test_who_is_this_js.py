@@ -417,6 +417,7 @@ class FakeElement {
     this.id = '';
     this._html = '';
     this._text = '';
+    this.scrollIntoViewCalls = [];
   }
   get firstChild() {
     return this.children[0] || null;
@@ -503,6 +504,9 @@ class FakeElement {
   }
   focus() {
     this.ownerDocument.activeElement = this;
+  }
+  scrollIntoView(options) {
+    this.scrollIntoViewCalls.push(options || {});
   }
   contains(node) {
     if (node === this) return true;
@@ -659,6 +663,7 @@ function speakerCopy() {
     SPK_OVERVIEW_KNOWN_VOICES_EMPTY: 'known empty',
     SPK_OVERVIEW_CARD_SAMPLES_LABEL: 'samples',
     SPK_OVERVIEW_CARD_SEGMENTS_LABEL: 'segments',
+    SPK_OVERVIEW_YOUR_VOICE_HEADER: 'your voice',
     SPK_OVERVIEW_CARD_LAST_HEARD_PREFIX: 'last',
     SPK_OVERVIEW_CARD_STREAMS_PREFIX: 'streams',
     SPK_OVERVIEW_QUALITY_READY: 'quality ready',
@@ -716,10 +721,32 @@ function matchedSpeakers(name = '') {
   };
 }
 
-function makeWorkspaceContext(kind) {
+function makeLocation(hash = '') {
+  const location = { href: '' };
+  let currentHash = '';
+  Object.defineProperty(location, 'hash', {
+    get() {
+      return currentHash;
+    },
+    set(value) {
+      const text = String(value || '');
+      currentHash = text && !text.startsWith('#') ? `#${text}` : text;
+    },
+  });
+  location.hash = hash;
+  return location;
+}
+
+function makeWorkspaceContext(kind, options = {}) {
+  const config = options || {};
+  const day = config.day || '20240101';
+  const today = config.today || '20240101';
+  const hash = config.hash ?? (kind === 'day' ? '#seg-a' : '');
+  const ownerStatus = config.ownerStatus || { status: 'confirmed', centroid_metadata: {} };
   const ids = kind === 'overview'
     ? [
         'speakersOverviewView',
+        'spkOverviewYourVoiceSection',
         'spkOverviewOwner',
         'spkOverviewQuality',
         'spkKnownVoices',
@@ -743,6 +770,20 @@ function makeWorkspaceContext(kind) {
         'spkFilterIndicator',
       ];
   const document = new FakeDocument(ids);
+  const overviewYourVoiceSection = document.getElementById('spkOverviewYourVoiceSection');
+  if (overviewYourVoiceSection) {
+    overviewYourVoiceSection.tagName = 'SECTION';
+    overviewYourVoiceSection.setAttribute('data-section', 'your-voice');
+    overviewYourVoiceSection.setAttribute('tabindex', '-1');
+    overviewYourVoiceSection.setAttribute('aria-labelledby', 'spkOverviewYourVoiceHeader');
+    const ownerPanel = document.getElementById('spkOverviewOwner');
+    if (ownerPanel?.parentNode) ownerPanel.parentNode.removeChild(ownerPanel);
+    const header = document.createElement('h2');
+    header.setAttribute('id', 'spkOverviewYourVoiceHeader');
+    header.setAttribute('data-copy', 'SPK_OVERVIEW_YOUR_VOICE_HEADER');
+    overviewYourVoiceSection.appendChild(header);
+    if (ownerPanel) overviewYourVoiceSection.appendChild(ownerPanel);
+  }
   const queues = {
     discovery: [],
     scan: [],
@@ -758,12 +799,12 @@ function makeWorkspaceContext(kind) {
   const window = {
     SPEAKERS_CONTEXT: kind === 'overview'
       ? { isDay: false }
-      : { isDay: true, day: '20240101' },
+      : { isDay: true, day },
     SPEAKERS_STATE_PROMISE: Promise.resolve({
       speaker_copy: speakerCopy(),
       owner_status_routing_tokens: { candidate: 'candidate', confirmed: 'confirmed' },
       not_in_new_voices_copy: 'not in new voices',
-      today: '20240101',
+      today,
       owner_min_statements: 3,
     }),
     AppServices: { escapeHtml },
@@ -775,7 +816,9 @@ function makeWorkspaceContext(kind) {
     CONVEY_COPY: { RELOAD_HINT: 'reload' },
     RelativeTime: { formatTimestamp: () => 'recently' },
     DayGrid: null,
-    location: { hash: kind === 'day' ? '#seg-a' : '', href: '' },
+    Drawer: { preserveOpen(_node, render) { render(); } },
+    GateDrawer: { render: () => '' },
+    location: makeLocation(hash),
     addEventListener() {},
     logError() {},
     formatDateShort: (day) => day,
@@ -789,24 +832,26 @@ function makeWorkspaceContext(kind) {
       },
     },
   };
-  window.fetch = (url, options) => {
-    fetchCalls.push({ url, options });
+  window.fetch = (url, requestOptions) => {
+    fetchCalls.push({ url, options: requestOptions });
     if (url.includes('/api/grid')) return Promise.resolve(response(null));
     if (url.includes('/api/owner/status')) {
-      return Promise.resolve(response({ status: 'confirmed', centroid_metadata: {} }));
+      if (config.ownerStatusError) return Promise.reject(config.ownerStatusError);
+      return Promise.resolve(response(ownerStatus));
     }
     if (url.includes('/api/quality')) return queueResponse(queues, 'quality', url);
     if (url.includes('/api/speakers/known')) return queueResponse(queues, 'known', url);
     if (url.includes('/api/discovery/cache')) return queueResponse(queues, 'discovery', url);
     if (url.includes('/api/discovery/scan')) return queueResponse(queues, 'scan', url);
     if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url);
-    if (url.includes('/api/speakers/20240101/')) return queueResponse(queues, 'speakers', url);
+    if (url.includes(`/api/speakers/${day}/`)) return queueResponse(queues, 'speakers', url);
     throw new Error(`unexpected fetch ${url}`);
   };
   window.apiJson = (url) => {
     apiCalls.push({ url });
     if (url.includes('/api/owner/status')) {
-      return Promise.resolve({ status: 'confirmed', centroid_metadata: {} });
+      if (config.ownerStatusError) return Promise.reject(config.ownerStatusError);
+      return Promise.resolve(ownerStatus);
     }
     if (url.includes('/api/review/')) return queueResponse(queues, 'review', url).then((r) => r.json());
     if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url).then((r) => r.json());
@@ -888,6 +933,27 @@ def test_who_is_this_accessibility_contract() -> None:
           }));
           assert.strictEqual(trigger.getAttribute('aria-expanded'), 'false');
           assert.strictEqual(doc.activeElement, trigger);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_who_is_this_ordinary_close_restores_and_deep_link_has_no_trigger() -> None:
+    _run_node(
+        """
+        (async () => {
+          const { doc, controller, trigger } = makeHarness();
+          await controller.open({ cluster: { cluster_id: 7 }, trigger });
+
+          controller.backdrop.dispatchEvent(new FakeEvent('click', { target: controller.backdrop }));
+          assert.strictEqual(trigger.getAttribute('aria-expanded'), 'false');
+          assert.strictEqual(doc.activeElement, trigger);
+
+          const deep = makeHarness();
+          await deep.controller.open({ cluster: { cluster_id: 8 }, trigger: null });
+          assert.strictEqual(deep.controller.trigger, null);
+          deep.controller.close();
+          assert.strictEqual(deep.controller.trigger, null);
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1181,6 +1247,159 @@ def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review(
           assert.strictEqual(discoveryBanner.querySelector('[data-cluster-id="99"]'), null);
           assert(!document.getElementById('spkSpeakers').innerHTML.includes('Undone Person'));
           assert(!document.getElementById('spkSentences').innerHTML.includes('Undone Person'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_this_is_me_focuses_your_voice_section() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], {
+            clusters: [
+              { cluster_id: 7, suggested_name: 'Initial Voice', size: 1, samples: [] },
+            ],
+          });
+          await flush();
+          await flush();
+
+          document.getElementById('spkDiscoveryClusters').querySelector('.spk-who-trigger').click();
+          assert.strictEqual(sheets.length, 1);
+          sheets[0].onThisIsMe();
+
+          const target = document.getElementById('spkOverviewYourVoiceSection');
+          assert.strictEqual(document.activeElement, target);
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+          assert.strictEqual(target.scrollIntoViewCalls[0].block, 'nearest');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_this_is_me_focuses_owner_banner_before_owner_help() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          function todayKey() {
+            const now = new Date();
+            return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+          }
+          const today = todayKey();
+          const harness = makeWorkspaceContext('day', {
+            day: today,
+            today,
+            hash: '',
+          });
+          const { document, queues, sheets, window } = harness;
+          await flush();
+          await flush();
+          resolveFetch(queues.discovery[0], {
+            clusters: [
+              { cluster_id: 7, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
+          resolveFetch(queues.segments[0], { segments: [segment()], total: 1 });
+          await flush();
+          await flush();
+
+          document.getElementById('spkDiscoveryBanner').querySelector('.spk-who-trigger').click();
+          assert.strictEqual(sheets.length, 1);
+          sheets[0].onThisIsMe();
+
+          const target = document.getElementById('spkOwnerBanner');
+          assert.strictEqual(document.activeElement, target);
+          assert.strictEqual(target.scrollIntoViewCalls.at(-1).block, 'nearest');
+          assert.strictEqual(target.getAttribute('aria-label'), 'your voice');
+          assert.strictEqual(window.location.hash, '#owner-teach');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_non_today_this_is_me_routes_and_destination_focuses_owner_banner() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          function todayKey() {
+            const now = new Date();
+            return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+          }
+          const today = todayKey();
+          const oldHarness = makeWorkspaceContext('day', {
+            day: '20000101',
+            today,
+            hash: '',
+          });
+          await flush();
+          await flush();
+          resolveFetch(oldHarness.queues.discovery[0], {
+            clusters: [
+              { cluster_id: 7, size: 1, segment_count: 1, samples: [] },
+            ],
+          });
+          resolveFetch(oldHarness.queues.segments[0], { segments: [segment()], total: 1 });
+          await flush();
+          await flush();
+
+          oldHarness.document.getElementById('spkDiscoveryBanner').querySelector('.spk-who-trigger').click();
+          oldHarness.sheets[0].onThisIsMe();
+          assert.strictEqual(oldHarness.window.location.href, `/app/speakers/${today}#owner-teach`);
+
+          const destination = makeWorkspaceContext('day', {
+            day: today,
+            today,
+            hash: '#owner-teach',
+            ownerStatus: {
+              status: 'no_cluster',
+            },
+          });
+          await flush();
+          await flush();
+
+          const target = destination.document.getElementById('spkOwnerBanner');
+          assert.strictEqual(destination.document.activeElement, target);
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+          assert.strictEqual(target.scrollIntoViewCalls[0].block, 'nearest');
+          assert.strictEqual(target.style.display, 'none');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_owner_teach_route_state_failure_focuses_error_region() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const err = new Error('status failed');
+          err.serverMessage = 'offline';
+          const harness = makeWorkspaceContext('day', {
+            hash: '#owner-teach',
+            ownerStatusError: err,
+          });
+          const { document } = harness;
+          await flush();
+          await flush();
+
+          const target = document.getElementById('spkOwnerBanner');
+          assert.strictEqual(document.activeElement, target);
+          assert.strictEqual(target.scrollIntoViewCalls.length, 1);
+          assert.strictEqual(target.scrollIntoViewCalls[0].block, 'nearest');
+          assert(target.innerHTML.includes("Couldn't load owner status"));
+          assert(target.innerHTML.includes('offline'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1727,7 +1946,7 @@ def test_who_is_this_this_is_me_callback_and_back_preserves_main_state() -> None
           assert.strictEqual(callbacks.length, 1);
           assert.strictEqual(callbacks[0].clusterId, '7');
           assert.strictEqual(trigger.getAttribute('aria-expanded'), 'false');
-          assert.strictEqual(doc.activeElement, trigger);
+          assert.notStrictEqual(doc.activeElement, trigger);
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )

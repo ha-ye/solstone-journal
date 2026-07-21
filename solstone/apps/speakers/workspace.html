@@ -1247,7 +1247,7 @@
 
 <div id="speakersDayView" hidden>
 <div class="spk-wrap">
-  <div id="spkOwnerBanner" class="spk-owner-banner"></div>
+  <div id="spkOwnerBanner" class="spk-owner-banner" tabindex="-1"></div>
   <div id="spkDiscoveryBanner" class="spk-discovery-banner" aria-live="polite"></div>
   <div class="spk-layout">
     <nav class="spk-segments" aria-label="segments">
@@ -1403,8 +1403,17 @@
   const OWNER_TEACH_HASH = 'owner-teach';
   const OWNER_TEACH_REVIEW_CONCURRENCY = 4;
 
+  function focusOwnerBanner() {
+    ownerBanner.focus();
+    ownerBanner.scrollIntoView({ block: 'nearest' });
+  }
+
   function initSpeakers() {
     ownerTeachStartRequested = window.location.hash.slice(1) === OWNER_TEACH_HASH;
+    if (ownerTeachStartRequested) {
+      renderThisIsMeGuidance();
+      focusOwnerBanner();
+    }
     checkOwnerStatus();
     loadSegments();
 
@@ -1424,6 +1433,7 @@
     const context = window.SPEAKERS_CONTEXT || {};
     day = context.day || '';
     SPK_COPY = payload.speaker_copy || {};
+    ownerBanner.setAttribute('aria-label', SPK_COPY.SPK_OVERVIEW_YOUR_VOICE_HEADER || '');
     OWNER_MIN = payload.owner_min_statements || 0;
     speakerFilter = context.speakerFilter || '';
     speakerFilterName = payload.speaker_filter_name || speakerFilter;
@@ -1553,6 +1563,7 @@
       formatDateShort: window.formatDateShort,
       onThisIsMe: () => {
         renderThisIsMeGuidance();
+        focusOwnerBanner();
         navigateToOwnerHelp();
       },
       onIdentified: ({ clusterId }) => {
@@ -3560,9 +3571,9 @@
     <div class="spk-day-grid-legend" id="spkDayGridLegend"></div>
   </section>
 
-  <section class="spk-overview-section" data-section="your-voice">
+  <section class="spk-overview-section" data-section="your-voice" id="spkOverviewYourVoiceSection" tabindex="-1" aria-labelledby="spkOverviewYourVoiceHeader">
     <div class="spk-overview-header">
-      <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_YOUR_VOICE_HEADER"></h2>
+      <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_YOUR_VOICE_HEADER" id="spkOverviewYourVoiceHeader"></h2>
     </div>
     <div id="spkOverviewOwner" class="spk-overview-panel"></div>
   </section>
@@ -3623,6 +3634,12 @@
   let knownRequestSeq = 0;
   let overviewDiscoveryRequestSeq = 0;
   let overviewHandoffSheetOpen = false;
+  const overviewYourVoiceSection = document.getElementById('spkOverviewYourVoiceSection');
+
+  function focusOverviewYourVoiceSection() {
+    overviewYourVoiceSection.focus();
+    overviewYourVoiceSection.scrollIntoView({ block: 'nearest' });
+  }
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
@@ -3957,6 +3974,7 @@
       formatDateShort: window.formatDateShort,
       onThisIsMe: () => {
         renderOverviewThisIsMeGuidance();
+        focusOverviewYourVoiceSection();
       },
       onIdentified: ({ clusterId }) => {
         removeOverviewDiscoveryCluster(clusterId);
