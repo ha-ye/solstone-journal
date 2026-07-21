@@ -246,6 +246,7 @@ def _presentation(
             "state": "off",
             "reason": "confidential_not_configured",
             "observed_at": None,
+            "expires_at": None,
         },
     }
 
@@ -599,6 +600,7 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
             "state": "inactive",
             "reason": "confidential_not_active",
             "observed_at": None,
+            "expires_at": None,
         },
     }
 
@@ -1330,7 +1332,7 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
     }
     monkeypatch.setattr(
         "solstone.think.providers.state.local_status_dict",
-        lambda: sentinel,
+        lambda **_kwargs: sentinel,
     )
 
     response = settings_client.get("/app/thinking/api/providers")
@@ -1386,6 +1388,146 @@ def test_get_providers_uses_canonical_spp_local_status_without_probe(
     assert payload["active_lane"]["confidential_attestation"]["state"] == "verified"
     assert local_response.get_json() == expected
     assert _journal_tree_snapshot(journal_path) == before
+
+
+@pytest.mark.parametrize("configuration", ["cloud", "bundled", "byo", "spp"])
+def test_get_providers_uses_one_config_snapshot_across_lanes(
+    settings_client_with_journal,
+    monkeypatch,
+    configuration,
+):
+    from solstone.think import brain_health, models
+    from solstone.think import journal_config as journal_config_module
+    from solstone.think.providers import brain_state, local_endpoint
+    from solstone.think.services import scout, spp
+
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.setdefault("services", {}).pop("confidential", None)
+    if configuration == "cloud":
+        config["providers"]["active"] = {
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+        }
+        config["providers"]["local"] = {}
+    elif configuration == "bundled":
+        config["providers"]["active"] = {
+            "provider": "local",
+            "model": LOCAL_MODEL,
+        }
+        config["providers"]["local"] = {}
+    elif configuration == "byo":
+        config["providers"]["active"] = {
+            "provider": "local",
+            "model": LOCAL_MODEL,
+        }
+        config["providers"]["local"] = {
+            "endpoint_url": "https://byo.example.test",
+            "served_model_id": "byo-model",
+            "credential": "byo-secret",
+        }
+    else:
+        config.update(_spp_configured_provider_config())
+    _write_config(journal_path, config)
+
+    reads: list[dict] = []
+
+    def read_once() -> dict:
+        reads.append(config)
+        assert len(reads) == 1
+        return config
+
+    inspections: list[dict] = []
+    original_inspect = brain_health.inspect_brain_state
+
+    def inspect_once(*args, **kwargs):
+        inspections.append(kwargs["config"])
+        assert kwargs["config"] is config
+        return original_inspect(*args, **kwargs)
+
+    def fail_reread(*_args, **_kwargs):
+        raise AssertionError("second config authority reached")
+
+    monkeypatch.setattr(routes, "get_journal_config", read_once)
+    monkeypatch.setattr(brain_health, "inspect_brain_state", inspect_once)
+    monkeypatch.setattr(brain_state, "read_journal_config", fail_reread)
+    monkeypatch.setattr(local_endpoint, "read_journal_config", fail_reread)
+    monkeypatch.setattr(scout, "read_journal_config", fail_reread)
+    monkeypatch.setattr(spp, "read_journal_config", fail_reread)
+    monkeypatch.setattr(journal_config_module, "read_journal_config", fail_reread)
+    monkeypatch.setattr(models, "get_config", fail_reread)
+    monkeypatch.setattr(
+        local_endpoint,
+        "probe_local_endpoint",
+        lambda _endpoint: (False, "controlled-unreachable"),
+    )
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    assert reads == [config]
+    assert inspections == [config]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/app/thinking/api/providers/local/status"),
+        ("post", "/app/thinking/api/confidential/recheck"),
+    ],
+)
+def test_spp_narrow_routes_use_one_config_and_one_brain_inspection(
+    settings_client_with_journal,
+    monkeypatch,
+    method,
+    path,
+):
+    from solstone.think import brain_health
+    from solstone.think import journal_config as journal_config_module
+    from solstone.think.providers import brain_state, local_endpoint
+    from solstone.think.services import scout, spp
+
+    client, journal_path = settings_client_with_journal
+    config = json.loads(
+        (journal_path / "config" / "journal.json").read_text(encoding="utf-8")
+    )
+    config.update(_spp_configured_provider_config())
+    _write_config(journal_path, config)
+    _write_ready_spp_brain_record(journal_path)
+
+    reads: list[dict] = []
+
+    def read_once() -> dict:
+        reads.append(config)
+        assert len(reads) == 1
+        return config
+
+    inspections: list[dict] = []
+    original_inspect = brain_health.inspect_brain_state
+
+    def inspect_once(*args, **kwargs):
+        inspections.append(kwargs["config"])
+        assert kwargs["config"] is config
+        return original_inspect(*args, **kwargs)
+
+    def fail_reread(*_args, **_kwargs):
+        raise AssertionError("second config authority reached")
+
+    monkeypatch.setattr(routes, "get_journal_config", read_once)
+    monkeypatch.setattr(routes, "request_brain_refresh", lambda **_kwargs: False)
+    monkeypatch.setattr(brain_health, "inspect_brain_state", inspect_once)
+    monkeypatch.setattr(brain_state, "read_journal_config", fail_reread)
+    monkeypatch.setattr(local_endpoint, "read_journal_config", fail_reread)
+    monkeypatch.setattr(scout, "read_journal_config", fail_reread)
+    monkeypatch.setattr(spp, "read_journal_config", fail_reread)
+    monkeypatch.setattr(journal_config_module, "read_journal_config", fail_reread)
+
+    response = getattr(client, method)(path)
+
+    assert response.status_code == 200
+    assert reads == [config]
+    assert inspections == [config]
 
 
 def test_get_providers_brain_shape(settings_client, monkeypatch):
@@ -1485,7 +1627,7 @@ def test_get_providers_brain_unknown_does_not_change_status_payload(
     }
     monkeypatch.setattr(
         "solstone.think.providers.state.local_status_dict",
-        lambda: sentinel,
+        lambda **_kwargs: sentinel,
     )
     _patch_selected_providers(monkeypatch)
     _patch_brain(

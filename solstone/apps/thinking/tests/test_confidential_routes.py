@@ -204,6 +204,7 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
         "state": "stale",
         "reason": "brain_record_missing",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -234,6 +235,7 @@ def test_enable_confidential_early_access_stays_off(
         "state": "off",
         "reason": "confidential_not_configured",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -702,6 +704,7 @@ def test_recheck_confidential_rejects_when_inactive_before_refresh(
                 "state": "inactive",
                 "reason": "confidential_not_active",
                 "observed_at": None,
+                "expires_at": None,
             },
         },
     )
@@ -715,6 +718,35 @@ def test_recheck_confidential_rejects_when_inactive_before_refresh(
 
     assert response.status_code == 400
     assert response.get_json()["reason_code"] == "invalid_operation_for_state"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("endpoint_url", "https://other.example.test"),
+        ("served_model_id", "other-model"),
+        ("credential", "other-credential"),
+    ],
+)
+def test_recheck_confidential_rejects_mismatched_canonical_spp_binding(
+    thinking_client,
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str,
+) -> None:
+    spp.provision_confidential_handoff(_payload("mismatch"))
+    config = _read_config(journal_copy)
+    config["providers"]["local"][field] = value
+    _write_config(config)
+    refresh = Mock(side_effect=AssertionError("brain refresh attempted"))
+    monkeypatch.setattr(routes, "request_brain_refresh", refresh)
+
+    response = thinking_client.post("/app/thinking/api/confidential/recheck")
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_operation_for_state"
+    refresh.assert_not_called()
 
 
 def test_recheck_confidential_returns_brain_check_response(

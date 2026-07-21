@@ -138,6 +138,7 @@ def get_provider_list() -> List[Dict[str, Any]]:
 def build_provider_status(
     providers_list: List[Dict[str, Any]] | None = None,
     *,
+    config: dict[str, Any] | None = None,
     local_status: dict[str, Any] | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build per-provider readiness status.
@@ -149,6 +150,9 @@ def build_provider_status(
     local_status
         When provided, replaces the ``local`` row and ``local_status_dict()`` is
         not called. ``None`` preserves existing behavior.
+    config
+        An already-read journal config. When omitted, existing helper reads are
+        preserved.
     Returns
     -------
     Dict[str, Dict[str, Any]]
@@ -168,9 +172,9 @@ def build_provider_status(
         from solstone.think.providers import state as provider_state
 
         if name == "local":
-            status[name] = provider_state.local_status_dict()
+            status[name] = provider_state.local_status_dict(config=config)
             continue
-        configured = provider_state.cloud_key_configured(env_key)
+        configured = provider_state.cloud_key_configured(env_key, config=config)
         status[name] = {
             "provider": name,
             "configured": configured,

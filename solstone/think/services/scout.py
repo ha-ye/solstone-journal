@@ -285,10 +285,10 @@ def apply_scout_state(payload: dict[str, Any]) -> ScoutStateResult:
     raise ScoutPayloadError("unexpected_payload")
 
 
-def is_scout_enabled() -> bool:
+def is_scout_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether scout is enabled through service provisioning."""
 
-    config = read_journal_config()
+    config = read_journal_config() if config is None else config
     block = config.get("services", {}).get("scout")
     return _is_approved_provision(block) and bool(
         config.get("env", {}).get("GOOGLE_API_KEY")
@@ -305,10 +305,13 @@ def is_manual_key_present() -> bool:
     )
 
 
-def scout_provenance() -> dict[str, Any] | None:
+def scout_provenance(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Return the scout provenance block from journal config, if present."""
 
-    provenance = read_journal_config().get("services", {}).get("scout")
+    config = read_journal_config() if config is None else config
+    provenance = config.get("services", {}).get("scout")
     return provenance if isinstance(provenance, dict) else None
 
 

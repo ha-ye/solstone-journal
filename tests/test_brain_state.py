@@ -538,6 +538,30 @@ def test_inspect_brain_state_is_passive_host_probe_free_for_bundled_runtime(
     assert _health_snapshot(tmp_path) == before
 
 
+def test_inspect_brain_state_uses_supplied_config_without_reread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _cloud_config()
+    _write_ready_record(tmp_path, config)
+    monkeypatch.setattr(
+        brain_state_module,
+        "read_journal_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("config reread")
+        ),
+    )
+
+    inspection = inspect_brain_state(
+        NOW,
+        journal_path=tmp_path,
+        config=config,
+    )
+
+    assert inspection["projection"]["aggregate_state"] == "ready"
+    assert inspection["projection"]["active_lane"] == "byo-cloud"
+
+
 def test_inspect_brain_state_faults_do_not_modify_health(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

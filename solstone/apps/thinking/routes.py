@@ -54,7 +54,6 @@ from solstone.think.models import (
     DEFAULT_MODEL_BY_PROVIDER,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
-    resolve_provider,
 )
 from solstone.think.providers import (
     PROVIDER_REGISTRY,
@@ -63,9 +62,11 @@ from solstone.think.providers import (
     validate_key,
     validate_model,
 )
+from solstone.think.providers.brain_state import derive_active_brain_lane
 from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
+    resolve_local_endpoint_from_config,
 )
 from solstone.think.providers.runtime_health import (
     RuntimeHealthConflictError,
@@ -221,7 +222,7 @@ def _local_endpoint_public_payload(config: dict[str, Any]) -> dict[str, object]:
 
 
 def _local_override_payload(config: dict[str, Any]) -> dict[str, object]:
-    endpoint = resolve_local_endpoint()
+    endpoint = resolve_local_endpoint_from_config(config)
     local_config = _read_local_provider_config(config)
     return {
         "enabled": not endpoint.is_bundled,
@@ -270,7 +271,21 @@ def _active_settings(providers_config: dict[str, Any]) -> dict[str, Any]:
     active_config = providers_config.get("active", {})
     if not isinstance(active_config, dict):
         active_config = {}
-    provider, model = resolve_provider("generate")
+    raw_provider = active_config.get("provider")
+    provider = (
+        raw_provider
+        if isinstance(raw_provider, str) and raw_provider
+        else NO_BRAIN_PROVIDER
+    )
+    if provider == NO_BRAIN_PROVIDER:
+        model = ""
+    else:
+        raw_model = active_config.get("model")
+        model = (
+            raw_model.strip()
+            if isinstance(raw_model, str) and raw_model.strip()
+            else DEFAULT_MODEL_BY_PROVIDER[provider]
+        )
     return {
         "provider": provider,
         "model": active_config.get("model") or model,
@@ -322,12 +337,13 @@ def _confidential_lane_active_for_config(config: dict[str, Any]) -> bool:
 
 def _active_lane_payload(
     active_settings: dict[str, Any],
+    config: dict[str, Any],
     transcribe_config: dict[str, Any],
     *,
     presentation: BrainPresentation,
     confidential_provenance_present: bool,
 ) -> dict[str, Any]:
-    endpoint = resolve_local_endpoint()
+    endpoint = resolve_local_endpoint_from_config(config)
     local_endpoint_configured = not endpoint.is_bundled
     active = _lane_for_provider(
         str(active_settings.get("provider") or ""),
@@ -336,9 +352,9 @@ def _active_lane_payload(
     )
     return {
         "lane": active,
-        "scout_enabled": scout.is_scout_enabled(),
-        "scout_provenance_configured": scout.scout_provenance() is not None,
-        "confidential_enabled": spp.is_confidential_enabled(),
+        "scout_enabled": scout.is_scout_enabled(config),
+        "scout_provenance_configured": scout.scout_provenance(config) is not None,
+        "confidential_enabled": spp.is_confidential_enabled(config),
         "confidential_audio": confidential_audio_enabled(transcribe_config),
         "confidential_provenance_configured": confidential_provenance_present,
         "confidential_operation": _remap_confidential_operation(
@@ -380,7 +396,7 @@ def _keys_payload(config: dict[str, Any]) -> dict[str, Any]:
         "api_keys": _api_key_status(config),
         "env": _env_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
-        "scout_enabled": scout.is_scout_enabled(),
+        "scout_enabled": scout.is_scout_enabled(config),
     }
 
 
@@ -480,11 +496,14 @@ def _validate_google_model_resolution_targets(value: Any) -> list[str] | Any:
 def _provider_status_payload(
     providers_list: list[dict[str, Any]],
     presentation: BrainPresentation,
+    *,
+    config: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     if not presentation["spp_active"]:
-        return build_provider_status(providers_list)
+        return build_provider_status(providers_list, config=config)
     return build_provider_status(
         providers_list,
+        config=config,
         local_status={
             "configured": True,
             "selected": True,
@@ -504,19 +523,27 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
 
     providers_list = get_provider_list()
     local_status = local_bootstrap.get_state(local_model_id)
-    confidential_provenance_present = spp.confidential_provenance() is not None
+    confidential_provenance_present = (
+        spp.confidential_provenance_block(dict(config)) is not None
+    )
     presentation = build_brain_presentation(
         datetime.now(timezone.utc),
         surface="thinking",
         spp_configured=confidential_provenance_present,
+        config=config,
     )
 
     return {
         "providers": providers_list,
-        "provider_status": _provider_status_payload(providers_list, presentation),
+        "provider_status": _provider_status_payload(
+            providers_list,
+            presentation,
+            config=config,
+        ),
         "brain": presentation["brain"],
         "active_lane": _active_lane_payload(
             active_settings,
+            config,
             config.get("transcribe", {})
             if isinstance(config.get("transcribe", {}), dict)
             else {},
@@ -533,7 +560,7 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "local_runtime": local_recovery.runtime_view(),
         "local_override": _local_override_payload(config),
         "local_backend": "mlx" if local_bootstrap._is_mlx_backend() else "local",
-        "scout_enabled": scout.is_scout_enabled(),
+        "scout_enabled": scout.is_scout_enabled(config),
     }
 
 
@@ -725,18 +752,13 @@ def confidential_disable() -> Any:
 @thinking_bp.route("/api/confidential/recheck", methods=["POST"])
 def confidential_recheck() -> Any:
     try:
-        confidential_provenance_present = spp.confidential_provenance() is not None
-        presentation = build_brain_presentation(
-            datetime.now(timezone.utc),
-            surface="thinking",
-            spp_configured=confidential_provenance_present,
-        )
-        if presentation["confidential_attestation"]["state"] in {"off", "inactive"}:
+        config = get_journal_config()
+        if derive_active_brain_lane(config) != "spp":
             return error_response(
                 INVALID_OPERATION_FOR_STATE,
                 detail="confidential processing is not active.",
             )
-        return _brain_check_response()
+        return _brain_check_response(config=config)
     except Exception:
         logger.exception("error rechecking confidential processing")
         return _thinking_operation_failed()
@@ -1228,10 +1250,14 @@ def get_providers() -> Any:
         return _thinking_operation_failed()
 
 
-def _brain_check_response() -> Any:
+def _brain_check_response(*, config: dict[str, Any] | None = None) -> Any:
     ok = request_brain_refresh(surface="thinking")
     try:
-        brain = build_brain_snapshot(datetime.now(timezone.utc), surface="thinking")
+        brain = build_brain_snapshot(
+            datetime.now(timezone.utc),
+            surface="thinking",
+            config=config,
+        )
     except Exception:
         logger.exception("error loading brain health")
         return _thinking_operation_failed()
@@ -1251,17 +1277,25 @@ def get_local_provider_status() -> Any:
     """Return local provider readiness status."""
 
     try:
-        confidential_provenance_present = spp.confidential_provenance() is not None
+        config = get_journal_config()
+        confidential_provenance_present = (
+            spp.confidential_provenance_block(dict(config)) is not None
+        )
         presentation = build_brain_presentation(
             datetime.now(timezone.utc),
             surface="thinking",
             spp_configured=confidential_provenance_present,
+            config=config,
         )
         providers_list = get_provider_list()
         local_provider = next(
             provider for provider in providers_list if provider["name"] == "local"
         )
-        provider_status = _provider_status_payload([local_provider], presentation)
+        provider_status = _provider_status_payload(
+            [local_provider],
+            presentation,
+            config=config,
+        )
         return jsonify(provider_status["local"])
     except Exception:
         logger.exception("error loading local provider status")

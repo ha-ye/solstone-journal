@@ -241,7 +241,11 @@ def test_state_parity_matrix(monkeypatch, capsys):
 
         thinking_brain = _snapshot(case, "thinking")
         monkeypatch.setattr(thinking_routes, "get_provider_list", lambda: [])
-        monkeypatch.setattr(thinking_routes, "build_provider_status", lambda _p: {})
+        monkeypatch.setattr(
+            thinking_routes,
+            "build_provider_status",
+            lambda _p, **_kwargs: {},
+        )
         monkeypatch.setattr(thinking_routes.local_bootstrap, "get_state", lambda _m: {})
         monkeypatch.setattr(
             thinking_routes,
@@ -258,6 +262,7 @@ def test_state_parity_matrix(monkeypatch, capsys):
                     "state": "off",
                     "reason": "confidential_not_configured",
                     "observed_at": None,
+                    "expires_at": None,
                 },
             },
         )

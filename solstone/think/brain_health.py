@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from solstone.think.callosum import callosum_send
 from solstone.think.providers.brain_state import (
@@ -120,6 +121,7 @@ class ConfidentialAttestationView(TypedDict):
     state: ConfidentialAttestationState
     reason: str | None
     observed_at: str | None
+    expires_at: str | None
 
 
 class BrainPresentation(TypedDict):
@@ -396,6 +398,7 @@ def _confidential_attestation_from_inspection(
             "state": "off",
             "reason": "confidential_not_configured",
             "observed_at": None,
+            "expires_at": None,
         }
 
     projection = inspection["projection"]
@@ -404,18 +407,21 @@ def _confidential_attestation_from_inspection(
             "state": "inactive",
             "reason": "confidential_not_active",
             "observed_at": None,
+            "expires_at": None,
         }
     if projection["aggregate_state"] == "checking":
         return {
             "state": "verifying",
             "reason": "brain_check_in_progress",
             "observed_at": None,
+            "expires_at": None,
         }
     if projection["reason_code"] in BRAIN_PROJECTION_ONLY_REASON_CODES:
         return {
             "state": "stale",
             "reason": projection["reason_code"],
             "observed_at": None,
+            "expires_at": None,
         }
 
     lane_prerequisites = _spp_component(inspection, "lane_prerequisites")
@@ -424,22 +430,45 @@ def _confidential_attestation_from_inspection(
             "state": "stale",
             "reason": projection["reason_code"] or "brain_record_invalid",
             "observed_at": None,
+            "expires_at": None,
         }
 
     reason = _component_reason(lane_prerequisites)
     observed_at = lane_prerequisites.get("observed_at")
+    expires_at = lane_prerequisites.get("expires_at")
     if lane_prerequisites["status"] == "ok":
-        return {"state": "verified", "reason": None, "observed_at": observed_at}
+        return {
+            "state": "verified",
+            "reason": None,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
     if reason == "attestation_rejected":
-        return {"state": "failed", "reason": reason, "observed_at": observed_at}
+        return {
+            "state": "failed",
+            "reason": reason,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
     if reason == "attestation_not_verified":
-        return {"state": "unreachable", "reason": reason, "observed_at": observed_at}
+        return {
+            "state": "unreachable",
+            "reason": reason,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
     if reason == "attestation_expired":
-        return {"state": "stale", "reason": reason, "observed_at": observed_at}
+        return {
+            "state": "stale",
+            "reason": reason,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
     return {
         "state": "stale",
         "reason": reason or projection["reason_code"] or "brain_record_invalid",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -449,9 +478,14 @@ def build_brain_presentation(
     surface: BrainSurface,
     spp_configured: bool,
     journal_path: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> BrainPresentation:
     now = _utc(now)
-    inspection = inspect_brain_state(now, journal_path=journal_path)
+    inspection = inspect_brain_state(
+        now,
+        journal_path=journal_path,
+        config=config,
+    )
     return {
         "brain": _brain_snapshot_from_inspection(inspection, now, surface=surface),
         "spp_active": inspection["projection"]["active_lane"] == "spp",
@@ -468,6 +502,7 @@ def build_brain_snapshot(
     *,
     surface: BrainSurface,
     journal_path: Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> BrainSnapshot:
     # The standalone brain wire shape does not depend on SPP setup state.
     return build_brain_presentation(
@@ -475,6 +510,7 @@ def build_brain_snapshot(
         surface=surface,
         spp_configured=False,
         journal_path=journal_path,
+        config=config,
     )["brain"]
 
 

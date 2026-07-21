@@ -467,6 +467,71 @@ def test_persisted_spp_brain_evidence_never_authorizes_generate_egress(
     establish.assert_called_once()
 
 
+def test_persisted_spp_brain_evidence_never_authorizes_cogitate_egress(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.providers.brain_state import (
+        begin_brain_refresh,
+        finish_brain_refresh,
+    )
+    from solstone.think.services import spp
+
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config()
+    config["providers"] = {
+        "active": {"provider": "local", "model": LOCAL_MODEL},
+    }
+    _add_local_endpoint(config)
+    config["services"]["confidential"]["credential_fingerprint_sha256"] = (
+        hashlib.sha256(b"confidential-credential").hexdigest()
+    )
+    _seed_journal_config(tmp_path, config)
+
+    now = datetime.now(timezone.utc)
+    permit = begin_brain_refresh(now, journal_path=tmp_path)
+    assert permit is not None
+    component = {
+        "status": "ok",
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+    }
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": component,
+            "lane_prerequisites": component,
+            "generate": component,
+            "cogitate": component,
+        },
+        now,
+        journal_path=tmp_path,
+    )
+    spp.delete_attestation_state()
+
+    establish = _install_failing_confidential_transport(monkeypatch)
+    local_cogitate = Mock(side_effect=AssertionError("local cogitate dispatched"))
+    build_llm = Mock(side_effect=AssertionError("llm build attempted"))
+    monkeypatch.setattr(
+        "solstone.think.providers.local.run_cogitate",
+        local_cogitate,
+    )
+    monkeypatch.setattr("solstone.think.providers.openhands._build_llm", build_llm)
+
+    with pytest.raises(AttestationFailedError) as cogitate_exc:
+        asyncio.run(
+            talents._execute_with_tools(
+                {"provider": "local", "model": LOCAL_MODEL, "type": "cogitate"},
+                lambda _event: None,
+            )
+        )
+
+    _assert_attestation_failed(cogitate_exc.value)
+    local_cogitate.assert_not_called()
+    build_llm.assert_not_called()
+    establish.assert_called_once()
+
+
 def test_confidential_cogitate_stops_before_any_provider_dispatch(
     tmp_path,
     monkeypatch,

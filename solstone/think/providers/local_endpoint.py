@@ -105,10 +105,9 @@ def _configured_byo_parallel_slots(local_config: dict[str, Any]) -> int:
     return raw
 
 
-def resolve_local_endpoint() -> LocalEndpoint:
-    """Resolve whether local provider traffic uses bundled runtime or BYO endpoint."""
+def resolve_local_endpoint_from_config(config: dict[str, Any]) -> LocalEndpoint:
+    """Resolve local provider traffic from an already-read journal config."""
 
-    config = read_journal_config()
     providers_config = config.get("providers", {})
     local_config: Any = {}
     if isinstance(providers_config, dict):
@@ -132,6 +131,12 @@ def resolve_local_endpoint() -> LocalEndpoint:
             ),
         )
     return LocalEndpoint("", "", None, is_bundled=True)
+
+
+def resolve_local_endpoint() -> LocalEndpoint:
+    """Resolve whether local provider traffic uses bundled runtime or BYO endpoint."""
+
+    return resolve_local_endpoint_from_config(read_journal_config())
 
 
 def probe_local_endpoint(
@@ -355,5 +360,6 @@ __all__ = [
     "redact_event_payload",
     "redact_local_endpoint_credential",
     "resolve_local_endpoint",
+    "resolve_local_endpoint_from_config",
     "wrap_on_event_redacting",
 ]

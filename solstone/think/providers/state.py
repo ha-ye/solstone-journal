@@ -7,13 +7,20 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Any
 
 
-def cloud_key_configured(env_key: str) -> bool:
+def cloud_key_configured(
+    env_key: str,
+    *,
+    config: dict[str, Any] | None = None,
+) -> bool:
     if not env_key:
         return False
     if os.getenv(env_key):
         return True
+    if config is not None:
+        return bool(config.get("env", {}).get(env_key))
     try:
         from solstone.think.journal_config import read_journal_config
 
@@ -27,16 +34,21 @@ def _is_darwin() -> bool:
     return sys.platform == "darwin"
 
 
-def local_status_dict() -> dict:
+def local_status_dict(*, config: dict[str, Any] | None = None) -> dict:
     """Build the local provider setup status dict."""
     from solstone.think.models import is_local_provider_needed
     from solstone.think.providers.local_endpoint import (
         probe_local_endpoint,
         resolve_local_endpoint,
+        resolve_local_endpoint_from_config,
     )
 
-    endpoint = resolve_local_endpoint()
-    selected = is_local_provider_needed()
+    endpoint = (
+        resolve_local_endpoint()
+        if config is None
+        else resolve_local_endpoint_from_config(config)
+    )
+    selected = is_local_provider_needed(config)
     if not endpoint.is_bundled:
         reachable, _ = probe_local_endpoint(endpoint)
         return {

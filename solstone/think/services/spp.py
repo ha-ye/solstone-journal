@@ -297,10 +297,10 @@ def confidential_provenance() -> dict[str, Any] | None:
     return confidential_provenance_block(read_journal_config())
 
 
-def is_confidential_enabled() -> bool:
+def is_confidential_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether confidential processing is provisioned with a credential."""
 
-    config = read_journal_config()
+    config = read_journal_config() if config is None else config
     block = config.get("services", {}).get("confidential")
     local = config.get("providers", {}).get("local", {})
     credential = local.get("credential") if isinstance(local, dict) else None

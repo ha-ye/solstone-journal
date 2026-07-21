@@ -138,6 +138,7 @@ def test_show_verbs_select_http_fields() -> None:
         "state": "off",
         "reason": "confidential_not_configured",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -340,7 +341,7 @@ def test_providers_show_human_and_set_errors(
     monkeypatch.setattr(
         thinking_routes,
         "build_provider_status",
-        lambda providers: provider_status,
+        lambda providers, **_kwargs: provider_status,
     )
 
     human = runner.invoke(thinking_call.app, ["providers", "show", "--human"])

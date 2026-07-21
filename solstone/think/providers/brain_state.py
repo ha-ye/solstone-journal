@@ -1658,7 +1658,10 @@ def project_brain_state(
 
 
 def inspect_brain_state(
-    now: datetime, *, journal_path: str | Path | None = None
+    now: datetime,
+    *,
+    journal_path: str | Path | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> BrainStateInspection:
     now = _utc(now)
     try:
@@ -1685,18 +1688,19 @@ def inspect_brain_state(
     if record is None and record_reason is None:
         status = "unavailable"
         record_reason = "brain_record_missing"
-    try:
-        config = read_journal_config(journal_path)
-    except (CorruptConfigError, OSError) as exc:
-        projection = _projection("unknown", "configuration_invalid")
-        return {
-            "status": status,
-            "path": str(path),
-            "record": record,
-            "projection": projection,
-            "reason_code": "configuration_invalid",
-            "error": str(exc),
-        }
+    if config is None:
+        try:
+            config = read_journal_config(journal_path)
+        except (CorruptConfigError, OSError) as exc:
+            projection = _projection("unknown", "configuration_invalid")
+            return {
+                "status": status,
+                "path": str(path),
+                "record": record,
+                "projection": projection,
+                "reason_code": "configuration_invalid",
+                "error": str(exc),
+            }
     lane, provider, model = _derive_lane(config)
     if lane is None:
         projection = _projection(
@@ -2274,6 +2278,13 @@ def runtime_phase_reason(phase: RuntimePhase) -> BrainReasonCode | None:
     return RUNTIME_PHASE_TO_REASON[phase]
 
 
+def derive_active_brain_lane(config: Mapping[str, Any]) -> BrainLaneId | None:
+    """Derive the canonical active-brain lane from an already-read config."""
+
+    lane, _, _ = _derive_lane(config)
+    return lane
+
+
 __all__ = [
     "BRAIN_AGGREGATE_STATES",
     "BRAIN_COMPONENT_STATUSES",
@@ -2309,6 +2320,7 @@ __all__ = [
     "brain_state_path",
     "begin_brain_refresh",
     "build_active_brain_fingerprint",
+    "derive_active_brain_lane",
     "finish_brain_refresh",
     "inspect_brain_state",
     "project_brain_state",

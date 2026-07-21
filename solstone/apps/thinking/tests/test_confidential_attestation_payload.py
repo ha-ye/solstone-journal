@@ -202,6 +202,7 @@ def test_active_lane_confidential_attestation_defaults_to_off(settings_env):
         "state": "off",
         "reason": "confidential_not_configured",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -214,6 +215,7 @@ def test_active_lane_confidential_attestation_configured_but_inactive(settings_e
         "state": "inactive",
         "reason": "confidential_not_active",
         "observed_at": None,
+        "expires_at": None,
     }
 
 
@@ -222,7 +224,12 @@ def test_active_lane_confidential_attestation_uses_canonical_presentation(
     monkeypatch,
 ):
     client = _client(settings_env, confidential=True, active_provider="local")
-    attestation = {"state": "verified", "reason": None, "observed_at": NOW_ISO}
+    attestation = {
+        "state": "verified",
+        "reason": None,
+        "observed_at": NOW_ISO,
+        "expires_at": EXPIRES_ISO,
+    }
     monkeypatch.setattr(
         routes,
         "build_brain_presentation",
@@ -238,6 +245,7 @@ def test_active_lane_confidential_attestation_uses_canonical_presentation(
         "state",
         "reason",
         "observed_at",
+        "expires_at",
     }
     serialized = response.get_data(as_text=True)
     assert "last_verified" not in serialized
@@ -251,11 +259,13 @@ def test_active_lane_confidential_attestation_uses_canonical_presentation(
                 "state": "verifying",
                 "reason": "brain_check_in_progress",
                 "observed_at": None,
+                "expires_at": None,
             },
             {
                 "state": "verifying",
                 "reason": "brain_check_in_progress",
                 "observed_at": None,
+                "expires_at": None,
             },
         ),
         (
@@ -263,11 +273,13 @@ def test_active_lane_confidential_attestation_uses_canonical_presentation(
                 "state": "unreachable",
                 "reason": "attestation_not_verified",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
             {
                 "state": "unreachable",
                 "reason": "attestation_not_verified",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
         ),
         (
@@ -275,20 +287,42 @@ def test_active_lane_confidential_attestation_uses_canonical_presentation(
                 "state": "failed",
                 "reason": "attestation_rejected",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
             {
                 "state": "failed",
                 "reason": "attestation_rejected",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
         ),
         (
-            {"state": "stale", "reason": "attestation_expired", "observed_at": NOW_ISO},
-            {"state": "stale", "reason": "attestation_expired", "observed_at": NOW_ISO},
+            {
+                "state": "stale",
+                "reason": "attestation_expired",
+                "observed_at": NOW_ISO,
+                "expires_at": EXPIRES_ISO,
+            },
+            {
+                "state": "stale",
+                "reason": "attestation_expired",
+                "observed_at": NOW_ISO,
+                "expires_at": EXPIRES_ISO,
+            },
         ),
         (
-            {"state": "stale", "reason": "brain_record_stale", "observed_at": None},
-            {"state": "stale", "reason": "brain_record_stale", "observed_at": None},
+            {
+                "state": "stale",
+                "reason": "brain_record_stale",
+                "observed_at": None,
+                "expires_at": None,
+            },
+            {
+                "state": "stale",
+                "reason": "brain_record_stale",
+                "observed_at": None,
+                "expires_at": None,
+            },
         ),
     ],
 )
@@ -320,6 +354,7 @@ def test_route_serializes_closed_attestation_view(
                 "state": "off",
                 "reason": "confidential_not_configured",
                 "observed_at": None,
+                "expires_at": None,
             },
         ),
         (
@@ -329,6 +364,7 @@ def test_route_serializes_closed_attestation_view(
                 "state": "inactive",
                 "reason": "confidential_not_active",
                 "observed_at": None,
+                "expires_at": None,
             },
         ),
         (
@@ -338,6 +374,7 @@ def test_route_serializes_closed_attestation_view(
                 "state": "verifying",
                 "reason": "brain_check_in_progress",
                 "observed_at": None,
+                "expires_at": None,
             },
         ),
         (
@@ -347,7 +384,12 @@ def test_route_serializes_closed_attestation_view(
                 record=_record(generate=_component("failed", "provider_unavailable")),
             ),
             True,
-            {"state": "verified", "reason": None, "observed_at": NOW_ISO},
+            {
+                "state": "verified",
+                "reason": None,
+                "observed_at": NOW_ISO,
+                "expires_at": EXPIRES_ISO,
+            },
         ),
         (
             _inspection(
@@ -367,6 +409,7 @@ def test_route_serializes_closed_attestation_view(
                 "state": "unreachable",
                 "reason": "attestation_not_verified",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
         ),
         (
@@ -384,6 +427,7 @@ def test_route_serializes_closed_attestation_view(
                 "state": "failed",
                 "reason": "attestation_rejected",
                 "observed_at": NOW_ISO,
+                "expires_at": None,
             },
         ),
         (
@@ -397,7 +441,12 @@ def test_route_serializes_closed_attestation_view(
                 ),
             ),
             True,
-            {"state": "stale", "reason": "attestation_expired", "observed_at": NOW_ISO},
+            {
+                "state": "stale",
+                "reason": "attestation_expired",
+                "observed_at": NOW_ISO,
+                "expires_at": None,
+            },
         ),
         (
             _inspection(
@@ -406,7 +455,12 @@ def test_route_serializes_closed_attestation_view(
                 record=None,
             ),
             True,
-            {"state": "stale", "reason": "brain_record_missing", "observed_at": None},
+            {
+                "state": "stale",
+                "reason": "brain_record_missing",
+                "observed_at": None,
+                "expires_at": None,
+            },
         ),
     ],
 )
