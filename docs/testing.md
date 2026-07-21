@@ -85,9 +85,6 @@ triaged by asking which side is wrong. Current recorded findings:
 - `GET /app/network/api/status` materializes link CA key material on a read path:
   `ca_dir().exists()` first creates `journal/link/ca`, then `_ca_fingerprint()` calls
   `load_or_generate_ca()` and writes `private.pem` plus `cert.pem`.
-- `GET /app/home/api/pulse` can write the awareness `thinking_readiness` cache. This is
-  weaker than the link CA finding because it routes through the awareness owner and is
-  not an L3 read-verb violation.
 - `GET /app/network/api/status` reaches `_detect_lan_ip()`, which opens a UDP socket to
   `8.8.8.8:80` to read the kernel-selected source address. The WSGI test harness reaches
   that syscall.

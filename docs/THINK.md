@@ -171,12 +171,14 @@ use_id = cortex_request(
 completed, timed_out = wait_for_uses([use_id], timeout=300)
 ```
 
-### Direct CLI Usage (Testing Only)
+### Brain Health CLI
 
-The `journal providers check` command is an ad-hoc provider check CLI. Cortex does not use it as the talent spawn path. For testing purposes, it can be invoked directly:
+Use `journal brain status` to inspect the active thinking lane and
+`journal brain refresh` to run one bounded active-brain check:
 
 ```bash
-journal providers check [TASK_FILE] [--provider PROVIDER] [--model MODEL] [--max-tokens N] [-o OUT_FILE]
+journal brain status
+journal brain refresh
 ```
 
 Provider resolution lives in `solstone/think/models.py`. Generate and cogitate
@@ -243,7 +245,8 @@ AI agent system and tool-calling support for solstone.
 | Command | Purpose |
 |---------|---------|
 | `journal cortex` | Agent orchestration service |
-| `journal providers check` | Ad-hoc provider check (testing only) |
+| `journal brain status` | Active-brain thinking status |
+| `journal brain refresh` | Bounded active-brain check |
 
 ## Architecture
 

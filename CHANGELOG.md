@@ -10,6 +10,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 - naming a recurring voice now opens a guided who-is-this sheet. sol offers people it noticed around that voice, lets you search everyone in your journal, and keeps two people with similar names apart instead of quietly merging them. attaching a voice previews what will change first, and you can undo it.
 - the prompt about a recurring voice now names how often sol has heard it and opens that exact voice in the who-is-this sheet, and it stays quiet once you've dismissed that voice. from a transcript, you can now send a statement to the same sheet when the voice behind it isn't someone sol knows yet — and if sol hasn't heard it enough times, it says so plainly instead of dead-ending.
+- sol now reports one honest thinking-status state with one next action, so Health, Home, Thinking, support diagnostics, `sol top`, and `journal doctor` agree on whether thinking is available.
 - sol now suggests exact Gemini models, Gemini 3.5 Flash and Gemini 3.1 Flash Lite, instead of moving `latest` aliases that could quietly change which model your journal uses. if your journal had a moving flash alias saved, it now pins it to the matching exact model. if it had the old `gemini-pro-latest` alias saved, Thinking shows one action: choose an exact model in Thinking, because that alias has no single exact match.
 
 ### Fixed

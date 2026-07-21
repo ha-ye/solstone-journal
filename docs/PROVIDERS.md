@@ -144,7 +144,7 @@ responses, schemas, images, URLs, or credentials.
 Provider failure is not a routing signal. Solstone surfaces the failure and
 recovery action for the active profile.
 
-- Quota failures are recorded in `health/talents.json`.
+- Quota failures are recorded through `record_brain_runtime_failure` into `health/brain.json`.
 - Endpoint reachability and contract errors are classified by the local
   endpoint wrapper.
 - Local generate retries once only for narrow capacity/truncation cases, using
