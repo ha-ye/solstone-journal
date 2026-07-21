@@ -27,9 +27,8 @@ byte-identity across different zlib builds is not promised.
 Imports of _-prefixed helpers from oci_image.py are deliberate: OCI layer,
 whiteout, traversal, blob, and digest semantics are single-sourced there.
 
-CLI convention follows release_models_gate.py: the pin snippet is printed on
-stdout; progress, warnings, and diagnostics go to stderr; this module does not
-use logging.
+CLI convention: the pin snippet is printed on stdout; progress, warnings, and
+diagnostics go to stderr; this module does not use logging.
 """
 
 from __future__ import annotations
