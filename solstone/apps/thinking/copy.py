@@ -81,8 +81,9 @@ CONFIDENTIAL_SETUP = {
 }
 CONFIDENTIAL_ATTESTATION_STATES = {
     "off": "",
+    "inactive": "confidential processing is available.",
     "verifying": "checking the hardware…",
-    "verified": "{legs} · {substrate} · checked {checked}",
+    "verified": "confidential hardware verified · checked {checked}",
     "failed": "couldn't verify the service — sol isn't sending.",
     "stale": "your journal needs to re-check the service before sending.",
     "unreachable": "can't reach confidential processing right now — sol isn't sending.",
@@ -162,6 +163,11 @@ GLANCE = {
         "label": "sol is thinking with",
         "value": "confidential processing",
         "detail": CONFIDENTIAL_ATTESTATION_STATES["verified"],
+    },
+    "confidential_available": {
+        "label": "available",
+        "value": "confidential processing",
+        "detail": CONFIDENTIAL_ATTESTATION_STATES["inactive"],
     },
     "confidential_blocked": {
         "label": "sol is holding",

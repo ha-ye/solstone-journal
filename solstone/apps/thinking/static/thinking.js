@@ -288,20 +288,6 @@
     return {message: operation?.guidance || '', tone: ''};
   }
 
-  function confidentialLegsLabel(legs) {
-    return (Array.isArray(legs) ? legs : [])
-      .map((leg) => String(leg || '').trim().toUpperCase())
-      .filter(Boolean)
-      .join(' + ');
-  }
-
-  function confidentialVerifiedValues(provenance, checkedLabel = '') {
-    const legs = confidentialLegsLabel(provenance?.legs);
-    const substrate = String(provenance?.substrate || '').trim();
-    if (!legs || !substrate || !checkedLabel) return null;
-    return {legs, substrate, checked: checkedLabel};
-  }
-
   function confidentialSetupMetaLine(attestation, lastCheckedLabel = '') {
     const stateName = attestation?.state || '';
     const blocked = stateName === 'failed' || stateName === 'stale' || stateName === 'unreachable';
@@ -368,12 +354,19 @@
   function confidentialAttestationRender(attestation, text, checkedLabel = '') {
     const stateName = attestation?.state || 'off';
     const states = text?.attestation_states || {};
-    const verified = confidentialVerifiedValues(attestation?.provenance, checkedLabel);
-    if (stateName === 'verified' && verified) {
+    if (stateName === 'verified') {
       return {
         pill: 'active',
         tone: 'hot',
-        message: formatCopy(states.verified || '', verified),
+        message: formatCopy(states.verified || '', {checked: checkedLabel}),
+        recheck: false,
+      };
+    }
+    if (stateName === 'inactive') {
+      return {
+        pill: 'available',
+        tone: '',
+        message: states.inactive || '',
         recheck: false,
       };
     }
@@ -411,13 +404,20 @@
   function confidentialGlanceForAttestation(attestation, text, checkedLabel = '') {
     const glance = text?.glance || {};
     const stateName = attestation?.state || 'off';
-    const verified = confidentialVerifiedValues(attestation?.provenance, checkedLabel);
-    if (stateName === 'verified' && verified) {
+    if (stateName === 'verified') {
       const row = glance.confidential_verified || {};
       return {
         label: row.label || glance.lane_label || '',
         value: row.value || '',
-        detail: formatCopy(row.detail || '', verified),
+        detail: formatCopy(row.detail || '', {checked: checkedLabel}),
+      };
+    }
+    if (stateName === 'inactive') {
+      const row = glance.confidential_available || {};
+      return {
+        label: row.label || '',
+        value: row.value || '',
+        detail: row.detail || '',
       };
     }
     if (stateName === 'verifying') {
@@ -1110,7 +1110,7 @@
   }
 
   function confidentialCheckedLabel(attestation) {
-    return relativeTime(attestation?.provenance?.checked_at || '');
+    return relativeTime(attestation?.observed_at || '');
   }
 
   function renderConfidentialTrust() {
@@ -1190,8 +1190,7 @@
       operationActive ? '' : rendered.tone,
     );
     setText('confidentialSetupState', lines.state);
-    const lastChecked = relativeTime(attestation.last_verified?.checked_at || '');
-    setText('confidentialSetupMeta', confidentialSetupMetaLine(attestation, lastChecked));
+    setText('confidentialSetupMeta', confidentialSetupMetaLine(attestation, checked));
     setMessage(
       'confidentialLaneOperation',
       lines.operation,
@@ -2392,9 +2391,9 @@
   }
 
   async function recheckConfidential() {
-    setMessage('confidentialLaneOperation', copy.confidential?.attestation_states?.verifying || '');
-    state.providers = await api('api/confidential/recheck', {method: 'POST'});
-    renderAll();
+    setMessage('confidentialLaneOperation', '');
+    await requestBrainCheck();
+    await refreshProviders();
   }
 
   async function disableConfidential() {
