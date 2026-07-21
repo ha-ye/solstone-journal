@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
 import scripts.check_release_preflight as preflight
+import scripts.check_rust_release_manifest as checker
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_rust_release_manifest import canonical_json_bytes
@@ -85,15 +87,25 @@ def _native(role: str, wheel_name: str, member_path: str) -> dict:
 
 
 def _native_records() -> list[dict]:
+    root_wheel = next(
+        name
+        for name in checker.expected_package_names(include_models=False)
+        if name.startswith("solstone-") and "macosx_14_0_arm64" in name
+    )
+    core_wheel = next(
+        name
+        for name in checker.expected_package_names(include_models=False)
+        if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
+    )
     return [
         _native(
             "root",
-            "solstone-1.2.3-py3-none-macosx_14_0_arm64.whl",
+            root_wheel,
             "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper",
         ),
         _native(
             "core",
-            "solstone_core-1.2.3-py3-none-macosx_14_0_arm64.whl",
+            core_wheel,
             "solstone_core-1.2.3.data/scripts/solstone-core",
         ),
     ]
@@ -102,8 +114,29 @@ def _native_records() -> list[dict]:
 def _candidate(root: Path) -> Path:
     candidate = root / "candidate"
     candidate.mkdir(parents=True)
-    (candidate / "a.whl").write_bytes(b"a")
-    (candidate / "a.whl.rust-release-manifest.json").write_bytes(b"{}")
+    checker.write_inert_packages(candidate, include_models=False)
+    for artifact, (lane, _target) in checker.rust_artifact_targets().items():
+        if lane == "source":
+            continue
+        info = zipfile.ZipInfo(
+            f"{artifact.removesuffix('.whl')}.data/scripts/solstone-core"
+        )
+        info.create_system = 3
+        info.external_attr = 0o755 << 16
+        with zipfile.ZipFile(candidate / artifact, "w") as wheel:
+            wheel.writestr(info, f"{lane} native member".encode("utf-8"))
+    root_wheel = next(
+        name
+        for name in checker.expected_package_names(include_models=False)
+        if name.startswith("solstone-") and "macosx_14_0_arm64" in name
+    )
+    info = zipfile.ZipInfo(
+        "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
+    )
+    info.create_system = 3
+    info.external_attr = 0o755 << 16
+    with zipfile.ZipFile(candidate / root_wheel, "w") as wheel:
+        wheel.writestr(info, b"macos helper")
     return candidate
 
 
@@ -121,6 +154,10 @@ def _tool_evidence() -> dict[str, dict[str, str]]:
     }
 
 
+def _models(decision: str = "exclude") -> dict[str, str]:
+    return {"decision": decision, "package_version": "1.0.0"}
+
+
 def _ledger_path(root: Path) -> Path:
     return ledger.write_ledger(
         evidence_root=root / "target" / "release-evidence",
@@ -131,6 +168,7 @@ def _ledger_path(root: Path) -> Path:
         tool_evidence=_tool_evidence(),
         policy_run=_policy(),
         native_records=_native_records(),
+        models=_models(),
     )
 
 
@@ -150,6 +188,7 @@ def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:
         tool_evidence=_tool_evidence(),
         policy_run=_policy(),
         native_records=_native_records(),
+        models=_models(),
     )
     second = ledger.write_ledger(
         evidence_root=tmp_path / "two" / "target" / "release-evidence",
@@ -160,6 +199,7 @@ def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:
         tool_evidence=_tool_evidence(),
         policy_run=_policy(),
         native_records=_native_records(),
+        models=_models(),
     )
 
     assert first.read_bytes() == second.read_bytes()
@@ -175,6 +215,7 @@ def test_ledger_key_set_excludes_transport_and_bundle_state(tmp_path: Path) -> N
         tool_evidence=_tool_evidence(),
         policy_run=_policy(),
         native_records=_native_records(),
+        models=_models(),
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     text = path.read_text(encoding="utf-8")
@@ -186,7 +227,14 @@ def test_ledger_key_set_excludes_transport_and_bundle_state(tmp_path: Path) -> N
     assert "github" not in text
     assert "db_url" not in text
     assert "url" not in payload["policy_run"]
+    assert payload["models"] == _models()
     assert {"name", "sha256", "bytes"} == set(payload["candidate"]["files"][0])
+    assert set(payload["tool_evidence"]) == set(preflight.LANE_TOOL_KEYS)
+    assert set(payload["native_members"]) == set(ledger.PROOF_TARGETS)
+    assert set(payload["native_members"]["macos-arm64"]) == {
+        "solstone-core",
+        "parakeet-helper",
+    }
 
 
 def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> None:
@@ -201,6 +249,7 @@ def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> Non
             tool_evidence=_tool_evidence(),
             policy_run=_policy(),
             native_records=records,
+            models=_models(),
         )
 
     records = _native_records()
@@ -214,6 +263,7 @@ def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> Non
             tool_evidence=_tool_evidence(),
             policy_run=_policy(),
             native_records=records,
+            models=_models(),
         )
 
 
@@ -227,9 +277,60 @@ def test_ledger_requires_exactly_two_native_records(tmp_path: Path) -> None:
             tool_evidence=_tool_evidence(),
             policy_run=_policy(),
             native_records=_native_records()[:1],
+            models=_models(),
         )
 
     assert exc.value.failures[0].error == "macOS native record set is incomplete"
+
+
+@pytest.mark.parametrize("lane", tuple(preflight.LANE_TOOL_KEYS))
+def test_ledger_requires_full_tool_cohort_per_lane(tmp_path: Path, lane: str) -> None:
+    tools = _tool_evidence()
+    removed = next(iter(preflight.LANE_TOOL_KEYS[lane]))
+    del tools[lane][removed]
+
+    with pytest.raises(ledger.LedgerError) as exc:
+        ledger.build_ledger(
+            version="1.2.3",
+            source_commit=SOURCE_COMMIT,
+            release_dir=_candidate(tmp_path),
+            core_lock_path=_core_lock(tmp_path),
+            tool_evidence=tools,
+            policy_run=_policy(),
+            native_records=_native_records(),
+            models=_models(),
+        )
+
+    assert any("tool" in failure.error for failure in exc.value.failures)
+
+
+@pytest.mark.parametrize(
+    ("target", "member", "mutation"),
+    [
+        ("linux-x86_64-musl", "solstone-core", "missing"),
+        ("linux-aarch64-musl", "solstone-core", "invalid-sha256"),
+        ("macos-arm64", "parakeet-helper", "invalid-bytes"),
+    ],
+)
+def test_retained_ledger_rejects_native_member_map_mutations(
+    tmp_path: Path, target: str, member: str, mutation: str
+) -> None:
+    path = _ledger_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        del payload["native_members"][target][member]
+    elif mutation == "invalid-sha256":
+        payload["native_members"][target][member]["sha256"] = "ABC"
+    elif mutation == "invalid-bytes":
+        payload["native_members"][target][member]["bytes"] = -1
+    else:
+        raise AssertionError(mutation)
+    path.write_bytes(canonical_json_bytes(payload))
+
+    with pytest.raises(ledger.LedgerError) as exc:
+        ledger.read_retained_ledger(path)
+
+    assert any("native member" in failure.error for failure in exc.value.failures)
 
 
 @pytest.mark.parametrize("value", MALFORMED_DB_COMMITS)

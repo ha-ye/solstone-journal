@@ -1358,7 +1358,7 @@ def test_native_tools_allowlists_by_lane() -> None:
         ),
         ("secret token abc123", "native_tools value contains secret/token canary"),
         (
-            "built on pro5e.local",
+            "built on build-host.local",
             "native_tools value contains private host, IP, or path",
         ),
         (

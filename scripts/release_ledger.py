@@ -6,27 +6,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import scripts.check_release_preflight as preflight
 from scripts.check_rust_release_manifest import (
+    SHA256_RE,
     SOURCE_COMMIT_RE,
     Failure,
     canonical_json_bytes,
+    expected_package_names,
     rust_artifact_targets,
+)
+from scripts.check_wheel_contents import (
+    PARAKEET_HELPER_MEMBER,
+    core_wheel_script_members,
 )
 from scripts.release_advisory_policy import PolicyRun, validate_snapshot_identity
 from scripts.release_digest import candidate_digest, file_sha256_size
+from scripts.release_install_smoke import PROOF_TARGETS
 from scripts.release_public_evidence import validate_public_evidence_tree
 
-PROOF_TARGETS: tuple[str, ...] = (
-    "linux-x86_64-musl",
-    "linux-aarch64-musl",
-    "macos-arm64",
-)
 TOP_LEVEL_KEYS = frozenset(
     (
         "schema_version",
@@ -35,9 +40,11 @@ TOP_LEVEL_KEYS = frozenset(
         "version",
         "source_commit",
         "candidate",
+        "models",
         "core_lock_sha256",
         "rust_targets",
         "tool_evidence",
+        "native_members",
         "dependency_policy",
         "policy_run",
         "native_summary",
@@ -45,6 +52,7 @@ TOP_LEVEL_KEYS = frozenset(
         "redaction",
     )
 )
+MODELS_KEYS = frozenset(("decision", "package_version"))
 POLICY_RUN_KEYS = frozenset(
     (
         "advisory_source_id",
@@ -85,6 +93,40 @@ def _rust_targets() -> list[dict[str, Any]]:
     return targets
 
 
+def _validate_tool_evidence(
+    tool_evidence: Mapping[str, Mapping[str, str]],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    expected_lanes = set(preflight.LANE_TOOL_KEYS)
+    if set(tool_evidence) != expected_lanes:
+        failures.append(
+            _failure(
+                "release tool evidence lanes are invalid",
+                expected=", ".join(sorted(expected_lanes)),
+                actual=", ".join(sorted(str(key) for key in tool_evidence))
+                or "<empty>",
+                repair="python3 scripts/check_release_preflight.py lane-tools --help",
+            )
+        )
+    for lane in sorted(set(tool_evidence) & expected_lanes):
+        evidence = tool_evidence[lane]
+        if not isinstance(evidence, Mapping):
+            failures.append(
+                _failure(
+                    "release tool evidence lane is invalid",
+                    expected=f"{lane} tool evidence object",
+                    actual=type(evidence).__name__,
+                    repair="python3 scripts/check_release_preflight.py lane-tools --help",
+                )
+            )
+            continue
+        failures.extend(preflight.check_lane_tool_evidence(lane, evidence))
+    failures.extend(
+        validate_public_evidence_tree("ledger.tool_evidence", tool_evidence)
+    )
+    return failures
+
+
 def _policy_run_payload(policy_run: PolicyRun) -> dict[str, str]:
     payload = {
         "advisory_source_id": policy_run.advisory_source_id,
@@ -104,6 +146,168 @@ def _policy_run_payload(policy_run: PolicyRun) -> dict[str, str]:
     if failures:
         raise LedgerError(failures)
     return payload
+
+
+def _validate_member_entry(label: str, value: Any) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(value, Mapping) or set(value) != {"path", "sha256", "bytes"}:
+        return [
+            _failure(
+                f"{label} native member entry is invalid",
+                expected="path, sha256, bytes",
+                actual=repr(value),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    if not isinstance(value.get("path"), str) or not value["path"]:
+        failures.append(
+            _failure(
+                f"{label} native member path is invalid",
+                expected="non-empty retained wheel member path",
+                actual=repr(value.get("path")),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if not isinstance(value.get("sha256"), str) or not SHA256_RE.fullmatch(
+        value["sha256"]
+    ):
+        failures.append(
+            _failure(
+                f"{label} native member sha256 is invalid",
+                expected="lowercase SHA-256",
+                actual=repr(value.get("sha256")),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if not isinstance(value.get("bytes"), int) or value["bytes"] < 0:
+        failures.append(
+            _failure(
+                f"{label} native member byte count is invalid",
+                expected="non-negative integer",
+                actual=repr(value.get("bytes")),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    return failures
+
+
+def validate_native_members(value: Any) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(value, Mapping):
+        return [
+            _failure(
+                "retained ledger native_members is invalid",
+                expected="target native member map",
+                actual=type(value).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    expected_targets = set(PROOF_TARGETS)
+    if set(value) != expected_targets:
+        failures.append(
+            _failure(
+                "retained ledger native_members targets are invalid",
+                expected=", ".join(sorted(expected_targets)),
+                actual=", ".join(sorted(str(key) for key in value)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    for target in sorted(set(value) & expected_targets):
+        members = value[target]
+        expected_member_names = (
+            {"solstone-core", "parakeet-helper"}
+            if target == "macos-arm64"
+            else {"solstone-core"}
+        )
+        if not isinstance(members, Mapping):
+            failures.append(
+                _failure(
+                    f"retained ledger {target} native members are invalid",
+                    expected="native member map",
+                    actual=type(members).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        if set(members) != expected_member_names:
+            failures.append(
+                _failure(
+                    f"retained ledger {target} native member set is invalid",
+                    expected=", ".join(sorted(expected_member_names)),
+                    actual=", ".join(sorted(str(key) for key in members)) or "<empty>",
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        for name, entry in sorted(members.items()):
+            failures.extend(_validate_member_entry(f"{target}.{name}", entry))
+    failures.extend(validate_public_evidence_tree("ledger.native_members", value))
+    return failures
+
+
+def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(value, Mapping):
+        return [
+            _failure(
+                "retained ledger models binding is invalid",
+                expected="models decision object",
+                actual=type(value).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    if set(value) != MODELS_KEYS:
+        failures.append(
+            _failure(
+                "retained ledger models key set is invalid",
+                expected=", ".join(sorted(MODELS_KEYS)),
+                actual=", ".join(sorted(str(key) for key in value)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    decision = value.get("decision")
+    if decision not in {"include", "exclude"}:
+        failures.append(
+            _failure(
+                "retained ledger models decision is invalid",
+                expected="include or exclude",
+                actual=str(decision),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    package_version = value.get("package_version")
+    if not isinstance(package_version, str) or not package_version:
+        failures.append(
+            _failure(
+                "retained ledger models package version is invalid",
+                expected="non-empty package version",
+                actual=repr(package_version),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if isinstance(candidate, Mapping) and decision in {"include", "exclude"}:
+        raw_files = candidate.get("files")
+        files = raw_files if isinstance(raw_files, Sequence) else ()
+        package_names = {
+            str(item.get("name"))
+            for item in files
+            if isinstance(item, Mapping)
+            and isinstance(item.get("name"), str)
+            and not str(item.get("name")).endswith(".rust-release-manifest.json")
+        }
+        expected_packages = set(
+            expected_package_names(include_models=decision == "include")
+        )
+        if package_names != expected_packages:
+            failures.append(
+                _failure(
+                    "retained ledger candidate inventory does not match models decision",
+                    expected=", ".join(sorted(expected_packages)),
+                    actual=", ".join(sorted(package_names)) or "<empty>",
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+    failures.extend(validate_public_evidence_tree("ledger.models", value))
+    return failures
 
 
 def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
@@ -145,6 +349,22 @@ def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
                 db_archive_sha256=policy_run.get("db_archive_sha256"),
             )
         )
+    tool_evidence = payload.get("tool_evidence")
+    if isinstance(tool_evidence, Mapping):
+        failures.extend(_validate_tool_evidence(tool_evidence))
+    else:
+        failures.append(
+            _failure(
+                "retained ledger tool_evidence is invalid",
+                expected="per-lane full tool evidence",
+                actual=type(tool_evidence).__name__,
+                repair="python3 scripts/check_release_preflight.py lane-tools --help",
+            )
+        )
+    failures.extend(
+        validate_models_payload(payload.get("models"), payload.get("candidate"))
+    )
+    failures.extend(validate_native_members(payload.get("native_members")))
     failures.extend(validate_public_evidence_tree("ledger", payload))
     return failures
 
@@ -246,6 +466,220 @@ def _native_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _macos_records_by_role(
+    records: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Mapping[str, Any]], list[Failure]]:
+    failures: list[Failure] = []
+    by_role: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        role = record.get("role")
+        if role not in {"root", "core"}:
+            failures.append(
+                _failure(
+                    "macOS native record role is invalid",
+                    expected="root or core",
+                    actual=str(role),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        if role in by_role:
+            failures.append(
+                _failure(
+                    "macOS native record role is duplicated",
+                    expected="one root and one core record",
+                    actual=str(role),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        by_role[str(role)] = record
+    if set(by_role) != {"root", "core"}:
+        failures.append(
+            _failure(
+                "macOS native record set is incomplete",
+                expected="exactly root and core records",
+                actual=", ".join(sorted(by_role)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    return by_role, failures
+
+
+def _wheel_member_entry(
+    path: Path, *, member_name: str, label: str
+) -> tuple[dict[str, Any] | None, list[Failure]]:
+    failures: list[Failure] = []
+    try:
+        with zipfile.ZipFile(path) as wheel:
+            members = [
+                info for info in wheel.infolist() if info.filename == member_name
+            ]
+            if len(members) != 1:
+                return None, [
+                    _failure(
+                        f"{label} native member count is wrong",
+                        expected=f"exactly one {member_name}",
+                        actual=str(len(members)),
+                        repair="python3 scripts/check_rust_release_manifest.py",
+                    )
+                ]
+            member = members[0]
+            member_bytes = wheel.read(member)
+    except (OSError, zipfile.BadZipFile) as exc:
+        failures.append(
+            _failure(
+                f"{label} native member could not be read",
+                expected="valid wheel with retained native member",
+                actual=type(exc).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+        return None, failures
+    return (
+        {
+            "path": member.filename,
+            "sha256": hashlib.sha256(member_bytes).hexdigest(),
+            "bytes": len(member_bytes),
+        },
+        [],
+    )
+
+
+def _core_member_from_wheel(path: Path) -> tuple[dict[str, Any] | None, list[Failure]]:
+    try:
+        with zipfile.ZipFile(path) as wheel:
+            scripts = core_wheel_script_members(wheel)
+            if len(scripts) != 1:
+                return None, [
+                    _failure(
+                        "core wheel native member count is wrong",
+                        expected="exactly one .data/scripts/solstone-core",
+                        actual=str(len(scripts)),
+                        repair="python3 scripts/check_rust_release_manifest.py",
+                    )
+                ]
+            member_name = scripts[0].filename
+    except (OSError, zipfile.BadZipFile) as exc:
+        return None, [
+            _failure(
+                "core wheel native member could not be read",
+                expected="valid core wheel with native script member",
+                actual=type(exc).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    return _wheel_member_entry(path, member_name=member_name, label="core wheel")
+
+
+def _root_wheel_name_from_record(
+    records_by_role: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any] | None, list[Failure]]:
+    record = records_by_role.get("root")
+    wheel = record.get("wheel") if isinstance(record, Mapping) else None
+    if not isinstance(wheel, Mapping) or not isinstance(wheel.get("name"), str):
+        return None, [
+            _failure(
+                "macOS root native record wheel name is invalid",
+                expected="root native record wheel name",
+                actual=repr(wheel),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    return {"name": wheel["name"]}, []
+
+
+def _native_members_from_wheels(
+    release_dir: Path, *, root_wheel_name: str
+) -> dict[str, dict[str, dict[str, Any]]]:
+    failures: list[Failure] = []
+    members: dict[str, dict[str, dict[str, Any]]] = {}
+    for artifact, (lane, _target) in sorted(rust_artifact_targets().items()):
+        if lane == "source":
+            continue
+        core_member, core_failures = _core_member_from_wheel(release_dir / artifact)
+        failures.extend(core_failures)
+        if core_member is not None:
+            members.setdefault(lane, {})["solstone-core"] = core_member
+    helper_member, helper_failures = _wheel_member_entry(
+        release_dir / root_wheel_name,
+        member_name=PARAKEET_HELPER_MEMBER,
+        label="macOS root wheel",
+    )
+    failures.extend(helper_failures)
+    if helper_member is not None:
+        members.setdefault("macos-arm64", {})["parakeet-helper"] = helper_member
+    failures.extend(validate_native_members(members))
+    if failures:
+        raise LedgerError(failures)
+    return members
+
+
+def _native_members(
+    release_dir: Path,
+    native_records: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    records_by_role, record_failures = _macos_records_by_role(native_records)
+    root_wheel_name, root_name_failures = _root_wheel_name_from_record(records_by_role)
+    failures = [*record_failures, *root_name_failures]
+    if failures:
+        raise LedgerError(failures)
+    if root_wheel_name is None:
+        raise AssertionError("root wheel name missing without failures")
+    return _native_members_from_wheels(
+        release_dir, root_wheel_name=str(root_wheel_name["name"])
+    )
+
+
+def _root_wheel_name_from_ledger(
+    payload: Mapping[str, Any],
+) -> tuple[str | None, list[Failure]]:
+    native_summary = payload.get("native_summary")
+    root_summary = (
+        native_summary.get("macos_root_helper")
+        if isinstance(native_summary, Mapping)
+        else None
+    )
+    wheel = root_summary.get("wheel") if isinstance(root_summary, Mapping) else None
+    if not isinstance(wheel, Mapping) or not isinstance(wheel.get("name"), str):
+        return None, [
+            _failure(
+                "retained ledger macOS root wheel name is invalid",
+                expected="native_summary macOS root wheel name",
+                actual=repr(wheel),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    return str(wheel["name"]), []
+
+
+def validate_native_members_against_release_dir(
+    release_dir: Path, payload: Mapping[str, Any]
+) -> list[Failure]:
+    root_wheel_name, failures = _root_wheel_name_from_ledger(payload)
+    if failures:
+        return failures
+    if root_wheel_name is None:
+        return []
+    try:
+        actual = _native_members_from_wheels(
+            release_dir, root_wheel_name=root_wheel_name
+        )
+    except LedgerError as exc:
+        return list(exc.failures)
+    retained = payload.get("native_members")
+    if actual != retained:
+        return [
+            _failure(
+                "retained ledger native_members do not match finalized wheels",
+                expected="native member path/hash map rederived from release payload",
+                actual="retained native_members differ",
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    return []
+
+
 def build_ledger(
     *,
     version: str,
@@ -255,6 +689,7 @@ def build_ledger(
     tool_evidence: Mapping[str, Mapping[str, str]],
     policy_run: PolicyRun,
     native_records: Sequence[Mapping[str, Any]],
+    models: Mapping[str, str],
 ) -> dict[str, Any]:
     failures: list[Failure] = []
     if not SOURCE_COMMIT_RE.fullmatch(source_commit):
@@ -287,6 +722,13 @@ def build_ledger(
     except LedgerError as exc:
         failures.extend(exc.failures)
         native_summary = {}
+    try:
+        native_members = _native_members(release_dir, native_records)
+    except LedgerError as exc:
+        failures.extend(exc.failures)
+        native_members = {}
+    failures.extend(validate_models_payload(models, candidate))
+    failures.extend(_validate_tool_evidence(tool_evidence))
     if failures:
         raise LedgerError(failures)
 
@@ -297,11 +739,13 @@ def build_ledger(
         "version": version,
         "source_commit": source_commit,
         "candidate": candidate,
+        "models": {key: models[key] for key in sorted(models)},
         "core_lock_sha256": core_lock_sha256,
         "rust_targets": _rust_targets(),
         "tool_evidence": {
             lane: dict(tool_evidence[lane]) for lane in sorted(tool_evidence)
         },
+        "native_members": native_members,
         "dependency_policy": policy_run.manifest_dependency_policy(),
         "policy_run": _policy_run_payload(policy_run),
         "native_summary": native_summary,
@@ -326,6 +770,8 @@ def write_ledger(
     tool_evidence: Mapping[str, Mapping[str, str]],
     policy_run: PolicyRun,
     native_records: Sequence[Mapping[str, Any]],
+    models: Mapping[str, str],
+    output_dir: Path | None = None,
 ) -> Path:
     ledger = build_ledger(
         version=version,
@@ -335,10 +781,11 @@ def write_ledger(
         tool_evidence=tool_evidence,
         policy_run=policy_run,
         native_records=native_records,
+        models=models,
     )
-    output_dir = evidence_root / version
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "ledger.json"
+    resolved_output_dir = output_dir or (evidence_root / version)
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = resolved_output_dir / "ledger.json"
     payload = canonical_json_bytes(ledger)
     temp_path = output_path.with_name(f".{output_path.name}.tmp")
     try:

@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -114,7 +115,7 @@ NATIVE_TOOL_KEYS: dict[LaneName, frozenset[str]] = {
     "linux-x86_64-musl": frozenset(("uv", "maturin", "zig")),
     "linux-aarch64-musl": frozenset(("uv", "maturin", "zig")),
     "macos-arm64": frozenset(
-        ("uv", "maturin", "xcode", "codesign", "notarytool", "signing_mode")
+        ("uv", "maturin", "xcode", "swift", "codesign", "notarytool", "signing_mode")
     ),
 }
 ORDER_INDEPENDENT_LIST_KEYS = frozenset(("features", "active_exceptions"))
@@ -1874,8 +1875,36 @@ def fixture_evidence_by_lane() -> dict[LaneName, LaneEvidence]:
 
 def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
     dist_dir.mkdir(parents=True, exist_ok=True)
+    core_wheel_names = {
+        name
+        for name, (lane, _target) in rust_artifact_targets().items()
+        if lane != "source"
+    }
     for name in expected_package_names(include_models=include_models):
-        (dist_dir / name).write_bytes(f"inert bytes for {name}\n".encode("utf-8"))
+        path = dist_dir / name
+        if name in core_wheel_names:
+            info = zipfile.ZipInfo(
+                f"{name.removesuffix('.whl')}.data/scripts/solstone-core"
+            )
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            with zipfile.ZipFile(path, "w") as wheel:
+                wheel.writestr(info, f"inert solstone-core for {name}\n")
+            continue
+        if (
+            name.startswith("solstone-")
+            and name.endswith(".whl")
+            and "macosx_14_0_arm64" in name
+        ):
+            info = zipfile.ZipInfo(
+                "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
+            )
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            with zipfile.ZipFile(path, "w") as wheel:
+                wheel.writestr(info, f"inert parakeet-helper for {name}\n")
+            continue
+        path.write_bytes(f"inert bytes for {name}\n".encode("utf-8"))
 
 
 def write_inert_candidate(
@@ -2089,6 +2118,215 @@ def run_fixtures_mode() -> list[Failure]:
                     expected="no ready or staging directory",
                     actual="leftover path present",
                     repair="do not stage while the lock is contended",
+                )
+            ]
+        try:
+            from scripts.check_release_preflight import expected_lane_tool_evidence
+            from scripts.release_advisory_policy import PolicyRun
+            from scripts.release_digest import candidate_digest, file_sha256_size
+            from scripts.release_install_smoke import (
+                PROOF_TARGETS,
+                SCRUBBED_COMMAND_ENV,
+                CommandResult,
+                InstallObservation,
+                build_install_proof,
+                expected_distribution_entries,
+                proof_targets_match_lanes,
+                target_install_paths_from_ledger,
+                write_install_proof,
+            )
+            from scripts.release_ledger import read_retained_ledger, write_ledger
+        except ImportError as exc:
+            return [
+                _failure(
+                    "fixtures mode could not import release evidence helpers",
+                    expected="release evidence helper modules import cleanly",
+                    actual=str(exc),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            ]
+        if not proof_targets_match_lanes():
+            return [
+                _failure(
+                    "proof target fixture relationship drifted",
+                    expected="PROOF_TARGETS plus source equals LANES",
+                    actual=", ".join(PROOF_TARGETS),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            ]
+        policy_run = PolicyRun(
+            advisory_source_id="fixture-advisories",
+            db_commit="a" * 40,
+            db_archive_sha256="b" * 64,
+            advisory_acquired_at="2026-07-20T11:00:00Z",
+            policy_checked_at="2026-07-20T12:00:00Z",
+            result="pass",
+        )
+        fixture_root_wheel = next(
+            name
+            for name in expected_package_names(include_models=False)
+            if name.startswith("solstone-") and "macosx_14_0_arm64" in name
+        )
+        fixture_core_wheel = next(
+            name
+            for name in expected_package_names(include_models=False)
+            if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
+        )
+        native_records = [
+            {
+                "role": "root",
+                "wheel": {
+                    "name": fixture_root_wheel,
+                    "sha256": "c" * 64,
+                    "bytes": 12,
+                },
+                "member": {
+                    "path": "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper",
+                    "sha256": "d" * 64,
+                    "bytes": 6,
+                },
+                "tools": fixture_native_tools("macos-arm64"),
+                "signing_mode": "signed-verified",
+                "signing": {
+                    "signer_pinned": True,
+                    "team_pinned": True,
+                    "hardened_runtime": True,
+                    "trusted_timestamp": True,
+                },
+                "notarization_status": "accepted",
+            },
+            {
+                "role": "core",
+                "wheel": {
+                    "name": fixture_core_wheel,
+                    "sha256": "e" * 64,
+                    "bytes": 12,
+                },
+                "member": {
+                    "path": "solstone_core-1.0.0.data/scripts/solstone-core",
+                    "sha256": "f" * 64,
+                    "bytes": 6,
+                },
+                "tools": fixture_native_tools("macos-arm64"),
+                "signing_mode": "signed-verified",
+                "signing": {
+                    "signer_pinned": True,
+                    "team_pinned": True,
+                    "hardened_runtime": True,
+                    "trusted_timestamp": True,
+                },
+                "notarization_status": "accepted",
+            },
+        ]
+        tool_evidence = {lane: expected_lane_tool_evidence(lane) for lane in LANES}
+        evidence_root = root / "target" / "release-evidence"
+        try:
+            ledger_path = write_ledger(
+                evidence_root=evidence_root,
+                version=_current_version(),
+                source_commit=source_commit,
+                release_dir=ready,
+                core_lock_path=cargo_lock_path,
+                tool_evidence=tool_evidence,
+                policy_run=policy_run,
+                native_records=native_records,
+                models={
+                    "decision": "exclude",
+                    "package_version": next(
+                        name.removeprefix("solstone_journal_models-").removesuffix(
+                            ".tar.gz"
+                        )
+                        for name in _models_expected_names()
+                        if name.endswith(".tar.gz")
+                    ),
+                },
+            )
+            ledger_payload = read_retained_ledger(ledger_path)
+            ledger_sha256 = file_sha256_size(ledger_path)[0]
+            digest = candidate_digest(ready)
+            candidate_paths = sorted(path for path in ready.iterdir() if path.is_file())
+            env_root = root / "fixture-env"
+            (env_root / "bin").mkdir(parents=True, exist_ok=True)
+            (env_root / "bin" / "solstone-core").write_bytes(b"fixture-core")
+            (env_root / "bin" / "parakeet-helper").write_bytes(b"fixture-helper")
+            proofs_dir = evidence_root / _current_version() / "proofs"
+            for target in PROOF_TARGETS:
+                install_paths = target_install_paths_from_ledger(
+                    ledger_payload,
+                    target=target,
+                    candidate_dir=ready,
+                )
+                retained_members = ledger_payload["native_members"][target]
+                installed_members = [
+                    {
+                        "name": "solstone-core",
+                        "path": env_root / "bin" / "solstone-core",
+                        "sha256": retained_members["solstone-core"]["sha256"],
+                        "symlink": False,
+                    }
+                ]
+                if target == "macos-arm64":
+                    installed_members.append(
+                        {
+                            "name": "parakeet-helper",
+                            "path": env_root / "bin" / "parakeet-helper",
+                            "sha256": retained_members["parakeet-helper"]["sha256"],
+                            "symlink": False,
+                        }
+                    )
+                proof = build_install_proof(
+                    target=target,
+                    version=_current_version(),
+                    source_commit=source_commit,
+                    core_lock_sha256=file_sha256_size(cargo_lock_path)[0],
+                    candidate_digest=digest,
+                    ledger_sha256=ledger_sha256,
+                    candidate_dir=ready,
+                    candidate_paths=candidate_paths,
+                    ledger_payload=ledger_payload,
+                    observation=InstallObservation(
+                        env_root=env_root,
+                        preexisting_distributions=(),
+                        install=CommandResult(
+                            argv=(
+                                str(env_root / "bin" / "python"),
+                                "-m",
+                                "pip",
+                                "install",
+                                "--no-index",
+                                "--no-deps",
+                                *(str(path) for path in install_paths),
+                            ),
+                            exit_code=0,
+                            stdout="installed",
+                            env=SCRUBBED_COMMAND_ENV,
+                        ),
+                        installed_distributions=expected_distribution_entries(
+                            install_paths
+                        ),
+                        installed_members=tuple(installed_members),
+                        smoke={
+                            "solstone-core": CommandResult(
+                                argv=(
+                                    str(env_root / "bin" / "solstone-core"),
+                                    "--version",
+                                ),
+                                exit_code=0,
+                                stdout=f"solstone-core {_current_version()}",
+                                env=SCRUBBED_COMMAND_ENV,
+                            )
+                        },
+                    ),
+                    recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
+                )
+                write_install_proof(proofs_dir / f"{target}.json", proof)
+        except Exception as exc:
+            return [
+                _failure(
+                    "fixtures mode release evidence validation failed",
+                    expected="inert ledger and proofs validate",
+                    actual=type(exc).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
                 )
             ]
         return []
