@@ -58,6 +58,10 @@ from solstone.apps.speakers.discovery import (
     resolve_statement_cluster,
     undo_identify_operation,
 )
+from solstone.apps.speakers.eligibility import (
+    current_principal_id,
+    is_speaker_attach_candidate,
+)
 from solstone.apps.speakers.encoder_config import (
     OWNER_BOOTSTRAP_MIN_STMTS,
     OWNER_THRESHOLD,
@@ -633,20 +637,12 @@ def search_people_for_speakers(query: str) -> dict[str, Any]:
         return {"query": "", "people": []}
 
     folded_query = q.casefold()
-    principal = get_journal_principal()
-    principal_id = str(principal.get("id") or "") if principal else ""
+    principal_id = current_principal_id()
     people: list[dict[str, Any]] = []
     for entity in load_all_journal_entities().values():
         entity_id = str(entity.get("id") or "")
         name = str(entity.get("name") or "")
-        if (
-            not entity_id
-            or not name
-            or entity.get("type") != "Person"
-            or entity.get("blocked")
-            or entity.get("is_principal")
-            or entity_id == principal_id
-        ):
+        if not is_speaker_attach_candidate(entity, principal_id=principal_id):
             continue
         if not any(
             folded_query in value.casefold() for value in _person_search_strings(entity)
@@ -2460,6 +2456,7 @@ def _identify_result_response(result: dict) -> Any:
         "resolved",
         "ambiguous",
         "no_match",
+        "principal_match",
         "undone",
         "already_undone",
     }:

@@ -20,6 +20,13 @@ from solstone.apps.speakers.attribution import (
     compute_segment_candidate_evidence_readonly,
 )
 from solstone.apps.speakers.audio import resolve_audio_url
+from solstone.apps.speakers.eligibility import (
+    blocked_person_name_collision,
+    current_principal_id,
+    eligible_speaker_attach_entities,
+    principal_name_collision,
+    speaker_attach_rejection_reason,
+)
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
@@ -1069,39 +1076,61 @@ def _normalize_reviewed_near_match_ids(
     return result, None
 
 
+def _visible_near_match_candidate_rows(
+    candidates: Any,
+    *,
+    entities: dict[str, dict[str, Any]],
+    principal_id: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for candidate in candidates or ():
+        entity_id = str(getattr(candidate, "id", "") or "")
+        if (
+            speaker_attach_rejection_reason(
+                entity_id,
+                entities,
+                principal_id=principal_id,
+            )
+            is not None
+        ):
+            continue
+        row = candidate.to_dict()
+        row["has_voice"] = _voiceprints_exist(entity_id)
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            -float(row.get("score") or 0.0),
+            str(row.get("name") or "").casefold(),
+            str(row.get("id") or ""),
+        )
+    )
+    return rows
+
+
+def _candidate_ids(candidate_rows: list[dict[str, Any]]) -> list[str]:
+    return [str(row["id"]) for row in candidate_rows]
+
+
 def _validate_near_matches_for_create(
     reviewed_ids: list[str],
     *,
-    name: str,
     target_id: str,
     entities: dict[str, dict[str, Any]],
+    visible_candidate_ids: list[str],
+    principal_id: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    from solstone.think.entities import closest_resolution_candidates
     from solstone.think.speaker_keep_separate import pair_key
 
-    if not reviewed_ids:
-        return [], None
-    entities_list = [
-        entity for entity in entities.values() if not entity.get("blocked")
-    ]
-    shown = {
-        candidate.id
-        for candidate in closest_resolution_candidates(name, entities_list, limit=3)
-    }
+    shown = set(visible_candidate_ids)
     invalid: list[dict[str, str]] = []
     for reviewed_id in reviewed_ids:
-        entity = entities.get(reviewed_id)
-        reason = None
-        if reviewed_id == target_id:
-            reason = "self"
-        elif entity is None:
-            reason = "nonexistent"
-        elif entity.get("is_principal"):
-            reason = "principal"
-        elif entity.get("type") != "Person":
-            reason = "non_person"
-        elif reviewed_id not in shown:
-            reason = "unshown"
+        reason = speaker_attach_rejection_reason(
+            reviewed_id,
+            entities,
+            target_id=target_id,
+            visible_candidate_ids=shown,
+            principal_id=principal_id,
+        )
         if reason is not None:
             invalid.append({"entity_id": reviewed_id, "reason": reason})
     if invalid:
@@ -1109,6 +1138,15 @@ def _validate_near_matches_for_create(
             "status": "invalid_request",
             "error": "invalid reviewed_near_match_entity_ids",
             "invalid_reviewed_near_match_entity_ids": invalid,
+        }
+
+    reviewed_set = set(reviewed_ids)
+    if reviewed_set != shown:
+        return [], {
+            "status": "invalid_request",
+            "error": "reviewed_near_match_entity_ids must match shown near matches",
+            "expected_reviewed_near_match_entity_ids": sorted(shown),
+            "actual_reviewed_near_match_entity_ids": sorted(reviewed_set),
         }
 
     assertions: list[dict[str, Any]] = []
@@ -1183,6 +1221,9 @@ def _plan_identify(
     if reviewed_error:
         return None, reviewed_error
 
+    principal_id = current_principal_id()
+    journal_entities: dict[str, dict[str, Any]] | None = None
+    visible_candidate_rows: list[dict[str, Any]] = []
     name_value = name.strip() if isinstance(name, str) else ""
     entity_id_value = entity_id.strip() if isinstance(entity_id, str) else ""
     will_create = False
@@ -1201,9 +1242,26 @@ def _plan_identify(
         if not name_value:
             return None, {"error": "name is required"}
         journal_entities = load_all_journal_entities()
-        entities_list = [
-            entity for entity in journal_entities.values() if not entity.get("blocked")
-        ]
+        if principal_name_collision(
+            name_value,
+            journal_entities,
+            principal_id=principal_id,
+        ):
+            return None, {
+                "status": "principal_match",
+                "this_is_me": True,
+            }
+        if blocked_person_name_collision(name_value, journal_entities):
+            return None, {
+                "status": "invalid_request",
+                "error": "name is unavailable",
+            }
+        entities_list = list(
+            eligible_speaker_attach_entities(
+                journal_entities,
+                principal_id=principal_id,
+            )
+        )
         resolution = record_entity_resolution(
             name_value,
             entities_list,
@@ -1215,30 +1273,34 @@ def _plan_identify(
             ),
             read_only=True,
         )
-        if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
-            return None, {
-                "status": "ambiguous",
-                "ambiguity_id": resolution.ambiguity_id,
-                "candidates": [
-                    candidate.to_dict() for candidate in resolution.candidates
-                ],
-            }
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             target_id = resolution.entity["id"]
             target_name = resolution.entity.get("name", name_value)
             target_type = str(resolution.entity.get("type") or entity_type)
         else:
+            candidate_source = resolution.candidates
+            if resolution.outcome == EntityResolutionOutcome.NO_MATCH:
+                candidate_source = closest_resolution_candidates(
+                    name_value,
+                    entities_list,
+                )
+            visible_candidate_rows = _visible_near_match_candidate_rows(
+                candidate_source,
+                entities=journal_entities,
+                principal_id=principal_id,
+            )
             if resolve_only or not create_new:
-                return None, {
-                    "status": "no_match",
-                    "candidates": [
-                        candidate.to_dict()
-                        for candidate in closest_resolution_candidates(
-                            name_value,
-                            entities_list,
-                        )
-                    ],
+                result = {
+                    "status": (
+                        "ambiguous"
+                        if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS
+                        else "no_match"
+                    ),
+                    "candidates": visible_candidate_rows,
                 }
+                if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+                    result["ambiguity_id"] = resolution.ambiguity_id
+                return None, result
             will_create = True
             target_id = entity_slug(name_value)
             target_name = name_value
@@ -1261,12 +1323,14 @@ def _plan_identify(
             "invalid_entity_type": True,
         }
 
-    journal_entities = load_all_journal_entities()
+    if journal_entities is None:
+        journal_entities = load_all_journal_entities()
     keep_separate_assertions, near_match_error = _validate_near_matches_for_create(
         reviewed_ids,
-        name=name_value,
         target_id=target_id,
         entities=journal_entities,
+        visible_candidate_ids=_candidate_ids(visible_candidate_rows),
+        principal_id=principal_id,
     )
     if near_match_error:
         return None, near_match_error

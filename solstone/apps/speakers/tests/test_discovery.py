@@ -201,6 +201,57 @@ def _create_identify_cluster(
     )
 
 
+def _update_entity(env, entity_id: str, **updates) -> None:
+    entity_path = env.journal / "entities" / entity_id / "entity.json"
+    entity = json.loads(entity_path.read_text(encoding="utf-8"))
+    entity.update(updates)
+    entity_path.write_text(json.dumps(entity), encoding="utf-8")
+
+
+def _setup_mixed_person_entities(env) -> None:
+    _setup_owner_centroid(env.journal, [0.0, 1.0], entity_id="owner_test")
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    env.create_entity("Sarah Org")
+    env.create_entity("Sarah Blocked")
+    env.create_entity("Other Person")
+    _update_entity(env, "sarah_org", type="Organization")
+    _update_entity(env, "sarah_blocked", blocked=True)
+
+
+def _setup_no_match_near_entities(env) -> None:
+    _setup_owner_centroid(env.journal, [0.0, 1.0], entity_id="owner_test")
+    _update_entity(env, "owner_test", name="Jnthn Smth Owner")
+    env.create_entity("Jonathan Smith")
+    env.create_entity("Jnthn Smth Org")
+    env.create_entity("Jnthn Smth Blocked")
+    _update_entity(env, "jnthn_smth_org", type="Organization")
+    _update_entity(env, "jnthn_smth_blocked", blocked=True)
+
+
+def _assert_no_identify_write_boundary(
+    env,
+    *,
+    target_id: str,
+    segment_key: str,
+    before: dict[str, str],
+    target_must_be_absent: bool = True,
+) -> None:
+    assert _domain_tree_hash(env.journal) == before
+    target_dir = env.journal / "entities" / target_id
+    if target_must_be_absent:
+        assert not target_dir.exists()
+    else:
+        assert target_dir.exists()
+        assert not (target_dir / "voiceprints.npz").exists()
+    assert _speaker_labels_for_segment(env.journal, "20240101", segment_key) == []
+    assert _load_corrections_count(env.journal, "20240101", segment_key) == 0
+    assert not (env.journal / "speakers" / "identify-operations.jsonl").exists()
+    assert not (env.journal / "speakers" / "keep-separate.jsonl").exists()
+    assert not _discovery_resolved_path().exists()
+    assert not (env.journal / "awareness" / "speaker_candidates.json").exists()
+
+
 def _speaker_labels_for_segment(
     journal: Path, day: str, segment_key: str
 ) -> list[dict]:
@@ -916,8 +967,19 @@ def test_identify_name_create_matrix_and_entity_type_validation(speakers_env):
     existing = identify_cluster(21, name="Bob Smith")
     existing_create = identify_cluster(27, name="Bob Smith", create_new=True)
     no_match = identify_cluster(22, name="Zelda Unknown")
-    created = identify_cluster(23, name="Yara New", create_new=True)
-    ambiguous = identify_cluster(24, name="Sarah", create_new=True)
+    created = identify_cluster(
+        23,
+        name="Yara New",
+        create_new=True,
+        reviewed_near_match_entity_ids=[
+            "bob_smith",
+            "sarah_connor",
+            "sarah_lee",
+        ],
+    )
+    ambiguous_create_missing_review = identify_cluster(
+        24, name="Sarah", create_new=True
+    )
     invalid_type = identify_cluster(
         25,
         name="Qzxqv Wvuty",
@@ -937,7 +999,11 @@ def test_identify_name_create_matrix_and_entity_type_validation(speakers_env):
     assert created["entity_id"] == "yara_new"
     assert created["entity_created"] is True
     assert (env.journal / "entities" / "yara_new" / "entity.json").exists()
-    assert ambiguous["status"] == "ambiguous"
+    assert ambiguous_create_missing_review["status"] == "invalid_request"
+    assert (
+        ambiguous_create_missing_review["error"]
+        == "reviewed_near_match_entity_ids must match shown near matches"
+    )
     assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
     assert invalid_type["invalid_entity_type"] is True
     assert not (env.journal / "entities" / "qzxqv_wvuty").exists()
@@ -1047,6 +1113,149 @@ def test_identify_matches_existing(speakers_env):
     assert (env.journal / "entities" / "bob_smith" / "voiceprints.npz").exists()
 
 
+def test_identify_resolve_only_uses_person_only_universe_and_special_collisions(
+    speakers_env,
+):
+    env = speakers_env()
+    _setup_mixed_person_entities(env)
+    _create_identify_cluster(env, 60, "130000_300")
+
+    before = _domain_tree_hash(env.journal)
+    resolved = identify_cluster(
+        60,
+        name="Sarah Connor",
+        create_new=True,
+        resolve_only=True,
+    )
+    assert resolved["status"] == "resolved"
+    assert resolved["entity_id"] == "sarah_connor"
+    assert resolved["has_voice"] is False
+    assert _domain_tree_hash(env.journal) == before
+
+    ambiguous = identify_cluster(
+        60,
+        name="Sarah",
+        create_new=True,
+        resolve_only=True,
+    )
+    assert ambiguous["status"] == "ambiguous"
+    assert [
+        (candidate["id"], candidate["name"], candidate["tier"], candidate["has_voice"])
+        for candidate in ambiguous["candidates"]
+    ] == [
+        ("sarah_lee", "Sarah Lee", 5, False),
+        ("sarah_connor", "Sarah Connor", 5, False),
+    ]
+    assert _domain_tree_hash(env.journal) == before
+
+    principal = identify_cluster(
+        60,
+        name="Owner Test",
+        create_new=True,
+        resolve_only=True,
+    )
+    assert principal == {"status": "principal_match", "this_is_me": True}
+    assert _domain_tree_hash(env.journal) == before
+
+    blocked = identify_cluster(
+        60,
+        name="Sarah Blocked",
+        create_new=True,
+        resolve_only=True,
+    )
+    assert blocked == {"status": "invalid_request", "error": "name is unavailable"}
+    assert "entity_id" not in blocked
+    assert "candidates" not in blocked
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="sarah_blocked",
+        segment_key="130000_300",
+        before=before,
+        target_must_be_absent=False,
+    )
+
+
+def test_identify_no_match_returns_person_only_visible_near_candidates(speakers_env):
+    env = speakers_env()
+    _setup_no_match_near_entities(env)
+    _create_identify_cluster(env, 64, "130500_300")
+    before = _domain_tree_hash(env.journal)
+
+    no_match = identify_cluster(
+        64,
+        name="Jnthn Smth",
+        create_new=True,
+        resolve_only=True,
+    )
+
+    assert no_match["status"] == "no_match"
+    assert len(no_match["candidates"]) == 1
+    candidate = no_match["candidates"][0]
+    assert candidate["id"] == "jonathan_smith"
+    assert candidate["name"] == "Jonathan Smith"
+    assert candidate["tier"] == 8
+    assert candidate["score"] < 90
+    assert candidate["has_voice"] is False
+    assert {
+        "owner_test",
+        "jnthn_smth_org",
+        "jnthn_smth_blocked",
+    }.isdisjoint({row["id"] for row in no_match["candidates"]})
+    assert _domain_tree_hash(env.journal) == before
+
+
+def test_identify_no_match_visible_candidates_stay_bounded_in_large_person_universe(
+    speakers_env,
+):
+    from solstone.think.speaker_keep_separate import find_assertion
+
+    env = speakers_env()
+    for index in range(25):
+        env.create_entity(f"Archive Person {index:02d}")
+    _create_identify_cluster(env, 67, "130600_300")
+    before = _domain_tree_hash(env.journal)
+
+    preview = identify_cluster(
+        67,
+        name="Completely New Speaker",
+        create_new=True,
+        resolve_only=True,
+    )
+
+    assert preview["status"] == "no_match"
+    visible_ids = [candidate["id"] for candidate in preview["candidates"]]
+    assert len(visible_ids) == 3
+    assert len(set(visible_ids)) == 3
+    assert _domain_tree_hash(env.journal) == before
+
+    result = identify_cluster(
+        67,
+        name="Completely New Speaker",
+        create_new=True,
+        request_id="no-match-bounded-create",
+        reviewed_near_match_entity_ids=visible_ids,
+    )
+
+    assert result["status"] == "identified"
+    assert result["entity_id"] == "completely_new_speaker"
+    assert result["entity_created"] is True
+    assert result["keep_separate_assertions_recorded"] == 3
+    assert result["operation_id"].startswith("idop_")
+    assert _load_voiceprint_count(env.journal, "completely_new_speaker") == 1
+    assert _speaker_labels_for_segment(env.journal, "20240101", "130600_300") == [
+        {
+            "sentence_id": 1,
+            "speaker": "completely_new_speaker",
+            "confidence": "high",
+            "method": "user_identified",
+        }
+    ]
+    assert _load_corrections_count(env.journal, "20240101", "130600_300") == 1
+    for entity_id in visible_ids:
+        assert find_assertion("completely_new_speaker", entity_id) is not None
+    assert _domain_tree_hash(env.journal) != before
+
+
 def test_identify_ambiguous_name_returns_before_writes(speakers_env):
     from solstone.think.entities import (
         ResolutionOrigin,
@@ -1140,6 +1349,48 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
     assert (env.journal / "entities" / "sarah_connor" / "voiceprints.npz").exists()
     row = load_ambiguities()[0]
     assert row["status"] == "resolved"
+
+
+def test_identify_ineligible_resolved_ambiguity_choice_is_out_of_scope(
+    speakers_env,
+):
+    from solstone.think.entities import (
+        EntityResolutionError,
+        ResolutionOrigin,
+        ResolutionScope,
+        load_all_journal_entities,
+        record_ambiguity_choice,
+        record_entity_resolution,
+    )
+
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    env.create_entity("Sarah Connor")
+    org_path = env.create_entity("Sarah Org")
+    org = json.loads((org_path / "entity.json").read_text(encoding="utf-8"))
+    org["type"] = "Organization"
+    (org_path / "entity.json").write_text(json.dumps(org), encoding="utf-8")
+    _create_identify_cluster(env, 63, "130100_300")
+    entities = list(load_all_journal_entities().values())
+    scope = ResolutionScope.journal()
+    record_entity_resolution(
+        "Sarah",
+        entities,
+        scope=scope,
+        origin=ResolutionOrigin(lane="test", field="name"),
+    )
+    record_ambiguity_choice("Sarah", "sarah_org", entities, scope=scope)
+    before = _domain_tree_hash(env.journal)
+
+    with pytest.raises(EntityResolutionError, match="outside scope"):
+        identify_cluster(
+            63,
+            name="Sarah",
+            create_new=True,
+            resolve_only=True,
+        )
+
+    assert _domain_tree_hash(env.journal) == before
 
 
 def test_identify_idempotent(speakers_env):
@@ -1380,40 +1631,125 @@ def test_identify_retro_manifest_removed_on_undo(speakers_env):
     assert candidate.confirmed_entity is None
 
 
-def test_identify_create_records_keep_separate_near_match_assertions(speakers_env):
+def test_identify_ambiguous_create_exact_reviewed_set_records_keep_separate_and_replays(
+    speakers_env,
+):
     from solstone.think.speaker_keep_separate import find_assertion
-    from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
     env = speakers_env()
-    env.create_entity("Alice Smith")
-    record_name_variant_candidate(
-        source_id="alice_smith",
-        source_label="Alice Smith",
-        target_id="qzxqv_wvuty",
-        target_label="Qzxqv Wvuty",
-        similarity=0.97,
-    )
-    record_name_variant_candidate(
-        source_id="alice_smith",
-        source_label="Alice Smith",
-        target_id="qzxqv_wvuty",
-        target_label="Qzxqv Wvuty",
-        similarity=0.98,
-    )
+    _setup_mixed_person_entities(env)
     _create_identify_cluster(env, 46, "124000_300")
+    before = _domain_tree_hash(env.journal)
 
     result = identify_cluster(
         46,
-        name="Qzxqv Wvuty",
+        name="Sarah",
         create_new=True,
         request_id="near-match-ok",
-        reviewed_near_match_entity_ids=["alice_smith"],
+        reviewed_near_match_entity_ids=["sarah_connor", "sarah_lee"],
     )
 
     assert result["status"] == "identified"
-    assertion = find_assertion("qzxqv_wvuty", "alice_smith")
-    assert assertion is not None
-    assert assertion.dismissed_detection_count == 2
+    assert result["entity_id"] == "sarah"
+    assert result["entity_created"] is True
+    assert result["keep_separate_assertions_recorded"] == 2
+    assert result["operation_id"].startswith("idop_")
+    assert _load_voiceprint_count(env.journal, "sarah") == 1
+    assert _speaker_labels_for_segment(env.journal, "20240101", "124000_300") == [
+        {
+            "sentence_id": 1,
+            "speaker": "sarah",
+            "confidence": "high",
+            "method": "user_identified",
+        }
+    ]
+    assert _load_corrections_count(env.journal, "20240101", "124000_300") == 1
+    assert _discovery_resolved_path().exists()
+    resolved = json.loads(_discovery_resolved_path().read_text(encoding="utf-8"))
+    assert resolved["46"]["entity_id"] == "sarah"
+    assert (env.journal / "speakers" / "identify-operations.jsonl").exists()
+    assert not (env.journal / "awareness" / "speaker_candidates.json").exists()
+    assert find_assertion("sarah", "sarah_connor") is not None
+    assert find_assertion("sarah", "sarah_lee") is not None
+    assert _domain_tree_hash(env.journal) != before
+
+    replay = identify_cluster(
+        46,
+        name="Sarah",
+        create_new=True,
+        request_id="near-match-ok",
+        reviewed_near_match_entity_ids=["sarah_lee", "sarah_connor"],
+    )
+
+    assert replay == result
+    assert _load_voiceprint_count(env.journal, "sarah") == 1
+    keep_path = env.journal / "speakers" / "keep-separate.jsonl"
+    assert len(keep_path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_identify_no_match_create_accepts_explicit_empty_reviewed_set(speakers_env):
+    env = speakers_env()
+    _create_identify_cluster(env, 62, "124100_300")
+    before = _domain_tree_hash(env.journal)
+
+    result = identify_cluster(
+        62,
+        name="Voice QA Person",
+        create_new=True,
+        request_id="no-match-empty-reviewed",
+        reviewed_near_match_entity_ids=[],
+    )
+
+    assert result["status"] == "identified"
+    assert result["entity_id"] == "voice_qa_person"
+    assert result["entity_created"] is True
+    assert result["keep_separate_assertions_recorded"] == 0
+    assert (env.journal / "speakers" / "identify-operations.jsonl").exists()
+    assert _load_voiceprint_count(env.journal, "voice_qa_person") == 1
+    assert _speaker_labels_for_segment(env.journal, "20240101", "124100_300") == [
+        {
+            "sentence_id": 1,
+            "speaker": "voice_qa_person",
+            "confidence": "high",
+            "method": "user_identified",
+        }
+    ]
+    assert _load_corrections_count(env.journal, "20240101", "124100_300") == 1
+    resolved = json.loads(_discovery_resolved_path().read_text(encoding="utf-8"))
+    assert resolved["62"]["entity_id"] == "voice_qa_person"
+    assert not (env.journal / "awareness" / "speaker_candidates.json").exists()
+    assert not (env.journal / "speakers" / "keep-separate.jsonl").exists()
+    assert _domain_tree_hash(env.journal) != before
+
+
+def test_identify_no_match_create_rejects_empty_reviewed_set_when_candidate_visible(
+    speakers_env,
+):
+    env = speakers_env()
+    _setup_no_match_near_entities(env)
+    _create_identify_cluster(env, 65, "124200_300")
+    before = _domain_tree_hash(env.journal)
+
+    result = identify_cluster(
+        65,
+        name="Jnthn Smth",
+        create_new=True,
+        request_id="no-match-empty-reviewed-visible",
+        reviewed_near_match_entity_ids=[],
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["error"] == (
+        "reviewed_near_match_entity_ids must match shown near matches"
+    )
+    assert result["expected_reviewed_near_match_entity_ids"] == ["jonathan_smith"]
+    assert result["actual_reviewed_near_match_entity_ids"] == []
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="jnthn_smth",
+        segment_key="124200_300",
+        before=before,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1421,6 +1757,7 @@ def test_identify_create_records_keep_separate_near_match_assertions(speakers_en
     [
         (["missing_person"], "nonexistent"),
         (["bad_type"], "non_person"),
+        (["blocked_person"], "blocked"),
         (["owner_test"], "principal"),
         (["qzxqv_wvuty"], "self"),
     ],
@@ -1439,6 +1776,8 @@ def test_identify_near_match_validation_rejects_before_writes(
     bad_type = json.loads((bad_type_path / "entity.json").read_text(encoding="utf-8"))
     bad_type["type"] = "Organization"
     (bad_type_path / "entity.json").write_text(json.dumps(bad_type), encoding="utf-8")
+    env.create_entity("Blocked Person")
+    _update_entity(env, "blocked_person", blocked=True)
     env.create_entity("Bob Far")
     _create_identify_cluster(env, 47, "124500_300")
     before = _domain_tree_hash(env.journal)
@@ -1453,49 +1792,140 @@ def test_identify_near_match_validation_rejects_before_writes(
 
     assert result["status"] == "invalid_request"
     assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == reason
-    assert _domain_tree_hash(env.journal) == before
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="qzxqv_wvuty",
+        segment_key="124500_300",
+        before=before,
+    )
 
 
 def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_env):
-    from solstone.think.entities import (
-        closest_resolution_candidates,
-        load_all_journal_entities,
-    )
-
     env = speakers_env()
-    for name in (
-        "Alice Smith",
-        "Carol Jones",
-        "Delta Test",
-        "Echo Example",
-        "Frank Sample",
-        "Grace Person",
-    ):
-        env.create_entity(name)
+    _setup_mixed_person_entities(env)
     _create_identify_cluster(env, 48, "125000_300")
-    entities = [
-        entity
-        for entity in load_all_journal_entities().values()
-        if not entity.get("blocked")
-    ]
-    shown = {
-        candidate.id
-        for candidate in closest_resolution_candidates("Qzxqv Wvuty", entities, limit=3)
-    }
-    unshown = next(entity["id"] for entity in entities if entity["id"] not in shown)
     before = _domain_tree_hash(env.journal)
 
     result = identify_cluster(
         48,
-        name="Qzxqv Wvuty",
+        name="Sarah",
         create_new=True,
         request_id="near-match-unshown",
-        reviewed_near_match_entity_ids=[unshown],
+        reviewed_near_match_entity_ids=["other_person"],
     )
 
     assert result["status"] == "invalid_request"
     assert result["invalid_reviewed_near_match_entity_ids"][0]["reason"] == "unshown"
-    assert _domain_tree_hash(env.journal) == before
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="sarah",
+        segment_key="125000_300",
+        before=before,
+    )
+
+    env = speakers_env()
+    _setup_no_match_near_entities(env)
+    duplicate_dir = env.journal / "entities" / "jonathan_clone"
+    duplicate_dir.mkdir(parents=True, exist_ok=True)
+    (duplicate_dir / "entity.json").write_text(
+        json.dumps(
+            {
+                "id": "jonathan_clone",
+                "name": "Jonathan Smith",
+                "type": "Person",
+                "created_at": 1700000000000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _create_identify_cluster(env, 66, "125050_300")
+    before = _domain_tree_hash(env.journal)
+
+    result = identify_cluster(
+        66,
+        name="Jnthn Smth",
+        create_new=True,
+        request_id="near-match-unshown-no-match",
+        reviewed_near_match_entity_ids=["jonathan_clone"],
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["invalid_reviewed_near_match_entity_ids"] == [
+        {"entity_id": "jonathan_clone", "reason": "unshown"}
+    ]
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="jnthn_smth",
+        segment_key="125050_300",
+        before=before,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reviewed_ids", "expected_error", "expected_duplicate"),
+    [
+        (None, "reviewed_near_match_entity_ids must match shown near matches", None),
+        ([], "reviewed_near_match_entity_ids must match shown near matches", None),
+        (
+            ["sarah_connor"],
+            "reviewed_near_match_entity_ids must match shown near matches",
+            None,
+        ),
+        (
+            ["sarah_connor", "sarah_connor"],
+            "reviewed_near_match_entity_ids must be unique",
+            "sarah_connor",
+        ),
+        (
+            ["other_person", "sarah_connor"],
+            "invalid reviewed_near_match_entity_ids",
+            None,
+        ),
+    ],
+)
+def test_identify_ambiguous_create_requires_exact_reviewed_set_before_writes(
+    speakers_env,
+    reviewed_ids,
+    expected_error,
+    expected_duplicate,
+):
+    env = speakers_env()
+    _setup_mixed_person_entities(env)
+    _create_identify_cluster(env, 61, "125100_300")
+    before = _domain_tree_hash(env.journal)
+    kwargs = {}
+    if reviewed_ids is not None:
+        kwargs["reviewed_near_match_entity_ids"] = reviewed_ids
+
+    result = identify_cluster(
+        61,
+        name="Sarah",
+        create_new=True,
+        request_id=f"reviewed-set-{str(reviewed_ids)}",
+        **kwargs,
+    )
+
+    assert result["status"] == "invalid_request"
+    assert result["error"] == expected_error
+    if expected_duplicate is not None:
+        assert result["invalid_reviewed_near_match_entity_ids"] == [
+            {"entity_id": expected_duplicate, "reason": "duplicate"}
+        ]
+    elif expected_error == "invalid reviewed_near_match_entity_ids":
+        assert result["invalid_reviewed_near_match_entity_ids"] == [
+            {"entity_id": "other_person", "reason": "unshown"}
+        ]
+    else:
+        assert result["expected_reviewed_near_match_entity_ids"] == [
+            "sarah_connor",
+            "sarah_lee",
+        ]
+    _assert_no_identify_write_boundary(
+        env,
+        target_id="sarah",
+        segment_key="125100_300",
+        before=before,
+    )
 
 
 def test_identify_replay_uses_stored_state_when_planning_now_fails(

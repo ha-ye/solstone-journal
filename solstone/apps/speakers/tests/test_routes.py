@@ -1312,30 +1312,46 @@ def test_discovery_identify_route_name_create_flags_preserve_visible_paths(
         "/app/speakers/api/discovery/identify",
         json={"cluster_id": 31, "name": "Zelda Unknown"},
     )
+    assert no_create.status_code == 200
+    no_create_body = no_create.get_json()
+    assert no_create_body["status"] == "no_match"
+
     created = client.post(
         "/app/speakers/api/discovery/identify",
-        json={"cluster_id": 32, "name": "Zelda Unknown", "create_new": True},
+        json={
+            "cluster_id": 32,
+            "name": "Zelda Unknown",
+            "create_new": True,
+            "reviewed_near_match_entity_ids": [
+                candidate["id"] for candidate in no_create_body["candidates"]
+            ],
+        },
     )
     resolved = client.post(
         "/app/speakers/api/discovery/identify",
         json={"cluster_id": 33, "name": "Bob Smith", "create_new": True},
     )
+    before_ambiguous = _journal_file_hashes(env.journal)
     ambiguous = client.post(
         "/app/speakers/api/discovery/identify",
         json={"cluster_id": 34, "name": "Sarah", "create_new": True},
     )
 
-    assert no_create.status_code == 200
-    assert no_create.get_json()["status"] == "no_match"
     assert created.status_code == 200
     assert created.get_json()["status"] == "identified"
     assert created.get_json()["entity_created"] is True
     assert resolved.status_code == 200
     assert resolved.get_json()["entity_id"] == "bob_smith"
     assert resolved.get_json()["entity_created"] is False
-    assert ambiguous.status_code == 200
-    assert ambiguous.get_json()["status"] == "ambiguous"
+    assert ambiguous.status_code == 400
+    ambiguous_body = ambiguous.get_json()
+    assert ambiguous_body["reason_code"] == "invalid_request_value"
+    assert (
+        ambiguous_body["detail"]
+        == "reviewed_near_match_entity_ids must match shown near matches"
+    )
     assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
+    assert _journal_file_hashes(env.journal) == before_ambiguous
 
 
 def test_discovery_identify_route_invalid_entity_type(speakers_env):
@@ -1521,6 +1537,31 @@ def test_discovery_identify_route_non_success_operation_states_are_errors(
 
     assert unknown.status_code == 500
     assert unknown.get_json()["reason_code"] == "speaker_command_failed"
+
+
+def test_discovery_identify_route_accepts_principal_match_status(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+    client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
+    monkeypatch.setattr(
+        routes,
+        "identify_cluster",
+        lambda *args, **kwargs: {"status": "principal_match", "this_is_me": True},
+    )
+
+    response = client.post(
+        "/app/speakers/api/discovery/identify",
+        json={"cluster_id": 1, "name": "Owner Test", "resolve_only": True},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "principal_match", "this_is_me": True}
+    assert _journal_file_hashes(env.journal) == before
 
 
 def test_discovery_identify_operations_and_undo_routes(speakers_env):
@@ -1760,10 +1801,11 @@ def test_people_search_filters_principal_blocked_non_person_and_sets_has_voice(
     env.create_entity("Alicia Plain")
     env.create_entity("Alice Owner", is_principal=True)
     env.create_entity("Alice Blocked")
-    env.create_entity("Alice Project")
+    env.create_entity("Alice Org")
     _update_test_entity(env, "alice_blocked", blocked=True)
-    _update_test_entity(env, "alice_project", type="Project")
+    _update_test_entity(env, "alice_org", type="Organization")
     client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
 
     response = client.get("/app/speakers/api/people/search?q=ali")
 
@@ -1775,6 +1817,7 @@ def test_people_search_filters_principal_blocked_non_person_and_sets_has_voice(
             {"entity_id": "alicia_plain", "name": "Alicia Plain", "has_voice": False},
         ],
     }
+    assert _journal_file_hashes(env.journal) == before
 
 
 def test_people_search_casefolded_name_and_aka_match_name_only_response(
