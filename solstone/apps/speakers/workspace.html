@@ -821,29 +821,6 @@
   width: 100%;
 }
 
-.spk-discovery-form {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.spk-discovery-input {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid #d1d5db;
-  font-size: 13px;
-  transition: border-color 0.15s;
-}
-
-.spk-discovery-input:not(:disabled):hover { border-color: #9ca3af; }
-
-.spk-discovery-input:disabled {
-  background: #f9fafb;
-  color: #9ca3af;
-  cursor: not-allowed;
-}
-
 .spk-discovery-btn {
   padding: 6px 14px;
   border-radius: 6px;
@@ -869,6 +846,124 @@
   font-size: 12px;
   color: #166534;
   margin-top: 6px;
+}
+
+.spk-who-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.45);
+}
+
+.spk-who-backdrop[hidden] {
+  display: none;
+}
+
+.spk-who-dialog {
+  width: min(100%, 560px);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
+  padding: 22px;
+}
+
+.spk-who-title {
+  margin: 0 0 10px;
+  font-size: 20px;
+  line-height: 1.25;
+  color: #111827;
+}
+
+.spk-who-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.spk-who-lede,
+.spk-who-no-evidence,
+.spk-who-preview-body,
+.spk-who-keep-body,
+.spk-who-receipt-body {
+  margin: 0;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.spk-who-samples,
+.spk-who-people,
+.spk-who-mentions,
+.spk-who-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spk-who-sample,
+.spk-who-person {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.spk-who-sample {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spk-who-sample-label,
+.spk-who-sample-unavailable {
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.spk-who-sample-audio {
+  width: 100%;
+}
+
+.spk-who-shelf-title {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: #111827;
+}
+
+.spk-who-person-action {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.spk-who-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spk-who-search-label {
+  font-weight: 600;
+  color: #111827;
+}
+
+.spk-who-search-input {
+  min-height: 38px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font: inherit;
+}
+
+.spk-who-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 /* Semantic element resets - prevent browser defaults from changing layout */
@@ -911,7 +1006,7 @@
 
 /* Inputs and selects use :focus (browser convention - always show focus ring) */
 .spk-select-small:focus,
-.spk-discovery-input:focus {
+.spk-who-search-input:focus {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
 }
@@ -1092,8 +1187,8 @@
   .spk-speaker-card,
   .spk-owner-btn,
   .spk-discovery-cluster-title,
-  .spk-discovery-input,
   .spk-discovery-btn,
+  .spk-who-search-input,
   .spk-detail-summary,
   .spk-expand-btn,
   .spk-load-more-btn {
@@ -1143,7 +1238,7 @@
     min-height: 44px;
     padding: 10px 14px;
   }
-  .spk-discovery-input {
+  .spk-who-search-input {
     min-height: 44px;
     padding: 10px 12px;
   }
@@ -1206,6 +1301,8 @@
   window.SPEAKERS_STATE_PROMISE = window.loadSpeakersState();
 })();
 </script>
+
+<script src="/app/speakers/static/who_is_this.js"></script>
 
 <script>
 (() => {
@@ -1295,6 +1392,7 @@
   let ownerTeachRequestId = 0;
   let ownerRevealPendingSource = null;
   let ownerRevealShown = false;
+  let whoIsThisSheet = null;
   const ownerTeachDeclinedKeys = new Set();
   const OWNER_TEACH_HASH = 'owner-teach';
   const OWNER_TEACH_REVIEW_CONCURRENCY = 4;
@@ -1400,70 +1498,63 @@
     }
   });
 
-  function submitDiscoveryName(card) {
-    const clusterId = parseInt(card.dataset.clusterId, 10);
-    const input = card.querySelector('.spk-discovery-input');
-    const status = card.querySelector('.spk-discovery-status');
-    const btn = card.querySelector('.spk-discovery-btn');
-    const name = input.value.trim();
+  function renderThisIsMeGuidance() {
+    ownerBanner.style.display = 'block';
+    ownerBanner.replaceChildren();
+    const panel = document.createElement('div');
+    panel.className = 'spk-owner-panel';
+    const copy = document.createElement('div');
+    copy.className = 'spk-owner-copy';
+    copy.textContent = SPK_COPY.SPK_THIS_IS_ME_GUIDANCE || '';
+    panel.appendChild(copy);
+    ownerBanner.appendChild(panel);
+  }
 
-    if (!name) {
-      status.textContent = 'please enter a name.';
-      return;
+  function removeDiscoveryCluster(clusterId) {
+    const card = discoveryBanner.querySelector(`[data-cluster-id="${clusterId}"]`);
+    if (card) card.remove();
+    if (!discoveryBanner.querySelector('.spk-discovery-cluster')) {
+      hideDiscovery();
     }
+  }
 
-    btn.disabled = true;
-    input.disabled = true;
-    status.textContent = 'identifying...';
-
-    window.apiJson('/app/speakers/api/discovery/identify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cluster_id: clusterId, name: name, create_new: true }),
-    })
-      .then(data => {
-        status.textContent = `identified as ${data.entity_name} (${data.voiceprints_saved} voiceprints, ${data.segments_updated} segments updated)`;
-        card.style.opacity = '0.5';
+  function ensureWhoIsThisSheet() {
+    if (whoIsThisSheet) {
+      whoIsThisSheet.setCopy(SPK_COPY);
+      return whoIsThisSheet;
+    }
+    whoIsThisSheet = window.SpeakersWhoIsThis.init({
+      mount: document.body,
+      copy: SPK_COPY,
+      context: window.SPEAKERS_CONTEXT || {},
+      apiJson: window.apiJson,
+      logError: window.logError,
+      formatDateShort: window.formatDateShort,
+      onThisIsMe: () => {
+        renderThisIsMeGuidance();
+        navigateToOwnerHelp();
+      },
+      onIdentified: ({ clusterId }) => {
+        removeDiscoveryCluster(clusterId);
         loadSegments();
         if (selectedSegment && selectedSource) {
           loadReview(selectedSegment, selectedSource);
         }
-        setTimeout(() => {
-          card.style.opacity = '0';
-          setTimeout(() => {
-            card.remove();
-            if (!discoveryBanner.querySelector('.spk-discovery-cluster')) {
-              hideDiscovery();
-            }
-          }, 300);
-        }, 3000);
-      })
-      .catch((err) => {
-        window.logError(err, { context: 'speakers: identify discovery cluster failed' });
-        status.innerHTML = window.SurfaceState.error({
-          heading: "I couldn't identify that speaker",
-          desc: window.CONVEY_COPY?.RELOAD_HINT || 'reload to try again.',
-          retry: true,
-          retryLabel: window.CONVEY_COPY?.ACTION_TRY_AGAIN || 'Try again',
-          serverMessage: err.serverMessage,
-          detail: err,
-          headingLevel: 'h4'
-        });
-        const retry = status.querySelector('.surface-state-retry');
-        if (retry) {
-          retry.addEventListener('click', () => submitDiscoveryName(card));
-        }
-        btn.disabled = false;
-        input.disabled = false;
-      });
+      },
+      onDismissed: ({ clusterId }) => {
+        removeDiscoveryCluster(clusterId);
+      },
+    });
+    return whoIsThisSheet;
   }
 
-  discoveryBanner.addEventListener('submit', e => {
-    e.preventDefault();
-    const card = e.target.closest('.spk-discovery-cluster');
-    if (!card) return;
-    submitDiscoveryName(card);
-  });
+  function openWhoIsThis(cluster, trigger) {
+    ensureWhoIsThisSheet().open({
+      cluster,
+      clusterId: cluster.cluster_id,
+      trigger,
+    });
+  }
 
   function checkOwnerStatus() {
     return window.apiJson('/app/speakers/api/owner/status')
@@ -2201,21 +2292,19 @@
         </div>
         <div class="spk-discovery-clusters">
           ${clusters.map(cluster => `
-            <div class="spk-discovery-cluster" data-cluster-id="${cluster.cluster_id}">
+            <div class="spk-discovery-cluster" data-cluster-id="${escapeHtml(cluster.cluster_id)}">
               <div class="spk-discovery-cluster-title">
                 Unknown speaker <span style="font-weight: 400">&middot; ${cluster.size} samples &middot; ${cluster.segment_count} segments</span>
               </div>
               ${cluster.samples.map(sample => `
                 <div class="spk-discovery-sample">
                   <div class="spk-discovery-sample-text">${escapeHtml(sample.text || '(no transcript)')}</div>
-                  ${sample.audio_url ? `<audio controls preload="metadata" src="${sample.audio_url}"></audio>` : ''}
+                  ${sample.audio_url ? `<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>` : ''}
                 </div>
               `).join('')}
-              <form class="spk-discovery-form">
-                <input type="text" class="spk-discovery-input" aria-label="speaker name" placeholder="enter speaker name..." />
-                <button class="spk-discovery-btn">name</button>
-              </form>
-              <p class="spk-card-line">${escapeHtml(SPK_COPY.SPK_IDENTIFY_SCOPE || '')}</p>
+              <button type="button" class="spk-discovery-btn spk-who-trigger" aria-haspopup="dialog" aria-expanded="false">
+                ${escapeHtml(SPK_COPY.SPK_ACTION_WHO_IS_THIS || '')}
+              </button>
               <div class="spk-discovery-status"></div>
             </div>
           `).join('')}
@@ -2224,6 +2313,13 @@
     `;
 
     attachAudioErrorListeners(discoveryBanner);
+    discoveryBanner.querySelectorAll('.spk-who-trigger').forEach((trigger) => {
+      const card = trigger.closest('.spk-discovery-cluster');
+      const cluster = clusters.find(item => String(item.cluster_id) === card?.dataset.clusterId);
+      if (cluster) {
+        trigger.addEventListener('click', () => openWhoIsThis(cluster, trigger));
+      }
+    });
   }
 
   function hideDiscovery() {
@@ -3328,15 +3424,6 @@
   margin-top: 12px;
 }
 
-.spk-discovery-input {
-  flex: 1;
-  min-height: 38px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 7px 10px;
-  font: inherit;
-}
-
 @media (max-width: 720px) {
   .spk-overview {
     width: min(100vw - 24px, 1120px);
@@ -3421,6 +3508,7 @@
   const dayGridLegend = document.getElementById('spkDayGridLegend');
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
   let mountedDayGridKey = null;
+  let whoIsThisSheet = null;
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
@@ -3694,6 +3782,57 @@
     sortSelect.addEventListener('change', loadKnown);
   }
 
+  function renderOverviewThisIsMeGuidance() {
+    ownerPanel.replaceChildren();
+    const line = document.createElement('p');
+    line.className = 'spk-overview-muted';
+    line.textContent = COPY.SPK_THIS_IS_ME_GUIDANCE || '';
+    ownerPanel.appendChild(line);
+  }
+
+  function removeOverviewDiscoveryCluster(clusterId) {
+    const card = discoveryContainer.querySelector(`[data-cluster-id="${clusterId}"]`);
+    if (card) card.remove();
+    if (!discoveryContainer.querySelector('.spk-discovery-card')) {
+      discoverySection.hidden = true;
+    }
+  }
+
+  function ensureOverviewWhoIsThisSheet() {
+    if (whoIsThisSheet) {
+      whoIsThisSheet.setCopy(COPY);
+      return whoIsThisSheet;
+    }
+    whoIsThisSheet = window.SpeakersWhoIsThis.init({
+      mount: document.body,
+      copy: COPY,
+      context: window.SPEAKERS_CONTEXT || {},
+      apiJson: window.apiJson,
+      logError: window.logError,
+      formatDateShort: window.formatDateShort,
+      onThisIsMe: () => {
+        renderOverviewThisIsMeGuidance();
+      },
+      onIdentified: ({ clusterId }) => {
+        removeOverviewDiscoveryCluster(clusterId);
+        loadKnown();
+        loadQuality();
+      },
+      onDismissed: ({ clusterId }) => {
+        removeOverviewDiscoveryCluster(clusterId);
+      },
+    });
+    return whoIsThisSheet;
+  }
+
+  function openOverviewWhoIsThis(cluster, trigger) {
+    ensureOverviewWhoIsThisSheet().open({
+      cluster,
+      clusterId: cluster.cluster_id,
+      trigger,
+    });
+  }
+
   function renderDiscovery(data) {
     const clusters = data.clusters || [];
     if (!clusters.length) {
@@ -3705,25 +3844,17 @@
       <div class="spk-discovery-card" data-cluster-id="${escapeHtml(cluster.cluster_id)}">
         <h3 class="spk-card-title">${escapeHtml(cluster.suggested_name || cluster.cluster_id)}</h3>
         <p class="spk-card-line">${escapeHtml(String(cluster.size || cluster.count || 0))} ${escapeHtml(COPY.SPK_OVERVIEW_CARD_SAMPLES_LABEL)}</p>
-        <p class="spk-card-line">${escapeHtml(COPY.SPK_IDENTIFY_SCOPE || '')}</p>
         <div class="spk-discovery-actions">
-          <input class="spk-discovery-input" type="text" aria-label="speaker name">
-          <button class="spk-overview-btn">identify</button>
+          <button type="button" class="spk-overview-btn spk-who-trigger" aria-haspopup="dialog" aria-expanded="false">${escapeHtml(COPY.SPK_ACTION_WHO_IS_THIS || '')}</button>
         </div>
       </div>
     `).join('');
     discoveryContainer.querySelectorAll('.spk-discovery-card').forEach((card) => {
-      const button = card.querySelector('button');
-      const input = card.querySelector('input');
-      button?.addEventListener('click', () => {
-        const name = input.value.trim();
-        if (!name) return;
-        fetch('/app/speakers/api/discovery/identify', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cluster_id: card.dataset.clusterId, name, create_new: true})
-        }).then(loadDiscovery);
-      });
+      const trigger = card.querySelector('.spk-who-trigger');
+      const cluster = clusters.find(item => String(item.cluster_id) === card.dataset.clusterId);
+      if (trigger && cluster) {
+        trigger.addEventListener('click', () => openOverviewWhoIsThis(cluster, trigger));
+      }
     });
   }
 

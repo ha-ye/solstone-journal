@@ -1662,17 +1662,33 @@ def test_api_suggest_filters_keep_separate_name_variant(speakers_env):
     assert all(item["type"] != "name_variant" for item in response.get_json()["items"])
 
 
-def test_workspace_discovery_identify_requests_create_new():
+def test_workspace_discovery_renders_who_is_this_triggers_without_freeform_create():
     template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
 
-    assert (
-        "JSON.stringify({ cluster_id: clusterId, name: name, create_new: true })"
-        in template
-    )
-    assert (
-        "JSON.stringify({cluster_id: card.dataset.clusterId, name, create_new: true})"
-        in template
-    )
+    assert "SPK_ACTION_WHO_IS_THIS" in template
+    assert 'aria-haspopup="dialog"' in template
+    assert 'aria-expanded="false"' in template
+    assert "SpeakersWhoIsThis.init" in template
+    assert "create_new: true" not in template
+
+
+def test_workspace_discovery_freeform_inputs_retired():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
+
+    assert ".spk-discovery-input" not in template
+    assert ".spk-discovery-form" not in template
+    assert "submitDiscoveryName" not in template
+
+
+def test_workspace_loads_who_is_this_before_iifes():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
+
+    context_index = template.index("window.SPEAKERS_CONTEXT")
+    module_index = template.index("/app/speakers/static/who_is_this.js")
+    day_index = template.index("let SPK_COPY = {}")
+    overview_index = template.index("let COPY = {}")
+
+    assert context_index < module_index < day_index < overview_index
 
 
 def _update_test_entity(env, entity_id: str, **updates) -> None:
