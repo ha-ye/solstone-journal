@@ -72,13 +72,14 @@ BACKUP_EXCLUDES = (
     "*.lock",
     "*.tmp",
     ".tmp*",
+    "brain.json",
+    "brain.log",
     "brain-fingerprint.key",
+    "brain-refresh.lease",
     "supervisor.ready",
     "supervisor.start_time",
     "parakeet-cpp.placement",
     "scheduler.json",
-    "talents.json",
-    "agents.json",
 )
 PRUNE_MAX_REPACK_SIZE = "1G"
 UNLOCK_TIMEOUT_SECONDS = 5 * 60

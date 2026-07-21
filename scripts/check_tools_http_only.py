@@ -22,7 +22,6 @@ ALLOW_SET: frozenset[str] = frozenset(
     {
         "solstone.think.convey_client",
         "solstone.convey.reasons",
-        "solstone.convey.readiness_snapshot",
         "solstone.think.pipeline_health",
     }
 )
