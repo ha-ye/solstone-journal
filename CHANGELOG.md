@@ -4,6 +4,16 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Changed
+
+- sol now suggests exact Gemini models, Gemini 3.5 Flash and Gemini 3.1 Flash Lite, instead of moving `latest` aliases that could quietly change which model your journal uses. if your journal had a moving flash alias saved, it now pins it to the matching exact model. if it had the old `gemini-pro-latest` alias saved, Thinking shows one action: choose an exact model in Thinking, because that alias has no single exact match.
+
+### Fixed
+
+- a model reply that comes back empty is now a failure everywhere: key and model checks, thinking-engine health, and daily analysis all agree, so one path no longer accepts a blank answer another path rejects.
+
 ## [0.9.0] - 2026-07-19
 
 ### Added
