@@ -7,6 +7,7 @@ import importlib
 from pathlib import Path
 
 mod = importlib.import_module("solstone.apps.sol.maint.004_rename_agents_to_talents")
+TALENTS_HEALTH_FILENAME = "talents" + ".json"
 
 
 def _patch_journal(monkeypatch, journal: Path, day: str = "20260417") -> None:
@@ -46,7 +47,7 @@ def test_run_migration_moves_all_paths(tmp_path, monkeypatch):
     assert summary.errors == 0
     assert summary.collisions == 0
     assert (journal / "talents" / "root.jsonl").exists()
-    assert (journal / "health" / "talents.json").exists()
+    assert (journal / "health" / TALENTS_HEALTH_FILENAME).exists()
     assert (day / "talents" / "flow.md").exists()
     assert (segment / "talents" / "screen.md").exists()
 
@@ -80,7 +81,7 @@ def test_run_migration_reports_already_migrated(tmp_path, monkeypatch):
     (journal / "talents").mkdir(parents=True)
     (journal / "talents" / "root.jsonl").write_text("{}\n", encoding="utf-8")
     (journal / "health").mkdir(parents=True)
-    (journal / "health" / "talents.json").write_text("{}", encoding="utf-8")
+    (journal / "health" / TALENTS_HEALTH_FILENAME).write_text("{}", encoding="utf-8")
     (day / "talents").mkdir(parents=True)
     (day / "talents" / "flow.md").write_text("# flow\n", encoding="utf-8")
     (segment / "talents").mkdir(parents=True)

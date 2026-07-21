@@ -11,6 +11,7 @@ from datetime import date
 from solstone.apps.health import routes as health_routes
 from solstone.convey import backlog_copy
 from solstone.convey.reasons import REPROCESS_ALREADY_COMPLETE
+from solstone.think.brain_health import HEADLINES
 from solstone.think.talent_runs import AgentFailure, AgentFailureScan
 
 DAY = "20250115"
@@ -24,37 +25,35 @@ def test_errors_today_label_pluralizes_count():
     assert health_routes._errors_today_label(None) == "errors today"
 
 
-def _readiness_snapshot(severity: str = "neutral") -> dict:
+def _brain_snapshot(state: str = "blocked") -> dict:
     return {
-        "summary": {
-            "status": "unknown" if severity == "neutral" else "blocked",
-            "severity": severity,
-            "active_groups": 1 if severity in {"blocker", "attention"} else 0,
-            "blocked_count": 1 if severity == "blocker" else 0,
+        "state": state,
+        "headline": HEADLINES["blocked"],
+        "reason_code": "provider_key_invalid",
+        "reason_text": "provider key invalid",
+        "failing_component": "generate",
+        "action": {"label": "open thinking", "href": "/app/thinking/#main"},
+        "identity": {"lane": "cloud", "provider": "anthropic", "model": None},
+        "evidence": {
+            "observed_at": None,
+            "age_seconds": None,
+            "age_text": None,
         },
-        "interfaces": {},
-        "groups": [
-            {
-                "semantic_key": "provider_key_missing:anthropic:",
-                "work_key": None,
+        "components": {
+            "generate": {
                 "status": "blocked",
-                "severity": severity,
-                "reason_code": "provider_key_missing",
-                "provider": "anthropic",
-                "model": None,
-                "context": None,
-                "interface": "generate",
-                "summary": "Anthropic needs credentials before it can read your screen descriptions",
-                "detail": "Open provider setup.",
-                "recovery_action": {
-                    "label": "Open Thinking",
-                    "href": "/app/thinking/#main",
-                },
-                "operator_detail": "reason_code=provider_key_missing provider=anthropic",
-            }
-        ]
-        if severity in {"blocker", "attention"}
-        else [],
+                "reason_code": "provider_key_invalid",
+                "reason_text": "provider key invalid",
+                "observed_at": None,
+            },
+            "cogitate": {
+                "status": "unknown",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": None,
+            },
+        },
+        "progressing": False,
     }
 
 
@@ -157,11 +156,11 @@ class TestInfoRoute:
             }
         ]
 
-    def test_returns_hostname_and_readiness(self, health_env, monkeypatch):
-        snapshot = _readiness_snapshot("blocker")
+    def test_returns_hostname_and_brain(self, health_env, monkeypatch):
+        snapshot = _brain_snapshot()
         monkeypatch.setattr(
-            "solstone.apps.health.routes.build_readiness_snapshot",
-            lambda: snapshot,
+            "solstone.apps.health.routes.build_brain_snapshot",
+            lambda *_args, **_kwargs: snapshot,
         )
         env = health_env()
         response = env.client.get("/app/health/api/info")
@@ -170,31 +169,27 @@ class TestInfoRoute:
         assert "hostname" in data
         assert isinstance(data["hostname"], str)
         assert len(data["hostname"]) > 0
-        assert data["readiness"] == snapshot
+        assert data["brain"] == snapshot
 
-    def test_info_readiness_degrades_when_snapshot_raises(
-        self, health_env, monkeypatch
-    ):
+    def test_info_brain_degrades_when_snapshot_raises(self, health_env, monkeypatch):
         monkeypatch.setattr(
-            "solstone.apps.health.routes.build_readiness_snapshot",
-            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            "solstone.apps.health.routes.build_brain_snapshot",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         env = health_env()
 
         response = env.client.get("/app/health/api/info")
 
         assert response.status_code == 200
-        readiness = response.get_json()["readiness"]
-        assert readiness["unavailable"] is True
-        assert readiness["summary"]["severity"] == "neutral"
+        brain = response.get_json()["brain"]
+        assert brain["state"] == "unknown"
+        assert brain["headline"] == HEADLINES["unknown"]
 
-    def test_index_serves_shell_and_info_returns_readiness(
-        self, health_env, monkeypatch
-    ):
-        snapshot = _readiness_snapshot("blocker")
+    def test_index_serves_shell_and_info_returns_brain(self, health_env, monkeypatch):
+        snapshot = _brain_snapshot()
         monkeypatch.setattr(
-            "solstone.apps.health.routes.build_readiness_snapshot",
-            lambda: snapshot,
+            "solstone.apps.health.routes.build_brain_snapshot",
+            lambda *_args, **_kwargs: snapshot,
         )
         env = health_env()
 
@@ -204,7 +199,7 @@ class TestInfoRoute:
         assert index_response.status_code == 200
         assert b'data-solstone-shell="spa"' in index_response.data
         assert info_response.status_code == 200
-        assert info_response.get_json()["readiness"] == snapshot
+        assert info_response.get_json()["brain"] == snapshot
 
     def test_state_returns_agent_error_seed(self, health_env):
         env = health_env()
@@ -281,12 +276,12 @@ class TestInfoRoute:
             "label": "errors today",
         }
 
-    def test_index_stays_shell_when_readiness_snapshot_raises(
+    def test_index_stays_shell_when_brain_snapshot_raises(
         self, health_env, monkeypatch
     ):
         monkeypatch.setattr(
-            "solstone.apps.health.routes.build_readiness_snapshot",
-            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            "solstone.apps.health.routes.build_brain_snapshot",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         env = health_env()
 
@@ -295,9 +290,9 @@ class TestInfoRoute:
 
         assert index_response.status_code == 200
         assert b'data-solstone-shell="spa"' in index_response.data
-        readiness = info_response.get_json()["readiness"]
-        assert readiness["unavailable"] is True
-        assert readiness["summary"]["severity"] == "neutral"
+        brain = info_response.get_json()["brain"]
+        assert brain["state"] == "unknown"
+        assert brain["headline"] == HEADLINES["unknown"]
 
 
 class TestRestartObserverRoute:

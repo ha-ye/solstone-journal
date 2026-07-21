@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from solstone.apps.support.call import app as support_cli_app
 from solstone.apps.support.diagnostics import collect_recent_errors
 from solstone.convey.chat_stream import read_chat_events
+from solstone.think.brain_health import HEADLINES
 
 DRY_RUN_BANNER = (
     "DRY RUN — nothing was sent. Re-run with --submit to actually file this."
@@ -1289,64 +1290,63 @@ def test_proactive_support_still_emits_for_generic_errors(monkeypatch):
     assert kwargs["count"] == 3
 
 
-def test_collect_provider_readiness_is_redacted(monkeypatch):
+def test_collect_brain_health_is_redacted(monkeypatch):
     from solstone.apps.support import diagnostics
 
     revai_secret = "REVAI_ACCESS_TOKEN_REDACTION_VALUE"
     snapshot = {
-        "summary": {
-            "status": "blocked",
-            "severity": "blocker",
-            "active_groups": 1,
-            "blocked_count": 1,
+        "state": "blocked",
+        "headline": HEADLINES["blocked"],
+        "reason_code": "provider_key_invalid",
+        "reason_text": "provider key invalid",
+        "failing_component": "generate",
+        "action": {"label": "open thinking", "href": "/app/thinking/#main"},
+        "identity": {
+            "lane": "cloud",
+            "provider": "anthropic",
+            "model": "claude-test",
         },
-        "interfaces": {
+        "evidence": {
+            "observed_at": None,
+            "age_seconds": None,
+            "age_text": None,
+        },
+        "components": {
             "generate": {
-                "provider": "anthropic",
-                "model": "/home/jer/private/model",
-                "reason_code": "provider_key_missing",
                 "status": "blocked",
-                "severity": "blocker",
-                "summary": "Anthropic needs credentials before it can read your screen descriptions",
-                "operator_detail": (
-                    "reason_code=provider_key_missing; provider=anthropic; "
-                    "reset_at_ms=123; message=Traceback (most recent call last): "
-                    f"/home/jer/.config ANTHROPIC_API_KEY=sk-testsecret "
-                    f"REVAI_ACCESS_TOKEN={revai_secret}"
-                ),
-            }
+                "reason_code": "provider_key_invalid",
+                "reason_text": ("reason_code=provider_key_invalid; provider=anthropic"),
+                "observed_at": None,
+            },
+            "cogitate": {
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": None,
+            },
         },
-        "groups": [
-            {
-                "provider": "anthropic",
-                "model": "claude-test",
-                "reason_code": "provider_key_missing",
-                "status": "blocked",
-                "severity": "blocker",
-                "summary": "Anthropic needs credentials before it can read your screen descriptions",
-                "operator_detail": "reason_code=provider_key_missing; provider=anthropic",
-            }
-        ],
+        "api_key": revai_secret,
+        "progressing": False,
     }
     monkeypatch.setattr(
-        "solstone.convey.readiness_snapshot.build_readiness_snapshot",
-        lambda: snapshot,
+        "solstone.think.brain_health.build_brain_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        "solstone.think.brain_health.render_brain_health_lines",
+        lambda _snapshot: ["Brain Health", f"  {HEADLINES['blocked']}"],
     )
 
-    payload = diagnostics.collect_provider_readiness()
+    payload = diagnostics.collect_brain_health()
     serialized = json.dumps(payload)
 
-    assert payload["interfaces"]["generate"]["provider"] == "anthropic"
-    assert payload["interfaces"]["generate"]["reason_code"] == "provider_key_missing"
-    assert payload["interfaces"]["generate"]["status"] == "blocked"
-    assert payload["interfaces"]["generate"]["reset_at_ms"] == 123
+    assert payload["snapshot"]["identity"]["provider"] == "anthropic"
+    assert payload["snapshot"]["components"]["generate"]["status"] == "blocked"
+    assert payload["lines"] == ["Brain Health", f"  {HEADLINES['blocked']}"]
     assert "ANTHROPIC_API_KEY" not in serialized
     assert "REVAI_ACCESS_TOKEN" not in serialized
     assert "OPENAI_API_KEY" not in serialized
-    assert "sk-testsecret" not in serialized
     assert revai_secret not in serialized
-    assert "/home/jer" not in serialized
-    assert "Traceback" not in serialized
 
 
 def test_bounded_redacted_text_redacts_secret_assignments_and_preserves_reset():
@@ -1377,26 +1377,19 @@ def test_bounded_redacted_text_redacts_secret_assignments_and_preserves_reset():
     )
     assert diagnostics._bounded_redacted_text("reset_at_ms=123") == "reset_at_ms=123"
 
-    view = diagnostics._redacted_readiness_view(
-        {"operator_detail": "provider=anthropic; reset_at_ms=123; password=hunter2"}
-    )
 
-    assert view["reset_at_ms"] == 123
-    assert "password" not in view["operator_detail"]
-    assert "hunter2" not in view["operator_detail"]
-
-
-def test_collect_all_includes_provider_readiness(monkeypatch):
+def test_collect_all_includes_brain_health(monkeypatch):
     from solstone.apps.support import diagnostics
 
     monkeypatch.setattr(
         diagnostics,
-        "collect_provider_readiness",
-        lambda: {"interfaces": {"generate": {"provider": "anthropic"}}},
+        "collect_brain_health",
+        lambda: {"snapshot": {"state": "ready"}, "lines": ["Brain Health"]},
     )
 
-    assert diagnostics.collect_all()["provider_readiness"] == {
-        "interfaces": {"generate": {"provider": "anthropic"}}
+    assert diagnostics.collect_all()["brain_health"] == {
+        "snapshot": {"state": "ready"},
+        "lines": ["Brain Health"],
     }
 
 

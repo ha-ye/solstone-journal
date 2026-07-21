@@ -289,9 +289,6 @@ async def test_describe_explicit_jobs_wins_without_policy_resolution(
 
     monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
     monkeypatch.setattr(
-        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
         describe_module.VideoProcessor,
         "process_with_vision",
         fake_process_with_vision,

@@ -9,6 +9,7 @@ from datetime import datetime
 import pytest
 
 from solstone.apps.home.health_glance import build_health_glance
+from solstone.think.brain_health import HEADLINES
 
 BANNED_RE = re.compile(
     r"\b(watch|capture|record|monitor|track|collect|observer|observation)\b",
@@ -22,6 +23,24 @@ EXTENDED_BANNED_RE = re.compile(
     re.IGNORECASE,
 )
 HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
+
+
+def _blocked_brain() -> dict:
+    return {
+        "state": "blocked",
+        "headline": HEADLINES["blocked"],
+        "progressing": False,
+        "action": {"label": "open thinking", "href": "/app/thinking/#main"},
+    }
+
+
+def _ready_brain() -> dict:
+    return {
+        "state": "ready",
+        "headline": HEADLINES["ready"],
+        "progressing": False,
+        "action": None,
+    }
 
 
 def _june_22_ms() -> float:
@@ -214,14 +233,14 @@ def test_pipeline_health_actions_route_to_recent_errors(pipeline_status):
     assert result["issues"][0]["href"] == HEALTH_DETAIL_HREF
 
 
-def test_thinking_blocked_alone_returns_amber_attention_issue():
-    result = build_health_glance(_active_capture(), None, None, thinking_blocked=True)
+def test_brain_blocked_alone_returns_amber_attention_issue():
+    result = build_health_glance(_active_capture(), None, None, brain=_blocked_brain())
 
     assert result["issues"] == [
         {
-            "text": "sol needs a way to think",
+            "text": HEADLINES["blocked"],
             "severity": "amber",
-            "href": "/app/thinking/",
+            "href": "/app/thinking/#main",
         }
     ]
     assert result["verdict"] == "attention"
@@ -229,9 +248,9 @@ def test_thinking_blocked_alone_returns_amber_attention_issue():
     assert result["headline"] == "1 thing needs your attention"
 
 
-def test_thinking_blocked_combines_with_red_capture_issue():
+def test_brain_blocked_combines_with_red_capture_issue():
     result = build_health_glance(
-        _degraded_capture("fedora"), None, None, thinking_blocked=True
+        _degraded_capture("fedora"), None, None, brain=_blocked_brain()
     )
 
     assert len(result["issues"]) == 2
@@ -239,23 +258,21 @@ def test_thinking_blocked_combines_with_red_capture_issue():
     assert result["severity"] == "red"
     assert result["headline"] == "2 things need your attention"
     assert {
-        "text": "sol needs a way to think",
+        "text": HEADLINES["blocked"],
         "severity": "amber",
-        "href": "/app/thinking/",
+        "href": "/app/thinking/#main",
     } in result["issues"]
     assert any(issue["severity"] == "red" for issue in result["issues"])
 
 
-def test_thinking_not_blocked_keeps_ok_glance():
+def test_brain_ready_keeps_ok_glance():
     result = build_health_glance(
-        _active_capture(), None, "5m ago", thinking_blocked=False
+        _active_capture(), None, "5m ago", brain=_ready_brain()
     )
 
     assert result["verdict"] == "ok"
     assert result["headline"] == "everything's working"
-    assert all(
-        issue["text"] != "sol needs a way to think" for issue in result["issues"]
-    )
+    assert all(issue["text"] != HEADLINES["blocked"] for issue in result["issues"])
 
 
 def test_all_issue_and_cta_hrefs_are_local_paths():
@@ -307,7 +324,7 @@ def test_owner_facing_strings_use_allowed_terms():
             None,
         ),
         build_health_glance(_active_capture(), None, "5m ago"),
-        build_health_glance(_active_capture(), None, None, thinking_blocked=True),
+        build_health_glance(_active_capture(), None, None, brain=_blocked_brain()),
         build_health_glance({"status": "no_observers", "observers": []}, None, None),
         build_health_glance({"status": "unknown", "observers": []}, None, None),
         build_health_glance(
@@ -328,14 +345,12 @@ def test_owner_facing_strings_use_allowed_terms():
             assert BANNED_RE.findall(text) == []
 
 
-def test_thinking_blocked_chip_uses_owner_copy() -> None:
-    result = build_health_glance(_active_capture(), None, None, thinking_blocked=True)
+def test_brain_blocked_chip_uses_owner_copy() -> None:
+    result = build_health_glance(_active_capture(), None, None, brain=_blocked_brain())
     chip = next(
-        issue
-        for issue in result["issues"]
-        if issue["text"] == "sol needs a way to think"
+        issue for issue in result["issues"] if issue["text"] == HEADLINES["blocked"]
     )
 
-    assert chip["text"] == "sol needs a way to think"
+    assert chip["text"] == HEADLINES["blocked"]
     assert chip["text"] == chip["text"].lower()
     assert EXTENDED_BANNED_RE.findall(chip["text"]) == []

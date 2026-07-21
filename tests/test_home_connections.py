@@ -265,7 +265,11 @@ def test_build_pulse_context_survives_missing_connections_index(
     monkeypatch.setattr(
         home_routes, "read_steward_summary", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr(home_routes, "_thinking_blocked", lambda: False)
+    monkeypatch.setattr(
+        home_routes,
+        "build_brain_snapshot",
+        lambda *_a, **_k: {"state": "ready"},
+    )
     monkeypatch.setattr(
         home_routes,
         "_summarize_yesterday_processing",

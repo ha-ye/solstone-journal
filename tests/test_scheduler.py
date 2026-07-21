@@ -1527,8 +1527,8 @@ class TestHeartbeatSchedule:
         assert raw["heartbeat"]["max_runtime"] == "10m"
         assert raw["weekly-agents"]["max_runtime"] == "30m"
 
-    def test_register_defaults_creates_providers(self, journal_path):
-        """register_defaults() creates a providers health check entry."""
+    def test_register_defaults_creates_brain(self, journal_path):
+        """register_defaults() creates a brain health refresh entry."""
         import solstone.think.scheduler as mod
 
         mock_cal = Mock()
@@ -1539,13 +1539,13 @@ class TestHeartbeatSchedule:
         with open(config_path) as f:
             raw = json.load(f)
 
-        assert raw["providers"] == {
-            "cmd": ["journal", "providers", "check"],
+        assert raw["brain"] == {
+            "cmd": ["journal", "brain", "refresh"],
             "every": "daily",
             "enabled": True,
             "max_runtime": "5m",
         }
-        assert mod._entries["providers"]["max_runtime"] == 300
+        assert mod._entries["brain"]["max_runtime"] == 300
 
     def test_register_defaults_creates_facet_candidates(self, journal_path):
         """register_defaults() creates a facet candidates entry."""
@@ -1615,8 +1615,8 @@ class TestHeartbeatSchedule:
                     "enabled": True,
                     "max_runtime": "10m",
                 },
-                "providers": {
-                    "cmd": ["journal", "providers", "check"],
+                "brain": {
+                    "cmd": ["journal", "brain", "refresh"],
                     "every": "daily",
                     "enabled": True,
                     "max_runtime": "5m",
@@ -1694,16 +1694,16 @@ class TestHeartbeatSchedule:
             raw = json.load(f)
         assert "max_runtime" not in raw["heartbeat"]
 
-    def test_register_defaults_preserves_disabled_providers(self, journal_path):
-        """register_defaults() does not overwrite disabled providers config."""
+    def test_register_defaults_preserves_disabled_brain(self, journal_path):
+        """register_defaults() does not overwrite disabled brain config."""
         import solstone.think.scheduler as mod
 
         existing = {
-            "cmd": ["journal", "providers", "check", "--custom"],
+            "cmd": ["journal", "brain", "refresh", "--custom"],
             "every": "daily",
             "enabled": False,
         }
-        _write_config(journal_path, {"providers": existing})
+        _write_config(journal_path, {"brain": existing})
 
         mock_cal = Mock()
         mod.init(mock_cal)
@@ -1712,7 +1712,7 @@ class TestHeartbeatSchedule:
         config_path = journal_path / "config" / "schedules.json"
         with open(config_path) as f:
             raw = json.load(f)
-        assert raw["providers"] == existing
+        assert raw["brain"] == existing
 
     def test_register_defaults_second_call_writes_nothing(
         self, journal_path, monkeypatch

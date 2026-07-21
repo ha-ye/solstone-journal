@@ -64,11 +64,9 @@ def test_scan_source_flags_tools_http_only_violations(source: str, kind: str) ->
     [
         "from solstone.think.convey_client import get_client\n",
         "from solstone.convey.reasons import ENTITY_NOT_FOUND\n",
-        "from solstone.convey.readiness_snapshot import highest_severity_group\n",
         "from solstone.think.pipeline_health import summarize_pipeline_day\n",
         "from solstone.think import convey_client\n",
         "from solstone.convey import reasons\n",
-        "from solstone.convey import readiness_snapshot\n",
         "from solstone.think import pipeline_health\n",
         "import typer\n",
         "import json\n",

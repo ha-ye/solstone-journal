@@ -17,11 +17,11 @@ from solstone.apps.thinking.google_model_pins import (
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.convey import provider_readiness
+from solstone.think.brain_health import HEADLINES
 from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
 from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.brain_state import BRAIN_REASON_CODES
 from solstone.think.providers.install_state import InstallState
-from solstone.think.providers.state import ProviderState
 
 INSTALL_STATUS_FIELDS = {
     "name",
@@ -116,61 +116,81 @@ def _patch_selected_providers(monkeypatch, *, provider: str = "google") -> None:
     )
 
 
-def _patch_readiness(monkeypatch, reason_code: str, status: str, provider: str) -> None:
-    def fake_readiness(selected_provider: str, interface: str, model: str):
-        return ProviderState(
-            provider=selected_provider,
-            interface=interface,
-            status=status,
-            model=model,
-            reason_code=reason_code if status != "ready" else None,
-        )
+def _brain_payload(
+    *,
+    state: str = "ready",
+    headline: str = HEADLINES["ready"],
+    reason_code: str | None = None,
+    reason_text: str | None = None,
+    action: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "state": state,
+        "headline": headline,
+        "reason_code": reason_code,
+        "reason_text": reason_text,
+        "failing_component": "generate" if reason_code else None,
+        "action": action,
+        "identity": {"lane": "cloud", "provider": "google", "model": "gemini"},
+        "evidence": {
+            "observed_at": "2026-04-10T12:00:00Z",
+            "age_seconds": 60,
+            "age_text": "1m",
+        },
+        "components": {
+            "generate": {
+                "status": state,
+                "reason_code": reason_code,
+                "reason_text": reason_text,
+                "observed_at": "2026-04-10T12:00:00Z",
+            },
+            "cogitate": {
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": "2026-04-10T12:00:00Z",
+            },
+        },
+        "progressing": False,
+    }
 
+
+def _patch_brain(monkeypatch, snapshot: dict[str, object] | None = None) -> None:
     monkeypatch.setattr(
-        "solstone.think.providers.state.readiness_for_provider",
-        fake_readiness,
+        routes,
+        "build_brain_snapshot",
+        lambda *_args, **_kwargs: snapshot or _brain_payload(),
     )
-    _patch_selected_providers(monkeypatch, provider=provider)
 
 
-def _assert_ai_readiness_shape(payload: dict) -> None:
-    ai_readiness = payload["ai_readiness"]
-    expected_view_keys = {
-        "semantic_key",
-        "work_key",
-        "status",
-        "severity",
+def _assert_brain_shape(payload: dict) -> None:
+    brain = payload["brain"]
+    assert set(brain) == {
+        "state",
+        "headline",
         "reason_code",
-        "provider",
-        "model",
-        "context",
-        "interface",
-        "summary",
-        "detail",
-        "recovery_action",
-        "operator_detail",
+        "reason_text",
+        "failing_component",
+        "action",
+        "identity",
+        "evidence",
+        "components",
+        "progressing",
     }
-    assert set(ai_readiness) >= {"summary", "interfaces", "groups"}
-    assert set(ai_readiness["summary"]) == {
-        "status",
-        "severity",
-        "active_groups",
-        "blocked_count",
-    }
-    assert set(ai_readiness["interfaces"]) == {"generate", "cogitate"}
-    for view in ai_readiness["interfaces"].values():
-        assert set(view) == expected_view_keys
-    if ai_readiness.get("local") is not None:
-        assert set(ai_readiness["local"]) == expected_view_keys
+    assert set(brain["identity"]) == {"lane", "provider", "model"}
+    assert set(brain["evidence"]) == {"observed_at", "age_seconds", "age_text"}
+    assert set(brain["components"]) == {"generate", "cogitate"}
 
 
-def test_get_providers_includes_local_install_state(settings_client):
+def test_get_providers_includes_local_install_state(settings_client, monkeypatch):
+    _patch_brain(monkeypatch)
+
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
     assert "bundled" not in payload
-    assert "ai_readiness" in payload
+    assert "brain" in payload
     assert isinstance(payload["local"], dict)
     assert payload["local_override"] == {
         "enabled": False,
@@ -208,9 +228,7 @@ def test_get_providers_reports_none_lane_when_no_engine_selected(
             "providers": {"contexts": {}, "models": {}},
         }
     )
-    monkeypatch.setattr(
-        "solstone.think.providers.state.local_runtime_ready", lambda: False
-    )
+    _patch_brain(monkeypatch)
     client, _journal_path = _settings_client_with_journal(
         lambda: (journal_path, config), thinking_app
     )
@@ -1228,83 +1246,92 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
     assert payload["provider_status"]["local"] == sentinel
 
 
-def test_get_providers_ai_readiness_shape(settings_client):
+def test_get_providers_brain_shape(settings_client, monkeypatch):
+    _patch_brain(monkeypatch)
+
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
-    _assert_ai_readiness_shape(payload)
+    _assert_brain_shape(payload)
     assert payload["local_backend"] == "local"
-    assert payload["ai_readiness"]["local"]["provider"] == "local"
+    assert payload["brain"]["state"] == "ready"
 
 
-def test_get_providers_ai_readiness_surfaces_gpu_probe_failed_from_inspect(
+def test_get_providers_brain_surfaces_snapshot_from_builder(
     settings_client, monkeypatch
 ):
-    monkeypatch.setattr(
-        "solstone.think.providers.local_install.inspect_readiness",
-        lambda _model=None: _local_readiness_gpu_probe_failed(),
-    )
-    monkeypatch.setattr(
-        "solstone.think.providers.local_server.probe_state",
-        lambda: (_ for _ in ()).throw(AssertionError("server probe not expected")),
+    _patch_brain(
+        monkeypatch,
+        _brain_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_code="gpu_unavailable",
+            reason_text="gpu unavailable",
+            action={"label": "open local setup", "href": "/app/thinking/#local-setup"},
+        ),
     )
 
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
-    local = response.get_json()["ai_readiness"]["local"]
-    assert local["status"] == "blocked"
-    assert local["reason_code"] == "gpu_probe_failed"
-    assert local["provider"] == "local"
+    brain = response.get_json()["brain"]
+    assert brain["state"] == "blocked"
+    assert brain["reason_code"] == "gpu_unavailable"
+    assert brain["action"] == {
+        "label": "open local setup",
+        "href": "/app/thinking/#local-setup",
+    }
 
 
-def test_get_providers_ai_readiness_missing_key_blocks(settings_client, monkeypatch):
-    _patch_readiness(
+def test_get_providers_brain_missing_key_blocks(settings_client, monkeypatch):
+    _patch_brain(
         monkeypatch,
-        reason_code="provider_key_missing",
-        status="blocked",
-        provider="google",
+        _brain_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_code="provider_key_invalid",
+            reason_text="provider key invalid",
+            action={"label": "open thinking", "href": "/app/thinking/#main"},
+        ),
     )
 
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
-    _assert_ai_readiness_shape(payload)
-    readiness = payload["ai_readiness"]
-    assert readiness["summary"]["severity"] == "blocker"
-    assert readiness["summary"]["active_groups"] == 1
-    assert readiness["summary"]["blocked_count"] == 1
-    group = readiness["groups"][0]
-    assert group["reason_code"] == "provider_key_missing"
-    assert group["recovery_action"] == {
-        "label": "Open Thinking",
+    _assert_brain_shape(payload)
+    brain = payload["brain"]
+    assert brain["headline"] == HEADLINES["blocked"]
+    assert brain["reason_code"] == "provider_key_invalid"
+    assert brain["action"] == {
+        "label": "open thinking",
         "href": "/app/thinking/#main",
     }
 
 
-def test_get_providers_ai_readiness_cloud_unknown_is_neutral(
-    settings_client, monkeypatch
-):
-    _patch_readiness(
+def test_get_providers_brain_unknown_is_check_again(settings_client, monkeypatch):
+    _patch_brain(
         monkeypatch,
-        reason_code="unknown",
-        status="unknown",
-        provider="anthropic",
+        _brain_payload(
+            state="unknown",
+            headline=HEADLINES["unknown"],
+            reason_code="brain_record_unavailable",
+            reason_text="brain record unavailable",
+            action={"label": "check again", "refresh": True},
+        ),
     )
 
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
-    readiness = response.get_json()["ai_readiness"]
-    assert readiness["summary"]["severity"] == "neutral"
-    assert readiness["summary"]["active_groups"] == 0
-    assert readiness["summary"]["blocked_count"] == 0
-    assert readiness["groups"] == []
+    brain = response.get_json()["brain"]
+    assert brain["state"] == "unknown"
+    assert brain["headline"] == HEADLINES["unknown"]
+    assert brain["action"] == {"label": "check again", "refresh": True}
 
 
-def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
+def test_get_providers_brain_unknown_does_not_change_status_payload(
     settings_client, monkeypatch
 ):
     sentinel = {
@@ -1319,9 +1346,15 @@ def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
         lambda: sentinel,
     )
     _patch_selected_providers(monkeypatch)
-    monkeypatch.setattr(
-        "solstone.think.providers.state.readiness_for_provider",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    _patch_brain(
+        monkeypatch,
+        _brain_payload(
+            state="unknown",
+            headline=HEADLINES["unknown"],
+            reason_code="brain_record_unavailable",
+            reason_text="brain record unavailable",
+            action={"label": "check again", "refresh": True},
+        ),
     )
 
     response = settings_client.get("/app/thinking/api/providers")
@@ -1329,40 +1362,18 @@ def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["provider_status"]["local"] == sentinel
-    assert payload["ai_readiness"] == {
-        "summary": {
-            "status": "unknown",
-            "severity": "neutral",
-            "active_groups": 0,
-            "blocked_count": 0,
-        },
-        "interfaces": {},
-        "groups": [],
-        "unavailable": True,
-    }
+    assert payload["brain"]["state"] == "unknown"
+    assert payload["brain"]["headline"] == HEADLINES["unknown"]
 
 
-def test_get_providers_ai_readiness_includes_local_on_mlx(settings_client, monkeypatch):
+def test_get_providers_brain_keeps_local_backend_on_mlx(settings_client, monkeypatch):
     _patch_selected_providers(monkeypatch)
+    _patch_brain(monkeypatch)
     monkeypatch.setattr(routes.local_bootstrap, "_is_mlx_backend", lambda: True)
-
-    def fake_readiness(provider: str, interface: str, model: str):
-        return ProviderState(
-            provider=provider,
-            interface=interface,
-            status="ready",
-            model=model,
-        )
-
-    monkeypatch.setattr(
-        "solstone.think.providers.state.readiness_for_provider",
-        fake_readiness,
-    )
 
     response = settings_client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["local_backend"] == "mlx"
-    assert "local" in payload["ai_readiness"]
-    assert payload["ai_readiness"]["local"]["status"] == "ready"
+    assert payload["brain"]["state"] == "ready"

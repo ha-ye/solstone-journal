@@ -29,8 +29,7 @@ HEALTH_GLANCE_COPY = {
     "HEALTH_GLANCE_CATCHING_UP": "i'm catching up on {n} task(s) in the background. last update {age} ago.",
     "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
     "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
-    "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
-    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness. provider setup will be confirmed shortly.",
+    "HEALTH_GLANCE_BRAIN_ATTENTION": "{headline}",
     "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention: {service_names}.",
     "HEALTH_GLANCE_SERVICES_UNREACHABLE": "i couldn't reach my own services. check that your journal is running.",
 }
@@ -199,10 +198,9 @@ def test_health_glance_copy_literal_and_precedence():
     witnesses = [
         "HEALTH_GLANCE_SERVICES_UNREACHABLE",
         "HEALTH_GLANCE_SERVICES_ATTENTION",
-        "HEALTH_GLANCE_READINESS_BLOCKED",
+        "HEALTH_GLANCE_BRAIN_ATTENTION",
         "HEALTH_GLANCE_OBSERVER_SILENT",
         "HEALTH_GLANCE_CATCHING_UP",
-        "HEALTH_GLANCE_READINESS_UNKNOWN",
         "HEALTH_GLANCE_OK",
     ]
     positions = [selector.index(witness) for witness in witnesses]

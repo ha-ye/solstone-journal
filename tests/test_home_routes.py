@@ -66,7 +66,11 @@ def _patch_minimal_pulse_context(
     monkeypatch.setattr(home_routes, "_load_latest_weekly_reflection", lambda: None)
     monkeypatch.setattr(home_routes, "read_steward_health", lambda: None)
     monkeypatch.setattr(home_routes, "read_steward_summary", lambda *a, **k: None)
-    monkeypatch.setattr(home_routes, "_thinking_blocked", lambda: False)
+    monkeypatch.setattr(
+        home_routes,
+        "build_brain_snapshot",
+        lambda *_a, **_k: {"state": "ready"},
+    )
     monkeypatch.setattr(home_routes, "build_owner_voice_needs", lambda today: [])
     monkeypatch.setattr(
         home_routes,

@@ -365,8 +365,11 @@ class TestRunPendingTasks:
             "thinking:001_migrate_provider_install_state",
             "thinking:002_pin_google_model_aliases",
         }
+        retry_migrations = {"sol:008_migrate_provider_check_schedule"}
         existing = [
-            task for task in tasks if task.qualified_name not in blocking_migrations
+            task
+            for task in tasks
+            if task.qualified_name not in blocking_migrations | retry_migrations
         ]
 
         assert len(existing) == 22
@@ -379,6 +382,11 @@ class TestRunPendingTasks:
         assert len(migration) == 2
         assert all(task.retry_on_next_start is True for task in migration)
         assert all(task.blocks_supervisor_start is True for task in migration)
+
+        retry_only = [task for task in tasks if task.qualified_name in retry_migrations]
+        assert len(retry_only) == 1
+        assert retry_only[0].retry_on_next_start is True
+        assert retry_only[0].blocks_supervisor_start is False
 
 
 class TestRunTask:

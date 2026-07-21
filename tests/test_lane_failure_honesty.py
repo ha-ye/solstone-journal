@@ -14,10 +14,12 @@ import httpx
 import pytest
 
 from solstone.think import models
+from solstone.think import talents as talents_module
 from solstone.think.models import (
     CLAUDE_SONNET_4,
     LOCAL_MODEL,
     IncompleteJSONError,
+    ProviderResponseInvalidError,
     resolve_provider,
 )
 from solstone.think.pipeline_health import (
@@ -25,7 +27,6 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
     segment_fully_thought,
 )
-from solstone.think.providers import state as provider_state
 from solstone.think.providers.cli import QuotaExhaustedError
 from solstone.think.providers.local import LocalCapacityExhausted, LocalProviderError
 from solstone.think.talents import _execute_generate, _execute_with_tools
@@ -137,10 +138,6 @@ def _cogitate_config(
         "model": model,
         "timeout_seconds": 1,
     }
-
-
-def _health_rows(journal: Path) -> list[dict[str, Any]]:
-    return json.loads((journal / "health" / "talents.json").read_text())["results"]
 
 
 def _result(text: str = "ok") -> dict[str, Any]:
@@ -366,24 +363,6 @@ def _install_cogitate_probe(
     return LaneProbe(observations)
 
 
-def _assert_quota_row(
-    journal: Path,
-    *,
-    provider: str,
-    model: str,
-    interface: str,
-) -> None:
-    rows = _health_rows(journal)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["provider"] == provider
-    assert row["model"] == model
-    assert row["interface"] == interface
-    assert row["reason_code"] == "provider_quota_exceeded"
-    assert "tier" not in row
-    assert row["reset_at_ms"] > 0
-
-
 @pytest.mark.parametrize("interface", ["generate", "cogitate"])
 @pytest.mark.asyncio
 async def test_byo_endpoint_unreachable_stays_local(
@@ -540,6 +519,12 @@ async def test_vendor_quota_records_and_does_not_switch(
         },
     )
     quota = QuotaExhaustedError("quota exhausted", retry_delay_ms=5000)
+    recorded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        talents_module,
+        "_record_brain_runtime_failure",
+        lambda reason, component, **_kwargs: recorded.append((reason, component)),
+    )
 
     if interface == "generate":
         probe = _install_generate_probe(
@@ -569,12 +554,7 @@ async def test_vendor_quota_records_and_does_not_switch(
     probe.assert_no_provider("google")
     probe.assert_no_provider("openai")
     probe.assert_no_provider("local")
-    _assert_quota_row(
-        tmp_path,
-        provider="anthropic",
-        model=CLAUDE_SONNET_4,
-        interface=interface,
-    )
+    assert recorded == [("provider_quota_exceeded", interface)]
 
 
 @pytest.mark.parametrize("interface", ["generate", "cogitate"])
@@ -627,9 +607,84 @@ async def test_non_quota_vendor_failure_does_not_switch(
     probe.assert_no_provider("local")
 
 
+def test_brain_runtime_failure_helper_records_only_allowed_ingress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        talents_module,
+        "_read_runtime_fingerprint",
+        lambda: "fingerprint",
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.brain_state.record_brain_runtime_failure",
+        lambda reason_code, *_args, **kwargs: (
+            recorded.append({"reason_code": reason_code, **kwargs})
+            or {"accepted": True}
+        ),
+    )
+
+    talents_module._record_brain_runtime_failure("network_unreachable", "cogitate")
+    talents_module._record_brain_runtime_failure("context_window_exceeded", "generate")
+    talents_module._record_brain_runtime_failure("cogitate_terminal_error", "generate")
+
+    assert recorded == [
+        {
+            "reason_code": "network_unreachable",
+            "expected_fingerprint_sha256": "fingerprint",
+            "component": "cogitate",
+            "diagnostic": {},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reason", "finish_reason", "expected"),
+    [
+        ("blank_visible_output", "stop", [("provider_response_invalid", "generate")]),
+        ("blank_visible_output", None, [("provider_response_invalid", "generate")]),
+        ("content_filter", "content_filter", []),
+        ("recitation", "recitation", []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_provider_response_invalid_records_only_clean_stop_blank_response(
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    finish_reason: str | None,
+    expected: list[tuple[str, str]],
+) -> None:
+    recorded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        talents_module,
+        "_record_brain_runtime_failure",
+        lambda reason_code, component, **_kwargs: recorded.append(
+            (reason_code, component)
+        ),
+    )
+
+    def fake_generate_with_result(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise ProviderResponseInvalidError(
+            reason,
+            finish_reason=finish_reason,
+            model="model",
+        )
+
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result",
+        fake_generate_with_result,
+    )
+    events: list[dict[str, Any]] = []
+
+    await _execute_generate(_generate_config(), events.append)
+
+    assert recorded == expected
+    assert events[-1]["reason_code"] == "provider_response_invalid"
+
+
 @pytest.mark.parametrize("interface", ["generate", "cogitate"])
 @pytest.mark.asyncio
-async def test_standing_quota_row_does_not_pre_swap_active_brain(
+async def test_active_brain_does_not_pre_swap_for_previous_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     interface: str,
@@ -646,13 +701,6 @@ async def test_standing_quota_row_does_not_pre_swap_active_brain(
             "GOOGLE_API_KEY": "test-google-key",
         },
     )
-    provider_state.record_quota_failure(
-        "anthropic",
-        CLAUDE_SONNET_4,
-        interface,
-        reset_at_ms=9999999999999,
-    )
-
     if interface == "generate":
         probe = _install_generate_probe(monkeypatch, active_provider="anthropic")
         with _assert_config_unchanged(tmp_path):

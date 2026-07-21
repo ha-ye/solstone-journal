@@ -1635,7 +1635,7 @@ def test_segment_completion_fold_failure_elevates_status(
     ]
     assert pipeline_status_message(summary) == {
         "status": "stale",
-        "message": "Segment thinking status unavailable",
+        "message": "Segment analysis status unavailable",
     }
 
 
@@ -2420,7 +2420,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
             },
             {
                 "status": "stale",
-                "message": "Segment thinking status unavailable",
+                "message": "Segment analysis status unavailable",
             },
         ),
         (
@@ -2434,7 +2434,7 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
             },
             {
                 "status": "unknown",
-                "message": "Segment thinking status unavailable",
+                "message": "Segment analysis status unavailable",
             },
         ),
     ],

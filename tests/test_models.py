@@ -315,10 +315,6 @@ def test_resolve_provider_no_config(monkeypatch, tmp_path):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        "solstone.think.providers.state.local_runtime_ready", lambda: False
-    )
-
     provider, model = resolve_provider("generate")
     assert provider == NO_BRAIN_PROVIDER
     assert provider != "google"
@@ -400,9 +396,6 @@ def test_is_local_provider_needed_true_for_selected_surfaces(config):
     ],
 )
 def test_is_local_provider_needed_false_when_not_selected(config, monkeypatch):
-    monkeypatch.setattr(
-        "solstone.think.providers.state.local_runtime_ready", lambda: False
-    )
     assert is_local_provider_needed(config) is False
 
 
@@ -410,9 +403,6 @@ def test_is_local_provider_needed_does_not_infer_from_runtime(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        "solstone.think.providers.state.local_runtime_ready", lambda: True
-    )
 
     assert is_local_provider_needed({}) is False
 
@@ -2111,33 +2101,3 @@ class TestDefaultProviderTimeout:
         assert provider_module.run_generate.call_args_list[0].kwargs["timeout_s"] == 5
         assert provider_module.run_generate.call_args_list[1].kwargs["timeout_s"] == 5
         assert provider_module.run_agenerate.call_args.kwargs["timeout_s"] == 5
-
-
-def test_request_health_recheck_emits_callosum_request():
-    from solstone.think.providers.state import request_recheck
-
-    with patch(
-        "solstone.think.providers.state.callosum_send", return_value=True
-    ) as send:
-        request_recheck()
-
-    send.assert_called_once_with(
-        "supervisor",
-        "request",
-        cmd=["journal", "providers", "check", "--targeted"],
-    )
-
-
-def test_request_health_recheck_does_not_raise_on_send_failure(caplog):
-    from solstone.think.providers.state import request_recheck
-
-    with (
-        patch(
-            "solstone.think.providers.state.callosum_send", return_value=False
-        ) as send,
-        caplog.at_level(logging.WARNING),
-    ):
-        request_recheck()
-
-    send.assert_called_once()
-    assert "request_health_recheck: callosum_send returned false" in caplog.text

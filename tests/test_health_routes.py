@@ -9,7 +9,7 @@ from solstone.convey import create_app
 from solstone.think.surfaces import health as health_surface
 from tests._baseline_harness import make_test_client
 from tests.test_surfaces_health import (
-    _clear_readiness_snapshot,
+    _brain_snapshot,
     _minimal_facet_tree,
     _segment_backlog,
     _utc_dt,
@@ -45,8 +45,8 @@ def _freeze_health_surface(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(health_surface, "_resolve_now", lambda: _utc_dt("20260410"))
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        lambda: _clear_readiness_snapshot(),
+        "build_brain_snapshot",
+        lambda *_args, **_kwargs: _brain_snapshot(),
     )
     monkeypatch.setattr(
         health_surface,
@@ -69,7 +69,7 @@ def test_summary_returns_report_shape(tmp_path, monkeypatch):
         "capture_health",
         "synthesis_health",
         "consumer_signal",
-        "provider_readiness",
+        "brain_health",
     } <= response.get_json().keys()
 
 

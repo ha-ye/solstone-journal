@@ -1563,9 +1563,6 @@ async def test_existing_output_reenters_only_retryable_describe_failures(
 
     monkeypatch.setattr(describe_module, "VideoProcessor", FakeProcessor)
     monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
-    monkeypatch.setattr(
-        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
-    )
     monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
     monkeypatch.setattr("sys.argv", ["journal describe", str(video_path)])
 
@@ -1615,9 +1612,6 @@ async def test_redo_existing_output_does_not_read_previous_record(
     monkeypatch.setattr(describe_module, "VideoProcessor", FakeProcessor)
     monkeypatch.setattr(describe_module, "read_processing_record_header", fail_if_read)
     monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
-    monkeypatch.setattr(
-        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
-    )
     monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
     monkeypatch.setattr("sys.argv", ["journal describe", "--redo", str(video_path)])
 

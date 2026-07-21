@@ -29,8 +29,25 @@ from solstone.apps.home.routes import (
     _normalize_activity_title,
     _summarize_yesterday_processing,
 )
+from solstone.think.brain_health import HEADLINES
 
 FIXTURES = Path(__file__).parent / "fixtures" / "journal"
+
+
+def _brain_snapshot(state: str = "ready") -> dict:
+    if state == "blocked":
+        return {
+            "state": "blocked",
+            "headline": HEADLINES["blocked"],
+            "progressing": False,
+            "action": {"label": "open thinking", "href": "/app/thinking/#main"},
+        }
+    return {
+        "state": "ready",
+        "headline": HEADLINES["ready"],
+        "progressing": False,
+        "action": None,
+    }
 
 
 def _copy_fixture_file(journal: Path, rel_path: str) -> None:
@@ -212,7 +229,10 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
         "solstone.apps.home.routes.read_steward_summary",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: False)
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.build_brain_snapshot",
+        lambda *_a, **_k: _brain_snapshot(),
+    )
     monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
         lambda yesterday, journal_age_days: {
@@ -825,7 +845,10 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
         "solstone.apps.home.routes._collect_activities", lambda today: []
     )
     monkeypatch.setattr("solstone.apps.home.routes.read_steward_health", lambda: None)
-    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: False)
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.build_brain_snapshot",
+        lambda *_a, **_k: _brain_snapshot(),
+    )
     monkeypatch.setattr(
         "solstone.apps.home.routes._summarize_yesterday_processing",
         lambda yesterday, journal_age_days: {
@@ -885,14 +908,17 @@ def test_build_pulse_context_pipeline_status_enriched_with_summary(monkeypatch):
     assert ctx["pipeline_status"]["message"] == "Foo bar"
 
 
-def test_build_pulse_context_surfaces_thinking_chip_when_blocked(monkeypatch):
+def test_build_pulse_context_surfaces_brain_chip_when_blocked(monkeypatch):
     _patch_minimal_pulse_context(monkeypatch, None)
-    monkeypatch.setattr("solstone.apps.home.routes._thinking_blocked", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.build_brain_snapshot",
+        lambda *_a, **_k: _brain_snapshot("blocked"),
+    )
 
     ctx = _build_pulse_context()
 
     assert {
-        "text": "sol needs a way to think",
+        "text": HEADLINES["blocked"],
         "severity": "amber",
-        "href": "/app/thinking/",
+        "href": "/app/thinking/#main",
     } in ctx["health_glance"]["issues"]

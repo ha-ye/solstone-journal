@@ -78,13 +78,13 @@ def test_set_schedule_entries_applies_multiple_entries_in_one_call(
     schedule_config.set_schedule_entries(
         {
             "one": {"cmd": ["journal", "heartbeat"], "every": "daily"},
-            "two": {"cmd": ["journal", "providers", "check"], "every": "weekly"},
+            "two": {"cmd": ["journal", "brain", "refresh"], "every": "weekly"},
         }
     )
 
     assert _read_schedules(path) == {
         "one": {"cmd": ["journal", "heartbeat"], "every": "daily"},
-        "two": {"cmd": ["journal", "providers", "check"], "every": "weekly"},
+        "two": {"cmd": ["journal", "brain", "refresh"], "every": "weekly"},
     }
 
 
@@ -133,7 +133,7 @@ def test_write_failure_leaves_bytes_intact_and_no_temp_file(tmp_path, monkeypatc
 
     with pytest.raises(OSError):
         schedule_config.set_schedule_entries(
-            {"new": {"cmd": ["journal", "providers", "check"], "every": "daily"}}
+            {"new": {"cmd": ["journal", "brain", "refresh"], "every": "daily"}}
         )
 
     assert path.read_bytes() == before
@@ -211,7 +211,7 @@ def test_remove_schedule_entry_deletes_present_and_absent_is_noop(
         {
             "daily_time": "03:00",
             "remove-me": {"cmd": ["journal", "heartbeat"], "every": "daily"},
-            "keep-me": {"cmd": ["journal", "providers", "check"], "every": "daily"},
+            "keep-me": {"cmd": ["journal", "brain", "refresh"], "every": "daily"},
         },
     )
 
@@ -221,7 +221,7 @@ def test_remove_schedule_entry_deletes_present_and_absent_is_noop(
     assert "remove-me" not in raw
     assert raw["daily_time"] == "03:00"
     assert raw["keep-me"] == {
-        "cmd": ["journal", "providers", "check"],
+        "cmd": ["journal", "brain", "refresh"],
         "every": "daily",
     }
     before = path.read_bytes()

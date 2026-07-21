@@ -480,8 +480,6 @@ def test_local_verbs_hit_expected_endpoints(monkeypatch: pytest.MonkeyPatch) -> 
                 "json_body": json_body,
             }
         )
-        if path == "/app/thinking/api/providers":
-            return {"ai_readiness": {"local": {"status": "ready"}}}
         return {"ok": True}
 
     monkeypatch.setattr(thinking_call, "_request", fake_request)
@@ -511,7 +509,7 @@ def test_local_verbs_hit_expected_endpoints(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls == [
         {
             "method": "GET",
-            "path": "/app/thinking/api/providers",
+            "path": "/app/thinking/api/providers/local/status",
             "params": None,
             "json_body": None,
         },

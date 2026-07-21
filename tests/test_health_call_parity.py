@@ -16,7 +16,7 @@ from solstone.think.surfaces import health as health_surface
 from solstone.think.tools.health import app
 from tests._baseline_harness import make_test_client, mark_setup_complete
 from tests.test_surfaces_health import (
-    _clear_readiness_snapshot,
+    _brain_health_payload,
     _minimal_facet_tree,
     _segment_backlog,
     _utc_dt,
@@ -98,16 +98,7 @@ def _report() -> dict[str, object]:
             "display_powersave_detectable": False,
         },
         "notes": [],
-        "provider_readiness": {
-            "summary": {
-                "status": "ready",
-                "severity": "ok",
-                "active_groups": 0,
-                "blocked_count": 0,
-            },
-            "interfaces": {},
-            "groups": [],
-        },
+        "brain_health": _brain_health_payload(),
     }
 
 
@@ -115,8 +106,8 @@ def _freeze_health_surface(journal, monkeypatch) -> None:
     monkeypatch.setattr(health_surface, "_resolve_now", lambda: _utc_dt("20260410"))
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        lambda: _clear_readiness_snapshot(),
+        "_build_brain_health",
+        lambda: _brain_health_payload(),
     )
     monkeypatch.setattr(
         health_surface,

@@ -15,7 +15,7 @@ import pytest
 from click.testing import Result
 from typer.testing import CliRunner
 
-from solstone.convey.readiness_snapshot import unavailable_snapshot
+from solstone.think.brain_health import HEADLINES
 from solstone.think.convey_client import ConveyClient
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.processing import (
@@ -264,75 +264,70 @@ def _stub_display_powersave(
     )
 
 
-def _clear_readiness_snapshot() -> dict[str, object]:
+def _brain_snapshot(
+    *,
+    state: str = "ready",
+    headline: str = HEADLINES["ready"],
+    reason_text: str | None = None,
+    component: str | None = None,
+    action: dict[str, object] | None = None,
+) -> dict[str, object]:
     return {
-        "summary": {
-            "status": "ready",
-            "severity": "ok",
-            "active_groups": 0,
-            "blocked_count": 0,
+        "state": state,
+        "headline": headline,
+        "reason_code": "provider_key_invalid" if reason_text else None,
+        "reason_text": reason_text,
+        "failing_component": component,
+        "action": action,
+        "identity": {"lane": "cloud", "provider": "google", "model": "gemini"},
+        "evidence": {
+            "observed_at": "2026-04-10T12:00:00Z",
+            "age_seconds": 60,
+            "age_text": "1m",
         },
-        "interfaces": {},
-        "groups": [],
-    }
-
-
-def _blocked_readiness_snapshot() -> dict[str, object]:
-    return {
-        "summary": {
-            "status": "blocked",
-            "severity": "blocker",
-            "active_groups": 2,
-            "blocked_count": 1,
-        },
-        "interfaces": {
+        "components": {
             "generate": {
-                "severity": "blocker",
-                "summary": "Distinctive blocker summary",
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": "2026-04-10T12:00:00Z",
             },
             "cogitate": {
-                "severity": "attention",
-                "summary": "Distinctive attention summary",
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": "2026-04-10T12:00:00Z",
             },
         },
-        "groups": [
-            {
-                "severity": "blocker",
-                "semantic_key": "blocked:primary",
-                "summary": "Distinctive provider blocker summary",
-                "recovery_action": {
-                    "label": "Fix provider settings",
-                    "href": "/app/settings/providers",
-                },
-                "operator_detail": "operator-only diagnostic detail",
-                "reason_code": "blocked_reason_code",
-            },
-            {
-                "severity": "attention",
-                "semantic_key": "attention:secondary",
-                "summary": "Distinctive provider attention summary",
-                "recovery_action": {
-                    "label": "Review provider",
-                    "href": "/app/settings/providers#review",
-                },
-                "operator_detail": "attention operator detail",
-                "reason_code": "attention_reason_code",
-            },
-        ],
+        "progressing": False,
     }
 
 
-def _neutral_readiness_snapshot() -> dict[str, object]:
-    return {
-        "summary": {
-            "status": "unknown",
-            "severity": "neutral",
-            "active_groups": 0,
-            "blocked_count": 0,
-        },
-        "interfaces": {},
-        "groups": [],
-    }
+def _brain_health_payload(
+    *,
+    state: str = "ready",
+    headline: str = HEADLINES["ready"],
+    reason_text: str | None = None,
+    component: str | None = None,
+    action: dict[str, object] | None = None,
+) -> dict[str, object]:
+    snapshot = _brain_snapshot(
+        state=state,
+        headline=headline,
+        reason_text=reason_text,
+        component=component,
+        action=action,
+    )
+    lines = ["Brain Health", f"  {headline}"]
+    if reason_text is None:
+        lines.append("  cloud google/gemini, checked 1m ago")
+    else:
+        suffix = f" ({component})" if component else ""
+        lines.append(f"  cloud google/gemini — {reason_text}{suffix}")
+    if action is not None:
+        target = action.get("href") or action.get("command")
+        lines.append(f"  → {action['label']}: {target}")
+    return {"snapshot": snapshot, "lines": lines}
 
 
 def _patch_health_cli_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1433,7 +1428,7 @@ def test_cli_summary_renders_segment_backlog_unavailable(tmp_path, monkeypatch):
     result = _invoke_health_summary(tmp_path, monkeypatch)
 
     assert result.exit_code == 0
-    assert "Segment thinking status unavailable" in result.stdout
+    assert "Segment analysis status unavailable" in result.stdout
     assert "awaiting thinking" not in result.stdout
 
 
@@ -1499,39 +1494,28 @@ def test_cli_health_summary_full_range_json(tmp_path, monkeypatch):
             "consumer_signal",
             "segment_backlog",
             "notes",
-            "provider_readiness",
+            "brain_health",
         }
         assert list(payload) == sorted(payload)
 
 
-def test_provider_readiness_carried_through_verbatim_json(tmp_path, monkeypatch):
+def test_brain_health_carried_through_verbatim_json(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
     monkeypatch.setattr(
         health_surface, "read_segment_backlog", lambda: _segment_backlog({})
     )
-    sentinel = {
-        "summary": {
-            "status": "blocked",
-            "severity": "blocker",
-            "active_groups": 1,
-            "blocked_count": 1,
-        },
-        "interfaces": {},
-        "groups": [
-            {
-                "severity": "blocker",
-                "semantic_key": "sentinel:marker:",
-                "reason_code": "sentinel_reason",
-                "summary": "SENTINEL SUMMARY",
-            }
-        ],
-        "marker": {"unusual": ["value"]},
-    }
+    sentinel = _brain_health_payload(
+        state="blocked",
+        headline="SENTINEL HEADLINE",
+        reason_text="SENTINEL REASON",
+        component="generate",
+        action={"label": "open thinking", "href": "/app/thinking/#main"},
+    )
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
+        "_build_brain_health",
         lambda: sentinel,
     )
     _patch_health_cli_client(tmp_path, monkeypatch)
@@ -1542,10 +1526,10 @@ def test_provider_readiness_carried_through_verbatim_json(tmp_path, monkeypatch)
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["provider_readiness"] == sentinel
+    assert payload["brain_health"] == sentinel
 
 
-def test_other_sections_unchanged_across_readiness_states(tmp_path, monkeypatch):
+def test_other_sections_unchanged_across_brain_states(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
@@ -1557,28 +1541,38 @@ def test_other_sections_unchanged_across_readiness_states(tmp_path, monkeypatch)
     from solstone.think.call import call_app
 
     rendered_payloads = []
-    for snapshot in (
-        _clear_readiness_snapshot(),
-        _blocked_readiness_snapshot(),
-        unavailable_snapshot(),
+    for payload in (
+        _brain_health_payload(state="ready", headline=HEADLINES["ready"]),
+        _brain_health_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_text="choose a thinking engine",
+            component="configuration",
+        ),
+        _brain_health_payload(
+            state="unknown",
+            headline=HEADLINES["unknown"],
+            reason_text="missing evidence",
+            component=None,
+        ),
     ):
         monkeypatch.setattr(
             health_surface,
-            "build_readiness_snapshot",
-            lambda snapshot=snapshot: snapshot,
+            "_build_brain_health",
+            lambda payload=payload: payload,
         )
         result = _RUNNER.invoke(call_app, ["health", "summary", "--json"])
         assert result.exit_code == 0
         payload = json.loads(result.stdout)
-        without_readiness = {
-            key: value for key, value in payload.items() if key != "provider_readiness"
+        without_brain = {
+            key: value for key, value in payload.items() if key != "brain_health"
         }
-        rendered_payloads.append(json.dumps(without_readiness, sort_keys=True))
+        rendered_payloads.append(json.dumps(without_brain, sort_keys=True))
 
     assert rendered_payloads[0] == rendered_payloads[1] == rendered_payloads[2]
 
 
-def test_human_block_clear(tmp_path, monkeypatch):
+def test_human_brain_health_lines_are_printed(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
@@ -1587,8 +1581,14 @@ def test_human_block_clear(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        _clear_readiness_snapshot,
+        "_build_brain_health",
+        lambda: _brain_health_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_text="SENTINEL REASON",
+            component="generate",
+            action={"label": "open thinking", "href": "/app/thinking/#main"},
+        ),
     )
     _patch_health_cli_client(tmp_path, monkeypatch)
 
@@ -1597,58 +1597,10 @@ def test_human_block_clear(tmp_path, monkeypatch):
     result = _RUNNER.invoke(call_app, ["health", "summary"])
 
     assert result.exit_code == 0
-    assert "Provider Readiness" in result.stdout
-    assert "all providers ready" in result.stdout
-
-
-def test_human_block_neutral(tmp_path, monkeypatch):
-    _configure_env(tmp_path, monkeypatch)
-    _set_now(monkeypatch, _utc_dt("20260410"))
-    _minimal_facet_tree(tmp_path)
-    monkeypatch.setattr(
-        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
-    )
-    monkeypatch.setattr(
-        health_surface,
-        "build_readiness_snapshot",
-        _neutral_readiness_snapshot,
-    )
-    _patch_health_cli_client(tmp_path, monkeypatch)
-
-    from solstone.think.call import call_app
-
-    result = _RUNNER.invoke(call_app, ["health", "summary"])
-
-    assert result.exit_code == 0
-    assert "Provider Readiness" in result.stdout
-    assert "no active provider blockers" in result.stdout
-    assert "all providers ready" not in result.stdout
-
-
-def test_human_block_blocked(tmp_path, monkeypatch):
-    _configure_env(tmp_path, monkeypatch)
-    _set_now(monkeypatch, _utc_dt("20260410"))
-    _minimal_facet_tree(tmp_path)
-    monkeypatch.setattr(
-        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
-    )
-    monkeypatch.setattr(
-        health_surface,
-        "build_readiness_snapshot",
-        _blocked_readiness_snapshot,
-    )
-    _patch_health_cli_client(tmp_path, monkeypatch)
-
-    from solstone.think.call import call_app
-
-    result = _RUNNER.invoke(call_app, ["health", "summary"])
-
-    assert result.exit_code == 0
-    assert "Distinctive provider blocker summary" in result.stdout
-    assert "2 provider groups need attention" in result.stdout
-    assert "Fix provider settings: /app/settings/providers" in result.stdout
-    assert "operator-only diagnostic detail" not in result.stdout
-    assert "blocked_reason_code" not in result.stdout
+    assert "Brain Health" in result.stdout
+    assert HEADLINES["blocked"] in result.stdout
+    assert "cloud google/gemini — SENTINEL REASON (generate)" in result.stdout
+    assert "→ open thinking: /app/thinking/#main" in result.stdout
 
 
 def test_human_block_renderer_stays_thin(tmp_path, monkeypatch):
@@ -1660,8 +1612,13 @@ def test_human_block_renderer_stays_thin(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        _blocked_readiness_snapshot,
+        "_build_brain_health",
+        lambda: _brain_health_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_text="SENTINEL REASON",
+            component="generate",
+        ),
     )
     _patch_health_cli_client(tmp_path, monkeypatch)
 
@@ -1670,8 +1627,8 @@ def test_human_block_renderer_stays_thin(tmp_path, monkeypatch):
     real_import = builtins.__import__
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "solstone.convey.readiness_snapshot":
-            raise AssertionError("health renderer imported journal readiness builder")
+        if name == "solstone.think.brain_health":
+            raise AssertionError("health renderer imported brain health renderer")
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
@@ -1679,35 +1636,10 @@ def test_human_block_renderer_stays_thin(tmp_path, monkeypatch):
     result = _RUNNER.invoke(call_app, ["health", "summary"])
 
     assert result.exit_code == 0
-    assert "Distinctive provider blocker summary" in result.stdout
+    assert "SENTINEL REASON" in result.stdout
 
 
-def test_human_block_unavailable(tmp_path, monkeypatch):
-    _configure_env(tmp_path, monkeypatch)
-    _set_now(monkeypatch, _utc_dt("20260410"))
-    _minimal_facet_tree(tmp_path)
-    monkeypatch.setattr(
-        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
-    )
-    monkeypatch.setattr(
-        health_surface,
-        "build_readiness_snapshot",
-        unavailable_snapshot,
-    )
-    _patch_health_cli_client(tmp_path, monkeypatch)
-
-    from solstone.think.call import call_app
-
-    result = _RUNNER.invoke(call_app, ["health", "summary"])
-
-    assert result.exit_code == 0
-    assert "Provider Readiness" in result.stdout
-    assert "readiness status unavailable" in result.stdout
-    assert "all providers ready" not in result.stdout
-    assert "all clear" not in result.stdout
-
-
-def test_readiness_degrades_when_builder_raises(tmp_path, monkeypatch):
+def test_brain_health_degrades_when_builder_raises(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
@@ -1715,13 +1647,13 @@ def test_readiness_degrades_when_builder_raises(tmp_path, monkeypatch):
         health_surface, "read_segment_backlog", lambda: _segment_backlog({})
     )
 
-    def raise_readiness_error() -> dict[str, object]:
-        raise RuntimeError("readiness failed")
+    def raise_brain_error(*_args, **_kwargs) -> dict[str, object]:
+        raise RuntimeError("brain failed")
 
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        raise_readiness_error,
+        "build_brain_snapshot",
+        raise_brain_error,
     )
     _patch_health_cli_client(tmp_path, monkeypatch)
 
@@ -1731,11 +1663,12 @@ def test_readiness_degrades_when_builder_raises(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["provider_readiness"]["unavailable"] is True
+    assert payload["brain_health"]["snapshot"]["state"] == "unknown"
+    assert payload["brain_health"]["snapshot"]["headline"] == HEADLINES["unknown"]
     assert "capture_health" in payload
 
 
-def test_backlog_and_readiness_render_independently(tmp_path, monkeypatch):
+def test_backlog_and_brain_health_render_independently(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
@@ -1746,8 +1679,13 @@ def test_backlog_and_readiness_render_independently(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         health_surface,
-        "build_readiness_snapshot",
-        _blocked_readiness_snapshot,
+        "_build_brain_health",
+        lambda: _brain_health_payload(
+            state="blocked",
+            headline=HEADLINES["blocked"],
+            reason_text="SENTINEL REASON",
+            component="generate",
+        ),
     )
     _patch_health_cli_client(tmp_path, monkeypatch)
 
@@ -1757,8 +1695,8 @@ def test_backlog_and_readiness_render_independently(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "3 segments across 2 days awaiting thinking" in result.stdout
-    assert "Provider Readiness" in result.stdout
-    assert "Distinctive provider blocker summary" in result.stdout
+    assert "Brain Health" in result.stdout
+    assert "SENTINEL REASON" in result.stdout
 
 
 def test_cli_help_disambiguates_and_lists_health_once(tmp_path, monkeypatch):

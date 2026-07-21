@@ -11,13 +11,11 @@ from solstone.convey.provider_readiness import (
     is_blocking_reason,
     mapped_reason_codes,
     present_for_reason,
-    present_readiness,
     semantic_key_for,
 )
-from solstone.think.providers import shared, state
+from solstone.think.providers import shared
 from solstone.think.providers.local import ContextBudgetExceeded, LocalCapacityExhausted
 from solstone.think.providers.local_admission import LocalAdmissionTimeout
-from solstone.think.providers.state import ProviderState
 
 
 def local_provider_error_codes() -> set[str]:
@@ -46,9 +44,7 @@ def local_provider_error_codes() -> set[str]:
 
 def test_completeness_set_is_mapped_and_owner_safe():
     expected = (
-        state.READINESS_REASON_CODES
-        | shared.RUNTIME_REASON_CODES
-        | local_provider_error_codes()
+        set(_ENTRIES) | shared.RUNTIME_REASON_CODES | local_provider_error_codes()
     )
 
     assert expected <= mapped_reason_codes()
@@ -191,18 +187,3 @@ def test_degrade_safe_fallback_never_crashes_or_returns_ok():
     assert blocked.severity == "attention"
     assert "new_reason_code" not in unknown.summary
     assert "new_reason_code" not in blocked.summary
-
-
-def test_present_readiness_handles_ready_provider_state():
-    view = present_readiness(
-        ProviderState(
-            provider="google",
-            interface="generate",
-            status="ready",
-            model="gemini-test",
-        )
-    )
-
-    assert view.reason_code == "ready"
-    assert view.severity == "ok"
-    assert view.summary == "Gemini is ready"

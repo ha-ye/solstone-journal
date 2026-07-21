@@ -18,94 +18,46 @@
     "scout_enabled": false,
     "scout_provenance_configured": false
   },
-  "ai_readiness": {
-    "groups": [
-      {
-        "context": null,
-        "detail": "Open provider setup and add credentials, then try again.",
-        "interface": "generate",
-        "model": "gemini-custom-flash-test",
-        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
-        "provider": "google",
-        "reason_code": "provider_key_missing",
-        "recovery_action": {
-          "href": "/app/thinking/#main",
-          "label": "Open Thinking"
-        },
-        "semantic_key": "provider_key_missing:google:",
-        "severity": "blocker",
-        "status": "blocked",
-        "summary": "Gemini needs credentials before it can read your screen descriptions",
-        "work_key": null
-      }
-    ],
-    "interfaces": {
-      "cogitate": {
-        "context": null,
-        "detail": "Open provider setup and add credentials, then try again.",
-        "interface": "cogitate",
-        "model": "gemini-custom-flash-test",
-        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=cogitate; message=GOOGLE_API_KEY not set",
-        "provider": "google",
-        "reason_code": "provider_key_missing",
-        "recovery_action": {
-          "href": "/app/thinking/#main",
-          "label": "Open Thinking"
-        },
-        "semantic_key": "provider_key_missing:google:",
-        "severity": "blocker",
-        "status": "blocked",
-        "summary": "Gemini needs credentials before it can read your screen descriptions",
-        "work_key": null
-      },
-      "generate": {
-        "context": null,
-        "detail": "Open provider setup and add credentials, then try again.",
-        "interface": "generate",
-        "model": "gemini-custom-flash-test",
-        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
-        "provider": "google",
-        "reason_code": "provider_key_missing",
-        "recovery_action": {
-          "href": "/app/thinking/#main",
-          "label": "Open Thinking"
-        },
-        "semantic_key": "provider_key_missing:google:",
-        "severity": "blocker",
-        "status": "blocked",
-        "summary": "Gemini needs credentials before it can read your screen descriptions",
-        "work_key": null
-      }
-    },
-    "local": {
-      "context": null,
-      "detail": "Finish local model setup, then try the request again.",
-      "interface": "generate",
-      "model": "local/qwen3.5-4b",
-      "operator_detail": "reason_code=local_model_missing; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
-      "provider": "local",
-      "reason_code": "local_model_missing",
-      "recovery_action": {
-        "href": "/app/thinking/#local-setup",
-        "label": "Open Local Model Setup"
-      },
-      "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
-      "severity": "blocker",
-      "status": "blocked",
-      "summary": "local model setup is not finished",
-      "work_key": null
-    },
-    "summary": {
-      "active_groups": 1,
-      "blocked_count": 1,
-      "severity": "blocker",
-      "status": "blocked"
-    }
-  },
   "api_keys": {
     "anthropic": false,
     "google": false,
     "openai": false
+  },
+  "brain": {
+    "action": {
+      "label": "check again",
+      "refresh": true
+    },
+    "components": {
+      "cogitate": {
+        "observed_at": null,
+        "reason_code": null,
+        "reason_text": "unknown",
+        "status": null
+      },
+      "generate": {
+        "observed_at": null,
+        "reason_code": null,
+        "reason_text": "unknown",
+        "status": null
+      }
+    },
+    "evidence": {
+      "age_seconds": null,
+      "age_text": null,
+      "observed_at": null
+    },
+    "failing_component": null,
+    "headline": "thinking status unavailable",
+    "identity": {
+      "lane": "byo-cloud",
+      "model": "gemini-custom-flash-test",
+      "provider": "google"
+    },
+    "progressing": false,
+    "reason_code": "brain_record_missing",
+    "reason_text": "brain record missing",
+    "state": "unknown"
   },
   "byo_models": {},
   "configuration_guidance": null,

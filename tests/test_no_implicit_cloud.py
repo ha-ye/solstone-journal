@@ -108,6 +108,24 @@ def _confidential_config(*, provider_pins: bool = True) -> dict:
     return config
 
 
+def test_cloud_key_configured_reads_env_and_journal_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think.providers import state
+
+    _empty_journal(tmp_path, monkeypatch)
+    assert state.cloud_key_configured("") is False
+    assert state.cloud_key_configured("GOOGLE_API_KEY") is False
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "ambient-key")
+    assert state.cloud_key_configured("GOOGLE_API_KEY") is True
+
+    monkeypatch.delenv("GOOGLE_API_KEY")
+    _seed_journal_config(tmp_path, {"env": {"GOOGLE_API_KEY": "stored-key"}})
+    assert state.cloud_key_configured("GOOGLE_API_KEY") is True
+
+
 def _install_failing_confidential_transport(
     monkeypatch: pytest.MonkeyPatch,
     reason_code: str = "gateway_unreachable",
@@ -812,9 +830,6 @@ def test_key_only_config_requires_maintenance_migration(tmp_path, monkeypatch):
 
 def test_runtime_readiness_does_not_implicitly_select_local(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "solstone.think.providers.state.local_runtime_ready", lambda: True
-    )
 
     provider, model = resolve_provider("generate")
 

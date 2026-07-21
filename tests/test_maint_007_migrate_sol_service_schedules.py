@@ -37,8 +37,8 @@ def test_happy_path_rewrites_all_stale_forms(tmp_path):
                 "every": "daily",
                 "enabled": True,
             },
-            "providers-check": {
-                "cmd": ["sol", "providers", "check"],
+            "indexer-rescan": {
+                "cmd": ["sol", "indexer", "--rescan"],
                 "every": "daily",
                 "enabled": True,
             },
@@ -65,9 +65,9 @@ def test_happy_path_rewrites_all_stale_forms(tmp_path):
     assert data["heartbeat"]["cmd"] == ["journal", "heartbeat"]
     assert data["heartbeat"]["every"] == "daily"
     assert data["heartbeat"]["enabled"] is True
-    assert data["providers-check"]["cmd"] == ["journal", "providers", "check"]
-    assert data["providers-check"]["every"] == "daily"
-    assert data["providers-check"]["enabled"] is True
+    assert data["indexer-rescan"]["cmd"] == ["journal", "indexer", "--rescan"]
+    assert data["indexer-rescan"]["every"] == "daily"
+    assert data["indexer-rescan"]["enabled"] is True
     assert data["sync:plaud"]["cmd"] == [
         "journal",
         "importer",

@@ -80,11 +80,6 @@ INCIDENTAL_READ_FINDINGS = {
         "journal/link/ca first; _ca_fingerprint() then load_or_generate_ca() writes "
         "private.pem and cert.pem on a read path."
     ),
-    "home.pulse": (
-        "GET /app/home/api/pulse can write awareness/current.json through the "
-        "thinking_readiness cache; this is weaker than link.status because it is "
-        "routed through the awareness owner and is not an L3 read-verb violation."
-    ),
     "link.status.socket": (
         "GET /app/network/api/status reaches _detect_lan_ip(), which opens a UDP "
         "socket to 8.8.8.8:80 to read the kernel-selected source address."

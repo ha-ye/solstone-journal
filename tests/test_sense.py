@@ -996,9 +996,6 @@ def test_failed_describe_heals_on_daily_pass_and_processed_prune_releases_raw(
 
     monkeypatch.setattr(describe_module, "VideoProcessor", HealingProcessor)
     monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
-    monkeypatch.setattr(
-        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
-    )
     monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
     monkeypatch.setattr(sensor, "_run_handler", fake_run)
 
