@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from solstone.apps.home.needs_you import (
     DISABLED_EMPTY_PROMPT_REASON,
@@ -79,29 +81,76 @@ def _seed_principal_centroid(journal: Path) -> None:
     (entity_dir / "owner_centroid.npz").write_bytes(b"centroid")
 
 
-def _write_discovery_cache(journal: Path, triples: list[tuple[str, str, str]]) -> None:
+def _discovery_record(
+    day: str,
+    stream: str,
+    segment_key: str,
+    *,
+    source: str = "mic_audio",
+    sentence_id: int = 1,
+) -> dict[str, Any]:
+    return {
+        "day": day,
+        "stream": stream,
+        "segment_key": segment_key,
+        "source": source,
+        "sentence_id": sentence_id,
+    }
+
+
+def _seed_discovery_segments(
+    journal: Path,
+    records: list[dict[str, Any]],
+    *,
+    settings: dict[tuple[str, str, str], str] | None = None,
+) -> None:
+    for record in records:
+        day = record.get("day")
+        stream = record.get("stream")
+        segment_key = record.get("segment_key")
+        if not all(isinstance(value, str) for value in (day, stream, segment_key)):
+            continue
+        segment_dir = journal / "chronicle" / day / stream / segment_key
+        segment_dir.mkdir(parents=True, exist_ok=True)
+        setting = (settings or {}).get((day, stream, segment_key))
+        if setting is not None:
+            (segment_dir / "imported_audio.jsonl").write_text(
+                json.dumps({"setting": setting}) + "\n",
+                encoding="utf-8",
+            )
+
+
+def _write_discovery_cache_records(
+    journal: Path,
+    clusters: dict[str, list[dict[str, Any]]],
+    *,
+    settings: dict[tuple[str, str, str], str] | None = None,
+) -> None:
     cache_path = journal / "awareness" / "discovery_clusters.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    for records in clusters.values():
+        _seed_discovery_segments(journal, records, settings=settings)
     cache_path.write_text(
         json.dumps(
             {
                 "version": "2026-07-20T00:00:00",
-                "clusters": {
-                    "1": [
-                        {
-                            "day": day,
-                            "stream": stream,
-                            "segment_key": segment_key,
-                            "source": "mic_audio",
-                            "sentence_id": 1,
-                        }
-                        for day, stream, segment_key in triples
-                    ]
-                },
+                "clusters": clusters,
             }
         )
         + "\n",
         encoding="utf-8",
+    )
+
+
+def _write_discovery_cache(journal: Path, triples: list[tuple[str, str, str]]) -> None:
+    _write_discovery_cache_records(
+        journal,
+        {
+            "1": [
+                _discovery_record(day, stream, segment_key)
+                for day, stream, segment_key in triples
+            ]
+        },
     )
 
 
@@ -422,10 +471,10 @@ def test_owner_voice_recurring_needs_from_cache_only(tmp_path, monkeypatch):
 
     assert build_owner_voice_needs("20260720") == [
         {
-            "text": "sol found a recurring voice. name it in speakers",
+            "text": "a voice keeps showing up. sol has heard it in 3 conversations, kept in your journal.",
             "kind": "route",
-            "payload": {"href": "/app/speakers/20260720"},
-            "source_id": "owner_voice:recurring",
+            "payload": {"href": "/app/speakers?voice_cluster_id=1"},
+            "source_id": "owner_voice:recurring:1",
         }
     ]
 
@@ -452,6 +501,227 @@ def test_owner_voice_recurring_need_requires_authoritative_owner_centroid(
     )
 
     assert build_owner_voice_needs("20260720") == []
+
+
+def test_owner_voice_recurring_uses_conversation_count_for_copy(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    records = [
+        _discovery_record("20260718", "mic", "090000_300", source="imported_audio"),
+        _discovery_record("20260718", "mic", "091000_300", source="imported_audio"),
+        _discovery_record("20260718", "mic", "092000_300", source="imported_audio"),
+    ]
+    _write_discovery_cache_records(
+        journal,
+        {"4": records},
+        settings={
+            ("20260718", "mic", "090000_300"): "Daily Standup",
+            ("20260718", "mic", "091000_300"): "Daily Standup",
+            ("20260718", "mic", "092000_300"): "Daily Standup",
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    assert build_owner_voice_needs("20260720") == [
+        {
+            "text": "a voice keeps showing up. sol has heard it in 1 conversation, kept in your journal.",
+            "kind": "route",
+            "payload": {"href": "/app/speakers?voice_cluster_id=4"},
+            "source_id": "owner_voice:recurring:4",
+        }
+    ]
+
+
+def test_owner_voice_recurring_selects_deterministically(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    clusters = {
+        "4": [
+            _discovery_record("20260718", "mic", "090000_300"),
+            _discovery_record("20260718", "mic", "091000_300"),
+            _discovery_record("20260718", "mic", "092000_300"),
+        ],
+        "6": [
+            _discovery_record("20260718", "sys", "090000_300", sentence_id=1),
+            _discovery_record("20260718", "sys", "090000_300", sentence_id=2),
+            _discovery_record("20260718", "sys", "091000_300", sentence_id=1),
+            _discovery_record("20260718", "sys", "091000_300", sentence_id=2),
+        ],
+        "7": [
+            _discovery_record("20260719", "mic", "090000_300", sentence_id=1),
+            _discovery_record("20260719", "mic", "091000_300", sentence_id=1),
+            _discovery_record("20260719", "mic", "092000_300", sentence_id=1),
+            _discovery_record("20260719", "mic", "093000_300", sentence_id=1),
+        ],
+        "3": [
+            _discovery_record("20260720", "mic", "090000_300", sentence_id=1),
+            _discovery_record("20260720", "mic", "091000_300", sentence_id=1),
+            _discovery_record("20260720", "mic", "092000_300", sentence_id=1),
+            _discovery_record("20260720", "mic", "093000_300", sentence_id=1),
+        ],
+    }
+    _write_discovery_cache_records(journal, clusters)
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    [item] = build_owner_voice_needs("20260720")
+
+    assert item["payload"] == {"href": "/app/speakers?voice_cluster_id=3"}
+    assert item["source_id"] == "owner_voice:recurring:3"
+
+
+def test_owner_voice_recurring_skips_non_integer_cluster_ids(
+    tmp_path, monkeypatch, caplog
+):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache_records(
+        journal,
+        {
+            "not-a-route-id": [
+                _discovery_record("20260718", "mic", "090000_300"),
+                _discovery_record("20260718", "mic", "091000_300"),
+                _discovery_record("20260718", "mic", "092000_300"),
+            ],
+            "2": [
+                _discovery_record("20260719", "mic", "090000_300"),
+                _discovery_record("20260719", "mic", "091000_300"),
+                _discovery_record("20260719", "mic", "092000_300"),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="solstone.apps.home.owner_voice"):
+        [item] = build_owner_voice_needs("20260720")
+
+    assert item["payload"] == {"href": "/app/speakers?voice_cluster_id=2"}
+    assert "non-integer discovery cluster ids" in caplog.text
+
+
+def test_owner_voice_recurring_filters_dismissed_clusters(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+    from solstone.think.speaker_cluster_dismissals import record_cluster_dismissal
+
+    for disposition in ("not_a_person", "quiet"):
+        journal = _use_tmp_journal(tmp_path / disposition, monkeypatch)
+        _seed_principal_centroid(journal)
+        dismissed = [
+            _discovery_record("20260718", "mic", "090000_300"),
+            _discovery_record("20260718", "mic", "091000_300"),
+            _discovery_record("20260718", "mic", "092000_300"),
+        ]
+        kept = [
+            _discovery_record("20260719", "sys", "090000_300"),
+            _discovery_record("20260719", "sys", "091000_300"),
+            _discovery_record("20260719", "sys", "092000_300"),
+        ]
+        _write_discovery_cache_records(journal, {"1": dismissed, "2": kept})
+        record_cluster_dismissal(dismissed, disposition)
+        monkeypatch.setattr(
+            "solstone.apps.home.owner_voice.load_owner_centroid",
+            lambda: object(),
+        )
+
+        assert build_owner_voice_needs("20260720")[0]["payload"] == {
+            "href": "/app/speakers?voice_cluster_id=2"
+        }
+
+
+def test_owner_voice_recurring_omits_when_only_dismissed(tmp_path, monkeypatch):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+    from solstone.think.speaker_cluster_dismissals import record_cluster_dismissal
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    records = [
+        _discovery_record("20260718", "mic", "090000_300"),
+        _discovery_record("20260718", "mic", "091000_300"),
+        _discovery_record("20260718", "mic", "092000_300"),
+    ]
+    _write_discovery_cache_records(journal, {"1": records})
+    record_cluster_dismissal(records, "quiet")
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    assert build_owner_voice_needs("20260720") == []
+
+
+def test_owner_voice_recurring_dismissal_store_error_fails_closed(
+    tmp_path, monkeypatch, caplog
+):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache(
+        journal,
+        [
+            ("20260718", "mic", "090000_300"),
+            ("20260718", "mic", "091000_300"),
+            ("20260718", "mic", "092000_300"),
+        ],
+    )
+    dismissal_path = journal / "speakers" / "cluster-dismissals.jsonl"
+    dismissal_path.parent.mkdir(parents=True, exist_ok=True)
+    dismissal_path.write_text("{not json}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="solstone.apps.home.owner_voice"):
+        assert build_owner_voice_needs("20260720") == []
+
+    assert "dismissal store unreadable" in caplog.text
+
+
+def test_owner_voice_recurring_count_less_than_one_fails_closed(
+    tmp_path, monkeypatch, caplog
+):
+    from solstone.apps.home.owner_voice import build_owner_voice_needs
+
+    journal = _use_tmp_journal(tmp_path, monkeypatch)
+    _seed_principal_centroid(journal)
+    _write_discovery_cache_records(
+        journal,
+        {
+            "1": [
+                {"day": "20260718", "stream": "mic", "segment_key": "090000_300"},
+                {"day": "20260718", "stream": "mic", "segment_key": "091000_300"},
+                {"day": "20260718", "stream": "mic", "segment_key": "092000_300"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.cluster_dismissal_suppressed",
+        lambda _records: False,
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.owner_voice.load_owner_centroid",
+        lambda: object(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="solstone.apps.home.owner_voice"):
+        assert build_owner_voice_needs("20260720") == []
+
+    assert "selected cluster has no valid conversations" in caplog.text
 
 
 def test_classify_needs_you_invalid_route_returns_disabled_item():

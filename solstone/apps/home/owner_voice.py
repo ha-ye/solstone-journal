@@ -5,14 +5,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from solstone.apps.speakers.copy import (
+    NEEDS_YOU_RECURRING_MANY,
+    NEEDS_YOU_RECURRING_ONE,
     OWNER_NEEDS_CONFIRM_VOICE_TEXT,
-    OWNER_NEEDS_RECURRING_VOICE_TEXT,
 )
 from solstone.apps.speakers.discovery import (
     MIN_SEGMENT_DIVERSITY,
+    get_cluster_conversation_count,
     load_discovery_cache,
 )
 from solstone.apps.speakers.owner import (
@@ -24,6 +27,12 @@ from solstone.think.entities.journal import (
     get_journal_principal,
     journal_entity_memory_path,
 )
+from solstone.think.speaker_cluster_dismissals import (
+    ClusterDismissalStoreError,
+    cluster_dismissal_suppressed,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def build_owner_voice_needs(today: str) -> list[dict[str, Any]]:
@@ -46,12 +55,12 @@ def _owner_candidate_need(today: str) -> dict[str, Any] | None:
         return None
     return _route_need(
         OWNER_NEEDS_CONFIRM_VOICE_TEXT,
-        today,
+        f"/app/speakers/{today}",
         source_id="owner_voice:candidate",
     )
 
 
-def _recurring_voice_need(today: str) -> dict[str, Any] | None:
+def _recurring_voice_need(_today: str) -> dict[str, Any] | None:
     if not _owner_centroid_file_exists():
         return None
     cache = load_discovery_cache()
@@ -60,14 +69,37 @@ def _recurring_voice_need(today: str) -> dict[str, Any] | None:
     clusters = cache.get("clusters")
     if not isinstance(clusters, dict):
         return None
-    if not any(_has_segment_diversity(records) for records in clusters.values()):
+    eligible_clusters = _eligible_recurring_clusters(clusters)
+    if not eligible_clusters:
         return None
+    try:
+        eligible_clusters = [
+            (cluster_id, records)
+            for cluster_id, records in eligible_clusters
+            if not cluster_dismissal_suppressed(records)
+        ]
+    except ClusterDismissalStoreError:
+        logger.warning(
+            "owner voice recurring need suppressed: dismissal store unreadable",
+            exc_info=True,
+        )
+        return None
+    selected = _select_recurring_cluster(eligible_clusters)
+    if selected is None:
+        return None
+    cluster_id, records = selected
     if not load_owner_centroid():
         return None
+    conversation_count = get_cluster_conversation_count(records)
+    if conversation_count < 1:
+        logger.warning(
+            "owner voice recurring need suppressed: selected cluster has no valid conversations"
+        )
+        return None
     return _route_need(
-        OWNER_NEEDS_RECURRING_VOICE_TEXT,
-        today,
-        source_id="owner_voice:recurring",
+        _recurring_voice_text(conversation_count),
+        f"/app/speakers?voice_cluster_id={cluster_id}",
+        source_id=f"owner_voice:recurring:{cluster_id}",
     )
 
 
@@ -100,10 +132,70 @@ def _has_segment_diversity(records: Any) -> bool:
     return False
 
 
-def _route_need(text: str, today: str, *, source_id: str) -> dict[str, Any]:
+def _eligible_recurring_clusters(
+    clusters: dict[str, Any],
+) -> list[tuple[int, list[dict[str, Any]]]]:
+    eligible: list[tuple[int, list[dict[str, Any]]]] = []
+    skipped_non_integer_ids: list[str] = []
+    for raw_cluster_id, records in clusters.items():
+        try:
+            cluster_id = int(raw_cluster_id)
+        except (TypeError, ValueError):
+            skipped_non_integer_ids.append(str(raw_cluster_id))
+            continue
+        if not isinstance(records, list) or not _has_segment_diversity(records):
+            continue
+        eligible.append((cluster_id, records))
+    if skipped_non_integer_ids:
+        logger.warning(
+            "owner voice recurring need skipped non-integer discovery cluster ids: %s",
+            ", ".join(skipped_non_integer_ids),
+        )
+    return eligible
+
+
+def _select_recurring_cluster(
+    eligible_clusters: list[tuple[int, list[dict[str, Any]]]],
+) -> tuple[int, list[dict[str, Any]]] | None:
+    if not eligible_clusters:
+        return None
+    return max(
+        eligible_clusters,
+        key=lambda item: (
+            len(item[1]),
+            _segment_count(item[1]),
+            -item[0],
+        ),
+    )
+
+
+def _segment_count(records: list[dict[str, Any]]) -> int:
+    segments: set[tuple[str, str, str]] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        day = record.get("day")
+        stream = record.get("stream")
+        segment_key = record.get("segment_key")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (day, stream, segment_key)
+        ):
+            continue
+        segments.add((day.strip(), stream.strip(), segment_key.strip()))
+    return len(segments)
+
+
+def _recurring_voice_text(conversation_count: int) -> str:
+    if conversation_count == 1:
+        return NEEDS_YOU_RECURRING_ONE
+    return NEEDS_YOU_RECURRING_MANY.format(count=conversation_count)
+
+
+def _route_need(text: str, href: str, *, source_id: str) -> dict[str, Any]:
     return {
         "text": text,
         "kind": "route",
-        "payload": {"href": f"/app/speakers/{today}"},
+        "payload": {"href": href},
         "source_id": source_id,
     }

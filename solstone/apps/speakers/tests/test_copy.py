@@ -8,7 +8,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from solstone.apps.speakers.copy import speaker_copy_payload, speaker_copy_values
+from solstone.apps.speakers.copy import (
+    NEEDS_YOU_RECURRING_MANY,
+    NEEDS_YOU_RECURRING_ONE,
+    TR_NOT_IN_NEW_VOICES,
+    speaker_copy_payload,
+    speaker_copy_values,
+)
 
 WHO_IS_THIS_COPY = {
     "SPK_SHEET_TITLE": "someone keeps showing up",
@@ -55,6 +61,12 @@ WHO_IS_THIS_COPY = {
     "SPK_CHECK_NAME_ERROR": "sol couldn't check this name. try again.",
     "SPK_SAMPLE_UNAVAILABLE": "this sample isn't available",
     "SPK_ACTION_RETRY": "try again",
+}
+
+LOCKED_NEEDS_YOU_COPY = {
+    "NEEDS_YOU_RECURRING_MANY": "a voice keeps showing up. sol has heard it in {count} conversations, kept in your journal.",
+    "NEEDS_YOU_RECURRING_ONE": "a voice keeps showing up. sol has heard it in 1 conversation, kept in your journal.",
+    "TR_NOT_IN_NEW_VOICES": "this voice isn't in new voices yet. sol needs to hear it a few more times.",
 }
 
 
@@ -109,6 +121,14 @@ def test_who_is_this_copy_matches_locked_block():
     actual = {name: payload.get(name) for name in WHO_IS_THIS_COPY}
 
     assert actual == WHO_IS_THIS_COPY
+
+
+def test_voice_confirm_copy_matches_locked_bytes():
+    assert {
+        "NEEDS_YOU_RECURRING_MANY": NEEDS_YOU_RECURRING_MANY,
+        "NEEDS_YOU_RECURRING_ONE": NEEDS_YOU_RECURRING_ONE,
+        "TR_NOT_IN_NEW_VOICES": TR_NOT_IN_NEW_VOICES,
+    } == LOCKED_NEEDS_YOU_COPY
 
 
 def test_owner_teach_banned_substrings_absent():
