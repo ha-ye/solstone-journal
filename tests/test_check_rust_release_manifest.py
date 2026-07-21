@@ -21,6 +21,40 @@ SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "check_rust_release_manifest.py"
 )
 VALID_COMMIT = checker.fixture_source_commit()
+PYTHON_WHITESPACE_CODE_POINTS: tuple[int, ...] = (
+    0x09,
+    0x0A,
+    0x0B,
+    0x0C,
+    0x0D,
+    0x1C,
+    0x1D,
+    0x1E,
+    0x1F,
+    0x20,
+    0x85,
+    0xA0,
+    0x1680,
+    0x2000,
+    0x2001,
+    0x2002,
+    0x2003,
+    0x2004,
+    0x2005,
+    0x2006,
+    0x2007,
+    0x2008,
+    0x2009,
+    0x200A,
+    0x2028,
+    0x2029,
+    0x202F,
+    0x205F,
+    0x3000,
+)
+RUSTC_REJECTED_SEPARATOR_CODE_POINTS: tuple[int, ...] = tuple(
+    code_point for code_point in PYTHON_WHITESPACE_CODE_POINTS if code_point != 0x20
+)
 
 
 def _errors(failures: list[checker.Failure]) -> set[str]:
@@ -55,6 +89,12 @@ def _rustc_lines(host: str = "x86_64-unknown-linux-gnu") -> list[str]:
     return checker.fixture_rustc_verbose(host).split("\n")
 
 
+def _rustc_line_mutant(canonical: str, line_index: int, replacement: str) -> str:
+    lines = canonical.split("\n")
+    lines[line_index] = replacement
+    return "\n".join(lines)
+
+
 def _candidate(
     tmp_path: Path,
     *,
@@ -84,6 +124,93 @@ def _manifest_for_lane(release_dir: Path, lane: checker.LaneName) -> Path:
 def _artifact_for_lane(release_dir: Path, lane: checker.LaneName) -> Path:
     manifest = _manifest_for_lane(release_dir, lane)
     return release_dir / manifest.name.removesuffix(".rust-release-manifest.json")
+
+
+def _source_artifact(tmp_path: Path) -> Path:
+    release_dir = tmp_path / "source-artifact"
+    checker.write_inert_packages(release_dir, include_models=False)
+    return _artifact_for_lane(release_dir, "source")
+
+
+def _assert_malformed_redacted(
+    failures: list[checker.Failure],
+    forbidden: tuple[str, ...],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert failures
+    _assert_error(failures, "rustc_verbose is malformed")
+    for failure in failures:
+        assert failure.actual == "redacted"
+    _assert_redacted(failures, forbidden)
+    _assert_formatted_redacted(failures, forbidden, capsys)
+
+
+def _assert_rustc_mutant_rejected(
+    artifact_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    mutant: str,
+    forbidden: tuple[str, ...],
+) -> None:
+    parsed, parse_failures = checker.parse_rustc_verbose(mutant)
+    assert parsed is None
+    _assert_malformed_redacted(parse_failures, forbidden, capsys)
+
+    evidence = checker.fixture_evidence_by_lane()["source"]
+    generated, generate_failures = checker.generate_manifest(
+        artifact_path,
+        lane="source",
+        evidence=replace(evidence, rustc_verbose=mutant),
+        cohort=checker._default_cohort(VALID_COMMIT),
+    )
+    assert generated is None
+    _assert_malformed_redacted(generate_failures, forbidden, capsys)
+
+
+def _assert_rustc_line_mutant_rejected(
+    artifact_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    canonical: str,
+    mutant: str,
+    line_index: int,
+) -> None:
+    canonical_lines = canonical.split("\n")
+    mutant_lines = mutant.split("\n")
+    assert len(mutant_lines) == len(canonical_lines)
+    assert mutant_lines[line_index] != canonical_lines[line_index]
+    for index, line in enumerate(canonical_lines):
+        if index != line_index:
+            assert mutant_lines[index] == line
+    _assert_rustc_mutant_rejected(
+        artifact_path,
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, mutant_lines[line_index]),
+    )
+
+
+def _assert_rustc_lf_separator_mutant_rejected(
+    artifact_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    canonical: str,
+    mutant: str,
+    line_index: int,
+) -> None:
+    canonical_lines = canonical.split("\n")
+    label, value = canonical_lines[line_index].split(": ", 1)
+    mutant_lines = mutant.split("\n")
+    assert len(mutant_lines) == len(canonical_lines) + 1
+    assert mutant_lines[:line_index] == canonical_lines[:line_index]
+    assert mutant_lines[line_index : line_index + 2] == [f"{label}:", value]
+    assert mutant_lines[line_index + 2 :] == canonical_lines[line_index + 1 :]
+    _assert_rustc_mutant_rejected(
+        artifact_path,
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{label}:\n{value}"),
+    )
 
 
 def _load_manifest(path: Path) -> dict:
@@ -130,6 +257,41 @@ def _build_ready(
         _post_promote_hook=hook,
     )
     return ready, failures
+
+
+def test_python_whitespace_code_point_table_is_explicit() -> None:
+    assert len(PYTHON_WHITESPACE_CODE_POINTS) == 29
+    assert set(PYTHON_WHITESPACE_CODE_POINTS) == {
+        0x09,
+        0x0A,
+        0x0B,
+        0x0C,
+        0x0D,
+        0x1C,
+        0x1D,
+        0x1E,
+        0x1F,
+        0x20,
+        0x85,
+        0xA0,
+        0x1680,
+        0x2000,
+        0x2001,
+        0x2002,
+        0x2003,
+        0x2004,
+        0x2005,
+        0x2006,
+        0x2007,
+        0x2008,
+        0x2009,
+        0x200A,
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+    }
 
 
 def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
@@ -491,6 +653,251 @@ def test_rustc_host_mismatch_redacts_host_value(
     _assert_error(failures, "rustc host is not an allowed build host")
     _assert_redacted(failures, (host,))
     _assert_formatted_redacted(failures, (host,), capsys)
+
+
+@pytest.mark.parametrize("code_point", RUSTC_REJECTED_SEPARATOR_CODE_POINTS)
+def test_rustc_verbose_rejects_non_space_separator_code_points(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    code_point: int,
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    canonical_lines = canonical.split("\n")
+    artifact_path = _source_artifact(tmp_path)
+
+    for line_index in range(1, len(canonical_lines)):
+        label, value = canonical_lines[line_index].split(": ", 1)
+        mutant_line = f"{label}:{chr(code_point)}{value}"
+        mutant = _rustc_line_mutant(canonical, line_index, mutant_line)
+        if code_point == 0x0A:
+            _assert_rustc_lf_separator_mutant_rejected(
+                artifact_path,
+                capsys,
+                canonical=canonical,
+                mutant=mutant,
+                line_index=line_index,
+            )
+        else:
+            _assert_rustc_line_mutant_rejected(
+                artifact_path,
+                capsys,
+                canonical=canonical,
+                mutant=mutant,
+                line_index=line_index,
+            )
+
+
+@pytest.mark.parametrize(
+    "spacing_case", ("zero", "two", "three", "pre_colon", "trailing")
+)
+def test_rustc_verbose_rejects_noncanonical_space_counts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    spacing_case: str,
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    canonical_lines = canonical.split("\n")
+    artifact_path = _source_artifact(tmp_path)
+
+    for line_index in range(1, len(canonical_lines)):
+        label, value = canonical_lines[line_index].split(": ", 1)
+        if spacing_case == "zero":
+            mutant_line = f"{label}:{value}"
+        elif spacing_case == "two":
+            mutant_line = f"{label}:  {value}"
+        elif spacing_case == "three":
+            mutant_line = f"{label}:   {value}"
+        elif spacing_case == "pre_colon":
+            mutant_line = f"{label} : {value}"
+        else:
+            mutant_line = f"{label}: {value} "
+        mutant = _rustc_line_mutant(canonical, line_index, mutant_line)
+        _assert_rustc_line_mutant_rejected(
+            artifact_path,
+            capsys,
+            canonical=canonical,
+            mutant=mutant,
+            line_index=line_index,
+        )
+
+
+def test_rustc_verbose_rejects_crlf_line_boundary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = canonical.replace("\n", "\r\n", 1)
+    assert "\r\n" in mutant
+    assert mutant.replace("\r\n", "\n", 1) == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{lines[0]}\r\n{lines[1]}"),
+    )
+
+
+def test_rustc_verbose_rejects_lone_cr_line_boundary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = canonical.replace("\n", "\r", 1)
+    assert "\r" in mutant
+    assert mutant.replace("\r", "\n", 1) == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{lines[0]}\r{lines[1]}"),
+    )
+
+
+@pytest.mark.parametrize("separator", ("\u0085", "\u2028", "\u2029"))
+def test_rustc_verbose_rejects_unicode_line_boundary_replacements(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    separator: str,
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = canonical.replace("\n", separator, 1)
+    assert separator in mutant
+    assert mutant.replace(separator, "\n", 1) == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{lines[0]}{separator}{lines[1]}"),
+    )
+
+
+def test_rustc_verbose_rejects_doubled_lf_line_boundary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = canonical.replace("\n", "\n\n", 1)
+    assert mutant.count("\n") == canonical.count("\n") + 1
+    assert mutant.replace("\n\n", "\n", 1) == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{lines[0]}\n\n{lines[1]}"),
+    )
+
+
+def test_rustc_verbose_rejects_leading_lf(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = "\n" + canonical
+    assert mutant.startswith("\n")
+    assert mutant.count("\n") == canonical.count("\n") + 1
+    assert mutant.removeprefix("\n") == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"\n{lines[0]}"),
+    )
+
+
+def test_rustc_verbose_rejects_trailing_lf(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    mutant = canonical + "\n"
+    assert mutant.endswith("\n")
+    assert mutant.count("\n") == canonical.count("\n") + 1
+    assert mutant.removesuffix("\n") == canonical
+    _assert_rustc_mutant_rejected(
+        _source_artifact(tmp_path),
+        capsys,
+        mutant=mutant,
+        forbidden=(mutant, f"{lines[-1]}\n"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "separator"), (("nbsp", "\u00a0"), ("zero", ""), ("two", "  "))
+)
+def test_rustc_verbose_separator_rejections_cover_file_and_candidate_channels(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    separator: str,
+) -> None:
+    canonical = checker.fixture_rustc_verbose("x86_64-unknown-linux-gnu")
+    lines = canonical.split("\n")
+    label, value = lines[1].split(": ", 1)
+    mutant_line = f"{label}:{separator}{value}"
+    mutant = _rustc_line_mutant(canonical, 1, mutant_line)
+
+    release_dir = _candidate(tmp_path / f"file-{name}")
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["rust"]["rustc_verbose"] = mutant
+    _write_manifest(manifest, payload)
+    failures = checker.validate_manifest_file(manifest)
+    _assert_malformed_redacted(failures, (mutant, mutant_line), capsys)
+
+    evidence = checker.fixture_evidence_by_lane()
+    mutated_evidence = dict(evidence)
+    mutated_evidence["source"] = replace(evidence["source"], rustc_verbose=mutant)
+    failures = checker.write_inert_candidate(
+        tmp_path / f"generated-{name}",
+        include_models=False,
+        evidence_by_lane=mutated_evidence,
+    )
+    _assert_malformed_redacted(failures, (mutant, mutant_line), capsys)
+
+
+@pytest.mark.parametrize(
+    ("lane", "host"),
+    (
+        ("source", "x86_64-unknown-linux-gnu"),
+        ("macos-arm64", "aarch64-apple-darwin"),
+    ),
+)
+def test_rustc_verbose_canonical_evidence_is_byte_exact(
+    tmp_path: Path,
+    lane: str,
+    host: str,
+) -> None:
+    canonical = checker.fixture_rustc_verbose(host)
+    parsed, parse_failures = checker.parse_rustc_verbose(canonical)
+    assert parse_failures == []
+    assert parsed is not None
+
+    release_dir = tmp_path / lane
+    checker.write_inert_packages(release_dir, include_models=False)
+    artifact_path = _artifact_for_lane(release_dir, lane)
+    evidence = checker.fixture_evidence_by_lane()[lane]
+    assert evidence.rustc_verbose == canonical
+
+    generated, generate_failures = checker.generate_manifest(
+        artifact_path,
+        lane=lane,
+        evidence=evidence,
+        cohort=checker._default_cohort(VALID_COMMIT),
+    )
+    assert generate_failures == []
+    assert generated is not None
+    manifest_bytes = checker.canonical_json_bytes(generated.payload)
+    assert manifest_bytes == generated.bytes
+
+    decoded = json.loads(manifest_bytes)
+    rustc_verbose = decoded["rust"]["rustc_verbose"]
+    assert rustc_verbose == canonical
+    assert rustc_verbose.encode("utf-8") == canonical.encode("utf-8")
+
+    manifest_path = release_dir / generated.manifest_name
+    manifest_path.write_bytes(manifest_bytes)
+    assert checker.validate_manifest_file(manifest_path) == []
 
 
 def test_rustc_verbose_rejects_malformed_spoof_and_mixed_labeled_lines(

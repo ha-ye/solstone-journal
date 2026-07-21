@@ -47,7 +47,6 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
 )
-RUSTC_LABEL_RE = re.compile(r"^(?P<label>[^:]+):\s*(?P<value>.+)$")
 RUSTC_VERSION_BANNER = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
 RUSTC_BINARY_PIN = "rustc"
 RUSTC_COMMIT_HASH_PIN = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
@@ -769,18 +768,19 @@ def parse_rustc_verbose(text: Any) -> tuple[RustcVerbose | None, list[Failure]]:
     for line, (expected_label, pinned_value) in zip(
         lines[1:], expected_labels, strict=True
     ):
-        match = RUSTC_LABEL_RE.fullmatch(line)
-        if match is None:
-            return malformed("pinned labeled rustc -Vv lines")
-        label = match.group("label")
-        value = match.group("value")
-        if label != expected_label or (
-            pinned_value is not None and value != pinned_value
-        ):
-            return malformed(f"{expected_label}: pinned value")
-        labels[label] = value
-        if label == "host":
+        if pinned_value is None:
+            if not line.startswith("host: "):
+                return malformed("host: build host")
+            value = line[len("host: ") :]
+            if not value or value != value.strip():
+                return malformed("host: build host")
+            labels[expected_label] = value
             host = value
+            continue
+
+        if line != f"{expected_label}: {pinned_value}":
+            return malformed(f"{expected_label}: pinned value")
+        labels[expected_label] = pinned_value
     if host is None:
         return malformed("host: build host")
     return (
