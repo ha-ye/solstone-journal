@@ -14,9 +14,11 @@ from typing import Literal, TypedDict
 from solstone.think.callosum import callosum_send
 from solstone.think.providers.brain_state import (
     BRAIN_EVIDENCE_REASON_CODES,
+    BRAIN_PROJECTION_ONLY_REASON_CODES,
     COMPONENT_ORDER,
     BrainAggregateState,
     BrainEvidenceComponent,
+    BrainStateInspection,
     BrainStateRecord,
     inspect_brain_state,
 )
@@ -95,6 +97,36 @@ class BrainSnapshot(TypedDict):
     evidence: BrainEvidenceView
     components: BrainComponentsSnapshot
     progressing: bool
+
+
+ConfidentialAttestationState = Literal[
+    "off",
+    "inactive",
+    "verifying",
+    "verified",
+    "unreachable",
+    "failed",
+    "stale",
+]
+
+
+class SppReadiness(TypedDict):
+    generate_ready: bool
+    cogitate_ready: bool
+    issues: list[str]
+
+
+class ConfidentialAttestationView(TypedDict):
+    state: ConfidentialAttestationState
+    reason: str | None
+    observed_at: str | None
+
+
+class BrainPresentation(TypedDict):
+    brain: BrainSnapshot
+    spp_active: bool
+    spp_readiness: SppReadiness
+    confidential_attestation: ConfidentialAttestationView
 
 
 def _utc(value: datetime) -> datetime:
@@ -267,14 +299,12 @@ def _resolve_action(kind: BrainActionKind, surface: BrainSurface) -> BrainAction
     return {"label": "check again", "command": "journal brain refresh"}
 
 
-def build_brain_snapshot(
+def _brain_snapshot_from_inspection(
+    inspection: BrainStateInspection,
     now: datetime,
     *,
     surface: BrainSurface,
-    journal_path: Path | None = None,
 ) -> BrainSnapshot:
-    now = _utc(now)
-    inspection = inspect_brain_state(now, journal_path=journal_path)
     projection = inspection["projection"]
     state = projection["aggregate_state"]
     reason_code = projection["reason_code"]
@@ -308,6 +338,144 @@ def build_brain_snapshot(
     }
     snapshot["action"] = _resolve_action(_action_kind(snapshot), surface)
     return snapshot
+
+
+def _add_issue(issues: list[str], reason_code: str | None) -> None:
+    if reason_code and reason_code not in issues:
+        issues.append(reason_code)
+
+
+def _current_spp_record_usable(inspection: BrainStateInspection) -> bool:
+    projection = inspection["projection"]
+    if projection["active_lane"] != "spp":
+        return False
+    if projection["reason_code"] in BRAIN_PROJECTION_ONLY_REASON_CODES:
+        return False
+    return inspection["record"] is not None
+
+
+def _spp_component(
+    inspection: BrainStateInspection,
+    component_name: str,
+) -> BrainEvidenceComponent | None:
+    record = inspection["record"] if _current_spp_record_usable(inspection) else None
+    if record is None:
+        return None
+    return record["evidence"].get(component_name)
+
+
+def _spp_readiness_from_inspection(inspection: BrainStateInspection) -> SppReadiness:
+    generate = _spp_component(inspection, "generate")
+    cogitate = _spp_component(inspection, "cogitate")
+    generate_ready = generate is not None and generate["status"] == "ok"
+    cogitate_ready = cogitate is not None and cogitate["status"] == "ok"
+
+    projection = inspection["projection"]
+    issues: list[str] = []
+    if projection["aggregate_state"] != "ready":
+        _add_issue(issues, projection["reason_code"])
+    for component in (generate, cogitate):
+        if component is not None and component["status"] != "ok":
+            _add_issue(issues, _component_reason(component))
+    if (not generate_ready or not cogitate_ready) and not issues:
+        issues.append("brain_record_invalid")
+    return {
+        "generate_ready": generate_ready,
+        "cogitate_ready": cogitate_ready,
+        "issues": issues,
+    }
+
+
+def _confidential_attestation_from_inspection(
+    inspection: BrainStateInspection,
+    *,
+    spp_configured: bool,
+) -> ConfidentialAttestationView:
+    if not spp_configured:
+        return {
+            "state": "off",
+            "reason": "confidential_not_configured",
+            "observed_at": None,
+        }
+
+    projection = inspection["projection"]
+    if projection["active_lane"] != "spp":
+        return {
+            "state": "inactive",
+            "reason": "confidential_not_active",
+            "observed_at": None,
+        }
+    if projection["aggregate_state"] == "checking":
+        return {
+            "state": "verifying",
+            "reason": "brain_check_in_progress",
+            "observed_at": None,
+        }
+    if projection["reason_code"] in BRAIN_PROJECTION_ONLY_REASON_CODES:
+        return {
+            "state": "stale",
+            "reason": projection["reason_code"],
+            "observed_at": None,
+        }
+
+    lane_prerequisites = _spp_component(inspection, "lane_prerequisites")
+    if lane_prerequisites is None:
+        return {
+            "state": "stale",
+            "reason": projection["reason_code"] or "brain_record_invalid",
+            "observed_at": None,
+        }
+
+    reason = _component_reason(lane_prerequisites)
+    observed_at = lane_prerequisites.get("observed_at")
+    if lane_prerequisites["status"] == "ok":
+        return {"state": "verified", "reason": None, "observed_at": observed_at}
+    if reason == "attestation_rejected":
+        return {"state": "failed", "reason": reason, "observed_at": observed_at}
+    if reason == "attestation_not_verified":
+        return {"state": "unreachable", "reason": reason, "observed_at": observed_at}
+    if reason == "attestation_expired":
+        return {"state": "stale", "reason": reason, "observed_at": observed_at}
+    return {
+        "state": "stale",
+        "reason": reason or projection["reason_code"] or "brain_record_invalid",
+        "observed_at": None,
+    }
+
+
+def build_brain_presentation(
+    now: datetime,
+    *,
+    surface: BrainSurface,
+    spp_configured: bool,
+    journal_path: Path | None = None,
+) -> BrainPresentation:
+    now = _utc(now)
+    inspection = inspect_brain_state(now, journal_path=journal_path)
+    return {
+        "brain": _brain_snapshot_from_inspection(inspection, now, surface=surface),
+        "spp_active": inspection["projection"]["active_lane"] == "spp",
+        "spp_readiness": _spp_readiness_from_inspection(inspection),
+        "confidential_attestation": _confidential_attestation_from_inspection(
+            inspection,
+            spp_configured=spp_configured,
+        ),
+    }
+
+
+def build_brain_snapshot(
+    now: datetime,
+    *,
+    surface: BrainSurface,
+    journal_path: Path | None = None,
+) -> BrainSnapshot:
+    # The standalone brain wire shape does not depend on SPP setup state.
+    return build_brain_presentation(
+        now,
+        surface=surface,
+        spp_configured=False,
+        journal_path=journal_path,
+    )["brain"]
 
 
 def render_brain_health_lines(snapshot: BrainSnapshot) -> list[str]:
@@ -363,12 +531,17 @@ __all__ = [
     "BrainComponentsSnapshot",
     "BrainEvidenceView",
     "BrainIdentity",
+    "BrainPresentation",
     "BrainSnapshot",
     "BrainSurface",
+    "ConfidentialAttestationState",
+    "ConfidentialAttestationView",
     "HEADLINES",
     "LOCAL_RUNTIME_REASON_CODES",
+    "SppReadiness",
     "brain_age",
     "brain_reason_text",
+    "build_brain_presentation",
     "build_brain_snapshot",
     "render_brain_health_lines",
     "request_brain_refresh",

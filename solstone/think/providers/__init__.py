@@ -137,6 +137,8 @@ def get_provider_list() -> List[Dict[str, Any]]:
 
 def build_provider_status(
     providers_list: List[Dict[str, Any]] | None = None,
+    *,
+    local_status: dict[str, Any] | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build per-provider readiness status.
 
@@ -144,6 +146,9 @@ def build_provider_status(
     ----------
     providers_list
         Output of get_provider_list().
+    local_status
+        When provided, replaces the ``local`` row and ``local_status_dict()`` is
+        not called. ``None`` preserves existing behavior.
     Returns
     -------
     Dict[str, Dict[str, Any]]
@@ -154,10 +159,14 @@ def build_provider_status(
 
     status: dict[str, dict[str, Any]] = {}
     for provider in providers_list:
-        from solstone.think.providers import state as provider_state
-
         name = provider["name"]
         env_key = provider.get("env_key", "")
+        if name == "local" and local_status is not None:
+            status[name] = dict(local_status)
+            continue
+
+        from solstone.think.providers import state as provider_state
+
         if name == "local":
             status[name] = provider_state.local_status_dict()
             continue
