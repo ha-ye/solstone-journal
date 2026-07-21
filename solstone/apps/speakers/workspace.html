@@ -842,12 +842,6 @@
 
 .spk-discovery-btn:not(:disabled):active { background: #166534; }
 
-.spk-discovery-status {
-  font-size: 12px;
-  color: #166534;
-  margin-top: 6px;
-}
-
 .spk-who-backdrop {
   position: fixed;
   inset: 0;
@@ -1180,7 +1174,6 @@
   .spk-select-small,
   .spk-status,
   .spk-discovery-sample-text,
-  .spk-discovery-status,
   .spk-segments-count,
   .spk-source-tab,
   .spk-seeding-prompt,
@@ -2305,7 +2298,6 @@
               <button type="button" class="spk-discovery-btn spk-who-trigger" aria-haspopup="dialog" aria-expanded="false">
                 ${escapeHtml(SPK_COPY.SPK_ACTION_WHO_IS_THIS || '')}
               </button>
-              <div class="spk-discovery-status"></div>
             </div>
           `).join('')}
         </div>

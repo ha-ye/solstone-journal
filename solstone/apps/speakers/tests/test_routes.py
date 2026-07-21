@@ -1677,6 +1677,7 @@ def test_workspace_discovery_freeform_inputs_retired():
 
     assert ".spk-discovery-input" not in template
     assert ".spk-discovery-form" not in template
+    assert "spk-discovery-" + "status" not in template
     assert "submitDiscoveryName" not in template
 
 

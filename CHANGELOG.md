@@ -8,6 +8,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ### Changed
 
+- naming a recurring voice now opens a guided who-is-this sheet. sol offers people it noticed around that voice, lets you search everyone in your journal, and keeps two people with similar names apart instead of quietly merging them. attaching a voice previews what will change first, and you can undo it.
 - sol now suggests exact Gemini models, Gemini 3.5 Flash and Gemini 3.1 Flash Lite, instead of moving `latest` aliases that could quietly change which model your journal uses. if your journal had a moving flash alias saved, it now pins it to the matching exact model. if it had the old `gemini-pro-latest` alias saved, Thinking shows one action: choose an exact model in Thinking, because that alias has no single exact match.
 
 ### Fixed
