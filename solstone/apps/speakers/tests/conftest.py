@@ -253,7 +253,12 @@ def speakers_env(tmp_path, monkeypatch):
             return journal_entity_dir
 
         def create_speakers_json(
-            self, day: str, segment_key: str, speakers: list[str]
+            self,
+            day: str,
+            segment_key: str,
+            speakers: list[str],
+            *,
+            raw: bytes | str | None = None,
         ) -> Path:
             """Create a speakers.json file in a segment directory.
 
@@ -261,6 +266,7 @@ def speakers_env(tmp_path, monkeypatch):
                 day: Day string (YYYYMMDD)
                 segment_key: Segment key (HHMMSS_LEN)
                 speakers: List of speaker names
+                raw: Optional raw file content to write verbatim
             """
             flat_dir, chronicle_dir = self._segment_dirs(day, segment_key)
             paths = []
@@ -268,8 +274,13 @@ def speakers_env(tmp_path, monkeypatch):
                 agents_dir = segment_dir / "talents"
                 agents_dir.mkdir(parents=True, exist_ok=True)
                 speakers_path = agents_dir / "speakers.json"
-                with open(speakers_path, "w", encoding="utf-8") as f:
-                    json.dump(speakers, f)
+                if isinstance(raw, bytes):
+                    speakers_path.write_bytes(raw)
+                elif isinstance(raw, str):
+                    speakers_path.write_text(raw, encoding="utf-8")
+                else:
+                    with open(speakers_path, "w", encoding="utf-8") as f:
+                        json.dump(speakers, f)
                 paths.append(speakers_path)
 
             return paths[0]

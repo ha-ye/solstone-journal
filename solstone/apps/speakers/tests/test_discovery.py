@@ -540,6 +540,64 @@ def test_cluster_presence_readonly_fallback_uses_legacy_sources_without_writes(
     }
 
 
+def test_cluster_presence_legacy_fallback_reports_speakers_gap_without_writes(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    env.create_import_segment(
+        "20240101",
+        "100500_300",
+        [("", "Unknown voice.")],
+        stream="test",
+        setting="Meeting with Alice Test",
+    )
+    env.create_speakers_json(
+        "20240101",
+        "100500_300",
+        [],
+        raw=json.dumps([5]),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "100500_300",
+        [],
+        metadata={"owner_centroid_last_refreshed_at": None, "voiceprint_versions": {}},
+    )
+    _write_discovery_cache(
+        env,
+        14,
+        [_cluster_record("20240101", "100500_300", source="imported_audio")],
+    )
+    before = journal_tree_hash(env.journal)
+
+    presence = get_cluster_presence(14)
+
+    assert journal_tree_hash(env.journal) == before
+    assert presence is not None
+    assert presence["evidence_complete"] is False
+    assert presence["evidence_gaps"] == [
+        {
+            "day": "20240101",
+            "stream": "test",
+            "segment_key": "100500_300",
+            "source": "speakers",
+            "reason": "wrong_shape",
+        }
+    ]
+    assert presence["candidates"]["mention"] == [
+        {
+            "entity_id": "alice_test",
+            "name": "Alice Test",
+            "has_voice": False,
+            "screen_conversations": 0,
+            "meeting_days": 0,
+            "setting_conversations": 1,
+            "speaker_conversations": 0,
+        }
+    ]
+
+
 def test_cluster_presence_stale_resolution_gap_keeps_siblings(speakers_env):
     from solstone.think.entities import (
         ResolutionOrigin,

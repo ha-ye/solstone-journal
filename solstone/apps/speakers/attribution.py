@@ -85,18 +85,16 @@ VOICEPRINT_ACCUMULATION_METHODS = {
 
 
 def _routes_helpers():
-    """Load speakers route helpers lazily to avoid import cycles."""
+    """Load route helpers lazily to avoid import cycles."""
     from solstone.apps.speakers.routes import (
         _load_embeddings_file,
         _load_entity_voiceprints_file,
-        _load_segment_speakers,
         _normalize_embedding,
     )
 
     return (
         _load_embeddings_file,
         _normalize_embedding,
-        _load_segment_speakers,
         _load_entity_voiceprints_file,
     )
 
@@ -247,14 +245,58 @@ def _load_setting_field_with_gaps(
     except json.JSONDecodeError:
         return None, [{"source": "setting", "reason": "malformed_json"}]
     if not isinstance(data, dict):
-        return None, []
+        return None, [{"source": "setting", "reason": "wrong_shape"}]
     setting = data.get("setting")
-    return (setting if isinstance(setting, str) else None), []
+    if setting is None:
+        return None, []
+    if not isinstance(setting, str):
+        return None, [{"source": "setting", "reason": "wrong_shape"}]
+    return setting, []
 
 
 def _load_setting_field(seg_dir: Path) -> str | None:
     """Read the setting field from the first line of imported_audio.jsonl."""
     return _load_setting_field_with_gaps(seg_dir)[0]
+
+
+def _load_segment_speakers_with_gaps(
+    seg_dir: Path,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Load speaker names and report present-but-malformed speakers output."""
+    speakers_path = seg_dir / "talents" / "speakers.json"
+    if not speakers_path.exists():
+        return [], []
+    try:
+        data = json.loads(speakers_path.read_text(encoding="utf-8"))
+    except OSError:
+        logger.warning(
+            "speaker attribution: failed to read segment speakers from %s",
+            speakers_path,
+            exc_info=True,
+        )
+        return [], [{"source": "speakers", "reason": "unreadable"}]
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning(
+            "speaker attribution: failed to read segment speakers from %s",
+            speakers_path,
+            exc_info=True,
+        )
+        return [], [{"source": "speakers", "reason": "malformed_json"}]
+    if not isinstance(data, list):
+        logger.warning(
+            "speaker attribution: malformed segment speakers in %s",
+            speakers_path,
+        )
+        return [], [{"source": "speakers", "reason": "wrong_shape"}]
+
+    names = [name for name in data if isinstance(name, str) and name.strip()]
+    if any(not isinstance(name, str) for name in data):
+        logger.warning(
+            "speaker attribution: malformed segment speakers in %s",
+            speakers_path,
+        )
+        return names, [{"source": "speakers", "reason": "wrong_shape"}]
+    return names, []
 
 
 def _extract_screen_participants_with_gaps(
@@ -377,19 +419,13 @@ def compute_segment_candidate_evidence_readonly(
     segment_key: str,
 ) -> tuple[list[dict], list[dict]]:
     """Compute per-segment candidate evidence without writing journal state."""
-    (
-        _load_embeddings_file,
-        _normalize_embedding,
-        load_segment_speakers,
-        _load_entity_voiceprints_file,
-    ) = _routes_helpers()
-
     seg_dir = segment_path(day, segment_key, stream, create=False)
     if not seg_dir.is_dir():
         return [], []
 
     evidence_gaps: list[dict[str, str]] = []
-    speakers = load_segment_speakers(seg_dir)
+    speakers, speakers_gaps = _load_segment_speakers_with_gaps(seg_dir)
+    evidence_gaps.extend(speakers_gaps)
     setting, setting_gaps = _load_setting_field_with_gaps(seg_dir)
     evidence_gaps.extend(setting_gaps)
     setting_names = _parse_setting_names(setting) if setting else []
@@ -466,7 +502,6 @@ def attribute_segment(
     (
         load_embeddings_file,
         normalize_embedding,
-        load_segment_speakers,
         load_entity_voiceprints_file,
     ) = _routes_helpers()
 
@@ -636,7 +671,8 @@ def attribute_segment(
     # LAYER 2: Structural heuristics
     # ================================
     evidence_gaps: list[dict[str, str]] = []
-    speakers = load_segment_speakers(seg_dir)
+    speakers, speakers_gaps = _load_segment_speakers_with_gaps(seg_dir)
+    evidence_gaps.extend(speakers_gaps)
     setting, setting_gaps = _load_setting_field_with_gaps(seg_dir)
     evidence_gaps.extend(setting_gaps)
     setting_names = _parse_setting_names(setting) if setting else []
@@ -1621,7 +1657,6 @@ def accumulate_voiceprints(
     (
         load_embeddings_file,
         normalize_embedding,
-        _,
         load_entity_voiceprints_file,
     ) = _routes_helpers()
 

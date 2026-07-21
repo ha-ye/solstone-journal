@@ -193,6 +193,140 @@ def _setup_margin_trap_entities(
 
 
 # ---------------------------------------------------------------------------
+# Layer 2 evidence readers
+# ---------------------------------------------------------------------------
+
+
+def test_load_segment_speakers_with_gaps_missing_valid_and_blank(tmp_path):
+    from solstone.apps.speakers.attribution import _load_segment_speakers_with_gaps
+
+    seg_dir = tmp_path / "segment"
+
+    assert _load_segment_speakers_with_gaps(seg_dir) == ([], [])
+
+    speakers_path = seg_dir / "talents" / "speakers.json"
+    speakers_path.parent.mkdir(parents=True)
+    speakers_path.write_text(json.dumps(["Ana", "Bo"]), encoding="utf-8")
+    assert _load_segment_speakers_with_gaps(seg_dir) == (["Ana", "Bo"], [])
+
+    speakers_path.write_text(json.dumps(["Ok", ""]), encoding="utf-8")
+    assert _load_segment_speakers_with_gaps(seg_dir) == (["Ok"], [])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_names", "expected_gap"),
+    [
+        (b"\xff", [], {"source": "speakers", "reason": "malformed_json"}),
+        (b"{not json", [], {"source": "speakers", "reason": "malformed_json"}),
+        (
+            json.dumps({"a": 1}).encode("utf-8"),
+            [],
+            {"source": "speakers", "reason": "wrong_shape"},
+        ),
+        (
+            json.dumps([1, 2]).encode("utf-8"),
+            [],
+            {"source": "speakers", "reason": "wrong_shape"},
+        ),
+        (
+            json.dumps(["Ok", 5]).encode("utf-8"),
+            ["Ok"],
+            {"source": "speakers", "reason": "wrong_shape"},
+        ),
+    ],
+)
+def test_load_segment_speakers_with_gaps_malformed_cases(
+    tmp_path,
+    raw: bytes,
+    expected_names: list[str],
+    expected_gap: dict[str, str],
+):
+    from solstone.apps.speakers.attribution import _load_segment_speakers_with_gaps
+
+    speakers_path = tmp_path / "segment" / "talents" / "speakers.json"
+    speakers_path.parent.mkdir(parents=True)
+    speakers_path.write_bytes(raw)
+
+    names, gaps = _load_segment_speakers_with_gaps(tmp_path / "segment")
+
+    assert names == expected_names
+    assert gaps == [expected_gap]
+    assert len(gaps) == 1
+
+
+def test_load_segment_speakers_with_gaps_unreadable(tmp_path, monkeypatch):
+    from solstone.apps.speakers.attribution import _load_segment_speakers_with_gaps
+
+    speakers_path = tmp_path / "segment" / "talents" / "speakers.json"
+    speakers_path.parent.mkdir(parents=True)
+    speakers_path.write_text(json.dumps(["Ana"]), encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_target_read(path: Path, *args, **kwargs):
+        if path == speakers_path:
+            raise OSError("boom")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_target_read)
+
+    assert _load_segment_speakers_with_gaps(tmp_path / "segment") == (
+        [],
+        [{"source": "speakers", "reason": "unreadable"}],
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("\n", (None, [])),
+        (json.dumps({}) + "\n", (None, [])),
+        (json.dumps({"setting": None}) + "\n", (None, [])),
+        (
+            json.dumps({"setting": "coffee with Priya"}) + "\n",
+            ("coffee with Priya", []),
+        ),
+        (
+            json.dumps([1, 2, 3]) + "\n",
+            (None, [{"source": "setting", "reason": "wrong_shape"}]),
+        ),
+        (
+            json.dumps({"setting": 5}) + "\n",
+            (None, [{"source": "setting", "reason": "wrong_shape"}]),
+        ),
+        ("{not json\n", (None, [{"source": "setting", "reason": "malformed_json"}])),
+    ],
+)
+def test_load_setting_field_with_gaps_branch_cases(
+    tmp_path,
+    raw: str,
+    expected: tuple[str | None, list[dict[str, str]]],
+):
+    from solstone.apps.speakers.attribution import _load_setting_field_with_gaps
+
+    seg_dir = tmp_path / "segment"
+    seg_dir.mkdir()
+    (seg_dir / "imported_audio.jsonl").write_text(raw, encoding="utf-8")
+
+    assert _load_setting_field_with_gaps(seg_dir) == expected
+
+
+def test_load_setting_field_with_gaps_missing_and_invalid_utf8(tmp_path):
+    from solstone.apps.speakers.attribution import _load_setting_field_with_gaps
+
+    missing_seg_dir = tmp_path / "missing"
+    assert _load_setting_field_with_gaps(missing_seg_dir) == (None, [])
+
+    seg_dir = tmp_path / "segment"
+    seg_dir.mkdir()
+    (seg_dir / "imported_audio.jsonl").write_bytes(b"\xff")
+
+    assert _load_setting_field_with_gaps(seg_dir) == (
+        None,
+        [{"source": "setting", "reason": "malformed_json"}],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Setting name parser tests
 # ---------------------------------------------------------------------------
 
@@ -1444,6 +1578,149 @@ def test_candidate_evidence_records_malformed_gaps_and_keeps_siblings(
     assert no_gap["metadata"]["candidate_evidence"] == [
         {"entity_id": "alice_test", "sources": ["setting"]}
     ]
+
+
+def test_candidate_evidence_keeps_setting_when_speakers_are_malformed(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import (
+        compute_segment_candidate_evidence_readonly,
+    )
+
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    env.create_entity("Bob Test")
+    env.create_import_segment(
+        "20240101",
+        "101500_300",
+        [("", "Hello.")],
+        stream=STREAM,
+        setting="Meeting with Alice Test",
+    )
+    env.create_speakers_json(
+        "20240101",
+        "101500_300",
+        [],
+        raw=json.dumps(["Bob Test", 5]),
+    )
+
+    evidence, gaps = compute_segment_candidate_evidence_readonly(
+        "20240101",
+        STREAM,
+        "101500_300",
+    )
+
+    assert gaps == [{"source": "speakers", "reason": "wrong_shape"}]
+    assert evidence == [
+        {"entity_id": "alice_test", "sources": ["setting"]},
+        {"entity_id": "bob_test", "sources": ["speakers"]},
+    ]
+
+
+def test_candidate_evidence_keeps_speakers_when_setting_is_wrong_shaped(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import (
+        compute_segment_candidate_evidence_readonly,
+    )
+
+    env = speakers_env()
+    env.create_entity("Bob Test")
+    seg_dir = env.create_segment("20240101", "102000_300", ["imported_audio"])
+    (seg_dir / "imported_audio.jsonl").write_text(
+        json.dumps({"setting": 5}) + "\n",
+        encoding="utf-8",
+    )
+    env.create_speakers_json("20240101", "102000_300", ["Bob Test"])
+
+    evidence, gaps = compute_segment_candidate_evidence_readonly(
+        "20240101",
+        STREAM,
+        "102000_300",
+    )
+
+    assert gaps == [{"source": "setting", "reason": "wrong_shape"}]
+    assert evidence == [{"entity_id": "bob_test", "sources": ["speakers"]}]
+
+
+def test_process_attributed_segment_refreshes_persisted_speakers_gap(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import process_attributed_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Bob Test")
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "102500_300",
+        np.vstack([_normalized([1.0, 0.0])]),
+    )
+    env.create_speakers_json(
+        "20240101",
+        "102500_300",
+        [],
+        raw=json.dumps(["Bob Test", 5]),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "102500_300",
+        [],
+        metadata={
+            "owner_centroid_last_refreshed_at": None,
+            "voiceprint_versions": {},
+            "unrelated": {"keep": True},
+        },
+    )
+
+    first = process_attributed_segment(
+        "20240101",
+        STREAM,
+        "102500_300",
+        commit=True,
+        read_only=False,
+    )
+
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / STREAM
+        / "102500_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    first_data = json.loads(labels_path.read_text(encoding="utf-8"))
+    first_labels = first_data["labels"]
+    assert first["status"] == "changed"
+    assert first_data["unrelated"] == {"keep": True}
+    assert first_data["candidate_evidence"] == [
+        {"entity_id": "bob_test", "sources": ["speakers"]}
+    ]
+    assert first_data["candidate_evidence_gaps"] == [
+        {"source": "speakers", "reason": "wrong_shape"}
+    ]
+
+    env.create_speakers_json("20240101", "102500_300", ["Bob Test"])
+
+    second = process_attributed_segment(
+        "20240101",
+        STREAM,
+        "102500_300",
+        commit=True,
+        read_only=False,
+    )
+
+    second_data = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert second["status"] == "unchanged"
+    assert second["changed_count"] == 0
+    assert second_data["labels"] == first_labels
+    assert second_data["unrelated"] == {"keep": True}
+    assert second_data["candidate_evidence"] == [
+        {"entity_id": "bob_test", "sources": ["speakers"]}
+    ]
+    assert "candidate_evidence_gaps" not in second_data
 
 
 def test_speaker_labels_container_preserves_unrelated_keys_and_drops_stub_markers(
