@@ -14,6 +14,7 @@ import importlib
 import io
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -51,6 +52,61 @@ MOCK_RESULT = {
     "text": "## Meeting Summary\n\nTeam standup at 9am with Alice and Bob discussing project status.",
     "usage": {"input_tokens": 100, "output_tokens": 50},
 }
+_BRAIN_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def _brain_component() -> dict:
+    return {
+        "status": "ok",
+        "observed_at": _BRAIN_NOW.isoformat(),
+        "expires_at": datetime(2026, 1, 3, 3, 4, 5, tzinfo=timezone.utc).isoformat(),
+    }
+
+
+def _ready_brain_outcome() -> dict:
+    component = _brain_component
+    return {
+        "configuration": component(),
+        "lane_prerequisites": component(),
+        "generate": component(),
+        "cogitate": component(),
+    }
+
+
+def _write_ready_brain_record(
+    tmp_path: Path,
+    *,
+    model: str = "gemini-3.5-flash",
+) -> None:
+    from solstone.think.providers.brain_state import (
+        begin_brain_refresh,
+        finish_brain_refresh,
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "active": {
+                        "provider": "google",
+                        "model": model,
+                    }
+                },
+                "env": {"GOOGLE_API_KEY": "test-key"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    permit = begin_brain_refresh(_BRAIN_NOW, journal_path=tmp_path)
+    assert permit is not None
+    finish_brain_refresh(
+        permit,
+        _ready_brain_outcome(),
+        _BRAIN_NOW,
+        journal_path=tmp_path,
+    )
 
 
 def run_generator_with_config(mod, config: dict, monkeypatch) -> list[dict]:
@@ -162,7 +218,7 @@ def test_generate_output_ndjson(tmp_path, monkeypatch):
 def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     tmp_path, monkeypatch
 ):
-    """Blank provider output for an output-path talent emits error, not finish."""
+    """Blank post-provider output for an output-path talent emits no_output."""
     from solstone.think import models
     from solstone.think.talents import _execute_generate
 
@@ -193,6 +249,154 @@ def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     assert events[0]["reason_code"] == "no_output"
     assert events[0]["terminal"] is True
     assert output_path.read_text(encoding="utf-8") == "old output"
+
+
+def test_execute_generate_provider_blank_records_runtime_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.providers.brain_state import inspect_brain_state
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_ready_brain_record(tmp_path)
+    output_path = tmp_path / "out.md"
+    output_path.write_text("old output", encoding="utf-8")
+    provider_module = MagicMock()
+    provider_module.run_generate.return_value = {
+        "text": "   ",
+        "model": "gemini-3.5-flash",
+        "finish_reason": "stop",
+        "usage": {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+    }
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: provider_module,
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-3.5-flash",
+                "name": "provider_blank_gen",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "provider_response_invalid"
+    assert events[0]["terminal"] is True
+    assert output_path.read_text(encoding="utf-8") == "old output"
+    provider_module.run_generate.assert_called_once()
+
+    inspection = inspect_brain_state(datetime.now(timezone.utc), journal_path=tmp_path)
+    record = inspection["record"]
+    assert record is not None
+    assert record["reason_code"] == "provider_response_invalid"
+    assert record["evidence"]["generate"]["reason_code"] == (
+        "provider_response_invalid"
+    )
+
+
+def test_execute_generate_provider_blank_rejected_when_config_switches_in_flight(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.providers import brain_state as brain_state_module
+    from solstone.think.providers.brain_state import (
+        brain_state_path,
+        inspect_brain_state,
+    )
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_ready_brain_record(tmp_path, model="gemini-3.5-flash")
+    f1_record = inspect_brain_state(datetime.now(timezone.utc), journal_path=tmp_path)[
+        "record"
+    ]
+    assert f1_record is not None
+    f1_sha = f1_record["fingerprint_sha256"]
+
+    original_record_failure = brain_state_module.record_brain_runtime_failure
+    recorded_expected_fingerprints: list[str] = []
+
+    def spy_record_brain_runtime_failure(*args, **kwargs):
+        recorded_expected_fingerprints.append(kwargs["expected_fingerprint_sha256"])
+        return original_record_failure(*args, **kwargs)
+
+    monkeypatch.setattr(
+        brain_state_module,
+        "record_brain_runtime_failure",
+        spy_record_brain_runtime_failure,
+    )
+
+    f2_snapshot: dict[str, object] = {}
+    provider_module = MagicMock()
+
+    def switch_to_f2_then_blank(*args, **kwargs):
+        assert kwargs["model"] == "gemini-3.5-flash"
+        _write_ready_brain_record(tmp_path, model="gemini-3.1-flash-lite")
+        f2_snapshot["bytes"] = brain_state_path(journal_path=tmp_path).read_bytes()
+        f2_record = inspect_brain_state(
+            datetime.now(timezone.utc), journal_path=tmp_path
+        )["record"]
+        assert f2_record is not None
+        assert f2_record["fingerprint_sha256"] != f1_sha
+        f2_snapshot["record"] = f2_record
+        return {
+            "text": "   ",
+            "model": "gemini-3.5-flash",
+            "finish_reason": "stop",
+            "usage": {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+        }
+
+    provider_module.run_generate.side_effect = switch_to_f2_then_blank
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: provider_module,
+    )
+    output_path = tmp_path / "out.md"
+    output_path.write_text("old output", encoding="utf-8")
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-3.5-flash",
+                "name": "provider_blank_in_flight_switch",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "provider_response_invalid"
+    assert events[0]["terminal"] is True
+    provider_module.run_generate.assert_called_once()
+    assert recorded_expected_fingerprints == [f1_sha]
+
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == f2_snapshot["bytes"]
+    current_record = inspect_brain_state(
+        datetime.now(timezone.utc), journal_path=tmp_path
+    )["record"]
+    assert current_record == f2_snapshot["record"]
+    assert current_record is not None
+    assert current_record["reason_code"] is None
+    assert current_record["evidence"]["generate"]["status"] == "ok"
+    assert (
+        current_record["evidence"]["generate"].get("reason_code")
+        != "provider_response_invalid"
+    )
 
 
 def test_execute_generate_schema_invalid_emits_terminal_error(tmp_path, monkeypatch):

@@ -23,7 +23,7 @@ import re
 import signal
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
 from typing import Any, Callable, Optional
@@ -1317,6 +1317,66 @@ def _record_quota_failure(config: dict, exc: QuotaExhaustedError) -> int:
     return reset_at_ms
 
 
+def _read_runtime_fingerprint_for_generate() -> str | None:
+    from solstone.think.providers.brain_state import (
+        read_active_brain_fingerprint_sha256,
+    )
+
+    try:
+        return read_active_brain_fingerprint_sha256()
+    except Exception as exc:
+        LOG.warning("Unable to read active brain fingerprint for generate: %s", exc)
+        return None
+
+
+def _record_generate_provider_response_invalid(
+    expected_fingerprint_sha256: str | None,
+) -> None:
+    if not expected_fingerprint_sha256:
+        LOG.warning(
+            "Unable to record provider_response_invalid runtime evidence: "
+            "active brain fingerprint unavailable"
+        )
+        return
+
+    from solstone.think.providers.brain_state import record_brain_runtime_failure
+
+    result = record_brain_runtime_failure(
+        "provider_response_invalid",
+        datetime.now(timezone.utc),
+        expected_fingerprint_sha256=expected_fingerprint_sha256,
+        component="generate",
+        diagnostic={},
+    )
+    if not result.get("accepted"):
+        LOG.warning(
+            "Unable to record provider_response_invalid runtime evidence: %s%s",
+            result.get("rejected_reason"),
+            f" ({result.get('error')})" if result.get("error") else "",
+        )
+
+
+def _emit_provider_response_invalid_terminal(
+    config: dict,
+    emit_event: Callable[[dict], None],
+    exc: Exception,
+    *,
+    retries: int = 0,
+) -> None:
+    _mark_terminal_error_evented(config)
+    event: dict[str, Any] = {
+        "event": "error",
+        "error": str(exc),
+        "reason_code": "provider_response_invalid",
+        "provider": config.get("provider"),
+        "terminal": True,
+        "ts": now_ms(),
+    }
+    if retries:
+        event["retries"] = retries
+    emit_event(event)
+
+
 async def _execute_with_tools(
     config: dict,
     emit_event: Callable[[dict], None],
@@ -1433,7 +1493,11 @@ async def _execute_generate(
         config: Prepared config dict
         emit_event: Event emission callback
     """
-    from solstone.think.models import IncompleteJSONError, generate_with_result
+    from solstone.think.models import (
+        IncompleteJSONError,
+        ProviderResponseInvalidError,
+        generate_with_result,
+    )
     from solstone.think.talent import key_to_context
 
     name = config["name"]
@@ -1458,6 +1522,7 @@ async def _execute_generate(
     context = key_to_context(name)
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
     retries = 0
+    expected_fingerprint_sha256 = _read_runtime_fingerprint_for_generate()
     try:
         gen_result = generate_with_result(
             contents=contents,
@@ -1470,6 +1535,10 @@ async def _execute_generate(
             json_schema=runtime_json_schema,
             timeout_s=timeout_s,
         )
+    except ProviderResponseInvalidError as exc:
+        _record_generate_provider_response_invalid(expected_fingerprint_sha256)
+        _emit_provider_response_invalid_terminal(config, emit_event, exc)
+        return
     except Exception as exc:
         provider = config.get("provider", "google")
         if isinstance(exc, QuotaExhaustedError):
@@ -1504,6 +1573,7 @@ async def _execute_generate(
                     name,
                 )
                 retry_kwargs["local_exclusive_admission"] = True
+            expected_fingerprint_sha256 = _read_runtime_fingerprint_for_generate()
             try:
                 gen_result = generate_with_result(
                     contents=contents,
@@ -1517,6 +1587,15 @@ async def _execute_generate(
                     timeout_s=timeout_s,
                     **retry_kwargs,
                 )
+            except ProviderResponseInvalidError as retry_exc:
+                _record_generate_provider_response_invalid(expected_fingerprint_sha256)
+                _emit_provider_response_invalid_terminal(
+                    config,
+                    emit_event,
+                    retry_exc,
+                    retries=retries,
+                )
+                return
             except Exception as retry_exc:
                 retry_exc.retries = retries
                 raise

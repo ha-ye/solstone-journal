@@ -1967,6 +1967,19 @@ def _load_fingerprint_for_write(
     return config, key, build_active_brain_fingerprint(config, hmac_key=key)
 
 
+def read_active_brain_fingerprint_sha256(
+    *, journal_path: str | Path | None = None
+) -> str | None:
+    config = read_journal_config(journal_path)
+    key = _load_existing_fingerprint_key(journal_path=journal_path)
+    if key is None:
+        return None
+    fingerprint = build_active_brain_fingerprint(config, hmac_key=key)
+    if not fingerprint["ok"]:
+        return None
+    return fingerprint["fingerprint_sha256"]
+
+
 def _record_from_evidence(
     *,
     evidence: BrainEvidenceRecord,
@@ -2299,6 +2312,7 @@ __all__ = [
     "finish_brain_refresh",
     "inspect_brain_state",
     "project_brain_state",
+    "read_active_brain_fingerprint_sha256",
     "record_brain_runtime_failure",
     "runtime_phase_reason",
     "validate_brain_state_record",
