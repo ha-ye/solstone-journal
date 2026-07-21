@@ -127,6 +127,54 @@ def test_cortex_service_initialization(cortex_service, mock_journal):
     assert cortex_service.talents_dir.exists()
 
 
+def test_start_starts_spawn_worker_and_stays_resident(cortex_service, monkeypatch):
+    from solstone.think import cortex
+
+    fake_callosum = MagicMock()
+    cortex_service.callosum = fake_callosum
+    monkeypatch.setattr(cortex_service, "_should_request_brain_refresh", lambda: False)
+    monkeypatch.setattr(cortex_service, "_emit_periodic_status", lambda: None)
+
+    resident_loop_entered = threading.Event()
+    returned = threading.Event()
+    errors: list[BaseException] = []
+    real_sleep = time.sleep
+
+    def short_sleep(_seconds):
+        resident_loop_entered.set()
+        real_sleep(0.01)
+
+    monkeypatch.setattr(cortex.time, "sleep", short_sleep)
+
+    def run_start():
+        try:
+            cortex_service.start()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+        finally:
+            returned.set()
+
+    service_thread = threading.Thread(target=run_start, daemon=True)
+    service_thread.start()
+    try:
+        assert resident_loop_entered.wait(1)
+        assert fake_callosum.start.called
+        assert cortex_service._spawn_worker is not None
+        assert cortex_service._spawn_worker.is_alive()
+        assert service_thread.is_alive()
+        assert not returned.is_set()
+
+        cortex_service.shutdown_requested.set()
+        service_thread.join(timeout=1)
+        assert returned.is_set()
+        assert errors == []
+    finally:
+        cortex_service.stop_event.set()
+        if cortex_service._spawn_worker is not None:
+            cortex_service._spawn_worker.join(timeout=1)
+        service_thread.join(timeout=1)
+
+
 def test_handle_request_dedups_existing_active_file(
     cortex_service, mock_journal, monkeypatch
 ):

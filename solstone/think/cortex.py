@@ -258,16 +258,6 @@ class CortexService:
             name="cortex-status",
             daemon=True,
         ).start()
-
-    def _should_request_brain_refresh(self) -> bool:
-        try:
-            inspection = inspect_brain_state(datetime.now(timezone.utc))
-        except Exception:
-            return True
-        projection = inspection["projection"]
-        if projection["aggregate_state"] in {"checking", "ready"}:
-            return False
-        return not projection["runtime_transition_in_progress"]
         self._spawn_worker = threading.Thread(
             target=self._run_spawn_worker,
             name="cortex-spawn-worker",
@@ -292,6 +282,16 @@ class CortexService:
             except KeyboardInterrupt:
                 self.logger.info("Shutdown requested, will exit when idle")
                 self.shutdown_requested.set()
+
+    def _should_request_brain_refresh(self) -> bool:
+        try:
+            inspection = inspect_brain_state(datetime.now(timezone.utc))
+        except Exception:
+            return True
+        projection = inspection["projection"]
+        if projection["aggregate_state"] in {"checking", "ready"}:
+            return False
+        return not projection["runtime_transition_in_progress"]
 
     def _handle_callosum_message(self, message: Dict[str, Any]) -> None:
         """Handle incoming Callosum messages (callback)."""
