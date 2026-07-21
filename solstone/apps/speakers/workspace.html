@@ -1279,11 +1279,20 @@
 (() => {
   const DAY_RE = /^\d{8}$/;
   const { segment } = window.solPathContext();
-  const speakerFilter = new URLSearchParams(window.location.search).get('speaker') || '';
+  const searchParams = new URLSearchParams(window.location.search);
+  const speakerFilter = searchParams.get('speaker') || '';
   window.SPEAKERS_CONTEXT = {
     isDay: DAY_RE.test(segment || ''),
     day: segment || null,
     speakerFilter,
+    voiceClusterId: searchParams.get('voice_cluster_id') || '',
+    statementHandoff: {
+      day: searchParams.get('voice_day') || '',
+      stream: searchParams.get('voice_stream') || '',
+      segmentKey: searchParams.get('voice_segment_key') || '',
+      source: searchParams.get('voice_source') || '',
+      sentenceId: searchParams.get('voice_sentence_id') || '',
+    },
   };
   window.loadSpeakersState = function loadSpeakersState() {
     const params = new URLSearchParams();
@@ -3472,6 +3481,7 @@
     <div class="spk-overview-header">
       <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_NEW_VOICES_HEADER"></h2>
     </div>
+    <div id="spkStatementHandoffNotice" class="spk-overview-muted" hidden></div>
     <div id="spkDiscoveryClusters" class="spk-discovery-clusters"></div>
   </section>
 
@@ -3485,6 +3495,7 @@
 (() => {
   let COPY = {};
   let OWNER_STATUS_ROUTING = {};
+  let NOT_IN_NEW_VOICES_COPY = '';
   let TODAY = '';
   let OWNER_MIN = 0;
   const ownerPanel = document.getElementById('spkOverviewOwner');
@@ -3492,6 +3503,7 @@
   const knownContainer = document.getElementById('spkKnownVoices');
   const sortSelect = document.getElementById('spkKnownSort');
   const discoverySection = document.getElementById('spkNewVoicesSection');
+  const statementHandoffNotice = document.getElementById('spkStatementHandoffNotice');
   const discoveryContainer = document.getElementById('spkDiscoveryClusters');
   const todayLink = document.getElementById('spkTodayReview');
   const dayGridCard = document.getElementById('spkDayGridCard');
@@ -3501,10 +3513,12 @@
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
   let mountedDayGridKey = null;
   let whoIsThisSheet = null;
+  let discoveryClustersById = new Map();
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
     OWNER_STATUS_ROUTING = payload.owner_status_routing_tokens || {};
+    NOT_IN_NEW_VOICES_COPY = payload.not_in_new_voices_copy || '';
     TODAY = payload.today || '';
     OWNER_MIN = payload.owner_min_statements || 0;
     document.querySelectorAll('[data-copy]').forEach((node) => {
@@ -3825,8 +3839,29 @@
     });
   }
 
+  function openOverviewDiscoveryCluster(clusterId, trigger) {
+    const key = String(clusterId || '');
+    const cluster = discoveryClustersById.get(key);
+    if (!cluster) return false;
+    openOverviewWhoIsThis(cluster, trigger || null);
+    return true;
+  }
+
+  function hideStatementHandoffNotice() {
+    statementHandoffNotice.hidden = true;
+    statementHandoffNotice.textContent = '';
+  }
+
+  function showStatementHandoffNotice() {
+    statementHandoffNotice.textContent = NOT_IN_NEW_VOICES_COPY;
+    statementHandoffNotice.hidden = false;
+    discoverySection.hidden = false;
+  }
+
   function renderDiscovery(data) {
     const clusters = data.clusters || [];
+    hideStatementHandoffNotice();
+    discoveryClustersById = new Map(clusters.map((cluster) => [String(cluster.cluster_id), cluster]));
     if (!clusters.length) {
       discoverySection.hidden = true;
       return;
@@ -3843,7 +3878,7 @@
     `).join('');
     discoveryContainer.querySelectorAll('.spk-discovery-card').forEach((card) => {
       const trigger = card.querySelector('.spk-who-trigger');
-      const cluster = clusters.find(item => String(item.cluster_id) === card.dataset.clusterId);
+      const cluster = discoveryClustersById.get(card.dataset.clusterId);
       if (trigger && cluster) {
         trigger.addEventListener('click', () => openOverviewWhoIsThis(cluster, trigger));
       }
@@ -3851,15 +3886,62 @@
   }
 
   function loadDiscovery() {
-    fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
+    return fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
       .then((response) => {
         if (!response.ok) throw new Error('scan failed');
         return response.json();
       })
-      .then(renderDiscovery)
+      .then((data) => {
+        renderDiscovery(data);
+        return true;
+      })
       .catch(() => {
         discoverySection.hidden = true;
+        return false;
       });
+  }
+
+  function statementHandoffComplete(handoff) {
+    return Boolean(
+      handoff
+      && handoff.day
+      && handoff.stream
+      && handoff.segmentKey
+      && handoff.source
+      && handoff.sentenceId
+    );
+  }
+
+  function resolveStatementHandoff(handoff) {
+    const params = new URLSearchParams({
+      voice_day: handoff.day,
+      voice_stream: handoff.stream,
+      voice_segment_key: handoff.segmentKey,
+      voice_source: handoff.source,
+      voice_sentence_id: handoff.sentenceId,
+    });
+    return window.apiJson(`/app/speakers/api/discovery/resolve-statement?${params}`);
+  }
+
+  async function handleOverviewHandoff() {
+    const context = window.SPEAKERS_CONTEXT || {};
+    hideStatementHandoffNotice();
+    if (context.voiceClusterId) {
+      openOverviewDiscoveryCluster(context.voiceClusterId, null);
+      return;
+    }
+    const handoff = context.statementHandoff || {};
+    if (!statementHandoffComplete(handoff)) return;
+    try {
+      const result = await resolveStatementHandoff(handoff);
+      if (result.status === 'hit') {
+        openOverviewDiscoveryCluster(result.cluster_id, null);
+      } else if (result.status === 'miss') {
+        showStatementHandoffNotice();
+      }
+    } catch (err) {
+      window.logError?.(err, { context: 'speakers-statement-handoff' });
+    }
   }
 
   function hideDayGrid() {
@@ -3930,7 +4012,9 @@
     loadOwner();
     loadQuality();
     loadKnown();
-    loadDiscovery();
+    loadDiscovery().then((loaded) => {
+      if (loaded) handleOverviewHandoff();
+    });
   }
 
   function renderOverviewStateError(err) {

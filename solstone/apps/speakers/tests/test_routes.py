@@ -1681,6 +1681,56 @@ def test_workspace_discovery_freeform_inputs_retired():
     assert "submitDiscoveryName" not in template
 
 
+def test_workspace_overview_voice_handoff_contract():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
+
+    assert "voice_cluster_id" in template
+    for param in (
+        "voice_day",
+        "voice_stream",
+        "voice_segment_key",
+        "voice_source",
+        "voice_sentence_id",
+    ):
+        assert param in template
+    assert "function openOverviewDiscoveryCluster(clusterId, trigger)" in template
+    assert "const cluster = discoveryClustersById.get(key);" in template
+    assert "if (!cluster) return false;" in template
+    assert "openOverviewDiscoveryCluster(context.voiceClusterId, null);" in template
+    assert "/app/speakers/api/discovery/resolve-statement" in template
+    assert "if (result.status === 'hit')" in template
+    assert "else if (result.status === 'miss')" in template
+    assert "showStatementHandoffNotice();" in template
+    assert 'id="spkStatementHandoffNotice"' in template
+    assert "NOT_IN_NEW_VOICES_COPY = payload.not_in_new_voices_copy || '';" in template
+
+
+def test_retired_voice_confirm_strings_absent():
+    retired = (
+        "sol found a recurring " + "voice. name it in speakers",
+        "open speaker " + "discovery",
+        "TR_SPEAKER_PICKER_" + "DISCOVERY_LINK",
+    )
+    hits: list[tuple[str, str]] = []
+    for root in (Path("solstone"), Path("tests")):
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in {
+                ".py",
+                ".html",
+                ".js",
+                ".json",
+            }:
+                continue
+            if Path("tests/baselines") in path.parents:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for value in retired:
+                if value in text:
+                    hits.append((path.as_posix(), value))
+
+    assert hits == []
+
+
 def test_workspace_loads_who_is_this_before_iifes():
     template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
 
@@ -1827,6 +1877,67 @@ def test_cluster_presence_route_returns_not_found(speakers_env, monkeypatch):
     body = response.get_json()
     assert body["reason_code"] == "speaker_review_unavailable"
     assert body["detail"] == "Cluster 404 was not found. Run a discovery scan first."
+
+
+def test_resolve_statement_cluster_route_returns_resolution(speakers_env, monkeypatch):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+    seen = {}
+
+    def resolve(**kwargs):
+        seen.update(kwargs)
+        return {"status": "hit", "cluster_id": 7}
+
+    monkeypatch.setattr(routes, "resolve_statement_cluster", resolve)
+    client = _convey_client(env.journal)
+
+    response = client.get(
+        "/app/speakers/api/discovery/resolve-statement"
+        "?voice_day=20240101"
+        "&voice_stream=test"
+        "&voice_segment_key=090000_300"
+        "&voice_source=audio"
+        "&voice_sentence_id=12"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "hit", "cluster_id": 7}
+    assert seen == {
+        "day": "20240101",
+        "stream": "test",
+        "segment_key": "090000_300",
+        "source": "audio",
+        "sentence_id": 12,
+    }
+
+
+def test_resolve_statement_cluster_route_rejects_missing_and_bad_sentence_id(
+    speakers_env,
+):
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    missing = client.get(
+        "/app/speakers/api/discovery/resolve-statement"
+        "?voice_day=20240101"
+        "&voice_stream=test"
+        "&voice_segment_key=090000_300"
+        "&voice_source=audio"
+    )
+    bad_sentence = client.get(
+        "/app/speakers/api/discovery/resolve-statement"
+        "?voice_day=20240101"
+        "&voice_stream=test"
+        "&voice_segment_key=090000_300"
+        "&voice_source=audio"
+        "&voice_sentence_id=not-int"
+    )
+
+    assert missing.status_code == 400
+    assert missing.get_json()["reason_code"] == "missing_required_field"
+    assert bad_sentence.status_code == 400
+    assert bad_sentence.get_json()["reason_code"] == "invalid_request_value"
 
 
 def test_serve_audio_sets_flac_mimetype(serve_audio_client):
@@ -4008,7 +4119,7 @@ def test_owner_panel_renders_built_unknown_when_created_at_absent():
 
 
 def test_speakers_state_endpoint_shape(speakers_env):
-    from solstone.apps.speakers.copy import speaker_copy_payload
+    from solstone.apps.speakers.copy import TR_NOT_IN_NEW_VOICES, speaker_copy_payload
     from solstone.apps.speakers.owner import OWNER_BOOTSTRAP_MIN_STMTS
 
     env = speakers_env()
@@ -4022,6 +4133,7 @@ def test_speakers_state_endpoint_shape(speakers_env):
         "today",
         "owner_min_statements",
         "owner_status_routing_tokens",
+        "not_in_new_voices_copy",
         "speaker_copy",
         "speaker_filter_name",
     }
@@ -4032,6 +4144,7 @@ def test_speakers_state_endpoint_shape(speakers_env):
         "candidate": "candidate",
         "confirmed": "confirmed",
     }
+    assert payload["not_in_new_voices_copy"] == TR_NOT_IN_NEW_VOICES
     assert payload["speaker_copy"] == speaker_copy_payload()
     assert payload["speaker_filter_name"] is None
 

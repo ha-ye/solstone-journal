@@ -47,6 +47,7 @@ from solstone.apps.speakers.copy import (
     OWNER_DETECT_CANDIDATE_GUIDANCE,
     OWNER_REJECTION_COOLDOWN_GUIDANCE,
     SPK_OVERVIEW_KNOWN_VOICES_SORTS,
+    TR_NOT_IN_NEW_VOICES,
     speaker_copy_payload,
 )
 from solstone.apps.speakers.discovery import (
@@ -54,6 +55,7 @@ from solstone.apps.speakers.discovery import (
     get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
+    resolve_statement_cluster,
     undo_identify_operation,
 )
 from solstone.apps.speakers.encoder_config import (
@@ -1085,6 +1087,7 @@ def api_state() -> Any:
                 "today": date.today().strftime("%Y%m%d"),
                 "owner_min_statements": OWNER_BOOTSTRAP_MIN_STMTS,
                 "owner_status_routing_tokens": OWNER_STATUS_ROUTING_TOKENS,
+                "not_in_new_voices_copy": TR_NOT_IN_NEW_VOICES,
                 "speaker_copy": speaker_copy_payload(),
                 "speaker_filter_name": speaker_filter_name,
             }
@@ -2310,6 +2313,42 @@ def api_cluster_presence(cluster_id: int) -> Any:
             detail=f"Cluster {cluster_id} was not found. Run a discovery scan first.",
         )
     return jsonify(presence)
+
+
+@speakers_bp.route("/api/discovery/resolve-statement", methods=["GET"])
+def api_resolve_statement_cluster() -> Any:
+    """Resolve one statement provenance tuple to a discovery cluster."""
+    required_params = (
+        "voice_day",
+        "voice_stream",
+        "voice_segment_key",
+        "voice_source",
+        "voice_sentence_id",
+    )
+    values = {name: request.args.get(name) for name in required_params}
+    missing = [name for name, value in values.items() if value in (None, "")]
+    if missing:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail=f"Missing required fields: {', '.join(missing)}",
+        )
+    try:
+        sentence_id = int(values["voice_sentence_id"] or "")
+    except ValueError:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="voice_sentence_id must be an integer",
+        )
+
+    return jsonify(
+        resolve_statement_cluster(
+            day=values["voice_day"] or "",
+            stream=values["voice_stream"] or "",
+            segment_key=values["voice_segment_key"] or "",
+            source=values["voice_source"] or "",
+            sentence_id=sentence_id,
+        )
+    )
 
 
 def _operation_result_summary(result: dict[str, Any] | None) -> dict[str, Any] | None:
