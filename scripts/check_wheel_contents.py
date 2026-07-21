@@ -597,7 +597,7 @@ def _check_base_platform_helper(
             path.name,
             wheel.read(helper),
             ("darwin", "arm64"),
-            binary_label="parakeet helper",
+            binary_label=f"parakeet helper {PARAKEET_HELPER_MEMBER}",
         )
     )
     errors.extend(
@@ -652,7 +652,11 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
             )
         elif platform_tuple is not None:
             errors.extend(
-                _check_core_binary(path.name, wheel.read(scripts[0]), platform_tuple)
+                _check_core_binary(
+                    f"{path.name}:{scripts[0].filename}",
+                    wheel.read(scripts[0]),
+                    platform_tuple,
+                )
             )
         errors.extend(_check_record(path, wheel))
 

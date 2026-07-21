@@ -9,10 +9,12 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,10 @@ import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_wheel_contents import (
+    CORE_REQUIRED_SDIST_MEMBERS,
+    CPU_TYPE_ARM64,
+    ELF_MACHINE,
+    EXPECTED_MODEL_SHA256,
     PARAKEET_HELPER_MEMBER,
     core_wheel_script_members,
 )
@@ -39,14 +45,20 @@ from scripts.release_install_smoke import (
     target_install_paths_from_ledger,
     write_install_proof,
 )
+from tests.helpers.release_wheel_fixtures import (
+    minimal_elf,
+    minimal_macho,
+    write_core_wheel,
+    write_platform_base_wheel,
+)
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK_CONTENT = "fixture lock\n"
 LOCK_SHA = hashlib.sha256(CORE_LOCK_CONTENT.encode("utf-8")).hexdigest()
-LINUX_X86_CORE = b"linux-x86-core"
-LINUX_AARCH64_CORE = b"linux-aarch64-core"
-MACOS_CORE = b"core-script"
-MACOS_HELPER = b"root-helper"
+LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
+LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
+MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
+MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
 
 
 class GuardedEnv(dict):
@@ -120,16 +132,6 @@ def _write_metadata_wheel(path: Path) -> None:
         wheel.writestr(metadata_name, metadata)
 
 
-def _write_member_wheel(path: Path, member: str, content: bytes) -> None:
-    info = zipfile.ZipInfo(member)
-    info.create_system = 3
-    info.external_attr = 0o755 << 16
-    with zipfile.ZipFile(path, "w") as wheel:
-        metadata_name, metadata = _wheel_metadata(path.name)
-        wheel.writestr(metadata_name, metadata)
-        wheel.writestr(info, content)
-
-
 def _write_linux_core_wheels(dist_dir: Path) -> None:
     content_by_lane = {
         "linux-x86_64-musl": LINUX_X86_CORE,
@@ -138,11 +140,41 @@ def _write_linux_core_wheels(dist_dir: Path) -> None:
     for artifact, (lane, _target) in checker.rust_artifact_targets().items():
         if lane not in content_by_lane:
             continue
-        _write_member_wheel(
-            dist_dir / artifact,
-            f"{artifact.removesuffix('.whl')}.data/scripts/solstone-core",
-            content_by_lane[lane],
+        tag = artifact.split("-py3-none-", 1)[1].removesuffix(".whl")
+        write_core_wheel(
+            dist_dir,
+            tag=tag,
+            binary=content_by_lane[lane],
+            version=checker._current_version(),
         )
+
+
+def _write_core_sdist(path: Path) -> None:
+    version = checker._current_version()
+    with tarfile.open(path, "w:gz") as archive:
+        for member in sorted(CORE_REQUIRED_SDIST_MEMBERS):
+            content = b"x"
+            info = tarfile.TarInfo(f"solstone_core-{version}/{member}")
+            info.size = len(content)
+            archive.addfile(info, BytesIO(content))
+
+
+def _write_models_wheel(path: Path) -> None:
+    assets_dir = (
+        Path(__file__).resolve().parents[1]
+        / "packages"
+        / "solstone-journal-models"
+        / "solstone_journal_models"
+        / "assets"
+    )
+    with zipfile.ZipFile(path, "w") as wheel:
+        metadata_name, metadata = _wheel_metadata(path.name)
+        wheel.writestr(metadata_name, metadata)
+        for basename in sorted(EXPECTED_MODEL_SHA256):
+            wheel.write(
+                assets_dir / basename,
+                f"solstone_journal_models/assets/{basename}",
+            )
 
 
 def _macos_wheel_names() -> tuple[str, str]:
@@ -192,11 +224,18 @@ def _write_macos_host_outputs(
         )
     root_bytes = MACOS_HELPER
     core_bytes = MACOS_CORE
-    _write_member_wheel(root_wheel, PARAKEET_HELPER_MEMBER, root_bytes)
-    _write_member_wheel(
-        core_wheel,
-        "solstone_core-0.0.0.data/scripts/solstone-core",
-        core_bytes,
+    write_platform_base_wheel(
+        root_wheel.parent,
+        helper_binary=root_bytes,
+        version=checker._current_version(),
+    )
+    if root_wheel.name != root_name:
+        (output_dir / root_name).rename(root_wheel)
+    write_core_wheel(
+        core_wheel.parent,
+        tag="macosx_14_0_arm64",
+        binary=core_bytes,
+        version=checker._current_version(),
     )
     root_record = native.build_macos_native_record(
         role="root",
@@ -323,8 +362,12 @@ def _services(
         dist.mkdir(parents=True, exist_ok=True)
         for name in driver._expected_local_dist_names(include_models=include_models):
             path = dist / name
-            if name.endswith(".whl"):
+            if name.startswith("solstone_journal_models-") and name.endswith(".whl"):
+                _write_models_wheel(path)
+            elif name.endswith(".whl"):
                 _write_metadata_wheel(path)
+            elif name.startswith("solstone_core-") and name.endswith(".tar.gz"):
+                _write_core_sdist(path)
             else:
                 path.write_bytes(b"fixture package")
         _write_linux_core_wheels(repo / "dist")
@@ -466,10 +509,10 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
     )
     root_name, core_name = _macos_wheel_names()
     with zipfile.ZipFile(first.release_dir / root_name) as wheel:
-        assert wheel.read(PARAKEET_HELPER_MEMBER) == b"root-helper"
+        assert wheel.read(PARAKEET_HELPER_MEMBER) == MACOS_HELPER
     with zipfile.ZipFile(first.release_dir / core_name) as wheel:
         [member] = core_wheel_script_members(wheel)
-        assert wheel.read(member) == b"core-script"
+        assert wheel.read(member) == MACOS_CORE
 
     recovered = _recover(first_root)
     assert recovered.heading == "retained-candidate-valid"
@@ -1326,7 +1369,11 @@ def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
         root_name, _core_name = _macos_wheel_names()
         wheel_path = root / "dist" / root_name
         if wheel_path.exists():
-            _write_member_wheel(wheel_path, PARAKEET_HELPER_MEMBER, b"mutated-helper")
+            write_platform_base_wheel(
+                wheel_path.parent,
+                helper_binary=b"mutated-helper",
+                version=checker._current_version(),
+            )
         for path in paths:
             if path.is_dir():
                 shutil.rmtree(path)
@@ -1339,7 +1386,35 @@ def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
         driver.run_candidate(root, _env(), services)
 
     assert any(
-        failure.error == "macOS native record member does not match wheel"
+        failure.error == "release candidate wheel content check failed"
+        and PARAKEET_HELPER_MEMBER in failure.actual
+        for failure in exc.value.failures
+    )
+
+
+def test_candidate_rejects_poisoned_core_wheel_content(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    base_services = _services(root)
+
+    def build_local_dist(repo: Path, include_models: bool) -> None:
+        base_services.build_local_dist(repo, include_models)
+        write_core_wheel(
+            repo / "dist",
+            tag="manylinux_2_17_x86_64.manylinux2014_x86_64",
+            binary=b"not an elf",
+            version=checker._current_version(),
+        )
+
+    services = replace(base_services, build_local_dist=build_local_dist)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    _assert_no_ready_cohort(root)
+    assert any(
+        failure.error == "release candidate wheel content check failed"
+        and ".data/scripts/solstone-core" in failure.actual
+        and "ELF binary is too short" in failure.actual
         for failure in exc.value.failures
     )
 

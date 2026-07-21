@@ -41,6 +41,11 @@ from scripts.check_rust_release_manifest import (
     rust_artifact_targets,
     validate_release_dir,
 )
+from scripts.check_wheel_contents import (
+    EXPECTED_MODEL_SHA256,
+    MAX_BASE_WHEEL_BYTES,
+    check_dist,
+)
 from scripts.record_macos_native_wheel import validate_macos_native_record
 from scripts.release_advisory_policy import PolicyRun, prepare_policy_run
 from scripts.release_build_host import (
@@ -754,6 +759,35 @@ def _validate_local_dist_inventory(dist_dir: Path, *, include_models: bool) -> N
         )
     if failures:
         raise DriverError(failures)
+
+
+def _validate_candidate_wheel_contents(
+    release_dir: Path, *, models_decision: str
+) -> None:
+    wheel_models_decision = "publish" if models_decision == "include" else "skip"
+    errors = check_dist(
+        release_dir,
+        EXPECTED_MODEL_SHA256,
+        MAX_BASE_WHEEL_BYTES,
+        required_core_platforms=(),
+        release_scope="all-hosts",
+        models_decision=wheel_models_decision,
+    )
+    if errors:
+        raise DriverError(
+            [
+                _failure(
+                    "release candidate wheel content check failed",
+                    expected="candidate wheels matching platform content policy",
+                    actual=error,
+                    repair=(
+                        "rebuild the candidate with bash scripts/release.sh --candidate "
+                        "after fixing the reported wheel content"
+                    ),
+                )
+                for error in errors
+            ]
+        )
 
 
 def _native_record_role(path: Path) -> str | None:
@@ -2675,6 +2709,10 @@ def run_candidate(
     proof_paths: dict[str, Path] = {}
 
     def post_promote_hook(release_dir: Path) -> None:
+        _validate_candidate_wheel_contents(
+            release_dir,
+            models_decision=models_decision,
+        )
         _revalidate_macos_wheels(
             release_dir,
             native_records,
