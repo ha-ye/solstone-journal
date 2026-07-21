@@ -10,7 +10,6 @@ from solstone.think.providers.local_endpoint import (
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
 )
-from solstone.think.providers.state import ProviderState
 
 
 @dataclass(frozen=True)
@@ -420,41 +419,6 @@ def chat_reason_projection() -> dict[str, dict[str, Any]]:
         }
         for code, entry in _ENTRIES.items()
     }
-
-
-def view_to_dict(view: ReadinessView) -> dict[str, Any]:
-    return {
-        "semantic_key": view.semantic_key,
-        "work_key": view.work_key,
-        "status": view.status,
-        "severity": view.severity,
-        "reason_code": view.reason_code,
-        "provider": view.provider,
-        "model": view.model,
-        "context": view.context,
-        "interface": view.interface,
-        "summary": view.summary,
-        "detail": view.detail,
-        "recovery_action": _action_projection(view.recovery_action),
-        "operator_detail": view.operator_detail,
-    }
-
-
-def present_readiness(
-    state: ProviderState, *, work_key: str | None = None
-) -> ReadinessView:
-    reason_code = state.reason_code or "ready"
-    return _build_view(
-        reason_code,
-        provider=state.provider,
-        model=state.model,
-        status=state.status,
-        context=state.context,
-        interface=state.interface,
-        message=state.message,
-        reset_at_ms=state.reset_at_ms,
-        work_key=work_key,
-    )
 
 
 def present_for_reason(

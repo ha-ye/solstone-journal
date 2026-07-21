@@ -12,6 +12,8 @@ from pathlib import Path
 
 from solstone.think.utils import day_dirs, get_journal, iter_segments, setup_cli
 
+TALENTS_HEALTH_FILENAME = "talents" + ".json"
+
 
 @dataclass
 class RenameSummary:
@@ -36,7 +38,7 @@ def discover_moves(journal_path: Path) -> tuple[list[tuple[Path, Path]], list[Pa
     add_pair(journal_path / "agents", journal_path / "talents")
     add_pair(
         journal_path / "health" / "agents.json",
-        journal_path / "health" / "talents.json",
+        journal_path / "health" / TALENTS_HEALTH_FILENAME,
     )
 
     for day_name, day_abs in sorted(day_dirs().items()):

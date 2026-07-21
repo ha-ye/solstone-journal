@@ -39,7 +39,6 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     OPERATION_NO_LONGER_AVAILABLE,
     PRINCIPAL_ENTITY_PROTECTED,
-    PROVIDER_KEY_MISSING,
 )
 from solstone.convey.utils import (
     created,
@@ -1559,10 +1558,6 @@ def generate_description(facet_name: str) -> Any:
     try:
         from solstone.convey.utils import spawn_agent
 
-        provider_error = _entity_describe_generate_readiness_error()
-        if provider_error is not None:
-            return provider_error
-
         # Build concise prompt - agent has detailed instructions
         current_desc = current_description or "(none)"
         prompt = (
@@ -1581,22 +1576,6 @@ def generate_description(facet_name: str) -> Any:
 
     except Exception as e:
         return error_response(AGENT_UNAVAILABLE, detail=str(e))
-
-
-def _entity_describe_generate_readiness_error() -> Any | None:
-    from solstone.think.models import resolve_provider
-    from solstone.think.providers.state import readiness_for_provider
-
-    provider, model = resolve_provider("generate")
-    readiness = readiness_for_provider(provider, "generate", model)
-    if readiness.status not in {"blocked", "unhealthy"}:
-        return None
-
-    detail = readiness.message or (
-        f"{provider} generate provider is not ready"
-        + (f" ({readiness.reason_code})" if readiness.reason_code else "")
-    )
-    return error_response(PROVIDER_KEY_MISSING, detail=detail)
 
 
 @entities_bp.route("/api/<facet_name>/assist", methods=["POST"])

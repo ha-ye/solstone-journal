@@ -59,7 +59,6 @@ from solstone.think.journal_io import install_file
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
 from solstone.think.providers import fanout_policy
-from solstone.think.providers import state as provider_state
 from solstone.think.utils import (
     day_from_path,
     get_config,
@@ -320,35 +319,6 @@ def _describe_work_key(video_path: Path, day: str | None, segment: str) -> str:
     return f"{day or ''}/{segment}/{video_path.stem}"
 
 
-def _describe_readiness_contexts() -> list[str]:
-    contexts = {FRAME_CONTEXT}
-    for metadata in CATEGORIES.values():
-        context = metadata.get("context")
-        if context and metadata.get("prompt"):
-            contexts.add(context)
-    return [FRAME_CONTEXT] + sorted(
-        context for context in contexts if context != FRAME_CONTEXT
-    )
-
-
-def _dedup_readiness_contexts(contexts: list[str]) -> list[str]:
-    from solstone.think.models import resolve_provider
-
-    selected: list[str] = []
-    seen: set[tuple[str, str]] = set()
-    for context in contexts:
-        key = resolve_provider("generate")
-        if key in seen:
-            continue
-        seen.add(key)
-        selected.append(context)
-    return selected
-
-
-def _blocked_status(status: str) -> bool:
-    return status in {"blocked", "unhealthy"}
-
-
 def _emit_blocked_notification(view) -> None:
     event_fields = {
         "key": view.semantic_key,
@@ -369,24 +339,6 @@ def _emit_blocked_notification(view) -> None:
         "show",
         **{key: value for key, value in event_fields.items() if value is not None},
     )
-
-
-def _preflight_provider_readiness(
-    video_path: Path,
-    *,
-    day: str | None,
-    segment: str,
-) -> None:
-    work_key = _describe_work_key(video_path, day, segment)
-    from solstone.convey.provider_readiness import present_readiness
-
-    for context in _dedup_readiness_contexts(_describe_readiness_contexts()):
-        readiness = provider_state.readiness_for_context(context, "generate")
-        if not _blocked_status(readiness.status):
-            continue
-        view = present_readiness(readiness, work_key=work_key)
-        _emit_blocked_notification(view)
-        raise SystemExit(EXIT_PROVIDER_BLOCKED)
 
 
 def _abort_for_blocking_request(
@@ -1590,7 +1542,6 @@ async def async_main():
 
         day = day_from_path(video_path)
         work_key = _describe_work_key(video_path, day, segment)
-        _preflight_provider_readiness(video_path, day=day, segment=segment)
     else:
         day = day_from_path(video_path)
         work_key = _describe_work_key(video_path, day, segment)
