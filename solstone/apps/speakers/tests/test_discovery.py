@@ -1001,8 +1001,8 @@ def test_identify_name_create_matrix_and_entity_type_validation(speakers_env):
     assert (env.journal / "entities" / "yara_new" / "entity.json").exists()
     assert ambiguous_create_missing_review["status"] == "invalid_request"
     assert (
-        ambiguous_create_missing_review["error"]
-        == "reviewed_near_match_entity_ids must match shown near matches"
+        ambiguous_create_missing_review["invalid_request_code"]
+        == "reviewed_near_match_set_mismatch"
     )
     assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
     assert invalid_type["invalid_entity_type"] is True
@@ -1739,9 +1739,7 @@ def test_identify_no_match_create_rejects_empty_reviewed_set_when_candidate_visi
     )
 
     assert result["status"] == "invalid_request"
-    assert result["error"] == (
-        "reviewed_near_match_entity_ids must match shown near matches"
-    )
+    assert result["invalid_request_code"] == "reviewed_near_match_set_mismatch"
     assert result["expected_reviewed_near_match_entity_ids"] == ["jonathan_smith"]
     assert result["actual_reviewed_near_match_entity_ids"] == []
     _assert_no_identify_write_boundary(
@@ -1862,32 +1860,36 @@ def test_identify_near_match_validation_rejects_unshown_before_writes(speakers_e
 
 
 @pytest.mark.parametrize(
-    ("reviewed_ids", "expected_error", "expected_duplicate"),
+    ("reviewed_ids", "expected_code", "expected_duplicate", "expected_invalid"),
     [
-        (None, "reviewed_near_match_entity_ids must match shown near matches", None),
-        ([], "reviewed_near_match_entity_ids must match shown near matches", None),
+        (None, "reviewed_near_match_set_mismatch", None, None),
+        ([], "reviewed_near_match_set_mismatch", None, None),
         (
             ["sarah_connor"],
-            "reviewed_near_match_entity_ids must match shown near matches",
+            "reviewed_near_match_set_mismatch",
+            None,
             None,
         ),
         (
             ["sarah_connor", "sarah_connor"],
-            "reviewed_near_match_entity_ids must be unique",
+            None,
             "sarah_connor",
+            None,
         ),
         (
             ["other_person", "sarah_connor"],
-            "invalid reviewed_near_match_entity_ids",
             None,
+            None,
+            [{"entity_id": "other_person", "reason": "unshown"}],
         ),
     ],
 )
 def test_identify_ambiguous_create_requires_exact_reviewed_set_before_writes(
     speakers_env,
     reviewed_ids,
-    expected_error,
+    expected_code,
     expected_duplicate,
+    expected_invalid,
 ):
     env = speakers_env()
     _setup_mixed_person_entities(env)
@@ -1906,20 +1908,18 @@ def test_identify_ambiguous_create_requires_exact_reviewed_set_before_writes(
     )
 
     assert result["status"] == "invalid_request"
-    assert result["error"] == expected_error
-    if expected_duplicate is not None:
-        assert result["invalid_reviewed_near_match_entity_ids"] == [
-            {"entity_id": expected_duplicate, "reason": "duplicate"}
-        ]
-    elif expected_error == "invalid reviewed_near_match_entity_ids":
-        assert result["invalid_reviewed_near_match_entity_ids"] == [
-            {"entity_id": "other_person", "reason": "unshown"}
-        ]
-    else:
+    if expected_code is not None:
+        assert result["invalid_request_code"] == expected_code
         assert result["expected_reviewed_near_match_entity_ids"] == [
             "sarah_connor",
             "sarah_lee",
         ]
+    elif expected_duplicate is not None:
+        assert result["invalid_reviewed_near_match_entity_ids"] == [
+            {"entity_id": expected_duplicate, "reason": "duplicate"}
+        ]
+    else:
+        assert result["invalid_reviewed_near_match_entity_ids"] == expected_invalid
     _assert_no_identify_write_boundary(
         env,
         target_id="sarah",
