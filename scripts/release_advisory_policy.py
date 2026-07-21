@@ -2,14 +2,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Advisory snapshot binding for release candidates."""
+"""Advisory snapshot binding for release candidates.
+
+Release candidates consume an operator-provisioned advisory database root. The root
+is a plain, non-git parent directory containing exactly one cargo-deny snapshot
+directory plus cargo-deny's parent-level ``db.lock``. The release rail measures git
+identity inside that snapshot only: the snapshot's git top level must resolve to the
+snapshot itself, and the receipt records the snapshot basename, HEAD commit, archive
+digest, advisory count, FETCH_HEAD mtime, HEAD commit timestamp, check time, and pass
+result. Absolute paths are never recorded.
+
+Freshness has two independent bounds. Fetch recency is the measured
+``.git/FETCH_HEAD`` mtime and must be within 24 hours. Content age is the measured
+HEAD commit timestamp and must be within 14 days. FETCH_HEAD mtime is mutable
+filesystem metadata; the commit timestamp is derived from the commit object named by
+``db_commit``.
+
+To acquire a conforming snapshot, write a cargo-deny config that sets the same
+``db-path`` and non-GitHub ``db-urls`` supplied to the release rail, then run
+``cargo-deny --config <cfg> --manifest-path core/Cargo.toml fetch db`` twice. The
+second run is intentional: cargo-deny 0.20.2 does not write ``.git/FETCH_HEAD`` on the
+first clone into an empty db root, but it does on subsequent fetches. Do not run
+manual ``git fetch`` or ``git reset``. ``make audit`` is not this acquisition
+operation; it uses cargo-deny's default db path, not a controlled release db root.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
@@ -18,10 +40,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-from scripts.check_rust_release_manifest import SHA256_RE, SOURCE_COMMIT_RE, Failure
+from scripts.check_rust_release_manifest import (
+    RFC3339_UTC_RE,
+    SHA256_RE,
+    SOURCE_COMMIT_RE,
+    Failure,
+)
 from scripts.release_tool_pins import CARGO_DENY_PIN
 
-PolicyMode = str
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 TempPathFactory = Callable[[str], Path]
 Clock = Callable[[], datetime]
@@ -29,27 +55,34 @@ ArchiveHasher = Callable[[Path], str]
 PathRemover = Callable[[Path], None]
 
 ADVISORY_TABLE_RE = re.compile(r"(?m)^\s*\[\s*advisories\s*\]\s*(?:#.*)?$")
+ADVISORY_DB_DEBUG_RE = re.compile(r"Opening advisory database at '(?P<path>[^']+)'")
 SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-MAXIMUM_DB_STALENESS = "24 hours"
-MAXIMUM_DB_STALENESS_DELTA = timedelta(hours=24)
+MAXIMUM_DB_FETCH_STALENESS_DELTA = timedelta(hours=24)
+MAXIMUM_DB_CONTENT_AGE_DELTA = timedelta(days=14)
 ARCHIVE_PREFIX = "advisory-db/"
 
 
 @dataclass(frozen=True)
 class PolicyRun:
     advisory_source_id: str
+    db_snapshot_basename: str
     db_commit: str
     db_archive_sha256: str
+    advisory_count: int
     advisory_acquired_at: str
+    db_commit_timestamp: str
     policy_checked_at: str
     result: str
 
     def __post_init__(self) -> None:
-        failures = validate_snapshot_identity(
-            "policy_run",
-            db_commit=self.db_commit,
-            db_archive_sha256=self.db_archive_sha256,
-        )
+        failures = [
+            *validate_snapshot_identity(
+                "policy_run",
+                db_commit=self.db_commit,
+                db_archive_sha256=self.db_archive_sha256,
+            ),
+            *_validate_policy_run_receipt(self),
+        ]
         if failures:
             raise ReleasePolicyError(failures)
 
@@ -59,6 +92,64 @@ class PolicyRun:
             "deterministic_gate": "pass",
             "advisory_checked_at": self.policy_checked_at,
         }
+
+
+def _validate_policy_run_receipt(policy_run: PolicyRun) -> list[Failure]:
+    failures: list[Failure] = []
+    if not _safe_snapshot_basename(policy_run.db_snapshot_basename):
+        failures.append(
+            _failure(
+                "policy_run.db_snapshot_basename is invalid",
+                expected="safe snapshot directory basename",
+                actual=repr(policy_run.db_snapshot_basename),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if type(policy_run.advisory_count) is not int or policy_run.advisory_count <= 0:
+        failures.append(
+            _failure(
+                "policy_run.advisory_count is invalid",
+                expected="positive integer advisory count",
+                actual=repr(policy_run.advisory_count),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    for key in (
+        "advisory_acquired_at",
+        "db_commit_timestamp",
+        "policy_checked_at",
+    ):
+        value = getattr(policy_run, key)
+        if not _is_normalized_utc_timestamp(value):
+            failures.append(
+                _failure(
+                    f"policy_run.{key} is invalid",
+                    expected="RFC3339 UTC timestamp normalized with Z",
+                    actual=repr(value),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+    if policy_run.result != "pass":
+        failures.append(
+            _failure(
+                "policy_run.result is invalid",
+                expected="pass",
+                actual=repr(policy_run.result),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    return failures
+
+
+def _safe_snapshot_basename(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in {".", ".."}
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+    )
 
 
 class ReleasePolicyError(RuntimeError):
@@ -121,16 +212,33 @@ def _unlink_path(path: Path) -> None:
     path.unlink()
 
 
-def _remove_tree(path: Path) -> None:
-    shutil.rmtree(path)
-
-
 def _remove_dir(path: Path) -> None:
     path.rmdir()
 
 
 def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _cargo_deny_duration(delta: timedelta) -> str:
+    total_seconds = delta.total_seconds()
+    if total_seconds <= 0 or not float(total_seconds).is_integer():
+        raise AssertionError("cargo-deny duration must be a positive whole second")
+    seconds = int(total_seconds)
+    if seconds % 3600 == 0:
+        return f"PT{seconds // 3600}H"
+    if seconds % 60 == 0:
+        return f"PT{seconds // 60}M"
+    return f"PT{seconds}S"
+
+
+def _duration_label(delta: timedelta) -> str:
+    seconds = int(delta.total_seconds())
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    return f"{seconds}s"
 
 
 def _advisory_host(value: str) -> str | None:
@@ -231,7 +339,8 @@ def _materialized_config_bytes(
         f"db-path = {_toml_string(str(db_root))}\n"
         f"db-urls = [{urls}]\n"
         "git-fetch-with-cli = true\n"
-        f"maximum-db-staleness = {_toml_string(MAXIMUM_DB_STALENESS)}\n"
+        "maximum-db-staleness = "
+        f"{_toml_string(_cargo_deny_duration(MAXIMUM_DB_FETCH_STALENESS_DELTA))}\n"
     )
     return prefix + block.encode("utf-8")
 
@@ -286,8 +395,148 @@ def _run(
     return result
 
 
-def _git_stdout(runner: Runner, db_root: Path, args: Sequence[str]) -> str:
-    return _run(runner, ["git", "-C", str(db_root), *args]).stdout.strip()
+def _git_stdout(runner: Runner, git_root: Path, args: Sequence[str]) -> str:
+    return _run(runner, ["git", "-C", str(git_root), *args]).stdout.strip()
+
+
+def _realpath(path: Path) -> Path:
+    return path.resolve(strict=False)
+
+
+def _locate_advisory_snapshot(db_root: Path) -> Path:
+    try:
+        entries = sorted(db_root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db root could not be inspected",
+                    expected="existing advisory db root containing one snapshot",
+                    actual=type(exc).__name__,
+                    repair="provision RELEASE_ADVISORY_DB_ROOT with cargo-deny fetch db",
+                )
+            ]
+        ) from None
+    visible_entries = [path for path in entries if path.name != "db.lock"]
+    unexpected = [
+        path.name for path in visible_entries if path.is_symlink() or not path.is_dir()
+    ]
+    if unexpected:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db root contains unexpected entries",
+                    expected="one snapshot directory plus db.lock",
+                    actual=", ".join(unexpected),
+                    repair="provision a clean RELEASE_ADVISORY_DB_ROOT with cargo-deny fetch db",
+                )
+            ]
+        )
+    snapshots = [path for path in visible_entries if path.is_dir()]
+    if len(snapshots) != 1:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db snapshot count is invalid",
+                    expected="exactly one snapshot directory under RELEASE_ADVISORY_DB_ROOT",
+                    actual=str(len(snapshots)),
+                    repair="provision a clean RELEASE_ADVISORY_DB_ROOT with cargo-deny fetch db",
+                )
+            ]
+        )
+    return snapshots[0]
+
+
+def _assert_snapshot_git_top_level(runner: Runner, snapshot: Path) -> None:
+    try:
+        top_level = _git_stdout(runner, snapshot, ["rev-parse", "--show-toplevel"])
+    except ReleasePolicyError as exc:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db snapshot git root could not be resolved",
+                    expected="snapshot directory is a git checkout root",
+                    actual="git rev-parse failed",
+                    repair="reacquire RELEASE_ADVISORY_DB_ROOT with cargo-deny fetch db",
+                )
+            ]
+        ) from exc
+    if _realpath(Path(top_level)) != _realpath(snapshot):
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db snapshot is not an isolated git checkout",
+                    expected=str(_realpath(snapshot)),
+                    actual=str(_realpath(Path(top_level))),
+                    repair="set RELEASE_ADVISORY_DB_ROOT to cargo-deny's non-git parent directory",
+                )
+            ]
+        )
+
+
+def _assert_snapshot_clean(runner: Runner, snapshot: Path) -> None:
+    clean = _git_stdout(
+        runner,
+        snapshot,
+        [
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
+    )
+    if clean:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db snapshot has uncommitted or ignored material",
+                    expected="empty git status including ignored and untracked files",
+                    actual=clean,
+                    repair=(
+                        "git -C <advisory-db-snapshot> status --porcelain=v1 "
+                        "--untracked-files=all --ignored=matching"
+                    ),
+                )
+            ]
+        )
+
+
+def _count_advisories(snapshot: Path) -> int:
+    return sum(
+        1
+        for path in snapshot.glob("crates/**/RUSTSEC-*.md")
+        if path.is_file() and not path.is_symlink()
+    )
+
+
+def _validate_advisory_count(count: int) -> None:
+    if count <= 0:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db snapshot contains no advisories",
+                    expected="at least one crates/**/RUSTSEC-*.md advisory",
+                    actual="0",
+                    repair="reacquire RELEASE_ADVISORY_DB_ROOT from a populated advisory mirror",
+                )
+            ]
+        )
+
+
+def _fetch_head_mtime(snapshot: Path) -> datetime:
+    fetch_head = snapshot / ".git" / "FETCH_HEAD"
+    if fetch_head.is_symlink() or not fetch_head.is_file():
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "advisory db FETCH_HEAD is missing",
+                    expected="snapshot .git/FETCH_HEAD written by cargo-deny fetch db",
+                    actual="<missing>",
+                    repair="run cargo-deny --config <cfg> --manifest-path core/Cargo.toml fetch db twice",
+                )
+            ]
+        )
+    return datetime.fromtimestamp(fetch_head.stat().st_mtime, UTC)
 
 
 def _strip_one_trailing_newline(value: str) -> str:
@@ -309,6 +558,58 @@ def _git_db_commit(runner: Runner, db_root: Path) -> str:
     if failures:
         raise ReleasePolicyError(failures)
     return value
+
+
+def _git_db_commit_timestamp(runner: Runner, snapshot: Path) -> datetime:
+    value = _git_stdout(runner, snapshot, ["show", "-s", "--format=%cI", "HEAD"])
+    return _parse_utc(value, label="advisory db commit timestamp")
+
+
+def _advisory_check_argv(cargo_deny: str, config_path: Path, root: Path) -> list[str]:
+    return [
+        cargo_deny,
+        "--config",
+        str(config_path),
+        "--manifest-path",
+        str(root / "core" / "Cargo.toml"),
+        "-L",
+        "debug",
+        "--locked",
+        "--offline",
+        "check",
+        "advisories",
+    ]
+
+
+def _scanned_advisory_db(stderr: str) -> Path:
+    matches = [match.group("path") for match in ADVISORY_DB_DEBUG_RE.finditer(stderr)]
+    if len(matches) != 1:
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "cargo-deny advisory database debug line is missing",
+                    expected="exactly one Opening advisory database at '<path>' debug line",
+                    actual=str(len(matches)),
+                    repair="run the pinned cargo-deny with -L debug and inspect stderr",
+                )
+            ]
+        )
+    return Path(matches[0])
+
+
+def _assert_scanned_snapshot(stderr: str, snapshot: Path) -> None:
+    scanned = _scanned_advisory_db(stderr)
+    if _realpath(scanned) != _realpath(snapshot):
+        raise ReleasePolicyError(
+            [
+                _failure(
+                    "cargo-deny scanned a different advisory database",
+                    expected=str(_realpath(snapshot)),
+                    actual=str(_realpath(scanned)),
+                    repair="provision RELEASE_ADVISORY_DB_ROOT with exactly one cargo-deny snapshot",
+                )
+            ]
+        )
 
 
 def _default_archive_hasher(db_root: Path) -> str:
@@ -341,16 +642,16 @@ def _default_archive_hasher(db_root: Path) -> str:
     return hashlib.sha256(result.stdout).hexdigest()
 
 
-def _parse_utc(value: str) -> datetime:
+def _parse_utc(value: str, *, label: str = "advisory acquisition time") -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
+    except (AttributeError, ValueError) as exc:
         raise ReleasePolicyError(
             [
                 _failure(
-                    "advisory acquisition time is not RFC3339",
+                    f"{label} is not RFC3339",
                     expected="RFC3339 timestamp with UTC offset",
-                    actual=value or "<empty>",
+                    actual=str(value) if value else "<empty>",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             ]
@@ -359,9 +660,9 @@ def _parse_utc(value: str) -> datetime:
         raise ReleasePolicyError(
             [
                 _failure(
-                    "advisory acquisition time is missing an offset",
+                    f"{label} is missing an offset",
                     expected="RFC3339 timestamp with UTC offset",
-                    actual=value,
+                    actual=str(value),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             ]
@@ -375,32 +676,32 @@ def _format_utc(value: datetime) -> str:
     )
 
 
+def _is_normalized_utc_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or not RFC3339_UTC_RE.fullmatch(value):
+        return False
+    try:
+        return _format_utc(_parse_utc(value)) == value
+    except ReleasePolicyError:
+        return False
+
+
 def _cleanup_temp(
     temp_root: Path,
     config_path: Path | None,
     *,
-    remove_tree: bool,
     unlink_path: PathRemover = _unlink_path,
-    remove_tree_path: PathRemover = _remove_tree,
     remove_dir: PathRemover = _remove_dir,
 ) -> None:
     try:
-        if remove_tree:
-            if temp_root.exists():
-                remove_tree_path(temp_root)
-            return
         if config_path is not None and config_path.exists():
             unlink_path(config_path)
         if temp_root.exists():
             remove_dir(temp_root)
     except OSError as exc:
-        operation = (
-            "refresh temp removal" if remove_tree else "materialized config removal"
-        )
         raise ReleasePolicyError(
             [
                 _failure(
-                    f"release advisory cleanup failed during {operation}",
+                    "release advisory cleanup failed during materialized config removal",
                     expected="owned release advisory temporary files removed",
                     actual=type(exc).__name__,
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -421,27 +722,53 @@ def _combined_release_policy_error(
 def _validate_acquisition_freshness(
     *,
     advisory_acquired_at: str,
-    acquired: datetime,
+    fetch_acquired: datetime,
+    db_commit_timestamp: str,
+    db_commit_time: datetime,
     policy_time: datetime,
 ) -> None:
     failures: list[Failure] = []
     policy_utc = policy_time.astimezone(UTC)
-    if acquired > policy_utc:
+    if fetch_acquired > policy_utc:
         failures.append(
             _failure(
-                "advisory acquisition time is in the future",
-                expected="acquisition time at or before policy check time",
+                "advisory fetch time is in the future",
+                expected="FETCH_HEAD mtime at or before policy check time",
                 actual=advisory_acquired_at,
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    elif policy_utc - acquired > MAXIMUM_DB_STALENESS_DELTA:
+    elif policy_utc - fetch_acquired > MAXIMUM_DB_FETCH_STALENESS_DELTA:
         failures.append(
             _failure(
-                "advisory acquisition time is stale",
-                expected=f"acquisition time within {MAXIMUM_DB_STALENESS}",
+                "advisory fetch time is stale",
+                expected=(
+                    "FETCH_HEAD mtime within "
+                    f"{_duration_label(MAXIMUM_DB_FETCH_STALENESS_DELTA)}"
+                ),
                 actual=advisory_acquired_at,
                 repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    if db_commit_time > policy_utc:
+        failures.append(
+            _failure(
+                "advisory db commit timestamp is in the future",
+                expected="HEAD commit timestamp at or before policy check time",
+                actual=db_commit_timestamp,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    elif policy_utc - db_commit_time > MAXIMUM_DB_CONTENT_AGE_DELTA:
+        failures.append(
+            _failure(
+                "advisory db content is stale",
+                expected=(
+                    "HEAD commit timestamp within "
+                    f"{_duration_label(MAXIMUM_DB_CONTENT_AGE_DELTA)}"
+                ),
+                actual=db_commit_timestamp,
+                repair="reacquire RELEASE_ADVISORY_DB_ROOT from a current advisory mirror",
             )
         )
     if failures:
@@ -453,59 +780,31 @@ def prepare_policy_run(
     *,
     advisory_source_id: str,
     db_urls: Sequence[str],
-    mode: PolicyMode,
-    advisory_acquired_at: str | None = None,
-    db_root: Path | None = None,
+    db_root: Path,
     cargo_deny: str = "cargo-deny",
     runner: Runner = subprocess.run,
     temp_path_factory: TempPathFactory = _default_temp_path_factory,
     clock: Clock = _utc_now,
     archive_hasher: ArchiveHasher = _default_archive_hasher,
     cleanup_unlink: PathRemover = _unlink_path,
-    cleanup_rmtree: PathRemover = _remove_tree,
     cleanup_rmdir: PathRemover = _remove_dir,
 ) -> PolicyRun:
     failures = _validate_source(advisory_source_id, db_urls)
     if failures:
         raise ReleasePolicyError(failures)
-    if mode not in {"refresh-once", "caller-provisioned"}:
+    if db_root is None:
         raise ReleasePolicyError(
             [
                 _failure(
-                    "advisory policy mode is unsupported",
-                    expected="refresh-once or caller-provisioned",
-                    actual=mode,
-                    repair="python3 scripts/check_rust_release_manifest.py",
-                )
-            ]
-        )
-    if mode == "caller-provisioned" and db_root is None:
-        raise ReleasePolicyError(
-            [
-                _failure(
-                    "caller-provisioned advisory mode has no db root",
-                    expected="existing advisory db root",
+                    "release advisory db root is missing",
+                    expected="RELEASE_ADVISORY_DB_ROOT containing one cargo-deny snapshot",
                     actual="<missing>",
-                    repair="python3 scripts/check_rust_release_manifest.py",
+                    repair="provision RELEASE_ADVISORY_DB_ROOT with cargo-deny fetch db",
                 )
             ]
         )
-    if mode == "caller-provisioned" and advisory_acquired_at is None:
-        raise ReleasePolicyError(
-            [
-                _failure(
-                    "caller-provisioned advisory mode has no acquisition time",
-                    expected="trusted advisory acquisition RFC3339 timestamp",
-                    actual="<missing>",
-                    repair="python3 scripts/check_rust_release_manifest.py",
-                )
-            ]
-        )
-    if mode == "caller-provisioned" and advisory_acquired_at is not None:
-        _parse_utc(advisory_acquired_at)
 
     temp_root = temp_path_factory("advisory-policy")
-    resolved_db_root = db_root or (temp_root / "advisory-db")
     config_path: Path | None = None
     result: PolicyRun | None = None
     primary_error: ReleasePolicyError | None = None
@@ -513,43 +812,15 @@ def prepare_policy_run(
         config_path = _write_materialized_config(
             root,
             temp_root,
-            db_root=resolved_db_root,
+            db_root=db_root,
             db_urls=db_urls,
         )
 
-        if mode == "refresh-once":
-            _run(
-                runner,
-                [cargo_deny, "--config", str(config_path), "fetch", "db"],
-                cwd=root,
-            )
-
-        clean = _git_stdout(
-            runner,
-            resolved_db_root,
-            [
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-                "--ignored=matching",
-            ],
-        )
-        if clean:
-            raise ReleasePolicyError(
-                [
-                    _failure(
-                        "advisory db has uncommitted or ignored material",
-                        expected="empty git status including ignored and untracked files",
-                        actual=clean,
-                        repair=(
-                            "git -C <advisory-db-root> status --porcelain=v1 "
-                            "--untracked-files=all --ignored=matching"
-                        ),
-                    )
-                ]
-            )
-        db_commit = _git_db_commit(runner, resolved_db_root)
-        db_archive_sha256 = archive_hasher(resolved_db_root)
+        snapshot = _locate_advisory_snapshot(db_root)
+        _assert_snapshot_git_top_level(runner, snapshot)
+        _assert_snapshot_clean(runner, snapshot)
+        db_commit = _git_db_commit(runner, snapshot)
+        db_archive_sha256 = archive_hasher(snapshot)
         failures = validate_snapshot_identity(
             "advisory_snapshot",
             db_commit=db_commit,
@@ -557,38 +828,36 @@ def prepare_policy_run(
         )
         if failures:
             raise ReleasePolicyError(failures)
-        if mode == "refresh-once":
-            acquisition_text = _format_utc(clock())
-        else:
-            assert advisory_acquired_at is not None
-            acquisition_text = advisory_acquired_at
-            _parse_utc(acquisition_text)
-        _run(
+        db_commit_time = _git_db_commit_timestamp(runner, snapshot)
+        db_commit_timestamp_text = _format_utc(db_commit_time)
+        advisory_count = _count_advisories(snapshot)
+        _validate_advisory_count(advisory_count)
+        check_result = _run(
             runner,
-            [
-                cargo_deny,
-                "--config",
-                str(config_path),
-                "--locked",
-                "--offline",
-                "check",
-                "advisories",
-            ],
+            _advisory_check_argv(cargo_deny, config_path, root),
             cwd=root,
         )
+        _assert_scanned_snapshot(check_result.stderr, snapshot)
+        _assert_snapshot_clean(runner, snapshot)
 
         policy_time = clock()
-        acquired = _parse_utc(acquisition_text)
+        fetch_acquired = _fetch_head_mtime(snapshot)
+        acquisition_text = _format_utc(fetch_acquired)
         _validate_acquisition_freshness(
             advisory_acquired_at=acquisition_text,
-            acquired=acquired,
+            fetch_acquired=fetch_acquired,
+            db_commit_timestamp=db_commit_timestamp_text,
+            db_commit_time=db_commit_time,
             policy_time=policy_time,
         )
         result = PolicyRun(
             advisory_source_id=advisory_source_id,
+            db_snapshot_basename=snapshot.name,
             db_commit=db_commit,
             db_archive_sha256=db_archive_sha256,
+            advisory_count=advisory_count,
             advisory_acquired_at=acquisition_text,
+            db_commit_timestamp=db_commit_timestamp_text,
             policy_checked_at=_format_utc(policy_time),
             result="pass",
         )
@@ -600,9 +869,7 @@ def prepare_policy_run(
             _cleanup_temp(
                 temp_root,
                 config_path,
-                remove_tree=mode == "refresh-once",
                 unlink_path=cleanup_unlink,
-                remove_tree_path=cleanup_rmtree,
                 remove_dir=cleanup_rmdir,
             )
         except ReleasePolicyError as exc:

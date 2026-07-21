@@ -2174,9 +2174,12 @@ def run_fixtures_mode() -> list[Failure]:
             ]
         policy_run = PolicyRun(
             advisory_source_id="fixture-advisories",
+            db_snapshot_basename="advisory-db-fixture00000000",
             db_commit="a" * 40,
             db_archive_sha256="b" * 64,
+            advisory_count=1,
             advisory_acquired_at="2026-07-20T11:00:00Z",
+            db_commit_timestamp="2026-07-19T12:00:00Z",
             policy_checked_at="2026-07-20T12:00:00Z",
             result="pass",
         )

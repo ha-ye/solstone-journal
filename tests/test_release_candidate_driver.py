@@ -83,9 +83,9 @@ def _env() -> GuardedEnv:
             "EXPECTED_RELEASE_COMMIT": SOURCE_COMMIT,
             "SOURCE_COMMIT": "b" * 40,
             "RELEASE_MODEL_PACKAGES": "exclude",
-            "RELEASE_ADVISORY_MODE": "caller-provisioned",
             "RELEASE_ADVISORY_SOURCE_NAME": "fixture",
             "RELEASE_ADVISORY_DB_URL": "ssh://example.test/db.git",
+            "RELEASE_ADVISORY_DB_ROOT": "/advisory-db",
         }
     )
 
@@ -93,9 +93,12 @@ def _env() -> GuardedEnv:
 def _policy() -> PolicyRun:
     return PolicyRun(
         advisory_source_id="fixture",
+        db_snapshot_basename="advisory-db-fixture00000000",
         db_commit="b" * 40,
         db_archive_sha256="c" * 64,
+        advisory_count=1,
         advisory_acquired_at="2026-07-20T11:00:00Z",
+        db_commit_timestamp="2026-07-19T12:00:00Z",
         policy_checked_at="2026-07-20T12:00:00Z",
         result="pass",
     )

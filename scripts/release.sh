@@ -60,9 +60,10 @@ Required environment:
   --candidate:
     EXPECTED_RELEASE_COMMIT       expected lowercase source commit
     RELEASE_MODEL_PACKAGES        include or exclude
-    RELEASE_ADVISORY_MODE         refresh-once or caller-provisioned
     RELEASE_ADVISORY_SOURCE_NAME  public advisory source id
     RELEASE_ADVISORY_DB_URL       explicit non-GitHub advisory DB source
+    RELEASE_ADVISORY_DB_ROOT      cargo-deny advisory db parent; see
+                                  scripts/release_advisory_policy.py
     RELEASE_BUILD_HOST_CHANNEL    external build-host adapter command
     RELEASE_PROOF_HOST_LINUX_X86_64_MUSL_CHANNEL
                                   external proof-host adapter command
@@ -70,8 +71,6 @@ Required environment:
                                   external proof-host adapter command
     RELEASE_PROOF_HOST_MACOS_ARM64_CHANNEL
                                   external proof-host adapter command
-    RELEASE_ADVISORY_DB_ROOT      caller-provisioned mode only
-    RELEASE_ADVISORY_ACQUIRED_AT  caller-provisioned mode only
 
   --recover:
     VERSION and SOURCE_COMMIT are required positional selectors. Recovery does

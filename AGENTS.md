@@ -159,7 +159,8 @@ policy or build work it deletes prior raw build/dist outputs and that version's
 stale payload/evidence. It verifies the expected source commit and lock state,
 gathers target evidence through configured build/proof-host channels,
 pair-promotes payload and evidence, and prints canonical local readiness JSON.
-This is candidate evidence only, not publication authorization.
+This is candidate evidence only, not publication authorization. Advisory acquisition
+is a separate operator operation documented in `scripts/release_advisory_policy.py`.
 
 `bash scripts/release.sh --recover <version> <source-commit>` is
 retained-byte-only, read-only validation. It preserves retained payload, ledger,

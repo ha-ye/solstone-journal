@@ -55,9 +55,12 @@ MODELS_KEYS = frozenset(("decision", "package_version"))
 POLICY_RUN_KEYS = frozenset(
     (
         "advisory_source_id",
+        "db_snapshot_basename",
         "db_commit",
         "db_archive_sha256",
+        "advisory_count",
         "advisory_acquired_at",
+        "db_commit_timestamp",
         "policy_checked_at",
         "result",
     )
@@ -126,12 +129,15 @@ def _validate_tool_evidence(
     return failures
 
 
-def _policy_run_payload(policy_run: PolicyRun) -> dict[str, str]:
+def _policy_run_payload(policy_run: PolicyRun) -> dict[str, Any]:
     payload = {
         "advisory_source_id": policy_run.advisory_source_id,
+        "db_snapshot_basename": policy_run.db_snapshot_basename,
         "db_commit": policy_run.db_commit,
         "db_archive_sha256": policy_run.db_archive_sha256,
+        "advisory_count": policy_run.advisory_count,
         "advisory_acquired_at": policy_run.advisory_acquired_at,
+        "db_commit_timestamp": policy_run.db_commit_timestamp,
         "policy_checked_at": policy_run.policy_checked_at,
         "result": policy_run.result,
     }

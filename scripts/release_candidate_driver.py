@@ -452,11 +452,7 @@ def _default_prepare_policy(root: Path, env: Mapping[str, str]) -> PolicyRun:
         root,
         advisory_source_id=env["RELEASE_ADVISORY_SOURCE_NAME"],
         db_urls=(env["RELEASE_ADVISORY_DB_URL"],),
-        mode=env["RELEASE_ADVISORY_MODE"],
-        advisory_acquired_at=env.get("RELEASE_ADVISORY_ACQUIRED_AT"),
-        db_root=Path(env["RELEASE_ADVISORY_DB_ROOT"])
-        if env.get("RELEASE_ADVISORY_DB_ROOT")
-        else None,
+        db_root=Path(env["RELEASE_ADVISORY_DB_ROOT"]),
     )
 
 
@@ -1912,7 +1908,31 @@ def _validate_policy_payload(policy_run: Mapping[str, Any]) -> list[Failure]:
                 repair="bash scripts/release.sh --recover",
             )
         )
-    for key in ("advisory_acquired_at", "policy_checked_at"):
+    snapshot = policy_run.get("db_snapshot_basename")
+    if not _safe_retained_basename(snapshot):
+        failures.append(
+            _failure(
+                "retained ledger db snapshot basename is invalid",
+                expected="safe snapshot directory basename",
+                actual=repr(snapshot),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    advisory_count = policy_run.get("advisory_count")
+    if type(advisory_count) is not int or advisory_count <= 0:
+        failures.append(
+            _failure(
+                "retained ledger advisory count is invalid",
+                expected="positive integer advisory count",
+                actual=repr(advisory_count),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    for key in (
+        "advisory_acquired_at",
+        "db_commit_timestamp",
+        "policy_checked_at",
+    ):
         value = policy_run.get(key)
         if not isinstance(value, str) or not RFC3339_UTC_RE.fullmatch(value):
             failures.append(
@@ -2131,9 +2151,12 @@ def _validate_deep_ledger_binding(
         failures.extend(_validate_policy_payload(policy_payload))
         if policy_run is not None and policy_payload != {
             "advisory_source_id": policy_run.advisory_source_id,
+            "db_snapshot_basename": policy_run.db_snapshot_basename,
             "db_commit": policy_run.db_commit,
             "db_archive_sha256": policy_run.db_archive_sha256,
+            "advisory_count": policy_run.advisory_count,
             "advisory_acquired_at": policy_run.advisory_acquired_at,
+            "db_commit_timestamp": policy_run.db_commit_timestamp,
             "policy_checked_at": policy_run.policy_checked_at,
             "result": policy_run.result,
         }:
