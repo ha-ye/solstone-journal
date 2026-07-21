@@ -57,6 +57,28 @@ def build_health_glance(
         }
 
     status = _observer_state(capture_health)
+    if status not in {"active", "no_observers"}:
+        return {
+            "verdict": "unavailable",
+            "severity": "amber",
+            "headline": "i don't know the status of your devices right now.",
+            "last_observation": None,
+            "cta": None,
+            "issues": [],
+        }
+
+    brain_verdict = _brain_inflight_verdict(brain)
+    if brain_verdict is not None:
+        assert isinstance(brain, dict)
+        return {
+            "verdict": brain_verdict,
+            "severity": "amber",
+            "headline": brain["headline"],
+            "last_observation": None,
+            "cta": None,
+            "issues": [],
+        }
+
     if status == "active":
         return {
             "verdict": "ok",
@@ -66,21 +88,12 @@ def build_health_glance(
             "cta": None,
             "issues": [],
         }
-    if status == "no_observers":
-        return {
-            "verdict": "ok",
-            "severity": "green",
-            "headline": "no devices are running sol yet. set one up to start your journal.",
-            "last_observation": None,
-            "cta": {"text": "set one up →", "href": "/app/observer/"},
-            "issues": [],
-        }
     return {
-        "verdict": "unavailable",
-        "severity": "amber",
-        "headline": "i don't know the status of your devices right now.",
+        "verdict": "ok",
+        "severity": "green",
+        "headline": "no devices are running sol yet. set one up to start your journal.",
         "last_observation": None,
-        "cta": None,
+        "cta": {"text": "set one up →", "href": "/app/observer/"},
         "issues": [],
     }
 
@@ -134,9 +147,9 @@ def _build_pipeline_issue(pipeline_status: Any) -> dict | None:
 def _build_brain_issue(brain: Any) -> dict | None:
     if not isinstance(brain, dict):
         return None
-    if brain.get("state") in {"ready", "checking"}:
+    if brain.get("state") == "ready":
         return None
-    if brain.get("state") == "blocked" and brain.get("progressing"):
+    if _brain_inflight_verdict(brain) is not None:
         return None
     action = brain.get("action")
     if not isinstance(action, dict) and brain.get("state") not in {
@@ -152,6 +165,17 @@ def _build_brain_issue(brain: Any) -> dict | None:
     if isinstance(action, dict) and isinstance(action.get("href"), str):
         href = action["href"]
     return {"text": text.strip(), "severity": "amber", "href": href}
+
+
+def _brain_inflight_verdict(brain: Any) -> str | None:
+    """Return the status-only verdict token for an in-flight brain state."""
+    if not isinstance(brain, dict):
+        return None
+    if brain.get("state") == "checking":
+        return "checking"
+    if brain.get("state") == "blocked" and brain.get("progressing"):
+        return "progressing"
+    return None
 
 
 def _pipeline_href(suggested_action: Any) -> str:

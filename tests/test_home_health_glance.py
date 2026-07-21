@@ -25,22 +25,57 @@ EXTENDED_BANNED_RE = re.compile(
 HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
 
 
-def _blocked_brain() -> dict:
+def _brain(
+    state: str,
+    *,
+    progressing: bool = False,
+    action: dict | None = None,
+) -> dict:
     return {
-        "state": "blocked",
-        "headline": HEADLINES["blocked"],
-        "progressing": False,
-        "action": {"label": "open thinking", "href": "/app/thinking/#main"},
+        "state": state,
+        "headline": HEADLINES[state],
+        "progressing": progressing,
+        "action": action,
     }
 
 
 def _ready_brain() -> dict:
-    return {
-        "state": "ready",
-        "headline": HEADLINES["ready"],
-        "progressing": False,
-        "action": None,
-    }
+    return _brain("ready")
+
+
+def _checking_brain() -> dict:
+    return _brain("checking", progressing=True)
+
+
+def _blocked_brain(
+    *,
+    progressing: bool = False,
+    action: dict | None = None,
+) -> dict:
+    if action is None and not progressing:
+        action = {"label": "open thinking", "href": "/app/thinking/#main"}
+    return _brain("blocked", progressing=progressing, action=action)
+
+
+def _bundled_runtime_brain(*, progressing: bool) -> dict:
+    action = (
+        None
+        if progressing
+        else {"label": "open local setup", "href": "/app/thinking/#local-setup"}
+    )
+    return _blocked_brain(progressing=progressing, action=action)
+
+
+def _unhealthy_brain() -> dict:
+    return _brain(
+        "unhealthy", action={"label": "open thinking", "href": "/app/thinking/#main"}
+    )
+
+
+def _unknown_brain() -> dict:
+    return _brain(
+        "unknown", action={"label": "view health", "href": "/app/health/#brain"}
+    )
 
 
 def _june_22_ms() -> float:
@@ -73,6 +108,56 @@ def _degraded_capture(*names: str) -> dict:
 
 def _active_capture() -> dict:
     return {"status": "active", "observers": [{"name": "fedora", "status": "active"}]}
+
+
+def _no_observers_capture() -> dict:
+    return {"status": "no_observers", "observers": []}
+
+
+def _assert_status_row(result: dict, *, verdict: str, headline: str) -> None:
+    assert result["verdict"] == verdict
+    assert result["severity"] == "amber"
+    assert result["headline"] == headline
+    assert result["issues"] == []
+    assert result["cta"] is None
+    assert result["last_observation"] is None
+
+
+def _assert_unavailable_row(result: dict) -> None:
+    assert result["verdict"] == "unavailable"
+    assert result["severity"] == "amber"
+    assert result["headline"] == "i don't know the status of your devices right now."
+    assert result["issues"] == []
+    assert result["cta"] is None
+    assert result["last_observation"] is None
+
+
+def _assert_no_observers_row(result: dict) -> None:
+    assert result["verdict"] == "ok"
+    assert result["severity"] == "green"
+    assert (
+        result["headline"]
+        == "no devices are running sol yet. set one up to start your journal."
+    )
+    assert result["issues"] == []
+    assert result["last_observation"] is None
+    assert result["cta"] == {"text": "set one up →", "href": "/app/observer/"}
+
+
+def _assert_single_brain_issue(result: dict, *, text: str, href: str) -> None:
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "amber"
+    assert result["headline"] == "1 thing needs your attention"
+    assert result["last_observation"] is None
+    assert result["cta"] is None
+    assert len(result["issues"]) == 1
+    assert result["issues"][0] == {"text": text, "severity": "amber", "href": href}
+
+
+def _assert_no_action_anywhere(result: dict) -> None:
+    assert "action" not in result
+    assert result["cta"] is None
+    assert all("action" not in issue for issue in result["issues"])
 
 
 def test_degraded_capture_returns_red_attention_issue():
@@ -275,6 +360,190 @@ def test_brain_ready_keeps_ok_glance():
     assert all(issue["text"] != HEADLINES["blocked"] for issue in result["issues"])
 
 
+def test_checking_brain_returns_status_only_amber_row():
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", brain=_checking_brain()
+    )
+
+    _assert_status_row(
+        result,
+        verdict="checking",
+        headline=HEADLINES["checking"],
+    )
+
+
+def test_progressing_blocked_brain_returns_status_only_amber_row():
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        "5m ago",
+        brain=_bundled_runtime_brain(progressing=True),
+    )
+
+    _assert_status_row(
+        result,
+        verdict="progressing",
+        headline=HEADLINES["blocked"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("brain", "verdict", "headline"),
+    [
+        (_checking_brain(), "checking", HEADLINES["checking"]),
+        (
+            _bundled_runtime_brain(progressing=True),
+            "progressing",
+            HEADLINES["blocked"],
+        ),
+    ],
+)
+def test_no_observers_with_inflight_brain_returns_brain_status_row(
+    brain, verdict, headline
+):
+    result = build_health_glance(_no_observers_capture(), None, None, brain=brain)
+
+    _assert_status_row(result, verdict=verdict, headline=headline)
+    assert result["verdict"] != "ok"
+    assert result["severity"] != "green"
+
+
+@pytest.mark.parametrize("brain", [_ready_brain(), None])
+def test_no_observers_ready_or_absent_brain_keeps_setup_cta(brain):
+    result = build_health_glance(_no_observers_capture(), None, None, brain=brain)
+
+    _assert_no_observers_row(result)
+
+
+@pytest.mark.parametrize(
+    "capture_health",
+    [
+        {"status": "unknown", "observers": []},
+        {"status": "unavailable", "observers": []},
+    ],
+)
+@pytest.mark.parametrize(
+    "brain",
+    [_checking_brain(), _bundled_runtime_brain(progressing=True)],
+)
+def test_unavailable_capture_with_inflight_brain_returns_unavailable_row(
+    capture_health, brain
+):
+    result = build_health_glance(capture_health, None, None, brain=brain)
+
+    _assert_unavailable_row(result)
+
+
+def test_bundled_runtime_progressing_suppresses_brain_action():
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        None,
+        brain=_bundled_runtime_brain(progressing=True),
+    )
+
+    _assert_status_row(
+        result,
+        verdict="progressing",
+        headline=HEADLINES["blocked"],
+    )
+    _assert_no_action_anywhere(result)
+
+
+def test_bundled_runtime_not_progressing_returns_local_setup_issue():
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        None,
+        brain=_bundled_runtime_brain(progressing=False),
+    )
+
+    _assert_single_brain_issue(
+        result,
+        text=HEADLINES["blocked"],
+        href="/app/thinking/#local-setup",
+    )
+
+
+@pytest.mark.parametrize(
+    ("brain", "text", "href"),
+    [
+        (
+            _blocked_brain(progressing=False),
+            HEADLINES["blocked"],
+            "/app/thinking/#main",
+        ),
+        (_unhealthy_brain(), HEADLINES["unhealthy"], "/app/thinking/#main"),
+        (_unknown_brain(), HEADLINES["unknown"], "/app/health/#brain"),
+    ],
+)
+def test_actionable_brain_states_return_single_amber_issue(brain, text, href):
+    result = build_health_glance(_active_capture(), None, None, brain=brain)
+
+    _assert_single_brain_issue(result, text=text, href=href)
+
+
+@pytest.mark.parametrize(
+    "brain",
+    [_checking_brain(), _bundled_runtime_brain(progressing=True)],
+)
+def test_capture_and_pipeline_attention_precede_inflight_brain_status(brain):
+    red_expected = build_health_glance(_degraded_capture("fedora"), None, None)
+    red_actual = build_health_glance(
+        _degraded_capture("fedora"), None, None, brain=brain
+    )
+
+    assert red_actual == red_expected
+
+    pipeline = {"status": "warning", "headline": "processing needs attention"}
+    amber_expected = build_health_glance(_active_capture(), pipeline, None)
+    amber_actual = build_health_glance(
+        _active_capture(), pipeline, None, brain=brain
+    )
+
+    assert amber_actual == amber_expected
+
+
+@pytest.mark.parametrize(
+    ("brain", "may_be_green"),
+    [
+        (_ready_brain(), True),
+        (_checking_brain(), False),
+        (_blocked_brain(progressing=False), False),
+        (_bundled_runtime_brain(progressing=True), False),
+        (_unhealthy_brain(), False),
+        (_unknown_brain(), False),
+    ],
+)
+def test_canonical_non_ready_brain_states_do_not_return_ok_green(
+    brain, may_be_green
+):
+    result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+
+    if may_be_green:
+        assert result["verdict"] == "ok"
+        assert result["severity"] == "green"
+        assert result["headline"] == "everything's working"
+        assert result["last_observation"] == "5m ago"
+        assert result["cta"] is None
+        assert result["issues"] == []
+    else:
+        assert result["verdict"] != "ok"
+        assert result["severity"] != "green"
+
+
+@pytest.mark.parametrize("brain", [None, "checking"])
+def test_absent_or_non_dict_brain_keeps_active_capture_green(brain):
+    result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+
+    assert result["verdict"] == "ok"
+    assert result["severity"] == "green"
+    assert result["headline"] == "everything's working"
+    assert result["last_observation"] == "5m ago"
+    assert result["cta"] is None
+    assert result["issues"] == []
+
+
 def test_all_issue_and_cta_hrefs_are_local_paths():
     states = [
         build_health_glance(_degraded_capture("fedora"), None, None),
@@ -292,6 +561,12 @@ def test_all_issue_and_cta_hrefs_are_local_paths():
                 "suggested_action": "open_support",
             },
             None,
+        ),
+        build_health_glance(
+            _active_capture(),
+            None,
+            None,
+            brain=_bundled_runtime_brain(progressing=False),
         ),
         build_health_glance({"status": "no_observers", "observers": []}, None, None),
     ]
@@ -325,6 +600,13 @@ def test_owner_facing_strings_use_allowed_terms():
         ),
         build_health_glance(_active_capture(), None, "5m ago"),
         build_health_glance(_active_capture(), None, None, brain=_blocked_brain()),
+        build_health_glance(_active_capture(), None, None, brain=_checking_brain()),
+        build_health_glance(
+            _active_capture(),
+            None,
+            None,
+            brain=_bundled_runtime_brain(progressing=True),
+        ),
         build_health_glance({"status": "no_observers", "observers": []}, None, None),
         build_health_glance({"status": "unknown", "observers": []}, None, None),
         build_health_glance(

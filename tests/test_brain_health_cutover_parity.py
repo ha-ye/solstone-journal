@@ -201,15 +201,43 @@ def test_state_parity_matrix(monkeypatch, capsys):
         )
         home_issue = home["issues"][0] if home["issues"] else None
         assert home_brain["headline"] == HEADLINES[case.state]
-        if home_brain["action"] is None and not (
-            case.state in {"blocked", "unhealthy", "unknown"} and not case.progressing
-        ):
-            assert home_issue is None
-        elif home_issue is not None:
-            assert home_issue["text"] == HEADLINES[case.state]
+        if case.state == "ready":
+            assert home["verdict"] == "ok"
+            assert home["severity"] == "green"
+            assert home["headline"] == "everything's working"
+            assert home["last_observation"] == "5m ago"
+            assert home["cta"] is None
+            assert home["issues"] == []
+        elif case.state == "checking":
+            assert home["verdict"] == "checking"
+            assert home["severity"] == "amber"
+            assert home["headline"] == HEADLINES["checking"]
+            assert home["last_observation"] is None
+            assert home["cta"] is None
+            assert home["issues"] == []
+            assert "action" not in home
+        elif case.state == "blocked" and case.progressing:
+            assert home["verdict"] == "progressing"
+            assert home["severity"] == "amber"
+            assert home["headline"] == HEADLINES["blocked"]
+            assert home["last_observation"] is None
+            assert home["cta"] is None
+            assert home["issues"] == []
+            assert "action" not in home
+        else:
+            assert home["verdict"] == "attention"
+            assert home["severity"] == "amber"
+            assert home["headline"] == "1 thing needs your attention"
+            assert home["last_observation"] is None
+            assert home["cta"] is None
+            assert len(home["issues"]) == 1
+            assert home_issue is not None
+            assert home_issue["text"] == home_brain["headline"]
             assert home_issue["href"] == (
                 home_brain["action"] or {"href": "/app/health/#brain"}
             ).get("href", "/app/health/#brain")
+        if case.state != "ready":
+            assert home["severity"] != "green"
 
         thinking_brain = _snapshot(case, "thinking")
         monkeypatch.setattr(thinking_routes, "get_provider_list", lambda: [])

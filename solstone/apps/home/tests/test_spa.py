@@ -8,6 +8,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from solstone.think.brain_health import HEADLINES
+
 APP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_PATH = APP_ROOT / "workspace.html"
 HOME_JS_PATH = APP_ROOT / "static" / "home.js"
@@ -148,6 +150,7 @@ def test_home_node_init_and_error_retry(tmp_path):
 const fs = require('fs');
 const vm = require('vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
+const checkingHeadline = process.argv[3];
 
 function assert(condition, message) {
   if (!condition) {
@@ -248,6 +251,17 @@ const pulseWithConnections = Object.assign({}, pulsePayload, {
         latest_day: '20260307',
       },
     ],
+  },
+});
+
+const pulseChecking = Object.assign({}, pulsePayload, {
+  health_glance: {
+    verdict: 'checking',
+    severity: 'amber',
+    headline: checkingHeadline,
+    last_observation: null,
+    cta: null,
+    issues: [],
   },
 });
 
@@ -390,6 +404,34 @@ function makeContext(apiJson) {
   assert(success.surface.innerHTML.includes('pulse-narrative'), 'pulse render did not populate narrative');
   assert(!success.surface.innerHTML.includes('data-home-surface="connections"'), 'missing connections payload should not render connections');
 
+  const checking = makeContext(url => {
+    if (url === '/app/home/api/pulse') return Promise.resolve(pulseChecking);
+    if (url === '/app/home/api/briefing') {
+      return Promise.resolve({
+        exists: false,
+        phase: 'eod',
+        summary: null,
+        meta: null,
+        sections: {},
+        needs_deduped: [],
+        needs_shared_count: 0,
+        needs_badge: null,
+      });
+    }
+    return Promise.reject(new Error(`unexpected url ${url}`));
+  });
+  checking.listeners['workspace:mounted']({ detail: { app: 'home' } });
+  await flush();
+  await flush();
+  const checkingHtml = checking.surface.innerHTML;
+  assert(checkingHtml.includes('id="pulse-vitals"'), 'checking vitals id missing');
+  assert(checkingHtml.includes('role="status" aria-live="polite"'), 'checking vitals status semantics missing');
+  assert(checkingHtml.includes('<span class="pulse-vitals-dot amber"'), 'checking vitals amber dot missing');
+  assert(checkingHtml.includes(`<span class="pulse-vitals-verdict amber">${checkingHeadline}</span>`), 'checking headline missing');
+  assert(!checkingHtml.includes('pulse-vitals-chip'), 'checking row should not render issue chips');
+  assert(checkingHtml.includes('href="/app/health">health →</a>'), 'checking row health link missing');
+  assert(!checkingHtml.includes('last reached your journal'), 'checking row should not render last observation');
+
   const connected = makeContext(url => {
     if (url === '/app/home/api/pulse') return Promise.resolve(pulseWithConnections);
     if (url === '/app/home/api/briefing') {
@@ -454,4 +496,8 @@ function makeContext(apiJson) {
         encoding="utf-8",
     )
 
-    subprocess.run([node, str(script), str(HOME_JS_PATH)], check=True, text=True)
+    subprocess.run(
+        [node, str(script), str(HOME_JS_PATH), HEADLINES["checking"]],
+        check=True,
+        text=True,
+    )
