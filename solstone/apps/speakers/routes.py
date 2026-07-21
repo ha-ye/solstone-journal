@@ -166,6 +166,7 @@ OWNER_STATUS_ROUTING_TOKENS = {
     "confirmed": OWNER_STATUS_CONFIRMED,
 }
 PROPAGATION_CLI_VERB = "speakers propagate-correction"
+PEOPLE_SEARCH_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,8 @@ speakers_bp = Blueprint(
     "app:speakers",
     __name__,
     url_prefix="/app/speakers",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 
@@ -603,6 +606,60 @@ def _ensure_attribution_target(entity_id: str) -> EntityDict | None:
     if identity is None or identity[0] != entity_id:
         return None
     return ensure_principal_entity()
+
+
+def _person_search_strings(entity: EntityDict) -> list[str]:
+    """Return owner-entered strings that participate in people search."""
+    values = [str(entity.get("name") or "")]
+    aka = entity.get("aka")
+    if isinstance(aka, list):
+        values.extend(str(value) for value in aka if value)
+    return values
+
+
+def _entity_voiceprints_exist(entity_id: str) -> bool:
+    """Return whether the entity has any stored voiceprint file."""
+    if not entity_id:
+        return False
+    return (journal_entity_memory_path(entity_id) / "voiceprints.npz").exists()
+
+
+def search_people_for_speakers(query: str) -> dict[str, Any]:
+    """Return read-only people search results for the who-is-this sheet."""
+    q = query.strip()
+    if not q:
+        return {"query": "", "people": []}
+
+    folded_query = q.casefold()
+    principal = get_journal_principal()
+    principal_id = str(principal.get("id") or "") if principal else ""
+    people: list[dict[str, Any]] = []
+    for entity in load_all_journal_entities().values():
+        entity_id = str(entity.get("id") or "")
+        name = str(entity.get("name") or "")
+        if (
+            not entity_id
+            or not name
+            or entity.get("type") != "Person"
+            or entity.get("blocked")
+            or entity.get("is_principal")
+            or entity_id == principal_id
+        ):
+            continue
+        if not any(
+            folded_query in value.casefold() for value in _person_search_strings(entity)
+        ):
+            continue
+        people.append(
+            {
+                "entity_id": entity_id,
+                "name": name,
+                "has_voice": _entity_voiceprints_exist(entity_id),
+            }
+        )
+
+    people.sort(key=lambda item: (item["name"].casefold(), item["entity_id"]))
+    return {"query": q, "people": people[:PEOPLE_SEARCH_LIMIT]}
 
 
 def _assign_attribution_impl(
@@ -1037,6 +1094,20 @@ def api_state() -> Any:
         return error_response(
             FILE_READ_FAILED,
             detail="Failed to load speaker state.",
+        )
+
+
+@speakers_bp.route("/api/people/search", methods=["GET"])
+def api_people_search() -> Any:
+    """Return read-only journal people matches for speaker discovery."""
+    try:
+        return jsonify(search_people_for_speakers(request.args.get("q") or ""))
+    except Exception:
+        logger.exception("error searching speakers people")
+        return error_response(
+            SPEAKER_COMMAND_FAILED,
+            detail="Failed to search people.",
+            status=500,
         )
 
 

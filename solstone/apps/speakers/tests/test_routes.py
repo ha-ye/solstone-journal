@@ -1675,6 +1675,101 @@ def test_workspace_discovery_identify_requests_create_new():
     )
 
 
+def _update_test_entity(env, entity_id: str, **updates) -> None:
+    path = env.journal / "entities" / entity_id / "entity.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(updates)
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+
+
+def test_people_search_filters_principal_blocked_non_person_and_sets_has_voice(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity(
+        "Alice Test",
+        voiceprints=[("20240101", "104000_300", "audio", 1)],
+    )
+    env.create_entity("Alicia Plain")
+    env.create_entity("Alice Owner", is_principal=True)
+    env.create_entity("Alice Blocked")
+    env.create_entity("Alice Project")
+    _update_test_entity(env, "alice_blocked", blocked=True)
+    _update_test_entity(env, "alice_project", type="Project")
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/people/search?q=ali")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "query": "ali",
+        "people": [
+            {"entity_id": "alice_test", "name": "Alice Test", "has_voice": True},
+            {"entity_id": "alicia_plain", "name": "Alicia Plain", "has_voice": False},
+        ],
+    }
+
+
+def test_people_search_casefolded_name_and_aka_match_name_only_response(
+    speakers_env,
+):
+    env = speakers_env()
+    env.create_entity("Bob Smith")
+    _update_test_entity(env, "bob_smith", aka=["The Mentor"])
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/people/search?q=MENTOR")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "query": "MENTOR",
+        "people": [
+            {"entity_id": "bob_smith", "name": "Bob Smith", "has_voice": False},
+        ],
+    }
+
+
+def test_people_search_blank_query_returns_empty_people(speakers_env):
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/people/search")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"query": "", "people": []}
+
+
+def test_people_search_failure_reason_is_speaker_command_failed(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+
+    def fail_load():
+        raise RuntimeError("search failed")
+
+    monkeypatch.setattr(routes, "load_all_journal_entities", fail_load)
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/api/people/search?q=ali")
+
+    assert response.status_code == 500
+    assert response.get_json()["reason_code"] == "speaker_command_failed"
+
+
+def test_speakers_static_js_route_serves_who_is_this(speakers_env):
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    response = client.get("/app/speakers/static/who_is_this.js")
+
+    assert response.status_code == 200
+    assert b"SpeakersWhoIsThis" in response.data
+
+
 def test_cluster_presence_route_returns_presence(speakers_env, monkeypatch):
     from solstone.apps.speakers import routes
 
