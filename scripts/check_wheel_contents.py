@@ -734,9 +734,8 @@ def _release_artifact_members(
                     f"root platform wheel for {platform_tuple[0]}/{platform_tuple[1]}",
                 )
             )
-    # release_models_gate.py is the only owner of whether the independently
-    # versioned model package should publish for this run; release.sh passes that
-    # decision in rather than re-deriving it here.
+    # The caller owns the explicit models include/exclude decision; this helper
+    # only maps that decision to the legacy publish/skip artifact vocabulary.
     if models_decision == "publish":
         artifacts.extend(
             [
@@ -882,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--models-decision",
         choices=("publish", "skip"),
-        help="release_models_gate.py decision for solstone-journal-models",
+        help="explicit models artifact decision for solstone-journal-models",
     )
     parser.add_argument(
         "--print-artifacts",

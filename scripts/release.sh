@@ -64,6 +64,12 @@ Required environment:
     RELEASE_ADVISORY_SOURCE_NAME  public advisory source id
     RELEASE_ADVISORY_DB_URL       explicit non-GitHub advisory DB source
     RELEASE_BUILD_HOST_CHANNEL    external build-host adapter command
+    RELEASE_PROOF_HOST_LINUX_X86_64_MUSL_CHANNEL
+                                  external proof-host adapter command
+    RELEASE_PROOF_HOST_LINUX_AARCH64_MUSL_CHANNEL
+                                  external proof-host adapter command
+    RELEASE_PROOF_HOST_MACOS_ARM64_CHANNEL
+                                  external proof-host adapter command
     RELEASE_ADVISORY_DB_ROOT      caller-provisioned mode only
     RELEASE_ADVISORY_ACQUIRED_AT  caller-provisioned mode only
 

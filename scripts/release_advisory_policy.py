@@ -541,7 +541,10 @@ def prepare_policy_run(
                         "advisory db has uncommitted or ignored material",
                         expected="empty git status including ignored and untracked files",
                         actual=clean,
-                        repair="git status --porcelain=v1 --untracked-files=all --ignored=matching",
+                        repair=(
+                            "git -C <advisory-db-root> status --porcelain=v1 "
+                            "--untracked-files=all --ignored=matching"
+                        ),
                     )
                 ]
             )
