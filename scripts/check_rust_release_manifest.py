@@ -11,7 +11,6 @@ import fcntl
 import hashlib
 import ipaddress
 import json
-import logging
 import math
 import os
 import re
@@ -34,8 +33,6 @@ from solstone.think.probe import (  # noqa: E402
     SOLSTONE_CORE_PLATFORM_TAGS,
     CorePlatform,
 )
-
-LOG = logging.getLogger(__name__)
 
 SCHEMA_PATH = ROOT / "schemas" / "rust-release-manifest" / "v1.json"
 SCHEMA_SHA256 = "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875c"
@@ -291,6 +288,8 @@ def _rust_artifact_names() -> frozenset[str]:
 
 def _safe_posix_basename(value: Any) -> bool:
     if not isinstance(value, str) or not value:
+        return False
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
         return False
     if value in {".", ".."}:
         return False

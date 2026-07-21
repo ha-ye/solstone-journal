@@ -140,6 +140,20 @@ def test_load_schema_checks_draft_2020_12_and_format_checker() -> None:
     assert schema["$schema"] == checker.SCHEMA_DRAFT
 
 
+def test_validate_manifest_rejects_schema_level_invalid_payload(
+    tmp_path: Path,
+) -> None:
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["unexpected"] = "not in schema"
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_manifest_file(manifest)
+
+    _assert_error(failures, "manifest does not match Rust release manifest schema")
+
+
 def test_main_mode_selection_fixtures_manifest_release_dir(tmp_path: Path) -> None:
     release_dir = _candidate(tmp_path)
     manifest = _manifest_for_lane(release_dir, "source")
@@ -305,6 +319,19 @@ def test_release_dir_rejects_unknown_missing_extra_assets_and_case_collision(
     _assert_error(failures, "release directory is missing required assets")
     _assert_error(failures, "release directory contains extra assets")
     _assert_error(failures, "release directory contains case-colliding filenames")
+
+
+def test_release_dir_rejects_special_file_entry(tmp_path: Path) -> None:
+    release_dir = _candidate(tmp_path)
+    package = release_dir / checker.expected_package_names(include_models=False)[0]
+    package.unlink()
+    package.mkdir()
+
+    failures = checker.validate_release_dir(
+        release_dir, expected_source_commit=VALID_COMMIT
+    )
+
+    _assert_error(failures, "release file is not a regular non-symlink file")
 
 
 def test_release_dir_rejects_extra_or_pure_package_manifest(tmp_path: Path) -> None:
@@ -473,6 +500,9 @@ def test_native_tools_allowlists_by_lane() -> None:
     )
     _assert_error(failures, "native_tools keys do not match lane allowlist")
 
+    failures = checker.validate_native_tools("source", {"uv": "uv 0.11.4"})
+    _assert_error(failures, "native_tools keys do not match lane allowlist")
+
     failures = checker.validate_native_tools(
         "macos-arm64",
         {
@@ -540,6 +570,20 @@ def test_validate_manifest_rejects_path_traversal_absolute_backslash(
     manifest = _manifest_for_lane(release_dir, "source")
     payload = _load_manifest(manifest)
     payload["artifacts"][0]["path"] = bad_path
+    _write_manifest(manifest, payload)
+
+    failures = checker.validate_manifest_file(manifest)
+
+    _assert_error(failures, "artifact path is not a safe relative basename")
+
+
+def test_validate_manifest_rejects_control_character_artifact_path(
+    tmp_path: Path,
+) -> None:
+    release_dir = _candidate(tmp_path)
+    manifest = _manifest_for_lane(release_dir, "source")
+    payload = _load_manifest(manifest)
+    payload["artifacts"][0]["path"] = "bad" + chr(10) + ".whl"
     _write_manifest(manifest, payload)
 
     failures = checker.validate_manifest_file(manifest)
