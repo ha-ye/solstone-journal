@@ -206,6 +206,8 @@ version entry is uploaded but the pointer is not updated, rerun the publisher to
 reuse the staged bytes and finish the mutable pointer. If a different object is
 locked at a version key, the recovery is cutting the next version; a locked-zone
 object can never be replaced.
+Latest-pointer writes deliberately use an immediately re-fetched ETag as
+`If-Match`, even though fetch-time pointer ETag presence is also asserted.
 
 `make resign-transparency-pointer` refreshes only the signed latest pointer's
 `signed_at` and `valid_until`; it does not require `RELEASE_DIR` and does not

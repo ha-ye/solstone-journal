@@ -23,6 +23,7 @@ from scripts.transparency_core import (
     latest_trusted_comment,
     parse_ledger_entry_bytes,
     parse_ledger_jsonl,
+    snapshot_candidate,
     validate_entry_chain,
     validate_entry_trusted_comment,
 )
@@ -198,6 +199,27 @@ def test_parse_jsonl_requires_trailing_newline() -> None:
         error.value.failures[0].error
         == "transparency ledger.jsonl line is not newline-terminated"
     )
+
+
+def test_snapshot_candidate_dangling_symlink_fails_closed(tmp_path: Path) -> None:
+    version = "0.9.1"
+    release_dir = tmp_path / "dist" / "release-candidate" / version
+    evidence_dir = tmp_path / "target" / "release-evidence" / version
+    release_dir.mkdir(parents=True)
+    evidence_dir.mkdir(parents=True)
+    (release_dir / "dangling").symlink_to(tmp_path / "missing")
+    (evidence_dir / "ledger.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(DriverError) as error:
+        snapshot_candidate(
+            source_root=tmp_path,
+            snapshot_root=tmp_path / "snapshot",
+            version=version,
+        )
+
+    failure = error.value.failures[0]
+    assert failure.error == "transparency snapshot copy failed"
+    assert str(release_dir / "dangling") in failure.actual
 
 
 def test_latest_pointer_rejects_bool_numeric_field() -> None:

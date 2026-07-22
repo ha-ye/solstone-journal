@@ -578,6 +578,8 @@ def fetch_chain_state(
             result=signature_result,
             retryable=True,
         )
+    # Presence assertion only: the pointer must have an ETag at fetch time,
+    # but the write path intentionally re-fetches for the If-Match source.
     _require_etag(
         latest_result,
         key=latest_key(config.product),
@@ -678,6 +680,7 @@ def _validate_staging_manifest_path(relative_path: str) -> None:
 def render_staging_manifest(payload_dir: Path) -> bytes:
     paths_by_relative: dict[str, Path] = {}
     for path in payload_dir.rglob("*"):
+        # Defense-in-depth for direct render_staging_manifest callers.
         if path.is_symlink():
             fail_closed(
                 "transparency staging payload contains a symlink",
@@ -1284,6 +1287,8 @@ def _pre_pointer_guard(
             actual=f"status={current.status} sha256={sha256_bytes(current.body) if current.body else '<empty>'}",
             repair="retry after refetching the chain state",
         )
+    # This immediate re-fetch supplies If-Match; it is stricter than relying on
+    # the fetch-time ETag asserted in fetch_chain_state.
     return _require_etag(current, key=latest_key(config.product), label="pointer")
 
 

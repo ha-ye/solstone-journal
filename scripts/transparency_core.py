@@ -850,8 +850,19 @@ def snapshot_candidate(
             actual=str(snapshot_root),
             repair="remove only the version-specific transparency staging dir and retry",
         )
-    shutil.copytree(release_src, release_dst, symlinks=False)
-    shutil.copytree(evidence_src, evidence_dst, symlinks=False)
+    try:
+        shutil.copytree(release_src, release_dst, symlinks=False)
+        shutil.copytree(evidence_src, evidence_dst, symlinks=False)
+    except shutil.Error as exc:
+        details = exc.args[0] if exc.args else ()
+        first = details[0] if isinstance(details, list) and details else None
+        offending = str(first[0]) if isinstance(first, tuple) and first else str(exc)
+        fail_closed(
+            "transparency snapshot copy failed",
+            expected="retained candidate and evidence files readable via real paths",
+            actual=f"{offending}: {exc}",
+            repair="remove dangling symlinks from retained release bytes and retry",
+        )
 
 
 def read_retained_ledger(report: CandidateReport) -> Mapping[str, Any]:
