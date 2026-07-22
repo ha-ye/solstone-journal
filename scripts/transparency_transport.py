@@ -10,6 +10,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,14 @@ class ListResult:
     status: int
     keys: tuple[str, ...]
     body: bytes
+    exit_code: int
+
+
+@dataclass(frozen=True)
+class CurlResult:
+    status: int
+    body: bytes
+    etag: str | None
     exit_code: int
 
 
@@ -369,7 +378,7 @@ class CurlTransparencyTransport:
     endpoint: str
     bucket: str
     access_key_id: str
-    secret_access_key: str
+    secret_access_key: str = field(repr=False)
     base_url: str
     region: str = "auto"
     curl: str = "curl"
@@ -392,7 +401,7 @@ class CurlTransparencyTransport:
         args: Sequence[str],
         *,
         body_output: Path,
-    ) -> tuple[int, bytes]:
+    ) -> CurlResult:
         result = subprocess.run(
             [self.curl, "-K", "-", *args],
             input=self._config(),
@@ -403,11 +412,13 @@ class CurlTransparencyTransport:
         body = body_output.read_bytes() if body_output.exists() else b""
         if result.stderr and not body:
             body = result.stderr.encode("utf-8", errors="replace")
-        try:
-            status = int(result.stdout.strip()[-3:])
-        except ValueError:
-            status = 0
-        return status, body
+        status, etag = parse_curl_write_out(result.stdout)
+        return CurlResult(
+            status=status,
+            body=body,
+            etag=etag,
+            exit_code=result.returncode,
+        )
 
     def put_object(
         self,
@@ -437,7 +448,7 @@ class CurlTransparencyTransport:
                 headers.extend(("-H", "If-None-Match: *"))
             if if_match is not None:
                 headers.extend(("-H", f"If-Match: {if_match}"))
-            status, response_body = self._run_curl(
+            curl_result = self._run_curl(
                 [
                     "--aws-sigv4",
                     f"aws:amz:{self.region}:s3",
@@ -446,7 +457,7 @@ class CurlTransparencyTransport:
                     "--upload-file",
                     str(payload_path),
                     "-w",
-                    "%{http_code}",
+                    CURL_WRITE_OUT,
                     "-o",
                     str(body_path),
                     *headers,
@@ -455,11 +466,11 @@ class CurlTransparencyTransport:
                 body_output=body_path,
             )
         return HttpResult(
-            status=status,
-            body=response_body,
-            headers={},
-            etag=None,
-            exit_code=0,
+            status=curl_result.status,
+            body=curl_result.body,
+            headers={"etag": curl_result.etag} if curl_result.etag is not None else {},
+            etag=curl_result.etag,
+            exit_code=curl_result.exit_code,
         )
 
     def get_object(self, key: str, *, cache_bypass: bool = False) -> HttpResult:
@@ -472,13 +483,13 @@ class CurlTransparencyTransport:
     def list_prefix(self, prefix: str) -> ListResult:
         with tempfile.TemporaryDirectory() as tmp:
             body_path = Path(tmp) / "body"
-            status, body = self._run_curl(
+            curl_result = self._run_curl(
                 [
                     "--aws-sigv4",
                     f"aws:amz:{self.region}:s3",
                     "-G",
                     "-w",
-                    "%{http_code}",
+                    CURL_WRITE_OUT,
                     "-o",
                     str(body_path),
                     "--data-urlencode",
@@ -490,13 +501,23 @@ class CurlTransparencyTransport:
                 body_output=body_path,
             )
         keys: tuple[str, ...] = ()
+        status = curl_result.status
+        body = curl_result.body
         if status == 200:
-            keys = tuple(
-                line.strip()
-                for line in body.decode("utf-8", errors="replace").splitlines()
-                if line.strip().startswith(prefix)
-            )
-        return ListResult(status=status, keys=keys, body=body, exit_code=0)
+            keys, truncated = parse_s3_list_keys(body)
+            if truncated:
+                return ListResult(
+                    status=0,
+                    keys=(),
+                    body=b"truncated S3 ListObjectsV2 response",
+                    exit_code=curl_result.exit_code,
+                )
+        return ListResult(
+            status=status,
+            keys=keys,
+            body=body,
+            exit_code=curl_result.exit_code,
+        )
 
     def get_public(self, path: str, *, cache_bypass: bool = True) -> HttpResult:
         return self._get_url(
@@ -508,12 +529,48 @@ class CurlTransparencyTransport:
     def _get_url(self, url: str, *, signed: bool, cache_bypass: bool) -> HttpResult:
         with tempfile.TemporaryDirectory() as tmp:
             body_path = Path(tmp) / "body"
-            args = ["-w", "%{http_code}", "-o", str(body_path)]
+            args = ["-w", CURL_WRITE_OUT, "-o", str(body_path)]
             if signed:
                 args.extend(("--aws-sigv4", f"aws:amz:{self.region}:s3"))
             if cache_bypass:
                 args.extend(("-H", "Cache-Control: no-cache"))
             args.append(url)
-            status, body = self._run_curl(args, body_output=body_path)
-        etag = None
-        return HttpResult(status=status, body=body, headers={}, etag=etag, exit_code=0)
+            curl_result = self._run_curl(args, body_output=body_path)
+        return HttpResult(
+            status=curl_result.status,
+            body=curl_result.body,
+            headers={"etag": curl_result.etag} if curl_result.etag is not None else {},
+            etag=curl_result.etag,
+            exit_code=curl_result.exit_code,
+        )
+
+
+CURL_WRITE_OUT = "%{http_code}\t%header{etag}\n"
+
+
+def parse_curl_write_out(stdout: str) -> tuple[int, str | None]:
+    line = stdout.splitlines()[-1] if stdout.splitlines() else ""
+    status_text, separator, etag_text = line.partition("\t")
+    try:
+        status = int(status_text)
+    except ValueError:
+        status = 0
+    etag = etag_text.strip() if separator and etag_text.strip() else None
+    return status, etag
+
+
+def parse_s3_list_keys(body: bytes) -> tuple[tuple[str, ...], bool]:
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return (), True
+
+    keys: list[str] = []
+    truncated = False
+    for element in root.iter():
+        name = element.tag.rsplit("}", 1)[-1]
+        if name == "Key" and element.text is not None:
+            keys.append(element.text)
+        elif name == "IsTruncated":
+            truncated = (element.text or "").strip().lower() == "true"
+    return tuple(keys), truncated

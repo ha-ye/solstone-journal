@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -100,6 +100,7 @@ STAGING_MANIFEST_NAME = "staging-manifest.txt"
 
 
 ArchiveRunner = Callable[[Path, str], str]
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,7 @@ class PublishConfig:
     s3_endpoint: str
     bucket: str
     access_key_id: str
-    secret_access_key: str
+    secret_access_key: str = field(repr=False)
     minisign_key: Path
     minisign_pub: Path
     archive_channel: str
@@ -172,6 +173,7 @@ class ChainState:
     entries: tuple[EntryRecord, ...]
     pointer: LatestRecord | None
     pointer_signature: bytes | None
+    pointer_signature_etag: str | None
     pointer_etag: str | None
     next_seq: int
     prev_sha256: str
@@ -319,11 +321,26 @@ def _raise_http_failure(
             failure(
                 error,
                 expected=f"successful HTTP status for {key}",
-                actual=f"status={result.status} body={result.body.decode('utf-8', errors='replace')}",
+                actual=(
+                    f"status={result.status} exit_code={result.exit_code} "
+                    f"body={result.body.decode('utf-8', errors='replace')}"
+                ),
                 repair=repair,
             )
         ]
     )
+
+
+def _require_etag(result: HttpResult, *, key: str, label: str) -> str:
+    if result.etag:
+        return result.etag
+    fail_closed(
+        f"transparency {label} ETag is missing",
+        expected=f"{key} ETag",
+        actual=f"status={result.status} exit_code={result.exit_code}",
+        repair="stop and audit the object store response headers before retrying",
+    )
+    raise AssertionError("unreachable")
 
 
 def _verify_remote_entry(
@@ -398,7 +415,7 @@ def fetch_chain_state(
                     failure(
                         "transparency genesis LIST failed",
                         expected="empty immutable version prefix",
-                        actual=f"status={listed.status}",
+                        actual=f"status={listed.status} exit_code={listed.exit_code}",
                         repair="retry after the S3 list operation is healthy",
                     )
                 ]
@@ -414,6 +431,7 @@ def fetch_chain_state(
             entries=(),
             pointer=None,
             pointer_signature=None,
+            pointer_signature_etag=None,
             pointer_etag=None,
             next_seq=1,
             prev_sha256=ZERO_SHA256,
@@ -440,6 +458,16 @@ def fetch_chain_state(
             result=signature_result,
             retryable=True,
         )
+    pointer_etag = _require_etag(
+        latest_result,
+        key=latest_key(config.product),
+        label="pointer",
+    )
+    signature_etag = _require_etag(
+        signature_result,
+        key=latest_signature_key(config.product),
+        label="latest signature",
+    )
     comment = _verify_bytes(
         signer,
         latest_result.body,
@@ -464,7 +492,7 @@ def fetch_chain_state(
                 failure(
                     "transparency immutable LIST failed",
                     expected="releases/<product>/v/ listing",
-                    actual=f"status={listed.status}",
+                    actual=f"status={listed.status} exit_code={listed.exit_code}",
                     repair="retry after the S3 list operation is healthy",
                 )
             ]
@@ -533,7 +561,8 @@ def fetch_chain_state(
         entries=pointer_entries,
         pointer=pointer,
         pointer_signature=signature_result.body,
-        pointer_etag=latest_result.etag,
+        pointer_signature_etag=signature_etag,
+        pointer_etag=pointer_etag,
         next_seq=chain_length + 1,
         prev_sha256=tip.sha256,
         prev_version=str(tip.entry["version"]),
@@ -655,6 +684,26 @@ def load_existing_stage(
     )
     _verify_stage_signatures(staged, signer)
     return staged
+
+
+def _assert_stage_extends_state(stage: StagedPublish, state: ChainState) -> None:
+    record = parse_ledger_entry_bytes(stage.entry_path.read_bytes())
+    entry = record.entry
+    if (
+        int(entry["seq"]) == state.next_seq
+        and entry["prev_sha256"] == state.prev_sha256
+    ):
+        return
+    fail_closed(
+        (
+            f"version {stage.version} is already permanently recorded at "
+            f"seq={entry['seq']} source_commit={entry['source_commit']} "
+            f"entry_sha256={record.sha256}"
+        ),
+        expected=f"seq={state.next_seq} prev_sha256={state.prev_sha256}",
+        actual=f"seq={entry['seq']} prev_sha256={entry['prev_sha256']}",
+        repair="cut the next version; a version key is one-shot and permanent",
+    )
 
 
 def create_stage_from_candidate(
@@ -1031,7 +1080,164 @@ def _pre_pointer_guard(
             actual=f"status={current.status} sha256={sha256_bytes(current.body) if current.body else '<empty>'}",
             repair="retry after refetching the chain state",
         )
-    return current.etag or state.pointer_etag
+    return _require_etag(current, key=latest_key(config.product), label="pointer")
+
+
+def _latest_signature_result(
+    *,
+    config: PublishConfig,
+    transport: TransparencyTransport,
+) -> HttpResult:
+    return transport.get_object(
+        latest_signature_key(config.product),
+        cache_bypass=True,
+    )
+
+
+def _raise_pointer_state_unknown(
+    *,
+    config: PublishConfig,
+    pointer_result: HttpResult,
+    latest_result: HttpResult,
+    signature_result: HttpResult | None = None,
+) -> None:
+    signature_state = (
+        "<not fetched>"
+        if signature_result is None
+        else f"status={signature_result.status} sha256={sha256_bytes(signature_result.body) if signature_result.body else '<empty>'}"
+    )
+    raise DriverError(
+        [
+            failure(
+                "transparency latest pointer failure state could not be established",
+                expected="live latest pointer is old-valid or new-valid",
+                actual=(
+                    f"put_status={pointer_result.status} "
+                    f"latest_status={latest_result.status} "
+                    f"latest_sha256={sha256_bytes(latest_result.body) if latest_result.body else '<empty>'} "
+                    f"signature={signature_state}"
+                ),
+                repair=f"retry after re-querying {latest_key(config.product)} and its signature",
+            )
+        ]
+    )
+
+
+def _restore_old_signature_or_raise(
+    *,
+    config: PublishConfig,
+    transport: TransparencyTransport,
+    pointer_result: HttpResult,
+    signature_result: HttpResult,
+    old_signature_bytes: bytes,
+) -> None:
+    if not signature_result.etag:
+        _raise_pointer_state_unknown(
+            config=config,
+            pointer_result=pointer_result,
+            latest_result=transport.get_object(
+                latest_key(config.product), cache_bypass=True
+            ),
+            signature_result=signature_result,
+        )
+        raise AssertionError("unreachable")
+    restore_result = transport.put_object(
+        latest_signature_key(config.product),
+        old_signature_bytes,
+        content_type=SIG_CONTENT_TYPE,
+        cache_control=MUTABLE_CACHE,
+        if_match=signature_result.etag,
+    )
+    if not _put_success(restore_result):
+        _raise_http_failure(
+            "transparency latest signature conditional restore failed",
+            key=latest_signature_key(config.product),
+            result=restore_result,
+            retryable=restore_result.status in {0, 412, 500, 502, 503, 504},
+        )
+    _raise_http_failure(
+        "transparency latest pointer upload failed",
+        key=latest_key(config.product),
+        result=pointer_result,
+        retryable=pointer_result.status in {0, 412, 500, 502, 503, 504},
+    )
+
+
+def _resolve_pointer_put_failure(
+    *,
+    config: PublishConfig,
+    transport: TransparencyTransport,
+    pointer_result: HttpResult,
+    old_pointer_bytes: bytes | None,
+    old_signature_bytes: bytes | None,
+    new_pointer_bytes: bytes,
+    new_signature_bytes: bytes,
+) -> None:
+    latest_result = transport.get_object(latest_key(config.product), cache_bypass=True)
+    if latest_result.status == 200 and latest_result.body == new_pointer_bytes:
+        signature_result = _latest_signature_result(config=config, transport=transport)
+        if (
+            signature_result.status == 200
+            and signature_result.body == new_signature_bytes
+        ):
+            return
+        _raise_pointer_state_unknown(
+            config=config,
+            pointer_result=pointer_result,
+            latest_result=latest_result,
+            signature_result=signature_result,
+        )
+
+    if old_pointer_bytes is not None and latest_result.status == 200:
+        if latest_result.body != old_pointer_bytes:
+            _raise_pointer_state_unknown(
+                config=config,
+                pointer_result=pointer_result,
+                latest_result=latest_result,
+            )
+        signature_result = _latest_signature_result(config=config, transport=transport)
+        if old_signature_bytes is None or signature_result.status != 200:
+            _raise_pointer_state_unknown(
+                config=config,
+                pointer_result=pointer_result,
+                latest_result=latest_result,
+                signature_result=signature_result,
+            )
+        if signature_result.body == old_signature_bytes:
+            _raise_http_failure(
+                "transparency latest pointer upload failed",
+                key=latest_key(config.product),
+                result=pointer_result,
+                retryable=pointer_result.status in {0, 412, 500, 502, 503, 504},
+            )
+        if signature_result.body == new_signature_bytes:
+            _restore_old_signature_or_raise(
+                config=config,
+                transport=transport,
+                pointer_result=pointer_result,
+                signature_result=signature_result,
+                old_signature_bytes=old_signature_bytes,
+            )
+        _raise_pointer_state_unknown(
+            config=config,
+            pointer_result=pointer_result,
+            latest_result=latest_result,
+            signature_result=signature_result,
+        )
+
+    if old_pointer_bytes is None and latest_result.status == 404:
+        _raise_http_failure(
+            "transparency latest pointer upload failed",
+            key=latest_key(config.product),
+            result=pointer_result,
+            retryable=pointer_result.status in {0, 412, 500, 502, 503, 504},
+        )
+
+    _raise_pointer_state_unknown(
+        config=config,
+        pointer_result=pointer_result,
+        latest_result=latest_result,
+    )
 
 
 def _put_and_public_verify_mutable(
@@ -1076,6 +1282,10 @@ def _write_mutable_objects(
     transport: TransparencyTransport,
 ) -> None:
     etag = _pre_pointer_guard(config=config, state=state, transport=transport)
+    old_pointer_bytes = state.pointer.bytes if state.pointer is not None else None
+    old_signature_bytes = state.pointer_signature
+    new_pointer_bytes = stage.latest_path.read_bytes()
+    new_signature_bytes = stage.latest_signature_path.read_bytes()
     _put_and_public_verify_mutable(
         key=ledger_key(config.product),
         body=stage.ledger_jsonl_path.read_bytes(),
@@ -1084,9 +1294,11 @@ def _write_mutable_objects(
     )
     signature_result = transport.put_object(
         latest_signature_key(config.product),
-        stage.latest_signature_path.read_bytes(),
+        new_signature_bytes,
         content_type=SIG_CONTENT_TYPE,
         cache_control=MUTABLE_CACHE,
+        if_none_match=state.pointer is None,
+        if_match=state.pointer_signature_etag,
     )
     if not _put_success(signature_result):
         _raise_http_failure(
@@ -1097,25 +1309,21 @@ def _write_mutable_objects(
         )
     pointer_result = transport.put_object(
         latest_key(config.product),
-        stage.latest_path.read_bytes(),
+        new_pointer_bytes,
         content_type=JSON_CONTENT_TYPE,
         cache_control=MUTABLE_CACHE,
-        if_none_match=etag is None,
+        if_none_match=state.pointer is None,
         if_match=etag,
     )
     if not _put_success(pointer_result):
-        if state.pointer_signature is not None:
-            transport.put_object(
-                latest_signature_key(config.product),
-                state.pointer_signature,
-                content_type=SIG_CONTENT_TYPE,
-                cache_control=MUTABLE_CACHE,
-            )
-        _raise_http_failure(
-            "transparency latest pointer upload failed",
-            key=latest_key(config.product),
-            result=pointer_result,
-            retryable=pointer_result.status in {0, 412, 500, 502, 503, 504},
+        _resolve_pointer_put_failure(
+            config=config,
+            transport=transport,
+            pointer_result=pointer_result,
+            old_pointer_bytes=old_pointer_bytes,
+            old_signature_bytes=old_signature_bytes,
+            new_pointer_bytes=new_pointer_bytes,
+            new_signature_bytes=new_signature_bytes,
         )
 
 
@@ -1157,6 +1365,7 @@ def publish_transparency(
             signer=signer,
             now=now or datetime.now(tz=UTC),
         )
+    _assert_stage_extends_state(stage, state)
     _clear_publish_call_log(transport)
     archive_digest = archive_stage(
         stage=stage,
@@ -1212,7 +1421,7 @@ def publish_transparency(
 class VerifiedPointerBundle:
     pointer: Mapping[str, Any]
     pointer_bytes: bytes
-    pointer_etag: str | None
+    signature_bytes: bytes
 
 
 def fetch_verified_pointer(
@@ -1232,7 +1441,7 @@ def fetch_verified_pointer(
     return VerifiedPointerBundle(
         pointer=state.pointer.pointer,
         pointer_bytes=state.pointer.bytes,
-        pointer_etag=state.pointer_etag,
+        signature_bytes=state.pointer_signature or b"",
     )
 
 
@@ -1279,11 +1488,37 @@ def resign_transparency_pointer(
                 actual=f"status={current.status} sha256={sha256_bytes(current.body) if current.body else '<empty>'}",
                 repair="retry after refetching the signed pointer",
             )
+        pointer_etag = _require_etag(
+            current,
+            key=latest_key(config.product),
+            label="pointer",
+        )
+        current_signature = _latest_signature_result(config=config, transport=transport)
+        if (
+            current_signature.status != 200
+            or current_signature.body != bundle.signature_bytes
+        ):
+            fail_closed(
+                "transparency latest pointer signature moved before re-sign",
+                expected=sha256_bytes(bundle.signature_bytes),
+                actual=(
+                    f"status={current_signature.status} "
+                    f"sha256={sha256_bytes(current_signature.body) if current_signature.body else '<empty>'}"
+                ),
+                repair="retry after refetching the signed pointer",
+            )
+        signature_etag = _require_etag(
+            current_signature,
+            key=latest_signature_key(config.product),
+            label="latest signature",
+        )
+        new_signature_bytes = sig_path.read_bytes()
         signature_result = transport.put_object(
             latest_signature_key(config.product),
-            sig_path.read_bytes(),
+            new_signature_bytes,
             content_type=SIG_CONTENT_TYPE,
             cache_control=MUTABLE_CACHE,
+            if_match=signature_etag,
         )
         if not _put_success(signature_result):
             _raise_http_failure(
@@ -1297,14 +1532,17 @@ def resign_transparency_pointer(
             pointer_bytes,
             content_type=JSON_CONTENT_TYPE,
             cache_control=MUTABLE_CACHE,
-            if_match=current.etag or bundle.pointer_etag,
+            if_match=pointer_etag,
         )
         if not _put_success(pointer_result):
-            _raise_http_failure(
-                "transparency latest pointer upload failed",
-                key=latest_key(config.product),
-                result=pointer_result,
-                retryable=True,
+            _resolve_pointer_put_failure(
+                config=config,
+                transport=transport,
+                pointer_result=pointer_result,
+                old_pointer_bytes=bundle.pointer_bytes,
+                old_signature_bytes=bundle.signature_bytes,
+                new_pointer_bytes=pointer_bytes,
+                new_signature_bytes=new_signature_bytes,
             )
     witness = WitnessStatus(
         state="not-written",
@@ -1398,10 +1636,13 @@ def _signer_from_config(config: PublishConfig) -> LocalMinisignSigner:
 
 def _print_failures(error: DriverError) -> None:
     for item in error.failures:
-        print(item.error, file=sys.stderr)
-        print(f"  expected: {item.expected}", file=sys.stderr)
-        print(f"  actual: {item.actual}", file=sys.stderr)
-        print(f"  repair: {item.repair}", file=sys.stderr)
+        LOG.error(
+            "%s\n  expected: %s\n  actual: %s\n  repair: %s",
+            item.error,
+            item.expected,
+            item.actual,
+            item.repair,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

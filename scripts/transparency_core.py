@@ -868,11 +868,6 @@ def read_retained_ledger(report: CandidateReport) -> Mapping[str, Any]:
         )
 
 
-def _retained_file_digest(path: Path) -> NamedDigest:
-    digest, byte_count = file_sha256_size(path)
-    return NamedDigest(name=path.name, sha256=digest, bytes=byte_count)
-
-
 def collect_candidate_parts(report: CandidateReport) -> CandidateTransparencyParts:
     ledger = read_retained_ledger(report)
     source_commit = ledger.get("source_commit")

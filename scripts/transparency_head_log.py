@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -161,7 +161,3 @@ def git_witness_status(
             f"with: git diff --quiet --exit-code HEAD -- {HEAD_LOG}"
         ),
     )
-
-
-def committed_or_uncommitted_previous_row_command() -> Sequence[str]:
-    return ("git", "diff", "--quiet", "--exit-code", "HEAD", "--", HEAD_LOG)
