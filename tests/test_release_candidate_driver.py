@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 from collections.abc import Sequence
 from dataclasses import replace
@@ -72,6 +73,45 @@ class GuardedEnv(dict):
         if key == "SOURCE_COMMIT":
             raise AssertionError("driver must not read SOURCE_COMMIT")
         return super().__getitem__(key)
+
+
+def _local_dist_names_for_build_argv(
+    argv: Sequence[str], *, include_models: bool
+) -> set[str]:
+    args = tuple(argv)
+    expected = driver._expected_local_dist_names(include_models=include_models)
+    if args == ("uv", "build", "--all-packages"):
+        return {
+            name
+            for name in expected
+            if not (name.startswith("solstone_core-") and "aarch64" in name)
+        }
+    if args == ("uv", "build", "--package", "solstone-core", "--wheel"):
+        return {
+            name
+            for name in expected
+            if name.startswith("solstone_core-") and "aarch64" in name
+        }
+    if len(args) == 4 and args[:3] == ("uv", "build", "--package"):
+        package = args[3]
+        prefix = f"{package.replace('-', '_')}-"
+        names = {name for name in expected if name.startswith(prefix)}
+        if package == "solstone-core":
+            return {name for name in names if "aarch64" not in name}
+        return names
+    return set()
+
+
+def _fabricate_local_dist_for_build_argv(
+    root: Path, argv: Sequence[str], *, include_models: bool
+) -> None:
+    names = _local_dist_names_for_build_argv(argv, include_models=include_models)
+    if not names:
+        return
+    dist = root / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (dist / name).write_bytes(b"package")
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -1201,6 +1241,22 @@ def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None
     assert recovered.heading == "retained-candidate-valid"
 
 
+def test_default_build_local_dist_package_selection_tracks_workspace_sources() -> None:
+    root_data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    expected_include = tuple(
+        sorted({driver.ROOT_WORKSPACE_PACKAGE, *driver.WORKSPACE_SOURCES})
+    )
+
+    assert driver.ROOT_WORKSPACE_PACKAGE == root_data["project"]["name"]
+    assert driver.MODELS_WORKSPACE_PACKAGE in driver.WORKSPACE_SOURCES
+    assert (
+        driver._expected_local_build_packages(include_models=True) == expected_include
+    )
+    assert driver._expected_local_build_packages(include_models=False) == tuple(
+        name for name in expected_include if name != driver.MODELS_WORKSPACE_PACKAGE
+    )
+
+
 @pytest.mark.parametrize(
     ("include_models", "mutation"),
     [
@@ -1217,35 +1273,36 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=include_models,
+        )
         if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
             dist = tmp_path / "dist"
-            dist.mkdir(parents=True, exist_ok=True)
-            names = set(
-                driver._expected_local_dist_names(include_models=include_models)
-            )
             if mutation == "unselected":
-                names.update(
+                for name in (
                     name
                     for name in checker.expected_package_names(include_models=True)
                     if name.startswith("solstone_journal_models-")
-                )
+                ):
+                    (dist / name).write_bytes(b"package")
             elif mutation == "partial":
                 models = sorted(
-                    name
-                    for name in names
-                    if name.startswith("solstone_journal_models-")
+                    path
+                    for path in dist.iterdir()
+                    if path.name.startswith("solstone_journal_models-")
                 )
-                names.remove(models[0])
+                models[0].unlink()
             elif mutation == "changed":
                 models = sorted(
-                    name
-                    for name in names
-                    if name.startswith("solstone_journal_models-")
+                    path
+                    for path in dist.iterdir()
+                    if path.name.startswith("solstone_journal_models-")
                 )
-                names.remove(models[0])
-                names.add(models[0].replace("1.0.0", "1.0.1"))
-            for name in names:
-                (dist / name).write_bytes(b"package")
+                changed = models[0].name.replace("1.0.0", "1.0.1")
+                models[0].unlink()
+                (dist / changed).write_bytes(b"package")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     with pytest.raises(driver.DriverError) as exc:
@@ -1273,39 +1330,70 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         env = kwargs.get("env")
         assert isinstance(env, dict)
         calls.append((tuple(argv), dict(env)))
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
-            dist = tmp_path / "dist"
-            dist.mkdir(parents=True, exist_ok=True)
-            for name in driver._expected_local_dist_names(include_models=False):
-                (dist / name).write_bytes(b"package")
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=False,
+        )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
 
-    assert calls[0][0] == ("python3", "scripts/render_packaging.py", "--check")
-    assert calls[1] == (
+    expected_x86_env = {
+        "MATURIN_PEP517_ARGS": driver.CORE_X86_64_MATURIN_ARGS,
+        "PATH": os.environ["PATH"],
+        "PYTHONNOUSERSITE": "1",
+    }
+    expected_aarch64_env = {
+        "MATURIN_PEP517_ARGS": driver.CORE_AARCH64_MATURIN_ARGS,
+        "PATH": os.environ["PATH"],
+        "PYTHONNOUSERSITE": "1",
+    }
+    assert calls == [
         (
-            "uv",
-            "build",
-            "--all-packages",
-            "--exclude",
-            "solstone-journal-models",
+            ("python3", "scripts/render_packaging.py", "--check"),
+            {
+                "MATURIN_PEP517_ARGS": "",
+                "PATH": os.environ["PATH"],
+                "PYTHONNOUSERSITE": "1",
+            },
         ),
-        {
-            "MATURIN_PEP517_ARGS": driver.CORE_X86_64_MATURIN_ARGS,
-            "PATH": os.environ["PATH"],
-            "PYTHONNOUSERSITE": "1",
-        },
-    )
-    assert calls[2] == (
-        ("uv", "build", "--package", "solstone-core", "--wheel"),
-        {
-            "MATURIN_PEP517_ARGS": driver.CORE_AARCH64_MATURIN_ARGS,
-            "PATH": os.environ["PATH"],
-            "PYTHONNOUSERSITE": "1",
-        },
-    )
+        (
+            ("uv", "build", "--package", "solstone"),
+            expected_x86_env,
+        ),
+        (
+            ("uv", "build", "--package", "solstone-core"),
+            expected_x86_env,
+        ),
+        (
+            ("uv", "build", "--package", "solstone-journal"),
+            expected_x86_env,
+        ),
+        (
+            ("uv", "build", "--package", "solstone-journal-cuda"),
+            expected_x86_env,
+        ),
+        (
+            ("uv", "build", "--package", "solstone-core", "--wheel"),
+            expected_aarch64_env,
+        ),
+    ]
+    assert all("--exclude" not in argv for argv, _env in calls)
+    assert [
+        env["MATURIN_PEP517_ARGS"]
+        for argv, env in calls
+        if argv[:2] == ("uv", "build") and "--wheel" not in argv
+    ] == [driver.CORE_X86_64_MATURIN_ARGS] * 4
+    assert [
+        env["MATURIN_PEP517_ARGS"]
+        for argv, env in calls
+        if argv == ("uv", "build", "--package", "solstone-core", "--wheel")
+    ] == [driver.CORE_AARCH64_MATURIN_ARGS]
     assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
+    assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
+        driver._expected_local_dist_names(include_models=False)
+    )
 
 
 def test_default_build_local_dist_honors_include_models_build_selection(
@@ -1317,17 +1405,24 @@ def test_default_build_local_dist_honors_include_models_build_selection(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(tuple(argv))
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
-            dist = tmp_path / "dist"
-            dist.mkdir(parents=True, exist_ok=True)
-            for name in driver._expected_local_dist_names(include_models=True):
-                (dist / name).write_bytes(b"package")
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=True,
+        )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     driver._default_build_local_dist(tmp_path, include_models=True, runner=runner)
 
-    assert ("uv", "build", "--all-packages") in calls
+    assert calls == [
+        ("python3", "scripts/render_packaging.py", "--check"),
+        ("uv", "build", "--all-packages"),
+        ("uv", "build", "--package", "solstone-core", "--wheel"),
+    ]
     assert all("--exclude" not in call for call in calls)
+    assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
+        driver._expected_local_dist_names(include_models=True)
+    )
 
 
 def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(

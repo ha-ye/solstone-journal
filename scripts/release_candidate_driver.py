@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scripts.check_extras_consistency import WORKSPACE_SOURCES
 from scripts.check_release_preflight import (
     LANE_TOOL_KEYS,
     check_lane_tool_evidence,
@@ -97,6 +98,8 @@ CORE_X86_64_MATURIN_ARGS = (
 CORE_AARCH64_MATURIN_ARGS = (
     "--locked --zig --compatibility manylinux2014 --target aarch64-unknown-linux-musl"
 )
+ROOT_WORKSPACE_PACKAGE = "solstone"
+MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 
 
 @dataclass(frozen=True)
@@ -421,6 +424,48 @@ def _scrubbed_build_env(maturin_args: str) -> dict[str, str]:
     }
 
 
+def _expected_local_build_packages(*, include_models: bool) -> tuple[str, ...]:
+    if MODELS_WORKSPACE_PACKAGE not in WORKSPACE_SOURCES:
+        raise DriverError(
+            [
+                _failure(
+                    "release driver models package is not a workspace source",
+                    expected=f"{MODELS_WORKSPACE_PACKAGE} in WORKSPACE_SOURCES",
+                    actual=", ".join(sorted(WORKSPACE_SOURCES)) or "<empty>",
+                    repair="python3 scripts/check_extras_consistency.py",
+                )
+            ]
+        )
+    packages = {ROOT_WORKSPACE_PACKAGE, *WORKSPACE_SOURCES}
+    if not include_models:
+        packages.remove(MODELS_WORKSPACE_PACKAGE)
+    return tuple(sorted(packages))
+
+
+def _expected_local_build_commands(
+    *, include_models: bool
+) -> tuple[tuple[tuple[str, ...], str], ...]:
+    render_check = (("python3", "scripts/render_packaging.py", "--check"), "")
+    aarch64_core = (
+        ("uv", "build", "--package", "solstone-core", "--wheel"),
+        CORE_AARCH64_MATURIN_ARGS,
+    )
+    if include_models:
+        return (
+            render_check,
+            (("uv", "build", "--all-packages"), CORE_X86_64_MATURIN_ARGS),
+            aarch64_core,
+        )
+    return (
+        render_check,
+        *(
+            (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS)
+            for package in _expected_local_build_packages(include_models=False)
+        ),
+        aarch64_core,
+    )
+
+
 def _default_build_local_dist(
     root: Path,
     include_models: bool,
@@ -436,27 +481,15 @@ def _default_build_local_dist(
         failures.extend(validate_linux_maturin_args(args, target=target))
     if failures:
         raise DriverError(failures)
-    _run_stdout(
-        runner,
-        ["python3", "scripts/render_packaging.py", "--check"],
-        cwd=root,
-        env=_scrubbed_build_env(""),
-    )
-    x86_argv = ["uv", "build", "--all-packages"]
-    if not include_models:
-        x86_argv.extend(["--exclude", "solstone-journal-models"])
-    _run_stdout(
-        runner,
-        x86_argv,
-        cwd=root,
-        env=_scrubbed_build_env(CORE_X86_64_MATURIN_ARGS),
-    )
-    _run_stdout(
-        runner,
-        ["uv", "build", "--package", "solstone-core", "--wheel"],
-        cwd=root,
-        env=_scrubbed_build_env(CORE_AARCH64_MATURIN_ARGS),
-    )
+    for argv, maturin_args in _expected_local_build_commands(
+        include_models=include_models
+    ):
+        _run_stdout(
+            runner,
+            list(argv),
+            cwd=root,
+            env=_scrubbed_build_env(maturin_args),
+        )
     _validate_local_dist_inventory(root / "dist", include_models=include_models)
 
 
