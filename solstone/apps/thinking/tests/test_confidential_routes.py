@@ -407,6 +407,48 @@ def test_normal_byo_save_refused_while_restore_only_save_still_succeeds(
     assert stored["providers"]["byo_models"]["google"] == exact_model
 
 
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ("active",),
+        ("remembered",),
+        ("active", "remembered"),
+    ],
+)
+def test_google_non_prior_targets_do_not_exempt_confidential_switch(
+    thinking_client,
+    journal_copy: Path,
+    targets: tuple[str, ...],
+) -> None:
+    """Non-confidential_prior targets are not the guidance restore flow."""
+
+    spp.provision_confidential_handoff(_payload(f"non-prior-{'-'.join(targets)}"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-3.5-flash",
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: list(targets),
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then switch your thinking provider."
+    )
+    assert config_path.read_bytes() == before
+    stored = _read_config(journal_copy)
+    active = stored["providers"]["active"]
+    assert derive_provider_lane(stored, active["provider"]) == "confidential"
+
+
 @pytest.mark.parametrize("provider", ["local", "anthropic", "openai"])
 def test_byo_lane_refuses_when_confidential_active_without_write(
     thinking_client,
