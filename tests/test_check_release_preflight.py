@@ -289,6 +289,39 @@ def test_host_variant_uv_evidence_fails_closed(uv_banner: str) -> None:
     assert uv_failures[0].expected == pins.UV_PIN
 
 
+@pytest.mark.parametrize("uv_value", (None, 123, True, {"a": 1}))
+def test_host_variant_uv_non_string_evidence_fails_closed(uv_value: object) -> None:
+    lane_evidence: dict[str, object] = dict(pins.fixture_lane_tool_evidence("source"))
+    lane_evidence["uv"] = uv_value
+    presign_evidence: dict[str, object] = dict(
+        pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    )
+    presign_evidence["uv"] = uv_value
+
+    lane_failures = preflight.check_lane_tool_evidence("source", lane_evidence)
+    presign_failures = preflight.check_presign_lane_tool_evidence(
+        "macos-arm64", presign_evidence
+    )
+
+    lane_uv_failures = [
+        failure
+        for failure in lane_failures
+        if failure.error == "release lane tool uv is not pinned"
+    ]
+    presign_uv_failures = [
+        failure
+        for failure in presign_failures
+        if failure.error == "pre-sign lane tool uv is not pinned"
+    ]
+
+    assert len(lane_uv_failures) == 1
+    assert lane_uv_failures[0].expected == pins.UV_PIN
+    assert lane_uv_failures[0].actual == str(uv_value)
+    assert len(presign_uv_failures) == 1
+    assert presign_uv_failures[0].expected == pins.UV_PIN
+    assert presign_uv_failures[0].actual == str(uv_value)
+
+
 def test_lane_tool_skew_fails_closed() -> None:
     evidence = pins.fixture_lane_tool_evidence("macos-arm64")
     evidence["swift"] = "swift 6.3.3"

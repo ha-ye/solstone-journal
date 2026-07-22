@@ -466,10 +466,12 @@ def check_host_variant_tool_pin(tool: str, expected_pin: str, actual: str) -> bo
     )
 
 
-def _tool_value_matches_pin(key: str, expected_value: str, actual: str | None) -> bool:
+def _tool_value_matches_pin(key: str, expected_value: str, actual: object) -> bool:
     if actual is None:
         return False
     if key in HOST_VARIANT_TOOL_KEYS:
+        if not isinstance(actual, str):
+            return False
         return check_host_variant_tool_pin(key, expected_value, actual)
     return actual == expected_value
 
