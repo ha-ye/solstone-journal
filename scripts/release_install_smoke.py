@@ -176,12 +176,36 @@ def _run_command(argv: Sequence[str]) -> CommandResult:
 
 
 def _solstone_distributions(env_python: Path) -> tuple[Mapping[str, str], ...]:
-    script = (
-        "import importlib.metadata as m;"
-        "print('\\n'.join(sorted("
-        "f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions() "
-        "if d.metadata.get('Name', '').lower().startswith('solstone'))))"
-    )
+    # importlib.metadata can report the same dist-info directory twice when a
+    # venv exposes both lib64 and lib site-packages. De-duplicate by canonical
+    # dist-info realpath, not by (name, version): two distinct real dist-info
+    # directories with the same name/version are polluted install evidence and
+    # must still be rejected downstream. _path is private API; when it is absent
+    # we fall back to a unique per-entry sentinel so the entry is never collapsed
+    # -- we merge only entries proven to be the same dist-info directory.
+    script = """
+import importlib.metadata as m
+import os
+
+seen = set()
+entries = []
+unkeyed = 0
+for d in m.distributions():
+    name = d.metadata.get('Name', '')
+    if not name.lower().startswith('solstone'):
+        continue
+    path = getattr(d, '_path', None)
+    if path is None:
+        key = ('unkeyed', unkeyed)
+        unkeyed += 1
+    else:
+        key = ('realpath', os.path.realpath(str(path)))
+    if key in seen:
+        continue
+    seen.add(key)
+    entries.append(f"{name}=={d.version}")
+print('\\n'.join(sorted(entries)))
+"""
     result = subprocess.run(
         [str(env_python), "-c", script],
         capture_output=True,

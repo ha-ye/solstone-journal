@@ -691,6 +691,16 @@ def _linux_context(
         (
             lambda observation, _tmp_path: replace(
                 observation,
+                installed_distributions=(
+                    *observation.installed_distributions,
+                    observation.installed_distributions[0],
+                ),
+            ),
+            "install proof installed distribution set is invalid",
+        ),
+        (
+            lambda observation, _tmp_path: replace(
+                observation,
                 smoke={
                     "solstone-core": smoke.CommandResult(
                         argv=("ENVROOT/bin/solstone-core",),
