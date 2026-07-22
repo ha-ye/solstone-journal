@@ -536,6 +536,7 @@ def fetch_chain_state(
             if _stage_path(
                 config.root, config.product, config.version
             ).exists() and all(key.startswith(requested_prefix) for key in listed.keys):
+                # A staged genesis retry may have locked only this requested version.
                 LOG.warning(
                     "transparency genesis immutable zone already contains "
                     "requested version objects; adopting staged retry"

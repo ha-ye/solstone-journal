@@ -523,6 +523,56 @@ def test_staging_payload_is_archive_superset(
     assert (stage.payload_dir / LATEST_SIGNATURE_NAME).is_file()
 
 
+def test_built_entry_inventory_matches_retained_rail_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch)
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    entry = parse_ledger_entry_bytes(stage.entry_path.read_bytes()).entry
+    ledger = json.loads((report.evidence_dir / "ledger.json").read_text())
+    candidate_files = ledger["candidate"]["files"]
+
+    assert entry["version"] == ledger["version"] == report.version
+    assert entry["source_commit"] == ledger["source_commit"]
+    assert {
+        (item["name"], item["sha256"], item["bytes"]) for item in entry["artifacts"]
+    } == {
+        (item["name"], item["sha256"], item["bytes"])
+        for item in candidate_files
+        if not item["name"].endswith(".rust-release-manifest.json")
+    }
+    assert {(item["name"], item["sha256"]) for item in entry["manifests"]} == {
+        (item["name"], item["sha256"])
+        for item in candidate_files
+        if item["name"].endswith(".rust-release-manifest.json")
+    }
+    assert {(item["name"], item["sha256"]) for item in entry["proofs"]} == {
+        (f"{target}.json", digest) for target, digest in report.proof_sha256.items()
+    }
+
+
+def test_excluded_models_package_names_are_not_transparency_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch)
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    entry = parse_ledger_entry_bytes(stage.entry_path.read_bytes()).entry
+    ledger = json.loads((report.evidence_dir / "ledger.json").read_text())
+    package_version = ledger["models"]["package_version"]
+
+    artifact_names = {item["name"] for item in entry["artifacts"]}
+    assert ledger["models"]["decision"] == "exclude"
+    assert f"solstone_journal_models-{package_version}.tar.gz" not in artifact_names
+    assert (
+        f"solstone_journal_models-{package_version}-py3-none-any.whl"
+        not in artifact_names
+    )
+
+
 def test_archive_channel_accepts_identical_retry_and_rejects_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -806,6 +856,76 @@ def test_public_immutable_verification_failure_prevents_mutable_writes(
     assert mutable_puts == []
 
 
+def test_immutable_put_412_foreign_bytes_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    key = version_object_key(PRODUCT, "0.9.1", ENTRY_OBJECT_NAME)
+    transport.put_object(
+        key,
+        b"foreign\n",
+        content_type="application/json",
+        cache_control="immutable",
+        if_none_match=True,
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher._upload_immutable(
+            config=_config(tmp_path),
+            stage=stage,
+            transport=transport,
+        )
+
+    failure = error.value.failures[0]
+    assert failure.error == (
+        "version 0.9.1 is already permanently recorded at unreadable bytes"
+    )
+    assert any(
+        call["op"] == "PUT" and call["key"] == key and call["status"] == 412
+        for call in transport.call_log
+    )
+
+
+def test_immutable_put_412_matching_bytes_are_adopted_and_publish_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    for name, path in stage.immutable_files():
+        transport.put_object(
+            version_object_key(PRODUCT, "0.9.1", name),
+            path.read_bytes(),
+            content_type="application/octet-stream"
+            if name.endswith(".minisig")
+            else "application/json",
+            cache_control="immutable",
+            if_none_match=True,
+        )
+    transport.call_log.clear()
+
+    result = publisher.publish_transparency(
+        config=_config(tmp_path),
+        transport=transport,
+        signer=signer,
+        archive_runner=_archive_ok,
+        now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.seq == 1
+    assert any(
+        call["op"] == "PUT"
+        and call["key"] == version_object_key(PRODUCT, "0.9.1", ENTRY_OBJECT_NAME)
+        and call["status"] == 412
+        for call in transport.call_log
+    )
+    assert transport.get_object(latest_key(PRODUCT)).status == 200
+
+
 def test_missing_archive_channel_fails_before_upload(tmp_path: Path) -> None:
     env = {
         "TRANSPARENCY_S3_ENDPOINT": "https://r2.example.invalid",
@@ -884,6 +1004,61 @@ def test_genesis_requires_explicit_env_gate(tmp_path: Path) -> None:
     assert (
         error.value.failures[0].error
         == "missing transparency pointer requires TRANSPARENCY_GENESIS=1"
+    )
+
+
+def test_genesis_listing_adopts_same_version_staged_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    transport.put_object(
+        version_object_key(PRODUCT, "0.9.1", ENTRY_OBJECT_NAME),
+        stage.entry_path.read_bytes(),
+        content_type="application/json",
+        cache_control="immutable",
+        if_none_match=True,
+    )
+    caplog.set_level(logging.WARNING, logger=publisher.LOG.name)
+
+    state = publisher.fetch_chain_state(
+        config=_config(tmp_path, genesis="1"),
+        transport=transport,
+        signer=signer,
+    )
+
+    assert state.next_seq == 1
+    assert "adopting staged retry" in caplog.text
+
+
+def test_genesis_listing_rejects_existing_object_outside_staged_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stage_candidate(tmp_path, monkeypatch)
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    transport.put_object(
+        version_object_key(PRODUCT, "0.9.2", ENTRY_OBJECT_NAME),
+        b"foreign\n",
+        content_type="application/json",
+        cache_control="immutable",
+        if_none_match=True,
+    )
+
+    with pytest.raises(DriverError) as error:
+        publisher.fetch_chain_state(
+            config=_config(tmp_path, genesis="1"),
+            transport=transport,
+            signer=signer,
+        )
+
+    assert (
+        error.value.failures[0].error
+        == "transparency genesis remote immutable zone is not empty"
     )
 
 
