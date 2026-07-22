@@ -42,6 +42,7 @@ from scripts.release_tool_pins import (  # noqa: E402
     RUSTC_LLVM_PIN,
     RUSTC_RELEASE_PIN,
     RUSTC_VERSION_BANNER,
+    fixture_lane_tool_evidence,
     fixture_native_tools,
 )
 from solstone.think.probe import (  # noqa: E402
@@ -2139,7 +2140,6 @@ def run_fixtures_mode() -> list[Failure]:
                 )
             ]
         try:
-            from scripts.check_release_preflight import expected_lane_tool_evidence
             from scripts.release_advisory_policy import PolicyRun
             from scripts.release_digest import candidate_digest, file_sha256_size
             from scripts.release_install_smoke import (
@@ -2239,7 +2239,7 @@ def run_fixtures_mode() -> list[Failure]:
                 "notarization_status": "accepted",
             },
         ]
-        tool_evidence = {lane: expected_lane_tool_evidence(lane) for lane in LANES}
+        tool_evidence = {lane: fixture_lane_tool_evidence(lane) for lane in LANES}
         evidence_root = root / "target" / "release-evidence"
         try:
             ledger_path = write_ledger(

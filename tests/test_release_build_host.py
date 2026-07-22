@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import scripts.check_release_preflight as preflight
 import scripts.check_rust_release_manifest as checker
 import scripts.release_build_host as build_host
+import scripts.release_tool_pins as pins
 from scripts.release_build_host import SourceBundle
 
 SOURCE_COMMIT = "a" * 40
@@ -272,9 +272,7 @@ def _channel(
                     "bundle_sha256": bundle.sha256,
                     "bundle_bytes": bundle.bytes,
                 },
-                "tool_evidence": preflight.expected_presign_lane_tool_evidence(
-                    "macos-arm64"
-                ),
+                "tool_evidence": pins.fixture_presign_lane_tool_evidence("macos-arm64"),
                 "macos_wheels": wheel_names,
                 "native_records": record_names,
             }

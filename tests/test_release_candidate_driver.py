@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 
-import scripts.check_release_preflight as preflight
 import scripts.check_rust_release_manifest as checker
 import scripts.record_macos_native_wheel as native
 import scripts.release_candidate_driver as driver
@@ -290,7 +289,7 @@ def _write_macos_host_outputs(
     return BuildHostResult(
         macos_wheels=(root_wheel, core_wheel),
         native_records=(root_record_path, core_record_path),
-        tool_evidence=preflight.expected_presign_lane_tool_evidence("macos-arm64"),
+        tool_evidence=pins.fixture_presign_lane_tool_evidence("macos-arm64"),
     )
 
 
@@ -456,7 +455,7 @@ def _services(
         build_local_dist=build_local_dist,
         prepare_policy=lambda _repo, _env: _policy(),
         coordinator_tool_evidence=lambda: {
-            lane: preflight.expected_lane_tool_evidence(lane)
+            lane: pins.fixture_lane_tool_evidence(lane)
             for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
         },
         create_source_bundle=create_source_bundle,
@@ -1161,7 +1160,7 @@ def test_tool_skew_is_rejected_before_any_build(tmp_path: Path) -> None:
         build_called = True
 
     tools = {
-        lane: preflight.expected_lane_tool_evidence(lane)
+        lane: pins.fixture_lane_tool_evidence(lane)
         for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
     }
     tools["source"] = {**tools["source"], "rustc": "rustc 0.0.0"}
@@ -1496,7 +1495,7 @@ def test_candidate_rejects_coordinator_sourced_macos_tool_evidence(
         services,
         coordinator_tool_evidence=lambda: {
             **base,
-            "macos-arm64": preflight.expected_lane_tool_evidence("macos-arm64"),
+            "macos-arm64": pins.fixture_lane_tool_evidence("macos-arm64"),
         },
     )
 
@@ -1546,7 +1545,7 @@ def test_candidate_derives_manifest_evidence_from_single_frozen_tool_observation
         nonlocal calls
         calls += 1
         return {
-            lane: preflight.expected_lane_tool_evidence(lane)
+            lane: pins.fixture_lane_tool_evidence(lane)
             for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
         }
 
@@ -1557,7 +1556,19 @@ def test_candidate_derives_manifest_evidence_from_single_frozen_tool_observation
     payload = json.loads((report.evidence_dir / "ledger.json").read_text())
 
     assert calls == 1
+    assert payload["tool_evidence"]["source"]["uv"] == pins.UV_LINUX_FIXTURE_BANNER
     assert payload["tool_evidence"]["source"]["maturin"] == pins.MATURIN_PIN
+    source_artifact = next(
+        name
+        for name, (lane, _target) in checker.rust_artifact_targets().items()
+        if lane == "source"
+    )
+    manifest = json.loads(
+        (
+            report.release_dir / f"{source_artifact}.rust-release-manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["native_tools"]["uv"] == pins.UV_LINUX_FIXTURE_BANNER
 
 
 def test_recovery_rejects_native_member_path_mutation_with_matching_hash(

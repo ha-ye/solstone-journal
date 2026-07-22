@@ -33,6 +33,8 @@ CARGO_DENY_PIN = f"cargo-deny {CARGO_DENY_VERSION}"
 
 UV_VERSION = "0.11.4"
 UV_PIN = f"uv {UV_VERSION}"
+UV_LINUX_FIXTURE_BANNER = f"uv {UV_VERSION} (x86_64-unknown-linux-gnu)"
+UV_MACOS_FIXTURE_BANNER = f"uv {UV_VERSION} (Homebrew 2026-04-08 aarch64-apple-darwin)"
 MATURIN_VERSION = "1.14.1"
 MATURIN_REQUIREMENT = f"maturin=={MATURIN_VERSION}"
 MATURIN_PIN = f"maturin {MATURIN_VERSION}"
@@ -79,14 +81,72 @@ def load_release_tool_pins(_root: Path | None = None) -> ReleaseToolPins:
     return ReleaseToolPins()
 
 
+def fixture_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
+    uv_banner = (
+        UV_MACOS_FIXTURE_BANNER if lane == "macos-arm64" else UV_LINUX_FIXTURE_BANNER
+    )
+    common = {
+        "python": PYTHON_MACOS_VERSION
+        if lane == "macos-arm64"
+        else PYTHON_SOURCE_LINUX_VERSION,
+        "rustc": RUSTC_VERSION_BANNER,
+        "cargo": CARGO_VERSION_PIN,
+        "uv": uv_banner,
+        "maturin": MATURIN_PIN,
+        "cargo-deny": CARGO_DENY_PIN,
+    }
+    if lane in {"linux-x86_64-musl", "linux-aarch64-musl"}:
+        common["zig"] = ZIG_PIN
+    if lane == "macos-arm64":
+        common.update(
+            {
+                "xcode": MACOS_XCODE_PIN,
+                "swift": MACOS_SWIFT_PIN,
+                "codesign": MACOS_CODESIGN_PUBLIC_PIN,
+                "notarytool": MACOS_NOTARYTOOL_PIN,
+                "signing_mode": MACOS_SIGNING_MODE,
+            }
+        )
+    if lane == "source":
+        keys = ("python", "rustc", "cargo", "uv", "maturin", "cargo-deny")
+    elif lane in {"linux-x86_64-musl", "linux-aarch64-musl"}:
+        keys = ("python", "rustc", "cargo", "uv", "maturin", "cargo-deny", "zig")
+    elif lane == "macos-arm64":
+        keys = (
+            "python",
+            "rustc",
+            "cargo",
+            "uv",
+            "maturin",
+            "cargo-deny",
+            "xcode",
+            "swift",
+            "codesign",
+            "notarytool",
+            "signing_mode",
+        )
+    else:
+        raise ValueError(f"unknown release lane: {lane}")
+    return {key: common[key] for key in keys}
+
+
+def fixture_presign_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
+    evidence = fixture_lane_tool_evidence(lane)
+    if lane == "macos-arm64":
+        evidence = {
+            key: value for key, value in evidence.items() if key != "signing_mode"
+        }
+    return evidence
+
+
 def fixture_native_tools(lane: LaneName) -> dict[str, str]:
     if lane == "source":
-        return {"uv": UV_PIN, "maturin": MATURIN_PIN}
+        return {"uv": UV_LINUX_FIXTURE_BANNER, "maturin": MATURIN_PIN}
     if lane in {"linux-x86_64-musl", "linux-aarch64-musl"}:
-        return {"uv": UV_PIN, "maturin": MATURIN_PIN, "zig": ZIG_PIN}
+        return {"uv": UV_LINUX_FIXTURE_BANNER, "maturin": MATURIN_PIN, "zig": ZIG_PIN}
     if lane == "macos-arm64":
         return {
-            "uv": UV_PIN,
+            "uv": UV_MACOS_FIXTURE_BANNER,
             "maturin": MATURIN_PIN,
             "xcode": MACOS_XCODE_PIN,
             "swift": MACOS_SWIFT_PIN,

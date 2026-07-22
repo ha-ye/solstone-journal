@@ -6,6 +6,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import scripts.check_release_preflight as preflight
 import scripts.release_tool_pins as pins
 
@@ -229,8 +231,66 @@ def test_expected_lane_tool_evidence_uses_grounded_release_pins() -> None:
     assert "signing_mode" not in macos_presign
 
 
+@pytest.mark.parametrize("lane", tuple(preflight.LANE_TOOL_KEYS))
+def test_fixture_lane_tool_evidence_key_sets_match_expectations(lane: str) -> None:
+    assert set(pins.fixture_lane_tool_evidence(lane)) == set(
+        preflight.expected_lane_tool_evidence(lane)
+    )
+    assert set(pins.fixture_presign_lane_tool_evidence(lane)) == set(
+        preflight.expected_presign_lane_tool_evidence(lane)
+    )
+
+
+@pytest.mark.parametrize(
+    "uv_banner",
+    (
+        pins.UV_LINUX_FIXTURE_BANNER,
+        pins.UV_MACOS_FIXTURE_BANNER,
+    ),
+)
+def test_host_variant_uv_evidence_accepts_strict_version(uv_banner: str) -> None:
+    source = pins.fixture_lane_tool_evidence("source")
+    source["uv"] = uv_banner
+    macos_presign = pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    macos_presign["uv"] = uv_banner
+
+    assert preflight.check_lane_tool_evidence("source", source) == []
+    assert (
+        preflight.check_presign_lane_tool_evidence("macos-arm64", macos_presign) == []
+    )
+
+
+@pytest.mark.parametrize(
+    "uv_banner",
+    (
+        "uv 0.10.0 (x86_64-unknown-linux-gnu)",
+        "not found",
+        "exit 1",
+        "",
+        "   ",
+        f"{pins.UV_LINUX_FIXTURE_BANNER}\nextra",
+        "uvx 0.11.4 (x86_64-unknown-linux-gnu)",
+        "uv release channel stable",
+        pins.UV_PIN,
+    ),
+)
+def test_host_variant_uv_evidence_fails_closed(uv_banner: str) -> None:
+    evidence = pins.fixture_lane_tool_evidence("source")
+    evidence["uv"] = uv_banner
+
+    failures = preflight.check_lane_tool_evidence("source", evidence)
+
+    uv_failures = [
+        failure
+        for failure in failures
+        if failure.error == "release lane tool uv is not pinned"
+    ]
+    assert len(uv_failures) == 1
+    assert uv_failures[0].expected == pins.UV_PIN
+
+
 def test_lane_tool_skew_fails_closed() -> None:
-    evidence = preflight.expected_lane_tool_evidence("macos-arm64")
+    evidence = pins.fixture_lane_tool_evidence("macos-arm64")
     evidence["swift"] = "swift 6.3.3"
 
     failures = preflight.check_lane_tool_evidence("macos-arm64", evidence)
@@ -245,7 +305,7 @@ def test_collect_lane_tools_normalizes_macos_observations() -> None:
         "python": "Python 3.14.6",
         "rustc": pins.RUSTC_VERSION_BANNER,
         "cargo": pins.CARGO_VERSION_PIN,
-        "uv": pins.UV_PIN,
+        "uv": pins.UV_MACOS_FIXTURE_BANNER,
         "maturin": pins.MATURIN_PIN,
         "cargo-deny": pins.CARGO_DENY_PIN,
         "xcodebuild": f"Xcode {pins.MACOS_XCODE_VERSION}\nBuild version {pins.MACOS_XCODE_BUILD}\n",
@@ -305,7 +365,7 @@ def _native_record(role: str) -> dict[str, object]:
 
 
 def test_macos_tool_finalizer_requires_valid_native_records() -> None:
-    preflight_evidence = preflight.expected_presign_lane_tool_evidence("macos-arm64")
+    preflight_evidence = pins.fixture_presign_lane_tool_evidence("macos-arm64")
 
     final, failures = preflight.finalize_macos_tool_evidence(
         preflight_evidence,

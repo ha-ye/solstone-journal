@@ -24,7 +24,6 @@ from scripts.check_release_preflight import (
     LANE_TOOL_KEYS,
     check_lane_tool_evidence,
     collect_lane_tool_evidence,
-    expected_lane_tool_evidence,
     finalize_macos_tool_evidence,
 )
 from scripts.check_rust_release_manifest import (
@@ -87,6 +86,7 @@ from scripts.release_tool_pins import (
     RUSTC_COMMIT_HASH_PIN,
     RUSTC_LLVM_PIN,
     RUSTC_RELEASE_PIN,
+    fixture_lane_tool_evidence,
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -2582,7 +2582,7 @@ def default_dry_run_plan(env: Mapping[str, str]) -> DryRunPlan:
         models_decision="include" if include_models else "exclude",
         artifacts=tuple(sorted(expected_package_names(include_models=include_models))),
         tool_evidence={
-            lane: expected_lane_tool_evidence(lane)
+            lane: fixture_lane_tool_evidence(lane)
             for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
         },
         linux_maturin_args={

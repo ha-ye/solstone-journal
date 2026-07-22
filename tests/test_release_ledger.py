@@ -152,8 +152,7 @@ def _core_lock(root: Path) -> Path:
 
 def _tool_evidence() -> dict[str, dict[str, str]]:
     return {
-        lane: preflight.expected_lane_tool_evidence(lane)
-        for lane in preflight.LANE_TOOL_KEYS
+        lane: pins.fixture_lane_tool_evidence(lane) for lane in preflight.LANE_TOOL_KEYS
     }
 
 
@@ -233,6 +232,7 @@ def test_ledger_key_set_excludes_transport_and_bundle_state(tmp_path: Path) -> N
     assert payload["models"] == _models()
     assert {"name", "sha256", "bytes"} == set(payload["candidate"]["files"][0])
     assert set(payload["tool_evidence"]) == set(preflight.LANE_TOOL_KEYS)
+    assert payload["tool_evidence"]["source"]["uv"] == pins.UV_LINUX_FIXTURE_BANNER
     assert set(payload["native_members"]) == set(ledger.PROOF_TARGETS)
     assert set(payload["native_members"]["macos-arm64"]) == {
         "solstone-core",
