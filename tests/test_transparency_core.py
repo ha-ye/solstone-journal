@@ -9,7 +9,9 @@ import pytest
 
 from scripts.release_candidate_driver import DriverError
 from scripts.transparency_core import (
+    ENTRY_KEYS,
     ENTRY_SCHEMA,
+    LATEST_KEYS,
     LATEST_SCHEMA,
     PRODUCT,
     PUBLIC_TRUST_ANCHOR_FILENAME,
@@ -29,13 +31,34 @@ from scripts.transparency_core import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transparency"
+SCHEMAS = Path(__file__).parents[1] / "schemas"
 ENTRY_SHA = "30fa37a5d4a1b254e695339b1b0dcaa7a481bb26cca92dfd888f8186f049599f"
 LATEST_SHA = "598d1e2acd1765b6ab3bf7ebf915efe9077cb869ed6d67d39c4262de512d9061"
+ENTRY_SCHEMA_SHA = "b4889cc7195e13a32a76041349103c3829b19a363d49f27e0df62cbf65fb9476"
+LATEST_SCHEMA_SHA = "46e655f17170105f73c5f1183e976d2100198bbeb16818d2e666bd6e4630b9a2"
 
 
 def test_public_trust_anchor_constants_match_contract() -> None:
     assert PUBLIC_TRUST_ANCHOR_FILENAME == "solpbc-transparency-1.pub"
     assert PUBLIC_TRUST_ANCHOR_PATH == "releases/keys/solpbc-transparency-1.pub"
+
+
+def test_vendored_transparency_schemas_are_pinned() -> None:
+    entry_bytes = (SCHEMAS / "transparency-ledger-entry" / "v1.json").read_bytes()
+    latest_bytes = (SCHEMAS / "transparency-latest" / "v1.json").read_bytes()
+    assert hashlib.sha256(entry_bytes).hexdigest() == ENTRY_SCHEMA_SHA
+    assert len(entry_bytes) == 2805
+    assert hashlib.sha256(latest_bytes).hexdigest() == LATEST_SCHEMA_SHA
+    assert len(latest_bytes) == 1140
+
+    entry_schema = json.loads(entry_bytes)
+    latest_schema = json.loads(latest_bytes)
+    assert entry_schema["$id"] == ENTRY_SCHEMA
+    assert set(entry_schema["required"]) == ENTRY_KEYS
+    assert set(entry_schema["properties"]) == ENTRY_KEYS
+    assert latest_schema["$id"] == LATEST_SCHEMA
+    assert set(latest_schema["required"]) == LATEST_KEYS
+    assert set(latest_schema["properties"]) == LATEST_KEYS
 
 
 def _reverse_order_entry_vector() -> OrderedDict[str, object]:
