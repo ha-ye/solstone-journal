@@ -106,6 +106,9 @@ BrainReasonCode = Literal[
     "local_runtime_not_ready",
     "local_artifact_not_ready",
     "attestation_not_verified",
+    "nvattest_install_in_progress",
+    "nvattest_platform_unsupported",
+    "nvattest_unavailable",
     "provider_key_invalid",
     "model_not_found",
     "provider_quota_exceeded",
@@ -118,6 +121,8 @@ BrainReasonCode = Literal[
     "cogitate_terminal_error",
     "attestation_rejected",
     "attestation_expired",
+    "nvattest_install_failed",
+    "nvattest_integrity_failed",
     "local_server_unhealthy",
     "configuration_invalid",
     "fingerprint_key_unavailable",
@@ -152,6 +157,9 @@ BRAIN_REASON_TO_AGGREGATE: dict[str, BrainAggregateState] = {
     "local_runtime_not_ready": "blocked",
     "local_artifact_not_ready": "blocked",
     "attestation_not_verified": "blocked",
+    "nvattest_install_in_progress": "blocked",
+    "nvattest_platform_unsupported": "blocked",
+    "nvattest_unavailable": "blocked",
     "provider_key_invalid": "unhealthy",
     "model_not_found": "unhealthy",
     "provider_quota_exceeded": "unhealthy",
@@ -164,6 +172,8 @@ BRAIN_REASON_TO_AGGREGATE: dict[str, BrainAggregateState] = {
     "cogitate_terminal_error": "unhealthy",
     "attestation_rejected": "unhealthy",
     "attestation_expired": "unhealthy",
+    "nvattest_install_failed": "unhealthy",
+    "nvattest_integrity_failed": "unhealthy",
     "local_server_unhealthy": "unhealthy",
     "configuration_invalid": "unknown",
     "fingerprint_key_unavailable": "unknown",
@@ -201,6 +211,11 @@ BRAIN_EVIDENCE_REASON_CODES: dict[str, frozenset[str]] = {
             "attestation_not_verified",
             "attestation_rejected",
             "attestation_expired",
+            "nvattest_install_in_progress",
+            "nvattest_platform_unsupported",
+            "nvattest_unavailable",
+            "nvattest_install_failed",
+            "nvattest_integrity_failed",
             "local_server_unhealthy",
             "local_runtime_state_invalid",
             "local_runtime_state_unavailable",
@@ -266,8 +281,8 @@ if set(BRAIN_REASON_TO_AGGREGATE) != BRAIN_REASON_CODES:
 _EVIDENCE_ALLOWED_REASON_CODES = frozenset().union(
     *BRAIN_EVIDENCE_REASON_CODES.values()
 )
-if len(_EVIDENCE_ALLOWED_REASON_CODES) != 26:
-    raise RuntimeError("brain evidence reason partition must contain 26 reasons")
+if len(_EVIDENCE_ALLOWED_REASON_CODES) != 31:
+    raise RuntimeError("brain evidence reason partition must contain 31 reasons")
 if len(BRAIN_PROJECTION_ONLY_REASON_CODES) != 10:
     raise RuntimeError("brain projection-only reason partition must contain 10 reasons")
 if _EVIDENCE_ALLOWED_REASON_CODES & BRAIN_PROJECTION_ONLY_REASON_CODES:

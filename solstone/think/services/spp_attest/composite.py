@@ -29,7 +29,12 @@ from solstone.think.services.spp_attest.tlv import decode_gpu_envelope
 log = logging.getLogger(__name__)
 
 _GPU_REASONS = frozenset(
-    {"nvattest_unavailable", "gpu_nonce_mismatch", "gpu_appraisal_failed"}
+    {
+        "nvattest_unavailable",
+        "nvattest_integrity_failed",
+        "gpu_nonce_mismatch",
+        "gpu_appraisal_failed",
+    }
 )
 
 

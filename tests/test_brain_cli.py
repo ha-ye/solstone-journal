@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -405,6 +406,64 @@ def _write_unhealthy_record(journal: Path) -> None:
         },
         NOW,
         journal_path=journal,
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_reason", "expected_reason", "expected_status"),
+    [
+        ("nvattest_install_in_progress", "nvattest_install_in_progress", "blocked"),
+        ("nvattest_platform_unsupported", "nvattest_platform_unsupported", "blocked"),
+        ("nvattest_unavailable", "nvattest_unavailable", "blocked"),
+        ("nvattest_install_failed", "nvattest_install_failed", "failed"),
+        ("nvattest_integrity_failed", "nvattest_integrity_failed", "failed"),
+        ("gateway_unreachable", "attestation_not_verified", "blocked"),
+    ],
+)
+def test_spp_prerequisite_maps_failure_reason_code(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_reason: str,
+    expected_reason: str,
+    expected_status: str,
+) -> None:
+    from solstone.think.services import spp
+
+    spp.delete_attestation_state()
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.recheck_confidential_attestation",
+        lambda: spp.record_attestation_failed("failed", raw_reason),
+    )
+    try:
+        component, reason = brain_cli._spp_prerequisite(NOW)
+    finally:
+        spp.delete_attestation_state()
+
+    assert reason == expected_reason
+    assert component["reason_code"] == expected_reason
+    assert component["status"] == expected_status
+
+
+def test_spp_prerequisite_warns_and_fails_closed_on_unmapped_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from solstone.think.services import spp
+
+    spp.delete_attestation_state()
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.recheck_confidential_attestation",
+        lambda: spp.record_attestation_failed("failed", "new_raw_reason"),
+    )
+    caplog.set_level(logging.WARNING, logger=brain_cli.LOG.name)
+    try:
+        component, reason = brain_cli._spp_prerequisite(NOW)
+    finally:
+        spp.delete_attestation_state()
+
+    assert reason == "attestation_rejected"
+    assert component["reason_code"] == "attestation_rejected"
+    assert (
+        "event=spp_attestation_reason_unmapped raw_reason=new_raw_reason" in caplog.text
     )
 
 

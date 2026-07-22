@@ -220,15 +220,30 @@ def test_verify_certificate_evidence_rejects_spki_mismatch(tmp_path: Path) -> No
     assert exc_info.value.reason_code == "spki_mismatch"
 
 
-def test_verify_certificate_evidence_maps_composite_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("detail", "expected_reason"),
+    [
+        (
+            "the CPU leg rejected evidence (cpu_verification_failed)",
+            "cpu_verification_failed",
+        ),
+        (
+            "the GPU leg rejected evidence (nvattest_integrity_failed)",
+            "nvattest_integrity_failed",
+        ),
+    ],
+)
+def test_verify_certificate_evidence_maps_composite_failure(
+    tmp_path: Path,
+    detail: str,
+    expected_reason: str,
+) -> None:
     nonce = b"n" * 32
     key, spki = _key_and_spki()
     evidence = _evidence(nonce, spki)
 
     def composite_verifier(_bundle, **_kwargs):
-        raise AttestationFailedError(
-            "the CPU leg rejected evidence (cpu_verification_failed)"
-        )
+        raise AttestationFailedError(detail)
 
     with pytest.raises(RatlsVerificationError) as exc_info:
         verify_certificate_evidence(
@@ -239,7 +254,7 @@ def test_verify_certificate_evidence_maps_composite_failure(tmp_path: Path) -> N
             composite_verifier=composite_verifier,
         )
 
-    assert exc_info.value.reason_code == "cpu_verification_failed"
+    assert exc_info.value.reason_code == expected_reason
 
 
 def test_verify_exporter_proof_binds_quote_to_exporter(monkeypatch) -> None:

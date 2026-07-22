@@ -126,6 +126,8 @@ def verify_certificate_evidence(
             code = "gpu_nonce_mismatch"
         elif "nvattest_unavailable" in reason:
             code = "nvattest_unavailable"
+        elif "nvattest_integrity_failed" in reason:
+            code = "nvattest_integrity_failed"
         elif "gpu_appraisal_failed" in reason:
             code = "gpu_appraisal_failed"
         else:

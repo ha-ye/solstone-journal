@@ -149,6 +149,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Provider install status, proof cache, and artifact manifests.
         "solstone/think/providers/artifact_proof.py",
         "solstone/think/providers/install_state.py",
+        # Provider cache-local nvattest artifacts and install single-flight lock.
+        "solstone/think/providers/nvattest_install.py",
         "solstone/think/providers/runtime_health.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",

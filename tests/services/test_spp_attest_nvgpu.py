@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -51,6 +53,8 @@ def _fake_nvattest_dir(tmp_path: Path) -> Path:
     (root / "bin").mkdir(parents=True, exist_ok=True)
     (root / "bin" / "nvattest").write_text("#!/bin/sh\n", encoding="utf-8")
     (root / "lib").mkdir(exist_ok=True)
+    (root / "share" / "ca").mkdir(parents=True, exist_ok=True)
+    (root / "share" / "ca" / "ca-bundle.pem").write_text("ca\n", encoding="utf-8")
     return root
 
 
@@ -360,6 +364,38 @@ def test_gpu_appraisal_error_message_omits_vendor_stderr_marker(
     assert marker not in str(exc_info.value)
 
 
+def test_gpu_appraisal_failure_log_uses_bounded_stderr_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stderr = "collector detail\n" * 5000
+    caplog.set_level(logging.WARNING, logger=appraise_module.log.name)
+
+    with pytest.raises(GpuAppraisalError):
+        _run_appraisal_with_stdout(
+            monkeypatch,
+            tmp_path,
+            "not json",
+            stderr=stderr,
+        )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == appraise_module.log.name
+        and "event=nvattest_gpu_appraisal_failed" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    message = messages[0]
+    fingerprint = message.rsplit("stderr_sha256=", 1)[1].split()[0]
+    assert len(fingerprint) == 16
+    assert fingerprint == hashlib.sha256(stderr.encode("utf-8")).hexdigest()[:16]
+    assert f"stderr_len={len(stderr.encode('utf-8'))}" in message
+    assert len(message) < 180
+    assert "collector detail" not in message
+
+
 def test_bool_false_returncode_rejects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -409,6 +445,23 @@ def test_nvattest_command_env_inherits_parent_and_sets_library_path(
 
     assert command.env["SPP_NVATTEST_PARENT_SENTINEL"] == "kept"
     assert command.env["LD_LIBRARY_PATH"] == str(nvattest_dir / "lib")
+    assert command.argv[command.argv.index("--ca-bundle") + 1] == str(
+        nvattest_dir / "share" / "ca" / "ca-bundle.pem"
+    )
+
+
+def test_nvattest_command_rejects_missing_ca_bundle(tmp_path: Path) -> None:
+    nvattest_dir = _fake_nvattest_dir(tmp_path)
+    (nvattest_dir / "share" / "ca" / "ca-bundle.pem").unlink()
+
+    with pytest.raises(GpuAppraisalError) as exc_info:
+        build_nvattest_attest_command(
+            nvattest_dir=nvattest_dir,
+            evidence_file=tmp_path / "evidence.json",
+            owner_nonce=_owner_nonce(),
+        )
+
+    assert exc_info.value.reason == "nvattest_integrity_failed"
 
 
 def test_nvattest_command_uses_absolute_install_paths_not_path_or_python_namespace(

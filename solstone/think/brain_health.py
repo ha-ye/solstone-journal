@@ -450,6 +450,25 @@ def _confidential_attestation_from_inspection(
             "observed_at": observed_at,
             "expires_at": expires_at,
         }
+    if reason == "nvattest_install_in_progress":
+        return {
+            "state": "verifying",
+            "reason": reason,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
+    if reason in {
+        "nvattest_platform_unsupported",
+        "nvattest_unavailable",
+        "nvattest_install_failed",
+        "nvattest_integrity_failed",
+    }:
+        return {
+            "state": "failed",
+            "reason": reason,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
     if reason == "attestation_not_verified":
         return {
             "state": "unreachable",

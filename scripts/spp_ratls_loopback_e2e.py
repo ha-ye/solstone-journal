@@ -92,7 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--nvattest-dir",
         type=Path,
-        help="nvattest install root containing bin/nvattest and lib/ (requires --real)",
+        help=(
+            "nvattest install root containing bin/nvattest, lib/, and "
+            "share/ca/ca-bundle.pem (requires --real)"
+        ),
     )
     parser.add_argument(
         "--upstream-port",
@@ -145,7 +148,9 @@ def validate_runtime_args(
     try:
         locate_nvattest(args.nvattest_dir)
     except GpuAppraisalError:
-        parser.error("--nvattest-dir must contain bin/nvattest and lib/")
+        parser.error(
+            "--nvattest-dir must contain bin/nvattest, lib/, and share/ca/ca-bundle.pem"
+        )
 
     return RealModeConfig(
         nvattest_dir=args.nvattest_dir.resolve(),

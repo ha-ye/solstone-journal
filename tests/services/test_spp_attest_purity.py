@@ -165,6 +165,11 @@ def test_nvgpu_appraise_removes_temp_evidence_file_on_return_and_raise(
     (nvattest_dir / "bin").mkdir(parents=True)
     (nvattest_dir / "bin" / "nvattest").write_text("#!/bin/sh\n", encoding="utf-8")
     (nvattest_dir / "lib").mkdir()
+    (nvattest_dir / "share" / "ca").mkdir(parents=True)
+    (nvattest_dir / "share" / "ca" / "ca-bundle.pem").write_text(
+        "ca\n",
+        encoding="utf-8",
+    )
     envelope = decode_gpu_envelope((FIXTURE_DIR / "gpu-envelope.tlv").read_bytes())
     owner_nonce = bytes.fromhex((FIXTURE_DIR / "nonce.hex").read_text().strip())
     observed: list[Path] = []

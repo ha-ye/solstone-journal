@@ -69,6 +69,8 @@ def _fake_nvattest_dir(tmp_path: Path) -> Path:
     (root / "bin").mkdir(parents=True)
     (root / "bin" / "nvattest").write_text("#!/bin/sh\n", encoding="utf-8")
     (root / "lib").mkdir()
+    (root / "share" / "ca").mkdir(parents=True)
+    (root / "share" / "ca" / "ca-bundle.pem").write_text("ca\n", encoding="utf-8")
     return root
 
 
@@ -345,8 +347,16 @@ def test_verify_composite_bounds_out_of_band_gpu_reason_without_leak(
     _assert_owner_message_safe(exc_info.value)
 
 
-def test_verify_composite_rejects_gpu_unavailable_without_cpu_only_pass(
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "nvattest_unavailable",
+        "nvattest_integrity_failed",
+    ],
+)
+def test_verify_composite_rejects_gpu_appraiser_prerequisite_without_cpu_only_pass(
     tmp_path: Path,
+    reason_code: str,
 ) -> None:
     def unavailable_gpu_appraiser(
         _envelope: GpuEnvelope,
@@ -355,7 +365,7 @@ def test_verify_composite_rejects_gpu_unavailable_without_cpu_only_pass(
         nvattest_dir: Path,
     ) -> GpuAppraisal:
         assert nvattest_dir
-        raise GpuAppraisalError("nvattest_unavailable")
+        raise GpuAppraisalError(reason_code)
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
@@ -368,7 +378,5 @@ def test_verify_composite_rejects_gpu_unavailable_without_cpu_only_pass(
             gpu_appraiser=unavailable_gpu_appraiser,
         )
 
-    assert exc_info.value.detail == (
-        "the GPU leg rejected the evidence (nvattest_unavailable)"
-    )
+    assert exc_info.value.detail == f"the GPU leg rejected the evidence ({reason_code})"
     _assert_owner_message_safe(exc_info.value)

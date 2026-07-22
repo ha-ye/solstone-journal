@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,6 +26,8 @@ from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.nvgpu.evidence import to_nvattest_evidence
 from solstone.think.services.spp_attest.snp import AppraisalStep
 from solstone.think.services.spp_attest.tlv import GpuEnvelope
+
+log = logging.getLogger(__name__)
 
 
 def appraise_gpu_leg(
@@ -59,13 +63,21 @@ def appraise_gpu_leg(
             handle.write(json.dumps(evidence, sort_keys=True))
             handle.write("\n")
 
-        command = build_nvattest_attest_command(
-            nvattest_dir=nvattest_dir,
-            evidence_file=evidence_path,
-            owner_nonce=owner_nonce,
-            rim_store=rim_store,
-            rim_dir=rim_dir,
-        )
+        try:
+            command = build_nvattest_attest_command(
+                nvattest_dir=nvattest_dir,
+                evidence_file=evidence_path,
+                owner_nonce=owner_nonce,
+                rim_store=rim_store,
+                rim_dir=rim_dir,
+            )
+        except GpuAppraisalError as exc:
+            _log_gpu_appraisal_failure(
+                exc.reason,
+                exception_class=type(exc).__name__,
+                stderr=None,
+            )
+            raise
         try:
             completed = subprocess.run(
                 command.argv,
@@ -75,11 +87,21 @@ def appraise_gpu_leg(
                 check=False,
             )
         except OSError as exc:
+            _log_gpu_appraisal_failure(
+                "nvattest_unavailable",
+                exception_class=type(exc).__name__,
+                stderr=None,
+            )
             raise GpuAppraisalError("nvattest_unavailable") from exc
 
         try:
             stdout_obj = parse_nvattest_stdout(completed.stdout)
         except ValueError as exc:
+            _log_gpu_appraisal_failure(
+                "gpu_appraisal_failed",
+                returncode=completed.returncode,
+                stderr=completed.stderr,
+            )
             raise GpuAppraisalError("gpu_appraisal_failed") from exc
 
         decision = classify_nvattest_result(
@@ -88,6 +110,11 @@ def appraise_gpu_leg(
             owner_nonce=owner_nonce,
         )
         if not isinstance(decision, NvattestAcceptance):
+            _log_gpu_appraisal_failure(
+                decision.reason,
+                returncode=completed.returncode,
+                stderr=completed.stderr,
+            )
             raise GpuAppraisalError(decision.reason)
 
         steps = [
@@ -111,6 +138,11 @@ def appraise_gpu_leg(
                 steps=steps,
             )
         except ValueError as exc:
+            _log_gpu_appraisal_failure(
+                "gpu_appraisal_failed",
+                returncode=completed.returncode,
+                stderr=completed.stderr,
+            )
             raise GpuAppraisalError("gpu_appraisal_failed") from exc
     finally:
         if evidence_path is not None:
@@ -119,3 +151,40 @@ def appraise_gpu_leg(
 
 def _ok(name: str, detail: str) -> AppraisalStep:
     return AppraisalStep(name=name, status="ok", detail=detail)
+
+
+def _log_gpu_appraisal_failure(
+    reason_code: str,
+    *,
+    stderr: str | bytes | None,
+    returncode: object | None = None,
+    exception_class: str | None = None,
+) -> None:
+    stderr_bytes = _stderr_bytes(stderr)
+    digest = hashlib.sha256(stderr_bytes).hexdigest()[:16]
+    if exception_class is not None:
+        log.warning(
+            "event=nvattest_gpu_appraisal_failed reason=%s exception=%s "
+            "stderr_len=%d stderr_sha256=%s",
+            reason_code,
+            exception_class,
+            len(stderr_bytes),
+            digest,
+        )
+        return
+    log.warning(
+        "event=nvattest_gpu_appraisal_failed reason=%s returncode=%s "
+        "stderr_len=%d stderr_sha256=%s",
+        reason_code,
+        returncode,
+        len(stderr_bytes),
+        digest,
+    )
+
+
+def _stderr_bytes(stderr: str | bytes | None) -> bytes:
+    if stderr is None:
+        return b""
+    if isinstance(stderr, bytes):
+        return stderr
+    return stderr.encode("utf-8", "surrogateescape")

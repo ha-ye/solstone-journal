@@ -11,12 +11,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
+from solstone.think.journal_io import LockTimeout
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.providers.rfdetr_install import (
     RfdetrInstallError,
 )
@@ -26,16 +31,19 @@ from solstone.think.providers.rfdetr_install import (
 from solstone.think.utils import get_journal
 
 SPP_NVATTEST_DIR_ENV = "SPP_NVATTEST_DIR"
-NVATTEST_VERSION = "1.2.2"
-NVATTEST_ARCHIVE_NAME = "libnvat-linux-x86_64-1.2.2.1780962352-archive.tar.xz"
-NVATTEST_ARCHIVE_URL = (
-    "https://developer.download.nvidia.com/compute/nvat/redist/libnvat/"
-    f"linux-x86_64/{NVATTEST_ARCHIVE_NAME}"
-)
-NVATTEST_ARCHIVE_SHA256 = (
-    "3f10da6fca794b7e3025c6645447947ec8bc45bcfde5b5b1d23241c7115630db"
-)
 SIDECAR_NAME = ".nvattest-install.json"
+CA_BUNDLE_RELATIVE_PATH = Path("share") / "ca" / "ca-bundle.pem"
+ENSURE_LOCK_TIMEOUT_S = 0.1
+ENSURE_LOCK_POLL_INTERVAL_S = 0.02
+
+NvattestArchiveKey = Literal["linux-x86_64"]
+NvattestEnsureStatus = Literal[
+    "already_installed",
+    "installed",
+    "install_in_flight",
+    "install_failed",
+    "platform_unsupported",
+]
 
 
 class NvattestInstallError(RuntimeError):
@@ -75,12 +83,51 @@ class NvattestInstallRecord:
         )
 
 
-NVATTEST_ARCHIVE_SPEC = NvattestArchiveSpec(
-    version=NVATTEST_VERSION,
-    url=NVATTEST_ARCHIVE_URL,
-    archive_name=NVATTEST_ARCHIVE_NAME,
-    sha256=NVATTEST_ARCHIVE_SHA256,
-)
+@dataclass(frozen=True, slots=True)
+class NvattestEnsureResult:
+    status: NvattestEnsureStatus
+    nvattest_dir: Path | None = None
+    reason_code: str | None = None
+    detail: str | None = None
+
+
+NVATTEST_ARCHIVES: dict[NvattestArchiveKey, NvattestArchiveSpec] = {
+    "linux-x86_64": NvattestArchiveSpec(
+        version="1.2.2-sol.1",
+        url=(
+            "https://updates.solstone.app/providers/nvattest/"
+            "libnvat-linux-x86_64-1.2.2-sol.1-archive.tar.xz"
+        ),
+        archive_name="libnvat-linux-x86_64-1.2.2-sol.1-archive.tar.xz",
+        sha256="60ef75d1873e7129f03ea80d107d92b2ef216d2a8815958617b30d9c721d474a",
+    ),
+}
+
+
+def nvattest_archive_key(
+    os_name: str | None = None,
+    arch: str | None = None,
+) -> NvattestArchiveKey | None:
+    if os_name is None:
+        os_name = "linux" if sys.platform.startswith("linux") else sys.platform
+    if arch is None:
+        arch = platform.machine()
+    normalized_arch = arch.lower()
+    if os_name == "linux" and normalized_arch in {"amd64", "x64", "x86_64"}:
+        return "linux-x86_64"
+    return None
+
+
+def resolve_nvattest_archive_spec(
+    archive_key: NvattestArchiveKey | None = None,
+) -> NvattestArchiveSpec:
+    resolved = archive_key or nvattest_archive_key()
+    if resolved is None:
+        raise NvattestInstallError(
+            "platform_unsupported",
+            "nvattest archive unsupported on this platform",
+        )
+    return NVATTEST_ARCHIVES[resolved]
 
 
 def cache_root(journal_path: str | Path | None = None) -> Path:
@@ -103,14 +150,77 @@ def resolve_nvattest_dir(
     return cache_root(journal_path)
 
 
+def ensure_nvattest_installed(
+    *,
+    explicit_override: str | Path | None = None,
+    journal_path: str | Path | None = None,
+    spec: NvattestArchiveSpec | None = None,
+    lock_timeout: float = ENSURE_LOCK_TIMEOUT_S,
+) -> NvattestEnsureResult:
+    """Ensure the journal-cache nvattest install is ready without blocking peers."""
+
+    nvattest_dir = resolve_nvattest_dir(
+        explicit_override,
+        journal_path=journal_path,
+    )
+    if explicit_override is not None or os.environ.get(SPP_NVATTEST_DIR_ENV):
+        # Override layout validation stays in nvgpu.binary so appraiser reasons
+        # still traverse binary -> composite -> ratls instead of install plumbing.
+        return NvattestEnsureResult(
+            status="already_installed",
+            nvattest_dir=nvattest_dir,
+        )
+
+    try:
+        resolved_spec = spec or resolve_nvattest_archive_spec()
+    except NvattestInstallError as exc:
+        return NvattestEnsureResult(
+            status="platform_unsupported",
+            reason_code=exc.reason_code,
+            detail=str(exc),
+        )
+
+    try:
+        with hold_lock(
+            _install_lock_path(journal_path),
+            timeout=lock_timeout,
+            poll_interval=ENSURE_LOCK_POLL_INTERVAL_S,
+        ):
+            if _installed(nvattest_dir, resolved_spec):
+                return NvattestEnsureResult(
+                    status="already_installed",
+                    nvattest_dir=nvattest_dir,
+                )
+            try:
+                installed = install_nvattest(
+                    spec=resolved_spec,
+                    journal_path=journal_path,
+                )
+            except NvattestInstallError as exc:
+                return NvattestEnsureResult(
+                    status="install_failed",
+                    nvattest_dir=nvattest_dir,
+                    reason_code=exc.reason_code,
+                    detail=str(exc),
+                )
+            return NvattestEnsureResult(status="installed", nvattest_dir=installed)
+    except LockTimeout:
+        return NvattestEnsureResult(
+            status="install_in_flight",
+            nvattest_dir=nvattest_dir,
+            reason_code="install-in-progress",
+        )
+
+
 def install_nvattest(
     *,
     force: bool = False,
-    spec: NvattestArchiveSpec = NVATTEST_ARCHIVE_SPEC,
+    spec: NvattestArchiveSpec | None = None,
     journal_path: str | Path | None = None,
 ) -> Path:
     """Download, verify, and install nvattest into the journal provider cache."""
 
+    spec = spec or resolve_nvattest_archive_spec()
     root = cache_root(journal_path)
     if not force and _installed(root, spec):
         return root
@@ -138,7 +248,11 @@ def install_nvattest(
 
 
 def _has_runtime_layout(root: Path) -> bool:
-    return (root / "bin" / "nvattest").is_file() and (root / "lib").is_dir()
+    return (
+        (root / "bin" / "nvattest").is_file()
+        and (root / "lib").is_dir()
+        and (root / CA_BUNDLE_RELATIVE_PATH).is_file()
+    )
 
 
 def _installed(root: Path, spec: NvattestArchiveSpec) -> bool:
@@ -161,6 +275,10 @@ def _archive_path(
     journal_path: str | Path | None = None,
 ) -> Path:
     return cache_root(journal_path) / ".downloads" / spec.archive_name
+
+
+def _install_lock_path(journal_path: str | Path | None = None) -> Path:
+    return cache_root(journal_path) / ".install"
 
 
 def _sha256_file(path: Path) -> str:
@@ -234,7 +352,7 @@ def _find_extracted_root(extract_dir: Path) -> Path:
         for path in extract_dir.rglob("nvattest")
         if path.is_file()
         and path.parent.name == "bin"
-        and (path.parent.parent / "lib").is_dir()
+        and _has_runtime_layout(path.parent.parent)
     ]
     if len(matches) != 1:
         raise NvattestInstallError(
@@ -247,10 +365,14 @@ def _find_extracted_root(extract_dir: Path) -> Path:
 def _install_extracted_tree(source: Path, root: Path) -> None:
     binary = source / "bin" / "nvattest"
     lib_dir = source / "lib"
-    if not binary.is_file() or not lib_dir.is_dir():
+    ca_bundle = source / CA_BUNDLE_RELATIVE_PATH
+    if not binary.is_file() or not lib_dir.is_dir() or not ca_bundle.is_file():
         raise NvattestInstallError(
             "archive_layout_invalid",
-            "extracted archive must contain bin/nvattest and lib/",
+            (
+                "extracted archive must contain bin/nvattest, lib/, "
+                "and share/ca/ca-bundle.pem"
+            ),
         )
 
     root.mkdir(parents=True, exist_ok=True)

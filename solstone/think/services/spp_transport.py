@@ -12,13 +12,17 @@ import socket
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from OpenSSL import SSL
 
 from solstone.think.models import AttestationFailedError, AttestationStaleError
-from solstone.think.providers.nvattest_install import resolve_nvattest_dir
+from solstone.think.providers.nvattest_install import (
+    ensure_nvattest_installed,
+    resolve_nvattest_dir,
+)
 from solstone.think.services import spp
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from solstone.think.services.spp_attest.composite import verify_composite
@@ -73,6 +77,33 @@ def _attestation_failed(
     raise AttestationFailedError(
         f"the confidential attestation transport failed closed ({reason_code})"
     )
+
+
+def _nvattest_prerequisite_failed(
+    kind: Literal["failed", "unreachable"],
+    reason_code: str,
+) -> None:
+    with _LOCK:
+        _teardown_locked()
+    _attestation_failed(kind, reason_code)
+
+
+def _ensure_nvattest_for_attestation(block: dict[str, Any]) -> Path | None:
+    if spp.confidential_provenance() is None:
+        return None
+    result = ensure_nvattest_installed(explicit_override=block.get("nvattest_dir"))
+    if result.status in {"already_installed", "installed"}:
+        return result.nvattest_dir
+    if result.status == "install_in_flight":
+        # Another process owns appraiser acquisition; evidence has not been rejected.
+        _nvattest_prerequisite_failed("unreachable", "nvattest_install_in_progress")
+    if result.status == "platform_unsupported":
+        # This host cannot acquire the appraiser archive, so attestation cannot pass.
+        _nvattest_prerequisite_failed("failed", "nvattest_platform_unsupported")
+    if result.status == "install_failed":
+        # Local appraiser acquisition failed before evidence verification could run.
+        _nvattest_prerequisite_failed("failed", "nvattest_install_failed")
+    _nvattest_prerequisite_failed("failed", "unexpected_error")
 
 
 def _endpoint_from_block(block: dict[str, Any]) -> RatlsEndpoint:
@@ -174,13 +205,20 @@ def _start_listener_locked() -> None:
     thread.start()
 
 
-def _establish_channel_locked(block: dict[str, Any], now: datetime) -> AttestedChannel:
+def _establish_channel_locked(
+    block: dict[str, Any],
+    now: datetime,
+    *,
+    nvattest_dir: Path | None = None,
+) -> AttestedChannel:
     try:
         endpoint = _endpoint_from_block(block)
         return establish_attested_channel(
             endpoint,
             owner_nonce=secrets.token_bytes(OWNER_NONCE_BYTES),
-            nvattest_dir=resolve_nvattest_dir(block.get("nvattest_dir")),
+            nvattest_dir=nvattest_dir
+            if nvattest_dir is not None
+            else resolve_nvattest_dir(block.get("nvattest_dir")),
             now=now,
             composite_verifier=verify_composite,
             monotonic_now=time.monotonic,
@@ -202,8 +240,13 @@ def _establish_channel_locked(block: dict[str, Any], now: datetime) -> AttestedC
         _attestation_failed("failed", "unexpected_error")
 
 
-def _establish_and_record_locked(block: dict[str, Any], now: datetime) -> None:
-    channel = _establish_channel_locked(block, now)
+def _establish_and_record_locked(
+    block: dict[str, Any],
+    now: datetime,
+    *,
+    nvattest_dir: Path | None = None,
+) -> None:
+    channel = _establish_channel_locked(block, now, nvattest_dir=nvattest_dir)
     _start_listener_locked()
     _POOL.append(channel)
     spp.record_attestation_verified(
@@ -216,30 +259,41 @@ def _establish_and_record_locked(block: dict[str, Any], now: datetime) -> None:
     )
 
 
+def _reuse_or_raise_stale_locked(now: datetime) -> bool:
+    state = spp.get_attestation_state()
+    if (
+        state.session is not None
+        and state.session.status(now) == "verified"
+        and _transport_live_locked()
+    ):
+        return True
+    if (
+        state.session is not None
+        and state.session.status(now) != "verified"
+        and _transport_live_locked()
+    ):
+        _teardown_locked()
+        raise AttestationStaleError(
+            "the confidential attestation cadence lapsed (attestation_stale)"
+        )
+    return False
+
+
 def verify_confidential_attestation(block: dict[str, Any]) -> None:
     global _CONFIDENTIAL_BLOCK
 
     now = datetime.now(timezone.utc)
     with _LOCK:
         _CONFIDENTIAL_BLOCK = dict(block)
-        state = spp.get_attestation_state()
-        if (
-            state.session is not None
-            and state.session.status(now) == "verified"
-            and _transport_live_locked()
-        ):
+        if _reuse_or_raise_stale_locked(now):
             return
-        if (
-            state.session is not None
-            and state.session.status(now) != "verified"
-            and _transport_live_locked()
-        ):
-            _teardown_locked()
-            raise AttestationStaleError(
-                "the confidential attestation cadence lapsed (attestation_stale)"
-            )
 
-        _establish_and_record_locked(block, now)
+    nvattest_dir = _ensure_nvattest_for_attestation(block)
+    with _LOCK:
+        _CONFIDENTIAL_BLOCK = dict(block)
+        if _reuse_or_raise_stale_locked(now):
+            return
+        _establish_and_record_locked(block, now, nvattest_dir=nvattest_dir)
 
 
 def confidential_egress_base_url(endpoint_base_url: str) -> str:
@@ -295,12 +349,16 @@ def recheck_confidential_attestation() -> None:
     if block is None:
         return
     now = datetime.now(timezone.utc)
+    try:
+        nvattest_dir = _ensure_nvattest_for_attestation(block)
+    except AttestationFailedError:
+        return
     with _LOCK:
         _teardown_locked()
         spp.clear_attestation_state()
         _CONFIDENTIAL_BLOCK = dict(block)
         try:
-            _establish_and_record_locked(block, now)
+            _establish_and_record_locked(block, now, nvattest_dir=nvattest_dir)
         except AttestationFailedError:
             return
 
@@ -320,6 +378,8 @@ def _borrow_or_establish_channel_locked(now: datetime) -> AttestedChannel | None
     if _CONFIDENTIAL_BLOCK is None:
         return _activate_channel_locked(channel)
     if channel is None:
+        # Public entry points run ensure-install before the first verified session;
+        # this locked refill only opens an extra channel and must not download.
         channel = _establish_channel_locked(_CONFIDENTIAL_BLOCK, now)
     return _activate_channel_locked(channel)
 

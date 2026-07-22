@@ -257,6 +257,9 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
         "local_runtime_not_ready",
         "local_artifact_not_ready",
         "attestation_not_verified",
+        "nvattest_install_in_progress",
+        "nvattest_platform_unsupported",
+        "nvattest_unavailable",
         "provider_key_invalid",
         "model_not_found",
         "provider_quota_exceeded",
@@ -269,6 +272,8 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
         "cogitate_terminal_error",
         "attestation_rejected",
         "attestation_expired",
+        "nvattest_install_failed",
+        "nvattest_integrity_failed",
         "local_server_unhealthy",
         "configuration_invalid",
         "fingerprint_key_unavailable",
@@ -307,7 +312,7 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
     assert set(BRAIN_REASON_TO_AGGREGATE) == BRAIN_REASON_CODES
     assert set(BRAIN_REASON_TO_AGGREGATE.values()) <= BRAIN_AGGREGATE_STATES
     evidence_reasons = frozenset().union(*BRAIN_EVIDENCE_REASON_CODES.values())
-    assert len(evidence_reasons) == 26
+    assert len(evidence_reasons) == 31
     assert len(BRAIN_PROJECTION_ONLY_REASON_CODES) == 10
     assert evidence_reasons | BRAIN_PROJECTION_ONLY_REASON_CODES == BRAIN_REASON_CODES
     assert not (evidence_reasons & BRAIN_PROJECTION_ONLY_REASON_CODES)

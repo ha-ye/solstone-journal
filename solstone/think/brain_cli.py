@@ -67,6 +67,33 @@ from solstone.think.utils import require_solstone, setup_cli
 
 LOG = logging.getLogger("solstone.think.brain_cli")
 
+_SPP_ATTESTATION_FAILURE_REASON_TO_BRAIN_REASON = {
+    "gateway_unreachable": "attestation_not_verified",
+    "nvattest_install_in_progress": "nvattest_install_in_progress",
+    "nvattest_platform_unsupported": "nvattest_platform_unsupported",
+    "nvattest_unavailable": "nvattest_unavailable",
+    "nvattest_install_failed": "nvattest_install_failed",
+    "nvattest_integrity_failed": "nvattest_integrity_failed",
+    "tls_handshake_failed": "attestation_rejected",
+    "proof_http_failed": "attestation_rejected",
+    "certificate_invalid": "attestation_rejected",
+    "certificate_extension_missing": "attestation_rejected",
+    "certificate_extension_not_critical": "attestation_rejected",
+    "certificate_extension_invalid": "attestation_rejected",
+    "certificate_evidence_invalid": "attestation_rejected",
+    "nonce_mismatch": "attestation_rejected",
+    "spki_mismatch": "attestation_rejected",
+    "cpu_verification_failed": "attestation_rejected",
+    "gpu_nonce_mismatch": "attestation_rejected",
+    "gpu_appraisal_failed": "attestation_rejected",
+    "composite_appraisal_failed": "attestation_rejected",
+    "exporter_proof_invalid": "attestation_rejected",
+    "exporter_mismatch": "attestation_rejected",
+    "exporter_quote_failed": "attestation_rejected",
+    "endpoint_invalid": "attestation_rejected",
+    "unexpected_error": "attestation_rejected",
+}
+
 RefreshOutcome = Literal["busy", "stale_expected_fingerprint", "lost_fence"]
 _REFRESH_EXIT_3: frozenset[str] = frozenset(
     {"busy", "stale_expected_fingerprint", "lost_fence"}
@@ -405,11 +432,15 @@ def _spp_prerequisite(now: datetime) -> tuple[BrainEvidenceComponent, str | None
 
     state = spp.get_attestation_state()
     if state.failure is not None:
-        reason = (
-            "attestation_not_verified"
-            if state.failure.kind == "unreachable"
-            else "attestation_rejected"
+        reason = _SPP_ATTESTATION_FAILURE_REASON_TO_BRAIN_REASON.get(
+            state.failure.reason_code
         )
+        if reason is None:
+            LOG.warning(
+                "event=spp_attestation_reason_unmapped raw_reason=%s",
+                state.failure.reason_code,
+            )
+            reason = "attestation_rejected"
         return _failed_component(now, reason), reason
     if state.session is None:
         return _failed_component(

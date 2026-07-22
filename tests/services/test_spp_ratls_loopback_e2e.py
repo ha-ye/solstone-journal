@@ -21,6 +21,8 @@ def _nvattest_root(tmp_path: Path) -> Path:
     (root / "bin").mkdir(parents=True)
     (root / "bin" / "nvattest").write_text("#!/bin/sh\n", encoding="utf-8")
     (root / "lib").mkdir()
+    (root / "share" / "ca").mkdir(parents=True)
+    (root / "share" / "ca" / "ca-bundle.pem").write_text("ca\n", encoding="utf-8")
     return root
 
 

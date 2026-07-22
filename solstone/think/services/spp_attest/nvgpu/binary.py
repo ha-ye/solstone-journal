@@ -12,6 +12,8 @@ from pathlib import Path
 from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.tlv import SPDM_NONCE_SIZE
 
+CA_BUNDLE_RELATIVE_PATH = Path("share") / "ca" / "ca-bundle.pem"
+
 
 @dataclass(frozen=True, slots=True)
 class NvattestCommand:
@@ -19,19 +21,22 @@ class NvattestCommand:
     env: dict[str, str]
 
 
-def locate_nvattest(nvattest_dir: Path) -> tuple[Path, Path]:
-    """Return the nvattest binary and lib directory under an injected install dir."""
+def locate_nvattest(nvattest_dir: Path) -> tuple[Path, Path, Path]:
+    """Return the nvattest binary, lib directory, and CA bundle."""
 
     root = nvattest_dir.resolve()
     binary = root / "bin" / "nvattest"
     lib_dir = root / "lib"
+    ca_bundle = root / CA_BUNDLE_RELATIVE_PATH
     if not root.is_dir():
         raise GpuAppraisalError("nvattest_unavailable")
     if not binary.is_file():
         raise GpuAppraisalError("nvattest_unavailable")
     if not lib_dir.is_dir():
         raise GpuAppraisalError("nvattest_unavailable")
-    return binary, lib_dir
+    if not ca_bundle.is_file():
+        raise GpuAppraisalError("nvattest_integrity_failed")
+    return binary, lib_dir, ca_bundle
 
 
 def build_nvattest_attest_command(
@@ -53,7 +58,7 @@ def build_nvattest_attest_command(
     if rim_store == "remote" and rim_dir is not None:
         raise ValueError("rim_dir is only valid when rim_store == 'dir'")
 
-    binary, lib_dir = locate_nvattest(nvattest_dir)
+    binary, lib_dir, ca_bundle = locate_nvattest(nvattest_dir)
     argv = [
         str(binary),
         "--format",
@@ -69,6 +74,8 @@ def build_nvattest_attest_command(
         "local",
         "--rim-store",
         rim_store,
+        "--ca-bundle",
+        str(ca_bundle),
     ]
     if rim_dir is not None:
         argv.extend(["--rim-dir", str(rim_dir)])

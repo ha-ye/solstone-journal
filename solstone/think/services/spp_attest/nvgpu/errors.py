@@ -11,6 +11,7 @@ from solstone.think.services.spp_attest.errors import VerificationError
 
 GpuAppraisalReason = Literal[
     "nvattest_unavailable",
+    "nvattest_integrity_failed",
     "gpu_nonce_mismatch",
     "gpu_appraisal_failed",
 ]

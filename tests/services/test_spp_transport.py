@@ -7,6 +7,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -59,7 +60,17 @@ class _AliveThread:
 
 
 @pytest.fixture(autouse=True)
-def _clear_transport_state():
+def _clear_transport_state(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        spp_transport,
+        "ensure_nvattest_installed",
+        lambda **_kwargs: SimpleNamespace(
+            status="already_installed",
+            nvattest_dir=Path("/tmp/solstone-nvattest-test"),
+            reason_code=None,
+            detail=None,
+        ),
+    )
     spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
     yield
@@ -331,6 +342,7 @@ RATLS_VERIFICATION_REASON_CODES = (
     "cpu_verification_failed",
     "gpu_nonce_mismatch",
     "nvattest_unavailable",
+    "nvattest_integrity_failed",
     "gpu_appraisal_failed",
     "composite_appraisal_failed",
     "exporter_proof_invalid",
@@ -393,6 +405,45 @@ def test_attestation_failure_buckets_real_reason_codes_at_transport_catch_site(
     assert failure.reason_code == reason_code
 
 
+@pytest.mark.parametrize(
+    ("status", "kind", "reason_code"),
+    [
+        ("install_in_flight", "unreachable", "nvattest_install_in_progress"),
+        ("platform_unsupported", "failed", "nvattest_platform_unsupported"),
+        ("install_failed", "failed", "nvattest_install_failed"),
+    ],
+)
+def test_verify_confidential_attestation_records_nvattest_install_prerequisites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    kind: str,
+    reason_code: str,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    establish = Mock(side_effect=AssertionError("verify should not run"))
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    monkeypatch.setattr(
+        spp_transport,
+        "ensure_nvattest_installed",
+        lambda **_kwargs: SimpleNamespace(
+            status=status,
+            nvattest_dir=None,
+            reason_code=None,
+            detail=None,
+        ),
+    )
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.verify_confidential_attestation(block)
+
+    establish.assert_not_called()
+    failure = spp.get_attestation_state().failure
+    assert failure is not None
+    assert failure.kind == kind
+    assert failure.reason_code == reason_code
+
+
 def test_recheck_confidential_attestation_records_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -414,6 +465,41 @@ def test_recheck_confidential_attestation_records_success(
     assert state.failure is None
     assert state.last_verified is state.session
     assert spp_transport._FORWARDER_BASE_URL == "http://127.0.0.1:4567"
+    assert block["endpoint_url"] == "https://spp.example.test:9443"
+
+
+def test_recheck_confidential_attestation_ensures_nvattest_before_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    _patch_listener(monkeypatch)
+    nvattest_dir = tmp_path / "cache" / "providers" / "nvattest"
+    ensured: list[dict[str, object]] = []
+
+    def fake_ensure_nvattest_installed(**kwargs):
+        ensured.append(kwargs)
+        return SimpleNamespace(
+            status="already_installed",
+            nvattest_dir=nvattest_dir,
+            reason_code=None,
+            detail=None,
+        )
+
+    def fake_establish(_endpoint, **kwargs):
+        assert ensured
+        assert kwargs["nvattest_dir"] == nvattest_dir
+        return _FakeChannel(object())
+
+    monkeypatch.setattr(
+        spp_transport, "ensure_nvattest_installed", fake_ensure_nvattest_installed
+    )
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", fake_establish)
+
+    spp_transport.recheck_confidential_attestation()
+
+    assert ensured == [{"explicit_override": None}]
+    assert spp.get_attestation_state().failure is None
     assert block["endpoint_url"] == "https://spp.example.test:9443"
 
 
@@ -441,11 +527,22 @@ def test_recheck_confidential_attestation_fails_closed_and_preserves_last_verifi
 
 
 def test_recheck_confidential_attestation_off_is_noop(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text("{}", encoding="utf-8")
     establish = Mock(side_effect=AssertionError("attestation attempted"))
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    monkeypatch.setattr(
+        spp_transport,
+        "ensure_nvattest_installed",
+        Mock(side_effect=AssertionError("nvattest ensure attempted")),
+    )
 
     spp_transport.recheck_confidential_attestation()
 
     establish.assert_not_called()
+    assert not (tmp_path / "cache" / "providers" / "nvattest").exists()

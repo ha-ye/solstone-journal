@@ -476,6 +476,43 @@ def test_build_brain_presentation_maps_confidential_attestation(
 
 
 @pytest.mark.parametrize(
+    ("reason", "aggregate", "component_status", "expected_state"),
+    [
+        ("nvattest_install_failed", "unhealthy", "failed", "failed"),
+        ("nvattest_platform_unsupported", "blocked", "blocked", "failed"),
+        ("nvattest_unavailable", "blocked", "blocked", "failed"),
+        ("nvattest_integrity_failed", "unhealthy", "failed", "failed"),
+        ("nvattest_install_in_progress", "blocked", "blocked", "verifying"),
+    ],
+)
+def test_build_brain_presentation_preserves_nvattest_reason(
+    monkeypatch,
+    reason: str,
+    aggregate: str,
+    component_status: str,
+    expected_state: str,
+):
+    inspection = _inspection(
+        aggregate=aggregate,
+        reason=reason,
+        record=_record(
+            lane_prerequisites=_component(component_status, reason),
+            generate=_component("not_attempted", reason),
+            cogitate=_component("not_attempted", reason),
+        ),
+    )
+
+    presentation = _build_presentation(monkeypatch, inspection, configured=True)
+
+    assert presentation["confidential_attestation"] == {
+        "state": expected_state,
+        "reason": reason,
+        "observed_at": NOW_ISO,
+        "expires_at": None,
+    }
+
+
+@pytest.mark.parametrize(
     "inspection",
     [
         _inspection(aggregate="checking", reason="brain_check_in_progress"),
