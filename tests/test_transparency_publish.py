@@ -405,6 +405,42 @@ def _entry_signature_gets(
     ]
 
 
+def _install_remote_stage(
+    *,
+    transport: DirectoryTransparencyTransport,
+    config: publisher.PublishConfig,
+    stage: publisher.StagedPublish,
+) -> None:
+    for name, path in stage.immutable_files():
+        transport.put_object(
+            version_object_key(config.product, config.version, name),
+            path.read_bytes(),
+            content_type="application/octet-stream"
+            if name.endswith(".minisig")
+            else "application/json",
+            cache_control="immutable",
+            if_none_match=True,
+        )
+    transport.put_object(
+        ledger_key(config.product),
+        stage.ledger_jsonl_path.read_bytes(),
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        latest_signature_key(config.product),
+        stage.latest_signature_path.read_bytes(),
+        content_type="application/octet-stream",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        latest_key(config.product),
+        stage.latest_path.read_bytes(),
+        content_type="application/json",
+        cache_control="no-cache",
+    )
+
+
 def test_staging_manifest_v1_pinned_fixture(tmp_path: Path) -> None:
     _write_staging_manifest_fixture_tree(tmp_path)
     manifest = publisher.render_staging_manifest(tmp_path)
@@ -902,10 +938,16 @@ def test_staged_retry_reuses_entry_bytes_despite_advancing_wall_time(
     assert second.entry_path.read_bytes() == first_bytes
 
 
-def test_stale_stage_fails_poisoned_version_before_mutable_write(
+def _prepare_stale_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> tuple[
+    publisher.PublishConfig,
+    FakeTransparencySigner,
+    DirectoryTransparencyTransport,
+    publisher.StagedPublish,
+    EntryRecord,
+]:
     _candidate(tmp_path, version="0.9.2")
     _patch_recover(monkeypatch, version="0.9.2")
     signer = FakeTransparencySigner()
@@ -946,7 +988,24 @@ def test_stale_stage_fails_poisoned_version_before_mutable_write(
         cache_control="no-cache",
     )
     transport.call_log.clear()
+    return config, signer, transport, stage, first
 
+
+def test_stale_stage_fails_poisoned_version_before_mutable_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, signer, transport, _stage, _first = _prepare_stale_stage(
+        tmp_path, monkeypatch
+    )
+    transport.put_object(
+        version_object_key(PRODUCT, "0.9.2", ENTRY_OBJECT_NAME),
+        b"poisoned\n",
+        content_type="application/json",
+        cache_control="immutable",
+        if_none_match=True,
+    )
+    transport.call_log.clear()
     with pytest.raises(DriverError) as error:
         publisher.publish_transparency(
             config=config,
@@ -956,10 +1015,10 @@ def test_stale_stage_fails_poisoned_version_before_mutable_write(
             now=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
         )
 
-    assert "version 0.9.2 is already permanently recorded at seq=2" in (
+    assert (
         error.value.failures[0].error
+        == "transparency remote version prefix is corrupt or poisoned"
     )
-    assert f"entry_sha256={stage.entry_sha256}" in error.value.failures[0].error
     mutable_puts = [
         call
         for call in transport.call_log
@@ -972,6 +1031,190 @@ def test_stale_stage_fails_poisoned_version_before_mutable_write(
         }
     ]
     assert mutable_puts == []
+
+
+def test_stale_stage_without_remote_prefix_reports_local_staging_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, signer, transport, stage, _first = _prepare_stale_stage(
+        tmp_path, monkeypatch
+    )
+
+    with pytest.raises(DriverError) as error:
+        publisher.publish_transparency(
+            config=config,
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+        )
+
+    failure = error.value.failures[0]
+    assert (
+        failure.error
+        == "transparency staging directory is stale and not remotely recorded"
+    )
+    assert str(stage.path) in failure.actual
+    assert str(stage.path) in failure.repair
+    assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
+
+
+def test_stale_stage_with_parseable_remote_entry_reports_permanent_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, signer, transport, _stage, first = _prepare_stale_stage(
+        tmp_path, monkeypatch
+    )
+    latest = transport.get_object(latest_key(PRODUCT)).body
+    latest_signature = transport.get_object(latest_signature_key(PRODUCT)).body
+    ledger = transport.get_object(ledger_key(PRODUCT)).body
+    recorded = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=2,
+        version="0.9.2",
+        prev_sha256=first.sha256,
+        prev_version="0.9.1",
+        published_utc="2026-07-23T12:00:00Z",
+    )
+    transport.put_object(
+        latest_signature_key(PRODUCT),
+        latest_signature,
+        content_type="application/octet-stream",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        latest_key(PRODUCT),
+        latest,
+        content_type="application/json",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        ledger,
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher.publish_transparency(
+            config=config,
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+        )
+
+    assert error.value.failures[0].error == (
+        "version 0.9.2 is already permanently recorded at "
+        f"seq=2 source_commit={SOURCE_COMMIT} entry_sha256={recorded.sha256}"
+    )
+
+
+def test_extending_stage_with_byte_identical_remote_prefix_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path, version="0.9.2")
+    _patch_recover(monkeypatch, version="0.9.2")
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    config = _config(tmp_path, version="0.9.2", genesis=None)
+    state = publisher.fetch_chain_state(
+        config=config,
+        transport=transport,
+        signer=signer,
+    )
+    stage = publisher.create_stage_from_candidate(
+        config=config,
+        state=state,
+        signer=signer,
+        now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+    for name, path in stage.immutable_files():
+        transport.put_object(
+            version_object_key(PRODUCT, "0.9.2", name),
+            path.read_bytes(),
+            content_type="application/octet-stream"
+            if name.endswith(".minisig")
+            else "application/json",
+            cache_control="immutable",
+            if_none_match=True,
+        )
+
+    result = publisher.publish_transparency(
+        config=config,
+        transport=transport,
+        signer=signer,
+        archive_runner=_archive_ok,
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.seq == 2
+    assert result.entry_sha256 == stage.entry_sha256
+
+
+def test_extending_stage_with_conflicting_remote_prefix_fails_before_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path, version="0.9.2")
+    _patch_recover(monkeypatch, version="0.9.2")
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    config = _config(tmp_path, version="0.9.2", genesis=None)
+    state = publisher.fetch_chain_state(
+        config=config,
+        transport=transport,
+        signer=signer,
+    )
+    publisher.create_stage_from_candidate(
+        config=config,
+        state=state,
+        signer=signer,
+        now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+    transport.put_object(
+        version_object_key(PRODUCT, "0.9.2", ENTRY_OBJECT_NAME),
+        b"conflict\n",
+        content_type="application/json",
+        cache_control="immutable",
+        if_none_match=True,
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher.publish_transparency(
+            config=config,
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+
+    assert (
+        error.value.failures[0].error
+        == "transparency remote version prefix is poisoned for staged retry"
+    )
+    assert all(call["op"] != "ARCHIVE" for call in transport.call_log)
 
 
 def test_publish_blocks_before_archive_when_head_witness_baseline_untracked(
@@ -1110,7 +1353,57 @@ def test_dirty_retained_manifest_fails_closed_before_signing(
     )
 
 
-def test_existing_version_is_permanent_terminal_failure(tmp_path: Path) -> None:
+def test_existing_version_with_matching_digest_is_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path)
+    _patch_recover(monkeypatch)
+    config = _config(tmp_path, genesis=None)
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    genesis_state = publisher.ChainState(
+        entries=(),
+        pointer=None,
+        pointer_signature=None,
+        pointer_signature_etag=None,
+        next_seq=1,
+        prev_sha256=ZERO_SHA256,
+        prev_version="",
+        tip_published_utc=None,
+        derived_ledger_jsonl=b"",
+    )
+    stage = publisher.create_stage_from_candidate(
+        config=config,
+        state=genesis_state,
+        signer=signer,
+        now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+    )
+    _install_remote_stage(transport=transport, config=config, stage=stage)
+    transport.call_log.clear()
+
+    result = publisher.publish_transparency(
+        config=config,
+        transport=transport,
+        signer=signer,
+        archive_runner=_archive_ok,
+        now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.seq == 1
+    assert result.version == "0.9.1"
+    assert result.entry_sha256 == stage.entry_sha256
+    assert result.witness_status.state == "already-published"
+    assert "chain unchanged" in result.witness_status.message
+    assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
+
+
+def test_existing_version_with_mismatched_digest_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path)
+    _patch_recover(monkeypatch)
     signer = FakeTransparencySigner()
     transport = DirectoryTransparencyTransport(tmp_path / "remote")
     existing = _install_remote_entry(

@@ -238,6 +238,15 @@ class StagedPublish:
 
 
 @dataclass(frozen=True)
+class RemoteVersionPrefix:
+    prefix: str
+    keys: tuple[str, ...]
+    bodies: Mapping[str, bytes]
+    entry: EntryRecord | None
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PublishResult:
     product: str
     version: str
@@ -755,23 +764,148 @@ def load_existing_stage(
     return staged
 
 
-def _assert_stage_extends_state(stage: StagedPublish, state: ChainState) -> None:
+def _stage_immutable_by_key(
+    *, config: PublishConfig, stage: StagedPublish
+) -> dict[str, bytes]:
+    return {
+        version_object_key(config.product, config.version, name): path.read_bytes()
+        for name, path in stage.immutable_files()
+    }
+
+
+def _probe_remote_version_prefix(
+    *,
+    config: PublishConfig,
+    transport: TransparencyTransport,
+) -> RemoteVersionPrefix:
+    prefix = version_prefix(config.product, config.version)
+    listed = transport.list_prefix(prefix)
+    if listed.status != 200:
+        raise DriverError(
+            [
+                failure(
+                    "transparency remote version prefix LIST failed",
+                    expected=f"{prefix} listing",
+                    actual=f"status={listed.status} exit_code={listed.exit_code}",
+                    repair="retry after the S3 list operation is healthy",
+                )
+            ]
+        )
+    bodies: dict[str, bytes] = {}
+    unreadable: list[str] = []
+    entry: EntryRecord | None = None
+    entry_key = version_object_key(config.product, config.version, ENTRY_OBJECT_NAME)
+    for key in listed.keys:
+        result = transport.get_object(key, cache_bypass=True)
+        if result.status != 200:
+            unreadable.append(f"{key} status={result.status}")
+            continue
+        bodies[key] = result.body
+        if key == entry_key:
+            try:
+                entry = parse_ledger_entry_bytes(result.body)
+            except DriverError:
+                unreadable.append(f"{key} unreadable ledger entry")
+    return RemoteVersionPrefix(
+        prefix=prefix,
+        keys=listed.keys,
+        bodies=bodies,
+        entry=entry,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _remote_prefix_matches_stage(
+    probe: RemoteVersionPrefix, expected: Mapping[str, bytes]
+) -> bool:
+    if probe.unreadable:
+        return False
+    if set(probe.keys) != set(expected):
+        return False
+    return all(probe.bodies.get(key) == body for key, body in expected.items())
+
+
+def _describe_remote_prefix(probe: RemoteVersionPrefix) -> str:
+    if not probe.keys:
+        return f"no remote objects under {probe.prefix}"
+    if probe.unreadable:
+        return "unreadable remote prefix: " + ", ".join(probe.unreadable)
+    return "remote objects: " + ", ".join(probe.keys)
+
+
+def _stage_entry_record(stage: StagedPublish) -> EntryRecord:
     record = parse_ledger_entry_bytes(stage.entry_path.read_bytes())
+    if record.sha256 != stage.entry_sha256:
+        fail_closed(
+            "transparency staging metadata entry digest does not match bytes",
+            expected=stage.entry_sha256,
+            actual=record.sha256,
+            repair="discard the staging directory and retry",
+        )
+    return record
+
+
+def _assert_stage_extends_state(
+    *,
+    config: PublishConfig,
+    stage: StagedPublish,
+    state: ChainState,
+    transport: TransparencyTransport,
+) -> None:
+    record = _stage_entry_record(stage)
     entry = record.entry
     if (
         int(entry["seq"]) == state.next_seq
         and entry["prev_sha256"] == state.prev_sha256
     ):
+        probe = _probe_remote_version_prefix(config=config, transport=transport)
+        if not probe.keys:
+            return
+        if _remote_prefix_matches_stage(
+            probe, _stage_immutable_by_key(config=config, stage=stage)
+        ):
+            return
+        fail_closed(
+            "transparency remote version prefix is poisoned for staged retry",
+            expected=f"absent prefix or byte-identical staged objects under {probe.prefix}",
+            actual=_describe_remote_prefix(probe),
+            repair="cut the next version; a locked-zone object can never be replaced",
+        )
         return
+    probe = _probe_remote_version_prefix(config=config, transport=transport)
+    if not probe.keys:
+        fail_closed(
+            "transparency staging directory is stale and not remotely recorded",
+            expected=f"seq={state.next_seq} prev_sha256={state.prev_sha256}",
+            actual=(
+                f"purely local stale stage {stage.path} "
+                f"seq={entry['seq']} prev_sha256={entry['prev_sha256']}"
+            ),
+            repair=f"discard staging directory {stage.path} and retry",
+        )
+    if probe.entry is not None:
+        fail_closed(
+            (
+                f"version {stage.version} is already permanently recorded at "
+                f"seq={probe.entry.entry['seq']} "
+                f"source_commit={probe.entry.entry['source_commit']} "
+                f"entry_sha256={probe.entry.sha256}"
+            ),
+            expected=f"seq={state.next_seq} prev_sha256={state.prev_sha256}",
+            actual=(
+                f"remote entry seq={probe.entry.entry['seq']} "
+                f"prev_sha256={probe.entry.entry['prev_sha256']}"
+            ),
+            repair="cut the next version; a version key is one-shot and permanent",
+        )
     fail_closed(
-        (
-            f"version {stage.version} is already permanently recorded at "
-            f"seq={entry['seq']} source_commit={entry['source_commit']} "
-            f"entry_sha256={record.sha256}"
+        "transparency remote version prefix is corrupt or poisoned",
+        expected=f"absent prefix or parseable locked entry under {probe.prefix}",
+        actual=_describe_remote_prefix(probe),
+        repair=(
+            "stop and audit immutable entries, ledger.jsonl, latest pointer, "
+            "and transparency-head-log.jsonl before publishing"
         ),
-        expected=f"seq={state.next_seq} prev_sha256={state.prev_sha256}",
-        actual=f"seq={entry['seq']} prev_sha256={entry['prev_sha256']}",
-        repair="cut the next version; a version key is one-shot and permanent",
     )
 
 
@@ -1544,6 +1678,86 @@ def _write_mutable_objects(
         )
 
 
+def _state_before_published_tip(state: ChainState) -> ChainState:
+    if not state.entries:
+        fail_closed(
+            "transparency latest pointer has no chain entry",
+            expected="latest pointer tip entry",
+            actual="empty chain state",
+            repair="stop and audit ledger.jsonl and latest pointer before retrying",
+        )
+    tip = state.entries[-1]
+    prior_entries = state.entries[:-1]
+    previous_tip = prior_entries[-1] if prior_entries else None
+    return ChainState(
+        entries=prior_entries,
+        pointer=None,
+        pointer_signature=None,
+        pointer_signature_etag=None,
+        next_seq=int(tip.entry["seq"]),
+        prev_sha256=str(tip.entry["prev_sha256"]),
+        prev_version=str(tip.entry["prev_version"]),
+        tip_published_utc=str(previous_tip.entry["published_utc"])
+        if previous_tip is not None
+        else None,
+        derived_ledger_jsonl=ledger_jsonl_bytes(prior_entries),
+    )
+
+
+def _published_noop_result(
+    *,
+    config: PublishConfig,
+    state: ChainState,
+    stage: StagedPublish,
+    transport: TransparencyTransport,
+    signer: TransparencySigner,
+    started: float,
+) -> PublishResult:
+    remote = _verify_remote_entry(
+        product=config.product,
+        version=config.version,
+        transport=transport,
+        signer=signer,
+    )
+    if state.entries[-1].sha256 == stage.entry_sha256 == remote.sha256:
+        public_urls = tuple(
+            public_url(config.base_url, key)
+            for key in (
+                version_object_key(config.product, config.version, ENTRY_OBJECT_NAME),
+                version_object_key(
+                    config.product, config.version, ENTRY_SIGNATURE_NAME
+                ),
+                ledger_key(config.product),
+                latest_signature_key(config.product),
+                latest_key(config.product),
+                PUBLIC_TRUST_ANCHOR_PATH,
+            )
+        )
+        return PublishResult(
+            product=config.product,
+            version=config.version,
+            seq=stage.seq,
+            entry_sha256=stage.entry_sha256,
+            public_urls=public_urls,
+            archive_receipt_sha256="",
+            witness_status=WitnessStatus(
+                state="already-published",
+                message=f"version {config.version} is already published; chain unchanged",
+            ),
+            elapsed_seconds=time.monotonic() - started,
+        )
+    fail_closed(
+        (
+            f"version {config.version} is already permanently recorded at "
+            f"seq={remote.entry['seq']} source_commit={remote.entry['source_commit']} "
+            f"entry_sha256={remote.sha256}"
+        ),
+        expected=stage.entry_sha256,
+        actual=remote.sha256,
+        repair="cut the next version; a version key is one-shot and permanent",
+    )
+
+
 def _assert_head_witness_baseline_committed(config: PublishConfig) -> None:
     rows = [row for row in read_head_log(config.root) if row.product == config.product]
     if not rows:
@@ -1574,18 +1788,10 @@ def publish_transparency(
     started = time.monotonic()
     signer.check()
     state = fetch_chain_state(config=config, transport=transport, signer=signer)
-    if state.pointer is not None and state.pointer.pointer["version"] == config.version:
-        tip_source_commit = (
-            state.entries[-1].entry.get("source_commit")
-            if state.entries
-            else "<unknown>"
-        )
-        fail_closed(
-            f"version {config.version} is already permanently recorded at seq={state.pointer.pointer['chain_length']} source_commit={tip_source_commit} entry_sha256={state.pointer.pointer['tip_sha256']}",
-            expected="new unpublished version",
-            actual=config.version,
-            repair="cut the next version; a version key is one-shot and permanent",
-        )
+    already_published = (
+        state.pointer is not None and state.pointer.pointer["version"] == config.version
+    )
+    stage_state = _state_before_published_tip(state) if already_published else state
     stage_path = _stage_path(config.root, config.product, config.version)
     if stage_path.exists():
         stage = load_existing_stage(
@@ -1597,11 +1803,25 @@ def publish_transparency(
     else:
         stage = create_stage_from_candidate(
             config=config,
-            state=state,
+            state=stage_state,
             signer=signer,
             now=now or datetime.now(tz=UTC),
         )
-    _assert_stage_extends_state(stage, state)
+    if already_published:
+        return _published_noop_result(
+            config=config,
+            state=state,
+            stage=stage,
+            transport=transport,
+            signer=signer,
+            started=started,
+        )
+    _assert_stage_extends_state(
+        config=config,
+        stage=stage,
+        state=state,
+        transport=transport,
+    )
     _assert_head_witness_baseline_committed(config)
     _clear_publish_call_log(transport)
     archive_digest = archive_stage(
