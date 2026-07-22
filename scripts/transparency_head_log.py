@@ -16,7 +16,6 @@ from typing import Any
 from scripts.release_candidate_driver import DriverError
 from scripts.transparency_core import (
     HEAD_LOG,
-    atomic_write,
     canonical_json_bytes,
     failure,
 )
@@ -121,10 +120,9 @@ def append_head_row(root: Path, row: HeadLogRow) -> bool:
                     ]
                 )
             return False
-    rendered = b"".join(
-        canonical_json_bytes(item.as_dict(), label=HEAD_LOG) for item in (*rows, row)
-    )
-    atomic_write(path, rendered)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as handle:
+        handle.write(canonical_json_bytes(row.as_dict(), label=HEAD_LOG))
     return True
 
 
