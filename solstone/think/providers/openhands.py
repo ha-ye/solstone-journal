@@ -349,9 +349,16 @@ def _build_generate_llm(
 
 
 def _data_url(part: Any) -> str:
-    from solstone.think.providers._image import encode_image_part
+    from solstone.think.providers._image import (
+        CLOUD_IMAGE_MEDIA_TYPES,
+        encode_image_part,
+    )
 
-    media_type, payload = encode_image_part(part)
+    # Use the permissive cloud image set here even though this module is not cloud-only:
+    # local.run_cogitate delegates to openhands.run_cogitate. This is safe today only
+    # because no cogitate tool returns image content; if that changes, accepts must be
+    # threaded from the calling provider instead of hardcoded here.
+    media_type, payload = encode_image_part(part, accepts=CLOUD_IMAGE_MEDIA_TYPES)
     return f"data:{media_type};base64,{payload}"
 
 

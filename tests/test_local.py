@@ -919,6 +919,66 @@ def _patch_bundled_server(monkeypatch):
     )
 
 
+def test_run_generate_bundled_encodes_image_once(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+    png = b"\x89PNG\r\n\x1a\npayload"
+    calls = []
+    captured = {}
+
+    def count_encode(part):
+        calls.append(part)
+        return "image/png", base64.b64encode(b"encoded").decode("ascii")
+
+    class TokenResponse:
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"tokens": [1]}
+
+    class ChatResponse:
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [
+                    {
+                        "message": {"content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+    def fake_post(url, json, timeout):
+        del timeout
+        if url.endswith("/tokenize"):
+            return TokenResponse()
+        if url.endswith("/v1/chat/completions"):
+            captured["body"] = json
+            return ChatResponse()
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(provider, "encode_image_part", count_encode)
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate(["look", png], model=LOCAL_MODEL)
+
+    assert result["text"] == "ok"
+    assert "body" in captured
+    assert len(calls) == 1
+    assert calls == [png]
+
+
 def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)

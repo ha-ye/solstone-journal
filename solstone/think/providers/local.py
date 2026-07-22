@@ -548,7 +548,6 @@ def run_generate(
     endpoint = resolve_local_endpoint()
     # Validate the requested logical id; served id comes from the server.
     normalize_model_id(model)
-    messages = _build_messages(contents, system_instruction)
     if endpoint.is_bundled:
         from solstone.think.providers import local_server
         from solstone.think.providers.local_admission import (
@@ -645,6 +644,7 @@ def run_generate(
             )
             raise
 
+    messages = _build_messages(contents, system_instruction)
     body = _build_request_body(
         endpoint.served_model_id,
         messages,
@@ -721,11 +721,11 @@ async def run_agenerate(
         raise TypeError(f"Unsupported local generate options: {unknown}")
     endpoint = resolve_local_endpoint()
     normalize_model_id(model)
-    messages = _build_messages(contents, system_instruction)
 
     import httpx
 
     if not endpoint.is_bundled:
+        messages = _build_messages(contents, system_instruction)
         from solstone.think.providers.local_admission import (
             LocalAdmissionTimeout,
             acquire_local_slot_async,

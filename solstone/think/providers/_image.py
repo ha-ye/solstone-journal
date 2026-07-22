@@ -9,9 +9,16 @@ import logging
 import reprlib
 from typing import Any
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 LOG = logging.getLogger(__name__)
+
+# llama.cpp mtmd decodes image inputs through stb_image. mtmd documents
+# jpeg/png/tga/bmp/gif support, and ggml-org/llama.cpp#15542 tells clients to
+# convert unsupported formats to PNG before sending. This encoder only emits
+# PNG/JPEG/GIF/WEBP, so WebP is excluded from the local/STB lane.
+STB_IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif"})
+CLOUD_IMAGE_MEDIA_TYPES = STB_IMAGE_MEDIA_TYPES | frozenset({"image/webp"})
 
 _PIL_FORMATS = {
     "PNG": ("PNG", "image/png"),
@@ -19,17 +26,22 @@ _PIL_FORMATS = {
     "GIF": ("GIF", "image/gif"),
     "WEBP": ("WEBP", "image/webp"),
 }
+_MEDIA_TYPE_FORMATS = {
+    media_type: save_format for save_format, media_type in _PIL_FORMATS.values()
+}
 
 
 def is_image_part(part: Any) -> bool:
     return isinstance(part, Image.Image) or isinstance(part, bytes | bytearray)
 
 
-def encode_image_part(part: Any) -> tuple[str, str]:
+def encode_image_part(
+    part: Any, *, accepts: frozenset[str] = STB_IMAGE_MEDIA_TYPES
+) -> tuple[str, str]:
     if isinstance(part, Image.Image):
-        return _encode_pil_image(part)
+        return _encode_pil_image(part, accepts=accepts)
     if isinstance(part, bytes | bytearray):
-        return _encode_image_bytes(part)
+        return _encode_image_bytes(part, accepts=accepts)
     raise _image_error("unsupported image part", part)
 
 
@@ -41,14 +53,56 @@ def _image_error(message: str, part: Any) -> ValueError:
     return ValueError(f"{message}: {_part_repr(part)}")
 
 
-def _encode_pil_image(image: Image.Image) -> tuple[str, str]:
+def _accepted_types(accepts: frozenset[str]) -> str:
+    return ", ".join(sorted(accepts))
+
+
+def _not_sent_message(
+    action: str,
+    source_format: str,
+    accepts: frozenset[str],
+    detail: str | None = None,
+) -> str:
+    message = (
+        f"{action} image source format {source_format or 'UNKNOWN'} "
+        f"for accepted media types [{_accepted_types(accepts)}]; "
+        "abandoned without sending image"
+    )
+    if detail:
+        message = f"{message} ({detail})"
+    return message
+
+
+def _select_image_encoding(
+    source_format: str,
+    accepts: frozenset[str],
+    part: Any,
+) -> tuple[str, str]:
+    normalized = source_format.upper()
+    preferred = _PIL_FORMATS.get(normalized)
+    if preferred is not None:
+        save_format, media_type = preferred
+        if media_type in accepts:
+            return save_format, media_type
+    if "image/png" in accepts:
+        return "PNG", "image/png"
+    raise _image_error(
+        _not_sent_message("cannot encode", normalized, accepts),
+        part,
+    )
+
+
+def _encode_pil_image(
+    image: Image.Image, *, accepts: frozenset[str]
+) -> tuple[str, str]:
     if image.width <= 0 or image.height <= 0:
         raise _image_error("cannot encode zero-size image part", image)
 
     source_format = (image.format or "").upper()
-    save_format, media_type = _PIL_FORMATS.get(
+    save_format, media_type = _select_image_encoding(
         source_format,
-        ("PNG", "image/png"),
+        accepts,
+        image,
     )
     prepared = _prepare_pil_image(image, save_format)
 
@@ -89,10 +143,38 @@ def _prepare_pil_image(image: Image.Image, save_format: str) -> Image.Image:
     raise _image_error(f"unsupported PIL format: {save_format}", image)
 
 
-def _encode_image_bytes(part: bytes | bytearray) -> tuple[str, str]:
+def _encode_image_bytes(
+    part: bytes | bytearray, *, accepts: frozenset[str]
+) -> tuple[str, str]:
     data = bytes(part)
     media_type = _sniff_image_media_type(data, part)
-    return media_type, base64.b64encode(data).decode("ascii")
+    source_format = _MEDIA_TYPE_FORMATS[media_type]
+    _, accepted_media_type = _select_image_encoding(source_format, accepts, part)
+    if accepted_media_type == media_type:
+        return media_type, base64.b64encode(data).decode("ascii")
+    image = _decode_image_bytes(data, source_format, accepts, part)
+    return _encode_pil_image(image, accepts=accepts)
+
+
+def _decode_image_bytes(
+    data: bytes,
+    source_format: str,
+    accepts: frozenset[str],
+    part: bytes | bytearray,
+) -> Image.Image:
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except (
+        UnidentifiedImageError,
+        OSError,
+        Image.DecompressionBombError,
+    ) as exc:
+        raise _image_error(
+            _not_sent_message("cannot decode", source_format, accepts, str(exc)),
+            part,
+        ) from exc
+    return image
 
 
 def _sniff_image_media_type(data: bytes, part: bytes | bytearray) -> str:
@@ -107,4 +189,9 @@ def _sniff_image_media_type(data: bytes, part: bytes | bytearray) -> str:
     raise _image_error("unrecognized image bytes", part)
 
 
-__all__ = ["is_image_part", "encode_image_part"]
+__all__ = [
+    "CLOUD_IMAGE_MEDIA_TYPES",
+    "STB_IMAGE_MEDIA_TYPES",
+    "is_image_part",
+    "encode_image_part",
+]

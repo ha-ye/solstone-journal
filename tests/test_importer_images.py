@@ -111,6 +111,42 @@ def test_process_vision_failure_propagates_before_success_entry(tmp_path, monkey
     assert not list((tmp_path / "chronicle").glob("**/import.image"))
 
 
+def test_process_real_encoder_failure_leaves_no_image_artifacts(tmp_path, monkeypatch):
+    mod = __import__("solstone.think.importers.images", fromlist=["importer"])
+    _configure_journal(tmp_path, monkeypatch)
+    image_path = tmp_path / "cmyk.jpg"
+    Image.new("CMYK", (8, 8)).save(image_path, "JPEG")
+    import_id = "20260115_120000"
+
+    from solstone.think import models
+    from solstone.think.models import LOCAL_MODEL
+    from solstone.think.providers import local as local_provider
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _agent_type: ("local", LOCAL_MODEL),
+    )
+    monkeypatch.setattr(
+        local_provider,
+        "resolve_local_endpoint",
+        lambda: LocalEndpoint(
+            "http://127.0.0.1:9",
+            "served-model",
+            None,
+            is_bundled=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported PIL mode for JPEG: CMYK"):
+        mod.importer.process(image_path, tmp_path, import_id=import_id)
+
+    assert not list((tmp_path / "chronicle").glob("**/import.image"))
+    assert not list((tmp_path / "chronicle").glob("**/image_transcript.md"))
+    assert not (tmp_path / "imports" / import_id / "content_manifest.jsonl").exists()
+
+
 def test_registry_entry():
     assert FILE_IMPORTER_REGISTRY["image"] == "solstone.think.importers.images"
     importer = get_file_importer("image")
