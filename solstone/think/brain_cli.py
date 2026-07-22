@@ -76,6 +76,7 @@ _SPP_ATTESTATION_FAILURE_REASON_TO_BRAIN_REASON = {
     "nvattest_integrity_failed": "nvattest_integrity_failed",
     "tls_handshake_failed": "attestation_rejected",
     "proof_http_failed": "attestation_rejected",
+    "attestation_failed": "attestation_rejected",
     "certificate_invalid": "attestation_rejected",
     "certificate_extension_missing": "attestation_rejected",
     "certificate_extension_not_critical": "attestation_rejected",

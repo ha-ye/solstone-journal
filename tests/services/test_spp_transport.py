@@ -12,7 +12,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.models import AttestationFailedError, AttestationStaleError
+from solstone.think.providers import nvattest_install
 from solstone.think.services import spp, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
@@ -324,6 +326,48 @@ def test_wrong_epoch_channel_is_not_checked_out() -> None:
     assert spp_transport._borrow_channel_locked(time.monotonic()) is None
     assert stale_epoch_channel.closed is True
     assert spp_transport._POOL == []
+
+
+def test_refill_does_not_establish_while_nvattest_install_lock_is_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    now = datetime.now(timezone.utc)
+    spp.record_attestation_verified(
+        AttestationSession(
+            verdict=object(),
+            started_at=now,
+            tpm_heartbeat_at=now,
+            gpu_reattest_at=now,
+        )
+    )
+    spec = nvattest_install.NvattestArchiveSpec(
+        version="9.9.9",
+        url="https://example.invalid/nvattest.tar.gz",
+        archive_name="nvattest.tar.gz",
+        sha256="a" * 64,
+    )
+
+    def cache_ready(**kwargs):
+        return nvattest_install.nvattest_cache_ready(
+            journal_path=tmp_path,
+            spec=spec,
+            **kwargs,
+        )
+
+    establish = Mock(side_effect=AssertionError("refill should not establish"))
+    monkeypatch.setattr(spp_transport, "nvattest_cache_ready", cache_ready)
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+
+    with hold_lock(nvattest_install._install_lock_path(tmp_path), timeout=1.0):
+        with spp_transport._LOCK:
+            spp_transport._CONFIDENTIAL_BLOCK = dict(block)
+            channel = spp_transport._borrow_or_establish_channel_locked(now)
+
+    assert channel is None
+    establish.assert_not_called()
+    assert spp.get_attestation_state().failure is None
 
 
 RATLS_CHANNEL_REASON_CODES = (

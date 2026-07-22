@@ -21,6 +21,7 @@ from OpenSSL import SSL
 from solstone.think.models import AttestationFailedError, AttestationStaleError
 from solstone.think.providers.nvattest_install import (
     ensure_nvattest_installed,
+    nvattest_cache_ready,
     resolve_nvattest_dir,
 )
 from solstone.think.services import spp
@@ -378,8 +379,12 @@ def _borrow_or_establish_channel_locked(now: datetime) -> AttestedChannel | None
     if _CONFIDENTIAL_BLOCK is None:
         return _activate_channel_locked(channel)
     if channel is None:
-        # Public entry points run ensure-install before the first verified session;
-        # this locked refill only opens an extra channel and must not download.
+        # Refill readers must not download, but they still avoid cache reads while
+        # another process is replacing the managed appraiser tree.
+        if not nvattest_cache_ready(
+            explicit_override=_CONFIDENTIAL_BLOCK.get("nvattest_dir")
+        ):
+            return None
         channel = _establish_channel_locked(_CONFIDENTIAL_BLOCK, now)
     return _activate_channel_locked(channel)
 

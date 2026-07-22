@@ -418,10 +418,12 @@ def _write_unhealthy_record(journal: Path) -> None:
         ("nvattest_install_failed", "nvattest_install_failed", "failed"),
         ("nvattest_integrity_failed", "nvattest_integrity_failed", "failed"),
         ("gateway_unreachable", "attestation_not_verified", "blocked"),
+        ("attestation_failed", "attestation_rejected", "failed"),
     ],
 )
 def test_spp_prerequisite_maps_failure_reason_code(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     raw_reason: str,
     expected_reason: str,
     expected_status: str,
@@ -429,6 +431,7 @@ def test_spp_prerequisite_maps_failure_reason_code(
     from solstone.think.services import spp
 
     spp.delete_attestation_state()
+    caplog.set_level(logging.WARNING, logger=brain_cli.LOG.name)
     monkeypatch.setattr(
         "solstone.think.services.spp_transport.recheck_confidential_attestation",
         lambda: spp.record_attestation_failed("failed", raw_reason),
@@ -441,6 +444,7 @@ def test_spp_prerequisite_maps_failure_reason_code(
     assert reason == expected_reason
     assert component["reason_code"] == expected_reason
     assert component["status"] == expected_status
+    assert "event=spp_attestation_reason_unmapped" not in caplog.text
 
 
 def test_spp_prerequisite_warns_and_fails_closed_on_unmapped_reason(

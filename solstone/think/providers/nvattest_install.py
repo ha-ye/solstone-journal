@@ -212,6 +212,34 @@ def ensure_nvattest_installed(
         )
 
 
+def nvattest_cache_ready(
+    *,
+    explicit_override: str | Path | None = None,
+    journal_path: str | Path | None = None,
+    spec: NvattestArchiveSpec | None = None,
+) -> bool:
+    """Return whether the cache install is quiescent and ready for a reader."""
+
+    if explicit_override is not None or os.environ.get(SPP_NVATTEST_DIR_ENV):
+        return True
+    root = cache_root(journal_path)
+    if not root.exists():
+        return False
+    try:
+        resolved_spec = spec or resolve_nvattest_archive_spec()
+    except NvattestInstallError:
+        return False
+    try:
+        with hold_lock(
+            _install_lock_path(journal_path),
+            timeout=0.0,
+            poll_interval=ENSURE_LOCK_POLL_INTERVAL_S,
+        ):
+            return _installed(root, resolved_spec)
+    except LockTimeout:
+        return False
+
+
 def install_nvattest(
     *,
     force: bool = False,
