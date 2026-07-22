@@ -24,6 +24,7 @@ import pytest
 
 import scripts.check_rust_release_manifest as checker
 import scripts.record_macos_native_wheel as native
+import scripts.release_build_host as release_build_host
 import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
@@ -405,10 +406,13 @@ def _services(
             "dist",
             f"target/release-evidence/{version}",
             f"target/release-transfer/{version}",
+            f"target/release-transfer/.{version}.source.bundle",
         ):
             path = repo / relative
-            if path.exists():
+            if path.is_dir():
                 shutil.rmtree(path)
+            elif path.exists() or path.is_symlink():
+                path.unlink()
 
     def build_local_dist(repo: Path, include_models: bool) -> None:
         dist = repo / "dist"
@@ -563,6 +567,12 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
     assert second.heading == "candidate-proven"
     assert not (
         first_root / "target" / "release-transfer" / checker._current_version()
+    ).exists()
+    assert not (
+        first_root
+        / "target"
+        / "release-transfer"
+        / f".{checker._current_version()}.source.bundle"
     ).exists()
     assert first.candidate_digest == second.candidate_digest
     assert first.bundle_digest == second.bundle_digest
@@ -788,10 +798,33 @@ def test_candidate_cleanup_receives_release_zig_cache_root(tmp_path: Path) -> No
     assert cleanup_calls == [
         (
             root / "target" / "release-transfer" / version,
+            root / "target" / "release-transfer" / f".{version}.source.bundle",
             cache_root,
         )
     ]
     assert not cache_root.exists()
+
+
+def test_candidate_source_bundle_does_not_preexist_build_host_output(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+    original = services.build_host
+    checked_output_dirs: list[Path] = []
+
+    def build_host(
+        source_bundle: SourceBundle, commit: str, output_dir: Path
+    ) -> BuildHostResult:
+        release_build_host._validate_fresh_directory_path(output_dir, label="output")
+        checked_output_dirs.append(output_dir)
+        return original(source_bundle, commit, output_dir)
+
+    driver.run_candidate(root, _env(), replace(services, build_host=build_host))
+
+    assert checked_output_dirs == [
+        root / "target" / "release-transfer" / checker._current_version()
+    ]
 
 
 def test_dry_run_linux_validates_static_plan_without_files_or_services(
@@ -836,6 +869,84 @@ def test_dry_run_linux_rejects_bad_plan_cases(
 
     with pytest.raises(driver.DriverError):
         driver.run_dry_run_linux(tmp_path, _env(), plan=plan)
+
+
+def test_main_prints_failure_records_from_build_host_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    failure = checker.Failure(
+        error="distinct build-host failure",
+        expected="distinct expected value",
+        actual="distinct actual value",
+        repair="distinct repair command",
+    )
+
+    def run_candidate(*_args: object, **_kwargs: object) -> driver.CandidateReport:
+        raise release_build_host.BuildHostError([failure])
+
+    monkeypatch.setattr(driver, "run_candidate", run_candidate)
+
+    assert driver.main(["candidate"], _env()) == 1
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert "ERROR: distinct build-host failure" in captured.err
+    assert "expected: distinct expected value" in captured.err
+    assert "actual: distinct actual value" in captured.err
+    assert "repair command: distinct repair command" in captured.err
+    assert "actual: BuildHostError" not in captured.err
+
+
+def test_main_preserves_generic_fallback_for_plain_exceptions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_candidate(*_args: object, **_kwargs: object) -> driver.CandidateReport:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(driver, "run_candidate", run_candidate)
+
+    assert driver.main(["candidate"], _env()) == 1
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert "ERROR: release candidate driver failed" in captured.err
+    assert "actual: RuntimeError" in captured.err
+
+
+def test_main_uses_generic_fallback_for_invalid_failure_records(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class EmptyFailuresError(RuntimeError):
+        failures: tuple[object, ...] = ()
+
+    class FailureShapeError(RuntimeError):
+        def __init__(self, failures: object) -> None:
+            self.failures = failures
+            super().__init__("boom")
+
+    cases = (
+        RuntimeError("boom"),
+        EmptyFailuresError("boom"),
+        FailureShapeError("boom"),
+        FailureShapeError(b"boom"),
+        FailureShapeError(("not a failure",)),
+    )
+    for exc in cases:
+
+        def run_candidate(
+            *_args: object,
+            _exc: BaseException = exc,
+            **_kwargs: object,
+        ) -> driver.CandidateReport:
+            raise _exc
+
+        monkeypatch.setattr(driver, "run_candidate", run_candidate)
+
+        assert driver.main(["candidate"], _env()) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "ERROR: release candidate driver failed" in captured.err
+        assert f"actual: {type(exc).__name__}" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -1594,6 +1705,7 @@ def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(
         / "solstone-journal-models"
         / "solstone_journal_models.egg-info",
         root / "target" / "release-transfer" / f".{version}.request-abc123",
+        root / "target" / "release-transfer" / f".{version}.source.bundle",
         root / "target" / "release-evidence" / f"{version}.staging",
         root / "target" / "release-zig-cache",
         root / "dist" / "release-candidate" / f"{version}.payload-staging.staging",

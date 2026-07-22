@@ -150,6 +150,22 @@ def _failure(error: str, *, expected: str, actual: str, repair: str) -> Failure:
     return Failure(error=error, expected=expected, actual=actual, repair=repair)
 
 
+def _extract_failure_records(exc: BaseException) -> tuple[Any, ...]:
+    failures = getattr(exc, "failures", ())
+    if isinstance(failures, (str, bytes)) or not isinstance(failures, Sequence):
+        return ()
+    records = tuple(failures)
+    if not records:
+        return ()
+    fields = ("error", "expected", "actual", "repair")
+    if not all(
+        all(isinstance(getattr(record, field, None), str) for field in fields)
+        for record in records
+    ):
+        return ()
+    return records
+
+
 def _run_stdout(
     runner: Runner,
     argv: Sequence[str],
@@ -341,6 +357,10 @@ def _zig_cache_root(root: Path) -> Path:
     return root / "target" / "release-zig-cache"
 
 
+def _source_bundle_staging_path(root: Path, version: str) -> Path:
+    return root / "target" / "release-transfer" / f".{version}.source.bundle"
+
+
 def _default_clean_outputs(root: Path, version: str) -> None:
     failures: list[Failure] = []
     failures.extend(_remove_owned_path(root / "build", label="build"))
@@ -367,6 +387,7 @@ def _default_clean_outputs(root: Path, version: str) -> None:
         Path("target") / "release-evidence" / version,
         Path("target") / "release-evidence" / f"{version}.staging",
         Path("target") / "release-transfer" / version,
+        _source_bundle_staging_path(root, version).relative_to(root),
         _zig_cache_root(root).relative_to(root),
     ):
         failures.extend(_remove_owned_relative(root, relative))
@@ -2831,9 +2852,10 @@ def run_candidate(
     )
     svc.build_local_dist(root, include_models)
     transfer_dir = root / "target" / "release-transfer" / version
+    source_bundle_path = _source_bundle_staging_path(root, version)
     try:
         source_bundle = svc.create_source_bundle(
-            root, expected_commit, transfer_dir / "source.bundle"
+            root, expected_commit, source_bundle_path
         )
         host_result = svc.build_host(source_bundle, expected_commit, transfer_dir)
         native_records = _native_record_payloads(
@@ -2858,7 +2880,9 @@ def run_candidate(
             core_lock_sha256=expected_lock,
         )
     finally:
-        svc.cleanup_transients((transfer_dir, _zig_cache_root(root)))
+        svc.cleanup_transients(
+            (transfer_dir, source_bundle_path, _zig_cache_root(root))
+        )
     _assert_clean_identity(
         root,
         expected_commit=expected_commit,
@@ -3112,9 +3136,10 @@ def main(
             )
         else:
             print(run_dry_run_linux(root, runtime_env))
-    except (DriverError, Exception) as exc:
-        if isinstance(exc, DriverError):
-            _format_failures(exc.failures)
+    except Exception as exc:
+        failures = _extract_failure_records(exc)
+        if failures:
+            _format_failures(failures)
         else:
             _format_failures(
                 [
