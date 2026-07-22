@@ -20,8 +20,15 @@ names, or machine-local working paths in source, tests, docs, or commit messages
 Operator-specific values belong only in the JSON config file.
 
 The repo-wide scrub gate is `scripts/check_channel_adapter_scrub.py`.
-It scans tracked UTF-8 text files; tracked NUL-binary, undecodable, or
-unreadable paths are skipped and reported by count.
+It scans tracked UTF-8 text files; tracked NUL-binary and undecodable paths are
+skipped and reported by count. Tracked symlink target strings are scanned as
+text at the symlink path. A tracked file that cannot be read is a finding, not a
+silent skip.
+
+The gate permits only documented, non-reachable fixtures. Reserved hostnames are
+covered by a reserved-host rule for RFC-reserved example/test/invalid/local
+names. Other fixture user-host values must be individually listed with comments
+that explain the source and why the exact value is not channel reach data.
 
 ## Config Location
 

@@ -12,6 +12,7 @@ import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +41,6 @@ class Finding:
 class ScanStats:
     skipped_nul_binary: int = 0
     skipped_decode: int = 0
-    skipped_io: int = 0
 
 
 @dataclass(frozen=True)
@@ -49,27 +49,54 @@ class ScanResult:
     stats: ScanStats
 
 
-TIER1_VALUES = (_parts("pr", "o5", "e"),)
+@dataclass(frozen=True)
+class TrackedEntry:
+    mode: str
+    object_id: str
+    path: str
+
+
+IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
+IPNetwork: TypeAlias = ipaddress.IPv4Network | ipaddress.IPv6Network
+IPExclusion: TypeAlias = IPAddress | IPNetwork
+
+
+TIER1_VALUES = (
+    _parts("pr", "o5", "e"),
+    _parts("spark", "-", "a8", "a6"),
+    _parts("tm", "ux", "-", "run"),
+    _parts("hopper", ":", "build", "-"),
+)
 
 TIER3_TERMS = (
-    "fedora",
-    "dgx",
-    "jer",
-    "nvidia-smi",
-    "solstone-macos",
-    "sol-signing",
-    "sol-pbc-notary",
+    _parts("fed", "ora"),
+    _parts("d", "gx"),
+    _parts("j", "er"),
+    _parts("nvidia", "-", "smi"),
+    _parts("solstone", "-", "mac", "os"),
+    _parts("sol", "-", "signing"),
+    _parts("sol", "-", "pbc", "-", "notary"),
 )
 
 OCTET_RE = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]?|0)"
+HOST_LABEL_RE = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+HOSTNAME_ALPHA_FINAL_RE = (
+    rf"(?:{HOST_LABEL_RE}\.)+"
+    rf"[A-Za-z](?:[A-Za-z0-9-]{{0,61}}[A-Za-z0-9])?"
+)
 IPV4_RE = re.compile(
     rf"(?<![A-Za-z0-9_.]){OCTET_RE}(?:\.{OCTET_RE}){{3}}(?![A-Za-z0-9_.])"
+)
+IPV6_RE = re.compile(
+    r"(?<![A-Za-z0-9_.:-])"
+    r"(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])"
+    r"(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]*"
+    r"(?![A-Za-z0-9_.:-])"
 )
 USER_HOST_RE = re.compile(
     rf"(?<![A-Za-z0-9._%+-])"
     rf"[A-Za-z0-9._-]+@"
-    rf"(?:{OCTET_RE}(?:\.{OCTET_RE}){{3}}|"
-    rf"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.local)"
+    rf"(?:{OCTET_RE}(?:\.{OCTET_RE}){{3}}|localhost|{HOSTNAME_ALPHA_FINAL_RE})"
     r"(?::[^\s\"'`,)\]}]+)?"
     rf"(?![A-Za-z0-9_.-])"
 )
@@ -82,6 +109,18 @@ ARGV_PORT_RE = re.compile(
     rf"['\"](?:{_parts('s', 'sh')}|{_parts('s', 'cp')})['\"].*"
     rf"['\"]-[pP]['\"]\s*,\s*['\"][0-9]+['\"]"
 )
+SHELL_OPTION_PORT_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.-])(?:{_parts('s', 'sh')}|{_parts('s', 'cp')})"
+    rf"(?![A-Za-z0-9_.-]).*(?:^|[\s\"'])-o\s*Port\s*=\s*[0-9]+",
+    re.IGNORECASE,
+)
+ARGV_OPTION_PORT_RE = re.compile(
+    rf"['\"](?:{_parts('s', 'sh')}|{_parts('s', 'cp')})['\"].*"
+    rf"(?:['\"]-oPort=[0-9]+['\"]|"
+    rf"['\"]-o['\"]\s*,\s*['\"]Port=[0-9]+['\"])",
+    re.IGNORECASE,
+)
+PORT_PATTERNS = (SHELL_PORT_RE, ARGV_PORT_RE, SHELL_OPTION_PORT_RE, ARGV_OPTION_PORT_RE)
 
 SSH_ARGV_RE = re.compile(
     rf"['\"](?:{_parts('s', 'sh')}|{_parts('s', 'cp')})['\"].*__TERM__"
@@ -169,21 +208,103 @@ DOCUMENTED_IP_VALUE_EXCLUSIONS = {
     ipaddress.IPv4Address("172.32.0.1"),
 }
 
+DOCUMENTED_IPV6_LITERAL_EXCLUSIONS = {
+    # RFC 4291: unspecified address used only for local bind/listener examples.
+    ipaddress.IPv6Address("::"),
+    # RFC 4291: loopback address.
+    ipaddress.IPv6Address("::1"),
+    # RFC 3849: documentation range.
+    ipaddress.IPv6Network("2001:db8::/32"),
+    # RFC 4291: link-local range fixtures.
+    ipaddress.IPv6Network("fe80::/10"),
+    # RFC 4193: unique local address fixtures.
+    ipaddress.IPv6Network("fc00::/7"),
+    # RFC 4291: IPv4-mapped IPv6 range fixtures.
+    ipaddress.IPv6Network("::ffff:0:0/96"),
+    # RFC 4291: multicast negative fixtures.
+    ipaddress.IPv6Network("ff00::/8"),
+}
+
 DOCUMENTED_USER_HOST_EXCLUSIONS = {
     # Negative home-address validation fixture; not a reachable adapter host.
-    "user@192.168.1.44:7657",
+    _parts("user", "@", "192.168.", "1.44", ":", "7657"),
+    # Vendored license contact addresses retained verbatim as third-party text.
+    _parts("ahmad.ahmad", "@", "kaust.edu", ".sa"),
+    _parts("david.keyes", "@", "kaust.edu", ".sa"),
+    _parts("hatem.ltaief", "@", "kaust.edu", ".sa"),
+    # Upstream author attribution retained verbatim in bundled license text.
+    _parts("alexander", "@", "bumpern", ".de"),
+    # Public support and owner identity fixtures used by package/app metadata.
+    _parts("j", "er", "@", "solpbc", ".org"),
+    # Owner-facing and importer examples that must stay non-reserved placeholders.
+    _parts("user", "@", "domain", ".com"),
+    _parts("work", "@", "company", ".com"),
+    # Fixture journal personas used by importer and chronicle contract tests.
+    _parts("carlos", "@", "meridian", ".io"),
+    _parts("david", "@", "betaworks", ".com"),
+    _parts("erik", "@", "solpbc", ".org"),
+    _parts("lin", "@", "solpbc", ".org"),
+    _parts("maya", "@", "solpbc", ".org"),
+    _parts("sarah.chen", "@", "whitfield-law", ".com"),
+    # Unit-test personas for matching, merge, importer, and support workflows.
+    _parts("a", "@", "b", ".com"),
+    _parts("aj", "@", "work", ".com"),
+    _parts("alice", "@", "acme", ".com"),
+    _parts("alice", "@", "co", ".com"),
+    _parts("alice", "@", "new", ".com"),
+    _parts("alice", "@", "old", ".com"),
+    _parts("bob", "@", "co", ".com"),
+    _parts("bob", "@", "jones", ".io"),
+    _parts("eve", "@", "megacorp", ".com"),
+    _parts("jane", "@", "startup", ".co"),
+    _parts("smug", "@", "x", ".com"),
 }
 
 
-def _ip_is_excluded(value: str) -> bool:
-    address = ipaddress.IPv4Address(value)
-    for excluded in DOCUMENTED_IP_LITERAL_EXCLUSIONS:
+def _address_is_excluded(
+    address: IPAddress,
+    literal_exclusions: Iterable[IPExclusion],
+    value_exclusions: Iterable[IPAddress] = (),
+) -> bool:
+    for excluded in literal_exclusions:
+        if excluded.version != address.version:
+            continue
         if isinstance(excluded, ipaddress.IPv4Network):
             if address in excluded:
                 return True
-        elif address == excluded:
+        elif isinstance(excluded, ipaddress.IPv6Network):
+            if address in excluded:
+                return True
+        elif excluded == address:
             return True
-    return address in DOCUMENTED_IP_VALUE_EXCLUSIONS
+    return address in value_exclusions
+
+
+def _ipv4_is_excluded(value: str) -> bool:
+    return _address_is_excluded(
+        ipaddress.IPv4Address(value),
+        DOCUMENTED_IP_LITERAL_EXCLUSIONS,
+        DOCUMENTED_IP_VALUE_EXCLUSIONS,
+    )
+
+
+def _ipv6_is_excluded(address: ipaddress.IPv6Address) -> bool:
+    return _address_is_excluded(address, DOCUMENTED_IPV6_LITERAL_EXCLUSIONS)
+
+
+def _user_host_host(value: str) -> str:
+    _user, target = value.split("@", 1)
+    host, _sep, _suffix = target.partition(":")
+    return host.lower().rstrip(".")
+
+
+def _user_host_is_reserved(value: str) -> bool:
+    host = _user_host_host(value)
+    return (
+        host == "localhost"
+        or host.endswith((".example", ".test", ".invalid"))
+        or host in {"example.com", "example.net", "example.org"}
+    )
 
 
 def _pattern_for_term(pattern: re.Pattern[str], term: str) -> re.Pattern[str]:
@@ -202,7 +323,7 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
 
     for match in IPV4_RE.finditer(line):
         value = match.group(0)
-        if _ip_is_excluded(value):
+        if _ipv4_is_excluded(value):
             continue
         findings.append(
             Finding(
@@ -217,9 +338,30 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
             )
         )
 
+    for match in IPV6_RE.finditer(line):
+        value = match.group(0)
+        try:
+            address = ipaddress.IPv6Address(value)
+        except ValueError:
+            continue
+        if _ipv6_is_excluded(address):
+            continue
+        findings.append(
+            Finding(
+                path,
+                line_number,
+                "Tier-2",
+                "ipv6-literal",
+                value,
+                "if this is a fixture rather than a host address, add it to "
+                "the documented IPv6 literal exclusion list with a one-line "
+                "justification",
+            )
+        )
+
     for match in USER_HOST_RE.finditer(line):
         value = match.group(0)
-        if value in DOCUMENTED_USER_HOST_EXCLUSIONS:
+        if value in DOCUMENTED_USER_HOST_EXCLUSIONS or _user_host_is_reserved(value):
             continue
         findings.append(
             Finding(
@@ -232,7 +374,7 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
             )
         )
 
-    for pattern in (SHELL_PORT_RE, ARGV_PORT_RE):
+    for pattern in PORT_PATTERNS:
         if pattern.search(line):
             findings.append(
                 Finding(
@@ -273,28 +415,63 @@ def scan_text(path: str, text: str) -> list[Finding]:
     return findings
 
 
-def tracked_paths(root: Path = ROOT) -> list[str]:
+def tracked_entries(root: Path = ROOT) -> list[TrackedEntry]:
     result = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-s"],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
     )
-    return [line for line in result.stdout.splitlines() if line]
+    entries: list[TrackedEntry] = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        metadata, relative_path = line.split("\t", 1)
+        mode, object_id, _stage = metadata.split()
+        entries.append(TrackedEntry(mode, object_id, relative_path))
+    return entries
 
 
-def scan_paths(root: Path, paths: Iterable[str]) -> ScanResult:
+def _read_symlink_target(root: Path, entry: TrackedEntry) -> str:
+    result = subprocess.run(
+        ["git", "cat-file", "-p", entry.object_id],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def _unreadable_finding(path: str, exc: OSError) -> Finding:
+    errno = exc.errno if exc.errno is not None else "unknown"
+    return Finding(
+        path,
+        1,
+        "Tier-2",
+        "tracked-io",
+        path,
+        f"tracked file could not be read (errno {errno})",
+    )
+
+
+def scan_paths(root: Path, entries: Iterable[TrackedEntry]) -> ScanResult:
     findings: list[Finding] = []
     skipped_nul_binary = 0
     skipped_decode = 0
-    skipped_io = 0
-    for relative_path in paths:
+    for entry in entries:
+        relative_path = entry.path
+        if entry.mode == "120000":
+            findings.extend(
+                scan_line(relative_path, 1, _read_symlink_target(root, entry))
+            )
+            continue
         path = root / relative_path
         try:
             data = path.read_bytes()
-        except OSError:
-            skipped_io += 1
+        except OSError as exc:
+            findings.append(_unreadable_finding(relative_path, exc))
             continue
         if b"\0" in data:
             skipped_nul_binary += 1
@@ -310,14 +487,13 @@ def scan_paths(root: Path, paths: Iterable[str]) -> ScanResult:
         ScanStats(
             skipped_nul_binary=skipped_nul_binary,
             skipped_decode=skipped_decode,
-            skipped_io=skipped_io,
         ),
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     _ = argv
-    result = scan_paths(ROOT, tracked_paths(ROOT))
+    result = scan_paths(ROOT, tracked_entries(ROOT))
     if result.findings:
         sys.stderr.write("Channel adapter scrub found host/reach literals:\n")
         for finding in result.findings:
@@ -326,14 +502,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(
             "Skipped tracked files: "
             f"NUL-binary={stats.skipped_nul_binary}, "
-            f"decode={stats.skipped_decode}, io={stats.skipped_io}\n"
+            f"decode={stats.skipped_decode}\n"
         )
         return 1
     stats = result.stats
     print(
         "Channel adapter scrub passed "
         f"(skipped NUL-binary={stats.skipped_nul_binary}, "
-        f"decode={stats.skipped_decode}, io={stats.skipped_io})."
+        f"decode={stats.skipped_decode})."
     )
     return 0
 
