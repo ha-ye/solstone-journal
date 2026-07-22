@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.release_candidate_driver import DriverError
 from scripts.transparency_transport import (
     CurlResult,
     CurlTransparencyTransport,
@@ -127,6 +128,79 @@ def test_directory_transport_records_exact_destination_set(tmp_path: Path) -> No
         {"plane": "s3", "op": "PUT", "key": key},
         {"plane": "public", "op": "GET", "key": key},
     ]
+
+
+def test_curl_check_rejects_too_old_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["curl", "--version"],
+            returncode=0,
+            stdout="curl 7.83.1 (x86_64-redhat-linux-gnu)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.transparency_transport.subprocess.run", run)
+    transport = CurlTransparencyTransport(
+        endpoint="https://r2.example.invalid",
+        bucket="transparency-test",
+        access_key_id="key",
+        secret_access_key="secret",
+        base_url="https://transparency.solstone.app",
+    )
+
+    with pytest.raises(DriverError) as error:
+        transport.check()
+
+    failure = error.value.failures[0]
+    assert failure.error == "transparency curl version is too old"
+    assert failure.expected == "curl >= 7.84"
+    assert failure.actual == "curl 7.83.1"
+
+
+def test_curl_check_missing_binary_fails_as_driver_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("curl")
+
+    monkeypatch.setattr("scripts.transparency_transport.subprocess.run", run)
+    transport = CurlTransparencyTransport(
+        endpoint="https://r2.example.invalid",
+        bucket="transparency-test",
+        access_key_id="key",
+        secret_access_key="secret",
+        base_url="https://transparency.solstone.app",
+    )
+
+    with pytest.raises(DriverError) as error:
+        transport.check()
+
+    assert error.value.failures[0].error == "transparency curl preflight failed"
+
+
+def test_curl_check_accepts_new_enough_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["curl", "--version"],
+            returncode=0,
+            stdout="curl 8.15.0 (x86_64-redhat-linux-gnu)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("scripts.transparency_transport.subprocess.run", run)
+    transport = CurlTransparencyTransport(
+        endpoint="https://r2.example.invalid",
+        bucket="transparency-test",
+        access_key_id="key",
+        secret_access_key="secret",
+        base_url="https://transparency.solstone.app",
+    )
+
+    transport.check()
 
 
 def test_curl_write_out_parser_extracts_status_and_etag() -> None:

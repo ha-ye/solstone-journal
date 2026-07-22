@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
 
+from scripts.release_candidate_driver import DriverError
+from scripts.transparency_core import failure
+
 
 @dataclass(frozen=True)
 class HttpResult:
@@ -44,6 +47,8 @@ class CurlResult:
 
 
 class TransparencyTransport(Protocol):
+    def check(self) -> None: ...
+
     def put_object(
         self,
         key: str,
@@ -86,6 +91,9 @@ class DirectoryTransparencyTransport:
     def __post_init__(self) -> None:
         (self.root / "objects").mkdir(parents=True, exist_ok=True)
 
+    def check(self) -> None:
+        return None
+
     @property
     def s3_destination(self) -> str:
         return f"{self.endpoint.rstrip('/')}/{self.bucket}"
@@ -125,11 +133,15 @@ class DirectoryTransparencyTransport:
         return f'"{hashlib.sha256(body).hexdigest()}"'
 
     def _consume_failure(self, *, plane: str, op: str, key: str) -> FakeFailure | None:
-        for index, failure in enumerate(tuple(self.failures)):
-            if failure.plane == plane and failure.op == op and failure.key == key:
-                if failure.once:
+        for index, fake_failure in enumerate(tuple(self.failures)):
+            if (
+                fake_failure.plane == plane
+                and fake_failure.op == op
+                and fake_failure.key == key
+            ):
+                if fake_failure.once:
                     del self.failures[index]
-                return failure
+                return fake_failure
         return None
 
     def _record(
@@ -396,6 +408,55 @@ class CurlTransparencyTransport:
             )
         )
 
+    def check(self) -> None:
+        try:
+            result = subprocess.run(
+                [self.curl, "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DriverError(
+                [
+                    failure(
+                        "transparency curl preflight failed",
+                        expected="curl --version line 1 with curl >= 7.84",
+                        actual=str(exc),
+                        repair="install curl 7.84 or newer before publishing transparency",
+                    )
+                ]
+            ) from None
+        first_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+        version_text = _curl_version_token(first_line)
+        version = _curl_major_minor(version_text)
+        if result.returncode != 0 or version is None:
+            raise DriverError(
+                [
+                    failure(
+                        "transparency curl preflight failed",
+                        expected="curl --version line 1 with curl >= 7.84",
+                        actual=(
+                            result.stderr.strip()
+                            or first_line
+                            or f"exit_code={result.returncode}"
+                        ),
+                        repair="install curl 7.84 or newer before publishing transparency",
+                    )
+                ]
+            )
+        if version < MIN_CURL_VERSION:
+            raise DriverError(
+                [
+                    failure(
+                        "transparency curl version is too old",
+                        expected="curl >= 7.84",
+                        actual=f"curl {version_text}",
+                        repair="install curl 7.84 or newer before publishing transparency",
+                    )
+                ]
+            )
+
     def _run_curl(
         self,
         args: Sequence[str],
@@ -572,7 +633,23 @@ class CurlTransparencyTransport:
 
 
 CURL_WRITE_OUT = "%{http_code}\t%header{etag}\n"
+MIN_CURL_VERSION = (7, 84)
 MAX_LIST_PAGES = 1000
+
+
+def _curl_version_token(first_line: str) -> str:
+    parts = first_line.split()
+    return parts[1] if len(parts) >= 2 and parts[0] == "curl" else ""
+
+
+def _curl_major_minor(version_text: str) -> tuple[int, int] | None:
+    parts = version_text.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
 
 def parse_curl_write_out(stdout: str) -> tuple[int, str | None]:

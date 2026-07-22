@@ -185,6 +185,9 @@ gates delivery. `make publish-transparency RELEASE_DIR=<retained ready dir>` is
 env-driven: operator endpoints, bucket, credentials, minisign key paths, and
 archive channel come from `TRANSPARENCY_*` env vars, while the public base
 defaults to `https://transparency.solstone.app`.
+`RELEASE_DIR` must resolve to `dist/release-candidate/<version>/`; the
+corresponding rail evidence is derived from `target/release-evidence/<version>/`,
+which holds `ledger.json` plus the three proof receipts under `proofs/`.
 
 The public layout is fixed:
 `releases/<product>/v/<version>/ledger-entry.json`,

@@ -1787,6 +1787,7 @@ def publish_transparency(
 ) -> PublishResult:
     started = time.monotonic()
     signer.check()
+    transport.check()
     state = fetch_chain_state(config=config, transport=transport, signer=signer)
     already_published = (
         state.pointer is not None and state.pointer.pointer["version"] == config.version
@@ -1911,6 +1912,7 @@ def resign_transparency_pointer(
 ) -> PublishResult:
     started = time.monotonic()
     signer.check()
+    transport.check()
     bundle = fetch_verified_pointer(config=config, transport=transport, signer=signer)
     signed_at = format_published_utc(now or datetime.now(tz=UTC))
     pointer = build_latest_pointer(
@@ -2041,6 +2043,22 @@ def _config_from_args(
                 )
             ]
         )
+    if release_dir:
+        supplied_release_dir = Path(release_dir).resolve()
+        derived_release_dir = (
+            root / "dist" / "release-candidate" / str(version)
+        ).resolve()
+        if supplied_release_dir != derived_release_dir:
+            raise DriverError(
+                [
+                    failure(
+                        "transparency RELEASE_DIR does not match retained path",
+                        expected=str(derived_release_dir),
+                        actual=str(supplied_release_dir),
+                        repair="point RELEASE_DIR at root/dist/release-candidate/<version>",
+                    )
+                ]
+            )
     if not source_commit:
         source_commit = env.get("SOURCE_COMMIT", "")
     if not source_commit:

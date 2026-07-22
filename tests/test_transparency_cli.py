@@ -61,6 +61,27 @@ def test_config_from_args_derives_source_commit_from_retained_ledger(
     assert config.source_commit == "b" * 40
 
 
+def test_config_from_args_rejects_mispointed_release_dir(tmp_path: Path) -> None:
+    version = "0.9.1"
+    supplied = tmp_path / "elsewhere" / version
+    supplied.mkdir(parents=True)
+    env = _env(tmp_path)
+    env["RELEASE_DIR"] = str(supplied)
+
+    with pytest.raises(DriverError) as error:
+        publisher._config_from_args(
+            Namespace(root=str(tmp_path), version="", source_commit=""),
+            env,
+        )
+
+    failure = error.value.failures[0]
+    assert failure.error == "transparency RELEASE_DIR does not match retained path"
+    assert str(supplied.resolve()) in failure.actual
+    assert str((tmp_path / "dist" / "release-candidate" / version).resolve()) in (
+        failure.expected
+    )
+
+
 def test_check_transparency_minisign_missing_binary_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
