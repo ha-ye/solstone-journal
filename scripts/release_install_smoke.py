@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -438,6 +439,25 @@ def normalize_path(path: Path | str, *, env_root: Path, candidate_dir: Path) -> 
     return text
 
 
+def normalize_command_text(text: str, *, env_root: Path, candidate_dir: Path) -> str:
+    # argv is rail-controlled and records the literal paths we passed; stdout/stderr
+    # come from external tools (pip today, other proof tooling later) that may print
+    # symlink-resolved spellings, such as macOS /tmp -> /private/tmp. The rail creates
+    # env_root with tempfile.mkdtemp, and this scrub is limited to env_root/candidate_dir.
+    root_spellings: dict[str, str] = {}
+    for root, sentinel in ((env_root, ENVROOT), (candidate_dir, CANDIDATE)):
+        root_spellings.setdefault(str(root), sentinel)
+        root_spellings.setdefault(os.path.realpath(root), sentinel)
+    escaped_roots = "|".join(
+        re.escape(spelling)
+        for spelling in sorted(root_spellings, key=len, reverse=True)
+    )
+    # The lookahead allowlist fails closed: unknown following characters leave the
+    # absolute path in place so public-evidence validation rejects loudly.
+    pattern = re.compile(f"(?:{escaped_roots})(?=[/\\s\"'),:;]|$)")
+    return pattern.sub(lambda match: root_spellings[match.group(0)], text)
+
+
 def _candidate_path_token(path: Path) -> str:
     return f"{CANDIDATE}/{path.name}"
 
@@ -503,8 +523,12 @@ def _command_payload(
             for token in normalize_argv(result.argv)
         ],
         "exit_code": result.exit_code,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": normalize_command_text(
+            result.stdout, env_root=env_root, candidate_dir=candidate_dir
+        ),
+        "stderr": normalize_command_text(
+            result.stderr, env_root=env_root, candidate_dir=candidate_dir
+        ),
         "env": dict(sorted(result.env.items())),
     }
 

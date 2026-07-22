@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import zipfile
 from collections.abc import Callable
 from dataclasses import replace
@@ -15,6 +16,7 @@ import pytest
 import scripts.check_rust_release_manifest as checker
 import scripts.release_install_smoke as smoke
 from scripts.release_digest import candidate_digest, file_sha256_size
+from scripts.release_public_evidence import validate_public_evidence_tree
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -235,6 +237,271 @@ def test_install_proof_records_inventory_normalized_argv_and_paths(
         proof["installed_members"][0]["installed_path"] == "ENVROOT/bin/solstone-core"
     )
     assert proof["recorded_at"] == "2026-07-20T12:34:56Z"
+
+
+def test_install_proof_normalizes_pip24_stdout_candidate_paths(
+    tmp_path: Path,
+) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    core_wheel = next(
+        path for path in install_paths if path.name.startswith("solstone_core-")
+    )
+    journal_wheel = next(
+        path for path in install_paths if path.name.startswith("solstone_journal-")
+    )
+    stdout = "\n".join(
+        (
+            f"Processing {candidate}/{core_wheel.name}",
+            f"Processing {candidate}/{journal_wheel.name}",
+            "Installing collected packages: solstone-journal, solstone-core",
+            "Successfully installed solstone-core-1.0.0 solstone-journal-1.0.0",
+        )
+    )
+    observation = _observation(
+        env_root=tmp_path / "env",
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    observation = replace(
+        observation,
+        install=replace(observation.install, stdout=stdout),
+    )
+
+    proof = smoke.build_install_proof(
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=digest,
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        candidate_paths=paths,
+        ledger_payload=ledger,
+        observation=observation,
+        recorded_at=datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC),
+    )
+
+    assert validate_public_evidence_tree("install_proof", proof) == []
+    normalized_stdout = proof["install"]["command"]["stdout"]
+    assert f"CANDIDATE/{core_wheel.name}" in normalized_stdout
+    assert f"CANDIDATE/{journal_wheel.name}" in normalized_stdout
+    assert str(candidate) not in normalized_stdout
+
+
+def test_install_proof_rejects_unrelated_absolute_stdout_path(
+    tmp_path: Path,
+) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    observation = _observation(
+        env_root=tmp_path / "env",
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    observation = replace(
+        observation,
+        install=replace(observation.install, stdout="note /etc/shadow here"),
+    )
+
+    with pytest.raises(smoke.InstallProofError) as exc:
+        smoke.build_install_proof(
+            target="linux-x86_64-musl",
+            version="1.0.0",
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=digest,
+            ledger_sha256=LEDGER_SHA,
+            candidate_dir=candidate,
+            candidate_paths=paths,
+            ledger_payload=ledger,
+            observation=observation,
+            recorded_at=datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC),
+        )
+
+    assert any(
+        failure.error
+        == "install_proof.install.command.stdout contains disallowed content"
+        for failure in exc.value.failures
+    )
+
+
+def test_install_proof_rejects_prefix_sibling_stdout_paths(
+    tmp_path: Path,
+) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    env_root = tmp_path / "env"
+    stdout = "\n".join(
+        (
+            f"note {candidate}-evil/data.txt here",
+            f"note {env_root}x/data.txt here",
+        )
+    )
+    observation = _observation(
+        env_root=env_root,
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    observation = replace(
+        observation,
+        install=replace(observation.install, stdout=stdout),
+    )
+
+    with pytest.raises(smoke.InstallProofError) as exc:
+        smoke.build_install_proof(
+            target="linux-x86_64-musl",
+            version="1.0.0",
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=digest,
+            ledger_sha256=LEDGER_SHA,
+            candidate_dir=candidate,
+            candidate_paths=paths,
+            ledger_payload=ledger,
+            observation=observation,
+            recorded_at=datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC),
+        )
+
+    assert any(
+        failure.error
+        == "install_proof.install.command.stdout contains disallowed content"
+        for failure in exc.value.failures
+    )
+
+
+def test_install_proof_normalizes_stderr_and_preserves_empty_streams(
+    tmp_path: Path,
+) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    wheel = next(
+        path for path in install_paths if path.name.startswith("solstone_core-")
+    )
+    env_root = tmp_path / "env"
+    stderr = "\n".join(
+        (
+            f"warning using {candidate}/{wheel.name}",
+            f"created environment {env_root}/bin/python",
+        )
+    )
+    observation = _observation(
+        env_root=env_root,
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    observation = replace(
+        observation,
+        install=replace(observation.install, stderr=stderr),
+    )
+
+    proof = smoke.build_install_proof(
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=digest,
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        candidate_paths=paths,
+        ledger_payload=ledger,
+        observation=observation,
+        recorded_at=datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC),
+    )
+
+    normalized_stderr = proof["install"]["command"]["stderr"]
+    assert f"CANDIDATE/{wheel.name}" in normalized_stderr
+    assert "ENVROOT/bin/python" in normalized_stderr
+    assert str(candidate) not in normalized_stderr
+    assert str(env_root) not in normalized_stderr
+    assert proof["smoke"]["solstone-core"]["stderr"] == ""
+
+
+def test_install_proof_normalizes_realpath_aliases_in_command_output(
+    tmp_path: Path,
+) -> None:
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    link_parent = tmp_path / "link-parent"
+    link_parent.symlink_to(real_parent, target_is_directory=True)
+    candidate, paths = _candidate(link_parent)
+    env_root = link_parent / "env"
+    assert str(candidate) != os.path.realpath(candidate)
+    assert str(env_root) != os.path.realpath(env_root)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+    )
+    wheel = next(
+        path for path in install_paths if path.name.startswith("solstone_core-")
+    )
+    stdout = "\n".join(
+        (
+            f"Processing {os.path.realpath(candidate)}/{wheel.name}",
+            f"Using interpreter {os.path.realpath(env_root)}/bin/python",
+        )
+    )
+    observation = _observation(
+        env_root=env_root,
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    observation = replace(
+        observation,
+        install=replace(observation.install, stdout=stdout),
+    )
+
+    proof = smoke.build_install_proof(
+        target="linux-x86_64-musl",
+        version="1.0.0",
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=digest,
+        ledger_sha256=LEDGER_SHA,
+        candidate_dir=candidate,
+        candidate_paths=paths,
+        ledger_payload=ledger,
+        observation=observation,
+        recorded_at=datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC),
+    )
+
+    normalized_stdout = proof["install"]["command"]["stdout"]
+    assert f"CANDIDATE/{wheel.name}" in normalized_stdout
+    assert "ENVROOT/bin/python" in normalized_stdout
+    assert os.path.realpath(candidate) not in normalized_stdout
+    assert os.path.realpath(env_root) not in normalized_stdout
 
 
 def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
