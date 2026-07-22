@@ -424,7 +424,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "solstone-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "solstone-core-cli",
@@ -434,11 +434,11 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-cli"
-version = "0.9.0"
+version = "0.9.1"
 
 [[package]]
 name = "solstone-core-indexer"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-indexer-store"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-journal"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "serde_json",
  "toml_edit",

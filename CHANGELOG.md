@@ -4,19 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.9.1] - 2026-07-22
+
+### Added
+
+- recurring voices now open in one who-is-this sheet from home, speakers, or a transcript. it shows the evidence, searches known people before offering a new person, keeps similar names separate only after confirmation, routes your own voice to its teaching path, and lets you preview, apply, or undo corrections across matching statements. speaker identification is also more cautious when voices sound alike.
+- the journal now names which brain produced each new image description and each run of screen descriptions.
 
 ### Changed
 
-- you can name a recurring voice from Home, Speakers, or a transcript, all in the same who-is-this sheet. the prompt shows how many conversations include that voice; the sheet suggests people only, keeps you and blocked people out of the choices, sends your own voice to the path for naming yourself, lets you confirm that similar names are separate people before adding someone new, and refreshes Speakers after undo so the unnamed voice comes back without a reload. dismissed voices stay quiet, and too-small voice groups say so plainly instead of dead-ending.
-- sol now reports one honest thinking-status state with one next action, so Health, Home, Thinking, support diagnostics, `sol top`, and `journal doctor` agree on whether thinking is available.
-- sol now suggests exact Gemini models, Gemini 3.5 Flash and Gemini 3.1 Flash Lite, instead of moving `latest` aliases that could quietly change which model your journal uses. if your journal had a moving flash alias saved, it now pins it to the matching exact model. if it had the old `gemini-pro-latest` alias saved, Thinking shows one action: choose an exact model in Thinking, because that alias has no single exact match.
+- thinking status now agrees everywhere it appears. background checks, blank replies, and model readiness all resolve to one state with one next action.
+- sol now suggests exact Gemini models instead of moving aliases and keeps confidential processing active while saving a model for later. confidential processing sets up verification on first use and names setup or integrity problems, while a failed local-model replacement leaves the working model available.
 
 ### Fixed
 
-- a model reply that comes back empty is now a failure everywhere: key and model checks, thinking-engine health, and daily analysis all agree, so one path no longer accepts a blank answer another path rejects.
-- confidential processing now gets its nvattest appraiser on first use when the machine supports it, and Thinking names appraiser setup or integrity problems instead of showing a generic attestation rejection.
-- choosing an exact Gemini model from Thinking's advisory now remembers it for when confidential processing is off, while sol keeps thinking with confidential processing now.
+- image imports now reach each brain in a format it understands, including webp with local models. markdown with accented or non-latin text keeps the same size and grouping rules as other text, and an interrupted index update no longer leaves a partial result.
+- links inside the journal on ios now open reliably instead of stalling. `journal doctor` now finds background launchers that keep reopening the legacy mac app, and a full index rescan explains why it found no new relationships and how to rebuild them.
 
 ## [0.9.0] - 2026-07-19
 

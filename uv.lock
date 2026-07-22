@@ -4372,7 +4372,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
@@ -4550,12 +4550,12 @@ journal-cuda = [{ name = "solstone-journal-cuda", editable = "packages/solstone-
 
 [[package]]
 name = "solstone-core"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/solstone-core" }
 
 [[package]]
 name = "solstone-journal"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/solstone-journal" }
 dependencies = [
     { name = "onnxruntime" },
@@ -4571,7 +4571,7 @@ requires-dist = [
 
 [[package]]
 name = "solstone-journal-cuda"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/solstone-journal-cuda" }
 dependencies = [
     { name = "nvidia-cublas-cu12" },
