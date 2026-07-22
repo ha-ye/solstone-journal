@@ -20,7 +20,12 @@ from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.convey import provider_readiness
 from solstone.think.brain_health import HEADLINES
-from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
+from solstone.think.models import (
+    LOCAL_MODEL,
+    NO_BRAIN_PROVIDER,
+    derive_provider_lane,
+    resolve_provider,
+)
 from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.brain_state import (
     BRAIN_REASON_CODES,
@@ -1113,6 +1118,65 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
     assert payload["active"]["provider"] == "local"
 
 
+def test_lane_switch_to_local_refuses_live_confidential_provenance_without_write(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config.update(_spp_configured_provider_config())
+    _write_config(journal_path, config)
+    before = config_path.read_bytes()
+
+    response = client.put("/app/thinking/api/providers", json={"lane": "local"})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then switch to the bundled local model."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_lane_switch_to_local_refuses_interleaved_confidential_provenance(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+    }
+    config["providers"].pop("local", None)
+    _write_config(journal_path, config)
+    interleaved_bytes: list[bytes] = []
+    original_mutate = routes.mutate_journal_config
+
+    def interleave_provenance(mutator):
+        current = json.loads(config_path.read_text())
+        current.update(_spp_configured_provider_config())
+        _write_config(journal_path, current)
+        interleaved_bytes.append(config_path.read_bytes())
+        return original_mutate(mutator)
+
+    monkeypatch.setattr(routes, "mutate_journal_config", interleave_provenance)
+
+    response = client.put("/app/thinking/api/providers", json={"lane": "local"})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then switch to the bundled local model."
+    )
+    assert config_path.read_bytes() == interleaved_bytes[0]
+
+
 def test_switch_from_byo_model_to_local_resolves_local_default(
     settings_client_with_journal,
 ):
@@ -1195,44 +1259,73 @@ def test_confidential_lane_preserves_byo_models(
     assert stored["providers"]["byo_models"] == {"openai": "gpt-5.5"}
 
 
-def test_lane_for_provider_derives_confidential_from_local_endpoint_provenance():
+def test_derive_provider_lane_derives_confidential_from_local_endpoint_provenance():
+    def lane_config(
+        *,
+        local_endpoint_configured: bool,
+        confidential_provenance_present: bool,
+    ) -> dict:
+        config: dict = {}
+        if local_endpoint_configured:
+            config["providers"] = {
+                "local": {
+                    "endpoint_url": "http://host.test:8080/v1",
+                    "served_model_id": "served-model",
+                }
+            }
+        if confidential_provenance_present:
+            config["services"] = {
+                "confidential": {"enabled_at": "2026-05-24T00:00:00Z"}
+            }
+        return config
+
     assert (
-        routes._lane_for_provider(
+        derive_provider_lane(
+            lane_config(
+                local_endpoint_configured=True,
+                confidential_provenance_present=True,
+            ),
             NO_BRAIN_PROVIDER,
-            local_endpoint_configured=True,
-            confidential_provenance_present=True,
         )
         == "none"
     )
     assert (
-        routes._lane_for_provider(
+        derive_provider_lane(
+            lane_config(
+                local_endpoint_configured=False,
+                confidential_provenance_present=True,
+            ),
             "local",
-            local_endpoint_configured=False,
-            confidential_provenance_present=True,
         )
         == "local"
     )
     assert (
-        routes._lane_for_provider(
+        derive_provider_lane(
+            lane_config(
+                local_endpoint_configured=True,
+                confidential_provenance_present=False,
+            ),
             "local",
-            local_endpoint_configured=True,
-            confidential_provenance_present=False,
         )
         == "byo"
     )
     assert (
-        routes._lane_for_provider(
+        derive_provider_lane(
+            lane_config(
+                local_endpoint_configured=True,
+                confidential_provenance_present=True,
+            ),
             "local",
-            local_endpoint_configured=True,
-            confidential_provenance_present=True,
         )
         == "confidential"
     )
     assert (
-        routes._lane_for_provider(
+        derive_provider_lane(
+            lane_config(
+                local_endpoint_configured=True,
+                confidential_provenance_present=True,
+            ),
             "google",
-            local_endpoint_configured=True,
-            confidential_provenance_present=True,
         )
         == "byo"
     )

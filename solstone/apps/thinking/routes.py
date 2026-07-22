@@ -54,6 +54,7 @@ from solstone.think.models import (
     DEFAULT_MODEL_BY_PROVIDER,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
+    derive_provider_lane,
 )
 from solstone.think.providers import (
     PROVIDER_REGISTRY,
@@ -115,6 +116,21 @@ GOOGLE_PRO_ALIAS_TARGETS_TEXT = ", ".join(sorted(GOOGLE_PRO_ALIAS_SLOT_TOKENS))
 GENERIC_THINKING_ERROR = (
     "something went wrong - try again, and if it persists, check the health dashboard"
 )
+CONFIDENTIAL_ENDPOINT_UPDATE_REFUSAL = (
+    "Turn off confidential thinking first, then change your local endpoint."
+)
+CONFIDENTIAL_ENDPOINT_CLEAR_REFUSAL = (
+    "Turn off confidential thinking first, then clear your local endpoint."
+)
+CONFIDENTIAL_BUNDLED_LOCAL_REFUSAL = (
+    "Turn off confidential thinking first, then switch to the bundled local model."
+)
+
+
+class _ConfidentialConfigRefused(Exception):
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
 def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
@@ -123,6 +139,10 @@ def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
 
 def _config_busy_response() -> Any:
     return error_response(CONFIG_BUSY, detail="settings are busy; try again")
+
+
+def _confidential_config_refusal_response(exc: _ConfidentialConfigRefused) -> Any:
+    return error_response(INVALID_OPERATION_FOR_STATE, detail=exc.detail)
 
 
 _CONFIDENTIAL_PHASE_TO_PRODUCT = {
@@ -292,28 +312,6 @@ def _active_settings(providers_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _lane_for_provider(
-    provider: str,
-    *,
-    local_endpoint_configured: bool,
-    confidential_provenance_present: bool,
-) -> str:
-    if provider == NO_BRAIN_PROVIDER:
-        return "none"
-    if provider == "local":
-        if local_endpoint_configured:
-            return "confidential" if confidential_provenance_present else "byo"
-        return "local"
-    return "byo"
-
-
-def _local_endpoint_configured_for_config(config: dict[str, Any]) -> bool:
-    local_config = _read_local_provider_config(config)
-    endpoint_url = str(local_config.get("endpoint_url") or "").strip()
-    served_model_id = str(local_config.get("served_model_id") or "").strip()
-    return bool(endpoint_url and served_model_id)
-
-
 def _confidential_lane_active_for_config(config: dict[str, Any]) -> bool:
     providers_config = config.get("providers")
     if not isinstance(providers_config, dict):
@@ -322,17 +320,7 @@ def _confidential_lane_active_for_config(config: dict[str, Any]) -> bool:
     if not isinstance(active_config, dict):
         active_config = {}
     provider = active_config.get("provider")
-    provider = provider if isinstance(provider, str) else ""
-    return (
-        _lane_for_provider(
-            provider,
-            local_endpoint_configured=_local_endpoint_configured_for_config(config),
-            confidential_provenance_present=(
-                spp.confidential_provenance_block(dict(config)) is not None
-            ),
-        )
-        == "confidential"
-    )
+    return derive_provider_lane(config, provider) == "confidential"
 
 
 def _active_lane_payload(
@@ -343,12 +331,9 @@ def _active_lane_payload(
     presentation: BrainPresentation,
     confidential_provenance_present: bool,
 ) -> dict[str, Any]:
-    endpoint = resolve_local_endpoint_from_config(config)
-    local_endpoint_configured = not endpoint.is_bundled
-    active = _lane_for_provider(
+    active = derive_provider_lane(
+        config,
         str(active_settings.get("provider") or ""),
-        local_endpoint_configured=local_endpoint_configured,
-        confidential_provenance_present=confidential_provenance_present,
     )
     return {
         "lane": active,
@@ -1141,6 +1126,8 @@ def update_local_endpoint() -> Any:
             return error_response(INVALID_REQUEST_VALUE, detail="credential")
 
         def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            if _confidential_lane_active_for_config(config):
+                raise _ConfidentialConfigRefused(CONFIDENTIAL_ENDPOINT_UPDATE_REFUSAL)
             local_config = _ensure_local_provider_config(config)
             before = dict(local_config)
             local_config["endpoint_url"] = endpoint_url
@@ -1180,6 +1167,8 @@ def update_local_endpoint() -> Any:
                 "local_endpoint": _local_endpoint_public_payload(config),
             }
         )
+    except _ConfidentialConfigRefused as exc:
+        return _confidential_config_refusal_response(exc)
     except CorruptConfigError:
         raise
     except LockTimeout:
@@ -1194,6 +1183,8 @@ def clear_local_endpoint() -> Any:
     try:
 
         def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            if _confidential_lane_active_for_config(config):
+                raise _ConfidentialConfigRefused(CONFIDENTIAL_ENDPOINT_CLEAR_REFUSAL)
             local_config = _ensure_local_provider_config(config)
             before = dict(local_config)
             for key in ("endpoint_url", "served_model_id", "credential"):
@@ -1227,6 +1218,8 @@ def clear_local_endpoint() -> Any:
                 "local_endpoint": _local_endpoint_public_payload(config),
             }
         )
+    except _ConfidentialConfigRefused as exc:
+        return _confidential_config_refusal_response(exc)
     except CorruptConfigError:
         raise
     except LockTimeout:
@@ -1416,9 +1409,14 @@ def _lane_provider(request_data: dict[str, Any]) -> str | Any:
         return "local"
     if lane == "local":
         if local_endpoint_configured:
+            detail = (
+                CONFIDENTIAL_BUNDLED_LOCAL_REFUSAL
+                if spp.confidential_provenance() is not None
+                else "clear your endpoint URL first to run the bundled local model."
+            )
             return error_response(
                 INVALID_OPERATION_FOR_STATE,
-                detail="clear your endpoint URL first to run the bundled local model.",
+                detail=detail,
             )
         return "local"
     provider = request_data.get("provider")
@@ -1500,6 +1498,11 @@ def update_providers() -> Any:
             )
 
         def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, Any]]:
+            if (
+                request_data["lane"] == "local"
+                and spp.confidential_provenance_block(dict(config)) is not None
+            ):
+                raise _ConfidentialConfigRefused(CONFIDENTIAL_BUNDLED_LOCAL_REFUSAL)
             providers_config = config.get("providers")
             if not isinstance(providers_config, dict):
                 providers_config = {}
@@ -1545,6 +1548,8 @@ def update_providers() -> Any:
                 params={"changed_fields": changed_fields},
             )
         return get_providers()
+    except _ConfidentialConfigRefused as exc:
+        return _confidential_config_refusal_response(exc)
     except LockTimeout:
         return _config_busy_response()
     except Exception:

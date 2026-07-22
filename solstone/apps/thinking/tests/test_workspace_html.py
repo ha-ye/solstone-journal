@@ -90,7 +90,10 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'data-open-view="local-setup"' in html
     assert 'id="localSetupCard" aria-live="polite" aria-atomic="true"' in html
     assert 'id="localRuntimeRetry"' in html
+    assert 'id="localSetupMessage"' in html
+    assert 'id="localOverrideNoticeText"' in html
     assert "data-switch-lane" in html
+    assert 'id="switchStatus"' in html
     assert html.count('id="byoLaneStatus"') == 1
     assert 'id="byoKeyStatus"' in html
     for control_id in (
@@ -197,6 +200,22 @@ def test_confidential_live_static_behavior_is_wired() -> None:
     assert "if (lane === 'confidential')" in js
     assert "showView('confidential-setup');" in js
     assert "confidential-setup" in js
+
+
+def test_confidential_refusal_status_targets_are_wired() -> None:
+    js = STATIC.read_text(encoding="utf-8")
+
+    assert "setMessage('switchStatus', err.message, 'error')" in js
+    assert (
+        "localEndpointClearFromLocal')?.addEventListener('click', () => "
+        "clearLocalEndpoint().catch((err) => setMessage('localSetupMessage', "
+        "err.message, 'error')))"
+    ) in js
+    assert "localOverrideNoticeText" in js
+    assert (
+        "Turn off confidential thinking first, then switch to the bundled local model."
+        in js
+    )
 
 
 def test_copy_payload_round_trips_apostrophes() -> None:

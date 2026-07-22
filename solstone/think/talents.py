@@ -1422,7 +1422,7 @@ async def _execute_with_tools(
         valid = ", ".join(sorted(PROVIDER_REGISTRY.keys()))
         raise ValueError(f"Unknown provider: {provider!r}. Valid providers: {valid}")
 
-    _raise_if_confidential_unverified()
+    _raise_if_confidential_unverified(provider)
     provider_mod = get_provider_module(provider)
     expected_fingerprint_sha256 = _capture_runtime_fingerprint(config)
 

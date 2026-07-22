@@ -819,7 +819,7 @@
       </div>
       <div class="message" id="localSetupMessage"></div>
       <div class="notice" id="localOverrideNotice" hidden>
-        you're pointed at your own URL — clear it to run the bundled model
+        <span id="localOverrideNoticeText">you're pointed at your own URL — clear it to run the bundled model</span>
         <div class="inline-actions">
           <button type="button" class="btn ghost" id="localEndpointClearFromLocal">clear endpoint</button>
         </div>
@@ -850,6 +850,7 @@
           </div>
         </div>
         <p class="gsub" id="switchNote"></p>
+        <div class="message" id="switchStatus"></div>
         <div class="actions">
           <button type="button" class="btn primary" id="switchConfirmPrimary" data-switch-lane=""></button>
           <button type="button" class="btn ghost" id="switchCancel" data-open-view="main"></button>

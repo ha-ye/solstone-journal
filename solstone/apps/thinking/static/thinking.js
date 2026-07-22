@@ -1916,6 +1916,12 @@
     setText('localSetupSub', local.sub);
     setMessage('localSetupMessage', local.message, local.tone === 'bad' ? 'error' : '');
     setText('localNotice', local.notice);
+    setText(
+      'localOverrideNoticeText',
+      state.providers?.active_lane?.lane === 'confidential'
+        ? 'Turn off confidential thinking first, then switch to the bundled local model.'
+        : "you're pointed at your own URL — clear it to run the bundled model",
+    );
     setHidden('localOverrideNotice', !local.endpointOverride);
     setButtonState('localBootstrap', local.bootstrap, !local.bootstrap);
     setButtonText('localBootstrap', local.bootstrapLabel || copy.local_install?.install || '');
@@ -1989,6 +1995,7 @@
     setText('switchTargetNodeLabel', switchCopy.target_label || '');
     setText('switchCurrentLabel', currentLabel);
     setText('switchTargetLabel', targetLabel);
+    setMessage('switchStatus', '');
     if (target === 'byo') {
       setText(
         'switchNote',
@@ -2698,7 +2705,7 @@
         if (!lane) return;
         switchLane(lane)
           .then(() => showView('main'))
-          .catch((err) => setMessage(`${lane}LaneStatus`, err.message, 'error'));
+          .catch((err) => setMessage('switchStatus', err.message, 'error'));
       });
     });
     $('byoProvider')?.addEventListener('change', () => {
@@ -2773,7 +2780,7 @@
     });
     $('localEndpointSave')?.addEventListener('click', () => saveLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
     $('localEndpointClear')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
-    $('localEndpointClearFromLocal')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
+    $('localEndpointClearFromLocal')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localSetupMessage', err.message, 'error')));
     window.addEventListener('hashchange', () => showView(viewFromHash(), {replace: true}));
   }
 

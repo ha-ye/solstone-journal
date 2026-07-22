@@ -9,6 +9,7 @@ from typing import Any
 
 from solstone.apps.thinking import routes as thinking_routes
 from solstone.convey import create_app
+from solstone.think.models import LOCAL_MODEL
 
 PLACEHOLDER_CREDENTIAL = "test-token-PLACEHOLDER"
 
@@ -39,6 +40,25 @@ def _ready_settings_env(settings_env) -> tuple[Path, dict[str, Any]]:
     config["setup"] = {"completed_at": 1700000000000}
     _write_config(journal_path, config)
     return journal_path, config
+
+
+def _activate_confidential_lane(config: dict[str, Any]) -> None:
+    config["providers"]["active"] = {"provider": "local", "model": LOCAL_MODEL}
+    config["providers"]["local"] = {
+        "endpoint_url": "https://spp.example.test/v1",
+        "served_model_id": "confidential-model",
+        "credential": PLACEHOLDER_CREDENTIAL,
+    }
+    config.setdefault("services", {})["confidential"] = {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "acct-confidential",
+        "endpoint_url": "https://spp.example.test/v1",
+        "served_model_id": "confidential-model",
+        "credential_created_at": "2026-05-24T00:00:00Z",
+        "credential_fingerprint_sha256": "fingerprint",
+        "prior_active": {"provider": "google", "model": "gemini-3.5-flash"},
+        "prior_local_endpoint": None,
+    }
 
 
 def test_local_endpoint_post_sets_normalized_values_and_masks_credential(
@@ -192,3 +212,92 @@ def test_local_endpoint_post_rejects_bad_url(settings_env):
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
     assert "endpoint_url" in payload["detail"]
+
+
+def test_local_endpoint_post_refuses_confidential_lane_without_config_write(
+    settings_env,
+):
+    journal_path, config = _ready_settings_env(settings_env)
+    _activate_confidential_lane(config)
+    _write_config(journal_path, config)
+    config_path = _config_path(journal_path)
+    before = config_path.read_bytes()
+    client = _client(journal_path)
+
+    response = client.post(
+        "/app/thinking/api/local/endpoint",
+        json={
+            "endpoint_url": "https://new-endpoint.example.test/v1",
+            "served_model_id": "new-model",
+            "credential": "new-token",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then change your local endpoint."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_local_endpoint_delete_refuses_confidential_lane_without_config_write(
+    settings_env,
+):
+    journal_path, config = _ready_settings_env(settings_env)
+    _activate_confidential_lane(config)
+    _write_config(journal_path, config)
+    config_path = _config_path(journal_path)
+    before = config_path.read_bytes()
+    client = _client(journal_path)
+
+    response = client.delete("/app/thinking/api/local/endpoint")
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then clear your local endpoint."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_local_endpoint_delete_refuses_interleaved_confidential_provenance(
+    settings_env,
+    monkeypatch,
+):
+    journal_path, config = _ready_settings_env(settings_env)
+    config["providers"]["active"] = {"provider": "local", "model": LOCAL_MODEL}
+    config["providers"]["local"] = {
+        "endpoint_url": "https://owner-endpoint.example.test/v1",
+        "served_model_id": "owner-model",
+        "credential": PLACEHOLDER_CREDENTIAL,
+    }
+    _write_config(journal_path, config)
+    config_path = _config_path(journal_path)
+    interleaved_bytes: list[bytes] = []
+    original_mutate = thinking_routes.mutate_journal_config
+
+    def interleave_provenance(mutator):
+        current = _read_config(journal_path)
+        _activate_confidential_lane(current)
+        _write_config(journal_path, current)
+        interleaved_bytes.append(config_path.read_bytes())
+        return original_mutate(mutator)
+
+    monkeypatch.setattr(thinking_routes, "mutate_journal_config", interleave_provenance)
+    client = _client(journal_path)
+
+    response = client.delete("/app/thinking/api/local/endpoint")
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then clear your local endpoint."
+    )
+    assert config_path.read_bytes() == interleaved_bytes[0]

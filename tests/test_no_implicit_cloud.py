@@ -198,6 +198,45 @@ def _add_local_endpoint(config: dict) -> None:
     }
 
 
+def _local_generate_result() -> dict:
+    return {
+        "text": "local-ok",
+        "model": LOCAL_MODEL,
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        "finish_reason": "stop",
+    }
+
+
+async def _local_agenerate_success(*args, **kwargs) -> dict:
+    return _local_generate_result()
+
+
+async def _local_cogitate_success(*, config: dict, on_event=None) -> str:
+    if on_event is not None:
+        on_event(
+            {
+                "event": "finish",
+                "result": "local-cogitate-ok",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+    return "local-cogitate-ok"
+
+
+def _install_local_success_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Mock]:
+    local_generate = Mock(return_value=_local_generate_result())
+    local_agenerate = Mock(side_effect=_local_agenerate_success)
+    local_cogitate = Mock(side_effect=_local_cogitate_success)
+    monkeypatch.setattr("solstone.think.providers.local.run_generate", local_generate)
+    monkeypatch.setattr("solstone.think.providers.local.run_agenerate", local_agenerate)
+    monkeypatch.setattr("solstone.think.providers.local.run_cogitate", local_cogitate)
+    return {
+        "generate": local_generate,
+        "agenerate": local_agenerate,
+        "cogitate": local_cogitate,
+    }
+
+
 def _stt_audio() -> np.ndarray:
     return np.zeros(16000, dtype=np.float32)
 
@@ -573,25 +612,31 @@ def test_confidential_local_lane_stops_before_any_provider_dispatch(
     config["providers"] = {
         "active": {"provider": "local", "model": LOCAL_MODEL},
     }
+    _add_local_endpoint(config)
     _seed_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
-    local_generate = Mock(side_effect=AssertionError("local generate dispatched"))
-    local_agenerate = Mock(side_effect=AssertionError("local agenerate dispatched"))
-    local_cogitate = Mock(side_effect=AssertionError("local cogitate dispatched"))
-    local_connect = Mock(side_effect=AssertionError("local server connect attempted"))
+    local = _install_local_success_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
     httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
-    monkeypatch.setattr("solstone.think.providers.local.run_generate", local_generate)
-    monkeypatch.setattr("solstone.think.providers.local.run_agenerate", local_agenerate)
-    monkeypatch.setattr("solstone.think.providers.local.run_cogitate", local_cogitate)
-    monkeypatch.setattr("solstone.think.providers.local_server.connect", local_connect)
     monkeypatch.setattr("httpx.post", httpx_post)
     monkeypatch.setattr("httpx.get", httpx_get)
 
     with pytest.raises(AttestationFailedError) as generate_exc:
         models.generate("hello", "any.context")
     _assert_attestation_failed(generate_exc.value)
+
+    with pytest.raises(AttestationFailedError) as result_exc:
+        models.generate_with_result("hello", "any.context")
+    _assert_attestation_failed(result_exc.value)
+
+    with pytest.raises(AttestationFailedError) as async_result_exc:
+        asyncio.run(models.agenerate_with_result("hello", "any.context"))
+    _assert_attestation_failed(async_result_exc.value)
+
+    with pytest.raises(AttestationFailedError) as async_exc:
+        asyncio.run(models.agenerate("hello", "any.context"))
+    _assert_attestation_failed(async_exc.value)
 
     with pytest.raises(AttestationFailedError) as cogitate_exc:
         asyncio.run(
@@ -604,13 +649,38 @@ def test_confidential_local_lane_stops_before_any_provider_dispatch(
 
     for mock in mocks:
         mock.assert_not_called()
-    local_generate.assert_not_called()
-    local_agenerate.assert_not_called()
-    local_cogitate.assert_not_called()
-    local_connect.assert_not_called()
+    local["generate"].assert_not_called()
+    local["agenerate"].assert_not_called()
+    local["cogitate"].assert_not_called()
     httpx_post.assert_not_called()
     httpx_get.assert_not_called()
-    assert establish.call_count == 2
+    assert establish.call_count == 5
+
+    config["providers"].pop("local", None)
+    _seed_journal_config(tmp_path, config)
+    for local_mock in local.values():
+        local_mock.reset_mock()
+    events: list[dict] = []
+
+    assert models.generate("hello", "any.context") == "local-ok"
+    assert models.generate_with_result("hello", "any.context")["text"] == "local-ok"
+    assert (
+        asyncio.run(models.agenerate_with_result("hello", "any.context"))["text"]
+        == "local-ok"
+    )
+    assert asyncio.run(models.agenerate("hello", "any.context")) == "local-ok"
+    asyncio.run(
+        talents._execute_with_tools(
+            {"provider": "local", "model": LOCAL_MODEL, "type": "cogitate"},
+            events.append,
+        )
+    )
+
+    assert local["generate"].call_count == 2
+    assert local["agenerate"].call_count == 2
+    local["cogitate"].assert_called_once()
+    assert events[-1]["event"] == "finish"
+    assert establish.call_count == 5
 
 
 def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
@@ -677,7 +747,7 @@ def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):
     establish.assert_called_once()
 
 
-def test_confidential_gate_keys_on_provenance_not_provider_resolution(
+def test_confidential_gate_keys_on_derived_lane_not_provider_name(
     tmp_path,
     monkeypatch,
 ):
@@ -690,16 +760,24 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     _seed_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
-    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
-    monkeypatch.setattr("httpx.post", httpx_post)
+    local = _install_local_success_mocks(monkeypatch)
+
+    assert models.generate("hello", "any.context") == "local-ok"
+    local["generate"].assert_called_once()
+    establish.assert_not_called()
+
+    for mock in mocks:
+        mock.assert_not_called()
+
+    _add_local_endpoint(config)
+    _seed_journal_config(tmp_path, config)
+    local["generate"].reset_mock()
 
     with pytest.raises(AttestationFailedError) as exc_info:
         models.generate("hello", "any.context")
 
     _assert_attestation_failed(exc_info.value)
-    for mock in mocks:
-        mock.assert_not_called()
-    httpx_post.assert_not_called()
+    local["generate"].assert_not_called()
     establish.assert_called_once()
 
 

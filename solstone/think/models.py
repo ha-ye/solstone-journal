@@ -8,12 +8,17 @@ import logging
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 
 import frontmatter
 from jsonschema import Draft202012Validator
 
+from solstone.think.providers.local_endpoint import (
+    confidential_provenance_block,
+    resolve_local_endpoint_from_config,
+)
 from solstone.think.providers.shared import validate_generate_result_strict
 from solstone.think.schema_prep import prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
@@ -675,8 +680,28 @@ def _raise_if_no_brain(provider: str) -> None:
         raise NoBrainConfiguredError()
 
 
-def _raise_if_confidential_unverified() -> None:
-    block = get_config().get("services", {}).get("confidential")
+def derive_provider_lane(config: Mapping[str, Any], provider: object) -> str:
+    provider_name = (
+        provider if isinstance(provider, str) and provider else NO_BRAIN_PROVIDER
+    )
+    config_dict = dict(config)
+    if provider_name == NO_BRAIN_PROVIDER:
+        return "none"
+    if provider_name == "local":
+        endpoint = resolve_local_endpoint_from_config(config_dict)
+        if endpoint.is_bundled:
+            return "local"
+        if confidential_provenance_block(config_dict) is not None:
+            return "confidential"
+        return "byo"
+    return "byo"
+
+
+def _raise_if_confidential_unverified(provider: object) -> None:
+    config = get_config()
+    if derive_provider_lane(config, provider) == "local":
+        return
+    block = config.get("services", {}).get("confidential")
     if not isinstance(block, dict):
         return
     _confidential_attestation_verifier()(block)
@@ -1130,7 +1155,7 @@ def generate(
     provider, model = resolve_provider("generate")
 
     _raise_if_no_brain(provider)
-    _raise_if_confidential_unverified()
+    _raise_if_confidential_unverified(provider)
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
@@ -1237,7 +1262,7 @@ def generate_with_result(
     provider, model = resolve_provider("generate")
 
     _raise_if_no_brain(provider)
-    _raise_if_confidential_unverified()
+    _raise_if_confidential_unverified(provider)
 
     provider_mod = get_provider_module(provider)
     provider_schema = prepare_provider_schema(json_schema, provider)
@@ -1311,7 +1336,7 @@ async def agenerate_with_result(
     provider, model = resolve_provider("generate")
 
     _raise_if_no_brain(provider)
-    _raise_if_confidential_unverified()
+    _raise_if_confidential_unverified(provider)
 
     provider_mod = get_provider_module(provider)
     provider_schema = prepare_provider_schema(json_schema, provider)
@@ -1408,7 +1433,7 @@ async def agenerate(
     provider, model = resolve_provider("generate")
 
     _raise_if_no_brain(provider)
-    _raise_if_confidential_unverified()
+    _raise_if_confidential_unverified(provider)
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
@@ -1459,6 +1484,7 @@ __all__ = [
     # Provider configuration
     "DEFAULT_MODEL_BY_PROVIDER",
     "NO_BRAIN_PROVIDER",
+    "derive_provider_lane",
     "NoBrainConfiguredError",
     "AttestationFailedError",
     "AttestationNotVerifiedError",
