@@ -11,7 +11,7 @@ from solstone.apps.transcripts.tests._media_helpers import build_moov_at_tail_m4
 from solstone.convey import create_app
 
 DAY = "20990104"
-STREAM = "pro5e"
+STREAM = "transcript-fixture"
 SEGMENT = "122500_300"
 MEDIA_FILE = "display_1_screen.mp4"
 AUDIO_FILE = "raw.m4a"
