@@ -337,6 +337,10 @@ def _payload_transient_paths(root: Path, version: str) -> tuple[Path, ...]:
     )
 
 
+def _zig_cache_root(root: Path) -> Path:
+    return root / "target" / "release-zig-cache"
+
+
 def _default_clean_outputs(root: Path, version: str) -> None:
     failures: list[Failure] = []
     failures.extend(_remove_owned_path(root / "build", label="build"))
@@ -363,6 +367,7 @@ def _default_clean_outputs(root: Path, version: str) -> None:
         Path("target") / "release-evidence" / version,
         Path("target") / "release-evidence" / f"{version}.staging",
         Path("target") / "release-transfer" / version,
+        _zig_cache_root(root).relative_to(root),
     ):
         failures.extend(_remove_owned_relative(root, relative))
     for path in _payload_transient_paths(root, version):
@@ -416,11 +421,52 @@ def validate_linux_maturin_args(args: str, *, target: str) -> list[Failure]:
     return []
 
 
-def _scrubbed_build_env(maturin_args: str) -> dict[str, str]:
+def _zig_cache_dirs(root: Path) -> tuple[Path, Path]:
+    cache_root = _zig_cache_root(root)
+    global_cache = cache_root / "zig-global"
+    local_cache = cache_root / "zig-local"
+    try:
+        global_cache.mkdir(parents=True, exist_ok=True)
+        local_cache.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DriverError(
+            [
+                _failure(
+                    "release Zig cache directory could not be created",
+                    expected="writable Zig cache directories under target/release-zig-cache",
+                    actual=f"{type(exc).__name__}: {exc}",
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        ) from None
+    return global_cache.resolve(), local_cache.resolve()
+
+
+def _scrubbed_build_env(root: Path, maturin_args: str) -> dict[str, str]:
+    zig_global_cache, zig_local_cache = _zig_cache_dirs(root)
+    # Local release builds use a narrow env, not a fully synthetic HOME. Keys:
+    # - MATURIN_PEP517_ARGS: gives the PEP517 backend the locked Linux args.
+    # - PATH: the only ambient value copied, solely for tool discovery.
+    # - PYTHONNOUSERSITE: keeps Python from importing user-site packages.
+    # - ZIG_GLOBAL_CACHE_DIR: required by Zig 0.16.0 without HOME/XDG appdata.
+    # - ZIG_LOCAL_CACHE_DIR: keeps Zig's local build cache out of cwd defaults.
+    #
+    # Tool disposition is intentional. Zig is hermetic because it is the only
+    # tool here with no passwd fallback and the only one that fails loudly.
+    # uv stays passwd-warm: with no HOME it exits 0 and resolves the operator's
+    # uv cache directory. maturin owns no cache and is cwd-relative. cargo and
+    # rustc stay passwd-warm through rustup shims that reach the operator's
+    # rustup and cargo home directories. python3 stays passwd-warm: Path.home()
+    # resolves to the operator's home. Making uv/cargo transaction-local forced
+    # network-dependent re-resolution in probes: crates.io index plus 77 .crate
+    # downloads and a 113M cargo cache per candidate, weakening --locked offline
+    # determinism.
     return {
         "MATURIN_PEP517_ARGS": maturin_args,
         "PATH": os.environ.get("PATH", ""),
         "PYTHONNOUSERSITE": "1",
+        "ZIG_GLOBAL_CACHE_DIR": str(zig_global_cache),
+        "ZIG_LOCAL_CACHE_DIR": str(zig_local_cache),
     }
 
 
@@ -477,7 +523,7 @@ def _default_build_local_dist(
             runner,
             list(argv),
             cwd=root,
-            env=_scrubbed_build_env(maturin_args),
+            env=_scrubbed_build_env(root, maturin_args),
         )
     _validate_local_dist_inventory(root / "dist", include_models=include_models)
 
@@ -2769,7 +2815,7 @@ def run_candidate(
             core_lock_sha256=expected_lock,
         )
     finally:
-        svc.cleanup_transients((transfer_dir,))
+        svc.cleanup_transients((transfer_dir, _zig_cache_root(root)))
     _assert_clean_identity(
         root,
         expected_commit=expected_commit,

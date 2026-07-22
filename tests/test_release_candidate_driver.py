@@ -523,6 +523,17 @@ def _assert_no_ready_cohort(root: Path) -> None:
     assert not evidence_staging.exists()
 
 
+def _expected_scrubbed_env(root: Path, maturin_args: str) -> dict[str, str]:
+    cache_root = root / "target" / "release-zig-cache"
+    return {
+        "MATURIN_PEP517_ARGS": maturin_args,
+        "PATH": os.environ["PATH"],
+        "PYTHONNOUSERSITE": "1",
+        "ZIG_GLOBAL_CACHE_DIR": str((cache_root / "zig-global").resolve()),
+        "ZIG_LOCAL_CACHE_DIR": str((cache_root / "zig-local").resolve()),
+    }
+
+
 def _recover(root: Path) -> driver.CandidateReport:
     return driver.run_recover(
         root,
@@ -753,6 +764,34 @@ def test_machine_report_is_canonical_sorted_and_not_publication_authorization(
         )
         for target, entry in payload["proof_inventory"].items():
             assert entry["sha256"] == payload["proof_sha256"][target]
+
+
+def test_candidate_cleanup_receives_release_zig_cache_root(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+    version = checker._current_version()
+    cache_root = root / "target" / "release-zig-cache"
+    (cache_root / "zig-global").mkdir(parents=True)
+    (cache_root / "zig-global" / "marker").write_text("stale", encoding="utf-8")
+    cleanup_calls: list[tuple[Path, ...]] = []
+
+    def cleanup(paths: Sequence[Path]) -> None:
+        cleanup_calls.append(tuple(paths))
+        services.cleanup_transients(paths)
+
+    driver.run_candidate(
+        root,
+        _env(),
+        replace(services, cleanup_transients=cleanup),
+    )
+
+    assert cleanup_calls == [
+        (
+            root / "target" / "release-transfer" / version,
+            cache_root,
+        )
+    ]
+    assert not cache_root.exists()
 
 
 def test_dry_run_linux_validates_static_plan_without_files_or_services(
@@ -1339,24 +1378,14 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
 
     driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
 
-    expected_x86_env = {
-        "MATURIN_PEP517_ARGS": driver.CORE_X86_64_MATURIN_ARGS,
-        "PATH": os.environ["PATH"],
-        "PYTHONNOUSERSITE": "1",
-    }
-    expected_aarch64_env = {
-        "MATURIN_PEP517_ARGS": driver.CORE_AARCH64_MATURIN_ARGS,
-        "PATH": os.environ["PATH"],
-        "PYTHONNOUSERSITE": "1",
-    }
+    expected_x86_env = _expected_scrubbed_env(tmp_path, driver.CORE_X86_64_MATURIN_ARGS)
+    expected_aarch64_env = _expected_scrubbed_env(
+        tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
+    )
     assert calls == [
         (
             ("python3", "scripts/render_packaging.py", "--check"),
-            {
-                "MATURIN_PEP517_ARGS": "",
-                "PATH": os.environ["PATH"],
-                "PYTHONNOUSERSITE": "1",
-            },
+            _expected_scrubbed_env(tmp_path, ""),
         ),
         (
             ("uv", "build", "--package", "solstone"),
@@ -1391,9 +1420,31 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         if argv == ("uv", "build", "--package", "solstone-core", "--wheel")
     ] == [driver.CORE_AARCH64_MATURIN_ARGS]
     assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
+    for _argv, env in calls:
+        assert Path(env["ZIG_GLOBAL_CACHE_DIR"]).is_relative_to(tmp_path)
+        assert Path(env["ZIG_LOCAL_CACHE_DIR"]).is_relative_to(tmp_path)
     assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
         driver._expected_local_dist_names(include_models=False)
     )
+
+
+def test_scrubbed_build_env_reports_uncreatable_zig_cache_root(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "target" / "release-zig-cache"
+    cache_root.parent.mkdir(parents=True)
+    cache_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._scrubbed_build_env(tmp_path, driver.CORE_X86_64_MATURIN_ARGS)
+
+    assert exc.value.failures[0].error == (
+        "release Zig cache directory could not be created"
+    )
+    assert exc.value.failures[0].expected == (
+        "writable Zig cache directories under target/release-zig-cache"
+    )
+    assert "NotADirectoryError" in exc.value.failures[0].actual
 
 
 def test_default_build_local_dist_honors_include_models_build_selection(
@@ -1439,6 +1490,7 @@ def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(
         / "solstone_journal_models.egg-info",
         root / "target" / "release-transfer" / f".{version}.request-abc123",
         root / "target" / "release-evidence" / f"{version}.staging",
+        root / "target" / "release-zig-cache",
         root / "dist" / "release-candidate" / f"{version}.payload-staging.staging",
         root / "dist" / "release-candidate" / f"{version}.payload-staging.quarantine",
     ]
