@@ -100,9 +100,9 @@ def test_manifest_entry_records_the_brain_that_described_the_image(
     mod.importer.process(image_path, tmp_path, import_id="20260115_120000")
 
     entry = json.loads(
-        (
-            tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl"
-        ).read_text(encoding="utf-8")
+        (tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl").read_text(
+            encoding="utf-8"
+        )
     )
     assert entry["meta"]["thinking"] == {
         "provider": "google",
@@ -126,9 +126,9 @@ def test_manifest_entry_omits_brain_when_none_is_selected(tmp_path, monkeypatch)
     mod.importer.process(image_path, tmp_path, import_id="20260115_120000")
 
     entry = json.loads(
-        (
-            tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl"
-        ).read_text(encoding="utf-8")
+        (tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl").read_text(
+            encoding="utf-8"
+        )
     )
     assert "thinking" not in entry["meta"]
     assert entry["meta"]["format"] == "PNG"
