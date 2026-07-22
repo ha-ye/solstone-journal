@@ -70,6 +70,26 @@ Source:
 License notice: Creative Commons Attribution 4.0 International (CC-BY-4.0).
 License text: https://creativecommons.org/licenses/by/4.0/legalcode.txt
 
+## runtime-downloaded provider artifacts (local model)
+
+These artifacts are fetched on demand into the journal provider cache when an
+owner installs the local inference provider; they are not bundled in this
+repository.
+
+### Qwen3.5-4B GGUF model
+
+Attribution: `unsloth/Qwen3.5-4B-GGUF`, based on Qwen3.5-4B.
+
+Source:
+
+- Model repository: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+- Downloaded file: `Qwen3.5-4B-Q4_K_M.gguf`
+- SHA-256: `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`
+- Downloaded file: `mmproj-F16.gguf`
+- SHA-256: `cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864`
+
+License notice: Apache License 2.0 (Apache-2.0).
+
 ## runtime-downloaded provider artifacts (ced.cpp sound-tag engine)
 
 These artifacts are fetched on demand into the journal provider cache for local
