@@ -104,6 +104,11 @@ def _normalize_location_value(
     if (parsed.hostname, redirect_port) != request_authority:
         return value
 
+    if parsed.path.startswith("//") or "\\" in parsed.path:
+        # Browser URL parsing can treat this relative form as authority-bearing;
+        # keep the absolute URI rather than changing origin during the rewrite.
+        return value
+
     path = parsed.path or "/"
     if parsed.query:
         path += f"?{parsed.query}"

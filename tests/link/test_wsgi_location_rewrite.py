@@ -122,6 +122,11 @@ async def test_secure_listener_rewrites_strict_slash_redirects_to_origin_relativ
             "a,b",
             "https://127.0.0.1:54321/app/home/",
         ),
+        (
+            "https://127.0.0.1:54321//evil.test/x",
+            "127.0.0.1:54321",
+            "https://127.0.0.1:54321//evil.test/x",
+        ),
     ],
 )
 async def test_secure_listener_location_passthrough_cases_do_not_substitute_500(
@@ -194,6 +199,7 @@ def test_normalize_location_headers_returns_new_list() -> None:
             "https://host:443/a%20b?q=a%2Fb&x=1#frag%201",
             "/a%20b?q=a%2Fb&x=1#frag%201",
         ),
+        ("example.test", "https", "https://example.test/a//b", "/a//b"),
     ],
 )
 def test_normalize_location_headers_rewrites_same_journal_absolute_locations(
@@ -224,6 +230,8 @@ def test_normalize_location_headers_rewrites_same_journal_absolute_locations(
         ("example.test:notaport", "https", "https://example.test/x"),
         ("example.test", "ftp", "https://example.test/x"),
         ("example.test", "https", "http://example.test/x"),
+        ("example.test", "https", "https://example.test//evil.test/x"),
+        ("example.test", "https", "https://example.test/\\evil.test/x"),
     ],
 )
 def test_normalize_location_headers_fail_closed_cases(

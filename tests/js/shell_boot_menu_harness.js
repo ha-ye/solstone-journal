@@ -18,10 +18,6 @@ class FakeClassList {
     this._classes.delete(name);
   }
 
-  contains(name) {
-    return this._classes.has(name);
-  }
-
   toggle(name, force) {
     const shouldAdd = force === undefined ? !this._classes.has(name) : Boolean(force);
     if (shouldAdd) {
@@ -49,16 +45,6 @@ class FakeElement {
   appendChild(child) {
     this.children.push(child);
     return child;
-  }
-
-  querySelector() {
-    return null;
-  }
-
-  remove() {}
-
-  setAttribute(name, value) {
-    this.attributes[name] = String(value);
   }
 }
 
