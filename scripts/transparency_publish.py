@@ -282,26 +282,6 @@ def _verify_bytes(
         return signer.trusted_comment(signature_path)
 
 
-def _extract_version_from_entry_key(product: str, key: str) -> str | None:
-    prefix = f"releases/{product}/v/"
-    suffix = f"/{ENTRY_OBJECT_NAME}"
-    if not key.startswith(prefix) or not key.endswith(suffix):
-        return None
-    version = key[len(prefix) : -len(suffix)]
-    return version or None
-
-
-def _immutable_entry_keys(
-    product: str, keys: Sequence[str]
-) -> tuple[tuple[str, str], ...]:
-    versions: list[tuple[str, str]] = []
-    for key in keys:
-        version = _extract_version_from_entry_key(product, key)
-        if version is not None:
-            versions.append((version, key))
-    return tuple(sorted(versions, key=lambda item: item[0]))
-
-
 def _raise_http_failure(
     error: str,
     *,
@@ -341,16 +321,52 @@ def _require_etag(result: HttpResult, *, key: str, label: str) -> str:
     raise AssertionError("unreachable")
 
 
+def _raise_missing_walk_entry(
+    *,
+    product: str,
+    missing_version: str,
+    from_version: str,
+    seq: int,
+    prev_sha256: str,
+) -> None:
+    fail_closed(
+        "transparency locked entry referenced by chain is missing",
+        expected=(
+            f"{version_object_key(product, missing_version, ENTRY_OBJECT_NAME)} "
+            "create-only immutable object"
+        ),
+        actual=(
+            "status=404 while walking prev_version from "
+            f"{from_version} seq={seq} prev_sha256={prev_sha256}"
+        ),
+        repair=(
+            "stop and audit immutable entries, ledger.jsonl, latest pointer, "
+            "and transparency-head-log.jsonl for deletion/rollback/split-view "
+            "before publishing"
+        ),
+    )
+
+
 def _verify_remote_entry(
     *,
     product: str,
     version: str,
     transport: TransparencyTransport,
     signer: TransparencySigner,
+    missing_walk_reference: tuple[str, int, str] | None = None,
 ) -> EntryRecord:
     key = version_object_key(product, version, ENTRY_OBJECT_NAME)
     result = transport.get_object(key, cache_bypass=True)
     if result.status != 200:
+        if result.status == 404 and missing_walk_reference is not None:
+            from_version, seq, prev_sha256 = missing_walk_reference
+            _raise_missing_walk_entry(
+                product=product,
+                missing_version=version,
+                from_version=from_version,
+                seq=seq,
+                prev_sha256=prev_sha256,
+            )
         _raise_http_failure(
             "transparency locked entry could not be fetched",
             key=key,
@@ -381,6 +397,93 @@ def _verify_remote_entry(
     if failures:
         raise DriverError(failures)
     return record
+
+
+def _binding_ledger_entries(
+    *,
+    body: bytes,
+    pointer: LatestRecord,
+    chain_length: int,
+) -> tuple[EntryRecord, ...] | None:
+    try:
+        entries = parse_ledger_jsonl(body)
+    except DriverError:
+        return None
+    if validate_entry_chain(entries):
+        return None
+    if len(entries) != chain_length:
+        return None
+    if not entries:
+        return None
+    tip = entries[-1]
+    if tip.sha256 != pointer.pointer["tip_sha256"]:
+        return None
+    if tip.entry["version"] != pointer.pointer["version"]:
+        return None
+    # The signed latest pointer binds the tip line hash, and the validated
+    # prev_sha256 links bind every earlier newline-terminated ledger row.
+    # Therefore the hot path does not need per-entry minisig GETs.
+    return entries
+
+
+def _walk_prev_version_chain(
+    *,
+    product: str,
+    pointer: LatestRecord,
+    chain_length: int,
+    transport: TransparencyTransport,
+    signer: TransparencySigner,
+) -> tuple[EntryRecord, ...]:
+    records: list[EntryRecord] = []
+    version = str(pointer.pointer["version"])
+    expected_sha256 = str(pointer.pointer["tip_sha256"])
+    missing_from_version = version
+    missing_from_seq = chain_length
+    missing_prev_sha256 = expected_sha256
+    for _index in range(chain_length):
+        record = _verify_remote_entry(
+            product=product,
+            version=version,
+            transport=transport,
+            signer=signer,
+            missing_walk_reference=(
+                missing_from_version,
+                missing_from_seq,
+                missing_prev_sha256,
+            ),
+        )
+        records.append(record)
+        if record.sha256 != expected_sha256:
+            fail_closed(
+                "transparency locked entry does not match chain reference",
+                expected=f"{version} {expected_sha256}",
+                actual=f"{record.entry['version']} {record.sha256}",
+                repair=(
+                    "stop and audit immutable entries, ledger.jsonl, latest pointer, "
+                    "and transparency-head-log.jsonl before publishing"
+                ),
+            )
+        missing_from_version = str(record.entry["version"])
+        missing_from_seq = int(record.entry["seq"])
+        missing_prev_sha256 = str(record.entry["prev_sha256"])
+        version = str(record.entry["prev_version"])
+        expected_sha256 = missing_prev_sha256
+    entries = tuple(sorted(records, key=lambda record: int(record.entry["seq"])))
+    chain_failures = validate_entry_chain(entries)
+    if chain_failures:
+        raise DriverError(chain_failures)
+    tip = entries[-1]
+    if (
+        pointer.pointer["tip_sha256"] != tip.sha256
+        or pointer.pointer["version"] != tip.entry["version"]
+    ):
+        fail_closed(
+            "transparency latest pointer tip does not match locked entry",
+            expected=f"{tip.entry['version']} {tip.sha256}",
+            actual=f"{pointer.pointer['version']} {pointer.pointer['tip_sha256']}",
+            repair="stop and audit the signed latest pointer before publishing",
+        )
+    return entries
 
 
 def fetch_chain_state(
@@ -491,71 +594,16 @@ def fetch_chain_state(
             actual=str(chain_length),
             repair=f"stop and audit {HEAD_LOG} for rollback or split-view evidence",
         )
-    listed = transport.list_prefix(f"releases/{config.product}/v/")
-    if listed.status != 200:
-        raise DriverError(
-            [
-                failure(
-                    "transparency immutable LIST failed",
-                    expected="releases/<product>/v/ listing",
-                    actual=f"status={listed.status} exit_code={listed.exit_code}",
-                    repair="retry after the S3 list operation is healthy",
-                )
-            ]
-        )
-    fetched_entries = tuple(
-        _verify_remote_entry(
-            product=config.product,
-            version=version,
-            transport=transport,
-            signer=signer,
-        )
-        for version, _key in _immutable_entry_keys(config.product, listed.keys)
-    )
-    entries = tuple(
-        sorted(fetched_entries, key=lambda record: int(record.entry["seq"]))
-    )
-    chain_failures = validate_entry_chain(entries)
-    if chain_failures:
-        raise DriverError(chain_failures)
-    pointer_entries = tuple(
-        entry for entry in entries if int(entry.entry["seq"]) <= chain_length
-    )
-    if len(pointer_entries) < chain_length:
-        fail_closed(
-            "transparency latest pointer tip entry is missing",
-            expected=f"seq {chain_length} locked entry",
-            actual=f"{len(pointer_entries)} locked entries",
-            repair="retry after the immutable zone is visible",
-        )
-    tip = pointer_entries[-1]
-    if (
-        pointer.pointer["tip_sha256"] != tip.sha256
-        or pointer.pointer["version"] != tip.entry["version"]
-    ):
-        fail_closed(
-            "transparency latest pointer tip does not match locked entry",
-            expected=f"{tip.entry['version']} {tip.sha256}",
-            actual=f"{pointer.pointer['version']} {pointer.pointer['tip_sha256']}",
-            repair="stop and audit the signed latest pointer before publishing",
-        )
     ledger_result = transport.get_object(ledger_key(config.product), cache_bypass=True)
     if ledger_result.status == 200:
-        ledger_records = parse_ledger_jsonl(ledger_result.body)
-        ledger_failures = validate_entry_chain(ledger_records)
-        if ledger_failures:
-            raise DriverError(ledger_failures)
-        locked_by_seq = {int(entry.entry["seq"]): entry for entry in entries}
-        for record in ledger_records:
-            locked = locked_by_seq.get(int(record.entry["seq"]))
-            if locked is not None and locked.sha256 != record.sha256:
-                fail_closed(
-                    "transparency ledger.jsonl contradicts a locked entry",
-                    expected=f"seq {record.entry['seq']} {locked.sha256}",
-                    actual=record.sha256,
-                    repair="stop and audit the mutable ledger before publishing",
-                )
-    elif ledger_result.status != 404:
+        entries = _binding_ledger_entries(
+            body=ledger_result.body,
+            pointer=pointer,
+            chain_length=chain_length,
+        )
+    elif ledger_result.status == 404:
+        entries = None
+    else:
         raise DriverError(
             [
                 failure(
@@ -569,8 +617,17 @@ def fetch_chain_state(
                 )
             ]
         )
+    if entries is None:
+        entries = _walk_prev_version_chain(
+            product=config.product,
+            pointer=pointer,
+            chain_length=chain_length,
+            transport=transport,
+            signer=signer,
+        )
+    tip = entries[-1]
     return ChainState(
-        entries=pointer_entries,
+        entries=entries,
         pointer=pointer,
         pointer_signature=signature_result.body,
         pointer_signature_etag=signature_etag,
@@ -578,7 +635,7 @@ def fetch_chain_state(
         prev_sha256=tip.sha256,
         prev_version=str(tip.entry["version"]),
         tip_published_utc=str(tip.entry["published_utc"]),
-        derived_ledger_jsonl=ledger_jsonl_bytes(pointer_entries),
+        derived_ledger_jsonl=ledger_jsonl_bytes(entries),
     )
 
 

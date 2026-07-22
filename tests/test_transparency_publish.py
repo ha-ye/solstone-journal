@@ -384,6 +384,16 @@ def _install_remote_entry(
     return EntryRecord(entry=entry, bytes=entry_bytes, sha256=entry_sha)
 
 
+def _entry_signature_gets(
+    transport: DirectoryTransparencyTransport,
+) -> list[dict[str, object]]:
+    return [
+        call
+        for call in transport.call_log
+        if call["op"] == "GET" and str(call["key"]).endswith(ENTRY_SIGNATURE_NAME)
+    ]
+
+
 def test_staging_manifest_v1_pinned_fixture(tmp_path: Path) -> None:
     _write_staging_manifest_fixture_tree(tmp_path)
     manifest = publisher.render_staging_manifest(tmp_path)
@@ -567,20 +577,32 @@ def test_publish_genesis_uploads_fixed_layout_and_order(
         hashlib.sha256(ledger.splitlines(keepends=True)[-1]).hexdigest()
         == latest.pointer["tip_sha256"]
     )
-    assert calls[0] == (
+    archive_call = (
         "archive",
         "ARCHIVE",
         str(tmp_path / "target/transparency-publish/solstone-journal/0.9.1/payload"),
     )
-    assert calls[1:10] == [("s3", "PUT", key) for key in immutable]
-    assert calls[10:19] == [("public", "GET", key) for key in immutable]
-    assert calls[19:] == [
-        ("s3", "GET", latest_key(PRODUCT)),
-        ("s3", "PUT", ledger_key(PRODUCT)),
-        ("public", "GET", ledger_key(PRODUCT)),
-        ("s3", "PUT", latest_signature_key(PRODUCT)),
-        ("s3", "PUT", latest_key(PRODUCT)),
-    ]
+    immutable_puts = [("s3", "PUT", key) for key in immutable]
+    public_gets = [("public", "GET", key) for key in immutable]
+    assert calls[calls.index(archive_call)] == archive_call
+    assert [call for call in calls if call in immutable_puts] == immutable_puts
+    assert [call for call in calls if call in public_gets] == public_gets
+    assert calls.index(archive_call) < min(calls.index(call) for call in immutable_puts)
+    assert max(calls.index(call) for call in immutable_puts) < min(
+        calls.index(call) for call in public_gets
+    )
+    assert max(calls.index(call) for call in public_gets) < calls.index(
+        ("s3", "PUT", ledger_key(PRODUCT))
+    )
+    assert calls.index(("s3", "PUT", ledger_key(PRODUCT))) < calls.index(
+        ("public", "GET", ledger_key(PRODUCT))
+    )
+    assert calls.index(("public", "GET", ledger_key(PRODUCT))) < calls.index(
+        ("s3", "PUT", latest_signature_key(PRODUCT))
+    )
+    assert calls.index(("s3", "PUT", latest_signature_key(PRODUCT))) < calls.index(
+        ("s3", "PUT", latest_key(PRODUCT))
+    )
 
 
 def test_publish_and_resign_accept_lexicographically_inverted_version_chain(
@@ -968,7 +990,7 @@ def test_candidate_revalidation_failure_stops_before_upload(
             now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
         )
     assert error.value.failures[0].error == "candidate revalidation failed"
-    assert transport.call_log[-1]["op"] == "LIST"
+    assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
 def test_stale_proofs_fail_closed_before_signing(
@@ -1080,7 +1102,9 @@ def test_foreign_product_in_fetched_state_fails_closed(tmp_path: Path) -> None:
     assert error.value.failures[0].error == "latest pointer product is invalid"
 
 
-def test_ledger_jsonl_contradicting_locked_entry_fails(tmp_path: Path) -> None:
+def test_ledger_jsonl_contradicting_locked_entry_falls_back_to_walk(
+    tmp_path: Path,
+) -> None:
     signer = FakeTransparencySigner()
     transport = DirectoryTransparencyTransport(tmp_path / "remote")
     locked = _install_remote_entry(
@@ -1098,16 +1122,14 @@ def test_ledger_jsonl_contradicting_locked_entry_fails(tmp_path: Path) -> None:
         content_type="application/jsonl",
         cache_control="no-cache",
     )
-    with pytest.raises(DriverError) as error:
-        publisher.fetch_chain_state(
-            config=_config(tmp_path, version="0.0.2", genesis=None),
-            transport=transport,
-            signer=signer,
-        )
-    assert (
-        error.value.failures[0].error
-        == "transparency ledger.jsonl contradicts a locked entry"
+    transport.call_log.clear()
+    state = publisher.fetch_chain_state(
+        config=_config(tmp_path, version="0.0.2", genesis=None),
+        transport=transport,
+        signer=signer,
     )
+    assert state.derived_ledger_jsonl == locked.bytes
+    assert _entry_signature_gets(transport)
 
 
 def test_missing_ledger_jsonl_is_rederived_without_failure(tmp_path: Path) -> None:
@@ -1121,12 +1143,67 @@ def test_missing_ledger_jsonl_is_rederived_without_failure(tmp_path: Path) -> No
         version="0.0.1",
     )
     transport._object_path(ledger_key(PRODUCT)).unlink()
+    transport.call_log.clear()
     state = publisher.fetch_chain_state(
         config=_config(tmp_path, version="0.0.2", genesis=None),
         transport=transport,
         signer=signer,
     )
     assert state.derived_ledger_jsonl == first.bytes
+    assert _entry_signature_gets(transport)
+
+
+def test_malformed_ledger_jsonl_falls_back_to_walk(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        b"not-json\n",
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+    state = publisher.fetch_chain_state(
+        config=_config(tmp_path, version="0.0.2", genesis=None),
+        transport=transport,
+        signer=signer,
+    )
+    assert state.derived_ledger_jsonl == first.bytes
+    assert _entry_signature_gets(transport)
+
+
+def test_broken_ledger_jsonl_chain_falls_back_to_walk(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    broken_entry = {**first.entry, "prev_sha256": "f" * 64}
+    transport.put_object(
+        ledger_key(PRODUCT),
+        canonical_json_bytes(broken_entry),
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+    state = publisher.fetch_chain_state(
+        config=_config(tmp_path, version="0.0.2", genesis=None),
+        transport=transport,
+        signer=signer,
+    )
+    assert state.derived_ledger_jsonl == first.bytes
+    assert _entry_signature_gets(transport)
 
 
 def test_superset_ledger_jsonl_that_still_chains_is_rederived(
@@ -1177,6 +1254,150 @@ def test_superset_ledger_jsonl_that_still_chains_is_rederived(
         signer=signer,
     )
     assert state.derived_ledger_jsonl == first.bytes
+    assert _entry_signature_gets(transport)
+
+
+def test_ledger_tip_version_mismatch_falls_back_to_walk(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    pointer = build_latest_pointer(
+        chain_length=1,
+        product=PRODUCT,
+        signed_at="2026-07-22T00:00:00Z",
+        tip_sha256=first.sha256,
+        valid_until="2026-08-05T00:00:00Z",
+        version="0.0.9",
+    )
+    latest_path = tmp_path / "mismatched-latest.json"
+    latest_sig = tmp_path / "mismatched-latest.json.minisig"
+    latest_path.write_bytes(canonical_json_bytes(pointer))
+    signer.sign_file(
+        latest_path,
+        latest_sig,
+        trusted_comment=latest_trusted_comment(pointer),
+    )
+    transport.put_object(
+        latest_key(PRODUCT),
+        latest_path.read_bytes(),
+        content_type="application/json",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        latest_signature_key(PRODUCT),
+        latest_sig.read_bytes(),
+        content_type="application/octet-stream",
+        cache_control="no-cache",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        first.bytes,
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher.fetch_chain_state(
+            config=_config(tmp_path, version="0.0.10", genesis=None),
+            transport=transport,
+            signer=signer,
+        )
+
+    assert (
+        error.value.failures[0].error
+        == "transparency locked entry referenced by chain is missing"
+    )
+    assert any(
+        call["op"] == "GET"
+        and call["key"] == version_object_key(PRODUCT, "0.0.9", ENTRY_OBJECT_NAME)
+        for call in transport.call_log
+    )
+
+
+def test_fetch_chain_state_fast_path_skips_entry_signature_gets(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        first.bytes,
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+
+    state = publisher.fetch_chain_state(
+        config=_config(tmp_path, version="0.0.2", genesis=None),
+        transport=transport,
+        signer=signer,
+    )
+
+    assert state.derived_ledger_jsonl == first.bytes
+    assert _entry_signature_gets(transport) == []
+
+
+def test_prev_version_walk_missing_referenced_entry_is_terminal(
+    tmp_path: Path,
+) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=2,
+        version="0.0.2",
+        prev_sha256=first.sha256,
+        prev_version="0.0.1",
+        published_utc="2026-07-23T00:00:00Z",
+    )
+    transport._object_path(ledger_key(PRODUCT)).unlink()
+    transport._object_path(
+        version_object_key(PRODUCT, "0.0.1", ENTRY_OBJECT_NAME)
+    ).unlink()
+
+    with pytest.raises(DriverError) as error:
+        publisher.fetch_chain_state(
+            config=_config(tmp_path, version="0.0.3", genesis=None),
+            transport=transport,
+            signer=signer,
+        )
+
+    failure = error.value.failures[0]
+    assert failure.error == "transparency locked entry referenced by chain is missing"
+    assert (
+        failure.expected
+        == f"{version_object_key(PRODUCT, '0.0.1', ENTRY_OBJECT_NAME)} create-only immutable object"
+    )
+    assert (
+        failure.actual == "status=404 while walking prev_version from 0.0.2 "
+        f"seq=2 prev_sha256={first.sha256}"
+    )
+    assert (
+        failure.repair
+        == "stop and audit immutable entries, ledger.jsonl, latest pointer, "
+        "and transparency-head-log.jsonl for deletion/rollback/split-view before publishing"
+    )
 
 
 def test_tip_signature_invalid_fails_closed(tmp_path: Path) -> None:
@@ -1465,7 +1686,6 @@ def _pointer_pair_state(
     (
         "fetch-latest",
         "fetch-latest-signature",
-        "fetch-list",
         "fetch-entry",
         "fetch-entry-signature",
         "fetch-ledger",
@@ -1517,11 +1737,8 @@ def test_crash_injection_classifies_pointer_pair_state(
         transport.add_failure(
             plane="s3", op="GET", key=latest_signature_key(PRODUCT), status=500
         )
-    elif seam == "fetch-list":
-        transport.add_failure(
-            plane="s3", op="LIST", key=f"releases/{PRODUCT}/v/", status=500
-        )
     elif seam == "fetch-entry":
+        transport._object_path(ledger_key(PRODUCT)).unlink()
         transport.add_failure(
             plane="s3",
             op="GET",
@@ -1529,6 +1746,7 @@ def test_crash_injection_classifies_pointer_pair_state(
             status=500,
         )
     elif seam == "fetch-entry-signature":
+        transport._object_path(ledger_key(PRODUCT)).unlink()
         transport.add_failure(
             plane="s3",
             op="GET",
