@@ -12,7 +12,7 @@ import urllib.parse
 from collections.abc import Iterable
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Final
 
 from werkzeug.exceptions import HTTPException
 
@@ -28,6 +28,7 @@ from .mux import (
 _HEAD_LIMIT = 64 * 1024
 _BODY_METHODS = {"POST", "PUT", "PATCH"}
 _NO_BODY_STATUSES = {204, 304}
+_DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
 # The cert-less pairing tunnel admits EXACTLY these endpoints (canonical +
 # the /app/link legacy alias). Never relax to a suffix/substring match — that
 # would admit pair_start and widen the tunnel.
@@ -38,6 +39,77 @@ class HttpBadRequest(ValueError): ...
 
 
 class _WsgiClientDisconnected(ConnectionError): ...
+
+
+def _normalize_location_headers(
+    headers: list[tuple[str, str]],
+    host_header: str | None,
+    request_scheme: str,
+) -> list[tuple[str, str]]:
+    # Peer-controlled Host/Location values preserve app response bytes here
+    # instead of turning observer navigation into a 500 at the response boundary.
+    request_authority = _parse_host_authority(host_header, request_scheme)
+    if request_authority is None:
+        return list(headers)
+
+    normalized: list[tuple[str, str]] = []
+    for name, value in headers:
+        if name.lower() != "location":
+            normalized.append((name, value))
+            continue
+        normalized.append((name, _normalize_location_value(value, request_authority)))
+    return normalized
+
+
+def _parse_host_authority(
+    host_header: str | None,
+    request_scheme: str,
+) -> tuple[str, int] | None:
+    default_port = _DEFAULT_PORTS.get(request_scheme)
+    if default_port is None or not host_header:
+        return None
+    if "," in host_header or "@" in host_header:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(f"//{host_header}")
+    except ValueError:
+        return None
+    if parsed.path or parsed.query or parsed.fragment or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return parsed.hostname, port if port is not None else default_port
+
+
+def _normalize_location_value(
+    value: str,
+    request_authority: tuple[str, int],
+) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    if not parsed.scheme or parsed.scheme not in _DEFAULT_PORTS:
+        return value
+    if not parsed.hostname:
+        return value
+    try:
+        port = parsed.port
+    except ValueError:
+        return value
+
+    redirect_port = port if port is not None else _DEFAULT_PORTS[parsed.scheme]
+    if (parsed.hostname, redirect_port) != request_authority:
+        return value
+
+    path = parsed.path or "/"
+    if parsed.query:
+        path += f"?{parsed.query}"
+    if parsed.fragment:
+        path += f"#{parsed.fragment}"
+    return path
 
 
 @dataclass(frozen=True)
@@ -421,6 +493,11 @@ def _run_wsgi(
             return
         status = state["status"] or "500 Internal Server Error"
         headers = list(state["headers"] or [])
+        headers = _normalize_location_headers(
+            headers,
+            environ.get("HTTP_HOST"),
+            environ["wsgi.url_scheme"],
+        )
         status_code = _status_code(status)
         method = str(environ.get("REQUEST_METHOD", "GET")).upper()
         body_allowed = method != "HEAD" and status_code not in _NO_BODY_STATUSES

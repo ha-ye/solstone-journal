@@ -17,6 +17,7 @@ from solstone.convey import create_app
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APPS_ROOT = REPO_ROOT / "solstone" / "apps"
 CONVEY_STATIC = REPO_ROOT / "solstone" / "convey" / "static"
+SHELL_BOOT_MENU_HARNESS = REPO_ROOT / "tests" / "js" / "shell_boot_menu_harness.js"
 JINJA_MARKERS = ("{{", "{%", "{#")
 BOOT_PATH_FILES = [
     CONVEY_STATIC / "shell.html",
@@ -233,5 +234,27 @@ for (const [input, expected] of Object.entries(cases)) {{
     throw new Error(`${{input}} expected ${{expected}} got ${{actual}}`);
   }}
 }}
-"""
+    """
     subprocess.run([node, "-e", script], check=True)
+
+
+def test_shell_boot_menu_hrefs_are_canonical_app_roots():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+
+    result = subprocess.run(
+        [node, str(SHELL_BOOT_MENU_HARNESS), str(REPO_ROOT)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["shellReady"] is True
+    assert payload["mounted"] == [{"url": "/app/home/workspace", "appName": "home"}]
+    assert payload["hrefs"] == [
+        "/app/home/",
+        "/app/backup/",
+        "/app/odd&lt;&amp;&quot;name/",
+    ]

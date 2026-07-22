@@ -155,7 +155,7 @@
         const label = escapeHtml(app.label);
         return (
           `<li class="menu-item${isCurrent ? ' current' : ''}${isLastStarred ? ' last-starred' : ''}" data-app-name="${escapeHtml(app.name)}" data-starred="${app.starred ? 'true' : 'false'}">` +
-          `<a href="/app/${escapeHtml(app.name)}" class="menu-item-link"${isCurrent ? ' aria-current="page"' : ''} tabindex="${isCurrent ? '0' : '-1'}">` +
+          `<a href="/app/${escapeHtml(app.name)}/" class="menu-item-link"${isCurrent ? ' aria-current="page"' : ''} tabindex="${isCurrent ? '0' : '-1'}">` +
           `<span class="icon">${icon}</span>` +
           `<span class="label">${label}</span>` +
           '</a>' +
