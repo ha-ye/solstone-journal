@@ -131,20 +131,42 @@ def git_witness_status(
     *,
     runner: Runner = subprocess.run,
 ) -> WitnessStatus:
-    command = ["git", "diff", "--quiet", "--exit-code", "HEAD", "--", HEAD_LOG]
-    result = runner(
-        command,
+    tracked = runner(
+        ["git", "ls-files", "--error-unmatch", "--", HEAD_LOG],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode == 0:
+    if tracked.returncode == 1:
+        return WitnessStatus(
+            state="written-untracked",
+            message=(
+                f"{HEAD_LOG} row is present but untracked; run: "
+                f"git add {HEAD_LOG} && git commit"
+            ),
+        )
+    if tracked.returncode != 0:
+        return WitnessStatus(
+            state="witness-unavailable",
+            message=(
+                "git witness status unavailable; verify the transparency head row "
+                f"with: git ls-files --error-unmatch -- {HEAD_LOG}"
+            ),
+        )
+    diff = runner(
+        ["git", "diff", "--quiet", "--exit-code", "HEAD", "--", HEAD_LOG],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff.returncode == 0:
         return WitnessStatus(
             state="written-and-committed",
             message=f"{HEAD_LOG} row is present and committed",
         )
-    if result.returncode == 1:
+    if diff.returncode == 1:
         return WitnessStatus(
             state="written-uncommitted",
             message=(

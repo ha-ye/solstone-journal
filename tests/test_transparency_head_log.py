@@ -1,13 +1,41 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from scripts.transparency_core import HEAD_LOG, PRODUCT, canonical_json_bytes
 from scripts.transparency_head_log import (
     HeadLogRow,
     append_head_row,
+    git_witness_status,
     head_log_path,
 )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _init_repo(repo: Path) -> None:
+    _git(repo, "init", "-q")
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(
+        repo,
+        "-c",
+        "user.name=solstone-test",
+        "-c",
+        "user.email=solstone@example.invalid",
+        "commit",
+        "-qm",
+        "initial",
+    )
 
 
 def _row(seq: int, *, entry_sha256: str | None = None) -> HeadLogRow:
@@ -35,3 +63,53 @@ def test_append_head_row_preserves_prior_bytes(tmp_path: Path) -> None:
 
     expected_new = canonical_json_bytes(new_row.as_dict(), label=HEAD_LOG)
     assert path.read_bytes() == prior + expected_new
+
+
+def test_git_witness_status_committed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    append_head_row(tmp_path, _row(1))
+    _git(tmp_path, "add", HEAD_LOG)
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=solstone-test",
+        "-c",
+        "user.email=solstone@example.invalid",
+        "commit",
+        "-qm",
+        "commit head log",
+    )
+
+    status = git_witness_status(tmp_path)
+
+    assert status.state == "written-and-committed"
+
+
+def test_git_witness_status_tracked_but_modified(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    append_head_row(tmp_path, _row(1))
+    _git(tmp_path, "add", HEAD_LOG)
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=solstone-test",
+        "-c",
+        "user.email=solstone@example.invalid",
+        "commit",
+        "-qm",
+        "commit head log",
+    )
+    append_head_row(tmp_path, _row(2))
+
+    status = git_witness_status(tmp_path)
+
+    assert status.state == "written-uncommitted"
+
+
+def test_git_witness_status_untracked(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    append_head_row(tmp_path, _row(1))
+
+    status = git_witness_status(tmp_path)
+
+    assert status.state == "written-untracked"

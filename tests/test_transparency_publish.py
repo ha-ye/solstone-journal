@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,16 @@ STAGING_MANIFEST_SHA256 = (
 def _sha(path: Path) -> tuple[str, int]:
     data = path.read_bytes()
     return hashlib.sha256(data).hexdigest(), len(data)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _candidate(
@@ -961,6 +972,65 @@ def test_stale_stage_fails_poisoned_version_before_mutable_write(
         }
     ]
     assert mutable_puts == []
+
+
+def test_publish_blocks_before_archive_when_head_witness_baseline_untracked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path, version="0.9.2")
+    _patch_recover(monkeypatch, version="0.9.2")
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    _git(tmp_path, "add", "README.md")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=solstone-test",
+        "-c",
+        "user.email=solstone@example.invalid",
+        "commit",
+        "-qm",
+        "initial",
+    )
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    previous = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    append_head_row(
+        tmp_path,
+        HeadLogRow(
+            product=PRODUCT,
+            seq=1,
+            version="0.9.1",
+            entry_sha256=previous.sha256,
+            published_utc="2026-07-22T00:00:00Z",
+        ),
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher.publish_transparency(
+            config=_config(tmp_path, version="0.9.2", genesis=None),
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+        )
+
+    failure = error.value.failures[0]
+    assert (
+        failure.error
+        == "transparency publication blocked because head witness baseline is uncommitted"
+    )
+    assert f"seq=1 version=0.9.1 entry_sha256={previous.sha256}" in failure.expected
+    assert "untracked" in failure.actual
+    assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
 def test_candidate_revalidation_failure_stops_before_upload(

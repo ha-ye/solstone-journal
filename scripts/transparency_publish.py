@@ -77,6 +77,7 @@ from scripts.transparency_head_log import (
     append_head_row,
     git_witness_status,
     highest_seq,
+    read_head_log,
 )
 from scripts.transparency_signing import (
     LocalMinisignSigner,
@@ -1543,6 +1544,25 @@ def _write_mutable_objects(
         )
 
 
+def _assert_head_witness_baseline_committed(config: PublishConfig) -> None:
+    rows = [row for row in read_head_log(config.root) if row.product == config.product]
+    if not rows:
+        return
+    witness = git_witness_status(config.root)
+    if witness.state == "written-and-committed":
+        return
+    row = rows[-1]
+    fail_closed(
+        "transparency publication blocked because head witness baseline is uncommitted",
+        expected=(
+            f"committed {HEAD_LOG} row product={row.product} seq={row.seq} "
+            f"version={row.version} entry_sha256={row.entry_sha256}"
+        ),
+        actual=witness.message,
+        repair=f"commit {HEAD_LOG} before publishing; run: git add {HEAD_LOG} && git commit",
+    )
+
+
 def publish_transparency(
     *,
     config: PublishConfig,
@@ -1582,6 +1602,7 @@ def publish_transparency(
             now=now or datetime.now(tz=UTC),
         )
     _assert_stage_extends_state(stage, state)
+    _assert_head_witness_baseline_committed(config)
     _clear_publish_call_log(transport)
     archive_digest = archive_stage(
         stage=stage,
