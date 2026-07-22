@@ -19,7 +19,7 @@ from solstone.apps.thinking.google_model_pins import (
 )
 from solstone.convey import create_app
 from solstone.think.journal_io import LockTimeout
-from solstone.think.models import LOCAL_MODEL
+from solstone.think.models import LOCAL_MODEL, derive_provider_lane
 from solstone.think.providers.brain_state import (
     begin_brain_refresh,
     brain_fingerprint_key_path,
@@ -337,10 +337,15 @@ def test_google_prior_active_advisory_save_restores_without_hijacking_lane(
     )
 
 
-def test_normal_byo_model_save_still_switches_when_confidential_active(
+def test_normal_byo_save_refused_while_restore_only_save_still_succeeds(
     thinking_client,
     journal_copy: Path,
 ) -> None:
+    """Plain save still contrasts with guidance restore-only: normal save now refuses
+    because it would move thinking off confidential, while the guidance payload only
+    repairs prior model memory.
+    """
+
     config = _read_config(journal_copy)
     config["providers"]["active"] = {
         "provider": "google",
@@ -348,6 +353,8 @@ def test_normal_byo_model_save_still_switches_when_confidential_active(
     }
     _write_config(config)
     spp.provision_confidential_handoff(_payload("normal-byo"))
+    config_path = journal_copy / "config" / "journal.json"
+    before_normal = config_path.read_bytes()
 
     response = thinking_client.put(
         "/app/thinking/api/providers",
@@ -358,17 +365,163 @@ def test_normal_byo_model_save_still_switches_when_confidential_active(
         },
     )
 
-    assert response.status_code == 200
-    payload = response.get_json()
+    assert response.status_code == 400
+    refused = response.get_json()
+    assert refused["reason_code"] == "invalid_operation_for_state"
+    assert (
+        refused["detail"]
+        == "Turn off confidential thinking first, then switch your thinking provider."
+    )
+    assert config_path.read_bytes() == before_normal
     stored = _read_config(journal_copy)
-    assert payload["active_lane"]["lane"] == "byo"
-    assert stored["providers"]["active"] == {
-        "provider": "google",
-        "model": "gemini-3.5-flash",
-    }
+    active = stored["providers"]["active"]
+    assert active == {"provider": "local", "model": LOCAL_MODEL}
+    assert derive_provider_lane(stored, active["provider"]) == "confidential"
     assert (
         stored["services"]["confidential"]["prior_active"]["model"] == GOOGLE_PRO_ALIAS
     )
+
+    guidance = _providers(thinking_client)["configuration_guidance"]
+    assert guidance is not None
+    targets = guidance[GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD]
+    exact_model = "gemini-3.5-flash"
+    before_restore = _read_config(journal_copy)
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": exact_model,
+            GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD: targets,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    stored = _read_config(journal_copy)
+    active = stored["providers"]["active"]
+    assert stored["providers"]["active"] == before_restore["providers"]["active"]
+    assert derive_provider_lane(stored, active["provider"]) == "confidential"
+    assert payload["active_lane"]["lane"] == "confidential"
+    assert stored["services"]["confidential"]["prior_active"]["model"] == exact_model
+    assert stored["providers"]["byo_models"]["google"] == exact_model
+
+
+@pytest.mark.parametrize("provider", ["local", "anthropic", "openai"])
+def test_byo_lane_refuses_when_confidential_active_without_write(
+    thinking_client,
+    journal_copy: Path,
+    provider: str,
+) -> None:
+    spp.provision_confidential_handoff(_payload(f"byo-{provider}"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": provider},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then switch your thinking provider."
+    )
+    assert config_path.read_bytes() == before
+    stored = _read_config(journal_copy)
+    active = stored["providers"]["active"]
+    assert derive_provider_lane(stored, active["provider"]) == "confidential"
+
+
+def test_byo_switch_succeeds_after_confidential_disabled(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    spp.provision_confidential_handoff(_payload("disabled-byo"))
+    outcome = spp.disable_confidential()
+    assert outcome.was_enabled is True
+
+    exact_model = "gemini-3.5-flash"
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "google", "model": exact_model},
+    )
+
+    assert response.status_code == 200
+    stored = _read_config(journal_copy)
+    assert "confidential" not in stored.get("services", {})
+    assert stored["providers"]["active"] == {
+        "provider": "google",
+        "model": exact_model,
+    }
+    assert derive_provider_lane(stored, "google") == "byo"
+
+
+def test_confidential_lane_noop_stays_allowed_when_confidential_active(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    spp.provision_confidential_handoff(_payload("confidential-noop"))
+    config_path = journal_copy / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = thinking_client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "confidential"},
+    )
+
+    assert response.status_code == 200
+    assert config_path.read_bytes() == before
+    payload = response.get_json()
+    stored = _read_config(journal_copy)
+    active = stored["providers"]["active"]
+    assert payload["active_lane"]["lane"] == "confidential"
+    assert derive_provider_lane(stored, active["provider"]) == "confidential"
+
+
+def test_confidential_provenance_never_survives_with_non_confidential_active_lane(
+    thinking_client,
+    journal_copy: Path,
+) -> None:
+    spp.provision_confidential_handoff(_payload("property"))
+
+    def assert_confidential_invariant() -> None:
+        config = _read_config(journal_copy)
+        services = config.get("services", {})
+        if not isinstance(services, dict) or "confidential" not in services:
+            return
+        active = config.get("providers", {}).get("active", {})
+        provider = active.get("provider") if isinstance(active, dict) else None
+        assert derive_provider_lane(config, provider) == "confidential"
+
+    exercised = 0
+    for lane in sorted(routes.LANES):
+        for provider in ("anthropic", "google", "local", "openai"):
+            thinking_client.put(
+                "/app/thinking/api/providers",
+                json={"lane": lane, "provider": provider},
+            )
+            exercised += 1
+            assert_confidential_invariant()
+
+    thinking_client.post(
+        "/app/thinking/api/local/endpoint",
+        json={
+            "endpoint_url": "https://new-endpoint.example.test/v1",
+            "served_model_id": "new-model",
+            "credential": "new-token",
+        },
+    )
+    exercised += 1
+    assert_confidential_invariant()
+
+    thinking_client.delete("/app/thinking/api/local/endpoint")
+    exercised += 1
+    assert_confidential_invariant()
+
+    assert exercised == len(routes.LANES) * 4 + 2
 
 
 def test_google_model_resolution_rejects_unknown_target_without_config_write(

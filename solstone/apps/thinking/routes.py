@@ -125,6 +125,9 @@ CONFIDENTIAL_ENDPOINT_CLEAR_REFUSAL = (
 CONFIDENTIAL_BUNDLED_LOCAL_REFUSAL = (
     "Turn off confidential thinking first, then switch to the bundled local model."
 )
+CONFIDENTIAL_PROVIDER_SWITCH_REFUSAL = (
+    "Turn off confidential thinking first, then switch your thinking provider."
+)
 
 
 class _ConfidentialConfigRefused(Exception):
@@ -1511,10 +1514,16 @@ def update_providers() -> Any:
             changed_fields: dict[str, Any] = {}
             reported_targets = set(read_google_pro_alias_slots(config))
             effective_targets = set(requested_targets) & reported_targets
+            confidential_lane_active = _confidential_lane_active_for_config(config)
             restore_only = (
-                "confidential_prior" in requested_targets
-                and _confidential_lane_active_for_config(config)
+                "confidential_prior" in requested_targets and confidential_lane_active
             )
+            if (
+                confidential_lane_active
+                and request_data["lane"] != "confidential"
+                and not restore_only
+            ):
+                raise _ConfidentialConfigRefused(CONFIDENTIAL_PROVIDER_SWITCH_REFUSAL)
             if model is not None:
                 _remember_byo_model(
                     config,

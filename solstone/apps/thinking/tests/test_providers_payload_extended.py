@@ -1177,6 +1177,46 @@ def test_lane_switch_to_local_refuses_interleaved_confidential_provenance(
     assert config_path.read_bytes() == interleaved_bytes[0]
 
 
+def test_byo_switch_refuses_interleaved_confidential_provenance(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": "gemini-3.5-flash",
+    }
+    config["providers"].pop("local", None)
+    _write_config(journal_path, config)
+    interleaved_bytes: list[bytes] = []
+    original_mutate = routes.mutate_journal_config
+
+    def interleave_provenance(mutator):
+        current = json.loads(config_path.read_text())
+        current.update(_spp_configured_provider_config())
+        _write_config(journal_path, current)
+        interleaved_bytes.append(config_path.read_bytes())
+        return original_mutate(mutator)
+
+    monkeypatch.setattr(routes, "mutate_journal_config", interleave_provenance)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "openai", "model": "gpt-5"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "Turn off confidential thinking first, then switch your thinking provider."
+    )
+    assert config_path.read_bytes() == interleaved_bytes[0]
+
+
 def test_switch_from_byo_model_to_local_resolves_local_default(
     settings_client_with_journal,
 ):
