@@ -113,8 +113,10 @@ unknown keys fail closed and name the config path plus
 Remote sentinel checks require both exit status zero and the expected success
 token. Missing tokens fail the adapter even when the subprocess exits zero.
 
-Retrieved proof files are checked for regular-file presence, non-empty bytes, and
-the digest reported by the proof harness before the proof response is written.
+Retrieved build artifacts and proof files are checked for regular-file presence,
+non-empty bytes, and the digest/byte count reported by the remote harness before
+the response is written. Missing, malformed, duplicate, unexpected, or invalid
+artifact digest lines fail closed.
 
 ## Operator Checklist
 

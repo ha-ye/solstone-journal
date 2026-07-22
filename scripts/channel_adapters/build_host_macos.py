@@ -24,6 +24,7 @@ from scripts.channel_adapters.adapter_common import (  # noqa: E402
     scp_to,
     sha256_size,
     ssh_run,
+    verify_retrieved_file,
     write_json,
 )
 from scripts.check_release_preflight import (  # noqa: E402
@@ -40,7 +41,9 @@ from scripts.release_tool_pins import (  # noqa: E402
 TOOLCHAIN_TOKEN = "TOOLCHAIN_OK"
 CHECKOUT_TOKEN = "CHECKOUT_OK"
 DIST_TOKEN = "DIST_OK"
+ARTIFACT_TOKEN = "ARTIFACT"
 IPV4_SHAPE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _remote_work(lane: LaneConfig, cohort_id: str) -> str:
@@ -65,6 +68,47 @@ def _parse_observed_tool_lines(stdout: str) -> dict[str, str]:
         key, value = line.split("\t", 1)
         observed[key] = value
     return observed
+
+
+def _parse_artifact_listing(
+    stdout: str,
+    expected_files: list[str],
+) -> dict[str, tuple[str, int]]:
+    expected = set(expected_files)
+    artifacts: dict[str, tuple[str, int]] = {}
+    for line in stdout.splitlines():
+        if not line.startswith(f"{ARTIFACT_TOKEN}\t"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 4:
+            die(
+                "macOS artifact listing reported malformed artifact digest line",
+                detail=line,
+            )
+        _token, name, sha256, bytes_text = parts
+        if name in artifacts:
+            die(
+                "macOS artifact listing reported duplicate artifact digest", detail=name
+            )
+        if name not in expected:
+            die("macOS artifact listing reported unexpected artifact", detail=name)
+        try:
+            byte_count = int(bytes_text)
+        except ValueError:
+            die(
+                f"macOS artifact listing reported invalid digest/size for {name}",
+                detail=bytes_text,
+            )
+        if not SHA256_RE.fullmatch(sha256) or byte_count < 0:
+            die(
+                f"macOS artifact listing reported invalid digest/size for {name}",
+                detail=f"{sha256}/{bytes_text}",
+            )
+        artifacts[name] = (sha256, byte_count)
+    for name in expected_files:
+        if name not in artifacts:
+            die(f"macOS artifact listing did not report digest/size for {name}")
+    return artifacts
 
 
 def _validate_host_variant_public_shape(tool: str, banner: str) -> None:
@@ -222,23 +266,35 @@ echo CHECKOUT_OK
         )
 
     expected_files = [root_wheel, core_wheel, root_record, core_record]
+    quoted_expected_files = " ".join(shlex.quote(name) for name in expected_files)
     listing = ssh_run(
         build_lane,
         f"""
 set -euo pipefail
 cd {quoted_src}/dist
-for f in {root_wheel} {core_wheel} {root_record} {core_record}; do
+for f in {quoted_expected_files}; do
   [ -f "$f" ] || {{ echo "missing $f" >&2; exit 6; }}
+  sha256="$(shasum -a 256 "$f" | awk '{{print $1}}')"
+  bytes="$(stat -f%z "$f")"
+  printf 'ARTIFACT\\t%s\\t%s\\t%s\\n' "$f" "$sha256" "$bytes"
 done
 echo DIST_OK
 """,
         check=False,
     )
     require_success_token(listing, DIST_TOKEN, "macOS artifact listing")
+    artifact_listing = _parse_artifact_listing(listing.stdout or "", expected_files)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in expected_files:
         scp_from(build_lane, f"{src}/dist/{name}", out_dir / name)
+        expected_sha256, expected_bytes = artifact_listing[name]
+        verify_retrieved_file(
+            out_dir / name,
+            expected_sha256=expected_sha256,
+            expected_bytes=expected_bytes,
+            label=name,
+        )
 
     response = {
         "schema_version": 1,

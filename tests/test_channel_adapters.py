@@ -101,6 +101,23 @@ def _tool_stdout(*, uv: str = UV_MACOS_FIXTURE_BANNER) -> str:
     )
 
 
+def _artifact_listing_stdout(artifact_bytes: dict[str, bytes]) -> str:
+    lines = []
+    for name, data in artifact_bytes.items():
+        lines.append(
+            "\t".join(
+                (
+                    build_host_macos.ARTIFACT_TOKEN,
+                    name,
+                    hashlib.sha256(data).hexdigest(),
+                    str(len(data)),
+                )
+            )
+        )
+    lines.append(build_host_macos.DIST_TOKEN)
+    return "\n".join(lines) + "\n"
+
+
 def _write_build_request(tmp_path: Path) -> tuple[Path, build_rail.SourceBundle, dict]:
     bundle = tmp_path / "source.bundle"
     bundle.write_bytes(b"bundle")
@@ -273,18 +290,23 @@ def test_build_request_response_round_trip_through_rail_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request_path, source_bundle, _payload = _write_build_request(tmp_path)
+    request_path, source_bundle, payload = _write_build_request(tmp_path)
+    expected_files = list(payload["expected_outputs"].values())
+    artifact_bytes = {
+        name: f"artifact:{name}".encode("utf-8") for name in expected_files
+    }
 
     def fake_runner(argv, **kwargs):
         if argv[0] == "scp" and ":" in argv[-2]:
-            Path(argv[-1]).write_bytes(b"artifact")
+            name = str(argv[-2]).rsplit("/", 1)[-1]
+            Path(argv[-1]).write_bytes(artifact_bytes[name])
         script = kwargs.get("input_text") or ""
         if "emit python" in script:
             return _completed(_tool_stdout())
         if "git checkout" in script:
             return _completed(f"{build_host_macos.CHECKOUT_TOKEN}\n")
         if "for f in" in script:
-            return _completed(f"{build_host_macos.DIST_TOKEN}\n")
+            return _completed(_artifact_listing_stdout(artifact_bytes))
         return _completed()
 
     monkeypatch.setattr(common, "run", fake_runner)
@@ -306,6 +328,40 @@ def test_build_request_response_round_trip_through_rail_parser(
         build_rail.MACOS_ROOT_RECORD,
         build_rail.MACOS_CORE_RECORD,
     )
+
+
+def test_build_retrieved_artifact_digest_mismatch_writes_no_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path, _source_bundle, payload = _write_build_request(tmp_path)
+    expected_files = list(payload["expected_outputs"].values())
+    artifact_bytes = {
+        name: f"artifact:{name}".encode("utf-8") for name in expected_files
+    }
+    truncated_name = expected_files[0]
+
+    def fake_runner(argv, **kwargs):
+        if argv[0] == "scp" and ":" in argv[-2]:
+            name = str(argv[-2]).rsplit("/", 1)[-1]
+            data = artifact_bytes[name]
+            Path(argv[-1]).write_bytes(data[:-1] if name == truncated_name else data)
+        script = kwargs.get("input_text") or ""
+        if "emit python" in script:
+            return _completed(_tool_stdout())
+        if "git checkout" in script:
+            return _completed(f"{build_host_macos.CHECKOUT_TOKEN}\n")
+        if "for f in" in script:
+            return _completed(_artifact_listing_stdout(artifact_bytes))
+        return _completed()
+
+    monkeypatch.setattr(common, "run", fake_runner)
+    monkeypatch.chdir(request_path.parent)
+
+    with pytest.raises(SystemExit):
+        build_host_macos.build_macos(_lane(), request_path)
+
+    assert not (request_path.parent / "response.json").exists()
 
 
 def test_proof_request_response_round_trip_through_rail_parser(
@@ -365,16 +421,18 @@ def test_source_and_retrieved_digest_verification(tmp_path: Path) -> None:
     proof.write_bytes(b"proof")
     sha256, byte_count = common.sha256_size(proof)
 
-    proof_host._verify_retrieved_proof(
+    common.verify_retrieved_file(
         proof,
         expected_sha256=sha256,
         expected_bytes=byte_count,
+        label="proof.json",
     )
     with pytest.raises(SystemExit):
-        proof_host._verify_retrieved_proof(
+        common.verify_retrieved_file(
             proof,
             expected_sha256="0" * 64,
             expected_bytes=byte_count,
+            label="proof.json",
         )
 
 
@@ -509,17 +567,27 @@ def test_cleanup_argument_handling(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all("cohort" in script for _argv, script in calls)
 
 
-def test_config_validation_fails_before_side_effects(tmp_path: Path) -> None:
+def test_config_validation_fails_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = tmp_path / "channel-adapters.json"
     config.write_text(
         '{"schema_version": 1, "build": {}, "proof": {}}', encoding="utf-8"
     )
+    calls: list[list[str]] = []
+
+    def fake_runner(argv, **_kwargs):
+        calls.append(list(argv))
+        return _completed()
+
+    monkeypatch.setenv(common.CONFIG_ENV, str(config))
+    monkeypatch.setattr(common, "run", fake_runner)
 
     with pytest.raises(SystemExit):
-        common.load_config(
-            proof_targets=tuple(proof_rail.TARGET_ENV_KEYS),
-            env={common.CONFIG_ENV: str(config)},
-        )
+        build_host_macos.main(["build-macos", "request.json"])
+
+    assert calls == []
 
 
 def test_target_env_keys_coupling() -> None:

@@ -25,8 +25,8 @@ from scripts.channel_adapters.adapter_common import (  # noqa: E402
     run,
     scp_from,
     scp_to,
-    sha256_size,
     ssh_run,
+    verify_retrieved_file,
     write_json,
 )
 from scripts.release_proof_host import TARGET_ENV_KEYS, TARGET_POLICY  # noqa: E402
@@ -99,24 +99,6 @@ def _verify_host(target: str, lane: LaneConfig) -> None:
         die(f"proof host os/arch {got} != expected ({exp_os},{exp_arch}) for {target}")
 
 
-def _verify_retrieved_proof(
-    path: Path, *, expected_sha256: str, expected_bytes: int
-) -> None:
-    if not path.is_file():
-        die("proof.json was not produced")
-    proof_sha, proof_bytes = sha256_size(path)
-    if proof_bytes <= 0:
-        die("proof.json is empty")
-    if proof_sha != expected_sha256 or proof_bytes != expected_bytes:
-        die(
-            "proof.json digest/size mismatch after retrieval",
-            detail=(
-                f"expected {expected_sha256}/{expected_bytes} "
-                f"got {proof_sha}/{proof_bytes}"
-            ),
-        )
-
-
 def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
     if target not in TARGET_ENV_KEYS:
         die(f"unknown target: {target}")
@@ -177,10 +159,11 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
         expected_sha256, expected_bytes = _proof_status(result.stdout or "")
         scp_from(lane, f"{rreq}/output/proof.json", out_proof)
 
-    _verify_retrieved_proof(
+    verify_retrieved_file(
         out_proof,
         expected_sha256=expected_sha256,
         expected_bytes=expected_bytes,
+        label="proof.json",
     )
     exp_os, exp_arch = TARGET_POLICY[target]
     response = {

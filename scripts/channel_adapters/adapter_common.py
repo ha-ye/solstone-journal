@@ -81,6 +81,28 @@ def sha256_size(path: Path) -> tuple[str, int]:
     return h.hexdigest(), n
 
 
+def verify_retrieved_file(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_bytes: int,
+    label: str,
+) -> None:
+    if not path.is_file():
+        die(f"{label} was not produced")
+    actual_sha256, actual_bytes = sha256_size(path)
+    if actual_bytes <= 0:
+        die(f"{label} is empty")
+    if actual_sha256 != expected_sha256 or actual_bytes != expected_bytes:
+        die(
+            f"{label} digest/size mismatch after retrieval",
+            detail=(
+                f"expected {expected_sha256}/{expected_bytes} "
+                f"got {actual_sha256}/{actual_bytes}"
+            ),
+        )
+
+
 def default_config_path(env: Mapping[str, str] | None = None) -> Path:
     source = os.environ if env is None else env
     override = source.get(CONFIG_ENV)
