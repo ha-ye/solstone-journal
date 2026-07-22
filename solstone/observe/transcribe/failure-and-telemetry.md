@@ -58,7 +58,8 @@ Backend-specific policy:
 |-----------|--------------|-----|
 | Parakeet server unreachable, warming, or **dead mid-request** | Defer (`69`) | The server is a supervised process. It comes back. |
 | Confidential lane refuses cloud egress | Defer (`69`) | The lane may permit a local backend later; the audio must not be lost. |
-| Confidential hosted STT lane inactive or audio disabled | Defer (`69`) | The owner selected or auto-resolved a confidential path, but the lane cannot currently carry audio. The input is preserved for a later local or confidential retry. |
+| Confidential backend already dispatched, then lane inactive or audio disabled | Defer (`69`) | The selected backend can no longer carry audio at dispatch time. The input is preserved for a later local or confidential retry. |
+| Stranded confidential channel before dispatch and local RAM below floor | Fail (`1`) | `resolve_default_backend` surfaces the local-STT requirement before `_process_one`; no JSONL is written, input audio stays on disk, and the segment remains `incomplete`. |
 | Confidential hosted STT 400/413 or bad 200 contract | Defer (`69`) | Hosted STT is operated infrastructure. A 400 can be an engine-side regression, and owner audio is irreplaceable; preserving it for a post-fix drain is safer than failing permanently. |
 | Confidential hosted STT unreachable, backpressured, or unexpected status | Defer (`69`) | These are service-side or lane-side conditions. The deferred event carries the reason so health surfaces can show the condition without leaking content. |
 | HTTP 5xx from a live server, malformed JSON, contract violation | Fail (`1`) | The server answered — it is broken, not absent. Retrying the same request reproduces it. |

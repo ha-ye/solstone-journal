@@ -182,8 +182,6 @@ def _confidential_backend_fallback_reason(
         missing.append("endpoint URL")
     if not str(local.get("served_model_id") or "").strip():
         missing.append("served model ID")
-    if not missing:
-        return "confidential channel is incomplete"
     return (
         f"confidential channel is incomplete: missing {_join_missing_fields(missing)}"
     )

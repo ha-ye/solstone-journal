@@ -1306,10 +1306,6 @@ def test_parakeet_desired_state_table_remote_platform_and_stt(
     )
     monkeypatch.setattr(supervisor, "read_journal_config", lambda: {"transcribe": {}})
     monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: None,
-    )
-    monkeypatch.setattr(
         supervisor,
         "_parakeet_stt_admission_latch",
         lambda _transcribe, _confidential: latch,

@@ -664,13 +664,14 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
 )
 def test_linux_stt_uses_parakeet_cpp_stranded_config_follows_local_resources(
     monkeypatch,
+    tmp_path,
     available_bytes: int,
     expected: bool,
 ) -> None:
     config = _stranded_confidential_stt_config()
+    _install_supervisor_config(tmp_path, monkeypatch, config)
     monkeypatch.setattr(supervisor.sys, "platform", "linux")
     monkeypatch.setattr(supervisor.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
     monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
     monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
@@ -787,10 +788,6 @@ def test_parakeet_truth_reports_artifact_not_ready_when_missing(
         parakeet_install,
         "inspect_readiness",
         lambda journal_path=None: _parakeet_readiness(),
-    )
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: None,
     )
 
     observation = supervisor._observe_parakeet_provider_truth()
