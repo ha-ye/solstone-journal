@@ -20,6 +20,7 @@ from scripts.transparency_core import failure
 
 REQUIRED_MINISIGN_VERSION = "minisign 0.12"
 MISSING_MINISIGN_MESSAGE = "transparency-minisign: minisign 0.12 is required; install it with: sudo dnf install minisign"
+TRUSTED_COMMENT_PREFIX = "trusted comment: "
 
 
 class TransparencySigner(Protocol):
@@ -76,6 +77,21 @@ def check_minisign_binary(minisign: str = "minisign") -> str:
             ]
         )
     return version
+
+
+def _extract_trusted_comment(line: str, *, malformed_error: str, repair: str) -> str:
+    if not line.startswith(TRUSTED_COMMENT_PREFIX):
+        raise DriverError(
+            [
+                failure(
+                    malformed_error,
+                    expected=f"{TRUSTED_COMMENT_PREFIX}<trusted comment>",
+                    actual=line,
+                    repair=repair,
+                )
+            ]
+        )
+    return line[len(TRUSTED_COMMENT_PREFIX) :]
 
 
 @dataclass
@@ -180,7 +196,6 @@ class LocalMinisignSigner:
             text=True,
             check=False,
         )
-        comment = result.stdout.strip()
         if result.returncode != 0:
             raise DriverError(
                 [
@@ -194,6 +209,7 @@ class LocalMinisignSigner:
                     )
                 ]
             )
+        comment = result.stdout.strip()
         if comment != expected_trusted_comment:
             raise DriverError(
                 [
@@ -219,7 +235,11 @@ class LocalMinisignSigner:
                     )
                 ]
             )
-        return lines[2]
+        return _extract_trusted_comment(
+            lines[2],
+            malformed_error="transparency minisign trusted comment line is malformed",
+            repair="re-sign the transparency object with minisign 0.12",
+        )
 
 
 @dataclass(frozen=True)
@@ -244,7 +264,7 @@ class FakeTransparencySigner:
                 (
                     "untrusted comment: fake transparency signature",
                     base64.b64encode(digest).decode("ascii"),
-                    trusted_comment,
+                    f"trusted comment: {trusted_comment}",
                     f"trusted comment signature: {hashlib.sha256(digest).hexdigest()}",
                     "",
                 )
@@ -271,7 +291,7 @@ class FakeTransparencySigner:
                     )
                 ]
             )
-        comment = lines[2]
+        comment = self.trusted_comment(signature_path)
         if comment != expected_trusted_comment:
             raise DriverError(
                 [
@@ -313,4 +333,8 @@ class FakeTransparencySigner:
                     )
                 ]
             )
-        return lines[2]
+        return _extract_trusted_comment(
+            lines[2],
+            malformed_error="fake transparency trusted comment line is malformed",
+            repair="re-sign the transparency object",
+        )

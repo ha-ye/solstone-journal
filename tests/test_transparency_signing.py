@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from scripts.release_candidate_driver import DriverError
-from scripts.transparency_signing import FakeTransparencySigner
+from scripts.transparency_signing import TRUSTED_COMMENT_PREFIX, FakeTransparencySigner
 
 
 def test_fake_signer_verifies_body_and_trusted_comment(tmp_path: Path) -> None:
@@ -39,7 +39,8 @@ def test_fake_signer_trusted_comment_is_line_three(tmp_path: Path) -> None:
     message.write_bytes(b'{"ok":1}\n')
     signer.sign_file(message, signature, trusted_comment=comment)
     lines = signature.read_text(encoding="utf-8").splitlines()
-    assert lines[2] == comment
+    assert len(lines) == 4
+    assert lines[2] == f"{TRUSTED_COMMENT_PREFIX}{comment}"
     assert signer.trusted_comment(signature) == comment
 
 
@@ -68,3 +69,26 @@ def test_fake_signer_rejects_trusted_comment_mismatch(tmp_path: Path) -> None:
     with pytest.raises(DriverError) as error:
         signer.verify_file(message, signature, expected_trusted_comment="two")
     assert error.value.failures[0].error == "fake transparency trusted comment mismatch"
+
+
+def test_fake_signer_rejects_missing_trusted_comment_prefix(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    signature = tmp_path / "latest.json.minisig"
+    signature.write_text(
+        "\n".join(
+            (
+                "untrusted comment: fake transparency signature",
+                "ZmFrZQ==",
+                "raw trusted comment",
+                "trusted comment signature: fake",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(DriverError) as error:
+        signer.trusted_comment(signature)
+    assert (
+        error.value.failures[0].error
+        == "fake transparency trusted comment line is malformed"
+    )
