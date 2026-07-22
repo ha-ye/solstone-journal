@@ -180,6 +180,41 @@ temporarily locked out. They fail before any token, transport, build-host, git,
 upload, tag, or hosted-release seam is reached. Do not add publication behavior
 to this rail.
 
+Transparency publication is a separate retryable step after delivery; it never
+gates delivery. `make publish-transparency RELEASE_DIR=<retained ready dir>` is
+env-driven: operator endpoints, bucket, credentials, minisign key paths, and
+archive channel come from `TRANSPARENCY_*` env vars, while the public base
+defaults to `https://transparency.solstone.app`.
+
+The public layout is fixed:
+`releases/<product>/v/<version>/ledger-entry.json`,
+`ledger-entry.json.minisig`, the byte-identical companion manifests, and the
+byte-identical native proof receipts are immutable create-only objects.
+`releases/<product>/ledger.jsonl` is mutable and derived.
+`releases/<product>/latest.json.minisig` and `latest.json` are the signed pointer
+pair, written in that order.
+The archive channel retains the full candidate artifact bytes; the public
+surface carries evidence only.
+
+Transparency attests what was released, that the public version history is
+immutable, and that history is publicly reconstructible; it does not attest that
+binaries provably match source. A version key is one-shot and permanent. If a
+version entry is uploaded but the pointer is not updated, rerun the publisher to
+reuse the staged bytes and finish the mutable pointer. If a different object is
+locked at a version key, the recovery is cutting the next version; a locked-zone
+object can never be replaced.
+
+`make resign-transparency-pointer` refreshes only the signed latest pointer's
+`signed_at` and `valid_until`; it does not require `RELEASE_DIR` and does not
+change `chain_length`, `tip_sha256`, or `version`.
+
+The in-repo append-only head witness is [`transparency-heads.jsonl`](transparency-heads.jsonl).
+It is JSONL with no header row and is committed before the first publish.
+The public minisign trust-anchor filename is `solpbc-transparency-1.pub`,
+served at `releases/keys/solpbc-transparency-1.pub`; rotation increments the
+numeric suffix and uses cross-signed successor files. `TRANSPARENCY_MINISIGN_PUB`
+sets only the local verification path and may use any local filename.
+
 ### Don't use
 
 | Target | Why not |
