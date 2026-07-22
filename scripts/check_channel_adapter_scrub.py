@@ -120,7 +120,12 @@ ARGV_OPTION_PORT_RE = re.compile(
     rf"['\"]-o['\"]\s*,\s*['\"]Port=[0-9]+['\"])",
     re.IGNORECASE,
 )
-PORT_PATTERNS = (SHELL_PORT_RE, ARGV_PORT_RE, SHELL_OPTION_PORT_RE, ARGV_OPTION_PORT_RE)
+PORT_PATTERNS = (
+    ("-p/-P", SHELL_PORT_RE),
+    ("argv -p/-P", ARGV_PORT_RE),
+    ("-oPort=/-o Port=", SHELL_OPTION_PORT_RE),
+    ("argv -oPort=/argv -o Port=", ARGV_OPTION_PORT_RE),
+)
 
 SSH_ARGV_RE = re.compile(
     rf"['\"](?:{_parts('s', 'sh')}|{_parts('s', 'cp')})['\"].*__TERM__"
@@ -209,8 +214,6 @@ DOCUMENTED_IP_VALUE_EXCLUSIONS = {
 }
 
 DOCUMENTED_IPV6_LITERAL_EXCLUSIONS = {
-    # RFC 4291: unspecified address used only for local bind/listener examples.
-    ipaddress.IPv6Address("::"),
     # RFC 4291: loopback address.
     ipaddress.IPv6Address("::1"),
     # RFC 3849: documentation range.
@@ -269,10 +272,7 @@ def _address_is_excluded(
     for excluded in literal_exclusions:
         if excluded.version != address.version:
             continue
-        if isinstance(excluded, ipaddress.IPv4Network):
-            if address in excluded:
-                return True
-        elif isinstance(excluded, ipaddress.IPv6Network):
+        if isinstance(excluded, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
             if address in excluded:
                 return True
         elif excluded == address:
@@ -374,7 +374,7 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
             )
         )
 
-    for pattern in PORT_PATTERNS:
+    for label, pattern in PORT_PATTERNS:
         if pattern.search(line):
             findings.append(
                 Finding(
@@ -382,7 +382,7 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
                     line_number,
                     "Tier-2",
                     "ssh-scp-port",
-                    "-p/-P",
+                    label,
                     "move SSH/SCP port values into operator config",
                 )
             )

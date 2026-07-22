@@ -22,6 +22,14 @@ def _components(findings: list[scrub.Finding]) -> set[str]:
     return {finding.component for finding in findings}
 
 
+def _port_value(findings: list[scrub.Finding]) -> str:
+    values = [
+        finding.value for finding in findings if finding.component == "ssh-scp-port"
+    ]
+    assert len(values) == 1
+    return values[0]
+
+
 def test_tier1_literal_rejected() -> None:
     for sensitive in scrub.TIER1_VALUES:
         findings = _line_findings(f"stream = {sensitive!r}")
@@ -94,11 +102,11 @@ def test_tier2_ssh_scp_port_rejected() -> None:
         f"cmd = [{ssh!r}, {_parts('-', 'o')!r}, {_parts('Port', '=', '2222')!r}, 'h']"
     )
 
-    assert "ssh-scp-port" in _components(shell_findings)
-    assert "ssh-scp-port" in _components(argv_findings)
-    assert "ssh-scp-port" in _components(shell_option_findings)
-    assert "ssh-scp-port" in _components(shell_split_option_findings)
-    assert "ssh-scp-port" in _components(argv_option_findings)
+    assert _port_value(shell_findings) == "-p/-P"
+    assert _port_value(argv_findings) == "argv -p/-P"
+    assert _port_value(shell_option_findings) == "-oPort=/-o Port="
+    assert _port_value(shell_split_option_findings) == "-oPort=/-o Port="
+    assert _port_value(argv_option_findings) == "argv -oPort=/argv -o Port="
     assert _line_findings("$(UV) build --wheel -C--build-option=--plat-name=x") == []
     assert _line_findings('<div data-speaker-option="voice">') == []
 
