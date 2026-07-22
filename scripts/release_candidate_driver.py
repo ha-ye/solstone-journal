@@ -421,8 +421,9 @@ def validate_linux_maturin_args(args: str, *, target: str) -> list[Failure]:
     return []
 
 
-def _zig_cache_dirs(root: Path) -> tuple[Path, Path]:
+def _create_zig_cache_dirs(root: Path) -> tuple[Path, Path]:
     cache_root = _zig_cache_root(root)
+    cache_root_label = cache_root.relative_to(root).as_posix()
     global_cache = cache_root / "zig-global"
     local_cache = cache_root / "zig-local"
     try:
@@ -433,7 +434,7 @@ def _zig_cache_dirs(root: Path) -> tuple[Path, Path]:
             [
                 _failure(
                     "release Zig cache directory could not be created",
-                    expected="writable Zig cache directories under target/release-zig-cache",
+                    expected=f"writable Zig cache directories under {cache_root_label}",
                     actual=f"{type(exc).__name__}: {exc}",
                     repair="bash scripts/release.sh --candidate",
                 )
@@ -443,7 +444,7 @@ def _zig_cache_dirs(root: Path) -> tuple[Path, Path]:
 
 
 def _scrubbed_build_env(root: Path, maturin_args: str) -> dict[str, str]:
-    zig_global_cache, zig_local_cache = _zig_cache_dirs(root)
+    zig_global_cache, zig_local_cache = _create_zig_cache_dirs(root)
     # Local release builds use a narrow env, not a fully synthetic HOME. Keys:
     # - MATURIN_PEP517_ARGS: gives the PEP517 backend the locked Linux args.
     # - PATH: the only ambient value copied, solely for tool discovery.
