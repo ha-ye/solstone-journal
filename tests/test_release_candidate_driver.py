@@ -1357,6 +1357,111 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
     )
 
 
+@pytest.mark.parametrize("marker", [b"*", b"*\n"])
+def test_default_build_local_dist_strips_uv_dist_gitignore_marker(
+    tmp_path: Path,
+    marker: bytes,
+) -> None:
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=False,
+        )
+        if tuple(argv[:2]) == ("uv", "build"):
+            (tmp_path / "dist" / ".gitignore").write_bytes(marker)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    try:
+        driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
+    except driver.DriverError as exc:
+        pytest.fail(
+            "; ".join(
+                f"{failure.error}: actual={failure.actual}" for failure in exc.failures
+            )
+        )
+
+    assert not (tmp_path / "dist" / ".gitignore").exists()
+    assert {p.name for p in (tmp_path / "dist").iterdir()} == set(
+        driver._expected_local_dist_names(include_models=False)
+    )
+
+
+def test_default_build_local_dist_rejects_foreign_dist_gitignore_content(
+    tmp_path: Path,
+) -> None:
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=False,
+        )
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            (tmp_path / "dist" / ".gitignore").write_bytes(b"build/")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
+
+    assert (
+        exc.value.failures[0].error
+        == "local release build artifact inventory does not match models decision"
+    )
+    assert ".gitignore" in exc.value.failures[0].actual
+
+
+def test_default_build_local_dist_rejects_foreign_dist_dotfile(
+    tmp_path: Path,
+) -> None:
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=False,
+        )
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            (tmp_path / "dist" / ".hidden").write_bytes(b"")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
+
+    assert (
+        exc.value.failures[0].error
+        == "local release build artifact inventory does not match models decision"
+    )
+    assert ".hidden" in exc.value.failures[0].actual
+
+
+def test_default_build_local_dist_rejects_symlink_dist_gitignore(
+    tmp_path: Path,
+) -> None:
+    def runner(
+        argv: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        _fabricate_local_dist_for_build_argv(
+            tmp_path,
+            argv,
+            include_models=False,
+        )
+        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+            (tmp_path / "dist" / ".gitignore").symlink_to("uv-generated-marker")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
+
+    assert {failure.error for failure in exc.value.failures} >= {
+        "local release build produced unsafe dist entry"
+    }
+
+
 def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -526,7 +526,49 @@ def _default_build_local_dist(
             cwd=root,
             env=_scrubbed_build_env(root, maturin_args),
         )
+    # uv build auto-creates dist/.gitignore with ignore-all content "*".
+    # Strip exactly that artifact before the local-dist inventory gate.
+    # Leave anything else in dist for the inventory gate to reject.
+    _remove_uv_dist_gitignore(root / "dist")
     _validate_local_dist_inventory(root / "dist", include_models=include_models)
+
+
+def _remove_uv_dist_gitignore(dist_dir: Path) -> None:
+    path = dist_dir / ".gitignore"
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(entry.st_mode):
+        return
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise DriverError(
+            [
+                _failure(
+                    "local release build could not inspect uv dist/.gitignore",
+                    expected="readable uv build dist/.gitignore marker",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        ) from exc
+    if content not in {b"*", b"*\n"}:
+        return
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise DriverError(
+            [
+                _failure(
+                    "local release build could not remove uv dist/.gitignore",
+                    expected="uv build dist/.gitignore marker removed",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        ) from exc
 
 
 def _default_prepare_policy(root: Path, env: Mapping[str, str]) -> PolicyRun:
