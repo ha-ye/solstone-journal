@@ -13,10 +13,54 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from solstone.observe.vad import VadResult
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _args(backend: str | None = None) -> argparse.Namespace:
     return argparse.Namespace(backend=backend, cpu=False, model=None, redo=False)
+
+
+def _confidential_block() -> dict:
+    return {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "acct-test",
+        "endpoint_url": "https://spp.example.test",
+        "served_model_id": "confidential-model",
+        "credential_fingerprint_sha256": "fingerprint",
+    }
+
+
+def _stranded_confidential_config(*, transcribe: dict | None = None) -> dict:
+    config = {
+        "services": {"confidential": _confidential_block()},
+        "providers": {"local": {}},
+    }
+    if transcribe is not None:
+        config["transcribe"] = transcribe
+    return config
+
+
+def _healthy_confidential_config(*, transcribe: dict | None = None) -> dict:
+    config = {
+        "services": {"confidential": _confidential_block()},
+        "providers": {
+            "local": {
+                "endpoint_url": "https://spp.example.test/v1",
+                "served_model_id": "confidential-model",
+                "credential": "confidential-credential",
+            }
+        },
+    }
+    if transcribe is not None:
+        config["transcribe"] = transcribe
+    return config
+
+
+def _seed_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: dict) -> dict:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    seed_journal_config(config, journal)
+    return config
 
 
 def test_main_accepts_journal_relative_path(tmp_path, monkeypatch):
@@ -280,59 +324,218 @@ def test_main_google_key_decoy_below_floor_surfaces_local_requirement(
     assert "local transcription needs about 4 GB" in caplog.text
 
 
-def test_resolve_default_backend_auto_selects_confidential_under_lane(monkeypatch):
+def test_resolve_default_backend_stranded_low_ram_surfaces_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _stranded_confidential_config())
 
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+
+    with pytest.raises(SystemExit) as exc_info:
+        transcribe_main.resolve_default_backend(
+            _args(),
+            config.get("transcribe", {}),
+        )
+
+    assert exc_info.value.code == 1
+
+
+def test_resolve_default_backend_stranded_adequate_ram_uses_local_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    transcribe_dispatch = importlib.import_module("solstone.observe.transcribe")
+    config = _seed_config(tmp_path, monkeypatch, _stranded_confidential_config())
+
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 8 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    expected_backend = transcribe_main.local_stt_backend()
+    backend_module = MagicMock()
+    backend_module.transcribe.return_value = [{"text": "local"}]
+    get_backend = MagicMock(return_value=backend_module)
+    monkeypatch.setattr(transcribe_dispatch, "get_backend", get_backend)
+
+    assert expected_backend is not None
+    resolved_backend = transcribe_main.resolve_default_backend(
+        _args(), config.get("transcribe", {})
+    )
+    assert resolved_backend == expected_backend
+
+    assert transcribe_dispatch.transcribe(resolved_backend, [], 16000, {}) == [
+        {"text": "local"}
+    ]
+    get_backend.assert_called_once_with(expected_backend)
+    backend_module.transcribe.assert_called_once_with([], 16000, {})
+
+
+def test_main_stranded_low_ram_preserves_audio_before_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from solstone.think.retention import resolve_segment_gate
+
+    journal = tmp_path / "journal"
+    config = _stranded_confidential_config()
+    _seed_config(tmp_path, monkeypatch, config)
+    audio_file = (
+        journal / "chronicle" / "20260722" / "_default" / "120000_0010" / "audio.wav"
+    )
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not decoded on the surface path")
+
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    monkeypatch.setattr("sys.argv", ["sol transcribe", str(audio_file)])
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    process_one = MagicMock(return_value=None)
+    monkeypatch.setattr(transcribe_main, "_process_one", process_one)
+
+    with pytest.raises(SystemExit) as exc_info:
+        transcribe_main.main()
+
+    assert exc_info.value.code == 1
+    process_one.assert_not_called()
+    assert audio_file.exists()
+    assert not audio_file.with_suffix(".jsonl").exists()
+    assert resolve_segment_gate(audio_file.parent).verdict == "incomplete"
+
+
+def test_resolve_default_backend_healthy_channel_without_brain_uses_confidential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _healthy_confidential_config())
+
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
-    )
-
-    assert transcribe_main.resolve_default_backend(_args(), {}) == "confidential"
-
-
-def test_resolve_default_backend_explicit_local_wins_under_lane(monkeypatch):
-    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
-
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
-    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
-    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
-    )
 
     assert (
-        transcribe_main.resolve_default_backend(_args(), {"backend": "parakeet"})
+        transcribe_main.resolve_default_backend(
+            _args(),
+            config.get("transcribe", {}),
+            journal_config=config,
+        )
+        == "confidential"
+    )
+
+
+def test_resolve_default_backend_auto_selects_confidential_under_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _healthy_confidential_config())
+
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+
+    assert (
+        transcribe_main.resolve_default_backend(
+            _args(),
+            config.get("transcribe", {}),
+            journal_config=config,
+        )
+        == "confidential"
+    )
+
+
+def test_resolve_default_backend_explicit_local_wins_under_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _healthy_confidential_config())
+
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+
+    assert (
+        transcribe_main.resolve_default_backend(
+            _args(),
+            {"backend": "parakeet"},
+            journal_config=config,
+        )
         == "parakeet"
     )
 
 
-def test_resolve_default_backend_confidential_fallback_never_cloud(monkeypatch, caplog):
+def test_resolve_default_backend_confidential_fallback_never_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _healthy_confidential_config())
 
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
-    )
 
     with caplog.at_level(logging.WARNING):
         backend = transcribe_main.resolve_default_backend(
             _args(),
             {"backend": "confidential", "confidential_audio": False},
+            journal_config=config,
         )
 
     assert backend == "parakeet"
     assert "confidential audio is disabled" in caplog.text
+
+
+def test_resolve_default_backend_healthy_channel_audio_disabled_uses_local_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(
+        tmp_path,
+        monkeypatch,
+        _healthy_confidential_config(transcribe={"confidential_audio": False}),
+    )
+
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    expected_backend = transcribe_main.local_stt_backend()
+
+    assert expected_backend is not None
+    assert (
+        transcribe_main.resolve_default_backend(
+            _args(),
+            config.get("transcribe", {}),
+            journal_config=config,
+        )
+        == expected_backend
+    )
+
+
+def test_resolve_default_backend_warns_when_confidential_channel_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _stranded_confidential_config())
+
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 8 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+
+    with caplog.at_level(logging.WARNING):
+        backend = transcribe_main.resolve_default_backend(
+            _args(),
+            {"backend": "confidential"},
+            journal_config=config,
+        )
+
+    assert backend == "parakeet"
+    assert (
+        "confidential channel is incomplete: missing credential, endpoint URL, "
+        "and served model ID"
+    ) in caplog.text
 
 
 def test_resolve_default_backend_surfaces_when_no_viable_backend(monkeypatch):
@@ -374,22 +577,21 @@ def test_resolve_default_backend_warns_but_honors_explicit_local(monkeypatch, ca
 
 
 def test_resolve_default_backend_stale_config_routes_to_confidential_under_lane(
-    monkeypatch, caplog
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
 ):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    config = _seed_config(tmp_path, monkeypatch, _healthy_confidential_config())
 
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
-    )
 
     with caplog.at_level(logging.WARNING):
         backend = transcribe_main.resolve_default_backend(
-            _args(), {"backend": "removed-stt"}
+            _args(),
+            {"backend": "removed-stt"},
+            journal_config=config,
         )
 
     assert backend == "confidential"

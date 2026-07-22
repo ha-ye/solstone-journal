@@ -591,10 +591,12 @@ def get_transcribe() -> Any:
         try:
             from solstone.think.services import spp
 
-            confidential_lane_active = spp.confidential_provenance() is not None
+            # Routing display uses channel usability; dispatch refusal separately
+            # keys on bare confidential block presence to prevent egress.
+            confidential_channel_usable = spp.is_confidential_channel_usable(config)
             resource = transcribe_resource.get_transcribe_resource_payload(
                 configured_backend=configured_backend,
-                confidential_lane_active=confidential_lane_active,
+                confidential_lane_active=confidential_channel_usable,
                 confidential_audio=confidential_audio,
             )
         except Exception:

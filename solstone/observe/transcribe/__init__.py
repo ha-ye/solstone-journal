@@ -201,6 +201,8 @@ def transcribe(
     """
     from solstone.think.services import spp
 
+    # Refusal keys on bare confidential block presence; routing uses channel
+    # usability earlier, but this gate must still prevent accidental egress.
     confidential_lane_active = spp.confidential_provenance() is not None
     if confidential_lane_active:
         meta = BACKEND_METADATA.get(backend)

@@ -23,6 +23,7 @@ from solstone.think.journal_config import (
 from solstone.think.providers.local_endpoint import (
     confidential_provenance_block,
     normalize_local_endpoint_url,
+    resolve_local_endpoint_from_config,
 )
 from solstone.think.services.spp_attest.cadence import AttestationSession
 
@@ -305,3 +306,11 @@ def is_confidential_enabled(config: dict[str, Any] | None = None) -> bool:
     local = config.get("providers", {}).get("local", {})
     credential = local.get("credential") if isinstance(local, dict) else None
     return isinstance(block, dict) and bool(credential)
+
+
+def is_confidential_channel_usable(config: dict[str, Any] | None = None) -> bool:
+    """Return whether the confidential channel can carry a request now."""
+
+    config = read_journal_config() if config is None else config
+    endpoint = resolve_local_endpoint_from_config(config)
+    return is_confidential_enabled(config) and not endpoint.is_bundled

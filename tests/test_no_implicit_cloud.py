@@ -930,6 +930,7 @@ def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch
 def test_confidential_stt_toggle_off_selection_is_immediate(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
+    _add_local_endpoint(config)
     _seed_journal_config(tmp_path, config)
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)

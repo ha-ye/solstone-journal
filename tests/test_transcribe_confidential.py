@@ -14,8 +14,14 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from solstone.observe import transcribe as transcribe_pkg
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
-from solstone.observe.transcribe import ConfidentialTranscribeDeferral, confidential
+from solstone.observe.transcribe import (
+    ConfidentialAudioEgressError,
+    ConfidentialTranscribeDeferral,
+    confidential,
+)
+from solstone.observe.transcribe import transcribe as dispatch_transcribe
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.models import AttestationFailedError, AttestationStaleError
@@ -27,6 +33,26 @@ def _block() -> dict[str, str]:
     return {
         "endpoint_url": "https://spp.example.test",
         spp.CREDENTIAL_FINGERPRINT_FIELD: "device-fingerprint",
+    }
+
+
+def _stranded_config() -> dict:
+    return {
+        "services": {"confidential": _block()},
+        "providers": {"local": {}},
+    }
+
+
+def _healthy_config() -> dict:
+    return {
+        "services": {"confidential": _block()},
+        "providers": {
+            "local": {
+                "endpoint_url": "https://spp.example.test/v1",
+                "served_model_id": "confidential-model",
+                "credential": "confidential-token",
+            }
+        },
     }
 
 
@@ -55,6 +81,40 @@ def _install_verified_lane(
 
 def _audio(seconds: float = 0.2) -> np.ndarray:
     return np.linspace(-0.5, 0.5, int(SAMPLE_RATE * seconds), dtype=np.float32)
+
+
+@pytest.mark.parametrize("config", [_stranded_config(), _healthy_config()])
+def test_confidential_dispatch_gate_refuses_nonlocal_under_any_provenance_shape(
+    config: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = config["services"]["confidential"]
+    monkeypatch.setattr(spp, "confidential_provenance", lambda: block)
+    monkeypatch.setitem(
+        transcribe_pkg.BACKEND_REGISTRY,
+        "remote-test",
+        "tests.unused_remote_backend",
+    )
+    monkeypatch.setitem(
+        transcribe_pkg.BACKEND_METADATA,
+        "remote-test",
+        {"local": False},
+    )
+    backend = Mock()
+    backend.transcribe.return_value = []
+    get_backend = Mock(return_value=backend)
+    monkeypatch.setattr(transcribe_pkg, "get_backend", get_backend)
+
+    with pytest.raises(ConfidentialAudioEgressError):
+        dispatch_transcribe("missing-backend", _audio(), SAMPLE_RATE, {})
+    get_backend.assert_not_called()
+
+    with pytest.raises(ConfidentialAudioEgressError):
+        dispatch_transcribe("remote-test", _audio(), SAMPLE_RATE, {})
+    get_backend.assert_not_called()
+
+    assert dispatch_transcribe("parakeet", _audio(), SAMPLE_RATE, {}) == []
+    get_backend.assert_called_once_with("parakeet")
 
 
 def test_confidential_transcribe_posts_canonical_wav_to_forwarder(

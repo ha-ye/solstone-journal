@@ -183,6 +183,11 @@ def test_transcribe_route_passes_confidential_lane_flag(settings_env, monkeypatc
     config.setdefault("services", {})["confidential"] = {
         "enabled_at": "2026-05-24T00:00:00Z"
     }
+    config.setdefault("providers", {})["local"] = {
+        "endpoint_url": "https://spp.example.test/v1",
+        "served_model_id": "confidential-model",
+        "credential": "confidential-credential",
+    }
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",

@@ -23,9 +23,55 @@ from solstone.think.providers.parakeet_placement import (
     PARAKEET_ATT_CONTEXT_ENV,
     PARAKEET_ATT_CONTEXT_FRAMES,
 )
+from tests.helpers.journal_config import seed_journal_config
 from tests.helpers.module_mocks import module_mock
 
 _LaunchRecord = dict[str, Any]
+
+
+def _confidential_block() -> dict[str, Any]:
+    return {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "acct-test",
+        "endpoint_url": "https://spp.example.test",
+        "served_model_id": "confidential-model",
+        "credential_fingerprint_sha256": "fingerprint",
+    }
+
+
+def _stranded_confidential_stt_config() -> dict[str, Any]:
+    return {
+        "services": {"confidential": _confidential_block()},
+        "providers": {"local": {}},
+        "transcribe": {},
+    }
+
+
+def _usable_confidential_stt_config(
+    transcribe: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "services": {"confidential": _confidential_block()},
+        "providers": {
+            "local": {
+                "endpoint_url": "https://spp.example.test/v1",
+                "served_model_id": "confidential-model",
+                "credential": "confidential-credential",
+            }
+        },
+        "transcribe": transcribe or {},
+    }
+
+
+def _install_supervisor_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, Any],
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    seed_journal_config(config, journal)
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
 
 
 @pytest.fixture(autouse=True)
@@ -596,16 +642,38 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
         transcribe_config["backend"] = backend
     if not confidential_audio:
         transcribe_config["confidential_audio"] = False
-    config = {"transcribe": transcribe_config} if transcribe_config else {}
+    if confidential:
+        config = _usable_confidential_stt_config(transcribe_config)
+    else:
+        config = {"transcribe": transcribe_config} if transcribe_config else {}
     monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
     monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
     monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(supervisor, "local_stt_backend", lambda: local_backend)
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"} if confidential else None,
-    )
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    assert supervisor.linux_stt_uses_parakeet_cpp() is expected
+
+
+@pytest.mark.parametrize(
+    ("available_bytes", "expected"),
+    [
+        (2 * 1024**3, False),
+        (8 * 1024**3, True),
+    ],
+)
+def test_linux_stt_uses_parakeet_cpp_stranded_config_follows_local_resources(
+    monkeypatch,
+    available_bytes: int,
+    expected: bool,
+) -> None:
+    config = _stranded_confidential_stt_config()
+    monkeypatch.setattr(supervisor.sys, "platform", "linux")
+    monkeypatch.setattr(supervisor.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
+    monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
+    monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
 
     assert supervisor.linux_stt_uses_parakeet_cpp() is expected
 
@@ -639,11 +707,7 @@ def test_start_parakeet_server_early_returns_for_other_backend(
     monkeypatch.setattr(
         supervisor,
         "read_journal_config",
-        lambda: {"transcribe": {"backend": "confidential"}},
-    )
-    monkeypatch.setattr(
-        "solstone.think.services.spp.confidential_provenance",
-        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
+        lambda: _usable_confidential_stt_config({"backend": "confidential"}),
     )
 
     observation = supervisor._observe_parakeet_provider_truth()
@@ -651,6 +715,55 @@ def test_start_parakeet_server_early_returns_for_other_backend(
     assert observation.phase == "not-desired"
     assert observation.reason_code == "confidential-backend-selected"
     assert parakeet_server.read_parakeet_placement() == "gpu"
+
+
+def test_parakeet_truth_stranded_low_ram_reports_host_blocked(
+    monkeypatch, tmp_path
+) -> None:
+    _install_supervisor_config(
+        tmp_path,
+        monkeypatch,
+        _stranded_confidential_stt_config(),
+    )
+    monkeypatch.setattr(supervisor, "_parakeet_platform_can_host", lambda: True)
+    monkeypatch.setattr(supervisor, "read_available_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
+
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == "host-blocked"
+    assert observation.reason_code == "host-admission-blocked"
+    assert observation.detail["stt_admission_latch"]["blocked"] is True
+
+
+def test_parakeet_truth_stranded_adequate_ram_desires_parakeet(
+    monkeypatch, tmp_path
+) -> None:
+    _install_supervisor_config(
+        tmp_path,
+        monkeypatch,
+        _stranded_confidential_stt_config(),
+    )
+    monkeypatch.setattr(supervisor, "_parakeet_platform_can_host", lambda: True)
+    monkeypatch.setattr(supervisor, "read_available_bytes", lambda: 8 * 1024**3)
+    monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(
+        parakeet_install,
+        "target_fingerprint",
+        lambda *, journal_path=None: {"provider": "parakeet"},
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "inspect_readiness",
+        lambda journal_path=None: _parakeet_readiness(),
+    )
+
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == "artifact-not-ready"
+    assert observation.reason_code == "artifact-missing"
 
 
 def test_parakeet_truth_reports_artifact_not_ready_when_missing(

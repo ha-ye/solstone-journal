@@ -175,19 +175,21 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     except RuntimeError:
         return False
 
-    from solstone.think.services import spp
-
-    confidential = spp.confidential_provenance() is not None
     config = read_journal_config()
     transcribe = config.get("transcribe", {})
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
+    from solstone.think.services import spp
+
+    # Routing uses channel usability; dispatch refusal still keys on bare
+    # confidential block presence to keep raw audio from accidental egress.
+    confidential_channel_usable = spp.is_confidential_channel_usable(config)
 
     selected = resolve_stt_backend_choice(
         backend if isinstance(backend, str) else None,
         read_available_bytes(),
         floor_bytes=stt_local_floor_bytes(),
         local_backend=local_stt_backend(),
-        confidential_lane_active=confidential,
+        confidential_lane_active=confidential_channel_usable,
         confidential_audio_enabled=confidential_audio_enabled(transcribe),
     )
     return selected in {"parakeet", "parakeet-cpp"}
@@ -2524,7 +2526,7 @@ def _parakeet_platform_can_host() -> bool:
 
 
 def _parakeet_stt_admission_input(
-    transcribe: dict[str, Any], confidential: bool
+    transcribe: dict[str, Any], confidential_channel_usable: bool
 ) -> dict[str, Any]:
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
     return {
@@ -2533,18 +2535,20 @@ def _parakeet_stt_admission_input(
         "backend": backend if isinstance(backend, str) else None,
         "local_backend": local_stt_backend(),
         "floor_bytes": stt_local_floor_bytes(),
-        "confidential_lane_active": confidential,
+        "confidential_lane_active": confidential_channel_usable,
         "confidential_audio_enabled": confidential_audio_enabled(transcribe),
     }
 
 
 def _parakeet_stt_admission_latch(
     transcribe: dict[str, Any],
-    confidential: bool,
+    confidential_channel_usable: bool,
 ) -> dict[str, Any]:
     global _parakeet_admission_retry_epoch
 
-    admission_input = _parakeet_stt_admission_input(transcribe, confidential)
+    admission_input = _parakeet_stt_admission_input(
+        transcribe, confidential_channel_usable
+    )
     input_json, input_sha = _target_fingerprint_pair(admission_input)
     try:
         current = read_runtime_health("parakeet")
@@ -2566,7 +2570,7 @@ def _parakeet_stt_admission_latch(
     available_bytes = (
         None
         if explicit_backend in {"parakeet", "parakeet-cpp", "confidential"}
-        or confidential
+        or confidential_channel_usable
         else read_available_bytes()
     )
     choice = resolve_stt_backend_choice(
@@ -2574,14 +2578,14 @@ def _parakeet_stt_admission_latch(
         available_bytes,
         floor_bytes=floor_bytes if isinstance(floor_bytes, int) else None,
         local_backend=local_backend if isinstance(local_backend, str) else None,
-        confidential_lane_active=confidential,
+        confidential_lane_active=confidential_channel_usable,
         confidential_audio_enabled=bool(admission_input["confidential_audio_enabled"]),
     )
     desired = choice in {"parakeet", "parakeet-cpp"}
     ram_blocked = (
         choice == STT_SURFACE
         and explicit_backend is None
-        and not confidential
+        and not confidential_channel_usable
         and local_backend in {"parakeet", "parakeet-cpp"}
         and floor_bytes is not None
     )
@@ -2848,8 +2852,12 @@ def _observe_parakeet_provider_truth() -> ProviderTruthObservation:
             transcribe = {}
         from solstone.think.services import spp
 
-        confidential = spp.confidential_provenance() is not None
-        admission_latch = _parakeet_stt_admission_latch(transcribe, confidential)
+        # Routing uses channel usability; dispatch refusal still keys on bare
+        # confidential block presence to keep raw audio from accidental egress.
+        confidential_channel_usable = spp.is_confidential_channel_usable(config)
+        admission_latch = _parakeet_stt_admission_latch(
+            transcribe, confidential_channel_usable
+        )
         if admission_latch["blocked"]:
             return ProviderTruthObservation(
                 provider="parakeet",

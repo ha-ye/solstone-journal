@@ -149,7 +149,52 @@ PYANNOTE_OVERLAP_MODEL_SHA256 = OVERLAP_DETECTOR_SHA256
 _embedder_session: ort.InferenceSession | None = None
 
 
-def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -> str:
+def _join_missing_fields(fields: list[str]) -> str:
+    if len(fields) == 1:
+        return fields[0]
+    if len(fields) == 2:
+        return f"{fields[0]} and {fields[1]}"
+    return f"{', '.join(fields[:-1])}, and {fields[-1]}"
+
+
+def _confidential_backend_fallback_reason(
+    journal_config: dict,
+    *,
+    confidential_channel_usable: bool,
+    confidential_audio: bool,
+) -> str:
+    if confidential_channel_usable and not confidential_audio:
+        return "confidential audio is disabled"
+
+    from solstone.think.providers.local_endpoint import confidential_provenance_block
+
+    if confidential_provenance_block(dict(journal_config)) is None:
+        return "confidential lane is inactive"
+
+    providers = journal_config.get("providers")
+    local = providers.get("local", {}) if isinstance(providers, dict) else {}
+    if not isinstance(local, dict):
+        local = {}
+    missing: list[str] = []
+    if not local.get("credential"):
+        missing.append("credential")
+    if not str(local.get("endpoint_url") or "").strip():
+        missing.append("endpoint URL")
+    if not str(local.get("served_model_id") or "").strip():
+        missing.append("served model ID")
+    if not missing:
+        return "confidential channel is incomplete"
+    return (
+        f"confidential channel is incomplete: missing {_join_missing_fields(missing)}"
+    )
+
+
+def resolve_default_backend(
+    args: argparse.Namespace,
+    transcribe_config: dict,
+    *,
+    journal_config: dict | None = None,
+) -> str:
     """Resolve the effective default STT backend once, from a single free-RAM read.
 
     Honors explicit CLI/config choices, warns on an explicit local choice below
@@ -170,21 +215,25 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
             explicit_backend = None
     from solstone.think.services import spp
 
-    confidential_lane_active = spp.confidential_provenance() is not None
+    if journal_config is None:
+        journal_config = get_config()
+    # Routing uses channel usability; the dispatch refusal gate separately keys
+    # on bare confidential block presence to prevent accidental egress.
+    confidential_channel_usable = spp.is_confidential_channel_usable(journal_config)
     confidential_audio = confidential_audio_enabled(transcribe_config)
     backend = resolve_stt_backend_choice(
         explicit_backend,
         available_bytes,
         floor_bytes=floor_bytes,
         local_backend=local_backend,
-        confidential_lane_active=confidential_lane_active,
+        confidential_lane_active=confidential_channel_usable,
         confidential_audio_enabled=confidential_audio,
     )
     if explicit_backend == "confidential" and backend != "confidential":
-        reason = (
-            "confidential audio is disabled"
-            if confidential_lane_active
-            else "confidential lane is inactive"
+        reason = _confidential_backend_fallback_reason(
+            journal_config,
+            confidential_channel_usable=confidential_channel_usable,
+            confidential_audio=confidential_audio,
         )
         logging.warning(
             "Configured STT backend 'confidential' cannot run because %s; using local STT placement",
@@ -1452,7 +1501,11 @@ def main():
 
     config = get_config()
     transcribe_config = config.get("transcribe", {})
-    default_backend = resolve_default_backend(args, transcribe_config)
+    default_backend = resolve_default_backend(
+        args,
+        transcribe_config,
+        journal_config=config,
+    )
 
     if args.all:
         processed = 0

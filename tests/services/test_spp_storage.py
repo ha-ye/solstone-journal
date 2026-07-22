@@ -19,6 +19,7 @@ from solstone.think.services.spp import (
     JournalNotInitializedError,
     confidential_provenance,
     disable_confidential,
+    is_confidential_channel_usable,
     is_confidential_enabled,
     provision_confidential_handoff,
 )
@@ -45,6 +46,65 @@ def _read_config(journal: Path) -> dict:
 
 def _write_config(journal: Path, config: dict) -> None:
     seed_journal_config(config, journal)
+
+
+@pytest.mark.parametrize(
+    (
+        "config",
+        "expected_enabled",
+        "expected_usable",
+    ),
+    [
+        ({}, False, False),
+        (
+            {"services": {"confidential": {"enabled_at": "2026-05-24T00:00:00Z"}}},
+            False,
+            False,
+        ),
+        (
+            {
+                "services": {"confidential": {"enabled_at": "2026-05-24T00:00:00Z"}},
+                "providers": {
+                    "local": {
+                        "endpoint_url": "https://spp.example.test/v1",
+                        "served_model_id": "confidential-model",
+                    }
+                },
+            },
+            False,
+            False,
+        ),
+        (
+            {
+                "services": {"confidential": {"enabled_at": "2026-05-24T00:00:00Z"}},
+                "providers": {
+                    "local": {
+                        "endpoint_url": "https://spp.example.test/v1",
+                        "served_model_id": "confidential-model",
+                        "credential": "confidential-credential",
+                    }
+                },
+            },
+            True,
+            True,
+        ),
+        (
+            {
+                "services": {"confidential": {"enabled_at": "2026-05-24T00:00:00Z"}},
+                "providers": {"local": {"credential": "confidential-credential"}},
+            },
+            True,
+            False,
+        ),
+    ],
+)
+def test_confidential_channel_usable_is_provisioned_complete_endpoint(
+    config: dict,
+    expected_enabled: bool,
+    expected_usable: bool,
+) -> None:
+    assert is_confidential_enabled(config) is expected_enabled
+    assert is_confidential_channel_usable(config) is expected_usable
 
 
 @pytest.fixture(autouse=True)

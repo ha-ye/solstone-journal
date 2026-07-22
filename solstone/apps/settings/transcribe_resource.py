@@ -31,6 +31,7 @@ def get_transcribe_resource_payload(
     available_bytes = read_available_bytes()
     floor_bytes = stt_local_floor_bytes()
     local_backend = local_stt_backend()
+    # The legacy selector keyword is kept stable; callers pass channel usability.
     selected_backend = resolve_stt_backend_choice(
         configured_backend,
         available_bytes,
