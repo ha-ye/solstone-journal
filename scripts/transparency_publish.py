@@ -503,7 +503,7 @@ def fetch_chain_state(
                 )
             ]
         )
-    entries = tuple(
+    fetched_entries = tuple(
         _verify_remote_entry(
             product=config.product,
             version=version,
@@ -511,6 +511,9 @@ def fetch_chain_state(
             signer=signer,
         )
         for version, _key in _immutable_entry_keys(config.product, listed.keys)
+    )
+    entries = tuple(
+        sorted(fetched_entries, key=lambda record: int(record.entry["seq"]))
     )
     chain_failures = validate_entry_chain(entries)
     if chain_failures:

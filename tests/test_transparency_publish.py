@@ -583,6 +583,59 @@ def test_publish_genesis_uploads_fixed_layout_and_order(
     ]
 
 
+def test_publish_and_resign_accept_lexicographically_inverted_version_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path, version="0.11.0")
+    _patch_recover(monkeypatch, version="0.11.0")
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+        published_utc="2026-07-22T00:00:00Z",
+    )
+    second = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=2,
+        version="0.10.0",
+        prev_sha256=first.sha256,
+        prev_version="0.9.1",
+        published_utc="2026-07-23T00:00:00Z",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        first.bytes + second.bytes,
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+
+    result = publisher.publish_transparency(
+        config=_config(tmp_path, version="0.11.0", genesis=None),
+        transport=transport,
+        signer=signer,
+        archive_runner=_archive_ok,
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.seq == 3
+    assert result.version == "0.11.0"
+    resigned = publisher.resign_transparency_pointer(
+        config=_config(tmp_path, version="0.11.0", genesis=None),
+        transport=transport,
+        signer=signer,
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+    )
+    assert resigned.seq == 3
+    assert resigned.version == "0.11.0"
+
+
 def test_genesis_retry_adopts_orphan_latest_signature(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1146,7 +1199,10 @@ def test_tip_signature_invalid_fails_closed(tmp_path: Path) -> None:
             transport=transport,
             signer=signer,
         )
-    assert error.value.failures[0].error == "fake transparency trusted comment mismatch"
+    assert (
+        error.value.failures[0].error
+        == "fake transparency trusted comment line is malformed"
+    )
 
 
 def test_existing_pointer_without_etag_fails_closed(tmp_path: Path) -> None:
