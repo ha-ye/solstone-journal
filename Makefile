@@ -573,6 +573,9 @@ install-checks: .installed
 	@echo "=== Running release advisory liveness check ==="
 	@$(MAKE) check-release-advisory-liveness
 	@echo ""
+	@echo "=== Checking transparency minisign ==="
+	@$(MAKE) check-transparency-minisign
+	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
@@ -777,3 +780,15 @@ release: ## Locked publication entrypoint
 
 release-test: ## Locked test-publication entrypoint
 	@bash scripts/release.sh --test
+
+.PHONY: check-transparency-minisign
+check-transparency-minisign: .installed
+	$(VENV_BIN)/python scripts/transparency_publish.py check-minisign
+
+.PHONY: publish-transparency resign-transparency-pointer
+publish-transparency: .installed
+	@test -n "$(RELEASE_DIR)" || { echo "publish-transparency: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
+	RELEASE_DIR="$(RELEASE_DIR)" SOURCE_COMMIT="$(SOURCE_COMMIT)" $(VENV_BIN)/python scripts/transparency_publish.py publish --root .
+
+resign-transparency-pointer: .installed
+	$(VENV_BIN)/python scripts/transparency_publish.py resign-transparency-pointer --root .
