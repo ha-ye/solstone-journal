@@ -603,6 +603,10 @@ def test_minisign_pub_env_overrides_local_path_only(tmp_path: Path) -> None:
     assert config.minisign_pub == local_pub
 
 
+def test_publish_config_repr_does_not_expose_secret(tmp_path: Path) -> None:
+    assert "SECRET_TEST" not in repr(_config(tmp_path))
+
+
 def test_public_immutable_verification_failure_prevents_mutable_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -771,6 +775,78 @@ def test_staged_retry_reuses_entry_bytes_despite_advancing_wall_time(
         now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
     )
     assert second.entry_path.read_bytes() == first_bytes
+
+
+def test_stale_stage_fails_poisoned_version_before_mutable_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _candidate(tmp_path, version="0.9.2")
+    _patch_recover(monkeypatch, version="0.9.2")
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    first = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    config = _config(tmp_path, version="0.9.2", genesis=None)
+    state = publisher.fetch_chain_state(
+        config=config,
+        transport=transport,
+        signer=signer,
+    )
+    stage = publisher.create_stage_from_candidate(
+        config=config,
+        state=state,
+        signer=signer,
+        now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+    second = _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=2,
+        version="0.9.3",
+        prev_sha256=first.sha256,
+        prev_version="0.9.1",
+        published_utc="2026-07-24T00:00:00Z",
+    )
+    transport.put_object(
+        ledger_key(PRODUCT),
+        first.bytes + second.bytes,
+        content_type="application/jsonl",
+        cache_control="no-cache",
+    )
+    transport.call_log.clear()
+
+    with pytest.raises(DriverError) as error:
+        publisher.publish_transparency(
+            config=config,
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+        )
+
+    assert "version 0.9.2 is already permanently recorded at seq=2" in (
+        error.value.failures[0].error
+    )
+    assert f"entry_sha256={stage.entry_sha256}" in error.value.failures[0].error
+    mutable_puts = [
+        call
+        for call in transport.call_log
+        if call["op"] == "PUT"
+        and call["key"]
+        in {
+            ledger_key(PRODUCT),
+            latest_signature_key(PRODUCT),
+            latest_key(PRODUCT),
+        }
+    ]
+    assert mutable_puts == []
 
 
 def test_candidate_revalidation_failure_stops_before_upload(
@@ -1034,6 +1110,25 @@ def test_tip_signature_invalid_fails_closed(tmp_path: Path) -> None:
     assert error.value.failures[0].error == "fake transparency trusted comment mismatch"
 
 
+def test_existing_pointer_without_etag_fails_closed(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = NoLatestEtagTransport(tmp_path / "remote")
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.0.1",
+    )
+    with pytest.raises(DriverError) as error:
+        publisher.fetch_chain_state(
+            config=_config(tmp_path, version="0.0.2", genesis=None),
+            transport=transport,
+            signer=signer,
+        )
+    assert error.value.failures[0].error == "transparency pointer ETag is missing"
+
+
 class MovingLatestTransport(DirectoryTransparencyTransport):
     latest_gets: int = 0
 
@@ -1043,6 +1138,20 @@ class MovingLatestTransport(DirectoryTransparencyTransport):
             if self.latest_gets == 2:
                 self._object_path(key).write_bytes(b"moved")
         return super().get_object(key, cache_bypass=cache_bypass)
+
+
+class NoLatestEtagTransport(DirectoryTransparencyTransport):
+    def get_object(self, key: str, *, cache_bypass: bool = False):  # type: ignore[no-untyped-def]
+        result = super().get_object(key, cache_bypass=cache_bypass)
+        if key == latest_key(PRODUCT) and result.status == 200:
+            return HttpResult(
+                status=result.status,
+                body=result.body,
+                headers={},
+                etag=None,
+                exit_code=result.exit_code,
+            )
+        return result
 
 
 class NthGetFailureTransport(DirectoryTransparencyTransport):
@@ -1079,6 +1188,50 @@ class NthGetFailureTransport(DirectoryTransparencyTransport):
                     exit_code=0,
                 )
         return super().get_object(key, cache_bypass=cache_bypass)
+
+
+class AmbiguousLatestPointerPutTransport(DirectoryTransparencyTransport):
+    def __init__(self, root: Path, *, status: int = 500) -> None:
+        super().__init__(root)
+        self.status = status
+
+    def put_object(  # type: ignore[override]
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str,
+        if_none_match: bool = False,
+        if_match: str | None = None,
+    ) -> HttpResult:
+        if key != latest_key(PRODUCT):
+            return super().put_object(
+                key,
+                body,
+                content_type=content_type,
+                cache_control=cache_control,
+                if_none_match=if_none_match,
+                if_match=if_match,
+            )
+        committed = super().put_object(
+            key,
+            body,
+            content_type=content_type,
+            cache_control=cache_control,
+            if_none_match=if_none_match,
+            if_match=if_match,
+        )
+        if committed.status != 200:
+            return committed
+        self.call_log[-1]["status"] = self.status
+        return HttpResult(
+            status=self.status,
+            body=b"ambiguous transfer",
+            headers=committed.headers,
+            etag=committed.etag,
+            exit_code=7,
+        )
 
 
 def _prepare_existing_publish(
@@ -1176,6 +1329,7 @@ def _pointer_pair_state(
         "ledger-public-get",
         "latest-signature-put",
         "latest-pointer-put",
+        "latest-pointer-put-ambiguous-committed",
         "latest-pointer-put-412",
     ),
 )
@@ -1191,6 +1345,8 @@ def test_crash_injection_keeps_pointer_pair_valid(
             fail_on=3,
             status=500,
         )
+    elif seam == "latest-pointer-put-ambiguous-committed":
+        transport = AmbiguousLatestPointerPutTransport(tmp_path / "remote")
     else:
         transport = DirectoryTransparencyTransport(tmp_path / "remote")
     config, signer, previous, stage = _prepare_existing_publish(
@@ -1265,10 +1421,12 @@ def test_crash_injection_keeps_pointer_pair_valid(
         )
     elif seam == "latest-pointer-put":
         transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=500)
+    elif seam == "latest-pointer-put-ambiguous-committed":
+        pass
     elif seam == "latest-pointer-put-412":
         transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=412)
 
-    with pytest.raises(DriverError):
+    if seam == "latest-pointer-put-ambiguous-committed":
         publisher.publish_transparency(
             config=config,
             transport=transport,
@@ -1276,13 +1434,34 @@ def test_crash_injection_keeps_pointer_pair_valid(
             archive_runner=archive_runner,
             now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
         )
-    assert _pointer_pair_state(
-        tmp_path,
-        transport=transport,
-        signer=signer,
-        previous_sha256=previous.sha256,
-        new_sha256=stage.entry_sha256,
-    ) in {"old", "new"}
+        expected_states = {"new"}
+    else:
+        with pytest.raises(DriverError):
+            publisher.publish_transparency(
+                config=config,
+                transport=transport,
+                signer=signer,
+                archive_runner=archive_runner,
+                now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+            )
+        expected_states = {"old", "new"}
+    assert (
+        _pointer_pair_state(
+            tmp_path,
+            transport=transport,
+            signer=signer,
+            previous_sha256=previous.sha256,
+            new_sha256=stage.entry_sha256,
+        )
+        in expected_states
+    )
+    if seam == "latest-pointer-put":
+        signature_puts = [
+            call
+            for call in transport.call_log
+            if call["op"] == "PUT" and call["key"] == latest_signature_key(PRODUCT)
+        ]
+        assert signature_puts[-1]["if_match"] is not None
 
 
 def test_pre_pointer_recheck_failure_stops_before_pointer_write(
@@ -1346,3 +1525,71 @@ def test_resign_pointer_preserves_chain_length_tip_and_version(tmp_path: Path) -
     assert latest.pointer["version"] == "0.9.1"
     assert latest.pointer["signed_at"] == "2026-07-24T00:00:00Z"
     assert latest.pointer["valid_until"] == "2026-08-07T00:00:00Z"
+
+
+def test_resign_pointer_failure_restores_old_signature_conditionally(
+    tmp_path: Path,
+) -> None:
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    old_latest = transport.get_object(latest_key(PRODUCT)).body
+    old_signature = transport.get_object(latest_signature_key(PRODUCT)).body
+    transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=500)
+
+    with pytest.raises(DriverError):
+        publisher.resign_transparency_pointer(
+            config=_config(tmp_path, version="0.9.1", genesis=None),
+            transport=transport,
+            signer=signer,
+            now=datetime(2026, 7, 24, 0, 0, tzinfo=UTC),
+        )
+
+    assert transport.get_object(latest_key(PRODUCT)).body == old_latest
+    assert transport.get_object(latest_signature_key(PRODUCT)).body == old_signature
+    signature_puts = [
+        call
+        for call in transport.call_log
+        if call["op"] == "PUT" and call["key"] == latest_signature_key(PRODUCT)
+    ]
+    assert signature_puts[-1]["if_match"] is not None
+
+
+def test_resign_pointer_ambiguous_committed_put_reports_success(tmp_path: Path) -> None:
+    signer = FakeTransparencySigner()
+    transport = AmbiguousLatestPointerPutTransport(tmp_path / "remote")
+    _install_remote_entry(
+        transport=transport,
+        signer=signer,
+        tmp_path=tmp_path,
+        seq=1,
+        version="0.9.1",
+    )
+    old_latest = transport.get_object(latest_key(PRODUCT)).body
+
+    publisher.resign_transparency_pointer(
+        config=_config(tmp_path, version="0.9.1", genesis=None),
+        transport=transport,
+        signer=signer,
+        now=datetime(2026, 7, 24, 0, 0, tzinfo=UTC),
+    )
+
+    latest_result = transport.get_object(latest_key(PRODUCT))
+    signature_result = transport.get_object(latest_signature_key(PRODUCT))
+    assert latest_result.body != old_latest
+    latest = parse_latest_bytes(latest_result.body)
+    latest_path = tmp_path / "resigned-latest.json"
+    signature_path = tmp_path / "resigned-latest.json.minisig"
+    latest_path.write_bytes(latest_result.body)
+    signature_path.write_bytes(signature_result.body)
+    signer.verify_file(
+        latest_path,
+        signature_path,
+        expected_trusted_comment=latest_trusted_comment(latest.pointer),
+    )

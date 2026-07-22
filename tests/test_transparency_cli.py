@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from argparse import Namespace
 from pathlib import Path
 
@@ -65,9 +66,9 @@ def test_cli_check_minisign_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert publisher.main(["check-minisign"], env={}) == 0
 
 
-def test_cli_check_minisign_missing_prints_loud_message(
+def test_cli_check_minisign_missing_logs_loud_message(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def fail() -> str:
         raise DriverError(
@@ -82,9 +83,9 @@ def test_cli_check_minisign_missing_prints_loud_message(
         )
 
     monkeypatch.setattr(publisher, "check_minisign_binary", fail)
+    caplog.set_level(logging.ERROR)
     assert publisher.main(["check-minisign"], env={}) == 1
-    captured = capsys.readouterr()
-    assert MISSING_MINISIGN_MESSAGE in captured.err
+    assert MISSING_MINISIGN_MESSAGE in caplog.text
 
 
 def test_cli_publish_prints_operator_summary(
