@@ -14,7 +14,7 @@ from PIL import Image, UnidentifiedImageError
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
 from solstone.think.importers.shared import install_source_file, write_content_manifest
 from solstone.think.journal_io import write_text
-from solstone.think.models import generate
+from solstone.think.models import NO_BRAIN_PROVIDER, generate, resolve_provider
 from solstone.think.utils import day_path
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".tiff"}
@@ -112,6 +112,16 @@ class ImageImporter:
 
         description = _describe_image(image)
 
+        # Record which brain produced the description, so the entry answers
+        # "what described this?" without cross-referencing tokens/<day>.jsonl.
+        # Mirrors the observer's _solstone_thinking header key.
+        provider, model = resolve_provider("generate")
+        thinking = (
+            {"provider": provider, "model": model}
+            if provider != NO_BRAIN_PROVIDER
+            else None
+        )
+
         segment_dir = day_path(day) / "import.image" / seg_key
         segment_dir.mkdir(parents=True, exist_ok=True)
 
@@ -132,7 +142,12 @@ class ImageImporter:
             "date": day,
             "type": "image",
             "preview": description[:200],
-            "meta": {"format": fmt, "width": width, "height": height},
+            "meta": {
+                "format": fmt,
+                "width": width,
+                "height": height,
+                **({"thinking": thinking} if thinking else {}),
+            },
             "segments": [{"day": day, "key": seg_key}],
         }
         write_content_manifest(import_id, [entry])

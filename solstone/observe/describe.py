@@ -636,6 +636,16 @@ class VideoProcessor:
         metadata["first_hash"] = self._format_dhash(self.first_hash)
         metadata["last_hash"] = self._format_dhash(self.last_hash)
         metadata["qualified_count"] = self.qualified_count
+
+        # Record which brain produced the rows below this header, so a segment
+        # answers "what described this?" on its own. Set by the frame pass, so
+        # it names the brain that actually ran; absent when none did. This is
+        # per-run, not per-call — tokens/<day>.jsonl stays the per-call truth.
+        # Sibling key to _solstone_processing, never inside it — that record is
+        # a consumed contract (data_state, retention, backfill).
+        thinking = getattr(self, "_thinking", None)
+        if thinking:
+            metadata["_solstone_thinking"] = thinking
         return metadata
 
     def _dhash(self, img: Image.Image) -> int:
@@ -934,10 +944,17 @@ class VideoProcessor:
                 print(result_line.rstrip("\n"), flush=True)
 
         try:
-            frame_provider, _ = resolve_provider("generate")
+            frame_provider, frame_model = resolve_provider("generate")
             if frame_provider == NO_BRAIN_PROVIDER:
                 logger.info("No thinking engine selected; deferring frame description")
                 return
+            # Remember the brain that actually describes the rows, for the
+            # header. Captured here rather than re-resolved at header-write
+            # time so a mid-run deselect cannot make the header name a brain
+            # that never ran, and gated on there being frames at all so an
+            # empty run does not claim a description that never happened.
+            if had_qualified_frames:
+                self._thinking = {"provider": frame_provider, "model": frame_model}
             categorization_image_tokens = _categorization_image_token_budget(
                 frame_provider
             )

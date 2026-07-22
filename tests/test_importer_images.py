@@ -82,6 +82,58 @@ def test_process_image_success(tmp_path, monkeypatch):
     assert result.segments == [(day, "120000_0")]
 
 
+def test_manifest_entry_records_the_brain_that_described_the_image(
+    tmp_path, monkeypatch
+):
+    """The entry answers "what described this?" without the token log."""
+    import json
+
+    mod = __import__("solstone.think.importers.images", fromlist=["importer"])
+    _configure_journal(tmp_path, monkeypatch)
+    image_path = tmp_path / "shot.png"
+    _write_png(image_path)
+    monkeypatch.setattr(mod, "_describe_image", lambda image: "A red square.")
+    monkeypatch.setattr(
+        mod, "resolve_provider", lambda _interface: ("google", "gemini-test")
+    )
+
+    mod.importer.process(image_path, tmp_path, import_id="20260115_120000")
+
+    entry = json.loads(
+        (
+            tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl"
+        ).read_text(encoding="utf-8")
+    )
+    assert entry["meta"]["thinking"] == {
+        "provider": "google",
+        "model": "gemini-test",
+    }
+
+
+def test_manifest_entry_omits_brain_when_none_is_selected(tmp_path, monkeypatch):
+    """No brain resolved means no claim about one, not an empty record."""
+    import json
+
+    mod = __import__("solstone.think.importers.images", fromlist=["importer"])
+    _configure_journal(tmp_path, monkeypatch)
+    image_path = tmp_path / "shot.png"
+    _write_png(image_path)
+    monkeypatch.setattr(mod, "_describe_image", lambda image: "A red square.")
+    monkeypatch.setattr(
+        mod, "resolve_provider", lambda _interface: (mod.NO_BRAIN_PROVIDER, "")
+    )
+
+    mod.importer.process(image_path, tmp_path, import_id="20260115_120000")
+
+    entry = json.loads(
+        (
+            tmp_path / "imports" / "20260115_120000" / "content_manifest.jsonl"
+        ).read_text(encoding="utf-8")
+    )
+    assert "thinking" not in entry["meta"]
+    assert entry["meta"]["format"] == "PNG"
+
+
 def test_process_undecodable_image_raises_before_segment(tmp_path, monkeypatch):
     mod = __import__("solstone.think.importers.images", fromlist=["importer"])
     _configure_journal(tmp_path, monkeypatch)

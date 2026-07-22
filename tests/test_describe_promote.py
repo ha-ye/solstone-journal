@@ -400,6 +400,7 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
             "first_hash": None,
             "last_hash": None,
             "qualified_count": 2,
+            "_solstone_thinking": {"provider": "google", "model": "gemini-test"},
             "_solstone_processing": {
                 "schema": "solstone.processing.v1",
                 "state": "failed",
@@ -1421,6 +1422,7 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
                 "first_hash": None,
                 "last_hash": None,
                 "qualified_count": 1,
+                "_solstone_thinking": {"provider": "google", "model": "gemini-test"},
                 "_solstone_processing": {
                     "schema": "solstone.processing.v1",
                     "state": "failed",
