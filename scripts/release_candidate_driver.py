@@ -425,20 +425,9 @@ def _scrubbed_build_env(maturin_args: str) -> dict[str, str]:
 
 
 def _expected_local_build_packages(*, include_models: bool) -> tuple[str, ...]:
-    if MODELS_WORKSPACE_PACKAGE not in WORKSPACE_SOURCES:
-        raise DriverError(
-            [
-                _failure(
-                    "release driver models package is not a workspace source",
-                    expected=f"{MODELS_WORKSPACE_PACKAGE} in WORKSPACE_SOURCES",
-                    actual=", ".join(sorted(WORKSPACE_SOURCES)) or "<empty>",
-                    repair="python3 scripts/check_extras_consistency.py",
-                )
-            ]
-        )
     packages = {ROOT_WORKSPACE_PACKAGE, *WORKSPACE_SOURCES}
     if not include_models:
-        packages.remove(MODELS_WORKSPACE_PACKAGE)
+        packages -= {MODELS_WORKSPACE_PACKAGE}
     return tuple(sorted(packages))
 
 

@@ -56,13 +56,13 @@ def _uv_banner(uv: str) -> str:
     return result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
 
 
-def _driver_uv_argvs() -> Iterable[tuple[bool, tuple[str, ...]]]:
+def _driver_uv_argvs() -> Iterable[tuple[str, ...]]:
     for include_models in (True, False):
         for argv, _maturin_args in driver._expected_local_build_commands(
             include_models=include_models
         ):
             if argv[:2] == ("uv", "build"):
-                yield include_models, argv
+                yield argv
 
 
 def test_release_driver_uv_build_argv_matches_real_uv_parser() -> None:
@@ -92,7 +92,7 @@ def test_release_driver_uv_build_argv_matches_real_uv_parser() -> None:
         f"ambient uv {banner!r} unexpectedly exposes unsupported --exclude"
     )
 
-    for _include_models, argv in _driver_uv_argvs():
+    for argv in _driver_uv_argvs():
         parse_result = subprocess.run(
             [uv, *argv[1:], "--help"],
             capture_output=True,
@@ -110,8 +110,17 @@ def test_release_driver_uv_build_argv_matches_real_uv_parser() -> None:
                     f"missing from ambient uv {banner!r}; parsed flags={sorted(flags)}"
                 )
 
+    # Keep this negative control help-only so a future uv that accepts --exclude
+    # fails safely with help output instead of starting a real workspace build.
     invalid = subprocess.run(
-        [uv, "build", "--all-packages", "--exclude", driver.MODELS_WORKSPACE_PACKAGE],
+        [
+            uv,
+            "build",
+            "--all-packages",
+            "--exclude",
+            driver.MODELS_WORKSPACE_PACKAGE,
+            "--help",
+        ],
         capture_output=True,
         text=True,
         check=False,
