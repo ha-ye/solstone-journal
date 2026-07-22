@@ -74,7 +74,7 @@ def _native(role: str, wheel_name: str, member_path: str) -> dict:
         "tools": {
             "python": pins.PYTHON_MACOS_VERSION,
             "xcode": pins.MACOS_XCODE_PIN,
-            "swift": pins.MACOS_SWIFT_PIN,
+            "swift": pins.MACOS_SWIFT_FIXTURE_BANNER,
             "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
             "notarytool": pins.MACOS_NOTARYTOOL_PIN,
         },

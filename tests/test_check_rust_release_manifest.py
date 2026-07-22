@@ -134,8 +134,8 @@ def test_release_manifest_imports_tool_pins_from_authoritative_module() -> None:
     assert "CARGO_DENY_PIN =" not in source
 
 
-def test_macos_swift_pin_requires_exact_full_grounded_output() -> None:
-    exact = "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+def test_macos_swift_pin_requires_exact_canonical_grounded_output() -> None:
+    exact = "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
 
     assert pins.MACOS_SWIFT_PIN == exact
     assert checker.validate_public_evidence_text("swift", pins.MACOS_SWIFT_PIN) == []
@@ -150,6 +150,9 @@ def test_macos_swift_pin_requires_exact_full_grounded_output() -> None:
         "Apple Swift 6.3.3",
         "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.102)",
         "Apple Swift 6.3.3 (swiftlang-6.3.3.1.4 clang-2100.1.1.101)",
+        "Apple Swift version 6.3.4 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+        "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.4 clang-2100.1.1.101)",
+        "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.102)",
         f" {exact}",
         f"{exact} ",
     )

@@ -59,7 +59,7 @@ def test_public_evidence_canaries_match_release_constraints() -> None:
     )
     assert (
         public_evidence.validate_public_evidence_tree(
-            "proof", {"swift": pins.MACOS_SWIFT_PIN}
+            "proof", {"swift": pins.MACOS_SWIFT_FIXTURE_BANNER}
         )
         == []
     )

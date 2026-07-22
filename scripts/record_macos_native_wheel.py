@@ -34,6 +34,7 @@ from scripts.release_tool_pins import (
     MACOS_SWIFT_PIN,
     MACOS_XCODE_PIN,
     PYTHON_MACOS_VERSION,
+    tool_value_matches_pin,
 )
 
 NativeRole = Literal["root", "core"]
@@ -223,7 +224,7 @@ def _validate_facts(facts: Mapping[str, Any]) -> list[Failure]:
             "notarytool": MACOS_NOTARYTOOL_PIN,
         }
         for key, expected in expected_tools.items():
-            if tools.get(key) != expected:
+            if not tool_value_matches_pin(key, expected, tools.get(key)):
                 failures.append(
                     _failure(
                         f"macOS {key} tool evidence is not pinned",
@@ -422,7 +423,7 @@ def validate_macos_native_record(
         )
     else:
         for key, expected in expected_tools.items():
-            if tools.get(key) != expected:
+            if not tool_value_matches_pin(key, expected, tools.get(key)):
                 failures.append(
                     _failure(
                         f"macOS native record tool {key} is not pinned",

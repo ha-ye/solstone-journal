@@ -26,13 +26,11 @@ def test_real_uv_banner_parses_and_compares_strictly() -> None:
         check=True,
     )
     banner = result.stdout.strip() or result.stderr.strip()
-    version = preflight.parse_host_variant_tool_banner("uv", banner)
+    version = pins.parse_host_variant_tool_banner("uv", banner)
 
     assert version is not None
-    assert preflight.check_host_variant_tool_pin("uv", f"uv {version}", banner)
-    assert not preflight.check_host_variant_tool_pin(
-        "uv", f"uv {version}.mismatch", banner
-    )
+    assert pins.check_host_variant_tool_pin("uv", f"uv {version}", banner)
+    assert not pins.check_host_variant_tool_pin("uv", f"uv {version}.mismatch", banner)
     if version == pins.UV_VERSION:
         evidence = pins.fixture_lane_tool_evidence("source")
         evidence["uv"] = banner

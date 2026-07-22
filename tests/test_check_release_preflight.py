@@ -241,6 +241,10 @@ def test_fixture_lane_tool_evidence_key_sets_match_expectations(lane: str) -> No
     )
 
 
+def test_host_variant_tool_keys_include_swift_and_uv() -> None:
+    assert pins.HOST_VARIANT_TOOL_KEYS == frozenset(("uv", "swift"))
+
+
 @pytest.mark.parametrize(
     "uv_banner",
     (
@@ -322,6 +326,133 @@ def test_host_variant_uv_non_string_evidence_fails_closed(uv_value: object) -> N
     assert presign_uv_failures[0].actual == str(uv_value)
 
 
+@pytest.mark.parametrize(
+    "swift_banner",
+    (
+        pins.MACOS_SWIFT_FIXTURE_BANNER,
+        pins.MACOS_SWIFT_PIN,
+    ),
+)
+def test_host_variant_swift_evidence_accepts_strict_identity(
+    swift_banner: str,
+) -> None:
+    lane_evidence = pins.fixture_lane_tool_evidence("macos-arm64")
+    lane_evidence["swift"] = swift_banner
+    presign_evidence = pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    presign_evidence["swift"] = swift_banner
+
+    assert preflight.check_lane_tool_evidence("macos-arm64", lane_evidence) == []
+    assert (
+        preflight.check_presign_lane_tool_evidence("macos-arm64", presign_evidence)
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "swift_value",
+    (
+        "not found",
+        "exit 1",
+        "",
+        "   ",
+        f"{pins.MACOS_SWIFT_FIXTURE_BANNER}\nTarget: arm64-apple-macosx26.0",
+        "swift 6.3.3",
+        "swift-driver 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+        f"{pins.MACOS_SWIFT_FIXTURE_BANNER} extra",
+        f"{pins.MACOS_SWIFT_FIXTURE_BANNER} Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+        "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "Apple Swift version 6.3.3", "Apple Swift version 6.3.4"
+        ),
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "swiftlang-6.3.3.1.3", "swiftlang-6.3.3.1.4"
+        ),
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "clang-2100.1.1.101", "clang-2100.1.1.102"
+        ),
+        None,
+        123,
+        True,
+        {"a": 1},
+    ),
+)
+def test_host_variant_swift_evidence_fails_closed(swift_value: object) -> None:
+    lane_evidence: dict[str, object] = dict(
+        pins.fixture_lane_tool_evidence("macos-arm64")
+    )
+    lane_evidence["swift"] = swift_value
+    presign_evidence: dict[str, object] = dict(
+        pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    )
+    presign_evidence["swift"] = swift_value
+
+    lane_failures = preflight.check_lane_tool_evidence("macos-arm64", lane_evidence)
+    presign_failures = preflight.check_presign_lane_tool_evidence(
+        "macos-arm64", presign_evidence
+    )
+
+    lane_swift_failures = [
+        failure
+        for failure in lane_failures
+        if failure.error == "release lane tool swift is not pinned"
+    ]
+    presign_swift_failures = [
+        failure
+        for failure in presign_failures
+        if failure.error == "pre-sign lane tool swift is not pinned"
+    ]
+    assert len(lane_swift_failures) == 1
+    assert lane_swift_failures[0].expected == pins.MACOS_SWIFT_PIN
+    assert lane_swift_failures[0].actual == str(swift_value)
+    assert len(presign_swift_failures) == 1
+    assert presign_swift_failures[0].expected == pins.MACOS_SWIFT_PIN
+    assert presign_swift_failures[0].actual == str(swift_value)
+
+
+def test_notarytool_evidence_accepts_bare_grounded_output() -> None:
+    lane_evidence = pins.fixture_lane_tool_evidence("macos-arm64")
+    lane_evidence["notarytool"] = "1.1.2 (41)"
+    presign_evidence = pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    presign_evidence["notarytool"] = "1.1.2 (41)"
+
+    assert preflight.check_lane_tool_evidence("macos-arm64", lane_evidence) == []
+    assert (
+        preflight.check_presign_lane_tool_evidence("macos-arm64", presign_evidence)
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "notarytool_value",
+    (
+        "notarytool 1.1.2 (41)",
+        "1.1.3 (41)",
+        "1.1.2 (42)",
+    ),
+)
+def test_notarytool_evidence_rejects_ungrounded_or_wrong_output(
+    notarytool_value: str,
+) -> None:
+    lane_evidence = pins.fixture_lane_tool_evidence("macos-arm64")
+    lane_evidence["notarytool"] = notarytool_value
+    presign_evidence = pins.fixture_presign_lane_tool_evidence("macos-arm64")
+    presign_evidence["notarytool"] = notarytool_value
+
+    lane_failures = preflight.check_lane_tool_evidence("macos-arm64", lane_evidence)
+    presign_failures = preflight.check_presign_lane_tool_evidence(
+        "macos-arm64", presign_evidence
+    )
+
+    assert any(
+        failure.error == "release lane tool notarytool is not pinned"
+        for failure in lane_failures
+    )
+    assert any(
+        failure.error == "pre-sign lane tool notarytool is not pinned"
+        for failure in presign_failures
+    )
+
+
 def test_lane_tool_skew_fails_closed() -> None:
     evidence = pins.fixture_lane_tool_evidence("macos-arm64")
     evidence["swift"] = "swift 6.3.3"
@@ -342,7 +473,7 @@ def test_collect_lane_tools_normalizes_macos_observations() -> None:
         "maturin": pins.MATURIN_PIN,
         "cargo-deny": pins.CARGO_DENY_PIN,
         "xcodebuild": f"Xcode {pins.MACOS_XCODE_VERSION}\nBuild version {pins.MACOS_XCODE_BUILD}\n",
-        "swift": pins.MACOS_SWIFT_PIN + "\n",
+        "swift": f"{pins.MACOS_SWIFT_FIXTURE_BANNER}\nTarget: arm64-apple-macosx26.0\n",
         "xcrun": pins.MACOS_NOTARYTOOL_PIN,
     }
 
@@ -365,6 +496,7 @@ def test_collect_lane_tools_normalizes_macos_observations() -> None:
     )
 
     assert "signing_mode" not in evidence
+    assert evidence["swift"] == pins.MACOS_SWIFT_FIXTURE_BANNER
     assert preflight.check_presign_lane_tool_evidence("macos-arm64", evidence) == []
     failures = preflight.check_presign_lane_tool_evidence(
         "macos-arm64",

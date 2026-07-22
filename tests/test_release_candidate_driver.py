@@ -215,7 +215,7 @@ def _facts(content: bytes) -> dict[str, Any]:
         "notarization_status": "accepted",
         "tools": {
             "xcode": pins.MACOS_XCODE_PIN,
-            "swift": pins.MACOS_SWIFT_PIN,
+            "swift": pins.MACOS_SWIFT_FIXTURE_BANNER,
             "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
             "notarytool": pins.MACOS_NOTARYTOOL_PIN,
         },

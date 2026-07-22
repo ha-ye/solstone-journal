@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -35,6 +36,7 @@ UV_VERSION = "0.11.4"
 UV_PIN = f"uv {UV_VERSION}"
 UV_LINUX_FIXTURE_BANNER = f"uv {UV_VERSION} (x86_64-unknown-linux-gnu)"
 UV_MACOS_FIXTURE_BANNER = f"uv {UV_VERSION} (Homebrew 2026-04-08 aarch64-apple-darwin)"
+HOST_VARIANT_TOOL_KEYS = frozenset(("uv", "swift"))
 MATURIN_VERSION = "1.14.1"
 MATURIN_REQUIREMENT = f"maturin=={MATURIN_VERSION}"
 MATURIN_PIN = f"maturin {MATURIN_VERSION}"
@@ -44,11 +46,16 @@ ZIG_PIN = f"zig {ZIG_VERSION}"
 MACOS_XCODE_VERSION = "26.6"
 MACOS_XCODE_BUILD = "17F113"
 MACOS_XCODE_PIN = f"xcode {MACOS_XCODE_VERSION} build {MACOS_XCODE_BUILD}"
-MACOS_SWIFT_PIN = "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+MACOS_SWIFT_PIN = "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+MACOS_SWIFT_FIXTURE_BANNER = (
+    "swift-driver version: 1.148.6 "
+    "Apple Swift version 6.3.3 "
+    "(swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
+)
 MACOS_CODESIGN_PATH = "/usr/bin/codesign"
 MACOS_CODESIGN_PUBLIC_PIN = "codesign pinned-path verified"
-MACOS_NOTARYTOOL_VERSION = "1.1.2 (41)"
-MACOS_NOTARYTOOL_PIN = f"notarytool {MACOS_NOTARYTOOL_VERSION}"
+# xcrun notarytool --version prints the bare grounded output, with no tool prefix.
+MACOS_NOTARYTOOL_PIN = "1.1.2 (41)"
 MACOS_SIGNING_MODE = "signed-verified"
 
 MACOS_SIGNER_IDENTITY = "Developer ID Application: sol pbc (7QCG8V4M6H)"
@@ -58,6 +65,14 @@ PRIVATE_SIGNING_POLICY_VALUES = frozenset(
 )
 
 SETUPTOOLS_BUILD_REQUIRES = ("setuptools==83.0.0", "wheel==0.47.0")
+_MACOS_SWIFT_BANNER_RE = re.compile(
+    r"^(?:swift-driver version: (?P<driver>\d+(?:\.\d+){2}) )?"
+    r"Apple Swift version (?P<version>\d+(?:\.\d+){2}) "
+    r"\(swiftlang-(?P<swiftlang>\d+(?:\.\d+){4}) "
+    r"clang-(?P<clang>\d+(?:\.\d+){3})\)$"
+)
+SwiftToolIdentity = tuple[str, str, str]
+HostVariantToolIdentity = str | SwiftToolIdentity
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,98 @@ def load_release_tool_pins(_root: Path | None = None) -> ReleaseToolPins:
     return ReleaseToolPins()
 
 
+def _single_stripped_line(value: str) -> str | None:
+    stripped = value.strip()
+    if not stripped or stripped != value:
+        return None
+    if len(value.splitlines()) != 1:
+        return None
+    return value
+
+
+def parse_macos_swift_banner(value: str) -> SwiftToolIdentity | None:
+    line = _single_stripped_line(value)
+    if line is None:
+        return None
+    match = _MACOS_SWIFT_BANNER_RE.fullmatch(line)
+    if match is None:
+        return None
+    return (match["version"], match["swiftlang"], match["clang"])
+
+
+def parse_host_variant_tool_banner(
+    tool: str, value: str
+) -> HostVariantToolIdentity | None:
+    line = _single_stripped_line(value)
+    if line is None:
+        return None
+    if tool == "swift":
+        return parse_macos_swift_banner(line)
+    parts = line.split(" ", 2)
+    if len(parts) != 3:
+        return None
+    actual_tool, version, rest = parts
+    if actual_tool != tool:
+        return None
+    if not version or any(
+        char.isspace() or char == "(" or char == ")" for char in version
+    ):
+        return None
+    if len(rest) < 3 or rest[0] != "(" or rest[-1] != ")":
+        return None
+    host = rest[1:-1]
+    if not host or host.strip() != host or len(host.splitlines()) != 1:
+        return None
+    if any(char == "(" or char == ")" for char in host):
+        return None
+    return version
+
+
+def parse_tool_pin_version(tool: str, value: str) -> str | None:
+    line = _single_stripped_line(value)
+    if line is None:
+        return None
+    parts = line.split(" ")
+    if len(parts) != 2:
+        return None
+    actual_tool, version = parts
+    if actual_tool != tool:
+        return None
+    if not version or any(
+        char.isspace() or char == "(" or char == ")" for char in version
+    ):
+        return None
+    return version
+
+
+def parse_host_variant_tool_pin(
+    tool: str, value: str
+) -> HostVariantToolIdentity | None:
+    if tool == "swift":
+        return parse_macos_swift_banner(value)
+    return parse_tool_pin_version(tool, value)
+
+
+def check_host_variant_tool_pin(tool: str, expected_pin: str, actual: str) -> bool:
+    expected_identity = parse_host_variant_tool_pin(tool, expected_pin)
+    actual_identity = parse_host_variant_tool_banner(tool, actual)
+    return (
+        expected_identity is not None
+        and actual_identity is not None
+        and actual_identity == expected_identity
+    )
+
+
+def tool_value_matches_pin(key: str, expected_value: str, actual: object) -> bool:
+    if actual is None:
+        return False
+    if key in HOST_VARIANT_TOOL_KEYS:
+        if not isinstance(actual, str):
+            return False
+        return check_host_variant_tool_pin(key, expected_value, actual)
+    return actual == expected_value
+
+
 def fixture_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
     uv_banner = (
         UV_MACOS_FIXTURE_BANNER if lane == "macos-arm64" else UV_LINUX_FIXTURE_BANNER
@@ -101,7 +208,7 @@ def fixture_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
         common.update(
             {
                 "xcode": MACOS_XCODE_PIN,
-                "swift": MACOS_SWIFT_PIN,
+                "swift": MACOS_SWIFT_FIXTURE_BANNER,
                 "codesign": MACOS_CODESIGN_PUBLIC_PIN,
                 "notarytool": MACOS_NOTARYTOOL_PIN,
                 "signing_mode": MACOS_SIGNING_MODE,
@@ -149,7 +256,7 @@ def fixture_native_tools(lane: LaneName) -> dict[str, str]:
             "uv": UV_MACOS_FIXTURE_BANNER,
             "maturin": MATURIN_PIN,
             "xcode": MACOS_XCODE_PIN,
-            "swift": MACOS_SWIFT_PIN,
+            "swift": MACOS_SWIFT_FIXTURE_BANNER,
             "codesign": MACOS_CODESIGN_PUBLIC_PIN,
             "notarytool": MACOS_NOTARYTOOL_PIN,
             "signing_mode": MACOS_SIGNING_MODE,

@@ -25,7 +25,6 @@ from scripts.release_tool_pins import (
     MACOS_CODESIGN_PUBLIC_PIN,
     MACOS_NOTARYTOOL_PIN,
     MACOS_SIGNER_IDENTITY,
-    MACOS_SWIFT_PIN,
     MACOS_TEAM_IDENTIFIER,
     MACOS_XCODE_BUILD,
     MACOS_XCODE_PIN,
@@ -37,7 +36,6 @@ values = {
     "CODESIGN_PUBLIC_PIN": MACOS_CODESIGN_PUBLIC_PIN,
     "IDENTITY": MACOS_SIGNER_IDENTITY,
     "NOTARYTOOL_PIN": MACOS_NOTARYTOOL_PIN,
-    "SWIFT_PIN": MACOS_SWIFT_PIN,
     "TEAM_ID": MACOS_TEAM_IDENTIFIER,
     "XCODE_BUILD": MACOS_XCODE_BUILD,
     "XCODE_PIN": MACOS_XCODE_PIN,
@@ -76,10 +74,22 @@ SWIFT_OUTPUT="$(swift --version 2>&1)" || {
     exit 1
 }
 SWIFT_FIRST_LINE="$(printf '%s\n' "$SWIFT_OUTPUT" | sed -n '1p')"
-if [ "$SWIFT_FIRST_LINE" != "$SWIFT_PIN" ]; then
-    echo "error: Swift version does not match release policy" >&2
-    exit 1
-fi
+SWIFT_ACTUAL="$SWIFT_FIRST_LINE" python3 - <<'PY'
+import os
+import sys
+
+from scripts.release_tool_pins import MACOS_SWIFT_PIN, check_host_variant_tool_pin
+
+actual = os.environ["SWIFT_ACTUAL"]
+if check_host_variant_tool_pin("swift", MACOS_SWIFT_PIN, actual):
+    raise SystemExit(0)
+print(
+    "error: Swift version does not match release policy "
+    f"(MACOS_SWIFT_PIN expected {MACOS_SWIFT_PIN!r}; actual {actual!r})",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+PY
 
 NOTARYTOOL_OUTPUT="$(xcrun notarytool --version 2>&1)" || {
     echo "error: notarytool version check failed" >&2
@@ -146,9 +156,9 @@ HARDENED_RUNTIME="$HARDENED_RUNTIME" \
 TRUSTED_TIMESTAMP="$TRUSTED_TIMESTAMP" \
 NOTARIZATION_STATUS="$NOTARIZATION_STATUS" \
 XCODE_PIN="$XCODE_PIN" \
-SWIFT_PIN="$SWIFT_PIN" \
+SWIFT_FIRST_LINE="$SWIFT_FIRST_LINE" \
 CODESIGN_PUBLIC_PIN="$CODESIGN_PUBLIC_PIN" \
-NOTARYTOOL_PIN="$NOTARYTOOL_PIN" \
+NOTARYTOOL_OUTPUT="$NOTARYTOOL_OUTPUT" \
 python3 - <<'PY'
 import json
 import os
@@ -162,9 +172,9 @@ payload = {
     "notarization_status": os.environ["NOTARIZATION_STATUS"],
     "tools": {
         "xcode": os.environ["XCODE_PIN"],
-        "swift": os.environ["SWIFT_PIN"],
+        "swift": os.environ["SWIFT_FIRST_LINE"],
         "codesign": os.environ["CODESIGN_PUBLIC_PIN"],
-        "notarytool": os.environ["NOTARYTOOL_PIN"],
+        "notarytool": os.environ["NOTARYTOOL_OUTPUT"],
     },
 }
 print(json.dumps(payload, sort_keys=True, separators=(",", ":")))

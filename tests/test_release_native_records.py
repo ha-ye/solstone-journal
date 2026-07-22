@@ -48,7 +48,7 @@ def _facts(content: bytes) -> dict:
         "notarization_status": "accepted",
         "tools": {
             "xcode": pins.MACOS_XCODE_PIN,
-            "swift": pins.MACOS_SWIFT_PIN,
+            "swift": pins.MACOS_SWIFT_FIXTURE_BANNER,
             "codesign": pins.MACOS_CODESIGN_PUBLIC_PIN,
             "notarytool": pins.MACOS_NOTARYTOOL_PIN,
         },
@@ -146,6 +146,15 @@ def test_swift_abbreviated_and_suffix_skewed_evidence_is_rejected(
         "Apple Swift 6.3.3",
         "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.102)",
         "Apple Swift 6.3.3 (swiftlang-6.3.3.1.4 clang-2100.1.1.101)",
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "Apple Swift version 6.3.3", "Apple Swift version 6.3.4"
+        ),
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "swiftlang-6.3.3.1.3", "swiftlang-6.3.3.1.4"
+        ),
+        pins.MACOS_SWIFT_FIXTURE_BANNER.replace(
+            "clang-2100.1.1.101", "clang-2100.1.1.102"
+        ),
     ):
         facts = _facts(b"root")
         facts["tools"]["swift"] = value
@@ -161,6 +170,78 @@ def test_swift_abbreviated_and_suffix_skewed_evidence_is_rejected(
             failure.error == "macOS swift tool evidence is not pinned"
             for failure in exc.value.failures
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "notarytool 1.1.2 (41)",
+        "1.1.3 (41)",
+        "1.1.2 (42)",
+    ),
+)
+def test_notarytool_prefixed_and_wrong_evidence_is_rejected(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    wheel = _root_wheel(tmp_path, b"root")
+    facts = _facts(b"root")
+    facts["tools"]["notarytool"] = value
+
+    with pytest.raises(native.NativeRecordError) as exc:
+        native.build_macos_native_record(
+            role="root",
+            wheel_path=wheel,
+            signing_facts=facts,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+        )
+    assert any(
+        failure.error == "macOS notarytool tool evidence is not pinned"
+        for failure in exc.value.failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "error"),
+    (
+        (
+            "swift",
+            "Apple Swift 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+            "macOS native record tool swift is not pinned",
+        ),
+        (
+            "notarytool",
+            "notarytool 1.1.2 (41)",
+            "macOS native record tool notarytool is not pinned",
+        ),
+    ),
+)
+def test_native_record_validation_rejects_swift_and_notarytool_skew(
+    tmp_path: Path,
+    key: str,
+    value: str,
+    error: str,
+) -> None:
+    wheel = _root_wheel(tmp_path, b"root")
+    record = native.build_macos_native_record(
+        role="root",
+        wheel_path=wheel,
+        signing_facts=_facts(b"root"),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    record["tools"][key] = value
+
+    failures = native.validate_macos_native_record(
+        record,
+        role="root",
+        wheel_path=wheel,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+
+    assert any(failure.error == error for failure in failures)
 
 
 def test_record_validation_rejects_wheel_hash_and_repacked_core_mismatch(
@@ -223,3 +304,14 @@ def test_signing_helper_removes_arbitrary_identity_override() -> None:
 
     assert "CODESIGN_IDENTITY" not in source
     assert "MACOS_SIGNER_IDENTITY" in source
+
+
+def test_signing_helper_records_tool_observations_not_pin_constants() -> None:
+    source = Path("scripts/sign-and-notarize-helper.sh").read_text(encoding="utf-8")
+
+    assert 'SWIFT_FIRST_LINE="$SWIFT_FIRST_LINE"' in source
+    assert '"swift": os.environ["SWIFT_FIRST_LINE"]' in source
+    assert 'NOTARYTOOL_OUTPUT="$NOTARYTOOL_OUTPUT"' in source
+    assert '"notarytool": os.environ["NOTARYTOOL_OUTPUT"]' in source
+    assert '"swift": os.environ["SWIFT_PIN"]' not in source
+    assert '"notarytool": os.environ["NOTARYTOOL_PIN"]' not in source

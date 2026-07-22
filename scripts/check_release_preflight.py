@@ -41,6 +41,7 @@ from scripts.release_tool_pins import (  # noqa: E402
     UV_PIN,
     ZIG_PIN,
     ZIG_VERSION,
+    tool_value_matches_pin,
 )
 
 TOOLCHAIN_FILE = "rust-toolchain.toml"
@@ -94,7 +95,6 @@ PRESIGN_LANE_TOOL_KEYS: dict[LaneName, tuple[str, ...]] = {
         key for key in LANE_TOOL_KEYS["macos-arm64"] if key != "signing_mode"
     ),
 }
-HOST_VARIANT_TOOL_KEYS = frozenset(("uv",))
 
 
 @dataclass(frozen=True)
@@ -412,70 +412,6 @@ def expected_presign_lane_tool_evidence(lane: LaneName) -> dict[str, str]:
     return _expected_lane_tool_evidence(lane, keys_by_lane=PRESIGN_LANE_TOOL_KEYS)
 
 
-def parse_host_variant_tool_banner(tool: str, value: str) -> str | None:
-    stripped = value.strip()
-    if not stripped or stripped != value:
-        return None
-    lines = value.splitlines()
-    if len(lines) != 1:
-        return None
-    parts = value.split(" ", 2)
-    if len(parts) != 3:
-        return None
-    actual_tool, version, rest = parts
-    if actual_tool != tool:
-        return None
-    if not version or any(
-        char.isspace() or char == "(" or char == ")" for char in version
-    ):
-        return None
-    if len(rest) < 3 or rest[0] != "(" or rest[-1] != ")":
-        return None
-    host = rest[1:-1]
-    if not host or host.strip() != host or len(host.splitlines()) != 1:
-        return None
-    if any(char == "(" or char == ")" for char in host):
-        return None
-    return version
-
-
-def parse_tool_pin_version(tool: str, value: str) -> str | None:
-    stripped = value.strip()
-    if not stripped or stripped != value:
-        return None
-    parts = value.split(" ")
-    if len(parts) != 2:
-        return None
-    actual_tool, version = parts
-    if actual_tool != tool:
-        return None
-    if not version or any(
-        char.isspace() or char == "(" or char == ")" for char in version
-    ):
-        return None
-    return version
-
-
-def check_host_variant_tool_pin(tool: str, expected_pin: str, actual: str) -> bool:
-    expected_version = parse_tool_pin_version(tool, expected_pin)
-    actual_version = parse_host_variant_tool_banner(tool, actual)
-    return (
-        expected_version is not None
-        and actual_version is not None
-        and actual_version == expected_version
-    )
-
-
-def _tool_value_matches_pin(key: str, expected_value: str, actual: object) -> bool:
-    if actual is None:
-        return False
-    if key in HOST_VARIANT_TOOL_KEYS:
-        if not isinstance(actual, str):
-            return False
-        return check_host_variant_tool_pin(key, expected_value, actual)
-    return actual == expected_value
-
-
 def check_lane_tool_evidence(
     lane: LaneName,
     evidence: Mapping[str, str],
@@ -493,7 +429,7 @@ def check_lane_tool_evidence(
         )
     for key, expected_value in expected.items():
         actual = evidence.get(key)
-        if not _tool_value_matches_pin(key, expected_value, actual):
+        if not tool_value_matches_pin(key, expected_value, actual):
             failures.append(
                 Failure(
                     error=f"release lane tool {key} is not pinned",
@@ -522,7 +458,7 @@ def check_presign_lane_tool_evidence(
         )
     for key, expected_value in expected.items():
         actual = evidence.get(key)
-        if not _tool_value_matches_pin(key, expected_value, actual):
+        if not tool_value_matches_pin(key, expected_value, actual):
             failures.append(
                 Failure(
                     error=f"pre-sign lane tool {key} is not pinned",
