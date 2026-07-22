@@ -15,6 +15,7 @@ from scripts.release_candidate_driver import CandidateReport, DriverError
 from scripts.transparency_core import (
     ENTRY_OBJECT_NAME,
     ENTRY_SIGNATURE_NAME,
+    HEAD_LOG,
     LATEST_OBJECT_NAME,
     LATEST_SIGNATURE_NAME,
     LEDGER_OBJECT_NAME,
@@ -1934,7 +1935,7 @@ def test_prev_version_walk_missing_referenced_entry_is_terminal(
     assert (
         failure.repair
         == "stop and audit immutable entries, ledger.jsonl, latest pointer, "
-        "and transparency-head-log.jsonl for deletion/rollback/split-view before publishing"
+        f"and {HEAD_LOG} for deletion/rollback/split-view before publishing"
     )
 
 

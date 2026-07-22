@@ -351,8 +351,7 @@ def _raise_missing_walk_entry(
         ),
         repair=(
             "stop and audit immutable entries, ledger.jsonl, latest pointer, "
-            "and transparency-head-log.jsonl for deletion/rollback/split-view "
-            "before publishing"
+            f"and {HEAD_LOG} for deletion/rollback/split-view before publishing"
         ),
     )
 
@@ -470,7 +469,7 @@ def _walk_prev_version_chain(
                 actual=f"{record.entry['version']} {record.sha256}",
                 repair=(
                     "stop and audit immutable entries, ledger.jsonl, latest pointer, "
-                    "and transparency-head-log.jsonl before publishing"
+                    f"and {HEAD_LOG} before publishing"
                 ),
             )
         missing_from_version = str(record.entry["version"])
@@ -908,7 +907,7 @@ def _assert_stage_extends_state(
         actual=_describe_remote_prefix(probe),
         repair=(
             "stop and audit immutable entries, ledger.jsonl, latest pointer, "
-            "and transparency-head-log.jsonl before publishing"
+            f"and {HEAD_LOG} before publishing"
         ),
     )
 
