@@ -342,7 +342,7 @@ wheel-macos: parakeet-helper
 	ROOT_MAC_WHEEL=$$(ls dist/solstone-*-macosx_14_0_arm64.whl); \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
-	python3 scripts/record_macos_native_wheel.py --role root --wheel "$$ROOT_MAC_WHEEL" --signing-facts "$$ROOT_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-root.json
+	python3 -m scripts.record_macos_native_wheel --role root --wheel "$$ROOT_MAC_WHEEL" --signing-facts "$$ROOT_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-root.json
 	@echo "==> building macosx_14_0_arm64 solstone-core wheel"
 	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core --wheel
 	@echo "==> signing and notarizing solstone-core"
@@ -357,7 +357,7 @@ wheel-macos: parakeet-helper
 	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"; \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
-	python3 scripts/record_macos_native_wheel.py --role core --wheel "$$CORE_MAC_WHEEL" --signing-facts "$$CORE_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-core.json
+	python3 -m scripts.record_macos_native_wheel --role core --wheel "$$CORE_MAC_WHEEL" --signing-facts "$$CORE_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-core.json
 else
 wheel-macos:
 	@echo "wheel-macos: only supported on Darwin/arm64 (got $(shell uname -s)/$(shell uname -m))" >&2

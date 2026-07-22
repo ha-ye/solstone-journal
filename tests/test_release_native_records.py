@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -59,6 +61,22 @@ def _facts_file(tmp_path: Path, facts: dict) -> Path:
     path = tmp_path / "facts.json"
     path.write_text(json.dumps(facts), encoding="utf-8")
     return path
+
+
+def test_native_record_cli_and_makefile_use_package_module() -> None:
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.record_macos_native_wheel", "--help"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    assert makefile.count("python3 -m scripts.record_macos_native_wheel") == 2
+    assert "python3 scripts/record_macos_native_wheel.py" not in makefile
 
 
 def test_exactly_two_role_records_are_written_and_not_interchangeable(
