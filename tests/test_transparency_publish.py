@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -580,6 +581,44 @@ def test_publish_genesis_uploads_fixed_layout_and_order(
         ("s3", "PUT", latest_signature_key(PRODUCT)),
         ("s3", "PUT", latest_key(PRODUCT)),
     ]
+
+
+def test_genesis_retry_adopts_orphan_latest_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _candidate(tmp_path)
+    _patch_recover(monkeypatch)
+    signer = FakeTransparencySigner()
+    transport = DirectoryTransparencyTransport(tmp_path / "remote")
+    config = _config(tmp_path)
+    transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=500)
+
+    with pytest.raises(DriverError):
+        publisher.publish_transparency(
+            config=config,
+            transport=transport,
+            signer=signer,
+            archive_runner=_archive_ok,
+            now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
+        )
+
+    assert transport.get_object(latest_key(PRODUCT)).status == 404
+    orphan_signature = transport.get_object(latest_signature_key(PRODUCT)).body
+    caplog.set_level(logging.WARNING, logger=publisher.LOG.name)
+    result = publisher.publish_transparency(
+        config=config,
+        transport=transport,
+        signer=signer,
+        archive_runner=_archive_ok,
+        now=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.seq == 1
+    assert transport.get_object(latest_key(PRODUCT)).status == 200
+    assert transport.get_object(latest_signature_key(PRODUCT)).body == orphan_signature
+    assert "adopting staged-identical signature" in caplog.text
 
 
 def test_minisign_pub_env_overrides_local_path_only(tmp_path: Path) -> None:
@@ -1190,6 +1229,59 @@ class NthGetFailureTransport(DirectoryTransparencyTransport):
         return super().get_object(key, cache_bypass=cache_bypass)
 
 
+class NthPutFailureTransport(DirectoryTransparencyTransport):
+    def __init__(
+        self,
+        root: Path,
+        *,
+        fail_key: str,
+        fail_on: int,
+        status: int,
+    ) -> None:
+        super().__init__(root)
+        self.fail_key = fail_key
+        self.fail_on = fail_on
+        self.status = status
+        self.put_count = 0
+
+    def put_object(  # type: ignore[override]
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str,
+        if_none_match: bool = False,
+        if_match: str | None = None,
+    ) -> HttpResult:
+        if key == self.fail_key:
+            self.put_count += 1
+            if self.put_count == self.fail_on:
+                self._record(
+                    plane="s3",
+                    op="PUT",
+                    key=key,
+                    status=self.status,
+                    if_none_match=if_none_match,
+                    if_match=if_match,
+                )
+                return HttpResult(
+                    status=self.status,
+                    body=b"forced failure",
+                    headers={},
+                    etag=None,
+                    exit_code=7,
+                )
+        return super().put_object(
+            key,
+            body,
+            content_type=content_type,
+            cache_control=cache_control,
+            if_none_match=if_none_match,
+            if_match=if_match,
+        )
+
+
 class AmbiguousLatestPointerPutTransport(DirectoryTransparencyTransport):
     def __init__(self, root: Path, *, status: int = 500) -> None:
         super().__init__(root)
@@ -1331,9 +1423,10 @@ def _pointer_pair_state(
         "latest-pointer-put",
         "latest-pointer-put-ambiguous-committed",
         "latest-pointer-put-412",
+        "latest-signature-restore-put",
     ),
 )
-def test_crash_injection_keeps_pointer_pair_valid(
+def test_crash_injection_classifies_pointer_pair_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     seam: str,
@@ -1347,6 +1440,13 @@ def test_crash_injection_keeps_pointer_pair_valid(
         )
     elif seam == "latest-pointer-put-ambiguous-committed":
         transport = AmbiguousLatestPointerPutTransport(tmp_path / "remote")
+    elif seam == "latest-signature-restore-put":
+        transport = NthPutFailureTransport(
+            tmp_path / "remote",
+            fail_key=latest_signature_key(PRODUCT),
+            fail_on=3,
+            status=500,
+        )
     else:
         transport = DirectoryTransparencyTransport(tmp_path / "remote")
     config, signer, previous, stage = _prepare_existing_publish(
@@ -1425,6 +1525,8 @@ def test_crash_injection_keeps_pointer_pair_valid(
         pass
     elif seam == "latest-pointer-put-412":
         transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=412)
+    elif seam == "latest-signature-restore-put":
+        transport.add_failure(plane="s3", op="PUT", key=latest_key(PRODUCT), status=500)
 
     if seam == "latest-pointer-put-ambiguous-committed":
         publisher.publish_transparency(
@@ -1436,7 +1538,7 @@ def test_crash_injection_keeps_pointer_pair_valid(
         )
         expected_states = {"new"}
     else:
-        with pytest.raises(DriverError):
+        with pytest.raises(DriverError) as error:
             publisher.publish_transparency(
                 config=config,
                 transport=transport,
@@ -1444,7 +1546,16 @@ def test_crash_injection_keeps_pointer_pair_valid(
                 archive_runner=archive_runner,
                 now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
             )
-        expected_states = {"old", "new"}
+        if seam == "latest-signature-restore-put":
+            failure = error.value.failures[0]
+            assert (
+                failure.error
+                == "transparency latest pointer pair is torn after restore failure"
+            )
+            assert "latest.json=old latest.json.minisig=new" in failure.actual
+            expected_states = {"invalid"}
+        else:
+            expected_states = {"old", "new"}
     assert (
         _pointer_pair_state(
             tmp_path,
@@ -1455,7 +1566,7 @@ def test_crash_injection_keeps_pointer_pair_valid(
         )
         in expected_states
     )
-    if seam == "latest-pointer-put":
+    if seam in {"latest-pointer-put", "latest-signature-restore-put"}:
         signature_puts = [
             call
             for call in transport.call_log
