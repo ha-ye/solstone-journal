@@ -95,8 +95,7 @@ def _verify_host(target: str, lane: LaneConfig) -> None:
         result = ssh_run(lane, "uname -s; uname -m", check=False)
         lines = (result.stdout or "").split()
         got = (lines[0] if lines else "?", lines[1] if len(lines) > 1 else "?")
-    norm = {"arm64": "arm64", "aarch64": "aarch64", "x86_64": "x86_64"}
-    if got[0] != exp_os or norm.get(got[1], got[1]) != exp_arch:
+    if got[0] != exp_os or got[1] != exp_arch:
         die(f"proof host os/arch {got} != expected ({exp_os},{exp_arch}) for {target}")
 
 

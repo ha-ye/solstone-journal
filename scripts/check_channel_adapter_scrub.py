@@ -70,7 +70,8 @@ USER_HOST_RE = re.compile(
     rf"[A-Za-z0-9._-]+@"
     rf"(?:{OCTET_RE}(?:\.{OCTET_RE}){{3}}|"
     rf"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.local)"
-    rf"(?![A-Za-z0-9_.:-])"
+    r"(?::[^\s\"'`,)\]}]+)?"
+    rf"(?![A-Za-z0-9_.-])"
 )
 
 SHELL_PORT_RE = re.compile(
@@ -168,6 +169,11 @@ DOCUMENTED_IP_VALUE_EXCLUSIONS = {
     ipaddress.IPv4Address("172.32.0.1"),
 }
 
+DOCUMENTED_USER_HOST_EXCLUSIONS = {
+    # Negative home-address validation fixture; not a reachable adapter host.
+    "user@192.168.1.44:7657",
+}
+
 
 def _ip_is_excluded(value: str) -> bool:
     address = ipaddress.IPv4Address(value)
@@ -212,13 +218,16 @@ def scan_line(path: str, line_number: int, line: str) -> list[Finding]:
         )
 
     for match in USER_HOST_RE.finditer(line):
+        value = match.group(0)
+        if value in DOCUMENTED_USER_HOST_EXCLUSIONS:
+            continue
         findings.append(
             Finding(
                 path,
                 line_number,
                 "Tier-2",
                 "user-host",
-                match.group(0),
+                value,
                 "replace reachable user/host literals with operator config",
             )
         )

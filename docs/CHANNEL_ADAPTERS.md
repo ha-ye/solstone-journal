@@ -20,6 +20,8 @@ names, or machine-local working paths in source, tests, docs, or commit messages
 Operator-specific values belong only in the JSON config file.
 
 The repo-wide scrub gate is `scripts/check_channel_adapter_scrub.py`.
+It scans tracked UTF-8 text files; tracked NUL-binary, undecodable, or
+unreadable paths are skipped and reported by count.
 
 ## Config Location
 

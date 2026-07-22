@@ -50,14 +50,23 @@ def test_tier2_ip_literal_uses_range_and_documented_exclusions() -> None:
 def test_tier2_user_host_rejects_bare_reachable_literal() -> None:
     host = ".".join(["10", "0", "0", "7"])
     reachable = f"deploy@{host}"
+    with_port = f"{reachable}:2222"
+    with_path = f"{reachable}:/var/tmp/proof"
 
     findings = _line_findings(reachable)
 
     assert [
         (finding.tier, finding.component, finding.value) for finding in findings
     ] == [("Tier-2", "user-host", reachable)]
+    assert [
+        (finding.tier, finding.component, finding.value)
+        for finding in _line_findings(with_port)
+    ] == [("Tier-2", "user-host", with_port)]
+    assert [
+        (finding.tier, finding.component, finding.value)
+        for finding in _line_findings(with_path)
+    ] == [("Tier-2", "user-host", with_path)]
     assert _line_findings("mail = 'deploy@example.com'") == []
-    assert _line_findings(f"{reachable}:2222") == []
 
 
 def test_tier2_ssh_scp_port_rejected() -> None:
@@ -107,6 +116,7 @@ def test_channel_adapter_scrub_falsification_plants_each_component(
     plants = [
         _parts("pr", "o5", "e"),
         f"deploy@{'.'.join(['10', '0', '0', '7'])}",
+        f"deploy@{'.'.join(['10', '0', '0', '7'])}:2222",
         f"{_parts('s', 'sh')} {scrub.TIER3_TERMS[0]}",
         f"cmd = [{_parts('s', 'sh')!r}, {scrub.TIER3_TERMS[1]!r}]",
         f"{scrub.TIER3_TERMS[2]}@host",

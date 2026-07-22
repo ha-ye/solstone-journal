@@ -3,18 +3,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import scripts.release_build_host as build_rail
+import scripts.release_install_smoke as smoke
 import scripts.release_proof_host as proof_rail
 from scripts.channel_adapters import adapter_common as common
 from scripts.channel_adapters import build_host_macos, proof_host
 from scripts.check_release_preflight import expected_presign_lane_tool_evidence
+from scripts.release_digest import candidate_digest
 from scripts.release_tool_pins import (
     HOST_VARIANT_TOOL_KEYS,
     MACOS_SWIFT_FIXTURE_BANNER,
@@ -64,6 +70,23 @@ def _local_lane() -> common.LaneConfig:
     )
 
 
+def _write_metadata_wheel(path: Path) -> None:
+    distribution, version = path.name.removesuffix(".whl").split("-")[:2]
+    metadata_name = f"{distribution}-{version}.dist-info/METADATA"
+    metadata = f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n"
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(metadata_name, metadata)
+
+
+def _file_entry(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    return {
+        "name": path.name,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def _tool_stdout(*, uv: str = UV_MACOS_FIXTURE_BANNER) -> str:
     expected = expected_presign_lane_tool_evidence("macos-arm64")
     observed = {
@@ -102,15 +125,48 @@ def _write_build_request(tmp_path: Path) -> tuple[Path, build_rail.SourceBundle,
     return request_path, source_bundle, payload
 
 
-def _write_proof_request(tmp_path: Path) -> tuple[Path, dict]:
+def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     request_dir = tmp_path / "proof-request"
     candidate_dir = request_dir / "candidate"
     output_dir = request_dir / "output"
     candidate_dir.mkdir(parents=True)
     output_dir.mkdir()
-    wheel = candidate_dir / "solstone-1.0.0-py3-none-any.whl"
-    wheel.write_bytes(b"wheel")
-    (request_dir / "ledger.json").write_text("{}", encoding="utf-8")
+    for name in (
+        "solstone-1.0.0-py3-none-any.whl",
+        "solstone_core-1.0.0-py3-none-linux_x86_64.whl",
+    ):
+        _write_metadata_wheel(candidate_dir / name)
+    native_bytes = b"core"
+    native_sha = hashlib.sha256(native_bytes).hexdigest()
+    digest = candidate_digest(candidate_dir)
+    ledger: dict[str, Any] = {
+        "source_commit": "b" * 40,
+        "core_lock_sha256": "c" * 64,
+        "candidate": {
+            "candidate_digest": digest,
+            "files": [
+                _file_entry(path)
+                for path in sorted(candidate_dir.iterdir(), key=lambda item: item.name)
+            ],
+        },
+        "native_members": {
+            "linux-x86_64-musl": {
+                "solstone-core": {
+                    "path": "linux-x86/solstone-core",
+                    "sha256": native_sha,
+                    "bytes": len(native_bytes),
+                }
+            }
+        },
+    }
+    ledger_bytes = json.dumps(ledger, sort_keys=True).encode("utf-8")
+    ledger_sha = hashlib.sha256(ledger_bytes).hexdigest()
+    (request_dir / "ledger.json").write_bytes(ledger_bytes)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate_dir,
+    )
     channel = proof_rail.ExternalProofHostChannel(
         "linux-x86_64-musl",
         ["adapter"],
@@ -121,13 +177,95 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict]:
         version="1.0.0",
         source_commit="b" * 40,
         core_lock_sha256="c" * 64,
-        candidate_digest="d" * 64,
-        ledger_sha256="e" * 64,
-        install_paths=[wheel],
+        candidate_digest=digest,
+        ledger_sha256=ledger_sha,
+        install_paths=install_paths,
     )
     request_path = request_dir / "request.json"
     request_path.write_text(json.dumps(payload), encoding="utf-8")
-    return request_path, payload
+    return request_path, payload, ledger
+
+
+def _write_valid_install_proof(
+    proof_path: Path,
+    *,
+    request_payload: dict[str, Any],
+    ledger: dict[str, Any],
+) -> None:
+    request_dir = proof_path.parents[1]
+    candidate_dir = request_dir / request_payload["paths"]["candidate_dir"]
+    env_root = request_dir / "env"
+    (env_root / "bin").mkdir(parents=True, exist_ok=True)
+    python_path = env_root / "bin" / "python"
+    core_path = env_root / "bin" / "solstone-core"
+    python_path.write_bytes(b"python")
+    core_path.write_bytes(b"core")
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target=request_payload["target"],
+        candidate_dir=candidate_dir,
+    )
+    proof = smoke.build_install_proof(
+        target=request_payload["target"],
+        version=request_payload["version"],
+        source_commit=request_payload["source_commit"],
+        core_lock_sha256=request_payload["core_lock_sha256"],
+        candidate_digest=request_payload["candidate_digest"],
+        ledger_sha256=request_payload["ledger_sha256"],
+        candidate_dir=candidate_dir,
+        candidate_paths=install_paths,
+        ledger_payload=ledger,
+        observation=smoke.InstallObservation(
+            env_root=env_root,
+            preexisting_distributions=(),
+            install=smoke.CommandResult(
+                argv=(
+                    str(python_path),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-index",
+                    "--no-deps",
+                    *(str(path) for path in install_paths),
+                ),
+                exit_code=0,
+                stdout="installed",
+                env=smoke.SCRUBBED_COMMAND_ENV,
+            ),
+            installed_distributions=smoke.expected_distribution_entries(install_paths),
+            installed_members=(
+                {
+                    "name": "solstone-core",
+                    "path": core_path,
+                    "sha256": ledger["native_members"][request_payload["target"]][
+                        "solstone-core"
+                    ]["sha256"],
+                    "symlink": False,
+                },
+            ),
+            smoke={
+                "solstone-core": smoke.CommandResult(
+                    argv=(str(core_path), "--version"),
+                    exit_code=0,
+                    stdout=f"solstone-core {request_payload['version']}",
+                    env=smoke.SCRUBBED_COMMAND_ENV,
+                )
+            },
+        ),
+        recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
+    )
+    smoke.write_install_proof(
+        proof_path,
+        proof,
+        target=request_payload["target"],
+        version=request_payload["version"],
+        source_commit=request_payload["source_commit"],
+        core_lock_sha256=request_payload["core_lock_sha256"],
+        candidate_digest=request_payload["candidate_digest"],
+        ledger_sha256=request_payload["ledger_sha256"],
+        candidate_dir=candidate_dir,
+        ledger_payload=ledger,
+    )
 
 
 def test_build_request_response_round_trip_through_rail_parser(
@@ -173,7 +311,7 @@ def test_proof_request_response_round_trip_through_rail_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request_path, request_payload = _write_proof_request(tmp_path)
+    request_path, request_payload, ledger = _write_proof_request(tmp_path)
     proof_path = request_path.parent / "output" / "proof.json"
 
     def fake_runner(argv, **kwargs):
@@ -182,7 +320,11 @@ def test_proof_request_response_round_trip_through_rail_parser(
         if argv == ["uname", "-m"]:
             return _completed("x86_64\n")
         if argv[:2] == [sys.executable, "-c"]:
-            proof_path.write_bytes(b'{"ok":true}\n')
+            _write_valid_install_proof(
+                proof_path,
+                request_payload=request_payload,
+                ledger=ledger,
+            )
             sha256, byte_count = common.sha256_size(proof_path)
             return _completed(
                 f'{proof_host.PROOF_TOKEN} {{"bytes": {byte_count}, "sha256": "{sha256}"}}\n'
@@ -203,6 +345,18 @@ def test_proof_request_response_round_trip_through_rail_parser(
         ledger_sha256=request_payload["ledger_sha256"],
     )
     assert proof_descriptor["path"] == "output/proof.json"
+    proof_failures = smoke.validate_install_proof_bytes(
+        proof_path.read_bytes(),
+        target=request_payload["target"],
+        version=request_payload["version"],
+        source_commit=request_payload["source_commit"],
+        core_lock_sha256=request_payload["core_lock_sha256"],
+        candidate_digest=request_payload["candidate_digest"],
+        ledger_sha256=request_payload["ledger_sha256"],
+        candidate_dir=request_path.parent / request_payload["paths"]["candidate_dir"],
+        ledger_payload=ledger,
+    )
+    assert proof_failures == []
 
 
 def test_source_and_retrieved_digest_verification(tmp_path: Path) -> None:

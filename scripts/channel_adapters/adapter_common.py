@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -50,9 +50,6 @@ class LaneConfig:
         return self.host
 
 
-Runner = Callable[..., subprocess.CompletedProcess[str]]
-
-
 def die(message: str, *, detail: str = "") -> NoReturn:
     sys.stderr.write(f"adapter error: {message}\n")
     if detail:
@@ -62,14 +59,11 @@ def die(message: str, *, detail: str = "") -> NoReturn:
 
 def read_json(path: Path) -> dict:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         die(f"could not read {path}", detail=str(exc))
     except json.JSONDecodeError as exc:
         die(f"{path} is not valid JSON", detail=str(exc))
-    if not isinstance(payload, dict):
-        die(f"{path} must contain a JSON object")
-    return payload
 
 
 def write_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -123,9 +117,8 @@ def _require_string(
     *,
     key: str,
     path: Path,
-    allow_empty: bool = False,
 ) -> str:
-    if not isinstance(value, str) or (not allow_empty and not value):
+    if not isinstance(value, str) or not value:
         _config_error(path, f"operator config key {key!r} must be a string")
     return value
 
