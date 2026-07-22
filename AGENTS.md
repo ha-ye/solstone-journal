@@ -208,7 +208,7 @@ object can never be replaced.
 `signed_at` and `valid_until`; it does not require `RELEASE_DIR` and does not
 change `chain_length`, `tip_sha256`, or `version`.
 
-The in-repo append-only head witness is [`transparency-heads.jsonl`](transparency-heads.jsonl).
+The in-repo append-only head witness is [`transparency-head-log.jsonl`](transparency-head-log.jsonl).
 It is JSONL with no header row and is committed before the first publish.
 The public minisign trust-anchor filename is `solpbc-transparency-1.pub`,
 served at `releases/keys/solpbc-transparency-1.pub`; rotation increments the
