@@ -209,13 +209,64 @@ def test_curl_list_prefix_parses_namespaced_s3_xml(
     )
 
 
-def test_curl_list_prefix_fails_closed_on_truncated_xml(
+def test_curl_list_prefix_paginates_list_objects_v2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages = [
+        b"""<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <IsTruncated>true</IsTruncated>
+  <NextContinuationToken>page-2</NextContinuationToken>
+  <Contents><Key>releases/solstone-journal/v/0.0.1/ledger-entry.json</Key></Contents>
+</ListBucketResult>
+""",
+        b"""<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <IsTruncated>false</IsTruncated>
+  <Contents><Key>releases/solstone-journal/v/0.0.2/ledger-entry.json</Key></Contents>
+</ListBucketResult>
+""",
+    ]
+    calls: list[list[str]] = []
+    transport = CurlTransparencyTransport(
+        endpoint="https://r2.example.invalid",
+        bucket="transparency-test",
+        access_key_id="key",
+        secret_access_key="secret",
+        base_url="https://transparency.solstone.app",
+    )
+
+    def run(
+        _self: CurlTransparencyTransport,
+        args: list[str],
+        *,
+        body_output: Path,
+    ) -> CurlResult:
+        calls.append(args)
+        return CurlResult(
+            status=200,
+            body=pages[len(calls) - 1],
+            etag=None,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(CurlTransparencyTransport, "_run_curl", run)
+    result = transport.list_prefix("releases/solstone-journal/v/")
+    assert result.status == 200
+    assert result.keys == (
+        "releases/solstone-journal/v/0.0.1/ledger-entry.json",
+        "releases/solstone-journal/v/0.0.2/ledger-entry.json",
+    )
+    assert all("continuation-token=page-2" not in arg for arg in calls[0])
+    assert "continuation-token=page-2" in calls[1]
+
+
+def test_curl_list_prefix_fails_closed_on_truncated_xml_without_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     body = b"""<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <IsTruncated>true</IsTruncated>
-  <NextContinuationToken>next</NextContinuationToken>
   <Contents><Key>releases/solstone-journal/v/0.0.1/ledger-entry.json</Key></Contents>
 </ListBucketResult>
 """
@@ -239,4 +290,7 @@ def test_curl_list_prefix_fails_closed_on_truncated_xml(
     result = transport.list_prefix("releases/solstone-journal/v/")
     assert result.status == 0
     assert result.keys == ()
-    assert result.body == b"truncated S3 ListObjectsV2 response"
+    assert (
+        result.body
+        == b"S3 ListObjectsV2 response is truncated without NextContinuationToken"
+    )

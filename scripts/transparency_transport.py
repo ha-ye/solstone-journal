@@ -481,10 +481,14 @@ class CurlTransparencyTransport:
         )
 
     def list_prefix(self, prefix: str) -> ListResult:
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "body"
-            curl_result = self._run_curl(
-                [
+        keys: list[str] = []
+        token: str | None = None
+        seen_tokens: set[str] = set()
+        last_exit_code = 0
+        for _page in range(MAX_LIST_PAGES):
+            with tempfile.TemporaryDirectory() as tmp:
+                body_path = Path(tmp) / "body"
+                args = [
                     "--aws-sigv4",
                     f"aws:amz:{self.region}:s3",
                     "-G",
@@ -496,27 +500,49 @@ class CurlTransparencyTransport:
                     "list-type=2",
                     "--data-urlencode",
                     f"prefix={prefix}",
-                    self._bucket_url,
-                ],
-                body_output=body_path,
-            )
-        keys: tuple[str, ...] = ()
-        status = curl_result.status
-        body = curl_result.body
-        if status == 200:
-            keys, truncated = parse_s3_list_keys(body)
-            if truncated:
+                ]
+                if token is not None:
+                    args.extend(("--data-urlencode", f"continuation-token={token}"))
+                args.append(self._bucket_url)
+                curl_result = self._run_curl(args, body_output=body_path)
+            last_exit_code = curl_result.exit_code
+            if curl_result.status != 200:
+                return ListResult(
+                    status=curl_result.status,
+                    keys=(),
+                    body=curl_result.body,
+                    exit_code=curl_result.exit_code,
+                )
+            page_keys, truncated, next_token = parse_s3_list_keys(curl_result.body)
+            keys.extend(page_keys)
+            if not truncated:
+                return ListResult(
+                    status=200,
+                    keys=tuple(keys),
+                    body=curl_result.body,
+                    exit_code=curl_result.exit_code,
+                )
+            if not next_token:
                 return ListResult(
                     status=0,
                     keys=(),
-                    body=b"truncated S3 ListObjectsV2 response",
+                    body=b"S3 ListObjectsV2 response is truncated without NextContinuationToken",
                     exit_code=curl_result.exit_code,
                 )
+            if next_token in seen_tokens:
+                return ListResult(
+                    status=0,
+                    keys=(),
+                    body=b"S3 ListObjectsV2 repeated NextContinuationToken",
+                    exit_code=curl_result.exit_code,
+                )
+            seen_tokens.add(next_token)
+            token = next_token
         return ListResult(
-            status=status,
-            keys=keys,
-            body=body,
-            exit_code=curl_result.exit_code,
+            status=0,
+            keys=(),
+            body=b"S3 ListObjectsV2 pagination exceeded maximum pages",
+            exit_code=last_exit_code,
         )
 
     def get_public(self, path: str, *, cache_bypass: bool = True) -> HttpResult:
@@ -546,6 +572,7 @@ class CurlTransparencyTransport:
 
 
 CURL_WRITE_OUT = "%{http_code}\t%header{etag}\n"
+MAX_LIST_PAGES = 1000
 
 
 def parse_curl_write_out(stdout: str) -> tuple[int, str | None]:
@@ -559,18 +586,22 @@ def parse_curl_write_out(stdout: str) -> tuple[int, str | None]:
     return status, etag
 
 
-def parse_s3_list_keys(body: bytes) -> tuple[tuple[str, ...], bool]:
+def parse_s3_list_keys(body: bytes) -> tuple[tuple[str, ...], bool, str | None]:
     try:
         root = ET.fromstring(body)
     except ET.ParseError:
-        return (), True
+        return (), True, None
 
     keys: list[str] = []
     truncated = False
+    next_token: str | None = None
     for element in root.iter():
         name = element.tag.rsplit("}", 1)[-1]
         if name == "Key" and element.text is not None:
             keys.append(element.text)
         elif name == "IsTruncated":
             truncated = (element.text or "").strip().lower() == "true"
-    return tuple(keys), truncated
+        elif name == "NextContinuationToken":
+            text = (element.text or "").strip()
+            next_token = text or None
+    return tuple(keys), truncated, next_token
