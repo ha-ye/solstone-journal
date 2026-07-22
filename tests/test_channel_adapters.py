@@ -58,6 +58,7 @@ def _lane(
         extra_ssh_options=("-o", "BatchMode=yes"),
         remote_python="python3",
         remote_work_prefix="/tmp/solstone-channel-adapter",
+        remote_run_wrapper="operator-session-wrapper",
         tmux_window="adapter:build",
         unlock_workdir="~/projects/build-worktree",
     )

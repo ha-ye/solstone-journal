@@ -34,6 +34,7 @@ class LaneConfig:
     extra_ssh_options: tuple[str, ...] = ()
     remote_python: str = "python3"
     remote_work_prefix: str = "/tmp/solstone-channel-adapter"
+    remote_run_wrapper: str | None = None
     tmux_window: str | None = None
     unlock_workdir: str | None = None
 
@@ -194,7 +195,7 @@ def _parse_lane(
         "remote_work_prefix",
     }
     if require_build_fields:
-        allowed.update({"tmux_window", "unlock_workdir"})
+        allowed.update({"remote_run_wrapper", "tmux_window", "unlock_workdir"})
     _validate_no_unknown_keys(mapping, allowed=allowed, prefix=name, path=path)
     if "mode" not in mapping:
         _config_error(path, f"operator config missing key {name}.mode")
@@ -243,10 +244,20 @@ def _parse_lane(
             path=path,
         )
         or "/tmp/solstone-channel-adapter",
+        remote_run_wrapper=_optional_string(
+            mapping,
+            key="remote_run_wrapper",
+            path=path,
+        ),
         tmux_window=_optional_string(mapping, key="tmux_window", path=path),
         unlock_workdir=_optional_string(mapping, key="unlock_workdir", path=path),
     )
     if require_build_fields:
+        if lane.remote_run_wrapper is None:
+            _config_error(
+                path,
+                f"operator config missing key {name}.remote_run_wrapper",
+            )
         if lane.tmux_window is None:
             _config_error(path, f"operator config missing key {name}.tmux_window")
         if lane.unlock_workdir is None:

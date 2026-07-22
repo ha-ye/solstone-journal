@@ -183,11 +183,16 @@ echo CHECKOUT_OK
 
     tool_evidence = _derive_tool_evidence(build_lane)
 
-    if build_lane.tmux_window is None or build_lane.unlock_workdir is None:
-        die("build lane signing-session config is incomplete")
+    for key in ("remote_run_wrapper", "tmux_window", "unlock_workdir"):
+        if getattr(build_lane, key) is None:
+            die(f"build lane signing-session config is missing {key}")
+    assert build_lane.remote_run_wrapper is not None
+    assert build_lane.tmux_window is not None
+    assert build_lane.unlock_workdir is not None
+    quoted_remote_run_wrapper = shlex.quote(build_lane.remote_run_wrapper)
     unlock = ssh_run(
         build_lane,
-        "tmux-run "
+        f"{quoted_remote_run_wrapper} "
         f"{shlex.quote(build_lane.tmux_window)} "
         f"{shlex.quote(build_lane.unlock_workdir)} "
         "'make unlock-signing'",
@@ -201,7 +206,7 @@ echo CHECKOUT_OK
 
     build = ssh_run(
         build_lane,
-        "tmux-run "
+        f"{quoted_remote_run_wrapper} "
         f"{shlex.quote(build_lane.tmux_window)} "
         f"{quoted_src} "
         f"'set -e; mkdir -p {shlex.quote(work)}/pyshim; "

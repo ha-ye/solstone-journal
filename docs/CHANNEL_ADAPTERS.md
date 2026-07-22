@@ -51,6 +51,7 @@ The build lane and every proof target known to the rail must be present.
       "extra_ssh_options": ["-o", "BatchMode=yes"],
       "remote_python": "python3",
       "remote_work_prefix": "/tmp/solstone-channel-adapter",
+      "remote_run_wrapper": "operator-session-wrapper",
       "tmux_window": "adapter:build",
       "unlock_workdir": "~/projects/build-worktree"
     }
@@ -85,8 +86,9 @@ The build lane and every proof target known to the rail must be present.
 `mode: "local"` means run in-process with no SSH or SCP. It is valid only for
 the `linux-x86_64-musl` proof lane.
 
-The macOS build lane also requires `tmux_window` and `unlock_workdir`; these name
-the already-prepared operator session used to run the existing build target.
+The macOS build lane also requires `remote_run_wrapper`, `tmux_window`, and
+`unlock_workdir`; these name the operator-provided command wrapper and the
+already-prepared operator session used to run the existing build target.
 
 ## Tool Evidence
 
