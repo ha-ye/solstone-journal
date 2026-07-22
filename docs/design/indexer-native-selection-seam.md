@@ -12,7 +12,8 @@ invocations to `solstone-core indexer`. It does not implement the seam.
 - Do not add these keys to `solstone/think/journal_default.json`. They are a
   two-release-lifetime migration control deleted in N+2. Adding them to every
   fresh journal would require a later migration just to remove them. Absent key
-  is the honest default path for existing and new journals.
+  now defaults native-eligible writes to Rust on hosts covered by the probe
+  module's solstone-core package predicate, while uncovered hosts keep Python.
 - The only implementation seam is the new sibling module
   `solstone/think/indexer/native_seam.py`, imported by
   `solstone/think/indexer/cli.py`.
@@ -41,22 +42,18 @@ branches without duplicating reset, rebuild, rescan, or query code.
 Selection is read once per launch for write-only operation sets. It is not
 re-read after a native decline or before fallback.
 
-| Operation set | Config state | Route |
+| Operation set | Config and host state | Route |
 | --- | --- | --- |
 | Bare `journal indexer` with no operation flags and no query | Any, not read | Existing `parser.print_help()`, return `None` |
 | Query-only, including `-q foo` or interactive `-q` | Any, not read | Python |
 | Mixed write+query, including `--rescan -q foo` | Any, not read | Python |
-| Pure write: `--reset` only | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure write: `--rebuild-edges` only | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure write: `--rescan` | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure write: `--rescan-full` | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure write: `--rescan-file PATH` | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure composed writes: any subset of `--reset`, `--rebuild-edges`, plus `--rescan` and/or `--rescan-full` | section absent, key absent, or `core.indexer = "python"` | Python |
-| Pure composed writes: any subset of `--reset`, `--rebuild-edges`, plus `--rescan-file PATH` | section absent, key absent, or `core.indexer = "python"` | Python |
-| Any valid pure write above | `core.indexer = "rust"` | Native |
-| `--rescan-file PATH` combined with `--rescan` or `--rescan-full` | `core.indexer = "rust"` | Python |
+| Pure native-eligible writes | `core.indexer = "python"` | Python |
+| Pure native-eligible writes | `core.indexer = "rust"` | Native path, subject to handshake gate |
+| Pure native-eligible writes | `core.indexer` unset and host covered by the probe module's solstone-core package predicate | Native path, subject to handshake gate |
+| Pure native-eligible writes | `core.indexer` unset and host not covered by the probe module's solstone-core package predicate | Python |
+| `--rescan-file PATH` combined with `--rescan` or `--rescan-full` | Any, not read | Python |
 | Any write-only invocation | invalid `core.indexer` | Print config error, return `core_handshake.EX_CONFIG` |
-| Any write-only invocation | invalid present `core.indexer_on_decline` | Print config error, return `core_handshake.EX_CONFIG` |
+| Any write-only invocation | invalid present `core.indexer_on_decline` | Print config error with resolved provenance, return `core_handshake.EX_CONFIG` |
 
 The `--rescan-file PATH` plus `--rescan` or `--rescan-full` combination is not
 native-eligible. The seam returns `None`, Python runs, and the invocation keeps
@@ -80,17 +77,17 @@ use.
 
 Resolution rules:
 
-- absent `core` section: selected implementation is `python`, decline policy is
-  `abort`;
-- present `core` without `indexer`: selected implementation is `python`;
+- present non-object `core` is a host-independent config error;
+- present `core.indexer` is validated before coverage is checked;
 - explicit `core.indexer = "python"`: selected implementation is `python`;
 - explicit `core.indexer = "rust"`: selected implementation is `rust`;
+- absent `core.indexer`: call the injected coverage checker; covered hosts
+  resolve to `rust`, and uncovered hosts resolve to `python`;
 - absent `core.indexer_on_decline`: policy is `abort`;
 - explicit `abort` or `fallback`: policy is that value;
-- any other present value is a config error, even if the selected implementation
-  is Python;
-- present non-object `core` is a config error equivalent to being unable to read
-  `core.indexer`.
+- any other present `core.indexer_on_decline` value is a config error, even if
+  the selected implementation is Python;
+- invalid decline-policy errors render the resolved selection provenance.
 
 Config errors return `core_handshake.EX_CONFIG`.
 
@@ -134,7 +131,7 @@ print usage and exit 0 without indexing.
 
 Failure mode: raise `RuntimeError` before spawning native. The message is:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but found no native-supported operation flags to pass. This is a seam bug; set core.indexer to 'python' to revert.`
+`{provenance}, but found no native-supported operation flags to pass. This is a seam bug; set core.indexer to 'python' to revert.`
 
 ## Handshake Policy
 
@@ -152,8 +149,10 @@ Test seams exposed by `native_seam`:
 - `handshake_checker`, defaulting to `check_solstone_core_handshake`;
 - `helper_locator`, defaulting to `helper_path_for_executable`;
 - `native_runner`, defaulting to `subprocess.run`.
+- `coverage_checker`, defaulting to the seam's probe-backed coverage wrapper.
 
-Handshake outcomes under `core.indexer = "rust"`:
+Handshake outcomes under explicit `core.indexer = "rust"` or covered-host
+absent `core.indexer`:
 
 - `ok`: run native;
 - `skip`: print/log a rust-selected abort and return `core_handshake.EX_CONFIG`;
@@ -205,53 +204,63 @@ Python.
 All owner-facing messages go to stderr. Also log them at error level, except the
 69 fallback warning, which logs at warning level.
 
+Provenance clauses:
+
+- explicit: `journal indexer selected implementation {selected!r} from config key core.indexer`
+- covered + absent: `journal indexer defaulted to implementation 'rust' because config key core.indexer is unset and solstone-core is packaged for this platform`
+- uncovered + absent: `journal indexer defaulted to implementation 'python' because config key core.indexer is unset and solstone-core is not packaged for this platform`
+
 Invalid `core.indexer`:
 
 `journal indexer selected implementation 'invalid' from config key core.indexer; found {value!r}; expected 'python' or 'rust'. Set core.indexer to 'python' to revert.`
 
+Invalid `core` section:
+
+`journal indexer selected implementation 'invalid' from config key core.indexer, but config section core has invalid value {value!r}; expected an object. Set core.indexer to 'python' to revert.`
+
 Invalid `core.indexer_on_decline`:
 
-`journal indexer selected implementation {selected!r} from config key core.indexer, but config key core.indexer_on_decline has invalid value {value!r}; expected 'abort' or 'fallback'. Set core.indexer to 'python' to revert.`
+`{provenance}, but config key core.indexer_on_decline has invalid value {value!r}; expected 'abort' or 'fallback'. Set core.indexer to 'python' to revert.`
 
 Handshake `skip` under rust:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core handshake returned 'skip': {message}. Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core handshake returned 'skip': {message}. Set core.indexer to 'python' to revert.`
 
 Handshake `fail` under rust:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core handshake returned 'fail': {message}. Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core handshake returned 'fail': {message}. Set core.indexer to 'python' to revert.`
 
 Native decline 69 under abort:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer declined this input with exit 69. Set core.indexer_on_decline to 'fallback' to retry unsupported inputs through Python, or set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer declined this input with exit 69. Set core.indexer_on_decline to 'fallback' to retry unsupported inputs through Python, or set core.indexer to 'python' to revert.`
 
 Native decline 69 under fallback:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer declined this input with exit 69; falling back to Python because core.indexer_on_decline is 'fallback'. Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer declined this input with exit 69; falling back to Python because core.indexer_on_decline is 'fallback'. Set core.indexer to 'python' to revert.`
 
 Native usage error 64:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer exited 64 (usage error). This is a seam argument-construction bug; set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer exited 64 (usage error). This is a seam argument-construction bug; set core.indexer to 'python' to revert.`
 
 Native tempfail 75:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer exited 75 (temporary failure). Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer exited 75 (temporary failure). Set core.indexer to 'python' to revert.`
 
 Native launch `OSError` mapped to 75:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but launching solstone-core indexer failed: {error}. Set core.indexer to 'python' to revert.`
+`{provenance}, but launching solstone-core indexer failed: {error}. Set core.indexer to 'python' to revert.`
 
 Native signal death mapped to 75:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer died from signal {signal_number} (returncode {returncode}); treating as temporary failure. Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer died from signal {signal_number} (returncode {returncode}); treating as temporary failure. Set core.indexer to 'python' to revert.`
 
 Other native nonzero:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but solstone-core indexer exited {returncode}. Set core.indexer to 'python' to revert.`
+`{provenance}, but solstone-core indexer exited {returncode}. Set core.indexer to 'python' to revert.`
 
 Empty-tail seam bug:
 
-`journal indexer selected implementation 'rust' from config key core.indexer, but found no native-supported operation flags to pass. This is a seam bug; set core.indexer to 'python' to revert.`
+`{provenance}, but found no native-supported operation flags to pass. This is a seam bug; set core.indexer to 'python' to revert.`
 
 ## PORTING.md Replacement Text
 
@@ -259,28 +268,36 @@ Replace the final paragraph of `docs/PORTING.md` section `Unsupported Inputs`
 with:
 
 > The first declined-exit wave is the config-gated indexer selection seam in the
-> Python `journal indexer` wrapper. `solstone-core indexer` returns 69 when the
-> native indexer declines an unsupported input. The wrapper handles that code
-> according to `config/journal.json` key `core.indexer_on_decline`: `abort`
-> reports the decline and exits 69, while `fallback` reruns the same operation
-> on the Python indexer. Usage errors (64) and temporary failures (75) are never
-> retried in Python. Signal death is normalized to temporary failure (75). The
-> supervisor intentionally keeps mapping non-zero scheduled-task exits to
-> `error`; abort-by-default makes that classification correct, and decline
-> visibility lives in the wrapper's stderr and logs.
+> Python `journal indexer` wrapper. When the seam routes a write-only invocation
+> to `solstone-core indexer`, the native indexer returns 69 when it declines an
+> unsupported input. The wrapper handles that code according to
+> `config/journal.json` key `core.indexer_on_decline`: `abort` reports the
+> decline and exits 69, while `fallback` reruns the same operation on the Python
+> indexer. Usage errors (64) and temporary failures (75) are never retried in
+> Python. Signal death is normalized to temporary failure (75). The supervisor
+> intentionally keeps mapping non-zero scheduled-task exits to `error`;
+> abort-by-default makes that classification correct, and decline visibility
+> lives in the wrapper's stderr and logs.
 
 Add this subsection after `Unsupported Inputs`:
 
 ### Indexer Selection Seam
 
 `journal indexer` has a temporary Python/native selection seam for the native
-indexer migration. It reads `config/journal.json` once at command launch. An
-absent `core` section, absent `core.indexer`, and explicit
-`core.indexer = "python"` all run the Python indexer. `core.indexer = "rust"`
-runs the sibling `solstone-core indexer` binary for write-only invocations,
-passing `--journal <path>` explicitly and constructing operation flags from the
-parsed argparse namespace. Query-only and mixed write+query invocations stay on
-Python for the whole invocation and do not read selection config.
+indexer migration. It reads `config/journal.json` once at command launch.
+Query-only and mixed write+query invocations stay on Python for the whole
+invocation and do not read selection config.
+
+For write-only native-eligible invocations, explicit `core.indexer = "python"`
+runs the Python indexer and remains the rollback switch. Explicit
+`core.indexer = "rust"` selects the sibling `solstone-core indexer` binary
+everywhere and keeps its loud handshake-failure behavior. When `core.indexer` is
+unset, hosts covered by the probe module's solstone-core package predicate
+default to Rust; uncovered hosts keep Python.
+
+Backup-restore full rescans, direct `index_file()` callers, chat stream appends,
+importers, day-accumulator writes, and index-mutating deletes bypass
+`journal indexer` and stay on the Python indexer during the dual window.
 
 The seam normalizes `--rescan-file` to an absolute path with the same Python
 journal-path resolver used by `index_file()` before passing it to native. This
@@ -288,11 +305,13 @@ keeps `chronicle/`-prefixed relative paths from being interpreted differently by
 the Rust relative-path resolver.
 
 The selection keys are intentionally absent from `journal_default.json`. They
-are a two-release-lifetime migration control: release N keeps Python as the
-absent-key default and allows opt-in Rust; release N+1 flips the absent-key
-default to Rust while still honoring explicit Python; release N+2 deletes the
-Python orchestration path and removes `core.indexer` / `core.indexer_on_decline`
-selection.
+are a two-release-lifetime migration control: release N kept Python as the
+absent-key default and allowed opt-in Rust; release N+1 defaults absent-key
+native-eligible writes to Rust on covered hosts while still honoring explicit
+Python and keeping uncovered hosts on Python; release N+2 may delete the Python
+orchestration path and remove `core.indexer` / `core.indexer_on_decline` only
+after a completed normal alpha interval and an explicit uncovered-host
+disposition.
 
 ## Seam Module Docstring Content
 
@@ -308,10 +327,12 @@ Use this content for `solstone/think/indexer/native_seam.py`:
 > entity-merge edge folds, bypass `journal indexer` and stay on the Python
 > indexer during the dual window.
 >
-> Selection is read once from `config/journal.json` at command launch. Absent
-> selection and explicit `python` continue in Python. `rust` runs the native
-> binary only for write-only command invocations; query and mixed write+query
-> invocations stay in Python.
+> Selection is read once from `config/journal.json` at command launch. Explicit
+> `python` stays on Python and explicit `rust` selects the native path. When
+> `core.indexer` is unset, write-only native-eligible invocations default to
+> Rust on hosts covered by the probe module's solstone-core package predicate
+> and to Python on uncovered hosts. Query and mixed write+query invocations stay
+> in Python.
 
 Known bypass references for the implementation review:
 
@@ -331,76 +352,41 @@ Known bypass references for the implementation review:
 
 ## Test Plan
 
-Each test must use distinct observable values: native stubs return a visible
-integer return code and record argv; Python stubs record calls and return through
-the existing `None` path. A test passes only if the expected implementation's
-observable appears and the other implementation's observable is absent.
+Each dispatch test must pair the expected implementation's positive observable
+with the absence of the other implementation's observable. Python dispatch is
+proved by recorded `reset_journal_index`, `rebuild_edges`, `index_file`, or
+`scan_journal` stubs on `indexer_cli`. Native dispatch is proved by a recorded
+native-runner argv. A seam return value alone is not dispatch proof.
 
-- `test_absent_core_section_runs_python`: config reader returns no `core`;
-  Python `scan_journal` stub records `python`; native runner raises if called.
-- `test_absent_indexer_key_runs_python`: config reader returns `{"core": {}}`;
-  same observables as above.
-- `test_explicit_python_runs_python`: config reader returns
-  `{"core": {"indexer": "python"}}`; same observables as above.
-- `test_rust_rescan_invokes_native_with_explicit_journal`: config selects rust;
-  handshake returns ok; helper locator returns fake path; native runner records
-  `[helper, "indexer", "--journal", journal, "--rescan"]`; Python stubs raise if
+Existing Python write-path CLI tests pin explicit
+`{"core": {"indexer": "python"}}` through the CLI helper so zero-edge hint and
+root task-log assertions continue to test the Python implementation rather than
+selection.
+
+Add a CLI selection matrix that monkeypatches `indexer_cli.maybe_run_native_indexer`
+with a thin wrapper around the real seam while injecting only coverage,
+handshake, helper, and native-runner boundaries:
+
+- covered host plus absent `core.indexer`: record native argv and no Python
+  write call;
+- uncovered host plus absent `core.indexer`: record Python write call and prove
+  handshake, helper, and native runner are not called;
+- explicit `core.indexer = "python"`: record Python write call and prove
+  coverage, handshake, helper, and native runner are not called;
+- explicit `core.indexer = "rust"`: record native argv and prove coverage is not
   called.
-- `test_rust_tail_drops_verbose_debug_and_query_filters`: Namespace has
-  `verbose`, `debug`, and filter fields; native argv contains only native flags.
-- `test_rust_composed_write_order`: Namespace has reset, rebuild, and full
-  rescan; native argv orders `--reset`, `--rebuild-edges`, `--rescan-full`.
-- `test_rust_prefers_rescan_full_when_both_scan_flags_are_set`: Namespace has
-  both scan booleans true; native argv emits `--rescan-full` and does not emit
-  `--rescan`.
-- `test_rust_rescan_file_normalizes_chronicle_prefixed_relative_to_absolute`:
-  input is `chronicle/20240101/talents/flow.md`; native argv receives an
-  absolute path under journal `chronicle/`.
-- `test_rust_rescan_file_with_rescan_stays_python`: config selects rust, but
-  Namespace has `rescan_file` plus `rescan` or `rescan_full`; seam returns
-  `None`, native runner raises if called, and the existing Python path preserves
-  today's parser-error surface and partial side-effect ordering.
-- `test_query_only_rust_selection_stays_python_without_reading_config`: query is
-  present; config reader and native runner raise if called; search stubs prove
-  Python path.
-- `test_mixed_write_query_rust_selection_stays_python_without_reading_config`:
-  `--rescan -q foo`; native runner raises if called; Python scan and search
-  stubs both record calls.
-- `test_invalid_indexer_value_returns_ex_config`: config has
-  `{"core": {"indexer": "go"}}`; assert return `core_handshake.EX_CONFIG` and
-  exact stderr.
-- `test_invalid_indexer_on_decline_value_returns_ex_config`: config has invalid
-  decline policy; assert return `core_handshake.EX_CONFIG` and exact stderr.
-- `test_handshake_skip_under_rust_aborts`: handshake returns
-  `CoreHandshakeResult("skip", "reason")`; assert return
-  `core_handshake.EX_CONFIG`, exact stderr, and no native runner call.
-- `test_handshake_fail_under_rust_aborts`: same for `fail`.
-- `test_native_decline_abort_returns_69_without_python`: native runner returns
-  69; policy abort; assert return 69, exact stderr, and no Python stub call.
-- `test_native_decline_fallback_continues_to_python`: native runner returns 69;
-  policy fallback; seam returns `None`; existing Python write stub records the
-  same operation.
-- `test_native_usage_error_64_never_fallbacks`: policy fallback but native
-  returns 64; assert return 64 and no Python stub call.
-- `test_native_tempfail_75_never_fallbacks`: policy fallback but native returns
-  75; assert return 75 and no Python stub call.
-- `test_native_signal_death_maps_to_tempfail`: native runner returns a negative
-  return code such as -9; assert return 75, exact signal-death stderr, and no
-  Python stub call.
-- `test_native_other_nonzero_returns_code`: native returns 12; assert return 12
-  and no Python stub call.
-- `test_empty_tail_raises_runtime_error`: call tail builder with rust selection and
-  no operation flags after bypassing the normal no-op guard; assert
-  `RuntimeError` with the exact empty-tail message.
-- `test_run_command_propagates_native_nonzero_indexer_return`: set `sys.argv` to
-  a pure write invocation, stub native return code to a unique nonzero such as
-  75, call `solstone.think.sol_cli.run_command("solstone.think.indexer")`, and
-  assert the same code is returned. This proves `main()` returns an int and is
-  not laundered through `None -> 0`.
 
-Existing `tests/test_indexer_cli.py` should remain valid because it ignores
-`main()`'s return value and asserts stubbed Python side effects. Add native seam
-unit tests beside it rather than broadening the argparse harness unnecessarily.
+Seam unit tests cover the coverage-aware absent default for both absent top-level
+`core` and present empty `core`, single write flags, native compositions, explicit
+selection bypassing coverage, default-provenance handshake failures, default
+69-abort and 69-fallback handling, 64/75/signal/launch-failure mappings,
+invalid decline under covered and uncovered absent-key hosts, and the rendered
+empty-tail exception.
+
+`test_run_command_propagates_native_nonzero_indexer_return` remains the
+`sol_cli.run_command()` propagation check: it uses explicit rust, stubs native to
+return a unique nonzero, and asserts that `main()` returns the same integer
+instead of laundering it through `None -> 0`.
 
 ## Implementation Sequence
 

@@ -149,29 +149,37 @@ The reserved declined process exit code is 69, matching the sysexits meaning
 "service unavailable"; it means this port declines to handle the input. It is
 distinct from existing success, usage, empty-input, and temporary-failure codes.
 
-The first declined-exit wave is the config-gated indexer selection seam in the
-Python `journal indexer` wrapper. `solstone-core indexer` returns 69 when the
-native indexer declines an unsupported input. The wrapper handles that code
-according to `config/journal.json` key `core.indexer_on_decline`: `abort`
-reports the decline and exits 69, while `fallback` reruns the same operation on
-the Python indexer. Usage errors (64) and temporary failures (75) are never
-retried in Python. Signal death is normalized to temporary failure (75). The
-supervisor intentionally keeps mapping non-zero scheduled-task exits to `error`;
+The first declined-exit wave is the indexer selection seam in the Python
+`journal indexer` wrapper. When the seam routes a write-only invocation to
+`solstone-core indexer`, the native indexer returns 69 when it declines an
+unsupported input. The wrapper handles that code according to
+`config/journal.json` key `core.indexer_on_decline`: `abort` reports the decline
+and exits 69, while `fallback` reruns the same operation on the Python indexer.
+Usage errors (64) and temporary failures (75) are never retried in Python.
+Signal death is normalized to temporary failure (75). The supervisor
+intentionally keeps mapping non-zero scheduled-task exits to `error`;
 abort-by-default makes that classification correct, and decline visibility lives
 in the wrapper's stderr and logs.
 
 ### Indexer Selection Seam
 
 `journal indexer` has a temporary Python/native selection seam for the native
-indexer migration. It reads `config/journal.json` once at command launch. An
-absent `core` section, absent `core.indexer`, and explicit
-`core.indexer = "python"` all run the Python indexer. `core.indexer = "rust"`
-runs the sibling `solstone-core indexer` binary for write-only invocations,
-passing `--journal <path>` explicitly and constructing operation flags from the
-parsed argparse namespace. Query-only and mixed write+query invocations stay on
-Python for the whole invocation and do not read selection config.
+indexer migration. It reads `config/journal.json` once at command launch.
+Query-only and mixed write+query invocations stay on Python for the whole
+invocation and do not read selection config.
+
+For write-only native-eligible invocations, explicit `core.indexer = "python"`
+runs the Python indexer and remains the rollback switch. Explicit
+`core.indexer = "rust"` selects the sibling `solstone-core indexer` binary
+everywhere and keeps its loud handshake-failure behavior. When `core.indexer` is
+unset, hosts covered by the probe module's solstone-core package predicate
+default to Rust; uncovered hosts keep Python.
+
 When 69 fallback is selected, the wrapper reruns the full operation set in
 Python; any native operations that succeeded before the decline are repeated.
+Backup-restore full rescans, direct `index_file()` callers, chat stream appends,
+importers, day-accumulator writes, and index-mutating deletes bypass
+`journal indexer` and stay on the Python indexer during the dual window.
 
 The seam normalizes `--rescan-file` to an absolute path with the same Python
 journal-path resolver used by `index_file()` before passing it to native. This
@@ -199,11 +207,13 @@ The detailed native atomicity design is in
 `docs/design/indexer-native-atomicity.md`.
 
 The selection keys are intentionally absent from `journal_default.json`. They
-are a two-release-lifetime migration control: release N keeps Python as the
-absent-key default and allows opt-in Rust; release N+1 flips the absent-key
-default to Rust while still honoring explicit Python; release N+2 deletes the
-Python orchestration path and removes `core.indexer` / `core.indexer_on_decline`
-selection.
+are a two-release-lifetime migration control: release N kept Python as the
+absent-key default and allowed opt-in Rust; release N+1 defaults absent-key
+native-eligible writes to Rust on covered hosts while still honoring explicit
+Python and keeping uncovered hosts on Python; release N+2 may delete the Python
+orchestration path and remove `core.indexer` / `core.indexer_on_decline` only
+after a completed normal alpha interval and an explicit uncovered-host
+disposition.
 
 ## Dual Paths And Shims
 

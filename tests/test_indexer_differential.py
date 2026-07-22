@@ -112,6 +112,30 @@ def _command(tmp_path: Path, mode: str) -> str:
     return _quote_command(sys.executable, _writer_script(tmp_path), mode)
 
 
+def _python_journal_indexer_command(tmp_path: Path) -> str:
+    script = tmp_path / "run_python_journal_indexer.py"
+    script.write_text(
+        """
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+journal = Path(os.environ["SOLSTONE_JOURNAL"])
+config_path = journal / "config" / "journal.json"
+config = json.loads(config_path.read_text(encoding="utf-8"))
+config.setdefault("core", {})["indexer"] = "python"
+config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+journal_bin = Path(sys.executable).with_name("journal")
+completed = subprocess.run([str(journal_bin), "indexer", "--rescan-full"], check=False)
+raise SystemExit(completed.returncode)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return _quote_command(sys.executable, script)
+
+
 def _tree_inventory(root: Path) -> dict[str, tuple[int, int]]:
     return {
         path.relative_to(root).as_posix(): (stat.st_size, stat.st_mtime_ns)
@@ -636,8 +660,7 @@ def test_command_failure_is_distinct_and_cli_nonzero(tmp_path: Path, capsys) -> 
 
 
 def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) -> None:
-    journal_bin = Path(sys.executable).with_name("journal")
-    command = _quote_command(journal_bin, "indexer", "--rescan-full")
+    command = _python_journal_indexer_command(tmp_path)
 
     report = harness.run_differential(
         journal=FIXTURE_JOURNAL,
@@ -842,8 +865,7 @@ def test_functional_fixture_cases_are_non_empty_on_reference_index(
 
 
 def test_fixture_corpus_reports_functionally_equal(tmp_path: Path) -> None:
-    journal_bin = Path(sys.executable).with_name("journal")
-    command = _quote_command(journal_bin, "indexer", "--rescan-full")
+    command = _python_journal_indexer_command(tmp_path)
 
     report = harness.run_differential(
         journal=FIXTURE_JOURNAL,

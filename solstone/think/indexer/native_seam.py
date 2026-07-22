@@ -11,10 +11,12 @@ index-mutating deletes such as observer prune, share-delete, and entity-merge
 edge folds, bypass `journal indexer` and stay on the Python indexer during the
 dual window.
 
-Selection is read once from `config/journal.json` at command launch. Absent
-selection and explicit `python` continue in Python. `rust` runs the native
-binary only for write-only command invocations; query and mixed write+query
-invocations stay in Python.
+Selection is read once from `config/journal.json` at command launch. Explicit
+`python` stays on Python and explicit `rust` selects the native path. When
+`core.indexer` is unset, write-only native-eligible invocations default to Rust
+on hosts covered by the probe module's solstone-core package predicate and to
+Python on uncovered hosts. Query and mixed write+query invocations stay in
+Python.
 
 When 69 fallback is enabled, the command reruns the full operation set in
 Python; any native operations that completed before the decline are repeated.
@@ -30,7 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from solstone.think import core_handshake
+from solstone.think import core_handshake, probe
 from solstone.think.journal_config import read_journal_config
 from solstone.think.utils import resolve_journal_path
 
@@ -51,69 +53,88 @@ INVALID_CORE_SECTION_MESSAGE = (
     "expected an object. Set core.indexer to 'python' to revert."
 )
 INVALID_DECLINE_MESSAGE = (
-    "journal indexer selected implementation {selected!r} from config key "
-    "core.indexer, but config key core.indexer_on_decline has invalid value "
-    "{value!r}; expected 'abort' or 'fallback'. Set core.indexer to 'python' "
-    "to revert."
+    "{provenance}, but config key core.indexer_on_decline has invalid value "
+    "{value!r}; expected 'abort' or 'fallback'. Set core.indexer to 'python' to "
+    "revert."
 )
 HANDSHAKE_SKIP_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core handshake returned 'skip': {message}. Set core.indexer "
-    "to 'python' to revert."
+    "{provenance}, but solstone-core handshake returned 'skip': {message}. Set "
+    "core.indexer to 'python' to revert."
 )
 HANDSHAKE_FAIL_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core handshake returned 'fail': {message}. Set core.indexer "
-    "to 'python' to revert."
+    "{provenance}, but solstone-core handshake returned 'fail': {message}. Set "
+    "core.indexer to 'python' to revert."
 )
 NATIVE_DECLINE_ABORT_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer declined this input with exit 69. Set "
-    "core.indexer_on_decline to 'fallback' to retry unsupported inputs through "
-    "Python, or set core.indexer to 'python' to revert."
+    "{provenance}, but solstone-core indexer declined this input with exit 69. "
+    "Set core.indexer_on_decline to 'fallback' to retry unsupported inputs "
+    "through Python, or set core.indexer to 'python' to revert."
 )
 NATIVE_DECLINE_FALLBACK_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer declined this input with exit 69; falling back to "
-    "Python because core.indexer_on_decline is 'fallback'. Set core.indexer to "
-    "'python' to revert."
+    "{provenance}, but solstone-core indexer declined this input with exit 69; "
+    "falling back to Python because core.indexer_on_decline is 'fallback'. Set "
+    "core.indexer to 'python' to revert."
 )
 NATIVE_USAGE_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer exited 64 (usage error). This is a seam "
-    "argument-construction bug; set core.indexer to 'python' to revert."
+    "{provenance}, but solstone-core indexer exited 64 (usage error). This is a "
+    "seam argument-construction bug; set core.indexer to 'python' to revert."
 )
 NATIVE_TEMPFAIL_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer exited 75 (temporary failure). Set core.indexer "
-    "to 'python' to revert."
+    "{provenance}, but solstone-core indexer exited 75 (temporary failure). Set "
+    "core.indexer to 'python' to revert."
 )
 NATIVE_LAUNCH_FAILED_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but launching solstone-core indexer failed: {error}. Set core.indexer to "
-    "'python' to revert."
+    "{provenance}, but launching solstone-core indexer failed: {error}. Set "
+    "core.indexer to 'python' to revert."
 )
 NATIVE_SIGNAL_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer died from signal {signal_number} (returncode "
-    "{returncode}); treating as temporary failure. Set core.indexer to 'python' "
-    "to revert."
+    "{provenance}, but solstone-core indexer died from signal {signal_number} "
+    "(returncode {returncode}); treating as temporary failure. Set core.indexer "
+    "to 'python' to revert."
 )
 NATIVE_OTHER_NONZERO_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but solstone-core indexer exited {returncode}. Set core.indexer to 'python' "
-    "to revert."
+    "{provenance}, but solstone-core indexer exited {returncode}. Set "
+    "core.indexer to 'python' to revert."
 )
 EMPTY_TAIL_MESSAGE = (
-    "journal indexer selected implementation 'rust' from config key core.indexer, "
-    "but found no native-supported operation flags to pass. This is a seam bug; "
-    "set core.indexer to 'python' to revert."
+    "{provenance}, but found no native-supported operation flags to pass. This "
+    "is a seam bug; set core.indexer to 'python' to revert."
 )
 
 ConfigReader = Callable[[str | Path | None], dict[str, Any]]
 HandshakeChecker = Callable[[], core_handshake.CoreHandshakeResult]
 HelperLocator = Callable[[], Path]
 NativeRunner = Callable[..., subprocess.CompletedProcess[Any]]
+CoverageChecker = Callable[[], bool]
+
+
+def _platform_has_core_coverage() -> bool:
+    system, machine = probe.current_solstone_core_platform()
+    return probe.is_solstone_core_covered_platform(system, machine)
+
+
+def _provenance_clause(
+    selected: str,
+    *,
+    explicit: bool,
+    covered: bool | None,
+) -> str:
+    if explicit:
+        return (
+            f"journal indexer selected implementation {selected!r} from config key "
+            "core.indexer"
+        )
+    if covered:
+        return (
+            f"journal indexer defaulted to implementation {selected!r} because "
+            "config key core.indexer is unset and solstone-core is packaged for "
+            "this platform"
+        )
+    return (
+        f"journal indexer defaulted to implementation {selected!r} because config "
+        "key core.indexer is unset and solstone-core is not packaged for this "
+        "platform"
+    )
 
 
 def maybe_run_native_indexer(
@@ -124,8 +145,9 @@ def maybe_run_native_indexer(
     handshake_checker: HandshakeChecker = core_handshake.check_solstone_core_handshake,
     helper_locator: HelperLocator = core_handshake.helper_path_for_executable,
     native_runner: NativeRunner = subprocess.run,
+    coverage_checker: CoverageChecker = _platform_has_core_coverage,
 ) -> int | None:
-    """Run native indexer when config selects it, else continue in Python."""
+    """Run native indexer when selected, else continue in Python."""
     if args.query is not None:
         return None
 
@@ -135,7 +157,10 @@ def maybe_run_native_indexer(
     if args.rescan_file and (args.rescan or args.rescan_full):
         return None
 
-    selected, decline_policy, error_message = _resolve_config(config_reader(journal))
+    selected, decline_policy, provenance, error_message = _resolve_config(
+        config_reader(journal),
+        coverage_checker=coverage_checker,
+    )
     if error_message is not None:
         _emit_error(error_message)
         return core_handshake.EX_CONFIG
@@ -145,25 +170,40 @@ def maybe_run_native_indexer(
 
     handshake = handshake_checker()
     if handshake.status == "skip":
-        _emit_error(HANDSHAKE_SKIP_MESSAGE.format(message=handshake.message))
+        _emit_error(
+            HANDSHAKE_SKIP_MESSAGE.format(
+                provenance=provenance,
+                message=handshake.message,
+            )
+        )
         return core_handshake.EX_CONFIG
     if handshake.status == "fail":
-        _emit_error(HANDSHAKE_FAIL_MESSAGE.format(message=handshake.message))
+        _emit_error(
+            HANDSHAKE_FAIL_MESSAGE.format(
+                provenance=provenance,
+                message=handshake.message,
+            )
+        )
         return core_handshake.EX_CONFIG
 
     operation_flags = _build_operation_flags(args, journal)
     if not operation_flags:
-        raise RuntimeError(EMPTY_TAIL_MESSAGE)
+        raise RuntimeError(EMPTY_TAIL_MESSAGE.format(provenance=provenance))
 
     helper_path = helper_locator()
     argv = [str(helper_path), "indexer", "--journal", journal, *operation_flags]
     try:
         completed = native_runner(argv, check=False)
     except OSError as exc:
-        _emit_error(NATIVE_LAUNCH_FAILED_MESSAGE.format(error=exc))
+        _emit_error(
+            NATIVE_LAUNCH_FAILED_MESSAGE.format(
+                provenance=provenance,
+                error=exc,
+            )
+        )
         return EXIT_TEMPFAIL
 
-    return _map_native_returncode(completed.returncode, decline_policy)
+    return _map_native_returncode(completed.returncode, decline_policy, provenance)
 
 
 def _has_write_operation(args: argparse.Namespace) -> bool:
@@ -176,24 +216,48 @@ def _has_write_operation(args: argparse.Namespace) -> bool:
     )
 
 
-def _resolve_config(config: dict[str, Any]) -> tuple[str, str, str | None]:
+def _resolve_config(
+    config: dict[str, Any],
+    *,
+    coverage_checker: CoverageChecker,
+) -> tuple[str, str, str, str | None]:
     core = config.get("core", {})
     if not isinstance(core, dict):
-        return "invalid", "abort", INVALID_CORE_SECTION_MESSAGE.format(value=core)
+        return (
+            "invalid",
+            "abort",
+            "",
+            INVALID_CORE_SECTION_MESSAGE.format(value=core),
+        )
 
-    selected = core.get("indexer", "python")
-    if selected not in ("python", "rust"):
-        return "invalid", "abort", INVALID_INDEXER_MESSAGE.format(value=selected)
+    if "indexer" in core:
+        selected = core["indexer"]
+        if selected not in ("python", "rust"):
+            return (
+                "invalid",
+                "abort",
+                "",
+                INVALID_INDEXER_MESSAGE.format(value=selected),
+            )
+        provenance = _provenance_clause(selected, explicit=True, covered=None)
+    else:
+        covered = coverage_checker()
+        selected = "rust" if covered else "python"
+        provenance = _provenance_clause(selected, explicit=False, covered=covered)
 
     decline_policy = core.get("indexer_on_decline", "abort")
     if decline_policy not in ("abort", "fallback"):
         return (
             selected,
             "abort",
-            INVALID_DECLINE_MESSAGE.format(selected=selected, value=decline_policy),
+            provenance,
+            INVALID_DECLINE_MESSAGE.format(
+                provenance=provenance,
+                value=decline_policy,
+            ),
         )
 
-    return selected, decline_policy, None
+    return selected, decline_policy, provenance, None
 
 
 def _build_operation_flags(args: argparse.Namespace, journal: str) -> list[str]:
@@ -223,31 +287,41 @@ def _normalize_rescan_file(journal: str, file_path: str) -> str:
     return str(resolve_journal_path(journal_path, file_path).resolve())
 
 
-def _map_native_returncode(returncode: int, decline_policy: str) -> int | None:
+def _map_native_returncode(
+    returncode: int,
+    decline_policy: str,
+    provenance: str,
+) -> int | None:
     if returncode == 0:
         return 0
     if returncode < 0:
         _emit_error(
             NATIVE_SIGNAL_MESSAGE.format(
+                provenance=provenance,
                 signal_number=abs(returncode),
                 returncode=returncode,
             )
         )
         return EXIT_TEMPFAIL
     if returncode == EXIT_USAGE:
-        _emit_error(NATIVE_USAGE_MESSAGE)
+        _emit_error(NATIVE_USAGE_MESSAGE.format(provenance=provenance))
         return EXIT_USAGE
     if returncode == EXIT_UNAVAILABLE:
         if decline_policy == "fallback":
-            _emit_warning(NATIVE_DECLINE_FALLBACK_MESSAGE)
+            _emit_warning(NATIVE_DECLINE_FALLBACK_MESSAGE.format(provenance=provenance))
             return None
-        _emit_error(NATIVE_DECLINE_ABORT_MESSAGE)
+        _emit_error(NATIVE_DECLINE_ABORT_MESSAGE.format(provenance=provenance))
         return EXIT_UNAVAILABLE
     if returncode == EXIT_TEMPFAIL:
-        _emit_error(NATIVE_TEMPFAIL_MESSAGE)
+        _emit_error(NATIVE_TEMPFAIL_MESSAGE.format(provenance=provenance))
         return EXIT_TEMPFAIL
 
-    _emit_error(NATIVE_OTHER_NONZERO_MESSAGE.format(returncode=returncode))
+    _emit_error(
+        NATIVE_OTHER_NONZERO_MESSAGE.format(
+            provenance=provenance,
+            returncode=returncode,
+        )
+    )
     return returncode
 
 
