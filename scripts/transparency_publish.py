@@ -2035,7 +2035,7 @@ def _config_from_args(
     root = Path(args.root).resolve()
     version = args.version
     source_commit = args.source_commit
-    release_dir = env.get("RELEASE_DIR")
+    release_dir = env.get("RELEASE_DIR") if args.command == "publish" else None
     if release_dir and not version:
         version = Path(release_dir).name
     if not version:

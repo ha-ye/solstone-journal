@@ -54,7 +54,7 @@ def test_config_from_args_derives_source_commit_from_retained_ledger(
     env.pop("SOURCE_COMMIT")
     env["RELEASE_DIR"] = str(release_dir)
     config = publisher._config_from_args(
-        Namespace(root=str(tmp_path), version="", source_commit=""),
+        Namespace(command="publish", root=str(tmp_path), version="", source_commit=""),
         env,
     )
     assert config.version == version
@@ -70,7 +70,9 @@ def test_config_from_args_rejects_mispointed_release_dir(tmp_path: Path) -> None
 
     with pytest.raises(DriverError) as error:
         publisher._config_from_args(
-            Namespace(root=str(tmp_path), version="", source_commit=""),
+            Namespace(
+                command="publish", root=str(tmp_path), version="", source_commit=""
+            ),
             env,
         )
 
@@ -80,6 +82,21 @@ def test_config_from_args_rejects_mispointed_release_dir(tmp_path: Path) -> None
     assert str((tmp_path / "dist" / "release-candidate" / version).resolve()) in (
         failure.expected
     )
+
+
+def test_config_from_args_ignores_release_dir_for_resign(tmp_path: Path) -> None:
+    release_dir = tmp_path / "elsewhere" / "0.9.1"
+    release_dir.mkdir(parents=True)
+    env = _env(tmp_path)
+    env["RELEASE_DIR"] = str(release_dir)
+    args = publisher.build_parser().parse_args(
+        ["resign-transparency-pointer", "--root", str(tmp_path)]
+    )
+
+    config = publisher._config_from_args(args, env)
+
+    assert config.version == "resign"
+    assert config.source_commit == "0" * 40
 
 
 def test_check_transparency_minisign_missing_binary_fails_loudly(
