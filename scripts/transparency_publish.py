@@ -79,10 +79,8 @@ from scripts.transparency_head_log import (
     highest_seq,
 )
 from scripts.transparency_signing import (
-    MISSING_MINISIGN_MESSAGE,
     LocalMinisignSigner,
     TransparencySigner,
-    check_minisign_binary,
 )
 from scripts.transparency_transport import (
     CurlTransparencyTransport,
@@ -1814,7 +1812,6 @@ def build_parser() -> argparse.ArgumentParser:
     resign_parser.add_argument("--root", default=".")
     resign_parser.add_argument("--version", default="resign")
     resign_parser.add_argument("--source-commit", default="0" * 40)
-    subparsers.add_parser("check-minisign")
     return parser
 
 
@@ -1826,9 +1823,6 @@ def main(
     args = parser.parse_args(list(argv) if argv is not None else None)
     runtime_env = dict(os.environ if env is None else env)
     try:
-        if args.command == "check-minisign":
-            check_minisign_binary()
-            return 0
         config = _config_from_args(args, runtime_env)
         transport = _transport_from_config(config)
         signer = _signer_from_config(config)
@@ -1849,8 +1843,6 @@ def main(
             return 2
     except DriverError as exc:
         _print_failures(exc)
-        if any(item.error == MISSING_MINISIGN_MESSAGE for item in exc.failures):
-            return 1
         return 1
     print(json.dumps(result.as_dict(), sort_keys=True))
     return 0

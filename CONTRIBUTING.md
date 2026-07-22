@@ -13,27 +13,28 @@ Required everywhere:
 - Git
 - ripgrep (`rg`)
 - ffmpeg for audio processing
+- minisign 0.12 for transparency signing checks
 
 Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged host installs (`uv tool install solstone-journal && uv tool install solstone`) on macOS 14 or newer ship the helper as a pre-built binary.
 
 Fedora/RHEL:
 
 ```bash
-sudo dnf install python3 git ripgrep ffmpeg pipewire gstreamer1-plugins-base gstreamer1-plugin-pipewire pulseaudio-utils
+sudo dnf install python3 git ripgrep ffmpeg minisign pipewire gstreamer1-plugins-base gstreamer1-plugin-pipewire pulseaudio-utils
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Ubuntu/Debian:
 
 ```bash
-sudo apt install python3 git ripgrep ffmpeg pipewire gstreamer1.0-tools gstreamer1.0-pipewire pulseaudio-utils
+sudo apt install python3 git ripgrep ffmpeg minisign pipewire gstreamer1.0-tools gstreamer1.0-pipewire pulseaudio-utils
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Arch:
 
 ```bash
-sudo pacman -S python git ripgrep ffmpeg pipewire gstreamer gst-plugin-pipewire libpulse
+sudo pacman -S python git ripgrep ffmpeg minisign pipewire gstreamer gst-plugin-pipewire libpulse
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
@@ -41,7 +42,7 @@ macOS:
 
 ```bash
 xcode-select --install
-brew install python git ripgrep ffmpeg uv
+brew install python git ripgrep ffmpeg minisign uv
 ```
 
 ## Source-checkout install

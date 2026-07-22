@@ -783,7 +783,7 @@ release-test: ## Locked test-publication entrypoint
 
 .PHONY: check-transparency-minisign
 check-transparency-minisign: .installed
-	$(VENV_BIN)/python scripts/transparency_publish.py check-minisign
+	$(VENV_BIN)/python scripts/check_transparency_minisign.py
 
 .PHONY: publish-transparency resign-transparency-pointer
 publish-transparency: .installed

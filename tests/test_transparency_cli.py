@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import logging
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
+import scripts.check_transparency_minisign as minisign_gate
 import scripts.transparency_publish as publisher
 from scripts.release_candidate_driver import DriverError
 from scripts.transparency_core import DEFAULT_BASE_URL, PRODUCT
@@ -61,16 +61,11 @@ def test_config_from_args_derives_source_commit_from_retained_ledger(
     assert config.source_commit == "b" * 40
 
 
-def test_cli_check_minisign_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(publisher, "check_minisign_binary", lambda: "minisign 0.12")
-    assert publisher.main(["check-minisign"], env={}) == 0
-
-
-def test_cli_check_minisign_missing_logs_loud_message(
+def test_check_transparency_minisign_missing_binary_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def fail() -> str:
+    def fail() -> None:
         raise DriverError(
             [
                 publisher.failure(
@@ -82,10 +77,39 @@ def test_cli_check_minisign_missing_logs_loud_message(
             ]
         )
 
-    monkeypatch.setattr(publisher, "check_minisign_binary", fail)
-    caplog.set_level(logging.ERROR)
-    assert publisher.main(["check-minisign"], env={}) == 1
-    assert MISSING_MINISIGN_MESSAGE in caplog.text
+    monkeypatch.setattr(minisign_gate, "check_minisign_binary", fail)
+    assert minisign_gate.main([]) == 1
+    captured = capsys.readouterr()
+    assert MISSING_MINISIGN_MESSAGE in captured.err
+    assert "sudo dnf install minisign" in captured.err
+
+
+def test_check_transparency_minisign_tamper_must_fail(tmp_path: Path) -> None:
+    class AcceptingVerifier:
+        def verify_file(
+            self,
+            message_path: Path,
+            signature_path: Path,
+            *,
+            expected_trusted_comment: str,
+        ) -> None:
+            return None
+
+    message = tmp_path / "message.json"
+    signature = tmp_path / "message.json.minisig"
+    message.write_bytes(b'{"ok":1}\n')
+    signature.write_text("placeholder\n", encoding="utf-8")
+    with pytest.raises(DriverError) as error:
+        minisign_gate._assert_tampered_verify_fails(
+            AcceptingVerifier(),
+            message,
+            signature,
+            expected_trusted_comment="trusted",
+        )
+    assert (
+        error.value.failures[0].error
+        == "transparency minisign tampered message verified"
+    )
 
 
 def test_cli_publish_prints_operator_summary(
