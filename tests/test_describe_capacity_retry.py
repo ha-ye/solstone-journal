@@ -65,11 +65,18 @@ def _assert_no_describe_temp(directory: Path) -> None:
 
 def _capacity_error():
     from solstone.think.providers import local as local_provider
+    from solstone.think.providers.local_endpoint import LocalEndpoint
 
     inner = type("ReadTimeout", (Exception,), {})("capacity wait timed out")
     outer = RuntimeError("outer")
     outer.__cause__ = inner
-    return local_provider._classify_byo_generate_error(outer)
+    endpoint = LocalEndpoint(
+        base_url="http://endpoint.test",
+        served_model_id="m",
+        credential=None,
+        is_bundled=False,
+    )
+    return local_provider._classify_byo_generate_error(outer, endpoint)
 
 
 class RetryBatch:
