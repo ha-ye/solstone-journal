@@ -459,6 +459,13 @@ class VideoProcessor:
 
         try:
             with av.open(str(self.video_path)) as container:
+                if not container.streams.video:
+                    logger.error(
+                        f"No video stream in {self.video_path}. Skipping video."
+                    )
+                    self.decode_failed = True
+                    return self.qualified_frames
+
                 stream = container.streams.video[0]
                 stream.thread_type = "AUTO"
                 stream.codec_context.thread_count = 0
@@ -593,13 +600,13 @@ class VideoProcessor:
                     self.qualified_count,
                 )
 
-        except av.error.InvalidDataError as e:
+        except av.error.FFmpegError as e:
             logger.error(
-                f"Invalid video data error for {self.video_path}: {e}. Skipping video.",
+                f"Video decode error for {self.video_path}: {e}. Skipping video.",
                 exc_info=True,
             )
             self.decode_failed = True
-            return []
+            return self.qualified_frames
         except Exception as e:
             logger.error(
                 f"Unexpected error processing video {self.video_path}: {e}",

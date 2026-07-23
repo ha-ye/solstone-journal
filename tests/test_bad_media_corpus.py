@@ -242,6 +242,46 @@ def _build_one_frame_mp4(path: Path) -> None:
             container.mux(packet)
 
 
+def _build_truncated_webm(path: Path) -> None:
+    pytest.importorskip("av")
+    import av
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="webm") as container:
+        stream = container.add_stream("libvpx", rate=1)
+        stream.width = 64
+        stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        frame = av.VideoFrame.from_ndarray(
+            np.zeros((64, 64, 3), dtype=np.uint8),
+            format="rgb24",
+        )
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    path.write_bytes(buf.getvalue()[:36])
+
+
+def _build_audio_only_mp4(path: Path) -> None:
+    pytest.importorskip("av")
+    import av
+
+    with av.open(str(path), "w", format="mp4") as container:
+        stream = container.add_stream("aac", rate=48000)
+        stream.layout = "mono"
+        frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, 4800), dtype=np.float32),
+            format="flt",
+            layout="mono",
+        )
+        frame.sample_rate = 48000
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+
 def _drive_describe(
     monkeypatch,
     video_path: Path,
@@ -594,6 +634,99 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
     assert load_audio_spy.call_count == 0
     assert stt_spy.call_count == 0
     assert vad_spy.call_count == 0
+
+
+def test_eof_truncated_screen_terminalizes_corrupt_input(
+    segment_journal,
+    monkeypatch,
+):
+    av = pytest.importorskip("av")
+    from solstone.observe.describe import should_reenter_failed_describe
+
+    segment = _segment_dir(segment_journal)
+    video_path = segment / "screen.webm"
+    output_path = segment / "screen.jsonl"
+    _build_truncated_webm(video_path)
+
+    with pytest.raises(av.error.EOFError):
+        with av.open(str(video_path)) as c:
+            for _ in c.decode(video=0):
+                pass
+
+    _header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+    )
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert record["attempts"] == 1
+    assert record["schema"] == "solstone.processing.v1"
+    assert agenerate.call_count == 0
+    assert read_segment_data_state(DAY, SEGMENT) == {
+        "screen": DataState.FAILED_FINAL.value
+    }
+    assert should_reenter_failed_describe(record) is False
+
+
+def test_no_video_stream_screen_terminalizes_corrupt_input(
+    segment_journal,
+    monkeypatch,
+):
+    av = pytest.importorskip("av")
+    segment_key = "123000_300"
+    segment = _segment_dir(segment_journal, segment=segment_key)
+    video_path = segment / "screen.mp4"
+    output_path = segment / "screen.jsonl"
+    _build_audio_only_mp4(video_path)
+
+    with av.open(str(video_path)) as c:
+        assert len(c.streams.video) == 0
+
+    _header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+    )
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert record["attempts"] == 1
+    assert agenerate.call_count == 0
+    assert read_segment_data_state(DAY, segment_key) == {
+        "screen": DataState.FAILED_FINAL.value
+    }
+
+
+def test_aruco_frame_body_index_error_still_propagates(
+    segment_journal,
+    monkeypatch,
+):
+    from solstone.observe import aruco, describe
+
+    segment = _segment_dir(segment_journal, segment="124000_300")
+    video_path = segment / "screen.mp4"
+    output_path = segment / "screen.jsonl"
+    _build_one_frame_mp4(video_path)
+
+    def raise_index_error(_image):
+        raise IndexError("frame body boom")
+
+    monkeypatch.setattr(aruco, "detect_markers", raise_index_error)
+
+    processor = describe.VideoProcessor(video_path)
+    with pytest.raises(IndexError, match="frame body boom"):
+        processor.process()
+    assert not output_path.exists()
 
 
 def test_ac4_corrupt_screen_is_failed_distinct_from_empty(segment_journal, monkeypatch):
