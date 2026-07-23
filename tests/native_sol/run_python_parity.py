@@ -23,8 +23,13 @@ from solstone.apps.activities import call as activities_call
 from solstone.apps.support import call as support_call
 from solstone.think import chat_cli
 from solstone.think.call import call_app
-from solstone.think.convey_client import ConveyClientError, ConveyUnreachableError
+from solstone.think.convey_client import (
+    ConveyClientError,
+    ConveyTimeoutError,
+    ConveyUnreachableError,
+)
 from solstone.think.tools import health as health_call
+from solstone.think.utils import require_solstone
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PARITY_DIR = REPO_ROOT / "core/fixtures/native-sol/parity"
@@ -169,6 +174,17 @@ def sse_shape(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def raise_fault(fault: dict[str, Any]) -> None:
+    if fault.get("kind") == "service_down":
+        # Faithfully reproduce the pre-client require_solstone() gate that the
+        # live ConveyClient hits on a transport error when solstone is down.
+        # is_solstone_up is patched False in patched_runtime, so this prints the
+        # shared service-down line and exits 1 exactly like the real CLI — the
+        # generic `unreachable` fault below bypasses this gate and is not
+        # evidence for real service-down output.
+        require_solstone()
+        raise AssertionError("require_solstone() did not exit for service_down fault")
+    if fault.get("kind") == "timeout":
+        raise ConveyTimeoutError(detail=fault.get("detail"))
     if fault.get("kind") == "unreachable":
         raise ConveyUnreachableError(
             fault.get("error") or "I couldn't reach the journal over HTTP.",
@@ -507,6 +523,7 @@ def patched_runtime(
     with (
         patch.dict(os.environ, env, clear=True),
         patch("solstone.think.identity.ensure_identity_directory", lambda: None),
+        patch("solstone.think.utils.is_solstone_up", return_value=False),
         patch("subprocess.Popen", blocked_spawn),
         patch("subprocess.run", blocked_spawn),
         patch("subprocess.check_output", blocked_spawn),

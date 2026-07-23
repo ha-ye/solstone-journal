@@ -260,7 +260,15 @@ fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpRespons
         })
     } else {
         let fault = &request["fault"];
-        if fault.get("kind").and_then(Value::as_str) == Some("unreachable") {
+        // `service_down` models the pre-client require_solstone() exit (solstone
+        // not running). Native has no preflight — a refused connection surfaces as
+        // Unreachable, which the require_service=True apps render as the shared
+        // service-down message. `unreachable` stays distinct for client-level
+        // semantics (support portal fallback, chat service-down).
+        if matches!(
+            fault.get("kind").and_then(Value::as_str),
+            Some("unreachable") | Some("service_down")
+        ) {
             return Err(ClientError::unreachable(
                 fault
                     .get("detail")

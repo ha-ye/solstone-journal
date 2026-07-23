@@ -417,7 +417,7 @@ mod tests {
 
     use crate::command::{CommandContext, CommandOutput};
     use crate::seam::{ExpectedHttpCall, ScriptedHttpTransport};
-    use crate::transport::{ApiRequest, HttpMethod, TimeoutPolicy};
+    use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
 
     #[test]
     fn summary_unreachable_renders_service_down_message() {
@@ -509,5 +509,54 @@ mod tests {
                 exit: 1,
             }
         );
+    }
+
+    #[test]
+    fn pipeline_report_failed_renders_sanitized_detail() {
+        // Native-only coverage: on a reason-coded `health_report_failed` 500,
+        // native's pipeline renders the sanitized server detail. The installed
+        // Python `pipeline` wrapper deliberately lets the exception surface with
+        // empty stderr; that intentional divergence is why this case cannot be a
+        // shared Python/native parity vector and lives here instead.
+        let args: Vec<String> = vec!["--day".to_string(), "20260723".to_string()];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![ExpectedHttpCall::Request {
+            expected: ApiRequest {
+                method: HttpMethod::Get,
+                path: "/api/health/pipeline".to_string(),
+                params: vec![QueryParam::single("day", "20260723")],
+                json: None,
+                headers: vec![],
+                policy: TimeoutPolicy::Api,
+            },
+            result: Err(ClientError::ReasonRejected {
+                status: 500,
+                error: "I couldn't build your journal health report.".to_string(),
+                reason_code: Some("health_report_failed".to_string()),
+                detail: Some("health report unavailable".to_string()),
+                payload: Box::new(serde_json::Value::Null),
+            }),
+        }]);
+        let output = pipeline(CommandContext {
+            args: &args,
+            env: &env,
+            stdin: "",
+            today: "20260723",
+            transport: &transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+        });
+
+        assert_eq!(
+            output,
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "health report unavailable\n".to_string(),
+                exit: 1,
+            }
+        );
+        transport.assert_done();
     }
 }
