@@ -4,6 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.12] - 2026-07-22
+
+### Added
+
+- every release now publishes signed evidence of exactly what shipped at transparency.solstone.app. anyone can check a release against it independently.
+
+### Changed
+
+- one version number for the journal everywhere now. the pip-installed journal and the native journal apps used to count releases separately; from this release they share the same version, which is why the number jumps. same journal, nothing was skipped.
+- on supported machines, the journal's index is now updated by new native code. what the index holds is unchanged, and a setting can put the previous indexer back at any time.
+
+### Fixed
+
+- a journal with leftover confidential processing settings, but with the built-in local model doing its thinking, could stop thinking entirely. sol now goes by where thinking actually runs, not by what's left in settings, so the built-in model keeps working. while confidential processing is on, switching providers now requires turning it off first, so a settings change can't leave the journal in that state again.
+- the same leftover settings could quietly stall transcription while everything else looked fine, leaving new audio waiting. transcription now falls back to local speech-to-text in that state. the separate safeguard that decides whether audio may leave your machine is unchanged.
+
 ## [0.9.1] - 2026-07-22
 
 ### Added
