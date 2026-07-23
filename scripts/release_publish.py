@@ -83,10 +83,6 @@ class PublishConfig:
     retained_ledger: Mapping[str, Any] = field(repr=False)
 
     @property
-    def evidence_dir(self) -> Path:
-        return self.root / "target" / "release-evidence" / self.version
-
-    @property
     def resume_target(self) -> str:
         target = (
             "publish-release" if self.mode == "production" else "publish-release-test"
@@ -211,11 +207,6 @@ class ArtifactEntry:
 @dataclass(frozen=True)
 class ClassifiedArtifacts:
     uploads: tuple[ArtifactEntry, ...]
-    manifests: tuple[str, ...]
-
-    @property
-    def expected_by_filename(self) -> dict[str, str]:
-        return {entry.name: entry.sha256 for entry in self.uploads}
 
     @property
     def project_expectations(self) -> tuple["ProjectExpectation", ...]:
@@ -419,11 +410,6 @@ def classify_candidate_artifacts(config: PublishConfig) -> ClassifiedArtifacts:
     unknown = sorted(actual_names - expected_upload_set - expected_manifest_set)
     missing_uploads = sorted(expected_upload_set - actual_names)
     missing_manifests = sorted(expected_manifest_set - actual_names)
-    extra_manifests = sorted(
-        name
-        for name in actual_names - expected_upload_set - expected_manifest_set
-        if name.endswith(".rust-release-manifest.json")
-    )
     problems: list[str] = []
     if invalid_entries:
         problems.append(f"invalid entries: {', '.join(invalid_entries)}")
@@ -435,8 +421,6 @@ def classify_candidate_artifacts(config: PublishConfig) -> ClassifiedArtifacts:
         problems.append(f"missing uploads: {', '.join(missing_uploads)}")
     if missing_manifests:
         problems.append(f"missing manifests: {', '.join(missing_manifests)}")
-    if extra_manifests:
-        problems.append(f"extra manifests: {', '.join(extra_manifests)}")
     if problems:
         raise DriverError(
             [
@@ -469,21 +453,15 @@ def classify_candidate_artifacts(config: PublishConfig) -> ClassifiedArtifacts:
                 version=project_version,
             )
         )
-    return ClassifiedArtifacts(
-        uploads=tuple(uploads),
-        manifests=tuple(sorted(expected_manifest_set)),
-    )
+    return ClassifiedArtifacts(uploads=tuple(uploads))
 
 
 def _verify_recover(config: PublishConfig) -> CandidateReport:
-    try:
-        report = recover_candidate(
-            config.root,
-            version=config.version,
-            source_commit=config.source_commit,
-        )
-    except DriverError:
-        raise
+    report = recover_candidate(
+        config.root,
+        version=config.version,
+        source_commit=config.source_commit,
+    )
     if report.heading != "retained-candidate-valid":
         raise DriverError(
             [

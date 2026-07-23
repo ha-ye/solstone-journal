@@ -467,6 +467,22 @@ def test_config_requires_mode_token_before_ledger(tmp_path: Path) -> None:
     assert _first_failure(excinfo.value) == "release publish environment is incomplete"
 
 
+def test_config_rejects_release_dir_path_mismatch(tmp_path: Path) -> None:
+    version = _release_version()
+    release_dir = tmp_path / "elsewhere" / version
+
+    with pytest.raises(DriverError) as excinfo:
+        publisher.PublishConfig.from_env(
+            root=tmp_path,
+            mode="test",
+            env={"RELEASE_DIR": str(release_dir), "TESTPYPI_TOKEN": TOKEN},
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "release publish RELEASE_DIR does not match retained path"
+    )
+
+
 def test_config_wraps_malformed_ledger(tmp_path: Path) -> None:
     version = _release_version()
     release_dir = tmp_path / "dist" / "release-candidate" / version
@@ -538,6 +554,69 @@ def test_production_clean_path_orders_upload_verify_tag_witness(
     assert result.upload_state == "uploaded"
     assert result.tag_state == "created-and-pushed"
     assert result.witness_status.state == "created"
+
+
+def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    ledger = _ledger(report)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    captured_paths: list[Path] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    def upload(
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append("upload")
+        assert cwd == tmp_path
+        assert env["TWINE_PASSWORD"] == TOKEN
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        assert list(argv[:4]) == [
+            "twine",
+            "upload",
+            "--repository-url",
+            publisher.PRODUCTION_REPOSITORY_URL,
+        ]
+        captured_paths.extend(Path(value) for value in argv[4:])
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    result = _run_publish(
+        _config(tmp_path, report, mode="production"),
+        calls=calls,
+        index=index,
+        upload_runner=upload,
+        git_runner=RecordingGit(calls),
+        gh_runner=_gh_runner(calls),
+    )
+
+    ledger_uploads = {
+        item["name"]: item["sha256"]
+        for item in ledger["candidate"]["files"]
+        if not item["name"].endswith(".rust-release-manifest.json")
+    }
+    expected_uploads = set(
+        publisher.expected_package_names(
+            include_models=ledger["models"]["decision"] == "include"
+        )
+    )
+
+    assert result.upload_state == "uploaded"
+    assert set(ledger_uploads) == expected_uploads
+    assert {path.name for path in captured_paths} == expected_uploads
+    for path in captured_paths:
+        assert (
+            hashlib.sha256(path.read_bytes()).hexdigest() == ledger_uploads[path.name]
+        )
 
 
 def test_byte_divergence_from_recover_prevents_transport(
@@ -628,6 +707,43 @@ def test_checkout_version_mismatch_refuses_before_transport(
     assert _first_failure(excinfo.value) == (
         "release publish checkout version does not match retained candidate"
     )
+    assert calls == []
+
+
+def test_retained_ledger_version_mismatch_refuses_before_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path)
+    ledger = _ledger(report)
+    ledger["version"] = "0.0.0"
+    _write_ledger(report, ledger)
+
+    def recover(root: Path, *, version: str, source_commit: str) -> CandidateReport:
+        assert root == tmp_path
+        assert source_commit == SOURCE_COMMIT
+        disk_ledger = _ledger(report)
+        # Evidence-dir path derives from the dirname version, so it is not independently variable.
+        if disk_ledger["version"] != version:
+            raise DriverError(
+                [
+                    failure(
+                        "retained ledger version mismatch",
+                        expected=version,
+                        actual=str(disk_ledger["version"]),
+                        repair="bash scripts/release.sh --recover",
+                    )
+                ]
+            )
+        return report
+
+    monkeypatch.setattr(publisher, "recover_candidate", recover)
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(_config(tmp_path, report), calls=calls, index=index)
+
+    assert _first_failure(excinfo.value) == "retained ledger version mismatch"
     assert calls == []
 
 
