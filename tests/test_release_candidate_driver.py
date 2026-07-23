@@ -1265,10 +1265,8 @@ def test_publication_entrypoints_fail_closed_before_external_seams(
     )
 
     assert result.returncode != 0
-    assert (
-        "publishing is locked out here; use the aggregate publisher after a release candidate is finalized"
-        in result.stderr
-    )
+    assert "make publish-release" in result.stderr
+    assert "scripts/release_publish.py" in result.stderr
     assert "release-publisher" not in result.stderr
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
 
