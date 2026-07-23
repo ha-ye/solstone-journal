@@ -93,7 +93,6 @@ _CONFIDENTIAL_TERMINAL_PHASES = {
     for phase in _CONFIDENTIAL_RAW_TERMINAL_PHASES
 }
 _CONFIDENTIAL_PHASE_NOT_VERIFIED = "not_verified"
-_CONFIDENTIAL_PHASE_REPAIR_NEEDED = "repair_needed"
 _CONFIDENTIAL_SUCCESS_PHASES = {_CONFIDENTIAL_PHASE_NOT_VERIFIED}
 _CONFIDENTIAL_OUTCOME_TERMINAL = "terminal"
 _CONFIDENTIAL_OUTCOME_TIMEOUT = "timeout"
@@ -196,10 +195,14 @@ def _post_confidential_action(path: str) -> dict[str, Any]:
     try:
         return _request("POST", path)
     except ConveyClientError as err:
-        if err.reason_code in {
-            INVALID_OPERATION_FOR_STATE.code,
-            SERVICE_BUSY.code,
-        } and err.detail:
+        if (
+            err.reason_code
+            in {
+                INVALID_OPERATION_FOR_STATE.code,
+                SERVICE_BUSY.code,
+            }
+            and err.detail
+        ):
             _exit_with(err.detail)
         raise
 
@@ -307,9 +310,7 @@ def _echo_scout_terminal(
 def _echo_confidential_terminal(
     state_block: dict[str, Any],
     phase: str | None,
-    outcome: str,
 ) -> None:
-    del outcome
     operation = state_block.get("confidential_operation")
     if not isinstance(operation, dict):
         operation = {}
@@ -354,13 +355,15 @@ def confidential_status() -> None:
     """Show confidential processing status."""
 
     state = _get_confidential_state()
+    operation = state.get("confidential_operation")
+    operation_phase = operation.get("phase") if isinstance(operation, dict) else None
     _echo_json(
         {
             "confidential_enabled": state.get("confidential_enabled"),
             "confidential_provenance_configured": state.get(
                 "confidential_provenance_configured"
             ),
-            "confidential_operation": state.get("confidential_operation"),
+            "confidential_operation_phase": operation_phase,
             "confidential_attestation": state.get("confidential_attestation"),
         }
     )
@@ -421,7 +424,7 @@ def confidential_enable(
         wait_seconds=wait_seconds,
         poll_interval=poll_interval,
     )
-    _echo_confidential_terminal(state, phase, outcome)
+    _echo_confidential_terminal(state, phase)
 
     if (
         outcome == _CONFIDENTIAL_OUTCOME_TERMINAL

@@ -140,12 +140,14 @@ def _stable_confidential_handoff_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _confidential_status_subset(state: dict[str, Any]) -> dict[str, Any]:
+    operation = state.get("confidential_operation")
+    operation_phase = operation.get("phase") if isinstance(operation, dict) else None
     return {
         "confidential_enabled": state.get("confidential_enabled"),
         "confidential_provenance_configured": state.get(
             "confidential_provenance_configured"
         ),
-        "confidential_operation": state.get("confidential_operation"),
+        "confidential_operation_phase": operation_phase,
         "confidential_attestation": state.get("confidential_attestation"),
     }
 
@@ -336,6 +338,33 @@ def test_confidential_status_matches_http_active_lane_subset(
     assert (journal_copy / "config" / "journal.json").read_text(
         encoding="utf-8"
     ) == before
+
+
+def test_confidential_status_omits_operation_portal_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        thinking_call,
+        "_get_confidential_state",
+        lambda: {
+            "confidential_enabled": False,
+            "confidential_provenance_configured": False,
+            "confidential_operation": {
+                "phase": "starting",
+                "portal_url": "http://portal.test/enable/spp?nonce=SECRETNONCE",
+            },
+            "confidential_attestation": _checked_confidential_attestation(),
+        },
+    )
+
+    result = runner.invoke(thinking_call.app, ["confidential", "status"])
+
+    payload = json.loads(result.stdout)
+    output = result.stdout + result.stderr
+    assert result.exit_code == 0
+    assert payload["confidential_operation_phase"] == "starting"
+    assert "SECRETNONCE" not in output
+    assert "portal_url" not in output
 
 
 @pytest.mark.parametrize(
@@ -707,10 +736,7 @@ def test_confidential_cli_phase_mirror_matches_routes() -> None:
         thinking_call._CONFIDENTIAL_PHASE_TO_PRODUCT
         == thinking_routes._CONFIDENTIAL_PHASE_TO_PRODUCT
     )
-    assert (
-        thinking_call._CONFIDENTIAL_RAW_TERMINAL_PHASES
-        == operations.TERMINAL_PHASES
-    )
+    assert thinking_call._CONFIDENTIAL_RAW_TERMINAL_PHASES == operations.TERMINAL_PHASES
     assert thinking_call._CONFIDENTIAL_TERMINAL_PHASES == {
         "not_verified",
         "needs_subscription",
