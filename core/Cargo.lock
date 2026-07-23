@@ -507,6 +507,8 @@ dependencies = [
 name = "solstone-core-sol"
 version = "1.0.12"
 dependencies = [
+ "chrono",
+ "serde_json",
  "solstone-core-journal",
  "solstone-core-sol-client",
  "solstone-core-sol-client-cli",

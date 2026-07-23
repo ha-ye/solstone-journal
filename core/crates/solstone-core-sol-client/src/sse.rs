@@ -11,57 +11,29 @@ where
 {
     SseEvents {
         chunks: chunks.into_iter(),
-        buffer: String::new(),
-        data_lines: Vec::new(),
-        pending: VecDeque::new(),
+        decoder: SseDecoder::default(),
         done: false,
     }
 }
 
-pub struct SseEvents<I>
-where
-    I: Iterator<Item = Vec<u8>>,
-{
-    chunks: I,
+#[derive(Debug, Default)]
+pub struct SseDecoder {
     buffer: String,
     data_lines: Vec<String>,
     pending: VecDeque<Value>,
-    done: bool,
 }
 
-impl<I> Iterator for SseEvents<I>
-where
-    I: Iterator<Item = Vec<u8>>,
-{
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(event) = self.pending.pop_front() {
-                return Some(event);
-            }
-            if self.done {
-                return None;
-            }
-            match self.chunks.next() {
-                Some(chunk) => {
-                    self.buffer
-                        .push_str(String::from_utf8_lossy(&chunk).as_ref());
-                    self.drain_lines();
-                }
-                None => {
-                    self.done = true;
-                    return None;
-                }
-            }
-        }
+impl SseDecoder {
+    pub fn push_chunk(&mut self, chunk: &[u8]) {
+        self.buffer
+            .push_str(String::from_utf8_lossy(chunk).as_ref());
+        self.drain_lines();
     }
-}
 
-impl<I> SseEvents<I>
-where
-    I: Iterator<Item = Vec<u8>>,
-{
+    pub fn pop_event(&mut self) -> Option<Value> {
+        self.pending.pop_front()
+    }
+
     fn drain_lines(&mut self) {
         while let Some(index) = self.buffer.find('\n') {
             let mut line = self.buffer[..index].to_string();
@@ -98,6 +70,40 @@ where
         };
         if value.is_object() {
             self.pending.push_back(value);
+        }
+    }
+}
+
+pub struct SseEvents<I>
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    chunks: I,
+    decoder: SseDecoder,
+    done: bool,
+}
+
+impl<I> Iterator for SseEvents<I>
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(event) = self.decoder.pop_event() {
+                return Some(event);
+            }
+            if self.done {
+                return None;
+            }
+            match self.chunks.next() {
+                Some(chunk) => self.decoder.push_chunk(&chunk),
+                None => {
+                    self.done = true;
+                    return None;
+                }
+            }
         }
     }
 }
@@ -184,5 +190,14 @@ mod tests {
     fn decodes_utf8_with_replacement() {
         let events = collect(&[b"data: {\"bad\":\"\xff\"}\n\n"]);
         assert_eq!(events, vec![json!({"bad": "�"})]);
+    }
+
+    #[test]
+    fn decoder_preserves_partial_frame_across_chunks() {
+        let mut decoder = SseDecoder::default();
+        decoder.push_chunk(b"data: {\"ok");
+        assert_eq!(decoder.pop_event(), None);
+        decoder.push_chunk(b"\":true}\n\n");
+        assert_eq!(decoder.pop_event(), Some(json!({"ok": true})));
     }
 }

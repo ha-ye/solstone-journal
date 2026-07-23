@@ -6,7 +6,9 @@ use std::ffi::{OsStr, OsString};
 
 use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
-use solstone_core_sol_client::seam::{BuildIdentityProvider, FileProvider, HttpTransport};
+use solstone_core_sol_client::seam::{
+    BuildIdentityProvider, ChatEventSource, Clock, FileProvider, HttpTransport,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -14,6 +16,14 @@ pub enum Outcome {
     Chat { args: Vec<OsString> },
     MovedStub { name: OsString },
     Unsupported { args: Vec<OsString> },
+}
+
+pub struct DispatchSeams<'a> {
+    pub transport: &'a dyn HttpTransport,
+    pub clock: Option<&'a dyn Clock>,
+    pub chat_events: Option<&'a dyn ChatEventSource>,
+    pub files: Option<&'a dyn FileProvider>,
+    pub build_identity: Option<&'a dyn BuildIdentityProvider>,
 }
 
 #[must_use]
@@ -42,9 +52,7 @@ pub fn dispatch_sol_chat_with_seams(
     env: &BTreeMap<String, String>,
     stdin: &str,
     today: &str,
-    transport: &dyn HttpTransport,
-    files: Option<&dyn FileProvider>,
-    build_identity: Option<&dyn BuildIdentityProvider>,
+    seams: DispatchSeams<'_>,
 ) -> CommandOutput {
     let Some((_, handler)) = match_generated_surface_path("sol-chat", &[String::from("chat")])
     else {
@@ -55,9 +63,11 @@ pub fn dispatch_sol_chat_with_seams(
         env,
         stdin,
         today,
-        transport,
-        files,
-        build_identity,
+        transport: seams.transport,
+        clock: seams.clock,
+        chat_events: seams.chat_events,
+        files: seams.files,
+        build_identity: seams.build_identity,
     })
 }
 
@@ -88,7 +98,19 @@ pub fn dispatch_sol_call(
     today: &str,
     transport: &dyn HttpTransport,
 ) -> CommandOutput {
-    dispatch_sol_call_with_seams(args, env, stdin, today, transport, None, None)
+    dispatch_sol_call_with_seams(
+        args,
+        env,
+        stdin,
+        today,
+        DispatchSeams {
+            transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+        },
+    )
 }
 
 #[must_use]
@@ -97,9 +119,7 @@ pub fn dispatch_sol_call_with_seams(
     env: &BTreeMap<String, String>,
     stdin: &str,
     today: &str,
-    transport: &dyn HttpTransport,
-    files: Option<&dyn FileProvider>,
-    build_identity: Option<&dyn BuildIdentityProvider>,
+    seams: DispatchSeams<'_>,
 ) -> CommandOutput {
     let Some((_, handler, len)) = match_generated_str_path(args) else {
         return CommandOutput::failure("Unsupported native sol command.\n", 64);
@@ -110,9 +130,11 @@ pub fn dispatch_sol_call_with_seams(
         env,
         stdin,
         today,
-        transport,
-        files,
-        build_identity,
+        transport: seams.transport,
+        clock: None,
+        chat_events: None,
+        files: seams.files,
+        build_identity: seams.build_identity,
     })
 }
 

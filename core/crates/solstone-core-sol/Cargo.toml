@@ -7,6 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
+serde_json = { workspace = true }
 solstone-core-journal = { workspace = true }
 solstone-core-sol-client = { workspace = true }
 solstone-core-sol-client-cli = { workspace = true }

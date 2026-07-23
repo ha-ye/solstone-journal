@@ -7,14 +7,17 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use solstone_core_sol_client::error::ClientError;
 use solstone_core_sol_client::seam::{
-    ExpectedHttpCall, FakeBuildIdentityProvider, FixtureFileProvider, RecordedHttpCall,
-    ScriptedHttpTransport,
+    ChatInput, ExpectedHttpCall, FakeBuildIdentityProvider, FakeClock, FixtureFileProvider,
+    RecordedHttpCall, ScriptedChatEventSource, ScriptedHttpTransport,
 };
+use solstone_core_sol_client::sse::iter_sse_events;
 use solstone_core_sol_client::transport::{
     ApiRequest, FormField, HttpMethod, HttpResponse, MultipartFile, QueryParam, SseRequest,
     TimeoutPolicy, UploadRequest,
 };
-use solstone_core_sol_client_cli::{dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams};
+use solstone_core_sol_client_cli::{
+    DispatchSeams, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
+};
 
 const ACTIVITIES_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/activities.jsonl");
@@ -33,7 +36,6 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
     {
-        assert_eq!(vector["normalizations"], json!([]), "{}", vector["id"]);
         run_vector(&vector);
     }
 }
@@ -44,6 +46,8 @@ fn run_vector(vector: &Value) {
     let stdin = vector["stdin"].as_str().unwrap_or_default();
     let today = vector["clock"]["today"].as_str().unwrap_or("20260723");
     let transport = ScriptedHttpTransport::new(scripted_calls(vector));
+    let clock = FakeClock::at_unix(0);
+    let chat_events = ScriptedChatEventSource::new(chat_inputs(vector));
     let files = fixture_files(vector);
     let build_identity = FakeBuildIdentityProvider::new(Some(json!({
         "version": "9.9.9",
@@ -62,9 +66,13 @@ fn run_vector(vector: &Value) {
             &env,
             stdin,
             today,
-            &transport,
-            Some(&files),
-            Some(&build_identity),
+            DispatchSeams {
+                transport: &transport,
+                clock: Some(&clock),
+                chat_events: Some(&chat_events),
+                files: Some(&files),
+                build_identity: Some(&build_identity),
+            },
         )
     } else {
         dispatch_sol_call_with_seams(
@@ -72,9 +80,13 @@ fn run_vector(vector: &Value) {
             &env,
             stdin,
             today,
-            &transport,
-            Some(&files),
-            Some(&build_identity),
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: Some(&files),
+                build_identity: Some(&build_identity),
+            },
         )
     };
     transport.assert_done();
@@ -84,7 +96,13 @@ fn run_vector(vector: &Value) {
         "exit": output.exit,
         "requests": recorded_calls_to_json(transport.recorded()),
     });
-    assert_eq!(actual, vector["expected"], "{}", vector["id"]);
+    let normalizations = normalization_array(vector);
+    assert_eq!(
+        normalize_result(actual, &normalizations),
+        normalize_result(vector["expected"].clone(), &normalizations),
+        "{}",
+        vector["id"]
+    );
 }
 
 fn load_vectors(text: &str) -> Vec<Value> {
@@ -101,6 +119,45 @@ fn scripted_calls(vector: &Value) -> Vec<ExpectedHttpCall> {
         .iter()
         .map(scripted_call)
         .collect()
+}
+
+fn chat_inputs(vector: &Value) -> Vec<ChatInput> {
+    if vector["surface"].as_str() != Some("sol-chat") {
+        return vec![];
+    }
+    if let Some(inputs) = vector.get("chat_inputs").and_then(Value::as_array) {
+        return inputs.iter().flat_map(chat_inputs_from_value).collect();
+    }
+    let chunks = vector["transport"]["requests"]
+        .as_array()
+        .and_then(|requests| requests.iter().find(|request| request["method"] == "SSE"))
+        .and_then(|request| request["chunks"].as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut inputs = iter_sse_events(
+        chunks
+            .iter()
+            .map(|chunk| chunk.as_str().expect("SSE chunk").as_bytes().to_vec()),
+    )
+    .map(ChatInput::SseEvent)
+    .collect::<Vec<_>>();
+    inputs.push(ChatInput::SseEnded);
+    inputs
+}
+
+fn chat_input(value: &Value) -> ChatInput {
+    match value["kind"].as_str().expect("chat input kind") {
+        "sse-event" => ChatInput::SseEvent(value["value"].clone()),
+        "sse-ended" => ChatInput::SseEnded,
+        "poll" => ChatInput::PollTick,
+        "interrupt" => ChatInput::Interrupted,
+        other => panic!("unsupported chat input kind {other}"),
+    }
+}
+
+fn chat_inputs_from_value(value: &Value) -> Vec<ChatInput> {
+    let count = value.get("count").and_then(Value::as_u64).unwrap_or(1);
+    (0..count).map(|_| chat_input(value)).collect()
 }
 
 fn scripted_call(request: &Value) -> ExpectedHttpCall {
@@ -329,6 +386,17 @@ fn string_array(value: &Value) -> Vec<String> {
         .collect()
 }
 
+fn normalization_array(vector: &Value) -> Vec<String> {
+    vector
+        .get("normalizations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .map(|value| value.as_str().expect("normalization").to_string())
+        .collect()
+}
+
 fn http_method(value: &str) -> HttpMethod {
     match value {
         "DELETE" => HttpMethod::Delete,
@@ -382,4 +450,22 @@ fn header_pairs_to_json(pairs: Vec<(String, String)>) -> Value {
             .map(|(key, value)| json!([key, value]))
             .collect(),
     )
+}
+
+fn normalize_result(mut value: Value, normalizations: &[String]) -> Value {
+    for normalization in normalizations {
+        match normalization.as_str() {
+            "invalid-json-error-tail" => normalize_invalid_json_stderr(&mut value),
+            other => panic!("unsupported normalization {other}"),
+        }
+    }
+    value
+}
+
+fn normalize_invalid_json_stderr(value: &mut Value) {
+    const PREFIX: &str = "Error: invalid JSON on stdin:";
+    let stderr = value["stderr"].as_str().expect("stderr string");
+    if stderr.starts_with(PREFIX) {
+        value["stderr"] = Value::String(format!("{PREFIX} <parser error>\n"));
+    }
 }

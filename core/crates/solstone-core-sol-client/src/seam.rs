@@ -25,6 +25,19 @@ pub trait Clock {
     fn sleep(&self, duration: Duration);
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatInput {
+    SseEvent(serde_json::Value),
+    SseEnded,
+    PollTick,
+    Interrupted,
+}
+
+pub trait ChatEventSource {
+    fn open(&self, transport: &dyn HttpTransport) -> Result<(), ClientError>;
+    fn next(&self, timeout: Duration, clock: &dyn Clock) -> ChatInput;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessOutput {
     pub status: i32,
@@ -98,6 +111,40 @@ pub struct RecordedMultipartFile {
 pub struct ScriptedHttpTransport {
     calls: RefCell<VecDeque<ExpectedHttpCall>>,
     recorded: RefCell<Vec<RecordedHttpCall>>,
+}
+
+#[derive(Debug)]
+pub struct ScriptedChatEventSource {
+    inputs: RefCell<VecDeque<ChatInput>>,
+}
+
+impl ScriptedChatEventSource {
+    #[must_use]
+    pub fn new(inputs: Vec<ChatInput>) -> Self {
+        Self {
+            inputs: RefCell::new(inputs.into()),
+        }
+    }
+}
+
+impl ChatEventSource for ScriptedChatEventSource {
+    fn open(&self, transport: &dyn HttpTransport) -> Result<(), ClientError> {
+        let _stream = transport.open_sse(SseRequest {
+            path: "/sse/events".to_string(),
+            policy: crate::transport::TimeoutPolicy::SseOpen,
+        })?;
+        Ok(())
+    }
+
+    fn next(&self, timeout: Duration, clock: &dyn Clock) -> ChatInput {
+        match self.inputs.borrow_mut().pop_front() {
+            Some(ChatInput::PollTick) | None => {
+                clock.sleep(timeout);
+                ChatInput::PollTick
+            }
+            Some(input) => input,
+        }
+    }
 }
 
 impl ScriptedHttpTransport {
@@ -352,6 +399,39 @@ mod tests {
         assert_eq!(
             provider.build_identity(Path::new("/tmp/journal")),
             Some(json!({"revision": "build-1"}))
+        );
+    }
+
+    #[test]
+    fn scripted_chat_source_opens_sse_and_advances_on_poll() {
+        let request = SseRequest {
+            path: "/sse/events".to_string(),
+            policy: crate::transport::TimeoutPolicy::SseOpen,
+        };
+        let transport = ScriptedHttpTransport::new(vec![ExpectedHttpCall::Sse {
+            expected: request,
+            chunks: vec![],
+        }]);
+        let clock = FakeClock::at_unix(0);
+        let source = ScriptedChatEventSource::new(vec![
+            ChatInput::SseEnded,
+            ChatInput::PollTick,
+            ChatInput::Interrupted,
+        ]);
+
+        source.open(&transport).expect("open sse");
+        assert_eq!(
+            source.next(Duration::from_secs(2), &clock),
+            ChatInput::SseEnded
+        );
+        assert_eq!(
+            source.next(Duration::from_secs(2), &clock),
+            ChatInput::PollTick
+        );
+        assert_eq!(clock.monotonic(), Duration::from_secs(2));
+        assert_eq!(
+            source.next(Duration::from_secs(2), &clock),
+            ChatInput::Interrupted
         );
     }
 

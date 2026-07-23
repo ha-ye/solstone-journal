@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::io::Read;
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::decode::decode_response;
 use crate::error::ClientError;
-use crate::sse::iter_sse_events;
-use crate::transport::{ApiRequest, HttpMethod, SseRequest, TimeoutPolicy};
+use crate::seam::ChatInput;
+use crate::transport::{ApiRequest, HttpMethod, TimeoutPolicy};
 
 const SERVICE_DOWN_MESSAGE: &str =
     "sol: solstone isn't running. Start it with 'journal up' and retry.";
@@ -22,6 +22,8 @@ const MALFORMED_RESPONSE_MESSAGE: &str = "I couldn't read the chat response.";
 const COMPOSING_MESSAGE: &str = "Composing your answer…";
 const CHAT_LIVENESS_THINKING: &str = "sol is thinking…";
 const HELP: &str = "usage: sol chat [-h] [--facet FACET] [-v] [-d] [message ...]\n\nChat with your journal\n\npositional arguments:\n  message        Chat message\n\noptions:\n  -h, --help     show this help message and exit\n  --facet FACET  Facet context\n  -v, --verbose  Enable verbose output\n  -d, --debug    Enable debug logging\n";
+const POLL_SECONDS: u64 = 2;
+const IDLE_CEILING_SECONDS: u64 = 240;
 
 #[must_use]
 pub fn chat(ctx: CommandContext<'_>) -> CommandOutput {
@@ -33,7 +35,13 @@ pub fn chat(ctx: CommandContext<'_>) -> CommandOutput {
         return CommandOutput::success(HELP);
     }
 
-    let sse_chunks = open_sse_chunks(ctx);
+    let Some(clock) = ctx.clock else {
+        return stderr_with_exit("sol: native chat runtime is unavailable.", 1);
+    };
+    let Some(event_source) = ctx.chat_events else {
+        return stderr_with_exit("sol: native chat runtime is unavailable.", 1);
+    };
+    let mut sse_ended = event_source.open(ctx.transport).is_err();
     let mut out = Output::default();
     let posted = match post_chat(ctx, &parsed.message, parsed.facet.as_deref()) {
         Ok(posted) => posted,
@@ -48,19 +56,37 @@ pub fn chat(ctx: CommandContext<'_>) -> CommandOutput {
     }
 
     let mut state = ChatState::new(posted.use_id);
-    for event in iter_sse_events(sse_chunks) {
-        match handle_event(&mut state, &mut out, &event, parsed.verbose) {
-            EventResult::Continue => {}
-            EventResult::Interrupted => return stderr_with_exit("\nInterrupted.", 1),
-            EventResult::Terminal => break,
+    let mut last_event_at = clock.monotonic();
+    loop {
+        match event_source.next(Duration::from_secs(POLL_SECONDS), clock) {
+            ChatInput::SseEvent(event) => {
+                match handle_event(&mut state, &mut out, &event, parsed.verbose) {
+                    EventResult::Continue => {}
+                    EventResult::Observed => last_event_at = clock.monotonic(),
+                    EventResult::Interrupted => return stderr_with_exit("\nInterrupted.", 1),
+                    EventResult::Terminal => break,
+                }
+            }
+            ChatInput::SseEnded => sse_ended = true,
+            ChatInput::Interrupted => return stderr_with_exit("\nInterrupted.", 1),
+            ChatInput::PollTick => {
+                if state.terminal.is_some() {
+                    break;
+                }
+                let idle = clock.monotonic().saturating_sub(last_event_at);
+                if sse_ended || idle >= Duration::from_secs(IDLE_CEILING_SECONDS) {
+                    if let Some(terminal) = session_terminal(ctx, &state.use_id) {
+                        out.emit(LIVE_PROGRESS_UNAVAILABLE_MESSAGE);
+                        state.terminal = Some(terminal);
+                        break;
+                    }
+                    if idle >= Duration::from_secs(IDLE_CEILING_SECONDS) {
+                        state.terminal = Some(Terminal::LostContact);
+                        break;
+                    }
+                }
+            }
         }
-    }
-
-    if state.terminal.is_none()
-        && let Some(terminal) = session_terminal(ctx, &state.use_id)
-    {
-        out.emit(LIVE_PROGRESS_UNAVAILABLE_MESSAGE);
-        state.terminal = Some(terminal);
     }
 
     finish_terminal(out, state.terminal)
@@ -162,21 +188,6 @@ fn post_chat(
     })
 }
 
-fn open_sse_chunks(ctx: CommandContext<'_>) -> Vec<Vec<u8>> {
-    let Ok(mut stream) = ctx.transport.open_sse(SseRequest {
-        path: "/sse/events".to_string(),
-        policy: TimeoutPolicy::SseOpen,
-    }) else {
-        return Vec::new();
-    };
-    let mut bytes = Vec::new();
-    if stream.body.read_to_end(&mut bytes).is_ok() {
-        vec![bytes]
-    } else {
-        Vec::new()
-    }
-}
-
 #[derive(Debug, Default)]
 struct Output {
     stderr: String,
@@ -216,6 +227,7 @@ impl ChatState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EventResult {
     Continue,
+    Observed,
     Terminal,
     Interrupted,
 }
@@ -252,7 +264,7 @@ fn handle_event(
             return EventResult::Terminal;
         }
         render_event_progress(state, out, message, verbose);
-        return EventResult::Continue;
+        return EventResult::Observed;
     }
 
     if event_tract != Some("chat") {
@@ -263,7 +275,7 @@ fn handle_event(
         if event == Some("sol_message") && truthy(message.get("requested_target")) {
             render_event_progress(state, out, message, verbose);
         }
-        return EventResult::Continue;
+        return EventResult::Observed;
     }
 
     if event == Some("sol_message") && is_fold_terminal_message(message, &state.use_id) {
@@ -273,6 +285,7 @@ fn handle_event(
 
     if event == Some("talent_finished") {
         render_event_progress(state, out, message, verbose);
+        return EventResult::Observed;
     }
 
     EventResult::Continue

@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -33,6 +34,7 @@ class ScriptedConveyClient:
     def __init__(self, vector: dict[str, Any]) -> None:
         self._surface = vector.get("surface", "sol-call")
         self._requests = list(vector.get("transport", {}).get("requests", []))
+        self.chat_controller: ChatController | None = None
         self.recorded: list[dict[str, Any]] = []
 
     def request(
@@ -82,6 +84,8 @@ class ScriptedConveyClient:
             )
         if "fault" in expected:
             return None
+        if self.chat_controller is not None:
+            return self.chat_controller.open_stream(expected)
         return [chunk.encode("utf-8") for chunk in expected.get("chunks", [])]
 
     def upload(
@@ -225,7 +229,7 @@ def run_materialized_vector(
     env = {key: str(value) for key, value in vector.get("env", {}).items()}
     today = vector.get("clock", {}).get("today", "20260723")
     runner = CliRunner()
-    with patched_runtime(client, env, today):
+    with patched_runtime(client, env, today, vector):
         if vector.get("surface") == "sol-chat":
             result = run_chat(vector)
         else:
@@ -244,12 +248,13 @@ def run_materialized_vector(
     }
     if assert_expected:
         expected = vector["expected"]
-        if actual != expected:
+        normalizations = [str(item) for item in vector.get("normalizations", [])]
+        if normalize_result(actual, normalizations) != normalize_result(
+            expected, normalizations
+        ):
             raise AssertionError(
                 f"{vector['id']} parity mismatch\nactual={actual!r}\nexpected={expected!r}"
             )
-        if vector.get("normalizations"):
-            raise AssertionError(f"{vector['id']} declares unsupported normalizations")
     return actual
 
 
@@ -257,14 +262,9 @@ def run_chat(vector: dict[str, Any]) -> Any:
     stdout = io.StringIO()
     stderr = io.StringIO()
     exit_code = 0
-    event_context = (
-        patch.object(chat_cli.threading, "Event", InterruptingEvent)
-        if vector.get("interrupt") == "main-loop"
-        else nullcontext()
-    )
     with (
         patch.object(sys, "argv", ["sol chat", *vector["argv"]]),
-        event_context,
+        nullcontext(),
         redirect_stdout(stdout),
         redirect_stderr(stderr),
     ):
@@ -279,8 +279,68 @@ def run_chat(vector: dict[str, Any]) -> Any:
     )
 
 
-class InterruptingEvent:
+class FakeMonotonic:
     def __init__(self) -> None:
+        self.value = 0.0
+
+    def monotonic(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class ChatController:
+    def __init__(self, vector: dict[str, Any], clock: FakeMonotonic) -> None:
+        self.inputs = chat_inputs(vector)
+        self.clock = clock
+        self.stream: ScriptedSseStream | None = None
+        self.events: list[ControlledEvent] = []
+
+    def event(self) -> "ControlledEvent":
+        event = ControlledEvent(self, len(self.events))
+        self.events.append(event)
+        return event
+
+    @property
+    def done_event(self) -> "ControlledEvent | None":
+        return self.events[0] if self.events else None
+
+    def open_stream(self, request: dict[str, Any]) -> "ScriptedSseStream":
+        del request
+        self.stream = ScriptedSseStream()
+        return self.stream
+
+    def step(self, timeout: float | None) -> None:
+        timeout = float(timeout or 0)
+        while self.inputs:
+            item = self.inputs.pop(0)
+            kind = item["kind"]
+            if kind == "sse-chunk":
+                if self.stream is not None:
+                    self.stream.push(
+                        str(item["value"]).encode("utf-8"), self.done_event
+                    )
+                if self.done_event is not None and self.done_event.is_set():
+                    return
+                continue
+            if kind == "sse-ended":
+                if self.stream is not None:
+                    self.stream.close(self.done_event)
+                continue
+            if kind == "interrupt":
+                raise KeyboardInterrupt
+            if kind == "poll":
+                self.clock.advance(timeout)
+                return
+            raise AssertionError(f"unsupported chat input kind {kind!r}")
+        self.clock.advance(timeout)
+
+
+class ControlledEvent:
+    def __init__(self, controller: ChatController, index: int) -> None:
+        self._controller = controller
+        self._index = index
         self._set = False
 
     def set(self) -> None:
@@ -289,8 +349,91 @@ class InterruptingEvent:
     def is_set(self) -> bool:
         return self._set
 
-    def wait(self, _timeout: object = None) -> bool:
-        raise KeyboardInterrupt
+    def wait(self, timeout: object = None) -> bool:
+        if self._index == 0 and not self._set:
+            self._controller.step(float(timeout or 0))
+        return self._set
+
+
+class ScriptedSseStream:
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._chunks: list[bytes] = []
+        self._closed = False
+        self._stopped = False
+        self._waiting = False
+        self._waiting_generation = 0
+
+    def __iter__(self) -> "ScriptedSseStream":
+        return self
+
+    def __next__(self) -> bytes:
+        with self._condition:
+            while not self._chunks and not self._closed:
+                self._waiting = True
+                self._waiting_generation += 1
+                self._condition.notify_all()
+                self._condition.wait()
+            self._waiting = False
+            if self._chunks:
+                return self._chunks.pop(0)
+            self._stopped = True
+            self._condition.notify_all()
+            raise StopIteration
+
+    def push(self, chunk: bytes, done_event: ControlledEvent | None) -> None:
+        with self._condition:
+            start_generation = self._waiting_generation
+            self._chunks.append(chunk)
+            self._condition.notify_all()
+            self._condition.wait_for(
+                lambda: (
+                    self._waiting_generation > start_generation
+                    or self._closed
+                    or bool(done_event and done_event.is_set())
+                ),
+                timeout=1,
+            )
+
+    def close(self, done_event: ControlledEvent | None) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+            self._condition.wait_for(
+                lambda: self._stopped or bool(done_event and done_event.is_set()),
+                timeout=1,
+            )
+
+
+def chat_inputs(vector: dict[str, Any]) -> list[dict[str, Any]]:
+    explicit = vector.get("chat_inputs")
+    if isinstance(explicit, list):
+        output: list[dict[str, Any]] = []
+        for item in explicit:
+            count = int(item.get("count", 1))
+            for _ in range(count):
+                if item.get("kind") == "sse-event":
+                    output.append(
+                        {"kind": "sse-chunk", "value": sse_frame(item["value"])}
+                    )
+                else:
+                    single = dict(item)
+                    single.pop("count", None)
+                    output.append(single)
+        return output
+    for request in vector.get("transport", {}).get("requests", []):
+        if request.get("method") == "SSE":
+            return [
+                {"kind": "sse-chunk", "value": chunk}
+                for chunk in request.get("chunks", [])
+            ] + [{"kind": "sse-ended"}]
+    return []
+
+
+def sse_frame(value: object) -> str:
+    return (
+        "data: " + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n\n"
+    )
 
 
 def materialize_files(vector: dict[str, Any], temp_dir: Path) -> None:
@@ -306,7 +449,12 @@ def expand_file_token(value: str, temp_dir: Path) -> str:
 
 
 @contextmanager
-def patched_runtime(client: ScriptedConveyClient, env: dict[str, str], today: str):
+def patched_runtime(
+    client: ScriptedConveyClient,
+    env: dict[str, str],
+    today: str,
+    vector: dict[str, Any],
+):
     real_datetime = activities_call.datetime
 
     class FixedDateTime(real_datetime):  # type: ignore[misc, valid-type]
@@ -327,14 +475,22 @@ def patched_runtime(client: ScriptedConveyClient, env: dict[str, str], today: st
     original_poll_seconds = chat_cli.POLL_SECONDS
     original_idle_ceiling = chat_cli.IDLE_CEILING_SECONDS
     original_thread = chat_cli.threading.Thread
+    original_event = chat_cli.threading.Event
+    original_monotonic = chat_cli.time.monotonic
+    fake_monotonic = FakeMonotonic()
+    chat_controller = ChatController(vector, fake_monotonic)
+    client.chat_controller = chat_controller
 
-    class SyncThread:
+    class ControlledThread:
         def __init__(self, *, target: object, daemon: bool = False) -> None:
-            del daemon
-            self._target = target
+            chat_cli.threading.Event = original_event
+            try:
+                self._thread = original_thread(target=target, daemon=daemon)
+            finally:
+                chat_cli.threading.Event = chat_controller.event
 
         def start(self) -> None:
-            self._target()
+            self._thread.start()
 
     activities_call.get_client = lambda: client
     activities_call.datetime = FixedDateTime
@@ -345,9 +501,9 @@ def patched_runtime(client: ScriptedConveyClient, env: dict[str, str], today: st
     chat_cli._build_client = lambda _base_url: client
     chat_cli._open_sse = lambda _base_url: client.open_sse()
     chat_cli.resolve_base_url = lambda: "http://localhost:5015"
-    chat_cli.POLL_SECONDS = 0
-    chat_cli.IDLE_CEILING_SECONDS = 0
-    chat_cli.threading.Thread = SyncThread
+    chat_cli.threading.Thread = ControlledThread
+    chat_cli.threading.Event = chat_controller.event
+    chat_cli.time.monotonic = fake_monotonic.monotonic
     with (
         patch.dict(os.environ, env, clear=True),
         patch("solstone.think.identity.ensure_identity_directory", lambda: None),
@@ -370,6 +526,28 @@ def patched_runtime(client: ScriptedConveyClient, env: dict[str, str], today: st
             chat_cli.POLL_SECONDS = original_poll_seconds
             chat_cli.IDLE_CEILING_SECONDS = original_idle_ceiling
             chat_cli.threading.Thread = original_thread
+            chat_cli.threading.Event = original_event
+            chat_cli.time.monotonic = original_monotonic
+            client.chat_controller = None
+
+
+def normalize_result(
+    result: dict[str, Any], normalizations: list[str]
+) -> dict[str, Any]:
+    result = copy.deepcopy(result)
+    for normalization in normalizations:
+        if normalization == "invalid-json-error-tail":
+            normalize_invalid_json_error_tail(result)
+        else:
+            raise AssertionError(f"unsupported normalization {normalization!r}")
+    return result
+
+
+def normalize_invalid_json_error_tail(result: dict[str, Any]) -> None:
+    prefix = "Error: invalid JSON on stdin:"
+    stderr = str(result.get("stderr", ""))
+    if stderr.startswith(prefix):
+        result["stderr"] = f"{prefix} <parser error>\n"
 
 
 def build_identity_fixture() -> dict[str, object]:
