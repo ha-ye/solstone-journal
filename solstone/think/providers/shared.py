@@ -164,6 +164,7 @@ _CONTEXT_WINDOW_PATTERNS = (
     "context size has been exceeded",
     "exceeds the context window",
     "maximum context length",
+    "longer than the model's context length",
     "context length exceeded",
 )
 
@@ -418,6 +419,7 @@ class GenerateResult(TypedDict, total=False):
     input_budget: Optional[
         dict
     ]  # Out-of-band truncation metadata when the bundled-local input was clipped
+    endpoint_budget: Optional[dict]  # Endpoint served-window clamp facts when known
     inference: Optional[dict]  # Content-free local inference timing/admission record
 
 

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+from pathlib import Path
+
 import pytest
 
 from solstone.think.providers import openhands
@@ -73,6 +75,22 @@ def test_classifies_litellm_bad_request_unrelated_unknown():
 
     assert classify_provider_error(exc, "local") == "unknown"
     assert classify_provider_error(exc, "local") != "context_window_exceeded"
+
+
+def test_context_reason_codes_are_registered_with_existing_owner_copy():
+    from solstone.convey import provider_readiness
+    from solstone.think.providers.shared import RUNTIME_REASON_CODES
+
+    projection = provider_readiness.chat_reason_projection()
+    chat_reasons = Path("solstone/convey/static/chat_reasons.js").read_text(
+        encoding="utf-8"
+    )
+
+    for reason_code in ("context_window_exceeded", "context_budget_exceeded"):
+        assert reason_code in RUNTIME_REASON_CODES
+        assert reason_code in provider_readiness.mapped_reason_codes()
+        assert reason_code in projection
+        assert f'"{reason_code}"' in chat_reasons
 
 
 def test_classifies_max_turns_exhausted():

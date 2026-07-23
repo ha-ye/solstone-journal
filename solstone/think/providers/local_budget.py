@@ -16,6 +16,9 @@ from solstone.think.providers.local import ContextBudgetExceeded
 LOG = logging.getLogger(__name__)
 
 _SAFETY_MARGIN_TOKENS = 256
+# Conservative per-image upper estimate; images inform endpoint completion
+# clamps but are never dropped or truncated by the fitting helper.
+_ESTIMATED_IMAGE_TOKENS = 2500
 _OUTPUT_RESERVE_DIVISOR = 4
 _CHARS_PER_TOKEN = 3
 _TOKENIZE_TIMEOUT_S = 5.0
@@ -100,8 +103,9 @@ def fit_contents(
     max_output_tokens: int,
     *,
     count: Callable[[str], int],
+    window: int | None = None,
 ) -> tuple[Any, dict | None]:
-    budget = compute_input_budget(max_output_tokens)
+    budget = compute_input_budget(max_output_tokens, window)
 
     if isinstance(contents, str):
         block = contents

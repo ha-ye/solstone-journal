@@ -59,6 +59,7 @@ def test_resolve_local_endpoint_active_requires_url_and_model(
         assert endpoint.base_url == "http://h:8080"
         assert endpoint.served_model_id == "model"
         assert endpoint.credential is None
+        assert endpoint.is_confidential is False
 
 
 def test_resolve_local_endpoint_carries_placeholder_credential(monkeypatch):
@@ -79,6 +80,7 @@ def test_resolve_local_endpoint_carries_placeholder_credential(monkeypatch):
     assert endpoint.is_bundled is False
     assert endpoint.credential == "test-token-PLACEHOLDER"
     assert endpoint.parallel_slots == 2
+    assert endpoint.is_confidential is False
 
 
 @pytest.mark.parametrize(
@@ -149,6 +151,7 @@ def test_resolve_local_endpoint_bundled_ignores_stray_parallel_slots(
 
     assert endpoint.is_bundled is True
     assert endpoint.parallel_slots is None
+    assert endpoint.is_confidential is False
     assert "providers.local.parallel_slots" not in caplog.text
 
 
@@ -175,6 +178,7 @@ def test_resolve_local_endpoint_confidential_ignores_stray_parallel_slots(
 
     assert endpoint.is_bundled is False
     assert endpoint.parallel_slots is None
+    assert endpoint.is_confidential is True
     assert "providers.local.parallel_slots" not in caplog.text
 
 
@@ -326,6 +330,18 @@ def test_classify_byo_cogitate_error_contract_by_status_or_name():
         local_endpoint.classify_byo_cogitate_error(BadRequestError("bad request"))
         == "local_endpoint_contract_failed"
     )
+
+
+def test_byo_exception_matches_context_window_caps_body_excerpt():
+    exc = BadRequestError("bad request")
+    exc.body = (
+        "x" * (local_endpoint.ENDPOINT_ERROR_BODY_CAP_CHARS + 1)
+        + "longer than the model's context length"
+    )
+    assert local_endpoint.byo_exception_matches_context_window(exc) is False
+
+    exc.body = "longer than the model's context length"
+    assert local_endpoint.byo_exception_matches_context_window(exc) is True
 
 
 @pytest.mark.parametrize(

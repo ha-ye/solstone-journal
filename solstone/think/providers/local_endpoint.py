@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.journal_config import read_journal_config
+from solstone.think.providers.shared import _CONTEXT_WINDOW_PATTERNS, _contains_any
 
 LOG = logging.getLogger(__name__)
 
@@ -28,6 +31,13 @@ _REASON_COPY_BY_CODE = {
     "local_endpoint_contract_failed": LOCAL_ENDPOINT_CONTRACT_COPY,
 }
 _DEFAULT_BYO_PARALLEL_SLOTS = 2
+ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY = "served_context_window"
+ENDPOINT_SERVED_CONTEXT_WINDOW_MIN_TOKENS = 2048
+ENDPOINT_SERVED_WINDOW_CACHE_TTL_S = 300.0
+ENDPOINT_MODELS_TIMEOUT_S = 2.5
+ENDPOINT_ERROR_BODY_CAP_CHARS = 4096
+
+_SERVED_WINDOW_CACHE: dict[tuple[str, str], tuple[float, int | None]] = {}
 
 
 @dataclass(frozen=True)
@@ -37,7 +47,9 @@ class LocalEndpoint:
     Bundled endpoints always carry ``parallel_slots=None``; bundled capacity is
     live server state and this field is inert. Confidential BYO endpoints also
     carry ``None`` and are ungoverned. Non-confidential BYO endpoints carry the
-    resolved ``int >= 1`` client-side slot count.
+    resolved ``int >= 1`` client-side slot count. ``is_confidential`` marks BYO
+    endpoints routed through the confidential forwarder; bundled endpoints are
+    not confidential endpoints even when confidential service config is present.
     """
 
     base_url: str
@@ -45,6 +57,7 @@ class LocalEndpoint:
     credential: str | None
     is_bundled: bool
     parallel_slots: int | None = None
+    is_confidential: bool = False
 
 
 def normalize_local_endpoint_url(raw_url: str) -> str:
@@ -105,20 +118,44 @@ def _configured_byo_parallel_slots(local_config: dict[str, Any]) -> int:
     return raw
 
 
-def resolve_local_endpoint_from_config(config: dict[str, Any]) -> LocalEndpoint:
-    """Resolve local provider traffic from an already-read journal config."""
-
+def _local_provider_config(config: dict[str, Any]) -> dict[str, Any]:
     providers_config = config.get("providers", {})
     local_config: Any = {}
     if isinstance(providers_config, dict):
         local_config = providers_config.get("local", {})
-    if not isinstance(local_config, dict):
-        local_config = {}
+    return local_config if isinstance(local_config, dict) else {}
+
+
+def _configured_served_context_window(local_config: dict[str, Any]) -> int | None:
+    if ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY not in local_config:
+        return None
+
+    raw = local_config.get(ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY)
+    if (
+        not isinstance(raw, int)
+        or isinstance(raw, bool)
+        or raw < ENDPOINT_SERVED_CONTEXT_WINDOW_MIN_TOKENS
+    ):
+        LOG.warning(
+            "Invalid providers.local.%s in journal config: %r - falling through "
+            "to endpoint discovery",
+            ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY,
+            raw,
+        )
+        return None
+    return raw
+
+
+def resolve_local_endpoint_from_config(config: dict[str, Any]) -> LocalEndpoint:
+    """Resolve local provider traffic from an already-read journal config."""
+
+    local_config = _local_provider_config(config)
 
     endpoint_url = str(local_config.get("endpoint_url") or "").strip()
     served_model_id = str(local_config.get("served_model_id") or "").strip()
     if endpoint_url and served_model_id:
         credential = local_config.get("credential") or None
+        is_confidential = confidential_provenance_block(config) is not None
         return LocalEndpoint(
             base_url=normalize_local_endpoint_url(endpoint_url),
             served_model_id=served_model_id,
@@ -126,17 +163,92 @@ def resolve_local_endpoint_from_config(config: dict[str, Any]) -> LocalEndpoint:
             is_bundled=False,
             parallel_slots=(
                 None
-                if confidential_provenance_block(config) is not None
+                if is_confidential
                 else _configured_byo_parallel_slots(local_config)
             ),
+            is_confidential=is_confidential,
         )
-    return LocalEndpoint("", "", None, is_bundled=True)
+    return LocalEndpoint("", "", None, is_bundled=True, is_confidential=False)
 
 
 def resolve_local_endpoint() -> LocalEndpoint:
     """Resolve whether local provider traffic uses bundled runtime or BYO endpoint."""
 
     return resolve_local_endpoint_from_config(read_journal_config())
+
+
+def reset_endpoint_served_window_cache() -> None:
+    """Clear the process-local endpoint served-window discovery cache."""
+
+    _SERVED_WINDOW_CACHE.clear()
+
+
+def resolve_endpoint_served_window(endpoint: LocalEndpoint) -> int | None:
+    """Resolve the endpoint's served context window without mutating journal state."""
+
+    if endpoint.is_bundled:
+        return None
+
+    local_config = _local_provider_config(read_journal_config())
+    override = _configured_served_context_window(local_config)
+    if override is not None:
+        return override
+
+    now = time.monotonic()
+    cache_key = (endpoint.base_url, endpoint.served_model_id)
+    cached = _SERVED_WINDOW_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, value = cached
+        if now - cached_at < ENDPOINT_SERVED_WINDOW_CACHE_TTL_S:
+            return value
+
+    value = _discover_endpoint_served_window(endpoint)
+    _SERVED_WINDOW_CACHE[cache_key] = (now, value)
+    if endpoint.is_confidential and value is None:
+        LOG.warning(
+            "Could not resolve served context window for confidential local "
+            "endpoint %s",
+            endpoint.served_model_id,
+        )
+    return value
+
+
+def _discover_endpoint_served_window(endpoint: LocalEndpoint) -> int | None:
+    import httpx
+
+    from solstone.think.services.spp_transport import confidential_egress_base_url
+
+    try:
+        base_url = (
+            confidential_egress_base_url(endpoint.base_url)
+            if endpoint.is_confidential
+            else endpoint.base_url
+        )
+        kwargs: dict[str, Any] = {"timeout": ENDPOINT_MODELS_TIMEOUT_S}
+        if endpoint.credential:
+            kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
+        response = httpx.get(f"{base_url}/v1/models", **kwargs)
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        LOG.debug(
+            "Could not discover local endpoint served context window", exc_info=True
+        )
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    models = data.get("data")
+    if not isinstance(models, list):
+        return None
+    for item in models:
+        if not isinstance(item, dict) or item.get("id") != endpoint.served_model_id:
+            continue
+        max_model_len = item.get("max_model_len")
+        if isinstance(max_model_len, int) and not isinstance(max_model_len, bool):
+            return max_model_len
+        return None
+    return None
 
 
 def probe_local_endpoint(
@@ -218,6 +330,68 @@ def is_byo_capacity_error(exc: BaseException) -> bool:
     return bool(_BYO_CAPACITY_EXC_NAMES & names)
 
 
+def _payload_text(payload: Any, credential: str | None) -> str | None:
+    if payload is None:
+        return None
+    redacted = redact_event_payload(payload, credential)
+    if isinstance(redacted, str):
+        text = redacted
+    elif isinstance(redacted, dict | list | tuple):
+        try:
+            text = json.dumps(redacted, default=str)
+        except Exception:
+            text = str(redacted)
+    else:
+        text = str(redacted)
+    if not text:
+        return None
+    return text[:ENDPOINT_ERROR_BODY_CAP_CHARS]
+
+
+def _candidate_exception_texts(
+    item: BaseException,
+    credential: str | None,
+) -> Iterator[str]:
+    body = _payload_text(getattr(item, "body", None), credential)
+    if body:
+        yield body
+
+    response = getattr(item, "response", None)
+    response_text = _payload_text(getattr(response, "text", None), credential)
+    if response_text:
+        yield response_text
+    response_json = getattr(response, "json", None)
+    if callable(response_json):
+        try:
+            json_text = _payload_text(response_json(), credential)
+        except Exception:
+            json_text = None
+        if json_text:
+            yield json_text
+
+    message = _payload_text(getattr(item, "message", None), credential)
+    if message:
+        yield message
+
+    item_text = _payload_text(str(item), credential)
+    if item_text:
+        yield item_text
+
+
+def byo_exception_matches_context_window(
+    exc: BaseException,
+    *,
+    credential: str | None = None,
+) -> bool:
+    """True when a BYO exception chain carries a context-window-shaped body."""
+
+    for item in _exception_chain(exc):
+        for text in _candidate_exception_texts(item, credential):
+            if _contains_any(text.lower(), _CONTEXT_WINDOW_PATTERNS):
+                return True
+    return False
+
+
 def classify_byo_cogitate_error(exc: BaseException) -> str | None:
     """Return a BYO local-endpoint reason code for known OpenHands/LiteLLM errors."""
 
@@ -225,6 +399,8 @@ def classify_byo_cogitate_error(exc: BaseException) -> str | None:
     names = {type(item).__name__ for item in chain}
     statuses = {_status_code(item) for item in chain}
 
+    if byo_exception_matches_context_window(exc):
+        return "context_window_exceeded"
     if 400 in statuses or "BadRequestError" in names:
         return "local_endpoint_contract_failed"
     if is_byo_network_error(exc) or 500 in statuses or "InternalServerError" in names:
@@ -345,9 +521,15 @@ def wrap_on_event_redacting(
 
 
 __all__ = [
+    "ENDPOINT_ERROR_BODY_CAP_CHARS",
+    "ENDPOINT_MODELS_TIMEOUT_S",
+    "ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY",
+    "ENDPOINT_SERVED_CONTEXT_WINDOW_MIN_TOKENS",
+    "ENDPOINT_SERVED_WINDOW_CACHE_TTL_S",
     "LOCAL_ENDPOINT_CONTRACT_COPY",
     "LOCAL_ENDPOINT_UNREACHABLE_COPY",
     "LocalEndpoint",
+    "byo_exception_matches_context_window",
     "classify_byo_cogitate_error",
     "confidential_fingerprint_provenance_block",
     "confidential_provenance_block",
@@ -359,6 +541,8 @@ __all__ = [
     "redact_exception_credential",
     "redact_event_payload",
     "redact_local_endpoint_credential",
+    "reset_endpoint_served_window_cache",
+    "resolve_endpoint_served_window",
     "resolve_local_endpoint",
     "resolve_local_endpoint_from_config",
     "wrap_on_event_redacting",
