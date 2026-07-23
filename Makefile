@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -785,7 +785,15 @@ release-test: ## Locked test-publication entrypoint
 check-transparency-minisign: .installed
 	$(VENV_BIN)/python scripts/check_transparency_minisign.py
 
-.PHONY: publish-transparency resign-transparency-pointer
+.PHONY: publish-release publish-release-test publish-transparency resign-transparency-pointer
+publish-release: .installed
+	@test -n "$(RELEASE_DIR)" || { echo "publish-release: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
+	RELEASE_DIR="$(RELEASE_DIR)" $(VENV_BIN)/python scripts/release_publish.py --mode production --root .
+
+publish-release-test: .installed
+	@test -n "$(RELEASE_DIR)" || { echo "publish-release-test: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
+	RELEASE_DIR="$(RELEASE_DIR)" $(VENV_BIN)/python scripts/release_publish.py --mode test --root .
+
 publish-transparency: .installed
 	@test -n "$(RELEASE_DIR)" || { echo "publish-transparency: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
 	RELEASE_DIR="$(RELEASE_DIR)" SOURCE_COMMIT="$(SOURCE_COMMIT)" $(VENV_BIN)/python scripts/transparency_publish.py publish --root .

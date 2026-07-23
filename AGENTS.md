@@ -175,16 +175,26 @@ Candidate readiness means candidate payload, ledger, and per-target
 install/smoke proofs are locally consistent for the retained bytes. Proofs do
 not authorize publication and do not prove external distribution.
 
-The no-arg release path, `--test`, `make release`, and `make release-test` are
-temporarily locked out. They fail before any token, transport, build-host, git,
-upload, tag, or hosted-release seam is reached. Do not add publication behavior
-to this rail.
+Aggregate release publication is the retryable delivery step for an already
+finalized retained candidate. `make publish-release
+RELEASE_DIR=<retained ready dir>` runs `scripts/release_publish.py --mode
+production`: it revalidates retained candidate bytes, uploads the canonical PyPI
+artifact set, verifies PyPI digests, tags `v<version>` at the retained source
+commit, and records a GitHub Release witness. `make publish-release-test
+RELEASE_DIR=<retained ready dir>` is TestPyPI upload+verify only; it does not
+validate changelog or tag readiness and does not invoke git or gh.
 
-Transparency publication is a separate retryable step after delivery; it never
-gates delivery. `make publish-transparency RELEASE_DIR=<retained ready dir>` is
-env-driven: operator endpoints, bucket, credentials, minisign key paths, and
-archive channel come from `TRANSPARENCY_*` env vars, while the public base
-defaults to `https://transparency.solstone.app`.
+The no-arg release path, `--test`, `make release`, and `make release-test` stay
+locked out. They fail before any token, transport, build-host, git, upload, tag,
+or hosted-release seam is reached. Do not add publication behavior to this
+candidate rail.
+
+Transparency publication is the separate retryable evidence step after delivery;
+it never gates delivery. `make publish-transparency
+RELEASE_DIR=<retained ready dir>` is env-driven: operator endpoints, bucket,
+credentials, minisign key paths, and archive channel come from
+`TRANSPARENCY_*` env vars, while the public base defaults to
+`https://transparency.solstone.app`.
 `RELEASE_DIR` must resolve to `dist/release-candidate/<version>/`; the
 corresponding rail evidence is derived from `target/release-evidence/<version>/`,
 which holds `ledger.json` plus the three proof receipts under `proofs/`.

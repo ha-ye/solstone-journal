@@ -4,11 +4,11 @@
 #
 # solstone release-candidate rail.
 #
-# This script is only a local dispatcher. It can finalize a provider-neutral
-# release candidate, revalidate retained candidate evidence, or run the narrowed
-# Linux structural dry-run. Publication is temporarily locked out here; a later
-# aggregate publisher is responsible for authentication, upload, tagging, and
-# hosted release creation after a candidate is proven locally.
+# This script is only the candidate rail dispatcher. It can finalize a
+# provider-neutral release candidate, revalidate retained candidate evidence, or
+# run the narrowed Linux structural dry-run. Publication lives in the aggregate
+# publisher: make publish-release RELEASE_DIR=dist/release-candidate/<version>/
+# or make publish-release-test RELEASE_DIR=dist/release-candidate/<version>/.
 #
 # DESTRUCTIVE: --candidate is fresh construction; before policy or build work it
 # deletes prior raw build/dist outputs and that version's stale payload/evidence.
@@ -36,7 +36,7 @@
 
 set -euo pipefail
 
-PUBLISH_LOCKOUT_MESSAGE="publishing is locked out here; use the aggregate publisher after a release candidate is finalized"
+PUBLISH_LOCKOUT_MESSAGE="publishing is handled by scripts/release_publish.py; run make publish-release RELEASE_DIR=dist/release-candidate/<version>/ or make publish-release-test RELEASE_DIR=dist/release-candidate/<version>/"
 
 usage() {
     cat <<'EOF'
@@ -81,8 +81,10 @@ Required environment:
 
 Publication entry points:
   Running with no args, --test, make release, or make release-test fails closed
-  before any external seam. Publication is handled by the later aggregate
-  publisher after local candidate evidence is complete.
+  before any external seam. Publish a retained candidate with:
+    make publish-release RELEASE_DIR=dist/release-candidate/<version>/
+  or rehearse against TestPyPI only with:
+    make publish-release-test RELEASE_DIR=dist/release-candidate/<version>/
 EOF
 }
 
