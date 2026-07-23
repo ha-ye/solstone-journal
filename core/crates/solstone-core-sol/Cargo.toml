@@ -1,0 +1,15 @@
+[package]
+name = "solstone-core-sol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+solstone-core-journal = { workspace = true }
+solstone-core-sol-client = { workspace = true }
+solstone-core-sol-client-cli = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["health", "summary"]
+kind = "command"
+help = "Summarize journal-data trust signals for one day."
+operation_id = "health.summary"
+entry_type = "http"
+method = "GET"
+route = "/api/health/summary"
+contract_operation_id = "health.summary"
+handler = "summary"
+params = [
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_out", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["health", "full"]
+kind = "command"
+help = "Render the full journal-data trust report for one day."
+operation_id = "health.full"
+entry_type = "http"
+method = "GET"
+route = "/api/health/full"
+contract_operation_id = "health.full"
+handler = "full"
+params = [
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_out", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["health", "for-range"]
+kind = "command"
+help = "Render the journal-data trust report for an inclusive day range."
+operation_id = "health.for_range"
+entry_type = "http"
+method = "GET"
+route = "/api/health/range"
+contract_operation_id = "health.for_range"
+handler = "for_range"
+params = [
+  { name = "day_from", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_to", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_out", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["health", "pipeline"]
+kind = "command"
+help = "Thin wrapper around think.pipeline_health. For journal-data trust checks use `summary` / `full` / `for-range`."
+operation_id = "health.pipeline"
+entry_type = "http"
+method = "GET"
+route = "/api/health/pipeline"
+contract_operation_id = "health.pipeline"
+handler = "pipeline"
+params = [
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "yesterday", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--yesterday"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]

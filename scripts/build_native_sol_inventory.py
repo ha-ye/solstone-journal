@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import tempfile
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT = (
+    REPO_ROOT / "core/crates/solstone-core-sol-client/src/generated/inventory.rs"
+)
+SCHEMA = "native-sol-authority-v1"
+PARAM_KEYS = {
+    "name",
+    "kind",
+    "type",
+    "required",
+    "nargs",
+    "multiple",
+    "default",
+    "options",
+    "secondary",
+    "hidden",
+    "is_flag",
+    "count",
+    "flag_value",
+}
+PARAM_REQUIRED_KEYS = PARAM_KEYS - {"default", "flag_value"}
+ORACLE_PATH = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
+ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "local"}
+COMMAND_KINDS = {"command", "callback", "top-level"}
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+
+@dataclass(frozen=True)
+class AuthorityEntry:
+    authority: Path
+    source: Path
+    module: str
+    surface: str
+    path: tuple[str, ...]
+    kind: str
+    help: str
+    params: list[dict[str, Any]]
+    operation_id: str
+    entry_type: str
+    method: str | None
+    route: str | None
+    contract_operation_id: str | None
+    handler: str
+
+
+def rust_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def rust_option(value: str | None) -> str:
+    if value is None:
+        return "None"
+    return f"Some({rust_string(value)})"
+
+
+def module_name(path: Path) -> str:
+    name = re.sub(r"[^A-Za-z0-9_]", "_", path.as_posix())
+    name = re.sub(r"_+", "_", name).strip("_")
+    if name[0].isdigit():
+        name = f"native_{name}"
+    return name
+
+
+def load_authority(path: Path, root: Path) -> list[AuthorityEntry]:
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"{path}: malformed TOML: {error}") from error
+
+    if data.get("schema") != SCHEMA:
+        raise ValueError(f"{path}: schema must be {SCHEMA!r}")
+    source_name = require_string(data, "source", path)
+    source = path.parent / source_name
+    if not source.is_file():
+        raise ValueError(f"{path}: source {source_name!r} does not exist")
+    entries = data.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"{path}: entries must be a non-empty list")
+
+    source_text = source.read_text()
+    output: list[AuthorityEntry] = []
+    for index, raw_entry in enumerate(entries):
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"{path}: entry {index} must be a table")
+        output.append(parse_entry(path, source, source_text, raw_entry, index, root))
+    return output
+
+
+def parse_entry(
+    authority: Path,
+    source: Path,
+    source_text: str,
+    raw_entry: dict[str, Any],
+    index: int,
+    root: Path,
+) -> AuthorityEntry:
+    label = f"{authority}: entry {index}"
+    raw_path = raw_entry.get("path")
+    if (
+        not isinstance(raw_path, list)
+        or not raw_path
+        or any(not isinstance(item, str) or not item for item in raw_path)
+    ):
+        raise ValueError(f"{label}: path must be a non-empty string list")
+    command_path = tuple(raw_path)
+    surface = raw_entry.get("surface", "sol-call")
+    if surface not in {"sol-call", "sol-chat"}:
+        raise ValueError(f"{label}: unsupported surface {surface!r}")
+    kind = require_string(raw_entry, "kind", Path(label))
+    if kind not in COMMAND_KINDS:
+        raise ValueError(f"{label}: unsupported kind {kind!r}")
+    entry_type = require_string(raw_entry, "entry_type", Path(label))
+    if entry_type not in ENTRY_TYPES:
+        raise ValueError(f"{label}: unsupported entry_type {entry_type!r}")
+    params = raw_entry.get("params", [])
+    if not isinstance(params, list):
+        raise ValueError(f"{label}: params must be a list")
+    canonical_params: list[dict[str, Any]] = []
+    for param_index, param in enumerate(params):
+        if not isinstance(param, dict):
+            raise ValueError(f"{label}: params[{param_index}] must be a table")
+        keys = set(param)
+        if not PARAM_REQUIRED_KEYS.issubset(keys) or not keys.issubset(PARAM_KEYS):
+            raise ValueError(
+                f"{label}: params[{param_index}] keys {sorted(keys)} must include "
+                f"{sorted(PARAM_REQUIRED_KEYS)} and may include default/flag_value"
+            )
+        canonical_params.append({key: param.get(key) for key in PARAM_KEYS})
+
+    handler = require_string(raw_entry, "handler", Path(label))
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", handler):
+        raise ValueError(f"{label}: handler {handler!r} is not a Rust identifier")
+    if re.search(rf"\bpub\s+fn\s+{re.escape(handler)}\s*\(", source_text) is None:
+        raise ValueError(f"{label}: handler {handler!r} is missing from {source}")
+
+    method = raw_entry.get("method")
+    route = raw_entry.get("route")
+    contract_operation_id = raw_entry.get("contract_operation_id")
+    if entry_type == "http":
+        method = require_optional_string(method, "method", label)
+        route = require_optional_string(route, "route", label)
+        contract_operation_id = require_optional_string(
+            contract_operation_id, "contract_operation_id", label
+        )
+        if method not in HTTP_METHODS:
+            raise ValueError(f"{label}: unsupported HTTP method {method!r}")
+        if (
+            not route.startswith("/")
+            or "//" in route
+            or any(ch.isspace() for ch in route)
+        ):
+            raise ValueError(f"{label}: noncanonical route {route!r}")
+    else:
+        require_absent(method, "method", label)
+        require_absent(route, "route", label)
+        require_absent(contract_operation_id, "contract_operation_id", label)
+        method = None
+        route = None
+        contract_operation_id = None
+
+    return AuthorityEntry(
+        authority=authority,
+        source=source,
+        module=module_name(source.relative_to(root)),
+        surface=surface,
+        path=command_path,
+        kind=kind,
+        help=require_string(raw_entry, "help", Path(label)),
+        params=canonical_params,
+        operation_id=require_string(raw_entry, "operation_id", Path(label)),
+        entry_type=entry_type,
+        method=method,
+        route=route,
+        contract_operation_id=contract_operation_id,
+        handler=handler,
+    )
+
+
+def require_string(data: dict[str, Any], key: str, path: Path) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{path}: {key} must be a non-empty string")
+    return value
+
+
+def require_optional_string(value: Any, key: str, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label}: {key} must be a non-empty string")
+    return value
+
+
+def require_absent(value: Any, key: str, label: str) -> None:
+    if value is not None:
+        raise ValueError(f"{label}: {key} is only valid for http entries")
+
+
+def discover(root: Path) -> list[AuthorityEntry]:
+    authority_paths = sorted(
+        set((root / "solstone").glob("**/native/authority.toml"))
+        | set((root / "solstone").glob("**/native/**/authority.toml"))
+    )
+    entries: list[AuthorityEntry] = []
+    seen_paths: dict[tuple[str, ...], Path] = {}
+    seen_operations: dict[str, Path] = {}
+    for authority in authority_paths:
+        if is_private_app_authority(authority, root):
+            continue
+        for entry in load_authority(authority, root):
+            if entry.path in seen_paths:
+                raise ValueError(
+                    f"{entry.authority}: duplicate path {list(entry.path)!r}; "
+                    f"first declared in {seen_paths[entry.path]}"
+                )
+            if entry.operation_id in seen_operations:
+                raise ValueError(
+                    f"{entry.authority}: duplicate operation_id {entry.operation_id!r}; "
+                    f"first declared in {seen_operations[entry.operation_id]}"
+                )
+            seen_paths[entry.path] = entry.authority
+            seen_operations[entry.operation_id] = entry.authority
+            entries.append(entry)
+    return entries
+
+
+def is_private_app_authority(authority: Path, root: Path) -> bool:
+    try:
+        parts = authority.relative_to(root).parts
+    except ValueError:
+        return False
+    return (
+        len(parts) >= 4
+        and parts[0] == "solstone"
+        and parts[1] == "apps"
+        and parts[2].startswith("_")
+    )
+
+
+def render(entries: list[AuthorityEntry], output: Path) -> str:
+    generated_dir = output.parent
+    lines = [
+        "// SPDX-License-Identifier: AGPL-3.0-only",
+        "// Copyright (c) 2026 sol pbc",
+        "",
+        "use crate::aggregate::{Handler, InventoryEntry};",
+        "",
+    ]
+    seen_modules: set[str] = set()
+    for entry in entries:
+        if entry.module in seen_modules:
+            continue
+        seen_modules.add(entry.module)
+        rel = os.path.relpath(entry.source, generated_dir)
+        lines.append(f"#[path = {rust_string(Path(rel).as_posix())}]")
+        lines.append(f"mod {entry.module};")
+    if entries:
+        lines.append("")
+    lines.append("pub const ENTRIES: &[InventoryEntry] = &[")
+    for entry in entries:
+        path_items = ", ".join(rust_string(item) for item in entry.path)
+        params_json = json.dumps(
+            entry.params, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        lines.extend(
+            [
+                "    InventoryEntry {",
+                f"        surface: {rust_string(entry.surface)},",
+                f"        path: &[{path_items}],",
+                f"        kind: {rust_string(entry.kind)},",
+                f"        help: {rust_string(entry.help)},",
+                f"        params_json: {rust_string(params_json)},",
+                f"        entry_type: {rust_string(entry.entry_type)},",
+                f"        operation_id: {rust_string(entry.operation_id)},",
+                f"        method: {rust_option(entry.method)},",
+                f"        route: {rust_option(entry.route)},",
+                f"        contract_operation_id: {rust_option(entry.contract_operation_id)},",
+                f"        handler: {rust_string(entry.handler)},",
+                "    },",
+            ]
+        )
+    lines.append("];")
+    lines.append("")
+    lines.append("pub const HANDLERS: &[Handler] = &[")
+    for entry in entries:
+        lines.append(f"    {entry.module}::{entry.handler},")
+    lines.append("];")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def check_oracle_subset(entries: list[AuthorityEntry], oracle_path: Path) -> list[str]:
+    if not oracle_path.is_file():
+        return [f"{oracle_path} is missing"]
+    oracle = json.loads(oracle_path.read_text())
+    oracle_entries = {
+        tuple(entry["path"]): entry
+        for entry in oracle.get("entries", [])
+        if isinstance(entry, dict) and isinstance(entry.get("path"), list)
+    }
+    errors: list[str] = []
+    for entry in entries:
+        if entry.surface != "sol-call":
+            continue
+        expected = oracle_entries.get(entry.path)
+        if expected is None:
+            errors.append(
+                f"{entry.authority}: path {list(entry.path)!r} is not in frozen oracle"
+            )
+            continue
+        for field in ("kind", "help"):
+            actual = getattr(entry, field)
+            if actual != expected[field]:
+                errors.append(
+                    f"{entry.authority}: {list(entry.path)!r} {field} {actual!r} "
+                    f"!= oracle {expected[field]!r}"
+                )
+        if entry.params != expected["params"]:
+            errors.append(
+                f"{entry.authority}: {list(entry.path)!r} params differ from frozen oracle"
+            )
+    return errors
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build native sol generated inventory."
+    )
+    parser.add_argument("--root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--check", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    root = args.root.resolve()
+    output = args.output.resolve()
+    entries = discover(root)
+    oracle_errors = check_oracle_subset(entries, ORACLE_PATH)
+    if oracle_errors:
+        for error in oracle_errors:
+            print(error)
+        return 1
+    rendered = rustfmt(render(entries, output), output.parent)
+    if args.check:
+        existing = output.read_text()
+        if existing != rendered:
+            print(f"{output} is stale; run make build-native-sol-inventory")
+            return 1
+        print(f"{output} is current")
+        return 0
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered)
+    print(f"wrote {output}")
+    return 0
+
+
+def rustfmt(text: str, directory: Path) -> str:
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", dir=directory, delete=False
+    ) as handle:
+        handle.write(text)
+        temp_path = Path(handle.name)
+    try:
+        subprocess.run(["rustfmt", "--edition", "2024", str(temp_path)], check=True)
+        return temp_path.read_text()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

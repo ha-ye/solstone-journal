@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+
+use solstone_core_sol_client::aggregate;
+use solstone_core_sol_client::command::{CommandContext, CommandOutput};
+use solstone_core_sol_client::seam::{BuildIdentityProvider, FileProvider, HttpTransport};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Migrated { path: Vec<OsString> },
+    Chat { args: Vec<OsString> },
+    MovedStub { name: OsString },
+    Unsupported { args: Vec<OsString> },
+}
+
+#[must_use]
+pub fn evaluate_args(args: &[OsString]) -> Outcome {
+    match args {
+        [command, rest @ ..] if command == OsStr::new("call") => evaluate_call(rest),
+        [command, rest @ ..] if command == OsStr::new("chat") => {
+            match_generated_surface_path("sol-chat", &[String::from("chat")]).map_or_else(
+                || Outcome::Unsupported {
+                    args: args.to_vec(),
+                },
+                |_entry| Outcome::Chat {
+                    args: rest.to_vec(),
+                },
+            )
+        }
+        _ => Outcome::Unsupported {
+            args: args.to_vec(),
+        },
+    }
+}
+
+#[must_use]
+pub fn dispatch_sol_chat_with_seams(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    transport: &dyn HttpTransport,
+    files: Option<&dyn FileProvider>,
+    build_identity: Option<&dyn BuildIdentityProvider>,
+) -> CommandOutput {
+    let Some((_, handler)) = match_generated_surface_path("sol-chat", &[String::from("chat")])
+    else {
+        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+    };
+    handler(CommandContext {
+        args,
+        env,
+        stdin,
+        today,
+        transport,
+        files,
+        build_identity,
+    })
+}
+
+fn evaluate_call(args: &[OsString]) -> Outcome {
+    let Some((entry, len)) = match_generated_path(args) else {
+        return Outcome::Unsupported {
+            args: args.to_vec(),
+        };
+    };
+    match entry.entry_type {
+        "http" => Outcome::Migrated {
+            path: args[..len].to_vec(),
+        },
+        "moved-stub" => Outcome::MovedStub {
+            name: args[0].clone(),
+        },
+        _ => Outcome::Unsupported {
+            args: args.to_vec(),
+        },
+    }
+}
+
+#[must_use]
+pub fn dispatch_sol_call(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    transport: &dyn HttpTransport,
+) -> CommandOutput {
+    dispatch_sol_call_with_seams(args, env, stdin, today, transport, None, None)
+}
+
+#[must_use]
+pub fn dispatch_sol_call_with_seams(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    transport: &dyn HttpTransport,
+    files: Option<&dyn FileProvider>,
+    build_identity: Option<&dyn BuildIdentityProvider>,
+) -> CommandOutput {
+    let Some((_, handler, len)) = match_generated_str_path(args) else {
+        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+    };
+    let remaining = args[len..].to_vec();
+    handler(CommandContext {
+        args: &remaining,
+        env,
+        stdin,
+        today,
+        transport,
+        files,
+        build_identity,
+    })
+}
+
+fn match_generated_path(args: &[OsString]) -> Option<(&'static aggregate::InventoryEntry, usize)> {
+    let utf8 = args
+        .iter()
+        .map(|arg| arg.to_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()?;
+    match_generated_str_path(&utf8).map(|(entry, _handler, len)| (entry, len))
+}
+
+fn match_generated_str_path(
+    args: &[String],
+) -> Option<(
+    &'static aggregate::InventoryEntry,
+    aggregate::Handler,
+    usize,
+)> {
+    let max_len = aggregate::entries()
+        .iter()
+        .map(|entry| entry.path.len())
+        .max()
+        .unwrap_or(0);
+    for len in (1..=args.len().min(max_len)).rev() {
+        let path = args[..len].iter().map(String::as_str).collect::<Vec<_>>();
+        if let Some((entry, handler)) = aggregate::handler_for(&path) {
+            if entry.surface != "sol-call" {
+                continue;
+            }
+            return Some((entry, handler, len));
+        }
+    }
+    None
+}
+
+fn match_generated_surface_path(
+    surface: &str,
+    args: &[String],
+) -> Option<(&'static aggregate::InventoryEntry, aggregate::Handler)> {
+    let path = args.iter().map(String::as_str).collect::<Vec<_>>();
+    aggregate::handler_for(&path).and_then(|(entry, handler)| {
+        if entry.surface == surface {
+            Some((entry, handler))
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn routes_named_builtins_to_generated_authority() {
+        assert_eq!(
+            evaluate_args(&args(&["call", "identity"])),
+            Outcome::MovedStub {
+                name: OsString::from("identity")
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_call_leaf_as_migrated_shell() {
+        assert_eq!(
+            evaluate_args(&args(&["call", "activities", "list"])),
+            Outcome::Migrated {
+                path: args(&["activities", "list"])
+            }
+        );
+    }
+
+    #[test]
+    fn routes_top_level_chat_to_chat_shell() {
+        assert_eq!(
+            evaluate_args(&args(&["chat", "hello"])),
+            Outcome::Chat {
+                args: args(&["hello"])
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_unported_call_as_unsupported_without_spawn_path() {
+        assert_eq!(
+            evaluate_args(&args(&["call", "transcripts", "list"])),
+            Outcome::Unsupported {
+                args: args(&["transcripts", "list"])
+            }
+        );
+    }
+}

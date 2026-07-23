@@ -5,6 +5,9 @@ members = [
     "crates/solstone-core-indexer",
     "crates/solstone-core-indexer-store",
     "crates/solstone-core-journal",
+    "crates/solstone-core-sol",
+    "crates/solstone-core-sol-client",
+    "crates/solstone-core-sol-client-cli",
 ]
 resolver = "3"
 
@@ -22,6 +25,8 @@ solstone-core-cli = { path = "crates/solstone-core-cli" }
 solstone-core-indexer = { path = "crates/solstone-core-indexer" }
 solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
+solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
+solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
 glob = "0.3.3"
@@ -29,7 +34,8 @@ md5 = "0.8.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rapidfuzz = "0.5.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
 unicode-normalization = "0.1.25"
 unidecode = "0.3.0"
+ureq = { version = "3.3.0", default-features = false }

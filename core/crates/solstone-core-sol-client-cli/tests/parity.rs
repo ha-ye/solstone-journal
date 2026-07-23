@@ -1,0 +1,385 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+
+use serde_json::{Value, json};
+use solstone_core_sol_client::error::ClientError;
+use solstone_core_sol_client::seam::{
+    ExpectedHttpCall, FakeBuildIdentityProvider, FixtureFileProvider, RecordedHttpCall,
+    ScriptedHttpTransport,
+};
+use solstone_core_sol_client::transport::{
+    ApiRequest, FormField, HttpMethod, HttpResponse, MultipartFile, QueryParam, SseRequest,
+    TimeoutPolicy, UploadRequest,
+};
+use solstone_core_sol_client_cli::{dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams};
+
+const ACTIVITIES_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/activities.jsonl");
+const CHAT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/chat.jsonl");
+const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
+const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
+const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
+const FILE_ROOT: &str = "/native-sol-parity-files";
+
+#[test]
+fn native_matches_sol_call_parity_vectors() {
+    for vector in load_vectors(ACTIVITIES_VECTORS)
+        .into_iter()
+        .chain(load_vectors(CHAT_VECTORS))
+        .chain(load_vectors(HEALTH_VECTORS))
+        .chain(load_vectors(MOVED_VECTORS))
+        .chain(load_vectors(SUPPORT_VECTORS))
+    {
+        assert_eq!(vector["normalizations"], json!([]), "{}", vector["id"]);
+        run_vector(&vector);
+    }
+}
+
+fn run_vector(vector: &Value) {
+    let argv = expand_file_args(string_array(&vector["argv"]));
+    let env = object_to_string_map(&vector["env"]);
+    let stdin = vector["stdin"].as_str().unwrap_or_default();
+    let today = vector["clock"]["today"].as_str().unwrap_or("20260723");
+    let transport = ScriptedHttpTransport::new(scripted_calls(vector));
+    let files = fixture_files(vector);
+    let build_identity = FakeBuildIdentityProvider::new(Some(json!({
+        "version": "9.9.9",
+        "revision": "abc123",
+        "platform": {
+            "system": "TestOS",
+            "release": "1.0",
+            "machine": "test64",
+            "python": "3.test"
+        }
+    })));
+
+    let output = if vector["surface"].as_str() == Some("sol-chat") {
+        dispatch_sol_chat_with_seams(
+            &argv,
+            &env,
+            stdin,
+            today,
+            &transport,
+            Some(&files),
+            Some(&build_identity),
+        )
+    } else {
+        dispatch_sol_call_with_seams(
+            &argv,
+            &env,
+            stdin,
+            today,
+            &transport,
+            Some(&files),
+            Some(&build_identity),
+        )
+    };
+    transport.assert_done();
+    let actual = json!({
+        "stdout": output.stdout,
+        "stderr": output.stderr,
+        "exit": output.exit,
+        "requests": recorded_calls_to_json(transport.recorded()),
+    });
+    assert_eq!(actual, vector["expected"], "{}", vector["id"]);
+}
+
+fn load_vectors(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid parity vector"))
+        .collect()
+}
+
+fn scripted_calls(vector: &Value) -> Vec<ExpectedHttpCall> {
+    vector["transport"]["requests"]
+        .as_array()
+        .expect("transport requests")
+        .iter()
+        .map(scripted_call)
+        .collect()
+}
+
+fn scripted_call(request: &Value) -> ExpectedHttpCall {
+    let policy = timeout_policy(request["timeout_policy"].as_str().unwrap_or("api"));
+    if request["method"].as_str() == Some("SSE") {
+        return ExpectedHttpCall::Sse {
+            expected: SseRequest {
+                path: request["path"].as_str().expect("path").to_string(),
+                policy,
+            },
+            chunks: request["chunks"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .map(|chunk| chunk.as_str().expect("SSE chunk").as_bytes().to_vec())
+                .collect(),
+        };
+    }
+    if request["method"].as_str() == Some("UPLOAD") {
+        let form_values = request["multipart"]["data"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        return ExpectedHttpCall::Upload {
+            expected: UploadRequest {
+                path: request["path"].as_str().expect("path").to_string(),
+                files: request["multipart"]["files"]
+                    .as_array()
+                    .expect("multipart files")
+                    .iter()
+                    .map(|file| MultipartFile {
+                        field_name: file["field_name"].as_str().expect("field").to_string(),
+                        filename: file["filename"].as_str().expect("filename").to_string(),
+                        content_type: file
+                            .get("content_type")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        body: vec![b'x'; file["length"].as_u64().expect("length") as usize],
+                    })
+                    .collect(),
+                data: form_values
+                    .iter()
+                    .map(|pair| {
+                        let pair = pair.as_array().expect("form pair");
+                        FormField {
+                            name: pair[0].as_str().expect("form key").to_string(),
+                            value: pair[1].as_str().expect("form value").to_string(),
+                        }
+                    })
+                    .collect(),
+                headers: header_pairs(request.get("headers")),
+                boundary: None,
+                policy,
+            },
+            result: scripted_result(request, policy),
+        };
+    }
+    let query_values = request["query"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let api_request = ApiRequest {
+        method: http_method(request["method"].as_str().expect("method")),
+        path: request["path"].as_str().expect("path").to_string(),
+        params: query_values
+            .iter()
+            .map(|pair| {
+                let pair = pair.as_array().expect("query pair");
+                QueryParam::single(
+                    pair[0].as_str().expect("query key"),
+                    pair[1].as_str().expect("query value"),
+                )
+            })
+            .collect(),
+        json: request
+            .get("json")
+            .filter(|value| !value.is_null())
+            .cloned(),
+        headers: header_pairs(request.get("headers")),
+        policy,
+    };
+    let result = scripted_result(request, policy);
+    ExpectedHttpCall::Request {
+        expected: api_request,
+        result,
+    }
+}
+
+fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpResponse, ClientError> {
+    if let Some(response) = request.get("response") {
+        Ok(HttpResponse {
+            status: response
+                .get("status")
+                .and_then(Value::as_u64)
+                .unwrap_or(200) as u16,
+            headers: header_pairs(response.get("headers")),
+            body: serde_json::to_vec(&response["json"]).expect("response JSON"),
+            policy,
+        })
+    } else {
+        let fault = &request["fault"];
+        if fault.get("kind").and_then(Value::as_str) == Some("unreachable") {
+            return Err(ClientError::unreachable(
+                fault
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ));
+        }
+        Err(ClientError::ReasonRejected {
+            status: fault.get("status").and_then(Value::as_u64).unwrap_or(500) as u16,
+            error: fault
+                .get("error")
+                .or_else(|| fault.get("reason_code"))
+                .and_then(Value::as_str)
+                .unwrap_or("error")
+                .to_string(),
+            reason_code: fault
+                .get("reason_code")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            detail: fault
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            payload: Box::new(fault.get("payload").cloned().unwrap_or(Value::Null)),
+        })
+    }
+}
+
+fn recorded_calls_to_json(calls: Vec<RecordedHttpCall>) -> Value {
+    Value::Array(
+        calls
+            .into_iter()
+            .map(|call| match call {
+                RecordedHttpCall::Request {
+                    method,
+                    path,
+                    query,
+                    json,
+                    headers,
+                    timeout_policy,
+                } => json!({
+                    "method": method,
+                    "path": path,
+                    "query": query_pairs_to_json(query),
+                    "json": json,
+                    "headers": header_pairs_to_json(headers),
+                    "timeout_policy": timeout_policy,
+                }),
+                RecordedHttpCall::Upload {
+                    path,
+                    files,
+                    data,
+                    headers,
+                    timeout_policy,
+                } => json!({
+                    "method": "UPLOAD",
+                    "path": path,
+                    "multipart": {
+                        "files": files.into_iter().map(|file| json!({
+                            "field_name": file.field_name,
+                            "filename": file.filename,
+                            "content_type": file.content_type,
+                            "length": file.length,
+                        })).collect::<Vec<_>>(),
+                        "data": query_pairs_to_json(data),
+                    },
+                    "headers": header_pairs_to_json(headers),
+                    "timeout_policy": timeout_policy,
+                }),
+                RecordedHttpCall::Sse {
+                    path,
+                    timeout_policy,
+                } => json!({
+                    "method": "SSE",
+                    "path": path,
+                    "headers": [],
+                    "timeout_policy": timeout_policy,
+                }),
+            })
+            .collect(),
+    )
+}
+
+fn fixture_files(vector: &Value) -> FixtureFileProvider {
+    let files = vector["files"]
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(relative, body)| {
+                    (
+                        PathBuf::from(format!("{FILE_ROOT}/{relative}")),
+                        body.as_str().unwrap_or_default().as_bytes().to_vec(),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    FixtureFileProvider::new(files)
+}
+
+fn expand_file_args(args: Vec<String>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| arg.replace("{files}", FILE_ROOT))
+        .collect()
+}
+
+fn object_to_string_map(value: &Value) -> BTreeMap<String, String> {
+    value
+        .as_object()
+        .expect("env object")
+        .iter()
+        .map(|(key, value)| (key.clone(), value.as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
+fn string_array(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .expect("string array")
+        .iter()
+        .map(|value| value.as_str().expect("string").to_string())
+        .collect()
+}
+
+fn http_method(value: &str) -> HttpMethod {
+    match value {
+        "DELETE" => HttpMethod::Delete,
+        "GET" => HttpMethod::Get,
+        "POST" => HttpMethod::Post,
+        "PUT" => HttpMethod::Put,
+        other => panic!("unsupported method {other}"),
+    }
+}
+
+fn timeout_policy(value: &str) -> TimeoutPolicy {
+    match value {
+        "api" => TimeoutPolicy::Api,
+        "upload" => TimeoutPolicy::Upload,
+        "chat-post" => TimeoutPolicy::ChatPost,
+        "sse-open" => TimeoutPolicy::SseOpen,
+        other => panic!("unsupported timeout policy {other}"),
+    }
+}
+
+fn header_pairs(value: Option<&Value>) -> Vec<(String, String)> {
+    let pairs = value
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    pairs
+        .iter()
+        .map(|pair| {
+            let pair = pair.as_array().expect("header pair");
+            (
+                pair[0].as_str().expect("header name").to_string(),
+                pair[1].as_str().expect("header value").to_string(),
+            )
+        })
+        .collect()
+}
+
+fn query_pairs_to_json(pairs: Vec<(String, String)>) -> Value {
+    Value::Array(
+        pairs
+            .into_iter()
+            .map(|(key, value)| json!([key, value]))
+            .collect(),
+    )
+}
+
+fn header_pairs_to_json(pairs: Vec<(String, String)>) -> Value {
+    Value::Array(
+        pairs
+            .into_iter()
+            .map(|(key, value)| json!([key, value]))
+            .collect(),
+    )
+}

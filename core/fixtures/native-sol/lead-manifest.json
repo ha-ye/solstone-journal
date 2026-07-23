@@ -1,0 +1,407 @@
+{
+  "entries": [
+    {
+      "contract_operation_id": "activities.list",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "activities.list",
+      "path": [
+        "activities",
+        "list"
+      ],
+      "reason_codes": [],
+      "route": "/app/activities/api/day/{day}/records",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "activities.get",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "activities.get",
+      "path": [
+        "activities",
+        "get"
+      ],
+      "reason_codes": [
+        "activity_not_found"
+      ],
+      "route": "/app/activities/api/day/{day}/record/{span_id}",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "activities.create",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "activities.create",
+      "path": [
+        "activities",
+        "create"
+      ],
+      "reason_codes": [
+        "activities_busy",
+        "activity_already_exists",
+        "activity_invalid",
+        "activity_not_found"
+      ],
+      "route": "/app/activities/api/day/{day}/records",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "activities.update",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "activities.update",
+      "path": [
+        "activities",
+        "update"
+      ],
+      "reason_codes": [
+        "activities_busy",
+        "activity_not_found"
+      ],
+      "route": "/app/activities/api/day/{day}/record/{span_id}/update",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "activities.mute",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "activities.mute",
+      "path": [
+        "activities",
+        "mute"
+      ],
+      "reason_codes": [
+        "activities_busy",
+        "activity_not_found"
+      ],
+      "route": "/app/activities/api/day/{day}/record/{span_id}/mute",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "activities.unmute",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "activities.unmute",
+      "path": [
+        "activities",
+        "unmute"
+      ],
+      "reason_codes": [
+        "activities_busy",
+        "activity_not_found"
+      ],
+      "route": "/app/activities/api/day/{day}/record/{span_id}/unmute",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.register",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "support.register",
+      "path": [
+        "support",
+        "register"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/register",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.search",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.search",
+      "path": [
+        "support",
+        "search"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/articles",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.article",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.article",
+      "path": [
+        "support",
+        "article"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/articles/{slug}",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.create",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "support.create",
+      "path": [
+        "support",
+        "create"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "missing_required_field",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/tickets",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.list",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.list",
+      "path": [
+        "support",
+        "list"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/tickets",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.show",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.show",
+      "path": [
+        "support",
+        "show"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/tickets/{ticket_id}",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.reply",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "support.reply",
+      "path": [
+        "support",
+        "reply"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "missing_required_field",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/tickets/{ticket_id}/reply",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.attach",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "support.attach",
+      "path": [
+        "support",
+        "attach"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "invalid_request_value",
+        "missing_required_field",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/tickets/{ticket_id}/attachments",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.feedback",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "POST",
+      "operation_id": "support.feedback",
+      "path": [
+        "support",
+        "feedback"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "missing_required_field",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/feedback",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.announcements",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.announcements",
+      "path": [
+        "support",
+        "announcements"
+      ],
+      "reason_codes": [
+        "feature_unavailable",
+        "support_portal_failed"
+      ],
+      "route": "/app/support/api/announcements",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "support.diagnose",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "support.diagnose",
+      "path": [
+        "support",
+        "diagnose"
+      ],
+      "reason_codes": [],
+      "route": "/app/support/api/diagnostics",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "health.summary",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "health.summary",
+      "path": [
+        "health",
+        "summary"
+      ],
+      "reason_codes": [
+        "health_report_failed",
+        "invalid_request_value"
+      ],
+      "route": "/api/health/summary",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "health.full",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "health.full",
+      "path": [
+        "health",
+        "full"
+      ],
+      "reason_codes": [
+        "health_report_failed",
+        "invalid_request_value"
+      ],
+      "route": "/api/health/full",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "health.for_range",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "health.for_range",
+      "path": [
+        "health",
+        "for-range"
+      ],
+      "reason_codes": [
+        "health_report_failed",
+        "invalid_request_value"
+      ],
+      "route": "/api/health/range",
+      "surface": "sol-call"
+    },
+    {
+      "contract_operation_id": "health.pipeline",
+      "entry_type": "http",
+      "kind": "command",
+      "method": "GET",
+      "operation_id": "health.pipeline",
+      "path": [
+        "health",
+        "pipeline"
+      ],
+      "reason_codes": [
+        "health_report_failed",
+        "invalid_request_value",
+        "missing_required_field"
+      ],
+      "route": "/api/health/pipeline",
+      "surface": "sol-call"
+    },
+    {
+      "entry_type": "moved-stub",
+      "kind": "callback",
+      "operation_id": "moved.identity",
+      "path": [
+        "identity"
+      ],
+      "surface": "sol-call"
+    },
+    {
+      "entry_type": "moved-stub",
+      "kind": "callback",
+      "operation_id": "moved.navigate",
+      "path": [
+        "navigate"
+      ],
+      "surface": "sol-call"
+    },
+    {
+      "backing_contracts": [
+        {
+          "method": "POST",
+          "operation_id": "chat.postMessage",
+          "route": "/api/chat"
+        },
+        {
+          "method": "GET",
+          "operation_id": "chat.session",
+          "route": "/api/chat/session"
+        },
+        {
+          "method": "GET",
+          "operation_id": "callosum.rootEvents",
+          "route": "/sse/events"
+        }
+      ],
+      "entry_type": "top-level-chat",
+      "kind": "top-level",
+      "operation_id": "chat.top_level",
+      "path": [
+        "chat"
+      ],
+      "surface": "sol-chat"
+    }
+  ],
+  "schema": "native-sol-lead-manifest-v1"
+}

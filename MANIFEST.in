@@ -11,6 +11,8 @@ include build_hooks.py
 global-exclude *.py[cod]
 global-exclude .DS_Store
 global-exclude .gitignore
+recursive-exclude solstone *.rs
+recursive-exclude solstone authority.toml
 
 # Drop the parakeet-helper Swift build tree. `make wheel-macos` builds the helper
 # into .build/ then stages the signed+notarized binary into _bin/parakeet-helper

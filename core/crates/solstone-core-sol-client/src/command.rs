@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+use std::collections::BTreeMap;
+
+use crate::seam::{BuildIdentityProvider, FileProvider, HttpTransport};
+
+#[derive(Clone, Copy)]
+pub struct CommandContext<'a> {
+    pub args: &'a [String],
+    pub env: &'a BTreeMap<String, String>,
+    pub stdin: &'a str,
+    pub today: &'a str,
+    pub transport: &'a dyn HttpTransport,
+    pub files: Option<&'a dyn FileProvider>,
+    pub build_identity: Option<&'a dyn BuildIdentityProvider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit: i32,
+}
+
+impl CommandOutput {
+    #[must_use]
+    pub fn success(stdout: impl Into<String>) -> Self {
+        Self {
+            stdout: stdout.into(),
+            stderr: String::new(),
+            exit: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn failure(stderr: impl Into<String>, exit: i32) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: stderr.into(),
+            exit,
+        }
+    }
+}
