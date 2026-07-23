@@ -606,6 +606,7 @@ class VideoProcessor:
                 exc_info=True,
             )
             self.decode_failed = True
+            self.qualified_count = len(self.qualified_frames)
             return self.qualified_frames
         except Exception as e:
             logger.error(

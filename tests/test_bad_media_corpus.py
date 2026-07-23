@@ -707,6 +707,84 @@ def test_no_video_stream_screen_terminalizes_corrupt_input(
     }
 
 
+def test_partial_decode_failure_preserves_qualified_count(
+    segment_journal,
+    monkeypatch,
+):
+    from fractions import Fraction
+
+    av = pytest.importorskip("av")
+    from solstone.observe import aruco
+
+    decode_error = av.error.InvalidDataError(
+        1094995529,
+        "partial decode failure",
+    )
+    assert isinstance(decode_error, av.error.FFmpegError)
+
+    frame = av.VideoFrame.from_ndarray(
+        np.zeros((64, 64, 3), dtype=np.uint8),
+        format="rgb24",
+    )
+    frame.pts = 1
+    frame.time_base = Fraction(1, 1)
+
+    class FakeCodecContext:
+        thread_count = 0
+
+    class FakeStream:
+        def __init__(self):
+            self.thread_type = None
+            self.codec_context = FakeCodecContext()
+            self.width = 64
+            self.height = 64
+
+    class FakeStreams:
+        video = (FakeStream(),)
+
+    class FakeContainer:
+        streams = FakeStreams()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def decode(self, video=0):
+            assert video == 0
+            yield frame
+            raise decode_error
+
+    segment_key = "125000_300"
+    segment = _segment_dir(segment_journal, segment=segment_key)
+    video_path = segment / "screen.mp4"
+    output_path = segment / "screen.jsonl"
+    video_path.write_bytes(b"fake container bytes")
+
+    monkeypatch.setattr(av, "open", lambda *args, **kwargs: FakeContainer())
+    monkeypatch.setattr(aruco, "detect_markers", lambda _image: None)
+
+    header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+    )
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert record["attempts"] == 1
+    assert header["qualified_count"] == 1
+    assert agenerate.call_count == 1
+    rows = _read_jsonl(output_path)
+    assert len(rows) == 2
+    assert rows[1]["frame_id"] == 1
+
+
 def test_aruco_frame_body_index_error_still_propagates(
     segment_journal,
     monkeypatch,
