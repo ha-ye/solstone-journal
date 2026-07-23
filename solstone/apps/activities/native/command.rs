@@ -596,15 +596,8 @@ fn read_stdin_json(raw: &str, allow_empty: bool) -> Result<Map<String, Value>, C
         }
         return Err(stderr("Error: expected JSON object on stdin."));
     }
-    let payload = serde_json::from_str::<Value>(raw).map_err(|error| {
-        if raw == "{" {
-            stderr(
-                "Error: invalid JSON on stdin: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
-            )
-        } else {
-            stderr(format!("Error: invalid JSON on stdin: {error}"))
-        }
-    })?;
+    let payload = serde_json::from_str::<Value>(raw)
+        .map_err(|error| stderr(format!("Error: invalid JSON on stdin: {error}")))?;
     match payload {
         Value::Object(object) => Ok(object),
         _ => Err(stderr("Error: expected JSON object on stdin.")),

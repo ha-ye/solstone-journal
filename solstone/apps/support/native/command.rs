@@ -177,6 +177,7 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
     }
 
     let mut out = Output::default();
+    let mut confirm_lines = ctx.stdin.lines();
     if !parsed.has_flag("--skip-kb") {
         out.stdout.push("Searching knowledge base...".to_string());
         let articles = match client.request(
@@ -204,11 +205,15 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
                 "These may answer your question. Use `sol call support article <slug>` to read."
                     .to_string(),
             );
-            if !parsed.has_flag("--yes")
-                && !confirm(&mut out, ctx.stdin, "Still want to file a ticket?")
-            {
-                out.stdout.push("Cancelled.".to_string());
-                return out.finish(0);
+            if !parsed.has_flag("--yes") {
+                match confirm(&mut out, &mut confirm_lines, "Still want to file a ticket?") {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        out.stdout.push("Cancelled.".to_string());
+                        return out.finish(0);
+                    }
+                    Err(()) => return out.finish(1),
+                }
             }
         }
     }
@@ -239,9 +244,15 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
     out.stdout.push(json_pretty(&diagnostics));
     out.stdout.push("--- End Draft ---".to_string());
     out.stdout.push(String::new());
-    if !parsed.has_flag("--yes") && !confirm(&mut out, ctx.stdin, "Submit this ticket?") {
-        out.stdout.push("Cancelled — nothing was sent.".to_string());
-        return out.finish(0);
+    if !parsed.has_flag("--yes") {
+        match confirm(&mut out, &mut confirm_lines, "Submit this ticket?") {
+            Ok(true) => {}
+            Ok(false) => {
+                out.stdout.push("Cancelled — nothing was sent.".to_string());
+                return out.finish(0);
+            }
+            Err(()) => return out.finish(1),
+        }
     }
     let payload = ticket_payload(
         subject,
@@ -411,12 +422,17 @@ pub fn reply(ctx: CommandContext<'_>) -> CommandOutput {
         return out.finish(0);
     }
     let mut out = Output::default();
+    let mut confirm_lines = ctx.stdin.lines();
     if !parsed.has_flag("--yes") {
         out.stdout
             .push(format!("Reply to ticket #{ticket_id}:\n{body}\n"));
-        if !confirm(&mut out, ctx.stdin, "Send this reply?") {
-            out.stdout.push("Cancelled.".to_string());
-            return out.finish(0);
+        match confirm(&mut out, &mut confirm_lines, "Send this reply?") {
+            Ok(true) => {}
+            Ok(false) => {
+                out.stdout.push("Cancelled.".to_string());
+                return out.finish(0);
+            }
+            Err(()) => return out.finish(1),
         }
     }
     if let Err(error) = client.request(
@@ -519,9 +535,16 @@ pub fn attach(ctx: CommandContext<'_>) -> CommandOutput {
         ));
     }
     out.stdout.push("--- End Review ---\n".to_string());
-    if !parsed.has_flag("--yes") && !confirm(&mut out, ctx.stdin, "Upload these files?") {
-        out.stdout.push("Cancelled — nothing was sent.".to_string());
-        return out.finish(0);
+    let mut confirm_lines = ctx.stdin.lines();
+    if !parsed.has_flag("--yes") {
+        match confirm(&mut out, &mut confirm_lines, "Upload these files?") {
+            Ok(true) => {}
+            Ok(false) => {
+                out.stdout.push("Cancelled — nothing was sent.".to_string());
+                return out.finish(0);
+            }
+            Err(()) => return out.finish(1),
+        }
     }
     let path = format!("/app/support/api/tickets/{ticket_id}/attachments");
     for (file, body) in file_bodies {
@@ -601,16 +624,21 @@ pub fn feedback(ctx: CommandContext<'_>) -> CommandOutput {
         return out.finish(0);
     }
     let mut out = Output::default();
+    let mut confirm_lines = ctx.stdin.lines();
     if !parsed.has_flag("--yes") {
         out.stdout.push(format!("Feedback:\n{body}\n"));
         let anon_note = if anonymous { " (anonymous)" } else { "" };
-        if !confirm(
+        match confirm(
             &mut out,
-            ctx.stdin,
+            &mut confirm_lines,
             &format!("Submit this feedback{anon_note}?"),
         ) {
-            out.stdout.push("Cancelled.".to_string());
-            return out.finish(0);
+            Ok(true) => {}
+            Ok(false) => {
+                out.stdout.push("Cancelled.".to_string());
+                return out.finish(0);
+            }
+            Err(()) => return out.finish(1),
         }
     }
     let result = match client.request(
@@ -942,10 +970,19 @@ fn ticket_payload(
     payload
 }
 
-fn confirm(out: &mut Output, stdin: &str, prompt: &str) -> bool {
-    let answer = stdin.lines().next().unwrap_or_default();
-    out.stdout.push(format!("{prompt} [y/N]: {answer}"));
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+fn confirm(out: &mut Output, lines: &mut std::str::Lines<'_>, prompt: &str) -> Result<bool, ()> {
+    loop {
+        let Some(answer) = lines.next() else {
+            out.stdout.push(format!("{prompt} [y/N]:Aborted!\n "));
+            return Err(());
+        };
+        out.stdout.push(format!("{prompt} [y/N]: {answer}"));
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "" | "n" | "no" => return Ok(false),
+            "y" | "yes" => return Ok(true),
+            _ => out.stdout.push("Error: invalid input".to_string()),
+        }
+    }
 }
 
 fn read_file(ctx: CommandContext<'_>, path: &str) -> Option<Vec<u8>> {
