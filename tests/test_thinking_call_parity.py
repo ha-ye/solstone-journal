@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,8 +15,8 @@ from typer.testing import CliRunner
 import solstone.apps.thinking.call as thinking_call
 import solstone.apps.thinking.routes as thinking_routes
 from solstone.apps.thinking import copy as thinking_copy
-from solstone.think.convey_client import ConveyClient
-from solstone.think.services import operations, scout, scout_handoff
+from solstone.think.convey_client import ConveyClient, ConveyUnreachableError
+from solstone.think.services import operations, scout, scout_handoff, spp, spp_handoff
 from tests._baseline_harness import make_test_client
 from tests.helpers.module_mocks import inline_thread_constructor, module_mock
 
@@ -104,6 +105,16 @@ def _approved_scout_payload(key: str = "google-scout-key") -> dict[str, str]:
     }
 
 
+def _confidential_payload(suffix: str = "one") -> dict[str, str]:
+    return {
+        "endpoint_url": f"https://spp-{suffix}.example.test/v1",
+        "served_model_id": f"confidential-model-{suffix}",
+        "credential": f"credential-{suffix}",
+        "account_id": f"acct-{suffix}",
+        "created_at": "2026-05-24T00:00:00Z",
+    }
+
+
 def _clear_scout(journal: Path) -> None:
     config = _read_config(journal)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
@@ -114,6 +125,43 @@ def _clear_scout(journal: Path) -> None:
 def _first_json(stdout: str) -> tuple[Any, str]:
     payload, index = json.JSONDecoder().raw_decode(stdout)
     return payload, stdout[index:].strip()
+
+
+def _stable_confidential_handoff_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        spp_handoff,
+        "build_confidential_handoff_url",
+        lambda: (
+            "http://portal.test/enable/spp?nonce=NONCE",
+            "NONCE",
+            "http://portal.test",
+        ),
+    )
+
+
+def _confidential_status_subset(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "confidential_enabled": state.get("confidential_enabled"),
+        "confidential_provenance_configured": state.get(
+            "confidential_provenance_configured"
+        ),
+        "confidential_operation": state.get("confidential_operation"),
+        "confidential_attestation": state.get("confidential_attestation"),
+    }
+
+
+def _checked_confidential_attestation() -> dict[str, str | None]:
+    return {
+        "state": "stale",
+        "reason": "brain_record_missing",
+        "observed_at": None,
+        "expires_at": None,
+    }
+
+
+def _assert_no_confidential_secret(output: str, suffix: str = "secret") -> None:
+    assert f"credential-{suffix}" not in output
+    assert f"acct-{suffix}" not in output
 
 
 def test_show_verbs_select_http_fields() -> None:
@@ -274,6 +322,402 @@ def test_scout_cli_copy_mirror_matches_thinking_copy() -> None:
         thinking_copy.SCOUT_STATE_REPAIR_NEEDED,
     }
     assert thinking_call._SCOUT_CONSENT_CTA == thinking_copy.SCOUT_CONSENT_CTA
+
+
+def test_confidential_status_matches_http_active_lane_subset(
+    journal_copy: Path,
+) -> None:
+    before = (journal_copy / "config" / "journal.json").read_text(encoding="utf-8")
+    expected = _confidential_status_subset(thinking_call._get_confidential_state())
+
+    result = runner.invoke(thinking_call.app, ["confidential", "status"])
+
+    _assert_json(result, expected)
+    assert (journal_copy / "config" / "journal.json").read_text(
+        encoding="utf-8"
+    ) == before
+
+
+@pytest.mark.parametrize(
+    ("refresh_ok", "expected_error"),
+    [
+        (True, None),
+        (False, "check_not_started"),
+    ],
+)
+def test_confidential_recheck_rereads_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+    refresh_ok: bool,
+    expected_error: str | None,
+) -> None:
+    spp.provision_confidential_handoff(_confidential_payload("recheck"))
+    monkeypatch.setattr(
+        thinking_routes,
+        "request_brain_refresh",
+        lambda *, surface: surface == "thinking" and refresh_ok,
+    )
+    monkeypatch.setattr(
+        thinking_routes,
+        "build_brain_snapshot",
+        lambda *_args, **_kwargs: {"state": "checking"},
+    )
+
+    result = runner.invoke(thinking_call.app, ["confidential", "recheck"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    expected = {
+        "ok": refresh_ok,
+        "attestation": thinking_call._get_confidential_state().get(
+            "confidential_attestation"
+        ),
+    }
+    if expected_error is not None:
+        expected["error"] = expected_error
+    assert payload == expected
+    assert "brain" not in payload
+
+
+_NOT_VERIFIED_GUIDANCE = (
+    "Hardware attestation is not yet verified. "
+    "Thinking stays blocked until verification finishes."
+)
+
+
+@pytest.mark.parametrize(
+    (
+        "raw_phase",
+        "guidance",
+        "retryable",
+        "subscribe_url",
+        "expected_phase",
+        "expected_exit",
+    ),
+    [
+        (
+            "enabled",
+            _NOT_VERIFIED_GUIDANCE,
+            False,
+            None,
+            "not_verified",
+            0,
+        ),
+        ("error", "Try again.", True, None, "repair_needed", 1),
+        ("early_access", None, False, None, "early_access", 1),
+        (
+            "needs_subscription",
+            "Subscription required.",
+            False,
+            "https://subscribe.example.test",
+            "needs_subscription",
+            1,
+        ),
+        ("revoked", "Access was revoked.", False, None, "revoked", 1),
+    ],
+)
+def test_confidential_enable_terminal_phase_exit_codes(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_phase: str,
+    guidance: str | None,
+    retryable: bool,
+    subscribe_url: str | None,
+    expected_phase: str,
+    expected_exit: int,
+) -> None:
+    _stable_confidential_handoff_url(monkeypatch)
+
+    def runner_result(**_kwargs):
+        if raw_phase == "enabled":
+            spp.provision_confidential_handoff(_confidential_payload("terminal"))
+        return operations.HandoffResult(
+            raw_phase,
+            guidance,
+            retryable,
+            subscribe_url=subscribe_url,
+        )
+
+    monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner_result)
+    monkeypatch.setattr(
+        operations,
+        "threading",
+        module_mock(
+            operations.threading,
+            Thread=inline_thread_constructor(),
+        ),
+    )
+
+    result = runner.invoke(
+        thinking_call.app,
+        ["confidential", "enable", "--wait-seconds", "2", "--poll-interval", "0"],
+    )
+
+    output = result.stdout + result.stderr
+    assert result.exit_code == expected_exit
+    assert result.stderr == ""
+    assert (
+        "continue in browser → http://portal.test/enable/spp?nonce=NONCE"
+        in result.stdout
+    )
+    assert f"operation: {expected_phase}\n" in result.stdout
+    if guidance:
+        assert guidance in result.stdout
+    if subscribe_url:
+        assert f"subscribe_url: {subscribe_url}\n" in result.stdout
+    if expected_exit == 0:
+        assert "next: sol call thinking confidential recheck\n" in result.stdout
+        assert "attestation_state: verified" not in result.stdout
+    else:
+        assert "next: sol call thinking confidential recheck" not in result.stdout
+    assert "credential-terminal" not in output
+    assert "acct-terminal" not in output
+
+
+def test_confidential_enable_timeout_does_not_fabricate_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stable_confidential_handoff_url(monkeypatch)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def runner_result(**_kwargs):
+        try:
+            release.wait(5)
+            return operations.HandoffResult("pending", "Still pending.", False)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner_result)
+
+    try:
+        result = runner.invoke(
+            thinking_call.app,
+            [
+                "confidential",
+                "enable",
+                "--wait-seconds",
+                "0",
+                "--poll-interval",
+                "0",
+            ],
+        )
+    finally:
+        release.set()
+        finished.wait(1)
+
+    output = result.stdout + result.stderr
+    assert result.exit_code == 1
+    assert "operation continues server-side" in output
+    assert "sol call thinking confidential status" in output
+    assert "repair_needed" not in output
+    assert "Timed out waiting for Scout" not in output
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_exit"),
+    [
+        (True, 0),
+        (False, 1),
+    ],
+)
+def test_confidential_enable_swept_operation_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    expected_exit: int,
+) -> None:
+    def fake_post_confidential_action(path: str) -> dict[str, Any]:
+        assert path == "/app/thinking/api/confidential/enable"
+        return {
+            "operation": {
+                "phase": "starting",
+                "portal_url": "http://portal.test/enable/spp?nonce=NONCE",
+            }
+        }
+
+    monkeypatch.setattr(
+        thinking_call,
+        "_post_confidential_action",
+        fake_post_confidential_action,
+    )
+    attestation = _checked_confidential_attestation()
+    states = [
+        {
+            "confidential_enabled": False,
+            "confidential_provenance_configured": False,
+            "confidential_operation": {
+                "phase": "starting",
+                "guidance": None,
+                "subscribe_url": None,
+            },
+            "confidential_attestation": attestation,
+        },
+        {
+            "confidential_enabled": configured,
+            "confidential_provenance_configured": configured,
+            "confidential_operation": None,
+            "confidential_attestation": attestation,
+        },
+    ]
+
+    def scripted_state() -> dict[str, Any]:
+        if states:
+            return states.pop(0)
+        return {
+            "confidential_enabled": configured,
+            "confidential_provenance_configured": configured,
+            "confidential_operation": None,
+            "confidential_attestation": attestation,
+        }
+
+    monkeypatch.setattr(thinking_call, "_get_confidential_state", scripted_state)
+
+    result = runner.invoke(
+        thinking_call.app,
+        ["confidential", "enable", "--wait-seconds", "2", "--poll-interval", "0"],
+    )
+
+    output = result.stdout + result.stderr
+    assert result.exit_code == expected_exit
+    assert (
+        "continue in browser → http://portal.test/enable/spp?nonce=NONCE"
+        in result.stdout
+    )
+    if configured:
+        assert "next: sol call thinking confidential recheck\n" in result.stdout
+        assert "operation ended without enabling confidential processing" not in output
+    else:
+        assert "operation ended without enabling confidential processing" in output
+        assert "sol call thinking confidential status" in output
+        assert "next: sol call thinking confidential recheck" not in output
+
+
+def test_confidential_unreachable_uses_convey_cli_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnreachableClient:
+        def request(self, *_args, **_kwargs):
+            raise ConveyUnreachableError("I couldn't reach the journal over HTTP.")
+
+    monkeypatch.setattr(thinking_call, "get_client", lambda: UnreachableClient())
+
+    result = runner.invoke(thinking_call.app, ["confidential", "status"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == "I couldn't reach the journal over HTTP.\n"
+
+
+def test_confidential_multi_verb_outputs_scrub_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spp.provision_confidential_handoff(_confidential_payload("secret"))
+    monkeypatch.setattr(
+        thinking_routes,
+        "request_brain_refresh",
+        lambda *, surface: surface == "thinking",
+    )
+    monkeypatch.setattr(
+        thinking_routes,
+        "build_brain_snapshot",
+        lambda *_args, **_kwargs: {"state": "checking"},
+    )
+
+    results = [
+        runner.invoke(thinking_call.app, ["confidential", "status"]),
+        runner.invoke(thinking_call.app, ["confidential", "recheck"]),
+        runner.invoke(thinking_call.app, ["confidential", "enable"]),
+        runner.invoke(thinking_call.app, ["confidential", "disable"]),
+    ]
+
+    assert [result.exit_code for result in results] == [0, 0, 1, 0]
+    for result in results:
+        _assert_no_confidential_secret(result.stdout + result.stderr)
+
+
+def test_confidential_service_busy_surfaces_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stable_confidential_handoff_url(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def blocking_flow() -> operations.HandoffResult:
+        try:
+            started.set()
+            release.wait(5)
+            return operations.HandoffResult("pending", "Still pending.", False)
+        finally:
+            finished.set()
+
+    operations.start_operation(
+        thinking_routes.SERVICE_SPP,
+        "enable",
+        "http://portal.test/enable/spp?nonce=BUSY",
+        blocking_flow,
+    )
+    assert started.wait(1)
+
+    try:
+        result = runner.invoke(thinking_call.app, ["confidential", "enable"])
+    finally:
+        release.set()
+        finished.wait(1)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == "operation already running\n"
+
+
+def test_confidential_refusals_surface_route_detail() -> None:
+    inactive = runner.invoke(thinking_call.app, ["confidential", "recheck"])
+
+    assert inactive.exit_code == 1
+    assert inactive.stdout == ""
+    assert inactive.stderr == "confidential processing is not active.\n"
+
+    spp.provision_confidential_handoff(_confidential_payload("refusal"))
+    already_enabled = runner.invoke(thinking_call.app, ["confidential", "enable"])
+
+    assert already_enabled.exit_code == 1
+    assert already_enabled.stdout == ""
+    assert already_enabled.stderr == "confidential processing is already set up.\n"
+
+
+def test_confidential_disable_matches_http_result_without_secret() -> None:
+    spp.provision_confidential_handoff(_confidential_payload("disable"))
+
+    result = runner.invoke(thinking_call.app, ["confidential", "disable"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"result"}
+    assert set(payload["result"]) == {"was_enabled", "credential_preserved"}
+    assert payload["result"]["was_enabled"] is True
+    assert payload["result"]["credential_preserved"] is False
+    assert "credential-disable" not in result.stdout
+    assert "acct-disable" not in result.stdout
+    assert "spp-disable.example.test" not in result.stdout
+    assert "confidential-model-disable" not in result.stdout
+
+
+def test_confidential_cli_phase_mirror_matches_routes() -> None:
+    assert (
+        thinking_call._CONFIDENTIAL_PHASE_TO_PRODUCT
+        == thinking_routes._CONFIDENTIAL_PHASE_TO_PRODUCT
+    )
+    assert (
+        thinking_call._CONFIDENTIAL_RAW_TERMINAL_PHASES
+        == operations.TERMINAL_PHASES
+    )
+    assert thinking_call._CONFIDENTIAL_TERMINAL_PHASES == {
+        "not_verified",
+        "needs_subscription",
+        "revoked",
+        "repair_needed",
+        "early_access",
+    }
 
 
 def test_keys_set_clear_validate_and_invalid_env(

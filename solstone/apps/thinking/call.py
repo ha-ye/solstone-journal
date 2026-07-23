@@ -14,6 +14,7 @@ import typer
 from solstone.convey.reasons import (
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
+    SERVICE_BUSY,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
@@ -67,6 +68,40 @@ _SCOUT_GUIDANCE = {
 }
 _SCOUT_CONSENT_CTA = "continue to approve →"
 
+# Mirrors solstone.apps.thinking.routes._CONFIDENTIAL_PHASE_TO_PRODUCT
+# (routes.py:151-157); reconstructed here so this call.py remains a pure
+# Convey HTTP client.
+_CONFIDENTIAL_PHASE_TO_PRODUCT = {
+    "starting": "starting",
+    "waiting": "waiting",
+    "enabled": "not_verified",
+    "early_access": "early_access",
+    "error": "repair_needed",
+}
+# Mirrors solstone.think.services.operations.TERMINAL_PHASES
+# (operations.py:32-34); reconstructed here so this call.py remains a pure
+# Convey HTTP client.
+_CONFIDENTIAL_RAW_TERMINAL_PHASES = {
+    "enabled",
+    "needs_subscription",
+    "revoked",
+    "error",
+    "early_access",
+}
+_CONFIDENTIAL_TERMINAL_PHASES = {
+    _CONFIDENTIAL_PHASE_TO_PRODUCT.get(phase, phase)
+    for phase in _CONFIDENTIAL_RAW_TERMINAL_PHASES
+}
+_CONFIDENTIAL_PHASE_NOT_VERIFIED = "not_verified"
+_CONFIDENTIAL_PHASE_REPAIR_NEEDED = "repair_needed"
+_CONFIDENTIAL_SUCCESS_PHASES = {_CONFIDENTIAL_PHASE_NOT_VERIFIED}
+_CONFIDENTIAL_OUTCOME_TERMINAL = "terminal"
+_CONFIDENTIAL_OUTCOME_TIMEOUT = "timeout"
+_CONFIDENTIAL_OUTCOME_SWEPT_CONFIGURED = "swept_configured"
+_CONFIDENTIAL_OUTCOME_SWEPT_UNCONFIGURED = "swept_unconfigured"
+# Mirrors the confidential browser portal-link literal at thinking.js:1202.
+_CONFIDENTIAL_CONSENT_CTA = "continue in browser →"
+
 app = typer.Typer(help="Thinking providers, keys, and local model setup.")
 
 keys_app = typer.Typer(help="AI key management.")
@@ -75,6 +110,8 @@ providers_app = typer.Typer(help="AI provider configuration.")
 app.add_typer(providers_app, name="providers")
 local_app = typer.Typer(help="Local model readiness and setup.")
 app.add_typer(local_app, name="local")
+confidential_app = typer.Typer(help="Confidential processing lane.")
+app.add_typer(confidential_app, name="confidential")
 scout_app = typer.Typer(
     help="Scout program — a Gemini key we provision on your behalf."
 )
@@ -140,11 +177,29 @@ def _get_scout_status() -> dict[str, Any]:
     return _request("GET", "/app/thinking/api/scout")
 
 
+def _get_confidential_state() -> dict[str, Any]:
+    response = _get_providers()
+    active_lane = response.get("active_lane", {})
+    return active_lane if isinstance(active_lane, dict) else {}
+
+
 def _post_scout_action(path: str) -> dict[str, Any]:
     try:
         return _request("POST", path)
     except ConveyClientError as err:
         if err.reason_code == INVALID_OPERATION_FOR_STATE.code and err.detail:
+            _exit_with(err.detail)
+        raise
+
+
+def _post_confidential_action(path: str) -> dict[str, Any]:
+    try:
+        return _request("POST", path)
+    except ConveyClientError as err:
+        if err.reason_code in {
+            INVALID_OPERATION_FOR_STATE.code,
+            SERVICE_BUSY.code,
+        } and err.detail:
             _exit_with(err.detail)
         raise
 
@@ -165,6 +220,14 @@ def _maybe_echo_scout_portal(operation: Any) -> None:
     portal_url = operation.get("portal_url")
     if portal_url:
         typer.echo(f"{_SCOUT_CONSENT_CTA} {portal_url}")
+
+
+def _maybe_echo_confidential_portal(operation: Any) -> None:
+    if not isinstance(operation, dict):
+        return
+    portal_url = operation.get("portal_url")
+    if portal_url:
+        typer.echo(f"{_CONFIDENTIAL_CONSENT_CTA} {portal_url}")
 
 
 def _poll_scout_until_terminal(
@@ -197,6 +260,36 @@ def _poll_scout_until_terminal(
             time.sleep(interval)
 
 
+def _poll_confidential_until_terminal(
+    *,
+    wait_seconds: float,
+    poll_interval: float,
+) -> tuple[dict[str, Any], str | None, str]:
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    interval = max(0.0, poll_interval)
+
+    while True:
+        state_block = _get_confidential_state()
+        operation = state_block.get("confidential_operation")
+        if not isinstance(operation, dict):
+            outcome = (
+                _CONFIDENTIAL_OUTCOME_SWEPT_CONFIGURED
+                if state_block.get("confidential_provenance_configured") is True
+                else _CONFIDENTIAL_OUTCOME_SWEPT_UNCONFIGURED
+            )
+            return state_block, None, outcome
+
+        phase = str(operation.get("phase") or "")
+        if phase in _CONFIDENTIAL_TERMINAL_PHASES:
+            return state_block, phase, _CONFIDENTIAL_OUTCOME_TERMINAL
+
+        if time.monotonic() >= deadline:
+            return state_block, None, _CONFIDENTIAL_OUTCOME_TIMEOUT
+
+        if interval:
+            time.sleep(interval)
+
+
 def _echo_scout_terminal(
     status: dict[str, Any],
     phase: str | None,
@@ -211,6 +304,40 @@ def _echo_scout_terminal(
     _echo_scout_guidance(phase or state)
 
 
+def _echo_confidential_terminal(
+    state_block: dict[str, Any],
+    phase: str | None,
+    outcome: str,
+) -> None:
+    del outcome
+    operation = state_block.get("confidential_operation")
+    if not isinstance(operation, dict):
+        operation = {}
+    attestation = state_block.get("confidential_attestation")
+    if not isinstance(attestation, dict):
+        attestation = {}
+
+    typer.echo(f"confidential_enabled: {state_block.get('confidential_enabled')}")
+    typer.echo(
+        "confidential_provenance_configured: "
+        f"{state_block.get('confidential_provenance_configured')}"
+    )
+    typer.echo(f"attestation_state: {attestation.get('state')}")
+    typer.echo(f"attestation_reason: {attestation.get('reason')}")
+    typer.echo(f"attestation_observed_at: {attestation.get('observed_at')}")
+    typer.echo(f"attestation_expires_at: {attestation.get('expires_at')}")
+
+    operation_phase = phase or str(operation.get("phase") or "")
+    if operation_phase:
+        typer.echo(f"operation: {operation_phase}")
+    guidance = operation.get("guidance")
+    if guidance:
+        typer.echo(str(guidance))
+    subscribe_url = operation.get("subscribe_url")
+    if subscribe_url:
+        typer.echo(f"subscribe_url: {subscribe_url}")
+
+
 @scout_app.command("status")
 @convey_cli
 def scout_status() -> None:
@@ -219,6 +346,24 @@ def scout_status() -> None:
     response = _get_scout_status()
     _echo_json(response)
     _echo_scout_guidance(response.get("state"))
+
+
+@confidential_app.command("status")
+@convey_cli
+def confidential_status() -> None:
+    """Show confidential processing status."""
+
+    state = _get_confidential_state()
+    _echo_json(
+        {
+            "confidential_enabled": state.get("confidential_enabled"),
+            "confidential_provenance_configured": state.get(
+                "confidential_provenance_configured"
+            ),
+            "confidential_operation": state.get("confidential_operation"),
+            "confidential_attestation": state.get("confidential_attestation"),
+        }
+    )
 
 
 @scout_app.command("check")
@@ -256,6 +401,49 @@ def scout_enable(
         raise typer.Exit(1)
 
 
+@confidential_app.command("enable")
+@convey_cli
+def confidential_enable(
+    wait_seconds: float = typer.Option(
+        900.0, "--wait-seconds", help="Maximum seconds to wait for the operation."
+    ),
+    poll_interval: float = typer.Option(
+        1.0, "--poll-interval", help="Seconds between status polls."
+    ),
+) -> None:
+    """Enable confidential processing."""
+
+    response = _post_confidential_action("/app/thinking/api/confidential/enable")
+    _maybe_echo_confidential_portal(
+        response.get("operation") if isinstance(response, dict) else None
+    )
+    state, phase, outcome = _poll_confidential_until_terminal(
+        wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    _echo_confidential_terminal(state, phase, outcome)
+
+    if (
+        outcome == _CONFIDENTIAL_OUTCOME_TERMINAL
+        and phase in _CONFIDENTIAL_SUCCESS_PHASES
+    ) or outcome == _CONFIDENTIAL_OUTCOME_SWEPT_CONFIGURED:
+        typer.echo("next: sol call thinking confidential recheck")
+        return
+
+    if outcome == _CONFIDENTIAL_OUTCOME_TIMEOUT:
+        typer.echo(
+            "operation continues server-side; "
+            "sol call thinking confidential status shows its progress."
+        )
+    elif outcome == _CONFIDENTIAL_OUTCOME_SWEPT_UNCONFIGURED:
+        typer.echo(
+            "operation ended without enabling confidential processing; "
+            "check sol call thinking confidential status."
+        )
+
+    raise typer.Exit(1)
+
+
 @scout_app.command("refresh")
 @convey_cli
 def scout_refresh(
@@ -281,6 +469,22 @@ def scout_refresh(
         raise typer.Exit(1)
 
 
+@confidential_app.command("recheck")
+@convey_cli
+def confidential_recheck() -> None:
+    """Recheck confidential processing."""
+
+    response = _post_confidential_action("/app/thinking/api/confidential/recheck")
+    state = _get_confidential_state()
+    payload = {
+        "ok": response.get("ok"),
+        "attestation": state.get("confidential_attestation"),
+    }
+    if "error" in response:
+        payload["error"] = response.get("error")
+    _echo_json(payload)
+
+
 @scout_app.command("disable")
 @convey_cli
 def scout_disable() -> None:
@@ -293,6 +497,15 @@ def scout_disable() -> None:
             "status": response.get("status", {}),
         }
     )
+
+
+@confidential_app.command("disable")
+@convey_cli
+def confidential_disable() -> None:
+    """Disable confidential processing."""
+
+    response = _post_confidential_action("/app/thinking/api/confidential/disable")
+    _echo_json({"result": response.get("result", {})})
 
 
 @keys_app.command("show")
