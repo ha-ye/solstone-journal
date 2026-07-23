@@ -2,6 +2,7 @@
   "type": "generate",
   "schedule": "segment",
   "priority": 41,
+  "max_output_tokens": 1024,
   "output": "json",
   "schema": "segment_summary.schema.json",
   "hook": {"pre": "timeline:segment_summary", "post": "timeline:segment_summary"},
