@@ -139,6 +139,16 @@ def test_macos_swift_pin_requires_exact_canonical_grounded_output() -> None:
 
     assert pins.MACOS_SWIFT_PIN == exact
     assert checker.validate_public_evidence_text("swift", pins.MACOS_SWIFT_PIN) == []
+    assert (
+        checker.validate_public_evidence_text("swift", pins.MACOS_SWIFT_RAW_BANNER)
+        == []
+    )
+    assert (
+        checker.validate_public_evidence_text(
+            "swift", pins.MACOS_SWIFT_FLATTENED_BANNER
+        )
+        == []
+    )
     assert not any(
         line.startswith("MACOS_SWIFT_VERSION")
         for line in Path(pins.__file__).read_text(encoding="utf-8").splitlines()

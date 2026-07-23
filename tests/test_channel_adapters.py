@@ -23,7 +23,7 @@ from scripts.check_release_preflight import expected_presign_lane_tool_evidence
 from scripts.release_digest import candidate_digest
 from scripts.release_tool_pins import (
     HOST_VARIANT_TOOL_KEYS,
-    MACOS_SWIFT_FIXTURE_BANNER,
+    MACOS_SWIFT_FLATTENED_BANNER,
     UV_MACOS_FIXTURE_BANNER,
 )
 
@@ -93,7 +93,7 @@ def _tool_stdout(*, uv: str = UV_MACOS_FIXTURE_BANNER) -> str:
     observed = {
         **expected,
         "uv": uv,
-        "swift": MACOS_SWIFT_FIXTURE_BANNER,
+        "swift": MACOS_SWIFT_FLATTENED_BANNER,
     }
     return (
         "\n".join(f"{key}\t{observed[key]}" for key in sorted(observed))
@@ -448,7 +448,7 @@ def test_macos_tool_evidence_derives_from_rail_pins(
 
     assert set(evidence) == set(expected)
     assert evidence["uv"] == UV_MACOS_FIXTURE_BANNER
-    assert evidence["swift"] == MACOS_SWIFT_FIXTURE_BANNER
+    assert evidence["swift"] == MACOS_SWIFT_FLATTENED_BANNER
     for key in set(expected) - set(HOST_VARIANT_TOOL_KEYS):
         assert evidence[key] == expected[key]
 

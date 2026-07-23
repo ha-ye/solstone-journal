@@ -52,6 +52,9 @@ MACOS_SWIFT_FIXTURE_BANNER = (
     "Apple Swift version 6.3.3 "
     "(swiftlang-6.3.3.1.3 clang-2100.1.1.101)"
 )
+MACOS_SWIFT_TARGET_LINE = "Target: arm64-apple-macosx26.0"
+MACOS_SWIFT_RAW_BANNER = f"{MACOS_SWIFT_FIXTURE_BANNER}\n{MACOS_SWIFT_TARGET_LINE}"
+MACOS_SWIFT_FLATTENED_BANNER = f"{MACOS_SWIFT_FIXTURE_BANNER} {MACOS_SWIFT_TARGET_LINE}"
 MACOS_CODESIGN_PATH = "/usr/bin/codesign"
 MACOS_CODESIGN_PUBLIC_PIN = "codesign pinned-path verified"
 # xcrun notarytool --version prints the bare grounded output, with no tool prefix.
@@ -69,7 +72,7 @@ _MACOS_SWIFT_BANNER_RE = re.compile(
     r"^(?:swift-driver version: (?P<driver>\d+(?:\.\d+){2}) )?"
     r"Apple Swift version (?P<version>\d+(?:\.\d+){2}) "
     r"\(swiftlang-(?P<swiftlang>\d+(?:\.\d+){4}) "
-    r"clang-(?P<clang>\d+(?:\.\d+){3})\)$"
+    r"clang-(?P<clang>\d+(?:\.\d+){3})\)(?:[ \n]Target: \S+)?$"
 )
 SwiftToolIdentity = tuple[str, str, str]
 HostVariantToolIdentity = str | SwiftToolIdentity
@@ -106,10 +109,7 @@ def _single_stripped_line(value: str) -> str | None:
 
 
 def parse_macos_swift_banner(value: str) -> SwiftToolIdentity | None:
-    line = _single_stripped_line(value)
-    if line is None:
-        return None
-    match = _MACOS_SWIFT_BANNER_RE.fullmatch(line)
+    match = _MACOS_SWIFT_BANNER_RE.fullmatch(value)
     if match is None:
         return None
     return (match["version"], match["swiftlang"], match["clang"])
@@ -118,11 +118,11 @@ def parse_macos_swift_banner(value: str) -> SwiftToolIdentity | None:
 def parse_host_variant_tool_banner(
     tool: str, value: str
 ) -> HostVariantToolIdentity | None:
+    if tool == "swift":
+        return parse_macos_swift_banner(value)
     line = _single_stripped_line(value)
     if line is None:
         return None
-    if tool == "swift":
-        return parse_macos_swift_banner(line)
     parts = line.split(" ", 2)
     if len(parts) != 3:
         return None

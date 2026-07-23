@@ -331,6 +331,8 @@ def test_host_variant_uv_non_string_evidence_fails_closed(uv_value: object) -> N
     (
         pins.MACOS_SWIFT_FIXTURE_BANNER,
         pins.MACOS_SWIFT_PIN,
+        pins.MACOS_SWIFT_RAW_BANNER,
+        pins.MACOS_SWIFT_FLATTENED_BANNER,
     ),
 )
 def test_host_variant_swift_evidence_accepts_strict_identity(
@@ -349,13 +351,48 @@ def test_host_variant_swift_evidence_accepts_strict_identity(
 
 
 @pytest.mark.parametrize(
+    "swift_banner",
+    (
+        pins.MACOS_SWIFT_RAW_BANNER,
+        pins.MACOS_SWIFT_FLATTENED_BANNER,
+    ),
+)
+def test_parse_macos_swift_banner_accepts_real_host_forms(
+    swift_banner: str,
+) -> None:
+    assert pins.parse_macos_swift_banner(swift_banner) == (
+        "6.3.3",
+        "6.3.3.1.3",
+        "2100.1.1.101",
+    )
+    assert (
+        pins.check_host_variant_tool_pin("swift", pins.MACOS_SWIFT_PIN, swift_banner)
+        is True
+    )
+
+
+def test_check_host_variant_swift_pin_rejects_mutated_flattened_identity() -> None:
+    mutated = pins.MACOS_SWIFT_FLATTENED_BANNER.replace(
+        "Apple Swift version 6.3.3", "Apple Swift version 6.3.4"
+    )
+    assert pins.parse_macos_swift_banner(mutated) == (
+        "6.3.4",
+        "6.3.3.1.3",
+        "2100.1.1.101",
+    )
+    assert (
+        pins.check_host_variant_tool_pin("swift", pins.MACOS_SWIFT_PIN, mutated)
+        is False
+    )
+
+
+@pytest.mark.parametrize(
     "swift_value",
     (
         "not found",
         "exit 1",
         "",
         "   ",
-        f"{pins.MACOS_SWIFT_FIXTURE_BANNER}\nTarget: arm64-apple-macosx26.0",
         "swift 6.3.3",
         "swift-driver 1.148.6 Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
         f"{pins.MACOS_SWIFT_FIXTURE_BANNER} extra",
