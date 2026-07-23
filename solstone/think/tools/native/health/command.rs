@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::decode::decode_response;
-use crate::error::ClientError;
+use crate::error::{ClientError, SERVICE_DOWN_MESSAGE};
 use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
 
 #[must_use]
@@ -404,5 +404,110 @@ fn stderr(value: impl AsRef<str>) -> CommandOutput {
 }
 
 fn health_error(error: ClientError) -> CommandOutput {
-    stderr(error.detail().unwrap_or_else(|| error.message()))
+    match error {
+        ClientError::Unreachable { .. } => stderr(SERVICE_DOWN_MESSAGE),
+        _ => stderr(error.detail().unwrap_or_else(|| error.message())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::command::{CommandContext, CommandOutput};
+    use crate::seam::{ExpectedHttpCall, ScriptedHttpTransport};
+    use crate::transport::{ApiRequest, HttpMethod, TimeoutPolicy};
+
+    #[test]
+    fn summary_unreachable_renders_service_down_message() {
+        let args: Vec<String> = vec![];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![ExpectedHttpCall::Request {
+            expected: ApiRequest {
+                method: HttpMethod::Get,
+                path: "/api/health/summary".to_string(),
+                params: vec![],
+                json: None,
+                headers: vec![],
+                policy: TimeoutPolicy::Api,
+            },
+            result: Err(ClientError::unreachable(Some(
+                "io: Connection refused".to_string(),
+            ))),
+        }]);
+        let output = summary(CommandContext {
+            args: &args,
+            env: &env,
+            stdin: "",
+            today: "20260723",
+            transport: &transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+        });
+
+        assert_eq!(
+            output,
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+                    .to_string(),
+                exit: 1,
+            }
+        );
+        transport.assert_done();
+    }
+
+    #[test]
+    fn health_error_renderer_preserves_variant_details() {
+        assert_eq!(
+            health_error(ClientError::unreachable(Some("io: x".to_string()))),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+                    .to_string(),
+                exit: 1,
+            }
+        );
+        assert_eq!(
+            health_error(ClientError::timeout(Some("D".to_string()))),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "D\n".to_string(),
+                exit: 1,
+            }
+        );
+        assert_eq!(
+            health_error(ClientError::ReasonRejected {
+                status: 400,
+                error: "invalid request".to_string(),
+                reason_code: Some("invalid_request_value".to_string()),
+                detail: Some("day must be YYYYMMDD".to_string()),
+                payload: Box::new(serde_json::Value::Null),
+            }),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "day must be YYYYMMDD\n".to_string(),
+                exit: 1,
+            }
+        );
+        assert_eq!(
+            health_error(ClientError::MalformedSuccess { status: Some(200) }),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "I couldn't read the journal response.\n".to_string(),
+                exit: 1,
+            }
+        );
+        assert_eq!(
+            health_error(ClientError::UnreadableServerError { status: Some(500) }),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "The journal returned an unreadable error.\n".to_string(),
+                exit: 1,
+            }
+        );
+    }
 }

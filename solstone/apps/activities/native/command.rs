@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::decode::decode_response;
-use crate::error::ClientError;
+use crate::error::{ClientError, SERVICE_DOWN_MESSAGE};
 use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
 
 const ACTIVITY_NOT_FOUND: &str = "activity_not_found";
@@ -796,5 +796,80 @@ fn stderr(value: impl AsRef<str>) -> CommandOutput {
 }
 
 fn transport_error(error: ClientError) -> CommandOutput {
-    stderr(error.message())
+    match error {
+        ClientError::Unreachable { .. } => stderr(SERVICE_DOWN_MESSAGE),
+        _ => stderr(error.message()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::command::{CommandContext, CommandOutput};
+    use crate::seam::{ExpectedHttpCall, ScriptedHttpTransport};
+    use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
+
+    #[test]
+    fn list_unreachable_renders_service_down_message() {
+        let args: Vec<String> = vec![];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![ExpectedHttpCall::Request {
+            expected: ApiRequest {
+                method: HttpMethod::Get,
+                path: "/app/activities/api/day/20260723/records".to_string(),
+                params: vec![QueryParam::single("include_hidden", "0")],
+                json: None,
+                headers: vec![],
+                policy: TimeoutPolicy::Api,
+            },
+            result: Err(ClientError::unreachable(Some(
+                "io: Connection refused".to_string(),
+            ))),
+        }]);
+        let output = list(CommandContext {
+            args: &args,
+            env: &env,
+            stdin: "",
+            today: "20260723",
+            transport: &transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+        });
+
+        assert_eq!(
+            output,
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+                    .to_string(),
+                exit: 1,
+            }
+        );
+        transport.assert_done();
+    }
+
+    #[test]
+    fn transport_error_renderer_preserves_timeout_message() {
+        assert_eq!(
+            transport_error(ClientError::unreachable(Some("io: x".to_string()))),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+                    .to_string(),
+                exit: 1,
+            }
+        );
+        assert_eq!(
+            transport_error(ClientError::timeout(Some("x".to_string()))),
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "The journal didn't answer in time.\n".to_string(),
+                exit: 1,
+            }
+        );
+    }
 }

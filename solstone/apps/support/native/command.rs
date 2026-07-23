@@ -1245,3 +1245,53 @@ impl Output {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::command::{CommandContext, CommandOutput};
+    use crate::seam::{ExpectedHttpCall, ScriptedHttpTransport};
+    use crate::transport::{ApiRequest, HttpMethod, TimeoutPolicy};
+
+    #[test]
+    fn search_unreachable_config_renders_support_fallback() {
+        let args = vec!["kb".to_string()];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![ExpectedHttpCall::Request {
+            expected: ApiRequest {
+                method: HttpMethod::Get,
+                path: "/app/support/api/config".to_string(),
+                params: vec![],
+                json: None,
+                headers: vec![],
+                policy: TimeoutPolicy::Api,
+            },
+            result: Err(ClientError::unreachable(Some(
+                "io: Connection refused".to_string(),
+            ))),
+        }]);
+        let output = search(CommandContext {
+            args: &args,
+            env: &env,
+            stdin: "",
+            today: "20260723",
+            transport: &transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+        });
+
+        assert_eq!(
+            output,
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "I couldn't reach support because solstone isn't reachable right now.\nTo file a support ticket, visit https://support.solstone.app\n".to_string(),
+                exit: 1,
+            }
+        );
+        transport.assert_done();
+    }
+}

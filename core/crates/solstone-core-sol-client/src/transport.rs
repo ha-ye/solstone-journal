@@ -291,7 +291,7 @@ impl HttpTransport for UreqHttpTransport {
                 }
             }
         };
-        collect_response(response, policy)
+        collect_response(response, policy, request.method, &request.path)
     }
 
     fn upload(&self, request: UploadRequest) -> Result<HttpResponse, ClientError> {
@@ -313,7 +313,7 @@ impl HttpTransport for UreqHttpTransport {
         let response = builder
             .send(body)
             .map_err(|error| map_ureq_error(error, policy, HttpMethod::Post, &request.path))?;
-        collect_response(response, policy)
+        collect_response(response, policy, HttpMethod::Post, &request.path)
     }
 
     fn open_sse(&self, request: SseRequest) -> Result<SseStream, ClientError> {
@@ -370,6 +370,8 @@ fn json_body(value: &JsonValue) -> Result<Vec<u8>, ClientError> {
 fn collect_response(
     mut response: ureq::http::Response<ureq::Body>,
     policy: TimeoutPolicy,
+    method: HttpMethod,
+    path: &str,
 ) -> Result<HttpResponse, ClientError> {
     let status = response.status().as_u16();
     let headers = collect_headers(response.headers());
@@ -378,7 +380,7 @@ fn collect_response(
         .body_mut()
         .as_reader()
         .read_to_end(&mut body)
-        .map_err(|error| map_read_error(error, policy))?;
+        .map_err(|error| map_read_error(error, policy, method, path))?;
     Ok(HttpResponse {
         status,
         headers,
@@ -399,9 +401,14 @@ fn collect_headers(headers: &ureq::http::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
-fn map_read_error(error: std::io::Error, policy: TimeoutPolicy) -> ClientError {
+fn map_read_error(
+    error: std::io::Error,
+    policy: TimeoutPolicy,
+    method: HttpMethod,
+    path: &str,
+) -> ClientError {
     if error.kind() == std::io::ErrorKind::TimedOut {
-        ClientError::timeout(Some(timeout_detail(policy, None, None)))
+        ClientError::timeout(Some(timeout_detail(policy, method, path)))
     } else {
         ClientError::unreachable(Some(error.to_string()))
     }
@@ -414,25 +421,19 @@ fn map_ureq_error(
     path: &str,
 ) -> ClientError {
     match error {
-        ureq::Error::Timeout(_) => {
-            ClientError::timeout(Some(timeout_detail(policy, Some(method), Some(path))))
-        }
+        ureq::Error::Timeout(_) => ClientError::timeout(Some(timeout_detail(policy, method, path))),
         ureq::Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-            ClientError::timeout(Some(timeout_detail(policy, Some(method), Some(path))))
+            ClientError::timeout(Some(timeout_detail(policy, method, path)))
         }
         other => ClientError::unreachable(Some(other.to_string())),
     }
 }
 
-fn timeout_detail(policy: TimeoutPolicy, method: Option<HttpMethod>, path: Option<&str>) -> String {
+fn timeout_detail(policy: TimeoutPolicy, method: HttpMethod, path: &str) -> String {
     let spec = policy.spec();
-    let target = match (method, path) {
-        (Some(method), Some(path)) => format!("{} {path}", method.as_str()),
-        _ => "response body".to_string(),
-    };
     format!(
-        "{target} exceeded local convey timeout (policy={}, connect={}s, read={}, total={})",
-        policy.label(),
+        "{} {path} exceeded local convey timeout (connect={}s, read={}, total={})",
+        method.as_str(),
         spec.connect.as_secs(),
         format_duration(spec.read),
         format_duration(spec.total)
@@ -584,6 +585,7 @@ pub fn memory_sse_stream(chunks: Vec<Vec<u8>>, policy: TimeoutPolicy) -> SseStre
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     #[test]
     fn query_encoding_preserves_order_and_repeats() {
@@ -664,5 +666,89 @@ mod tests {
             Some(Duration::from_secs(10))
         );
         assert_eq!(TimeoutPolicy::SseOpen.spec().read, None);
+    }
+
+    #[test]
+    fn api_timeout_detail_includes_method_path_and_limits() {
+        assert_eq!(
+            timeout_detail(TimeoutPolicy::Api, HttpMethod::Get, "/example/resource"),
+            "GET /example/resource exceeded local convey timeout (connect=2s, read=20s, total=30s)"
+        );
+    }
+
+    #[test]
+    fn upload_timeout_detail_includes_method_path_and_limits() {
+        assert_eq!(
+            timeout_detail(TimeoutPolicy::Upload, HttpMethod::Post, "/example/upload"),
+            "POST /example/upload exceeded local convey timeout (connect=2s, read=120s, total=180s)"
+        );
+    }
+
+    #[test]
+    fn read_timeout_error_preserves_request_target() {
+        assert_eq!(
+            map_read_error(
+                io::Error::from(io::ErrorKind::TimedOut),
+                TimeoutPolicy::Api,
+                HttpMethod::Get,
+                "/example/resource",
+            ),
+            ClientError::timeout(Some(
+                "GET /example/resource exceeded local convey timeout (connect=2s, read=20s, total=30s)"
+                    .to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn read_non_timeout_error_is_unreachable() {
+        assert!(matches!(
+            map_read_error(
+                io::Error::from(io::ErrorKind::ConnectionReset),
+                TimeoutPolicy::Api,
+                HttpMethod::Get,
+                "/example/resource",
+            ),
+            ClientError::Unreachable { detail: Some(_) }
+        ));
+    }
+
+    #[test]
+    fn ureq_connection_refused_is_unreachable() {
+        assert!(matches!(
+            map_ureq_error(
+                ureq::Error::Io(io::Error::from(io::ErrorKind::ConnectionRefused)),
+                TimeoutPolicy::Api,
+                HttpMethod::Get,
+                "/example/resource",
+            ),
+            ClientError::Unreachable { .. }
+        ));
+    }
+
+    #[test]
+    fn ureq_io_timeout_is_timeout() {
+        assert!(matches!(
+            map_ureq_error(
+                ureq::Error::Io(io::Error::from(io::ErrorKind::TimedOut)),
+                TimeoutPolicy::Api,
+                HttpMethod::Get,
+                "/example/resource",
+            ),
+            ClientError::Timeout { .. }
+        ));
+    }
+
+    #[test]
+    fn ureq_timeout_variant_is_timeout() {
+        assert!(matches!(
+            map_ureq_error(
+                ureq::Error::Timeout(ureq::Timeout::RecvBody),
+                TimeoutPolicy::Api,
+                HttpMethod::Get,
+                "/example/resource",
+            ),
+            ClientError::Timeout { .. }
+        ));
     }
 }

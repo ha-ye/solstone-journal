@@ -268,6 +268,14 @@ fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpRespons
                     .map(str::to_string),
             ));
         }
+        if fault.get("kind").and_then(Value::as_str) == Some("timeout") {
+            return Err(ClientError::timeout(
+                fault
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ));
+        }
         Err(ClientError::ReasonRejected {
             status: fault.get("status").and_then(Value::as_u64).unwrap_or(500) as u16,
             error: fault

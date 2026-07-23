@@ -7,12 +7,10 @@ use serde_json::{Map, Value};
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::decode::decode_response;
-use crate::error::ClientError;
+use crate::error::{ClientError, SERVICE_DOWN_MESSAGE};
 use crate::seam::ChatInput;
 use crate::transport::{ApiRequest, HttpMethod, TimeoutPolicy};
 
-const SERVICE_DOWN_MESSAGE: &str =
-    "sol: solstone isn't running. Start it with 'journal up' and retry.";
 const QUEUED_MESSAGE: &str = "Sol is busy right now — your message is queued.";
 const LIVE_PROGRESS_UNAVAILABLE_MESSAGE: &str = "Live progress was unavailable.";
 const LOST_CONTACT_MESSAGE: &str =
@@ -617,6 +615,13 @@ impl IfEmpty for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::command::CommandOutput;
+    use crate::seam::{
+        ExpectedHttpCall, FakeClock, ScriptedChatEventSource, ScriptedHttpTransport,
+    };
+    use crate::transport::{ApiRequest, HttpMethod, SseRequest, TimeoutPolicy};
     use serde_json::json;
 
     #[test]
@@ -652,5 +657,57 @@ mod tests {
             chat_view_message("unknown", "google"),
             "something went wrong with Gemini"
         );
+    }
+
+    #[test]
+    fn chat_unreachable_post_renders_service_down_message() {
+        let args = vec!["service".to_string()];
+        let env = BTreeMap::new();
+        let clock = FakeClock::at_unix(0);
+        let events = ScriptedChatEventSource::new(vec![]);
+        let transport = ScriptedHttpTransport::new(vec![
+            ExpectedHttpCall::Sse {
+                expected: SseRequest {
+                    path: "/sse/events".to_string(),
+                    policy: TimeoutPolicy::SseOpen,
+                },
+                chunks: vec![b": open\n\n".to_vec()],
+            },
+            ExpectedHttpCall::Request {
+                expected: ApiRequest {
+                    method: HttpMethod::Post,
+                    path: "/api/chat".to_string(),
+                    params: vec![],
+                    json: Some(json!({"message": "service"})),
+                    headers: vec![],
+                    policy: TimeoutPolicy::ChatPost,
+                },
+                result: Err(ClientError::unreachable(Some(
+                    "connection refused".to_string(),
+                ))),
+            },
+        ]);
+        let output = chat(CommandContext {
+            args: &args,
+            env: &env,
+            stdin: "",
+            today: "20260723",
+            transport: &transport,
+            clock: Some(&clock),
+            chat_events: Some(&events),
+            files: None,
+            build_identity: None,
+        });
+
+        assert_eq!(
+            output,
+            CommandOutput {
+                stdout: String::new(),
+                stderr: "sol: solstone isn't running. Start it with 'journal up' and retry.\n"
+                    .to_string(),
+                exit: 1,
+            }
+        );
+        transport.assert_done();
     }
 }
