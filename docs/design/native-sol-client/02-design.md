@@ -204,13 +204,13 @@ Both sides assert the same vector expectations. Python is the byte-for-byte orac
 
 | Native error | Python target | Owner-facing message |
 |---|---|---|
-| `Unreachable` | `ConveyUnreachableError` | `I couldn't reach the journal over HTTP.` |
+| `Unreachable` | `ConveyUnreachableError` | Base `message()` is `I couldn't reach the journal over HTTP.`; owner-facing rendering is app-specific — see note. |
 | `Timeout` | `ConveyTimeoutError` | `The journal didn't answer in time.` |
 | `MalformedSuccess` | malformed 2xx path | `I couldn't read the journal response.` |
 | `UnreadableServerError` | non-2xx unreadable error path | `The journal returned an unreadable error.` |
 | `ReasonRejected` | non-2xx reason-coded JSON | Server `error`, `reason_code`, `detail`, `status`, payload. |
 
-App modules may render app-specific wrappers over these errors only where Python does today, such as support unreachable and chat service-down messages.
+App modules render app-specific wrappers over these errors where Python does. On `Unreachable`: support renders its two-line portal fallback and chat renders the service-down message (both `require_service=False`); `require_service=True` apps such as activities and health render the shared service-down message (`sol: solstone isn't running. Start it with 'journal up' and retry.`), because their Python path exits via `require_solstone()` before the handler runs. Raw OS/socket/ureq text stays internal diagnostic detail only.
 
 ## 6. Health Pipeline Server Route
 
