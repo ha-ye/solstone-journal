@@ -14,7 +14,7 @@ import typer.main
 
 from solstone.think.call import call_app
 
-SOURCE = "c3eb606395862edf34d19865a2341f6e7f538edc"
+SOURCE = "ce65d06ba67ca4fad85ba3b3f71a1eec359bc6e5"
 SCHEMA = "sol-call-grammar-v1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"

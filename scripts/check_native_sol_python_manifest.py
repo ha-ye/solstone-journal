@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SHA256 = "1d14f01a819f2f44bfe229603aa38861cda3460ff1ca66b9593a33b6172a772d"
+EXPECTED_SHA256 = "b64434672c2eaa0d570301fc5b299f989b6d1524ecf7f90b3a1f22868ae84251"
 FILES = [
     "solstone/apps/activities/call.py",
     "solstone/apps/awareness/call.py",

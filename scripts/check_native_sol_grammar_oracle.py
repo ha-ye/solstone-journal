@@ -10,10 +10,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORACLE = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
 EXPECTED_SCHEMA = "sol-call-grammar-v1"
-EXPECTED_SOURCE = "c3eb606395862edf34d19865a2341f6e7f538edc"
-EXPECTED_ENTRIES = 174
-EXPECTED_BYTES = 120632
-EXPECTED_SHA256 = "cfa8c95c25e14937e5f616027bd2f15d610c0fa86d542b7adc4eb5da39409ce2"
+EXPECTED_SOURCE = "ce65d06ba67ca4fad85ba3b3f71a1eec359bc6e5"
+EXPECTED_ENTRIES = 178
+EXPECTED_BYTES = 121548
+EXPECTED_SHA256 = "5efb306ed70e54a8b97b3178a07c4267cfd58594a37ed754871a3da80c0dba57"
 
 
 def main() -> int:
