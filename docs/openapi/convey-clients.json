@@ -787,6 +787,421 @@
         ]
       }
     },
+    "/api/health/full": {
+      "get": {
+        "description": "Return the full journal-data trust report for one day.",
+        "operationId": "health.full",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "brain_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "capture_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "consumer_signal": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "facets": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generated_at": {
+                      "type": "integer"
+                    },
+                    "notes": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "range": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "segment_backlog": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "synthesis_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "generated_at",
+                    "range",
+                    "facets",
+                    "capture_health",
+                    "synthesis_health",
+                    "consumer_signal",
+                    "segment_backlog",
+                    "notes",
+                    "brain_health"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Full journal-data trust report."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day or day range was not valid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The health report could not be built.",
+            "x-reason-codes": [
+              "health_report_failed"
+            ]
+          }
+        },
+        "summary": "Read full journal health report",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/health/pipeline": {
+      "get": {
+        "description": "Return the day-level think pipeline health summary for an explicit canonical day. Clients own today/yesterday/default date selection.",
+        "operationId": "health.pipeline",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "query",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Pipeline health summary."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "day was missing or not a canonical calendar date.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The pipeline health summary could not be built.",
+            "x-reason-codes": [
+              "health_report_failed"
+            ]
+          }
+        },
+        "summary": "Read pipeline health summary",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/health/range": {
+      "get": {
+        "description": "Return journal-data trust signals for an inclusive day range.",
+        "operationId": "health.for_range",
+        "parameters": [
+          {
+            "description": "Inclusive start day in YYYYMMDD form.",
+            "in": "query",
+            "name": "day_from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Inclusive end day in YYYYMMDD form.",
+            "in": "query",
+            "name": "day_to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "brain_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "capture_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "consumer_signal": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "facets": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generated_at": {
+                      "type": "integer"
+                    },
+                    "notes": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "range": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "segment_backlog": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "synthesis_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "generated_at",
+                    "range",
+                    "facets",
+                    "capture_health",
+                    "synthesis_health",
+                    "consumer_signal",
+                    "segment_backlog",
+                    "notes",
+                    "brain_health"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Journal-data trust report for the requested range."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day or day range was not valid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The health report could not be built.",
+            "x-reason-codes": [
+              "health_report_failed"
+            ]
+          }
+        },
+        "summary": "Read journal health report for a day range",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/health/summary": {
+      "get": {
+        "description": "Return journal-data trust signals for one day.",
+        "operationId": "health.summary",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "brain_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "capture_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "consumer_signal": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "facets": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generated_at": {
+                      "type": "integer"
+                    },
+                    "notes": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "range": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "segment_backlog": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "synthesis_health": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "generated_at",
+                    "range",
+                    "facets",
+                    "capture_health",
+                    "synthesis_health",
+                    "consumer_signal",
+                    "segment_backlog",
+                    "notes",
+                    "brain_health"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Journal-data trust summary."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day or day range was not valid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The health report could not be built.",
+            "x-reason-codes": [
+              "health_report_failed"
+            ]
+          }
+        },
+        "summary": "Summarize journal health signals",
+        "tags": [
+          "health"
+        ]
+      }
+    },
     "/api/push/register": {
       "delete": {
         "description": "Remove the push token for the current paired device fingerprint.",
@@ -1211,6 +1626,634 @@
         "summary": "Get voice status",
         "tags": [
           "voice"
+        ]
+      }
+    },
+    "/app/activities/api/day/{day}/record/{span_id}": {
+      "get": {
+        "description": "Return one activity record plus the markdown rendering.",
+        "operationId": "activities.get",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Activity record span id.",
+            "in": "path",
+            "name": "span_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "record": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Activity record and markdown rendering."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No activity record matched the day, facet, and span id.",
+            "x-reason-codes": [
+              "activity_not_found"
+            ]
+          }
+        },
+        "summary": "Get one activity record",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/app/activities/api/day/{day}/record/{span_id}/mute": {
+      "post": {
+        "description": "Hide an activity record without deleting it.",
+        "operationId": "activities.mute",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Activity record span id.",
+            "in": "path",
+            "name": "span_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "record": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Muted activity record and markdown rendering."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No activity record matched the day, facet, and span id.",
+            "x-reason-codes": [
+              "activity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activities store could not be locked.",
+            "x-reason-codes": [
+              "activities_busy"
+            ]
+          }
+        },
+        "summary": "Mute an activity record",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/app/activities/api/day/{day}/record/{span_id}/unmute": {
+      "post": {
+        "description": "Restore a previously hidden activity record.",
+        "operationId": "activities.unmute",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Activity record span id.",
+            "in": "path",
+            "name": "span_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "record": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unmuted activity record and markdown rendering."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No activity record matched the day, facet, and span id.",
+            "x-reason-codes": [
+              "activity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activities store could not be locked.",
+            "x-reason-codes": [
+              "activities_busy"
+            ]
+          }
+        },
+        "summary": "Unmute an activity record",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/app/activities/api/day/{day}/record/{span_id}/update": {
+      "post": {
+        "description": "Patch mutable fields on one activity record.",
+        "operationId": "activities.update",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Activity record span id.",
+            "in": "path",
+            "name": "span_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "note": "updated fields",
+                "patch": {
+                  "title": "Design review"
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "note": {
+                    "type": "string"
+                  },
+                  "patch": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "patch"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "record": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated activity record and markdown rendering."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No activity record matched the day, facet, and span id.",
+            "x-reason-codes": [
+              "activity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activities store could not be locked.",
+            "x-reason-codes": [
+              "activities_busy"
+            ]
+          }
+        },
+        "summary": "Update an activity record",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/app/activities/api/day/{day}/records": {
+      "get": {
+        "description": "Return the activity records for one day. Native clients pass facet when scoped and include_hidden as the Python-compatible 1/0 query value.",
+        "operationId": "activities.list",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Python-compatible 1/0 include-hidden selector.",
+            "in": "query",
+            "name": "include_hidden",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": []
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Activity record list."
+          }
+        },
+        "summary": "List activity records",
+        "tags": [
+          "activities"
+        ]
+      },
+      "post": {
+        "description": "Create a user or cogitate activity record for one day.",
+        "operationId": "activities.create",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "source": "user",
+                "title": "Design review"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "activity": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "details": {
+                    "type": "string"
+                  },
+                  "participation": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "since_segment": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    },
+                    "record": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created activity record and markdown rendering."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body did not describe a valid activity record.",
+            "x-reason-codes": [
+              "activity_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested activity type was not available for the facet.",
+            "x-reason-codes": [
+              "activity_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activity record already exists.",
+            "x-reason-codes": [
+              "activity_already_exists"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activities store could not be locked.",
+            "x-reason-codes": [
+              "activities_busy"
+            ]
+          }
+        },
+        "summary": "Create an activity record",
+        "tags": [
+          "activities"
         ]
       }
     },
@@ -4195,6 +5238,906 @@
         "summary": "Delete observer source",
         "tags": [
           "observer"
+        ]
+      }
+    },
+    "/app/support/api/announcements": {
+      "get": {
+        "description": "Return active product announcements and known issues.",
+        "operationId": "support.announcements",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Active support announcements."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "List support announcements",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/articles": {
+      "get": {
+        "description": "Search knowledge-base articles.",
+        "operationId": "support.search",
+        "parameters": [
+          {
+            "description": "Search query.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Matching knowledge-base articles."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Search support articles",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/articles/{slug}": {
+      "get": {
+        "description": "Return one knowledge-base article by slug.",
+        "operationId": "support.article",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Knowledge-base article."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Read a support article",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/config": {
+      "get": {
+        "description": "Return whether the support agent is enabled and its portal URL.",
+        "operationId": "support.config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "portal_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "portal_url"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support configuration."
+          }
+        },
+        "summary": "Read support configuration",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/diagnostics": {
+      "get": {
+        "description": "Return local diagnostics collected by the journal host.",
+        "operationId": "support.diagnose",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support diagnostics."
+          }
+        },
+        "summary": "Read support diagnostics",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/draft": {
+      "post": {
+        "description": "Capture the exact submit-path payload for a dry-run support flow. JSON create, feedback, and reply drafts use verb plus payload; attach drafts use multipart/form-data with verb, ticket_id, and file.",
+        "operationId": "support.draft",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "payload": {
+                  "content": "hi",
+                  "ticket_id": 7
+                },
+                "verb": "reply"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "diagnostics_snapshot": {
+                    "additionalProperties": true,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "payload": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "verb": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verb",
+                  "payload"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "draft_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "draft_id"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Captured draft id."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The draft payload was missing required fields or had invalid values.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          }
+        },
+        "summary": "Capture a support draft",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/feedback": {
+      "post": {
+        "description": "Submit lower-friction product feedback.",
+        "operationId": "support.feedback",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "body": "The activity summary was useful.",
+                "product": "solstone"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "anonymous": {
+                    "type": "boolean"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "product": {
+                    "type": "string"
+                  },
+                  "user_email": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Portal feedback response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "body was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Submit support feedback",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/register": {
+      "post": {
+        "description": "Register this journal with the support portal.",
+        "operationId": "support.register",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "handle": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "handle"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support handle assigned by the portal."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Register with support",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/tickets": {
+      "get": {
+        "description": "List the owner's support tickets.",
+        "operationId": "support.list",
+        "parameters": [
+          {
+            "description": "Ticket status filter.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Support tickets."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "List support tickets",
+        "tags": [
+          "support"
+        ]
+      },
+      "post": {
+        "description": "Create a support ticket after the CLI consent flow.",
+        "operationId": "support.create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "description": "It timed out after submitting a prompt.",
+                "product": "solstone",
+                "severity": "medium",
+                "subject": "Chat stopped responding"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "anonymous": {
+                    "type": "boolean"
+                  },
+                  "auto_context": {
+                    "type": "boolean"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "product": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "user_context": {
+                    "additionalProperties": true,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "subject",
+                  "description"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created support ticket."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "subject or description was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Create a support ticket",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/tickets/{ticket_id}": {
+      "get": {
+        "description": "Return one support ticket with its thread.",
+        "operationId": "support.show",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Support ticket."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Read a support ticket",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/tickets/{ticket_id}/attachments": {
+      "post": {
+        "description": "Upload one attachment to an existing support ticket.",
+        "operationId": "support.attach",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "Multipart form with one file field.",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Portal attachment response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The upload was missing a file or had an invalid attachment value.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Attach a file to a support ticket",
+        "tags": [
+          "support"
+        ]
+      }
+    },
+    "/app/support/api/tickets/{ticket_id}/reply": {
+      "post": {
+        "description": "Append a reply to an existing support ticket.",
+        "operationId": "support.reply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "content": "I can reproduce this on today's build."
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Portal reply response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "content was missing.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support agent is disabled.",
+            "x-reason-codes": [
+              "feature_unavailable"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The support portal request failed.",
+            "x-reason-codes": [
+              "support_portal_failed"
+            ]
+          }
+        },
+        "summary": "Reply to a support ticket",
+        "tags": [
+          "support"
         ]
       }
     },

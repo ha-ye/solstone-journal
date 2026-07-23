@@ -12,9 +12,11 @@ from typing import Any
 import pytest
 
 import solstone.convey.chat as chat
+from solstone.apps.activities.contract import OPERATIONS as ACTIVITIES_OPERATIONS
 from solstone.apps.home.contract import OPERATIONS as HOME_OPERATIONS
 from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
 from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
+from solstone.apps.support.contract import OPERATIONS as SUPPORT_OPERATIONS
 from solstone.convey import create_app
 from solstone.convey.chat import ChatSpawnResult
 from solstone.convey.chat_contract import OPERATIONS as CHAT_OPERATIONS
@@ -23,6 +25,7 @@ from solstone.convey.contract.diff import (
     classify_changes,
     undeclared_top_level_fields,
 )
+from solstone.convey.health_contract import OPERATIONS as HEALTH_OPERATIONS
 from solstone.convey.push_contract import OPERATIONS as PUSH_OPERATIONS
 from solstone.convey.root_contract import OPERATIONS as ROOT_OPERATIONS
 from solstone.convey.secure_listener.identity import ConveyIdentity
@@ -42,10 +45,19 @@ CONTRACTED_PATHS = {
     "/api/chat/sol_chat_request/open",
     "/api/chat/support/draft/cancel",
     "/api/chat/support/draft/confirm",
+    "/api/health/full",
+    "/api/health/pipeline",
+    "/api/health/range",
+    "/api/health/summary",
     "/api/push/register",
     "/api/voice/connect",
     "/api/voice/session",
     "/api/voice/status",
+    "/app/activities/api/day/{day}/record/{span_id}",
+    "/app/activities/api/day/{day}/record/{span_id}/mute",
+    "/app/activities/api/day/{day}/record/{span_id}/unmute",
+    "/app/activities/api/day/{day}/record/{span_id}/update",
+    "/app/activities/api/day/{day}/records",
     "/app/home/api/pulse",
     "/app/import/api/meta",
     "/app/import/api/save",
@@ -65,6 +77,18 @@ CONTRACTED_PATHS = {
     "/app/observer/ingest/segments/{day}",
     "/app/observer/register",
     "/app/observer/source/{stream}",
+    "/app/support/api/announcements",
+    "/app/support/api/articles",
+    "/app/support/api/articles/{slug}",
+    "/app/support/api/config",
+    "/app/support/api/diagnostics",
+    "/app/support/api/draft",
+    "/app/support/api/feedback",
+    "/app/support/api/register",
+    "/app/support/api/tickets",
+    "/app/support/api/tickets/{ticket_id}",
+    "/app/support/api/tickets/{ticket_id}/attachments",
+    "/app/support/api/tickets/{ticket_id}/reply",
     "/sse/events",
 }
 
@@ -84,6 +108,45 @@ CONTRACTED_INVENTORY_TRIPLES = {
     ("POST", "/app/import/api/save", "import.save"),
     ("POST", "/app/import/api/save-path", "import.savePath"),
     ("POST", "/app/import/api/start", "import.start"),
+    ("GET", "/app/activities/api/day/{day}/records", "activities.list"),
+    ("GET", "/app/activities/api/day/{day}/record/{span_id}", "activities.get"),
+    ("POST", "/app/activities/api/day/{day}/records", "activities.create"),
+    (
+        "POST",
+        "/app/activities/api/day/{day}/record/{span_id}/update",
+        "activities.update",
+    ),
+    (
+        "POST",
+        "/app/activities/api/day/{day}/record/{span_id}/mute",
+        "activities.mute",
+    ),
+    (
+        "POST",
+        "/app/activities/api/day/{day}/record/{span_id}/unmute",
+        "activities.unmute",
+    ),
+    ("GET", "/app/support/api/config", "support.config"),
+    ("POST", "/app/support/api/draft", "support.draft"),
+    ("POST", "/app/support/api/register", "support.register"),
+    ("GET", "/app/support/api/articles", "support.search"),
+    ("GET", "/app/support/api/articles/{slug}", "support.article"),
+    ("GET", "/app/support/api/tickets", "support.list"),
+    ("GET", "/app/support/api/tickets/{ticket_id}", "support.show"),
+    ("POST", "/app/support/api/tickets", "support.create"),
+    ("POST", "/app/support/api/tickets/{ticket_id}/reply", "support.reply"),
+    (
+        "POST",
+        "/app/support/api/tickets/{ticket_id}/attachments",
+        "support.attach",
+    ),
+    ("POST", "/app/support/api/feedback", "support.feedback"),
+    ("GET", "/app/support/api/announcements", "support.announcements"),
+    ("GET", "/app/support/api/diagnostics", "support.diagnose"),
+    ("GET", "/api/health/summary", "health.summary"),
+    ("GET", "/api/health/full", "health.full"),
+    ("GET", "/api/health/range", "health.for_range"),
+    ("GET", "/api/health/pipeline", "health.pipeline"),
     ("DELETE", "/app/observer/source/{stream}", "observer.deleteSource"),
 }
 
@@ -112,8 +175,11 @@ def _all_operations():
         *LINK_OPERATIONS,
         *OBSERVER_OPERATIONS,
         *HOME_OPERATIONS,
+        *ACTIVITIES_OPERATIONS,
+        *SUPPORT_OPERATIONS,
         *PUSH_OPERATIONS,
         *CHAT_OPERATIONS,
+        *HEALTH_OPERATIONS,
         *ROOT_OPERATIONS,
         *VOICE_OPERATIONS,
         *IMPORT_OPERATIONS,
@@ -374,7 +440,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 30
+    assert len(document["paths"]) == 51
 
 
 def test_home_pulse_named_fields_present(contract_app):
