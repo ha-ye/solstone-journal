@@ -13,16 +13,18 @@ import asyncio
 import contextlib
 import copy
 import logging
+import re
 import time
 import traceback
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.providers.local_endpoint import (
+    ENDPOINT_ERROR_BODY_CAP_CHARS,
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
     classify_byo_cogitate_error,
@@ -30,6 +32,7 @@ from solstone.think.providers.local_endpoint import (
     is_byo_network_error,
     local_endpoint_reason_copy,
     redact_local_endpoint_credential,
+    resolve_endpoint_served_window,
     resolve_local_endpoint,
 )
 from solstone.think.providers.shared import (
@@ -72,6 +75,18 @@ _LOCAL_FINISH_REASON_MAP = {
 _LOCAL_UNSUPPORTED_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 _LOCAL_CAPACITY_EXHAUSTED_MESSAGE = (
     "The local model was busy and could not finish this request. Try again in a moment."
+)
+_ENDPOINT_CONTEXT_WINDOW_MESSAGE = (
+    "The configured endpoint rejected the request: prompt and completion exceed "
+    "the served context window."
+)
+_ENDPOINT_MIN_COMPLETION_TOKENS = 256
+_ENDPOINT_RECLAMP_SLACK_TOKENS = 16
+_ENDPOINT_COMPLETION_ANCHOR = "tokens for the completion"
+_ENDPOINT_LIMIT_RE = re.compile(r"maximum context length of\s+(?P<limit>\d+)\s+tokens")
+_ENDPOINT_INPUT_RE = re.compile(
+    r"(?P<input>\d+)\s+tokens?\s+from\s+the\s+input\s+messages?\s+and\s+"
+    r"\d+\s+tokens?\s+for\s+the\s+completion"
 )
 
 
@@ -125,6 +140,12 @@ class LocalCapacityExhausted(LocalProviderError):
 
     def __init__(self) -> None:
         super().__init__("local_capacity_exhausted", _LOCAL_CAPACITY_EXHAUSTED_MESSAGE)
+
+
+@dataclass(frozen=True)
+class _EndpointOverflowDecision:
+    kind: Literal["retry", "context", "budget", "contract"]
+    max_tokens: int | None = None
 
 
 def normalize_model_id(model: str | None) -> str:
@@ -248,6 +269,7 @@ def _build_request_body(
     json_output: bool,
     json_schema: dict | None,
     is_bundled: bool,
+    is_confidential: bool = False,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model_id,
@@ -256,7 +278,7 @@ def _build_request_body(
         "max_tokens": max_output_tokens,
         "stream": False,
     }
-    if is_bundled:
+    if is_bundled or is_confidential:
         body.update(
             {
                 "chat_template_kwargs": {"enable_thinking": False},
@@ -278,6 +300,31 @@ def _build_request_body(
     elif json_output:
         body["response_format"] = {"type": "json_object"}
     return body
+
+
+def _count_image_parts(value: Any) -> int:
+    if is_image_part(value):
+        return 1
+    if isinstance(value, dict):
+        return sum(_count_image_parts(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return sum(_count_image_parts(item) for item in value)
+    return 0
+
+
+def _serialized_message_text(messages: list[dict[str, Any]]) -> str:
+    text_parts: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+    return "\n".join(text_parts)
 
 
 def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
@@ -435,7 +482,10 @@ def _telemetry_record(
     return record
 
 
-def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
+def _classify_byo_generate_error(
+    exc: BaseException,
+    endpoint: Any,
+) -> LocalProviderError:
     if is_byo_capacity_error(exc):
         return LocalCapacityExhausted()
     if is_byo_network_error(exc):
@@ -443,6 +493,15 @@ def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
             "local_endpoint_unreachable",
             LOCAL_ENDPOINT_UNREACHABLE_COPY,
         )
+    response = getattr(exc, "response", None)
+    body_text = getattr(response, "text", None)
+    if isinstance(body_text, str) and body_text:
+        excerpt = redact_local_endpoint_credential(
+            body_text[:ENDPOINT_ERROR_BODY_CAP_CHARS],
+            endpoint,
+        )
+        if _contains_any(excerpt.lower(), _CONTEXT_WINDOW_PATTERNS):
+            return _context_window_exceeded_error()
     return LocalProviderError(
         "local_endpoint_contract_failed",
         LOCAL_ENDPOINT_CONTRACT_COPY,
@@ -458,6 +517,41 @@ def _remaining_timeout(started: float, timeout_s: float) -> float:
             f"Local inference request exceeded its {timeout_s:.3f}s deadline."
         )
     return remaining
+
+
+def _context_window_exceeded_error() -> LocalProviderError:
+    return LocalProviderError(
+        "context_window_exceeded",
+        _ENDPOINT_CONTEXT_WINDOW_MESSAGE,
+    )
+
+
+def _endpoint_overflow_decision(
+    body_text: str,
+    served_window: int | None,
+    attempt: int,
+) -> _EndpointOverflowDecision:
+    body_lower = body_text.lower()
+    if _ENDPOINT_COMPLETION_ANCHOR in body_lower:
+        limit_match = _ENDPOINT_LIMIT_RE.search(body_lower)
+        input_match = _ENDPOINT_INPUT_RE.search(body_lower)
+        limit = (
+            int(limit_match.group("limit"))
+            if limit_match is not None
+            else served_window
+        )
+        if limit is not None and input_match is not None:
+            reported_input = int(input_match.group("input"))
+            new_max = limit - reported_input - _ENDPOINT_RECLAMP_SLACK_TOKENS
+            if attempt == 0 and new_max >= _ENDPOINT_MIN_COMPLETION_TOKENS:
+                return _EndpointOverflowDecision("retry", new_max)
+            if attempt == 0:
+                return _EndpointOverflowDecision("budget")
+            return _EndpointOverflowDecision("context")
+
+    if _contains_any(body_lower, _CONTEXT_WINDOW_PATTERNS):
+        return _EndpointOverflowDecision("context")
+    return _EndpointOverflowDecision("contract")
 
 
 def _prepare_bundled_request(
@@ -493,6 +587,101 @@ def _prepare_bundled_request(
             True,
         ),
         input_budget,
+    )
+
+
+def _prepare_endpoint_request(
+    *,
+    endpoint: Any,
+    served_window: int | None,
+    contents: str | list[Any],
+    system_instruction: str | None,
+    temperature: float,
+    max_output_tokens: int,
+    json_output: bool,
+    json_schema: dict | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, int | None]]:
+    from solstone.think.providers import local_budget
+
+    if served_window is None:
+        messages = _build_messages(contents, system_instruction)
+        return (
+            _build_request_body(
+                endpoint.served_model_id,
+                messages,
+                temperature,
+                max_output_tokens,
+                json_output,
+                json_schema,
+                endpoint.is_bundled,
+                endpoint.is_confidential,
+            ),
+            None,
+            {
+                "served_window": None,
+                "estimated_prompt_tokens": None,
+                "clamped_max_tokens": max_output_tokens,
+                "requested_max_output_tokens": max_output_tokens,
+            },
+        )
+
+    fitted_contents, input_budget = local_budget.fit_contents(
+        contents,
+        system_instruction,
+        max_output_tokens,
+        count=local_budget.estimate_tokens,
+        window=served_window,
+    )
+    messages = _build_messages(fitted_contents, system_instruction)
+    estimated_prompt_tokens = local_budget.estimate_tokens(
+        _serialized_message_text(messages)
+    ) + local_budget._ESTIMATED_IMAGE_TOKENS * _count_image_parts(fitted_contents)
+    room = served_window - estimated_prompt_tokens - local_budget._SAFETY_MARGIN_TOKENS
+    if room < _ENDPOINT_MIN_COMPLETION_TOKENS:
+        raise ContextBudgetExceeded(
+            "Local endpoint request prompt content exceeds the served context window."
+        )
+    clamped_max_tokens = min(max_output_tokens, room)
+    return (
+        _build_request_body(
+            endpoint.served_model_id,
+            messages,
+            temperature,
+            clamped_max_tokens,
+            json_output,
+            json_schema,
+            endpoint.is_bundled,
+            endpoint.is_confidential,
+        ),
+        input_budget,
+        {
+            "served_window": served_window,
+            "estimated_prompt_tokens": estimated_prompt_tokens,
+            "clamped_max_tokens": clamped_max_tokens,
+            "requested_max_output_tokens": max_output_tokens,
+        },
+    )
+
+
+def _prepare_endpoint_request_with_resolution(
+    *,
+    endpoint: Any,
+    contents: str | list[Any],
+    system_instruction: str | None,
+    temperature: float,
+    max_output_tokens: int,
+    json_output: bool,
+    json_schema: dict | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, int | None]]:
+    return _prepare_endpoint_request(
+        endpoint=endpoint,
+        served_window=resolve_endpoint_served_window(endpoint),
+        contents=contents,
+        system_instruction=system_instruction,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        json_output=json_output,
+        json_schema=json_schema,
     )
 
 
@@ -644,15 +833,14 @@ def run_generate(
             )
             raise
 
-    messages = _build_messages(contents, system_instruction)
-    body = _build_request_body(
-        endpoint.served_model_id,
-        messages,
-        temperature,
-        max_output_tokens,
-        json_output,
-        json_schema,
-        endpoint.is_bundled,
+    body, input_budget, endpoint_budget = _prepare_endpoint_request_with_resolution(
+        endpoint=endpoint,
+        contents=contents,
+        system_instruction=system_instruction,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        json_output=json_output,
+        json_schema=json_schema,
     )
 
     import httpx
@@ -686,19 +874,59 @@ def run_generate(
     try:
         with admission:
             base_url = confidential_egress_base_url(endpoint.base_url)
-            response = httpx.post(
-                f"{base_url}/v1/chat/completions",
-                timeout=post_timeout,
-                **post_kwargs,
-            )
-            response.raise_for_status()
-            return _parse_response(response.json())
+            attempt = 0
+            while True:
+                response = httpx.post(
+                    f"{base_url}/v1/chat/completions",
+                    timeout=(
+                        post_timeout
+                        if attempt == 0
+                        else _remaining_timeout(started, timeout)
+                    ),
+                    **post_kwargs,
+                )
+                try:
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if response.status_code != 400:
+                        raise
+                    decision = _endpoint_overflow_decision(
+                        response.text,
+                        endpoint_budget.get("served_window"),
+                        attempt,
+                    )
+                    if decision.kind == "retry" and decision.max_tokens is not None:
+                        post_kwargs["json"] = {
+                            **post_kwargs["json"],
+                            "max_tokens": decision.max_tokens,
+                        }
+                        endpoint_budget = {
+                            **endpoint_budget,
+                            "clamped_max_tokens": decision.max_tokens,
+                        }
+                        attempt += 1
+                        continue
+                    if decision.kind == "budget":
+                        raise ContextBudgetExceeded(
+                            "Local endpoint request exceeded the served context "
+                            "window after completion re-clamp."
+                        ) from exc
+                    if decision.kind == "context":
+                        raise _context_window_exceeded_error() from exc
+                    raise
+            result = _parse_response(response.json())
+            if input_budget is not None:
+                result["input_budget"] = input_budget
+            if endpoint_budget.get("served_window") is not None:
+                result["endpoint_budget"] = endpoint_budget
+            return result
     except LocalAdmissionTimeout:
         raise
     except LocalProviderError:
         raise
     except Exception as exc:
-        raise _classify_byo_generate_error(exc) from exc
+        raise _classify_byo_generate_error(exc, endpoint) from exc
 
 
 async def run_agenerate(
@@ -725,7 +953,6 @@ async def run_agenerate(
     import httpx
 
     if not endpoint.is_bundled:
-        messages = _build_messages(contents, system_instruction)
         from solstone.think.providers.local_admission import (
             LocalAdmissionTimeout,
             acquire_local_slot_async,
@@ -734,14 +961,15 @@ async def run_agenerate(
             confidential_egress_base_url,
         )
 
-        body = _build_request_body(
-            endpoint.served_model_id,
-            messages,
-            temperature,
-            max_output_tokens,
-            json_output,
-            json_schema,
-            False,
+        body, input_budget, endpoint_budget = await asyncio.to_thread(
+            _prepare_endpoint_request_with_resolution,
+            endpoint=endpoint,
+            contents=contents,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            json_output=json_output,
+            json_schema=json_schema,
         )
         post_kwargs: dict[str, Any] = {
             "json": body,
@@ -766,14 +994,57 @@ async def run_agenerate(
         try:
             async with admission:
                 base_url = confidential_egress_base_url(endpoint.base_url)
+                attempt = 0
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{base_url}/v1/chat/completions",
-                        timeout=post_timeout,
-                        **post_kwargs,
-                    )
-                response.raise_for_status()
-                return _parse_response(response.json())
+                    while True:
+                        response = await client.post(
+                            f"{base_url}/v1/chat/completions",
+                            timeout=(
+                                post_timeout
+                                if attempt == 0
+                                else _remaining_timeout(started, timeout)
+                            ),
+                            **post_kwargs,
+                        )
+                        try:
+                            response.raise_for_status()
+                            break
+                        except httpx.HTTPStatusError as exc:
+                            if response.status_code != 400:
+                                raise
+                            decision = _endpoint_overflow_decision(
+                                response.text,
+                                endpoint_budget.get("served_window"),
+                                attempt,
+                            )
+                            if (
+                                decision.kind == "retry"
+                                and decision.max_tokens is not None
+                            ):
+                                post_kwargs["json"] = {
+                                    **post_kwargs["json"],
+                                    "max_tokens": decision.max_tokens,
+                                }
+                                endpoint_budget = {
+                                    **endpoint_budget,
+                                    "clamped_max_tokens": decision.max_tokens,
+                                }
+                                attempt += 1
+                                continue
+                            if decision.kind == "budget":
+                                raise ContextBudgetExceeded(
+                                    "Local endpoint request exceeded the served "
+                                    "context window after completion re-clamp."
+                                ) from exc
+                            if decision.kind == "context":
+                                raise _context_window_exceeded_error() from exc
+                            raise
+                result = _parse_response(response.json())
+                if input_budget is not None:
+                    result["input_budget"] = input_budget
+                if endpoint_budget.get("served_window") is not None:
+                    result["endpoint_budget"] = endpoint_budget
+                return result
         except asyncio.CancelledError:
             raise
         except LocalAdmissionTimeout:
@@ -781,7 +1052,7 @@ async def run_agenerate(
         except LocalProviderError:
             raise
         except Exception as exc:
-            raise _classify_byo_generate_error(exc) from exc
+            raise _classify_byo_generate_error(exc, endpoint) from exc
 
     from solstone.think.providers import local_server
     from solstone.think.providers.local_admission import (

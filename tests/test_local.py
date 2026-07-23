@@ -38,6 +38,26 @@ def _isolate_local_admission(monkeypatch, tmp_path):
     monkeypatch.setattr(local_admission, "record_local_inference", lambda _record: None)
 
 
+@pytest.fixture(autouse=True)
+def _default_endpoint_models_unknown(monkeypatch):
+    import httpx
+
+    from solstone.think.providers import local_endpoint
+
+    local_endpoint.reset_endpoint_served_window_cache()
+
+    def fake_get(url, **_kwargs):
+        return httpx.Response(
+            404,
+            request=httpx.Request("GET", url),
+            text="not found",
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    yield
+    local_endpoint.reset_endpoint_served_window_cache()
+
+
 def _provider():
     providers_pkg = importlib.import_module("solstone.think.providers")
     if hasattr(providers_pkg, "local_budget"):
@@ -91,6 +111,146 @@ class _ChatResponse:
                 }
             ],
         }
+
+
+_FAKE_MODELS_BODY = (
+    '{"object":"list","data":[{"id":"Qwen/Qwen3.5-4B","object":"model",'
+    '"created":1784825047,"owned_by":"sglang","root":"Qwen/Qwen3.5-4B",'
+    '"parent":null,"max_model_len":16384}]}'
+)
+_FAKE_F1_COMPLETION_OVERFLOW_BODY = (
+    '{"object":"error","message":"Requested token count exceeds the model\'s '
+    "maximum context length of 16384 tokens. You requested a total of 16397 "
+    "tokens: 13 tokens from the input messages and 16384 tokens for the "
+    "completion. Please reduce the number of tokens in the input messages or "
+    'the completion to fit within the limit.","type":"BadRequestError",'
+    '"param":null,"code":400}'
+)
+_FAKE_F2_PROMPT_OVERFLOW_BODY = (
+    '{"object":"error","message":"The input (18010 tokens) is longer than '
+    'the model\'s context length (16384 tokens).","type":"BadRequestError",'
+    '"param":null,"code":400}'
+)
+_FAKE_REJECT_WINDOW = 16384
+
+
+class _FakeRejectEndpoint:
+    def __init__(
+        self,
+        *,
+        prompt_tokens: int = 13,
+        models_body: str = _FAKE_MODELS_BODY,
+        completion_overflow_body: str = _FAKE_F1_COMPLETION_OVERFLOW_BODY,
+        prompt_overflow_body: str = _FAKE_F2_PROMPT_OVERFLOW_BODY,
+        force_completion_overflow: bool = False,
+        force_prompt_overflow: bool = False,
+        force_non_context_400: bool = False,
+        force_second_context_400: bool = False,
+    ) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.models_body = models_body
+        self.completion_overflow_body = completion_overflow_body
+        self.prompt_overflow_body = prompt_overflow_body
+        self.force_completion_overflow = force_completion_overflow
+        self.force_prompt_overflow = force_prompt_overflow
+        self.force_non_context_400 = force_non_context_400
+        self.force_second_context_400 = force_second_context_400
+        self.gets: list[dict] = []
+        self.posts: list[dict] = []
+
+    @property
+    def max_tokens(self) -> list[int]:
+        return [int(post["json"]["max_tokens"]) for post in self.posts]
+
+    def install(self, monkeypatch) -> None:
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", self.get)
+        monkeypatch.setattr(httpx, "post", self.post)
+
+        fake_endpoint = self
+
+        class AsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, url, **kwargs):
+                return fake_endpoint.post(url, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    def get(self, url, **kwargs):
+        import httpx
+
+        self.gets.append({"url": url, **kwargs})
+        request = httpx.Request("GET", url)
+        if str(url).endswith("/v1/models"):
+            return httpx.Response(200, request=request, text=self.models_body)
+        return httpx.Response(404, request=request, text="not found")
+
+    def post(self, url, **kwargs):
+        import httpx
+
+        request = httpx.Request("POST", url)
+        if str(url).endswith("/tokenize"):
+            content = str((kwargs.get("json") or {}).get("content") or "")
+            return httpx.Response(
+                200,
+                request=request,
+                json={"tokens": list(range(max(1, len(content) // 3)))},
+            )
+        if not str(url).endswith("/v1/chat/completions"):
+            raise AssertionError(f"unexpected local provider URL: {url}")
+
+        body = kwargs["json"]
+        self.posts.append({"url": url, **kwargs})
+        if self.force_non_context_400:
+            return httpx.Response(400, request=request, text="invalid temperature")
+        if self.force_prompt_overflow or self.prompt_tokens >= _FAKE_REJECT_WINDOW:
+            return httpx.Response(
+                400,
+                request=request,
+                text=self.prompt_overflow_body,
+            )
+        if (
+            self.force_completion_overflow
+            or self.force_second_context_400
+            and len(self.posts) > 1
+            or self.prompt_tokens + int(body["max_tokens"]) > _FAKE_REJECT_WINDOW
+        ):
+            return httpx.Response(
+                400,
+                request=request,
+                text=self.completion_overflow_body,
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": int(body["max_tokens"]),
+                    "total_tokens": self.prompt_tokens + int(body["max_tokens"]),
+                },
+            },
+        )
+
+
+def _http_status_error(body: str):
+    import httpx
+
+    request = httpx.Request("POST", "http://byo.example/openai/v1/chat/completions")
+    response = httpx.Response(400, request=request, text=body)
+    return httpx.HTTPStatusError("bad request", request=request, response=response)
 
 
 def test_local_model_prefix_maps_to_provider():
@@ -854,7 +1014,11 @@ def test_openhands_local_llm_kwargs(monkeypatch):
         lambda: SimpleNamespace(port=9876, served_model_id=served_model_id),
     )
 
-    llm = openhands._build_llm("local", LOCAL_MODEL)
+    llm = openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=_bundled_endpoint(),
+    )
 
     assert isinstance(llm, FakeLLM)
     assert captured == {
@@ -865,7 +1029,9 @@ def test_openhands_local_llm_kwargs(monkeypatch):
         "timeout": openhands.LLM_TIMEOUT_S,
         "num_retries": openhands.LLM_NUM_RETRIES,
         "max_input_tokens": local_server.LOCAL_MIN_CONTEXT_TOKENS,
-        "max_output_tokens": openhands._LOCAL_OUTPUT_RESERVE_TOKENS,
+        "max_output_tokens": openhands._local_output_reserve_tokens(
+            local_server.LOCAL_MIN_CONTEXT_TOKENS
+        ),
         "input_cost_per_token": 0,
         "output_cost_per_token": 0,
         "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
@@ -896,6 +1062,20 @@ def _byo_endpoint(
     )
 
 
+def _qwen_byo_endpoint():
+    from solstone.think.providers.local_endpoint import (
+        LocalEndpoint,
+        normalize_local_endpoint_url,
+    )
+
+    return LocalEndpoint(
+        base_url=normalize_local_endpoint_url("http://byo.example/openai/v1/"),
+        served_model_id="Qwen/Qwen3.5-4B",
+        credential="test-token-PLACEHOLDER",
+        is_bundled=False,
+    )
+
+
 def _bundled_endpoint():
     from solstone.think.providers.local_endpoint import LocalEndpoint
 
@@ -917,6 +1097,407 @@ def _patch_bundled_server(monkeypatch):
         "solstone.think.providers.local_server.read_server_capacity",
         lambda: local_server.ServerCapacity(1, "test", "floor"),
     )
+
+
+def test_run_generate_endpoint_clamps_large_default_budget_against_served_window(
+    monkeypatch,
+):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _qwen_byo_endpoint)
+
+    result = provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        max_output_tokens=49152,
+    )
+
+    assert result["text"] == "ok"
+    assert fake_endpoint.gets
+    assert fake_endpoint.max_tokens
+    assert all(token <= _FAKE_REJECT_WINDOW for token in fake_endpoint.max_tokens)
+
+
+def test_run_agenerate_endpoint_clamps_window_sized_budget_against_served_window(
+    monkeypatch,
+):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _qwen_byo_endpoint)
+
+    result = asyncio.run(
+        provider.run_agenerate(
+            "hello",
+            model=LOCAL_MODEL,
+            max_output_tokens=16384,
+        )
+    )
+
+    assert result["text"] == "ok"
+    assert fake_endpoint.gets
+    assert fake_endpoint.max_tokens
+    assert all(token <= _FAKE_REJECT_WINDOW for token in fake_endpoint.max_tokens)
+
+
+def test_run_generate_endpoint_preflight_floor_skips_chat_post(monkeypatch):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _qwen_byo_endpoint)
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        provider.run_generate(
+            [{"role": "user", "content": "x" * 50000}],
+            model=LOCAL_MODEL,
+            max_output_tokens=1024,
+        )
+
+    assert exc.value.reason_code == "context_budget_exceeded"
+    assert fake_endpoint.gets
+    assert fake_endpoint.posts == []
+
+
+def test_validate_key_known_window_keeps_tiny_max_tokens(monkeypatch):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _qwen_byo_endpoint)
+
+    assert provider.validate_key("local", "") == {"valid": True}
+    assert fake_endpoint.max_tokens == [8]
+
+
+def test_run_generate_endpoint_known_window_truncates_fittable_input(monkeypatch):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _qwen_byo_endpoint)
+    chunks = [
+        f"## 2026-06-23 09:{minute:02d}:00\n### Transcript\n"
+        + (str(minute) * 3000)
+        + "\n"
+        for minute in range(20)
+    ]
+
+    result = provider.run_generate(
+        "".join(chunks),
+        model=LOCAL_MODEL,
+        max_output_tokens=1024,
+    )
+
+    from solstone.think.providers import local_budget
+
+    posted_content = fake_endpoint.posts[0]["json"]["messages"][0]["content"]
+    assert local_budget.TRUNCATION_MARKER in posted_content
+    assert result["input_budget"]["clipped"] is True
+    assert result["input_budget"]["dropped_entries"] > 0
+    assert result["endpoint_budget"]["served_window"] == _FAKE_REJECT_WINDOW
+    assert result["endpoint_budget"]["clamped_max_tokens"] == 1024
+
+
+def test_endpoint_generate_branches_route_shared_prep(monkeypatch):
+    provider = _provider()
+    calls = []
+    original = provider._prepare_endpoint_request
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    def spy_prepare(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    def fake_post(url, **kwargs):
+        return _ChatResponse("ok")
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(provider, "_prepare_endpoint_request", spy_prepare)
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=7)
+    asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL, max_output_tokens=7))
+
+    assert [call["max_output_tokens"] for call in calls] == [7, 7]
+    assert [call["served_window"] for call in calls] == [None, None]
+
+
+def _run_endpoint_generate(provider, mode: str, **kwargs):
+    if mode == "sync":
+        return provider.run_generate(**kwargs)
+    return asyncio.run(provider.run_agenerate(**kwargs))
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_endpoint_completion_overflow_reclamps_once(monkeypatch, mode):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint()
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    result = _run_endpoint_generate(
+        provider,
+        mode,
+        contents="hello",
+        model=LOCAL_MODEL,
+        max_output_tokens=16384,
+    )
+
+    assert result["text"] == "ok"
+    assert fake_endpoint.max_tokens == [16384, 16355]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_endpoint_completion_overflow_below_floor_is_budget_terminal(
+    monkeypatch,
+    mode,
+):
+    provider = _provider()
+    low_room_body = _FAKE_F1_COMPLETION_OVERFLOW_BODY.replace(
+        "13 tokens from the input messages and 16384 tokens for the completion",
+        "16200 tokens from the input messages and 500 tokens for the completion",
+    )
+    fake_endpoint = _FakeRejectEndpoint(
+        completion_overflow_body=low_room_body,
+        force_completion_overflow=True,
+    )
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        _run_endpoint_generate(
+            provider,
+            mode,
+            contents="hello",
+            model=LOCAL_MODEL,
+            max_output_tokens=500,
+        )
+
+    assert exc.value.reason_code == "context_budget_exceeded"
+    assert fake_endpoint.max_tokens == [500]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_endpoint_prompt_overflow_is_terminal_context_window(monkeypatch, mode):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint(force_prompt_overflow=True)
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        _run_endpoint_generate(
+            provider,
+            mode,
+            contents="hello",
+            model=LOCAL_MODEL,
+            max_output_tokens=1024,
+        )
+
+    assert exc.value.reason_code == "context_window_exceeded"
+    assert fake_endpoint.max_tokens == [1024]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_endpoint_non_context_400_stays_contract_failed(monkeypatch, mode):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint(force_non_context_400=True)
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        _run_endpoint_generate(
+            provider,
+            mode,
+            contents="hello",
+            model=LOCAL_MODEL,
+            max_output_tokens=1024,
+        )
+
+    assert exc.value.reason_code == "local_endpoint_contract_failed"
+    assert fake_endpoint.max_tokens == [1024]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_endpoint_second_context_400_after_reclamp_is_terminal(monkeypatch, mode):
+    provider = _provider()
+    fake_endpoint = _FakeRejectEndpoint(force_second_context_400=True)
+    fake_endpoint.install(monkeypatch)
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        _run_endpoint_generate(
+            provider,
+            mode,
+            contents="hello",
+            model=LOCAL_MODEL,
+            max_output_tokens=16384,
+        )
+
+    assert exc.value.reason_code == "context_window_exceeded"
+    assert fake_endpoint.max_tokens == [16384, 16355]
+
+
+def test_run_generate_byo_unknown_window_request_body_matches_golden(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+        raising=False,
+    )
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        temperature=0.4,
+        max_output_tokens=7,
+    )
+
+    assert captured["json"] == {
+        "model": "served-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.4,
+        "max_tokens": 7,
+        "stream": False,
+    }
+
+
+def test_run_generate_confidential_body_carries_qwen_block(monkeypatch):
+    provider = _provider()
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    endpoint = LocalEndpoint(
+        base_url="https://spp.example.test",
+        served_model_id="confidential-model",
+        credential="confidential-token",
+        is_bundled=False,
+        is_confidential=True,
+    )
+    captured = {}
+    monkeypatch.setattr(provider, "resolve_local_endpoint", lambda: endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda _base_url: "http://127.0.0.1:4567",
+    )
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        temperature=0.4,
+        max_output_tokens=7,
+    )
+
+    assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["json"]["top_p"] == 0.8
+    assert captured["json"]["top_k"] == 20
+    assert captured["json"]["min_p"] == 0.0
+    assert captured["json"]["presence_penalty"] == 1.5
+
+
+def test_run_generate_bundled_request_body_matches_golden(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        if str(url).endswith("/tokenize"):
+            return _FakeRejectEndpoint().post(url, **kwargs)
+        if str(url).endswith("/v1/chat/completions"):
+            captured.update({"url": url, **kwargs})
+            return _ChatResponse("ok")
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        temperature=0.4,
+        max_output_tokens=7,
+    )
+
+    assert captured["json"] == {
+        "model": LOCAL_MODEL,
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.4,
+        "max_tokens": 7,
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+    }
 
 
 def test_run_generate_bundled_encodes_image_once(monkeypatch):
@@ -1040,6 +1621,11 @@ def test_run_generate_byo_acquires_and_releases_permit(monkeypatch):
         "resolve_local_endpoint",
         lambda: _byo_endpoint(parallel_slots=1),
     )
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
     captured = {}
 
     def fake_post(url, **kwargs):
@@ -1069,6 +1655,11 @@ def test_run_generate_byo_queue_timeout_preserves_exact_type_and_skips_post(
         "resolve_local_endpoint",
         lambda: _byo_endpoint(parallel_slots=1),
     )
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
 
     def fake_post(*_args, **_kwargs):
         raise AssertionError("httpx.post must not run after queue timeout")
@@ -1095,6 +1686,11 @@ def test_run_generate_byo_http_timeout_uses_remaining_deadline(monkeypatch):
         provider,
         "resolve_local_endpoint",
         lambda: _byo_endpoint(parallel_slots=1),
+    )
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
     )
     captured = {}
     times = iter([100.0, 100.0, 100.35])
@@ -1311,6 +1907,11 @@ def test_run_agenerate_byo_acquires_and_releases_permit(monkeypatch):
         provider,
         "resolve_local_endpoint",
         lambda: _byo_endpoint(parallel_slots=1),
+    )
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
     )
     captured = {}
 
@@ -1716,7 +2317,7 @@ def test_classify_byo_generate_error_capacity_names_are_non_blocking(exc_name):
     exc = RuntimeError("outer")
     exc.__cause__ = inner
 
-    classified = provider._classify_byo_generate_error(exc)
+    classified = provider._classify_byo_generate_error(exc, _byo_endpoint())
 
     assert classified.reason_code == "local_capacity_exhausted"
     assert is_blocking_reason(classified.reason_code) is False
@@ -1740,7 +2341,7 @@ def test_classify_byo_generate_error_unreachable_names_are_blocking(exc_name):
     exc = RuntimeError("outer")
     exc.__cause__ = inner
 
-    classified = provider._classify_byo_generate_error(exc)
+    classified = provider._classify_byo_generate_error(exc, _byo_endpoint())
 
     assert classified.reason_code == "local_endpoint_unreachable"
     assert str(classified) == provider.LOCAL_ENDPOINT_UNREACHABLE_COPY
@@ -1756,7 +2357,7 @@ def test_classify_byo_generate_error_capacity_wins_mixed_chain():
     outer.__cause__ = unreachable
     unreachable.__cause__ = capacity
 
-    classified = provider._classify_byo_generate_error(outer)
+    classified = provider._classify_byo_generate_error(outer, _byo_endpoint())
 
     assert classified.reason_code == "local_capacity_exhausted"
 
@@ -1768,11 +2369,59 @@ def test_classify_byo_generate_error_500_stays_contract_failed():
         status_code = 500
 
     classified = provider._classify_byo_generate_error(
-        InternalServerError("server failed")
+        InternalServerError("server failed"),
+        _byo_endpoint(),
     )
 
     assert classified.reason_code == "local_endpoint_contract_failed"
     assert str(classified) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _FAKE_F1_COMPLETION_OVERFLOW_BODY,
+        _FAKE_F2_PROMPT_OVERFLOW_BODY,
+    ],
+)
+def test_classify_byo_generate_error_context_body_maps_to_context_window(body):
+    provider = _provider()
+    endpoint = _byo_endpoint()
+
+    classified = provider._classify_byo_generate_error(
+        _http_status_error(body),
+        endpoint,
+    )
+
+    assert classified.reason_code == "context_window_exceeded"
+    assert (
+        str(classified)
+        == "The configured endpoint rejected the request: prompt and completion "
+        "exceed the served context window."
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _FAKE_F1_COMPLETION_OVERFLOW_BODY,
+        _FAKE_F2_PROMPT_OVERFLOW_BODY,
+    ],
+)
+def test_classify_byo_cogitate_error_context_body_maps_to_context_window(body):
+    from solstone.think.providers import local_endpoint
+
+    class BadRequestError(RuntimeError):
+        status_code = 400
+
+        def __init__(self, message: str, payload: str) -> None:
+            super().__init__(message)
+            self.message = message
+            self.body = payload
+
+    exc = BadRequestError("litellm bad request wrapper", body)
+
+    assert local_endpoint.classify_byo_cogitate_error(exc) == "context_window_exceeded"
 
 
 def test_run_generate_byo_http_status_maps_to_contract_failed(monkeypatch):
@@ -2278,7 +2927,7 @@ def test_run_cogitate_talent_hook_error_bypasses_local_error_event(monkeypatch):
     ],
 )
 def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
-    from solstone.think.providers import local_endpoint, openhands
+    from solstone.think.providers import openhands
 
     captured = {}
 
@@ -2290,16 +2939,16 @@ def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
     sdk_module.LLM = FakeLLM
     monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
     monkeypatch.setattr(
-        local_endpoint,
-        "resolve_local_endpoint",
-        lambda: _byo_endpoint(credential),
-    )
-    monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
         lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
     )
 
-    llm = openhands._build_llm("local", LOCAL_MODEL)
+    llm = openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=_byo_endpoint(credential),
+        served_window=None,
+    )
 
     assert isinstance(llm, FakeLLM)
     assert captured == {
@@ -2345,15 +2994,12 @@ def test_openhands_local_confidential_llm_uses_forwarder(monkeypatch):
     sdk_module = types.ModuleType("openhands.sdk")
     sdk_module.LLM = FakeLLM
     monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
-    monkeypatch.setattr(
-        local_endpoint,
-        "resolve_local_endpoint",
-        lambda: local_endpoint.LocalEndpoint(
-            base_url=configured_endpoint,
-            served_model_id="confidential-model",
-            credential="confidential-token",
-            is_bundled=False,
-        ),
+    endpoint = local_endpoint.LocalEndpoint(
+        base_url=configured_endpoint,
+        served_model_id="confidential-model",
+        credential="confidential-token",
+        is_bundled=False,
+        is_confidential=True,
     )
     monkeypatch.setattr(
         "solstone.think.services.spp_transport.confidential_egress_base_url",
@@ -2364,11 +3010,104 @@ def test_openhands_local_confidential_llm_uses_forwarder(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
     )
 
-    llm = openhands._build_llm("local", LOCAL_MODEL)
+    llm = openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=endpoint,
+        served_window=None,
+    )
 
     assert isinstance(llm, FakeLLM)
     assert captured["base_url"] == f"{forwarder}/v1"
     assert configured_endpoint not in captured["base_url"]
+
+
+def test_openhands_local_confidential_known_window_caps_and_extra_body(monkeypatch):
+    from solstone.think.providers import local_endpoint, openhands
+
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sdk_module = types.ModuleType("openhands.sdk")
+    sdk_module.LLM = FakeLLM
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
+    endpoint = local_endpoint.LocalEndpoint(
+        base_url="https://spp.example.test",
+        served_model_id="confidential-model",
+        credential="confidential-token",
+        is_bundled=False,
+        is_confidential=True,
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda _base_url: "http://127.0.0.1:4567",
+    )
+
+    openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=endpoint,
+        served_window=16384,
+    )
+
+    assert captured["max_input_tokens"] == 16384
+    assert captured["max_output_tokens"] == 4096
+    assert captured["litellm_extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+def test_openhands_local_known_window_caps_without_extra_body(monkeypatch):
+    from solstone.think.providers import openhands
+
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sdk_module = types.ModuleType("openhands.sdk")
+    sdk_module.LLM = FakeLLM
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
+
+    openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=_qwen_byo_endpoint(),
+        served_window=32768,
+    )
+
+    assert captured["max_input_tokens"] == 32768
+    assert captured["max_output_tokens"] == 8192
+    assert "litellm_extra_body" not in captured
+
+
+def test_openhands_local_small_window_omits_caps_and_extra_body(monkeypatch):
+    from solstone.think.providers import openhands
+
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sdk_module = types.ModuleType("openhands.sdk")
+    sdk_module.LLM = FakeLLM
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
+
+    openhands._build_llm(
+        "local",
+        LOCAL_MODEL,
+        endpoint=_qwen_byo_endpoint(),
+        served_window=8192,
+    )
+
+    assert "max_input_tokens" not in captured
+    assert "max_output_tokens" not in captured
+    assert "litellm_extra_body" not in captured
 
 
 def test_local_context_window_split_floor_vs_tier():

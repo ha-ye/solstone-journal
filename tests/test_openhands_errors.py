@@ -165,7 +165,7 @@ def test_run_cogitate_error_before_usage_baseline_omits_usage(
 ):
     build_exc = RuntimeError("llm exploded")
 
-    def fail_build(_provider, _model, *, num_retries=None):
+    def fail_build(_provider, _model, *, num_retries=None, **_kwargs):
         raise build_exc
 
     monkeypatch.setattr(openhands, "_build_llm", fail_build)
@@ -247,6 +247,114 @@ def test_run_cogitate_local_byo_error_event_uses_fixed_copy_and_redacts(
     assert events[0]["error"] == LOCAL_ENDPOINT_CONTRACT_COPY
     assert events[0]["reason_code"] == "local_endpoint_contract_failed"
     assert token not in events[0]["trace"]
+
+
+def test_run_cogitate_local_byo_context_body_event_redacts(
+    fake_openhands,
+    run_env,
+    monkeypatch,
+):
+    from tests.test_local import _FAKE_F2_PROMPT_OVERFLOW_BODY
+
+    token = "SENTINEL-BYO-CONTEXT-CRED-219a"
+    endpoint = LocalEndpoint(
+        base_url="http://byo.example/openai",
+        served_model_id="served-model",
+        credential=token,
+        is_bundled=False,
+    )
+
+    class BadRequestError(RuntimeError):
+        status_code = 400
+
+        def __init__(self) -> None:
+            super().__init__(f"bad request with {token}")
+            self.message = f"bad request with {token}"
+            self.body = _FAKE_F2_PROMPT_OVERFLOW_BODY + f" {token}" + ("x" * 6000)
+
+    async def fail(_conversation):
+        raise BadRequestError()
+
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: endpoint,
+    )
+    fake_openhands.Conversation.arun_impl = fail
+    events: list[dict] = []
+    local_env = {**run_env, "provider": "local", "model": LOCAL_MODEL}
+
+    with pytest.raises(BadRequestError) as raised:
+        asyncio.run(openhands.run_cogitate(local_env, events.append))
+
+    assert len(events) == 1
+    assert events[0]["reason_code"] == "context_window_exceeded"
+    assert token not in json.dumps(events)
+    assert token not in str(raised.value)
+
+
+def test_run_cogitate_local_window_threaded_once(
+    fake_openhands,
+    run_env,
+    monkeypatch,
+):
+    endpoint = LocalEndpoint(
+        base_url="https://spp.example.test",
+        served_model_id="confidential-model",
+        credential="confidential-token",
+        is_bundled=False,
+        is_confidential=True,
+    )
+    window_calls = []
+    llm_calls = []
+    agent_calls = []
+    original_build_llm = openhands._build_llm
+
+    def resolve_window(resolved_endpoint):
+        window_calls.append(resolved_endpoint)
+        return 16384
+
+    def spy_build_llm(*args, **kwargs):
+        llm_calls.append(kwargs)
+        return original_build_llm(*args, **kwargs)
+
+    def spy_build_agent(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            llm=kwargs["llm"],
+            tools=kwargs["tool_specs"],
+            include_default_tools=kwargs["include_default_tools"],
+            system_prompt=kwargs["system_prompt"],
+            condenser=SimpleNamespace(max_tokens=kwargs["condenser_max_tokens"]),
+        )
+
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: endpoint,
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_endpoint_served_window",
+        resolve_window,
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda _base_url: "http://127.0.0.1:4567",
+    )
+    monkeypatch.setattr(openhands, "_build_llm", spy_build_llm)
+    monkeypatch.setattr(openhands, "_build_cogitate_agent", spy_build_agent)
+    local_env = {**run_env, "provider": "local", "model": LOCAL_MODEL}
+
+    asyncio.run(openhands.run_cogitate(local_env, lambda _event: None))
+
+    assert window_calls == [endpoint]
+    assert llm_calls[0]["endpoint"] is endpoint
+    assert llm_calls[0]["served_window"] == 16384
+    assert agent_calls[0]["condenser_max_tokens"] == 11264
+    llm = fake_openhands.LLM.instances[0]
+    assert llm.max_input_tokens == 16384
+    assert llm.max_output_tokens == 4096
+    assert llm.litellm_extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
 
 
 @pytest.mark.parametrize("exc_type", [httpx.ConnectError, httpx.ConnectTimeout])

@@ -20,21 +20,26 @@ def _local_llm() -> LLM:
         api_key="EMPTY",
         native_tool_calling=False,
         max_input_tokens=LOCAL_MIN_CONTEXT_TOKENS,
-        max_output_tokens=openhands._LOCAL_OUTPUT_RESERVE_TOKENS,
+        max_output_tokens=openhands._local_output_reserve_tokens(
+            LOCAL_MIN_CONTEXT_TOKENS
+        ),
     )
 
 
 def test_build_cogitate_agent_adds_bundled_local_condenser():
+    condenser_max_tokens = openhands._local_condenser_max_tokens(
+        LOCAL_MIN_CONTEXT_TOKENS
+    )
     agent = openhands._build_cogitate_agent(
         llm=_local_llm(),
-        is_bundled_local=True,
+        condenser_max_tokens=condenser_max_tokens,
         tool_specs=[],
         include_default_tools=[],
         system_prompt="sys",
     )
 
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
-    assert agent.condenser.max_tokens == openhands._LOCAL_CONDENSER_MAX_TOKENS
+    assert agent.condenser.max_tokens == condenser_max_tokens
     assert agent.condenser.keep_first == openhands._LOCAL_CONDENSER_KEEP_FIRST
     assert agent.condenser.llm is agent.llm
 
@@ -42,7 +47,26 @@ def test_build_cogitate_agent_adds_bundled_local_condenser():
 def test_build_cogitate_agent_skips_condenser_for_non_bundled_local():
     agent = openhands._build_cogitate_agent(
         llm=_local_llm(),
-        is_bundled_local=False,
+        condenser_max_tokens=None,
+        tool_specs=[],
+        include_default_tools=[],
+        system_prompt="sys",
+    )
+
+    assert agent.condenser is None
+
+
+def test_build_cogitate_agent_skips_condenser_for_small_endpoint_window():
+    window = 8192
+    condenser_max_tokens = (
+        openhands._local_condenser_max_tokens(window)
+        if window >= LOCAL_MIN_CONTEXT_TOKENS
+        else None
+    )
+
+    agent = openhands._build_cogitate_agent(
+        llm=_local_llm(),
+        condenser_max_tokens=condenser_max_tokens,
         tool_specs=[],
         include_default_tools=[],
         system_prompt="sys",
@@ -52,17 +76,18 @@ def test_build_cogitate_agent_skips_condenser_for_non_bundled_local():
 
 
 def test_local_condenser_window_invariants():
-    assert (
-        openhands._LOCAL_CONDENSER_MAX_TOKENS // 2
-        + openhands._LOCAL_OUTPUT_RESERVE_TOKENS
-        < LOCAL_MIN_CONTEXT_TOKENS
+    condenser_max_tokens = openhands._local_condenser_max_tokens(
+        LOCAL_MIN_CONTEXT_TOKENS
     )
-    assert (
-        openhands._LOCAL_CONDENSER_MAX_TOKENS + openhands._LOCAL_OUTPUT_RESERVE_TOKENS
-        <= LOCAL_MIN_CONTEXT_TOKENS
+    output_reserve_tokens = openhands._local_output_reserve_tokens(
+        LOCAL_MIN_CONTEXT_TOKENS
     )
-    assert openhands._LOCAL_CONDENSER_MAX_TOKENS < LOCAL_MIN_CONTEXT_TOKENS
-    assert 11000 <= openhands._LOCAL_CONDENSER_MAX_TOKENS <= 11500
+    assert condenser_max_tokens // 2 + output_reserve_tokens < LOCAL_MIN_CONTEXT_TOKENS
+    assert condenser_max_tokens + output_reserve_tokens <= LOCAL_MIN_CONTEXT_TOKENS
+    assert condenser_max_tokens < LOCAL_MIN_CONTEXT_TOKENS
+    assert 11000 <= condenser_max_tokens <= 11500
+    assert openhands._local_output_reserve_tokens(16384) == 4096
+    assert openhands._local_condenser_max_tokens(16384) == 11264
     assert openhands._LOCAL_CONDENSER_KEEP_FIRST < 240 // 2 - 1
 
 

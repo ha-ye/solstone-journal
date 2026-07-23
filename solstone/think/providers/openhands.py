@@ -89,8 +89,6 @@ _SHELL_STDOUT_CAP = 6000
 _SHELL_STDERR_CAP = 6000
 _SHELL_TIMEOUT_SECONDS = 30
 _COST_WARNING_TEXT = "Cost calculation failed"
-_LOCAL_OUTPUT_RESERVE_TOKENS = LOCAL_MIN_CONTEXT_TOKENS // 4
-_LOCAL_CONDENSER_MAX_TOKENS = LOCAL_MIN_CONTEXT_TOKENS * 11 // 16
 _LOCAL_CONDENSER_KEEP_FIRST = 4
 _GENERATE_NUM_RETRIES = 2
 _GEMINI_MAX_OUTPUT_TOKENS = 65_535
@@ -151,6 +149,14 @@ def _resolve_provider_key(provider: str, api_key: str | None = None) -> str:
     return effective
 
 
+def _local_output_reserve_tokens(window: int) -> int:
+    return window // 4
+
+
+def _local_condenser_max_tokens(window: int) -> int:
+    return window * 11 // 16
+
+
 def _resolve_allowed_roots(config: dict[str, Any]) -> list[Path]:
     journal = Path(get_journal()).resolve()
     project_root = Path(get_project_root()).resolve()
@@ -206,30 +212,47 @@ def _cogitate_budgets(config: dict[str, Any]) -> tuple[int, float, float]:
     return max_turns, cost_cap, timeout_seconds
 
 
-def _build_llm(provider: str, model: str, *, num_retries: int | None = None) -> Any:
+def _build_llm(
+    provider: str,
+    model: str,
+    *,
+    num_retries: int | None = None,
+    endpoint: Any | None = None,
+    served_window: int | None = None,
+) -> Any:
     from openhands.sdk import LLM
 
     retry_count = LLM_NUM_RETRIES if num_retries is None else num_retries
     if provider == "local":
-        from solstone.think.providers.local_endpoint import resolve_local_endpoint
         from solstone.think.services.spp_transport import confidential_egress_base_url
 
-        endpoint = resolve_local_endpoint()
+        if endpoint is None:
+            raise ValueError("Resolved local endpoint is required to build local LLM.")
         if not endpoint.is_bundled:
             base_url = confidential_egress_base_url(endpoint.base_url)
-            return LLM(
-                model=f"openai/{endpoint.served_model_id}",
-                base_url=f"{base_url}/v1",
-                api_key=endpoint.credential or "EMPTY",
-                native_tool_calling=False,
-                timeout=LLM_TIMEOUT_S,
-                num_retries=retry_count,
-                retry_min_wait=1,
-                retry_max_wait=2,
-                retry_multiplier=1.0,
-                input_cost_per_token=0,
-                output_cost_per_token=0,
-            )
+            llm_kwargs: dict[str, Any] = {
+                "model": f"openai/{endpoint.served_model_id}",
+                "base_url": f"{base_url}/v1",
+                "api_key": endpoint.credential or "EMPTY",
+                "native_tool_calling": False,
+                "timeout": LLM_TIMEOUT_S,
+                "num_retries": retry_count,
+                "retry_min_wait": 1,
+                "retry_max_wait": 2,
+                "retry_multiplier": 1.0,
+                "input_cost_per_token": 0,
+                "output_cost_per_token": 0,
+            }
+            if served_window is not None and served_window >= LOCAL_MIN_CONTEXT_TOKENS:
+                llm_kwargs["max_input_tokens"] = served_window
+                llm_kwargs["max_output_tokens"] = _local_output_reserve_tokens(
+                    served_window
+                )
+                if endpoint.is_confidential:
+                    llm_kwargs["litellm_extra_body"] = {
+                        "chat_template_kwargs": {"enable_thinking": False}
+                    }
+            return LLM(**llm_kwargs)
 
         from solstone.think.providers import local_server
 
@@ -242,7 +265,9 @@ def _build_llm(provider: str, model: str, *, num_retries: int | None = None) -> 
             timeout=LLM_TIMEOUT_S,
             num_retries=retry_count,
             max_input_tokens=local_server.LOCAL_MIN_CONTEXT_TOKENS,
-            max_output_tokens=_LOCAL_OUTPUT_RESERVE_TOKENS,
+            max_output_tokens=_local_output_reserve_tokens(
+                local_server.LOCAL_MIN_CONTEXT_TOKENS
+            ),
             input_cost_per_token=0,
             output_cost_per_token=0,
             litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -677,8 +702,8 @@ async def _run_agenerate(
     return _generate_result(response, model)
 
 
-def _build_local_condenser(llm: Any) -> Any:
-    """LLM-summarizing condenser for the bundled-local floor window.
+def _build_local_condenser(llm: Any, *, max_tokens: int) -> Any:
+    """LLM-summarizing condenser for an explicitly resolved local window.
 
     Reuses the agent's own LLM (shared usage_id is accepted in
     openhands-sdk 1.27.1) so there is no separate summarization endpoint.
@@ -687,7 +712,7 @@ def _build_local_condenser(llm: Any) -> Any:
 
     return LLMSummarizingCondenser(
         llm=llm,
-        max_tokens=_LOCAL_CONDENSER_MAX_TOKENS,
+        max_tokens=max_tokens,
         keep_first=_LOCAL_CONDENSER_KEEP_FIRST,
     )
 
@@ -695,14 +720,18 @@ def _build_local_condenser(llm: Any) -> Any:
 def _build_cogitate_agent(
     *,
     llm: Any,
-    is_bundled_local: bool,
+    condenser_max_tokens: int | None,
     tool_specs: list[Any],
     include_default_tools: list[Any],
     system_prompt: str,
 ) -> Any:
     from openhands.sdk import Agent
 
-    condenser = _build_local_condenser(llm) if is_bundled_local else None
+    condenser = (
+        _build_local_condenser(llm, max_tokens=condenser_max_tokens)
+        if condenser_max_tokens is not None
+        else None
+    )
     return Agent(
         llm=llm,
         tools=tool_specs,
@@ -1597,13 +1626,17 @@ async def run_cogitate(
     model = str(config["model"])
     effective_on_event = on_event
     byo_endpoint = None
+    byo_served_window = None
     if provider == "local":
         from solstone.think.providers.local_endpoint import (
+            resolve_endpoint_served_window,
             resolve_local_endpoint,
             wrap_on_event_redacting,
         )
 
         byo_endpoint = resolve_local_endpoint()
+        if not byo_endpoint.is_bundled:
+            byo_served_window = resolve_endpoint_served_window(byo_endpoint)
         if not byo_endpoint.is_bundled and byo_endpoint.credential:
             effective_on_event = wrap_on_event_redacting(
                 on_event,
@@ -1642,7 +1675,13 @@ async def run_cogitate(
             config.get("read_call_budget", DEFAULT_READ_CALL_BUDGET) or 0
         )
         journal = Path(get_journal())
-        llm = _build_llm(provider, model, num_retries=_llm_num_retries(config))
+        llm = _build_llm(
+            provider,
+            model,
+            num_retries=_llm_num_retries(config),
+            endpoint=byo_endpoint,
+            served_window=byo_served_window,
+        )
         usage_start = _usage_snapshot(llm)
         tool_specs = []
         sol_executor = None
@@ -1679,10 +1718,20 @@ async def run_cogitate(
             tool_specs.append(Tool(name="emit_final"))
             default_tools = []
 
-        is_bundled_local = byo_endpoint is not None and byo_endpoint.is_bundled
+        condenser_max_tokens = None
+        if byo_endpoint is not None:
+            if byo_endpoint.is_bundled:
+                condenser_max_tokens = _local_condenser_max_tokens(
+                    LOCAL_MIN_CONTEXT_TOKENS
+                )
+            elif (
+                byo_served_window is not None
+                and byo_served_window >= LOCAL_MIN_CONTEXT_TOKENS
+            ):
+                condenser_max_tokens = _local_condenser_max_tokens(byo_served_window)
         agent = _build_cogitate_agent(
             llm=llm,
-            is_bundled_local=is_bundled_local,
+            condenser_max_tokens=condenser_max_tokens,
             tool_specs=tool_specs,
             include_default_tools=default_tools,
             system_prompt=system_instruction,
