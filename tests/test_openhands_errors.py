@@ -16,6 +16,7 @@ from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import ProviderKeyMissingError, QuotaExhaustedError
 from solstone.think.providers.local_endpoint import (
+    ENDPOINT_ERROR_BODY_CAP_CHARS,
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
     LocalEndpoint,
@@ -268,9 +269,10 @@ def test_run_cogitate_local_byo_context_body_event_redacts(
         status_code = 400
 
         def __init__(self) -> None:
-            super().__init__(f"bad request with {token}")
-            self.message = f"bad request with {token}"
-            self.body = _FAKE_F2_PROMPT_OVERFLOW_BODY + f" {token}" + ("x" * 6000)
+            body = _FAKE_F2_PROMPT_OVERFLOW_BODY + f" {token}" + ("x" * 6000)
+            super().__init__(body)
+            self.message = body
+            self.body = body
 
     async def fail(_conversation):
         raise BadRequestError()
@@ -288,6 +290,7 @@ def test_run_cogitate_local_byo_context_body_event_redacts(
 
     assert len(events) == 1
     assert events[0]["reason_code"] == "context_window_exceeded"
+    assert len(events[0]["error"]) <= ENDPOINT_ERROR_BODY_CAP_CHARS
     assert token not in json.dumps(events)
     assert token not in str(raised.value)
 

@@ -2831,6 +2831,48 @@ def test_run_cogitate_byo_classified_error_uses_fixed_copy_and_redacts(
     assert token not in events[0]["trace"]
 
 
+def test_run_cogitate_byo_context_error_event_caps_error_field(monkeypatch):
+    from solstone.think.providers.local_endpoint import ENDPOINT_ERROR_BODY_CAP_CHARS
+
+    provider = _provider()
+    token = "SENTINEL-BYO-CONTEXT-CRED-219a"
+    events: list[dict] = []
+
+    class BadRequestError(RuntimeError):
+        status_code = 400
+
+        def __init__(self) -> None:
+            body = _FAKE_F2_PROMPT_OVERFLOW_BODY + f" {token}" + ("x" * 6000)
+            super().__init__(body)
+            self.message = body
+            self.body = body
+
+    async def fail_cogitate(*_args, **_kwargs):
+        raise BadRequestError()
+
+    monkeypatch.setattr(
+        provider, "resolve_local_endpoint", lambda: _byo_endpoint(token)
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fail_cogitate,
+    )
+
+    with pytest.raises(BadRequestError):
+        asyncio.run(
+            provider.run_cogitate({"model": LOCAL_MODEL}, on_event=events.append)
+        )
+
+    assert events[0]["reason_code"] == "context_window_exceeded"
+    assert len(events[0]["error"]) <= ENDPOINT_ERROR_BODY_CAP_CHARS
+    assert token not in events[0]["error"]
+    assert token not in events[0]["trace"]
+
+
 def test_run_cogitate_byo_connection_error_records_no_success_telemetry(
     monkeypatch,
 ):

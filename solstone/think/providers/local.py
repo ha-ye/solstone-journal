@@ -1233,6 +1233,8 @@ async def run_cogitate(
             if not endpoint.is_bundled:
                 error_text = redact_local_endpoint_credential(error_text, endpoint)
                 trace_text = redact_local_endpoint_credential(trace_text, endpoint)
+                if not fixed_copy:
+                    error_text = error_text[:ENDPOINT_ERROR_BODY_CAP_CHARS]
             on_event(
                 {
                     "event": "error",
