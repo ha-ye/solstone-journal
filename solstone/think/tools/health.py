@@ -195,8 +195,6 @@ def pipeline(
     ),
 ) -> None:
     """Summarize think pipeline health for one day."""
-    from solstone.think.pipeline_health import summarize_pipeline_day
-
     if day is not None and yesterday:
         typer.echo("--day and --yesterday are mutually exclusive", err=True)
         raise typer.Exit(1)
@@ -208,5 +206,7 @@ def pipeline(
     else:
         target = datetime.now().strftime("%Y%m%d")
 
-    summary = summarize_pipeline_day(target)
+    summary = get_client().request(
+        "GET", "/api/health/pipeline", params={"day": target}
+    )
     typer.echo(json.dumps(summary, indent=2, sort_keys=False))

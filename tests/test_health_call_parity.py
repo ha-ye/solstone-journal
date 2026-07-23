@@ -102,6 +102,32 @@ def _report() -> dict[str, object]:
     }
 
 
+def _pipeline_summary(day: str = "20260410") -> dict[str, object]:
+    return {
+        "day": day,
+        "generated_at": 123,
+        "status": "healthy",
+        "anomalies": [{"kind": "ordered", "error": "kept"}],
+        "runs": {
+            "segment": {"count": 1, "duration_ms_total": 20},
+            "daily": {"count": 0, "duration_ms_total": 0},
+            "activity": {"count": 2, "duration_ms_total": 30},
+        },
+        "talents": {
+            "dispatched": 3,
+            "completed": 2,
+            "failed": 1,
+            "failed_list": [{"name": "sense", "reason": "boom"}],
+        },
+        "activities": {
+            "detected": 4,
+            "persisted": 3,
+            "talents_fired": True,
+        },
+        "exhausted_segments": {"count": 0, "segments": []},
+    }
+
+
 def _freeze_health_surface(journal, monkeypatch) -> None:
     monkeypatch.setattr(health_surface, "_resolve_now", lambda: _utc_dt("20260410"))
     monkeypatch.setattr(
@@ -145,6 +171,19 @@ def test_health_request_mapping(monkeypatch):
         "/api/health/full?day=20260411",
         "/api/health/range?day_from=20260404&day_to=20260410",
     ]
+
+
+def test_pipeline_http_cutover_preserves_local_pretty_bytes(monkeypatch):
+    summary = _pipeline_summary()
+    session = _CaptureSession(summary)
+    client = ConveyClient(session=session, base_url="")
+    monkeypatch.setattr("solstone.think.tools.health.get_client", lambda: client)
+
+    result = CliRunner().invoke(app, ["pipeline", "--day", "20260410"])
+
+    assert result.exit_code == 0
+    assert result.stdout == json.dumps(summary, indent=2, sort_keys=False) + "\n"
+    assert session.urls == ["/api/health/pipeline?day=20260410"]
 
 
 def test_health_null_fields_render_dash(runner, journal, monkeypatch):

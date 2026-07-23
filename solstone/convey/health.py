@@ -11,12 +11,19 @@ derived from journal data. It is distinct from the service-liveness app at
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
+from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
-from solstone.convey.reasons import HEALTH_REPORT_FAILED, INVALID_REQUEST_VALUE
+from solstone.convey.reasons import (
+    HEALTH_REPORT_FAILED,
+    INVALID_REQUEST_VALUE,
+    MISSING_REQUIRED_FIELD,
+)
 from solstone.convey.utils import error_response
+from solstone.think.pipeline_health import summarize_pipeline_day
 from solstone.think.surfaces import health as health_surface
 
 logger = logging.getLogger(__name__)
@@ -61,3 +68,31 @@ def health_range():
         logger.exception("health range report failed")
         return error_response(HEALTH_REPORT_FAILED, detail="health report unavailable")
     return jsonify(dataclasses.asdict(report))
+
+
+@bp.route("/pipeline")
+def health_pipeline():
+    day = request.args.get("day")
+    if not day:
+        return error_response(MISSING_REQUIRED_FIELD, detail="day is required")
+    if len(day) != 8 or not day.isdigit():
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="day must be a calendar date in YYYYMMDD format",
+        )
+    try:
+        datetime.strptime(day, "%Y%m%d")
+    except ValueError:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="day must be a calendar date in YYYYMMDD format",
+        )
+    try:
+        summary = summarize_pipeline_day(day)
+    except Exception:
+        logger.exception("health pipeline report failed")
+        return error_response(HEALTH_REPORT_FAILED, detail="health report unavailable")
+    return Response(
+        json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+        mimetype="application/json",
+    )

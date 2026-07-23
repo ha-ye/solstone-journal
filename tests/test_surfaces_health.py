@@ -1740,6 +1740,7 @@ def test_cli_pipeline_relocated_behavior(tmp_path, monkeypatch):
         {"event": "talent.complete", "mode": "segment"},
         {"event": "run.complete", "mode": "segment", "duration_ms": 42},
     )
+    _patch_health_cli_client(tmp_path, monkeypatch)
 
     from solstone.think.call import call_app
 

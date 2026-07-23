@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 from solstone.convey import create_app
+from solstone.convey import health as convey_health
 from solstone.think.surfaces import health as health_surface
 from tests._baseline_harness import make_test_client
 from tests.test_surfaces_health import (
@@ -149,6 +150,79 @@ def test_range_inverted_returns_400_distinct_detail(tmp_path, monkeypatch):
 
     assert data["reason_code"] == "invalid_request_value"
     assert "day_from must be <= day_to" in data["detail"]
+
+
+def test_pipeline_route_preserves_summary_key_order(tmp_path, monkeypatch):
+    _configure_journal(tmp_path, monkeypatch)
+    summary = {
+        "day": "20260410",
+        "generated_at": 1,
+        "status": "healthy",
+        "anomalies": [{"kind": "ordered", "error": "kept"}],
+        "runs": {
+            "segment": {"count": 1, "duration_ms_total": 20},
+            "daily": {"count": 0, "duration_ms_total": 0},
+        },
+        "talents": {"dispatched": 1, "completed": 1},
+    }
+    monkeypatch.setattr(
+        convey_health,
+        "summarize_pipeline_day",
+        lambda day: summary | {"day": day},
+    )
+    client = make_test_client(tmp_path)
+
+    response = client.get(f"{PREFIX}/pipeline?day=20260410")
+
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    raw = response.get_data(as_text=True)
+    assert raw.startswith(
+        '{"day":"20260410","generated_at":1,"status":"healthy","anomalies":'
+    )
+    assert list(json.loads(raw)) == [
+        "day",
+        "generated_at",
+        "status",
+        "anomalies",
+        "runs",
+        "talents",
+    ]
+
+
+def test_pipeline_route_missing_day_returns_existing_reason(tmp_path, monkeypatch):
+    _configure_journal(tmp_path, monkeypatch)
+    client = make_test_client(tmp_path)
+
+    data = _assert_error(client.get(f"{PREFIX}/pipeline"), 400)
+
+    assert data["reason_code"] == "missing_required_field"
+    assert data["detail"] == "day is required"
+
+
+def test_pipeline_route_invalid_day_returns_existing_reason(tmp_path, monkeypatch):
+    _configure_journal(tmp_path, monkeypatch)
+    client = make_test_client(tmp_path)
+
+    data = _assert_error(client.get(f"{PREFIX}/pipeline?day=20260230"), 400)
+
+    assert data["reason_code"] == "invalid_request_value"
+    assert "YYYYMMDD" in data["detail"]
+
+
+def test_pipeline_route_calc_failure_returns_existing_reason(tmp_path, monkeypatch):
+    _configure_journal(tmp_path, monkeypatch)
+
+    def fail(_day: str) -> dict:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(convey_health, "summarize_pipeline_day", fail)
+    client = make_test_client(tmp_path)
+
+    data = _assert_error(client.get(f"{PREFIX}/pipeline?day=20260410"), 500)
+
+    assert data["reason_code"] == "health_report_failed"
+    assert data["detail"] == "health report unavailable"
 
 
 def test_health_redirects_to_init_when_setup_incomplete(tmp_path, monkeypatch):
