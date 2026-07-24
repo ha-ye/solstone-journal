@@ -42,6 +42,7 @@ from solstone.think.providers.shared import (
     classify_provider_error,
     safe_raw,
 )
+from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 
 LOG = logging.getLogger(__name__)
 
@@ -58,6 +59,9 @@ _LOCAL_SCHEMA_MAX_ITEMS = 192
 # into literal characters. Drop these request-side only; canonical validation
 # still enforces them after generation.
 _LOCAL_UNSUPPORTED_STRING_KEYWORDS = frozenset({"pattern", "minLength", "maxLength"})
+# Unknown x-* handling by llama.cpp, mlx-vlm, and llguidance is unproven. Strip
+# Solstone annotations before a schema reaches any local structured-output path.
+_LOCAL_UNSUPPORTED_ANNOTATION_KEYWORDS = frozenset({SCHEMA_TRUNCATE_KEY})
 # Qwen3.5-4B model card sampling recommendations. The card explicitly warns
 # against greedy / near-greedy decoding, which drives runaway repetition on
 # entity-rich extractions. presence_penalty is the vendor-sanctioned
@@ -227,20 +231,24 @@ def _prepare_local_schema(schema: dict) -> dict:
 
     Strip string constraints that break llama.cpp grammar generation:
     maxLength becomes repetition counts that can exceed the grammar parser
-    limit, and pattern anchors are mistranslated into literal characters.
-    models.py still checks the canonical schema: generate() raises
-    SchemaValidationError, while generate_with_result() records
-    schema_validation for callers; the talent path writes output and withholds
-    clean provenance on violations. Adds maxItems to array nodes, because
-    bounded arrays force closure before Qwen can repeat entries to the context
-    wall. Does not recurse into enum/const values, because those are JSON
-    literals, not schemas. Deep-copies so the caller's schema is never mutated.
+    limit, and pattern anchors are mistranslated into literal characters. Strip
+    Solstone annotations because unknown x-* handling by llama.cpp, mlx-vlm, and
+    llguidance is unproven. models.py still checks the canonical schema and
+    honors annotations: generate() raises SchemaValidationError, while
+    generate_with_result() records schema_validation for callers; the talent path
+    writes output and withholds clean provenance on violations. Adds maxItems to
+    array nodes, because bounded arrays force closure before Qwen can repeat
+    entries to the context wall. Does not recurse into enum/const values, because
+    those are JSON literals, not schemas. Deep-copies so the caller's schema is
+    never mutated.
     """
     prepared = copy.deepcopy(schema)
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for key in _LOCAL_UNSUPPORTED_STRING_KEYWORDS:
+                node.pop(key, None)
+            for key in _LOCAL_UNSUPPORTED_ANNOTATION_KEYWORDS:
                 node.pop(key, None)
             node_type = node.get("type")
             if "maxItems" not in node and (

@@ -16,7 +16,11 @@ import pytest
 import tests.eval_schemas as eval_schemas
 from solstone.apps.timeline.rollup import build_rollup_schema
 from solstone.think.models import SchemaValidationError, generate
-from solstone.think.schema_prep import prepare_provider_schema, unsupported_keyword_hits
+from solstone.think.schema_prep import (
+    SCHEMA_TRUNCATE_KEY,
+    prepare_provider_schema,
+    unsupported_keyword_hits,
+)
 from solstone.think.talent import RUNTIME_FACETS_SENTINEL
 from tests.eval_schemas import DEFAULT_CASES, DEFAULT_OUT, load_cases, run_case
 
@@ -89,6 +93,30 @@ def test_anthropic_strips_array_and_length_bounds(
     assert "maxLength" not in item
     assert item["pattern"] == "^[a-z]+$"
     assert item["enum"] == ["alpha", "beta"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "google", "anthropic"])
+def test_strict_cloud_providers_strip_solstone_truncation_annotation(
+    provider: str,
+) -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "field": {
+                "type": "string",
+                "maxLength": 12,
+                SCHEMA_TRUNCATE_KEY: True,
+            }
+        },
+        "required": ["field"],
+        "additionalProperties": False,
+    }
+
+    prepared = prepare_provider_schema(schema, provider)
+
+    assert unsupported_keyword_hits(prepared, provider) == []
+    assert SCHEMA_TRUNCATE_KEY not in prepared["properties"]["field"]
+    assert SCHEMA_TRUNCATE_KEY in schema["properties"]["field"]
 
 
 @pytest.mark.parametrize("provider", ["openai", "google", "anthropic"])

@@ -23,6 +23,7 @@ from solstone.think.models import (
     get_model_provider,
 )
 from solstone.think.providers.artifact_proof import ReadinessOutcome
+from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 from solstone.think.talents import TalentHookError
 
 
@@ -569,6 +570,7 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
                 "pattern": r"^\d{2}:\d{2}:\d{2}$",
                 "minLength": 8,
                 "maxLength": 8,
+                SCHEMA_TRUNCATE_KEY: True,
             },
             "slots": {"type": "array", "items": {"type": "string"}},
         },
@@ -578,17 +580,19 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
     provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
 
     posted_schema = captured["json"]["response_format"]["json_schema"]["schema"]
-    unsupported = {"pattern", "minLength", "maxLength"}
+    unsupported = {"pattern", "minLength", "maxLength", SCHEMA_TRUNCATE_KEY}
     assert _schema_keyword_paths(posted_schema, unsupported) == []
     assert posted_schema["properties"]["slots"]["maxItems"] == 192
     assert schema == original_schema
     assert schema["properties"]["timestamp"]["pattern"] == r"^\d{2}:\d{2}:\d{2}$"
     assert schema["properties"]["timestamp"]["minLength"] == 8
     assert schema["properties"]["timestamp"]["maxLength"] == 8
+    assert schema["properties"]["timestamp"][SCHEMA_TRUNCATE_KEY] is True
     assert sorted(_schema_keyword_paths(schema, unsupported)) == [
         "$/properties/timestamp/maxLength",
         "$/properties/timestamp/minLength",
         "$/properties/timestamp/pattern",
+        f"$/properties/timestamp/{SCHEMA_TRUNCATE_KEY}",
     ]
     assert "maxItems" not in schema["properties"]["slots"]
 

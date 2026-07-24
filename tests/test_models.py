@@ -52,8 +52,16 @@ from solstone.think.models import (
     model_supports,
     resolve_provider,
 )
+from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 
 _FINISH_METADATA_MARKER = "zq7marker9x"
+
+
+def _fresh_generate_result(text: str):
+    def make_result(*_args, **_kwargs):
+        return {"text": text, "finish_reason": "stop"}
+
+    return make_result
 
 
 def test_calc_token_cost_basic():
@@ -1780,6 +1788,356 @@ class TestGenerateJsonSchemaPlumbing:
         call_kwargs = provider_module.run_agenerate.call_args.kwargs
         assert call_kwargs["json_output"] is True
         assert call_kwargs["json_schema"] == schema
+
+    def test_generate_with_result_truncates_annotated_overrun(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "maxLength": 3,
+                    SCHEMA_TRUNCATE_KEY: True,
+                }
+            },
+            "required": ["field"],
+            "additionalProperties": False,
+        }
+        response_text = json.dumps({"field": "abcdef"})
+        expected_text = json.dumps({"field": "abc"}, ensure_ascii=False)
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+
+        assert result["text"] == expected_text
+        assert result["schema_validation"] == {
+            "valid": True,
+            "errors": [],
+            "truncated": ["/field"],
+        }
+
+    def test_generate_returns_truncated_annotated_overrun(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "maxLength": 3,
+                    SCHEMA_TRUNCATE_KEY: True,
+                }
+            },
+            "required": ["field"],
+            "additionalProperties": False,
+        }
+        response_text = json.dumps({"field": "abcdef"})
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            result = generate("hello", "test.context", json_schema=schema)
+
+        assert result == json.dumps({"field": "abc"}, ensure_ascii=False)
+
+    def test_non_annotated_overrun_still_fails_advisory_and_raising_paths(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": ["string", "null"],
+                    "maxLength": 600,
+                }
+            },
+            "required": ["content"],
+            "additionalProperties": False,
+        }
+        response_text = json.dumps({"content": "c" * 700})
+        advisory_provider = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=advisory_provider,
+            ),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+
+        assert result["text"] == response_text
+        assert "truncated" not in result["schema_validation"]
+        assert result["schema_validation"]["valid"] is False
+        assert result["schema_validation"]["errors"][0]["path"] == "/content"
+        assert result["schema_validation"]["errors"][0]["constraint"] == "maxLength"
+
+        raising_provider = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=raising_provider,
+            ),
+        ):
+            with pytest.raises(SchemaValidationError) as exc_info:
+                generate("hello", "test.context", json_schema=schema)
+
+        assert exc_info.value.text == response_text
+        assert exc_info.value.errors[0]["path"] == "/content"
+        assert exc_info.value.errors[0]["constraint"] == "maxLength"
+
+    def test_multiple_array_item_truncations_record_instance_pointers(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "operations": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "reasoning": {
+                                            "type": ["string", "null"],
+                                            "maxLength": 300,
+                                            SCHEMA_TRUNCATE_KEY: True,
+                                        }
+                                    },
+                                    "required": ["reasoning"],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["operations"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["entities"],
+            "additionalProperties": False,
+        }
+        response = {
+            "entities": [
+                {
+                    "operations": [
+                        {"reasoning": "r" * 350},
+                        {"reasoning": "s" * 350},
+                        {"reasoning": "t" * 350},
+                    ]
+                }
+            ]
+        }
+        expected = {
+            "entities": [
+                {
+                    "operations": [
+                        {"reasoning": "r" * 300},
+                        {"reasoning": "s" * 300},
+                        {"reasoning": "t" * 300},
+                    ]
+                }
+            ]
+        }
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                side_effect=_fresh_generate_result(json.dumps(response))
+            )
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+
+        assert result["text"] == json.dumps(expected, ensure_ascii=False)
+        assert result["schema_validation"] == {
+            "valid": True,
+            "errors": [],
+            "truncated": [
+                "/entities/0/operations/0/reasoning",
+                "/entities/0/operations/1/reasoning",
+                "/entities/0/operations/2/reasoning",
+            ],
+        }
+
+    def test_non_string_at_annotated_path_is_not_coerced(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "reasoning": {
+                    "type": ["string", "null"],
+                    "maxLength": 300,
+                    SCHEMA_TRUNCATE_KEY: True,
+                }
+            },
+            "required": ["reasoning"],
+            "additionalProperties": False,
+        }
+        response_text = json.dumps({"reasoning": 42})
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+
+        assert result["text"] == response_text
+        assert "truncated" not in result["schema_validation"]
+        assert result["schema_validation"]["valid"] is False
+        assert result["schema_validation"]["errors"][0]["path"] == "/reasoning"
+        assert result["schema_validation"]["errors"][0]["constraint"] == "type"
+
+    def test_clean_annotated_response_preserves_byte_identity(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "z": {
+                    "type": "string",
+                    "maxLength": 10,
+                    SCHEMA_TRUNCATE_KEY: True,
+                },
+                "a": {"type": "string", "maxLength": 10},
+            },
+            "required": ["z", "a"],
+            "additionalProperties": False,
+        }
+        response_text = '{\n  "z" : "é",\n  "a" : "ok"\n}'
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text))
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+
+        assert result["text"] == response_text
+        assert result["schema_validation"] == {"valid": True, "errors": []}
+
+    def test_async_generate_entrypoints_match_sync_truncation(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "maxLength": 3,
+                    SCHEMA_TRUNCATE_KEY: True,
+                }
+            },
+            "required": ["field"],
+            "additionalProperties": False,
+        }
+        response_text = json.dumps({"field": "abcdef"})
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(side_effect=_fresh_generate_result(response_text)),
+            run_agenerate=AsyncMock(side_effect=_fresh_generate_result(response_text)),
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            sync_text = generate("hello", "test.context", json_schema=schema)
+            sync_result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema=schema,
+            )
+            async_text = asyncio.run(
+                agenerate("hello", "test.context", json_schema=schema)
+            )
+            async_result = asyncio.run(
+                agenerate_with_result(
+                    "hello",
+                    "test.context",
+                    json_schema=schema,
+                )
+            )
+
+        expected_text = json.dumps({"field": "abc"}, ensure_ascii=False)
+        expected_validation = {
+            "valid": True,
+            "errors": [],
+            "truncated": ["/field"],
+        }
+        assert sync_text == expected_text
+        assert async_text == expected_text
+        assert sync_result["text"] == expected_text
+        assert async_result["text"] == expected_text
+        assert sync_result["schema_validation"] == expected_validation
+        assert async_result["schema_validation"] == expected_validation
 
     def test_generate_with_result_adds_schema_validation(self):
         provider_module = SimpleNamespace(

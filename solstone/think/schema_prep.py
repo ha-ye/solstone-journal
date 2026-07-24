@@ -11,6 +11,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Solstone schema annotations are canonical-validation hints. Provider reductions
+# below are request-shaping only; models.py still validates the canonical schema
+# and honors annotations after generation.
+SCHEMA_TRUNCATE_KEY = "x-truncate"
+
 # Provider structured-output support references:
 # - OpenAI: https://developers.openai.com/api/docs/guides/structured-outputs
 #   supports pattern/format/minimum/maximum/minItems/maxItems; minLength and
@@ -22,12 +27,17 @@ logger = logging.getLogger(__name__)
 # - Google: https://ai.google.dev/gemini-api/docs/structured-output
 #   supports string format, number minimum/maximum, and array minItems/maxItems.
 STRICT_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
-    "openai": frozenset({"$schema", "$comment", "minLength", "maxLength"}),
-    "google": frozenset({"$schema", "$comment", "minLength", "maxLength"}),
+    "openai": frozenset(
+        {"$schema", "$comment", "minLength", "maxLength", SCHEMA_TRUNCATE_KEY}
+    ),
+    "google": frozenset(
+        {"$schema", "$comment", "minLength", "maxLength", SCHEMA_TRUNCATE_KEY}
+    ),
     "anthropic": frozenset(
         {
             "$schema",
             "$comment",
+            SCHEMA_TRUNCATE_KEY,
             "minLength",
             "maxLength",
             "minItems",
@@ -39,9 +49,10 @@ STRICT_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 }
 
 # Hazard: cloud-provider reductions are request-only. Canonical response
-# validation in models.py still enforces stripped bounds, so an Anthropic
-# response that overruns future canonical maxItems/maxLength bounds will fail
-# loudly with SchemaValidationError.
+# validation in models.py still enforces stripped bounds and annotations, so an
+# Anthropic response that overruns future canonical maxItems/maxLength bounds
+# will fail loudly with SchemaValidationError unless an honored annotation
+# truncates that specific instance path first.
 
 
 def unsupported_keyword_hits(schema: dict[str, Any] | None, provider: str) -> list[str]:

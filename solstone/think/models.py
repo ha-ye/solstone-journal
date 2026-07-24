@@ -20,7 +20,7 @@ from solstone.think.providers.local_endpoint import (
     resolve_local_endpoint_from_config,
 )
 from solstone.think.providers.shared import validate_generate_result_strict
-from solstone.think.schema_prep import prepare_provider_schema
+from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY, prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
 
 logger = logging.getLogger(__name__)
@@ -1023,6 +1023,17 @@ def finish_reason_error(
     )
 
 
+def _build_json_pointer(path: Any) -> str:
+    segments = list(path)
+    if not segments:
+        return ""
+    escaped_segments = []
+    for segment in segments:
+        escaped = str(segment).replace("~", "~0").replace("/", "~1")
+        escaped_segments.append(escaped)
+    return "/" + "/".join(escaped_segments)
+
+
 def _validate_schema(text: str, schema: dict) -> dict:
     """Validate JSON text against a JSON Schema and log any violations."""
 
@@ -1031,16 +1042,6 @@ def _validate_schema(text: str, schema: dict) -> dict:
         if len(value_repr) <= 80:
             return value_repr
         return value_repr[:77] + "..."
-
-    def build_pointer(path: Any) -> str:
-        segments = list(path)
-        if not segments:
-            return ""
-        escaped_segments = []
-        for segment in segments:
-            escaped = str(segment).replace("~", "~0").replace("/", "~1")
-            escaped_segments.append(escaped)
-        return "/" + "/".join(escaped_segments)
 
     try:
         parsed = json.loads(text)
@@ -1079,7 +1080,7 @@ def _validate_schema(text: str, schema: dict) -> dict:
         return {"valid": False, "errors": [error]}
 
     for error in validation_errors:
-        path = build_pointer(error.absolute_path)
+        path = _build_json_pointer(error.absolute_path)
         constraint = str(error.validator)
         message = error.message
         errors.append(
@@ -1098,6 +1099,72 @@ def _validate_schema(text: str, schema: dict) -> dict:
         )
 
     return {"valid": len(errors) == 0, "errors": errors}
+
+
+def _validate_schema_with_annotations(text: str, schema: dict) -> tuple[str, dict]:
+    """Honor supported schema annotations, then validate canonical JSON text.
+
+    The annotation walk traverses only ``properties`` and dict-form ``items``.
+    Annotations behind ``$ref``, ``$defs``, ``allOf``, ``patternProperties``,
+    schema-valued ``additionalProperties``, ``prefixItems``, and tuple-form
+    ``items`` are not honored. ``truncated`` is omitted from the returned
+    validation dict when no annotation fired. Non-string instance values are
+    never coerced; strict validation handles them exactly as before.
+    """
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text, _validate_schema(text, schema)
+
+    truncated: list[str] = []
+
+    def walk(schema_node: Any, instance: Any, path: list[Any]) -> tuple[Any, bool]:
+        if not isinstance(schema_node, dict):
+            return instance, False
+
+        max_length = schema_node.get("maxLength")
+        if (
+            schema_node.get(SCHEMA_TRUNCATE_KEY) is True
+            and isinstance(max_length, int)
+            and not isinstance(max_length, bool)
+            and max_length >= 0
+            and isinstance(instance, str)
+            and len(instance) > max_length
+        ):
+            truncated.append(_build_json_pointer(path))
+            return instance[:max_length], True
+
+        changed = False
+        properties = schema_node.get("properties")
+        if isinstance(properties, dict) and isinstance(instance, dict):
+            for key, child_schema in properties.items():
+                if key not in instance:
+                    continue
+                child, child_changed = walk(
+                    child_schema,
+                    instance[key],
+                    [*path, key],
+                )
+                if child_changed:
+                    instance[key] = child
+                    changed = True
+
+        items = schema_node.get("items")
+        if isinstance(items, dict) and isinstance(instance, list):
+            for index, item in enumerate(instance):
+                child, child_changed = walk(items, item, [*path, index])
+                if child_changed:
+                    instance[index] = child
+                    changed = True
+
+        return instance, changed
+
+    parsed, changed = walk(schema, parsed, [])
+    text_to_validate = json.dumps(parsed, ensure_ascii=False) if changed else text
+    validation = _validate_schema(text_to_validate, schema)
+    if truncated:
+        validation["truncated"] = truncated
+    return text_to_validate, validation
 
 
 def generate(
@@ -1196,9 +1263,12 @@ def generate(
     )
 
     if json_schema is not None:
-        validation = _validate_schema(result["text"], json_schema)
+        text, validation = _validate_schema_with_annotations(
+            result["text"], json_schema
+        )
         if validation["valid"] is False:
-            raise SchemaValidationError(validation["errors"], result["text"])
+            raise SchemaValidationError(validation["errors"], text)
+        return text
 
     return result["text"]
 
@@ -1311,7 +1381,11 @@ def generate_with_result(
     )
 
     if json_schema is not None:
-        result["schema_validation"] = _validate_schema(result["text"], json_schema)
+        text, validation = _validate_schema_with_annotations(
+            result["text"], json_schema
+        )
+        result["text"] = text
+        result["schema_validation"] = validation
 
     return result
 
@@ -1373,7 +1447,11 @@ async def agenerate_with_result(
     )
 
     if json_schema is not None:
-        result["schema_validation"] = _validate_schema(result["text"], json_schema)
+        text, validation = _validate_schema_with_annotations(
+            result["text"], json_schema
+        )
+        result["text"] = text
+        result["schema_validation"] = validation
 
     return result
 
@@ -1474,9 +1552,12 @@ async def agenerate(
     )
 
     if json_schema is not None:
-        validation = _validate_schema(result["text"], json_schema)
+        text, validation = _validate_schema_with_annotations(
+            result["text"], json_schema
+        )
         if validation["valid"] is False:
-            raise SchemaValidationError(validation["errors"], result["text"])
+            raise SchemaValidationError(validation["errors"], text)
+        return text
 
     return result["text"]
 
