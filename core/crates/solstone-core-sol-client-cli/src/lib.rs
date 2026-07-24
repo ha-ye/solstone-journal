@@ -11,6 +11,8 @@ use solstone_core_sol_client::seam::{
     HttpTransport,
 };
 
+pub mod help;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Migrated { path: Vec<OsString> },
