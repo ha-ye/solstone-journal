@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Four-way native-sol lead-slice conformance check."""
+"""Four-way native-sol conformance check."""
 
 from __future__ import annotations
 
 import ast
 import inspect
-import json
 import sys
 import tomllib
 from collections.abc import Callable, Iterable
@@ -21,6 +20,7 @@ from flask import Flask
 
 import solstone.convey.reasons as reasons
 from solstone.apps.activities.routes import activities_bp
+from solstone.apps.body.routes import body_bp
 from solstone.apps.support.routes import support_bp
 from solstone.convey.chat import chat_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
@@ -42,8 +42,6 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEAD_MANIFEST_PATH = REPO_ROOT / "core/fixtures/native-sol/lead-manifest.json"
-SCHEMA = "native-sol-lead-manifest-v1"
 REASON_CODES_BY_NAME = {
     name: value.code
     for name, value in vars(reasons).items()
@@ -65,298 +63,152 @@ class RawAuthorityEntry:
     raw: dict[str, Any]
 
 
-def load_manifest(path: Path = LEAD_MANIFEST_PATH) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def check_conformance(
     *,
-    manifest: dict[str, Any] | None = None,
     root: Path = REPO_ROOT,
     document: dict[str, Any] | None = None,
     authorities: list[AuthorityEntry] | None = None,
     route_map: dict[tuple[str, str], Callable[..., Any]] | None = None,
 ) -> list[str]:
     root = root.resolve()
-    manifest = manifest if manifest is not None else load_manifest()
     document = document if document is not None else build_document()
     authorities = authorities if authorities is not None else discover(root)
     route_map = route_map if route_map is not None else collect_flask_routes()
 
-    errors = validate_manifest_shape(manifest)
-    if errors:
-        return errors
-
-    manifest_entries = manifest["entries"]
-    manifest_by_operation = {
-        require_str(entry, "operation_id", "manifest entry"): entry
-        for entry in manifest_entries
-    }
-    authority_by_operation = {entry.operation_id: entry for entry in authorities}
+    errors: list[str] = []
     raw_authority_by_operation = load_raw_authority_entries(root)
     contract_by_operation = collect_contract_operations(document)
 
-    errors.extend(compare_operation_sets(manifest_by_operation, authority_by_operation))
-    for operation_id in sorted(manifest_by_operation):
-        manifest_entry = manifest_by_operation[operation_id]
-        authority = authority_by_operation.get(operation_id)
-        raw_authority = raw_authority_by_operation.get(operation_id)
-        if authority is None:
-            continue
-        errors.extend(
-            check_authority_entry(
-                operation_id, manifest_entry, authority, raw_authority
-            )
-        )
-        entry_type = manifest_entry["entry_type"]
-        if entry_type == "http":
-            errors.extend(
-                check_http_entry(
-                    operation_id,
-                    manifest_entry,
-                    authority,
-                    contract_by_operation,
-                    route_map,
-                )
-            )
-        elif entry_type == "moved-stub":
-            errors.extend(
-                check_moved_stub(operation_id, manifest_entry, contract_by_operation)
-            )
-        elif entry_type == "top-level-chat":
+    for authority in sorted(authorities, key=lambda entry: entry.operation_id):
+        raw_authority = raw_authority_by_operation.get(authority.operation_id)
+        if authority.entry_type == "http":
+            errors.extend(check_http_entry(authority, contract_by_operation, route_map))
+        elif authority.entry_type in {"moved-stub", "local"}:
+            errors.extend(check_non_http_entry(authority, contract_by_operation))
+        elif authority.entry_type == "top-level-chat":
             errors.extend(
                 check_top_level_chat(
-                    operation_id,
-                    manifest_entry,
+                    authority,
                     raw_authority,
                     contract_by_operation,
                     route_map,
                 )
             )
         else:
-            errors.append(f"{operation_id}: unsupported entry_type {entry_type!r}")
-    return errors
-
-
-def validate_manifest_shape(manifest: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    if manifest.get("schema") != SCHEMA:
-        errors.append(f"lead manifest schema must be {SCHEMA!r}")
-        return errors
-    entries = manifest.get("entries")
-    if not isinstance(entries, list):
-        errors.append("lead manifest entries must be a list")
-        return errors
-    seen: set[str] = set()
-    for index, entry in enumerate(entries):
-        label = f"lead manifest entry {index}"
-        if not isinstance(entry, dict):
-            errors.append(f"{label}: must be an object")
-            continue
-        operation_id = entry.get("operation_id")
-        if not isinstance(operation_id, str) or not operation_id:
-            errors.append(f"{label}: operation_id must be a non-empty string")
-            continue
-        if operation_id in seen:
-            errors.append(f"{operation_id}: duplicate lead manifest operation_id")
-        seen.add(operation_id)
-        path = entry.get("path")
-        if (
-            not isinstance(path, list)
-            or not path
-            or any(not isinstance(item, str) or not item for item in path)
-        ):
-            errors.append(f"{operation_id}: path must be a non-empty string list")
-        for key in ("surface", "kind", "entry_type"):
-            if not isinstance(entry.get(key), str) or not entry[key]:
-                errors.append(f"{operation_id}: {key} must be a non-empty string")
-    return errors
-
-
-def compare_operation_sets(
-    manifest_by_operation: dict[str, dict[str, Any]],
-    authority_by_operation: dict[str, AuthorityEntry],
-) -> list[str]:
-    errors: list[str] = []
-    missing_authority = sorted(set(manifest_by_operation) - set(authority_by_operation))
-    extra_authority = sorted(set(authority_by_operation) - set(manifest_by_operation))
-    for operation_id in missing_authority:
-        errors.append(f"{operation_id}: manifest entry has no app-local authority")
-    for operation_id in extra_authority:
-        authority = authority_by_operation[operation_id]
-        errors.append(
-            f"{operation_id}: migrated authority is not in lead manifest "
-            f"({authority.authority})"
-        )
-    return errors
-
-
-def check_authority_entry(
-    operation_id: str,
-    manifest_entry: dict[str, Any],
-    authority: AuthorityEntry,
-    raw_authority: RawAuthorityEntry | None,
-) -> list[str]:
-    errors: list[str] = []
-    if raw_authority is None:
-        errors.append(f"{operation_id}: raw authority entry was not found")
-    checks = {
-        "surface": authority.surface,
-        "kind": authority.kind,
-        "entry_type": authority.entry_type,
-        "path": list(authority.path),
-    }
-    for key, actual in checks.items():
-        expected = manifest_entry.get(key)
-        if actual != expected:
             errors.append(
-                f"{operation_id}: authority {key} {actual!r} != manifest {expected!r}"
+                f"{authority.operation_id}: unsupported entry_type "
+                f"{authority.entry_type!r}"
             )
     return errors
 
 
 def check_http_entry(
-    operation_id: str,
-    manifest_entry: dict[str, Any],
     authority: AuthorityEntry,
     contract_by_operation: dict[str, ContractOperation],
     route_map: dict[tuple[str, str], Callable[..., Any]],
 ) -> list[str]:
+    operation_id = authority.operation_id
     errors: list[str] = []
-    expected_method = require_str(manifest_entry, "method", operation_id)
-    expected_route = require_str(manifest_entry, "route", operation_id)
-    expected_contract = require_str(
-        manifest_entry, "contract_operation_id", operation_id
-    )
-    expected_reason_codes = frozenset(manifest_entry.get("reason_codes", []))
+    if authority.method is None or authority.route is None:
+        errors.append(f"{operation_id}: HTTP authority must declare method and route")
+        return errors
+    if authority.contract_operation_id is None:
+        errors.append(
+            f"{operation_id}: HTTP authority must declare contract_operation_id"
+        )
+        return errors
 
-    if authority.method != expected_method:
-        errors.append(
-            f"{operation_id}: authority method {authority.method!r} "
-            f"!= manifest {expected_method!r}"
-        )
-    if authority.route != expected_route:
-        errors.append(
-            f"{operation_id}: authority route {authority.route!r} "
-            f"!= manifest {expected_route!r}"
-        )
-    if authority.contract_operation_id != expected_contract:
-        errors.append(
-            f"{operation_id}: authority contract_operation_id "
-            f"{authority.contract_operation_id!r} != manifest {expected_contract!r}"
-        )
-
-    route_key = (expected_method, expected_route)
+    route_key = (authority.method, authority.route)
     view = route_map.get(route_key)
     if view is None:
         errors.append(
-            f"{operation_id}: no Flask route for {expected_method} {expected_route}"
+            f"{operation_id}: no Flask route for {authority.method} {authority.route}"
         )
-    else:
-        route_reason_codes = route_error_reason_codes(view)
-        if route_reason_codes != expected_reason_codes:
-            errors.append(
-                f"{operation_id}: route reason codes {sorted(route_reason_codes)!r} "
-                f"!= manifest {sorted(expected_reason_codes)!r}"
-            )
 
-    contract = contract_by_operation.get(expected_contract)
+    contract = contract_by_operation.get(authority.contract_operation_id)
     if contract is None:
-        errors.append(f"{operation_id}: no contract operation {expected_contract}")
+        errors.append(
+            f"{operation_id}: no contract operation {authority.contract_operation_id}"
+        )
         return errors
-    if contract.method != expected_method:
+    if contract.method != authority.method:
         errors.append(
             f"{operation_id}: contract method {contract.method!r} "
-            f"!= manifest {expected_method!r}"
+            f"!= authority {authority.method!r}"
         )
-    if contract.route != expected_route:
+    if contract.route != authority.route:
         errors.append(
             f"{operation_id}: contract route {contract.route!r} "
-            f"!= manifest {expected_route!r}"
+            f"!= authority {authority.route!r}"
         )
-    if contract.reason_codes != expected_reason_codes:
+    unknown_reasons = sorted(contract.reason_codes - set(REASON_CODES_BY_NAME.values()))
+    if unknown_reasons:
         errors.append(
-            f"{operation_id}: contract reason codes {sorted(contract.reason_codes)!r} "
-            f"!= manifest {sorted(expected_reason_codes)!r}"
+            f"{operation_id}: contract declares unknown reason codes {unknown_reasons!r}"
         )
+
+    if view is not None:
+        route_reason_codes = route_error_reason_codes(view)
+        if route_reason_codes != contract.reason_codes:
+            errors.append(
+                f"{operation_id}: route reason codes {sorted(route_reason_codes)!r} "
+                f"!= contract {sorted(contract.reason_codes)!r}"
+            )
     return errors
 
 
-def check_moved_stub(
-    operation_id: str,
-    manifest_entry: dict[str, Any],
+def check_non_http_entry(
+    authority: AuthorityEntry,
     contract_by_operation: dict[str, ContractOperation],
 ) -> list[str]:
     errors: list[str] = []
+    operation_id = authority.operation_id
     if any(
-        key in manifest_entry for key in ("method", "route", "contract_operation_id")
+        value is not None
+        for value in (
+            authority.method,
+            authority.route,
+            authority.contract_operation_id,
+        )
     ):
         errors.append(
-            f"{operation_id}: moved-stub manifest must not declare HTTP fields"
+            f"{operation_id}: non-HTTP authority must not declare HTTP fields"
         )
     if operation_id in contract_by_operation:
-        errors.append(f"{operation_id}: moved-stub must not have a contract operation")
+        errors.append(f"{operation_id}: non-HTTP authority must not have a contract")
     return errors
 
 
 def check_top_level_chat(
-    operation_id: str,
-    manifest_entry: dict[str, Any],
+    authority: AuthorityEntry,
     raw_authority: RawAuthorityEntry | None,
     contract_by_operation: dict[str, ContractOperation],
     route_map: dict[tuple[str, str], Callable[..., Any]],
 ) -> list[str]:
-    errors: list[str] = []
-    backing_contracts = manifest_entry.get("backing_contracts")
-    if not isinstance(backing_contracts, list) or not backing_contracts:
-        return [f"{operation_id}: top-level-chat must declare backing_contracts"]
-
-    manifest_ids = [
-        require_str(item, "operation_id", operation_id)
-        for item in backing_contracts
-        if isinstance(item, dict)
-    ]
+    errors = check_non_http_entry(authority, contract_by_operation)
+    operation_id = authority.operation_id
     authority_ids = (
         raw_authority.raw.get("backing_contract_operation_ids")
         if raw_authority is not None
         else None
     )
-    if authority_ids != manifest_ids:
-        errors.append(
-            f"{operation_id}: authority backing_contract_operation_ids "
-            f"{authority_ids!r} != manifest {manifest_ids!r}"
-        )
-
-    for item in backing_contracts:
-        if not isinstance(item, dict):
-            errors.append(f"{operation_id}: backing contract entry must be an object")
+    if not isinstance(authority_ids, list) or not authority_ids:
+        errors.append(f"{operation_id}: top-level-chat must declare backing contracts")
+        return errors
+    for backing_id in authority_ids:
+        if not isinstance(backing_id, str) or not backing_id:
+            errors.append(f"{operation_id}: backing contract id must be a string")
             continue
-        backing_id = require_str(item, "operation_id", operation_id)
-        expected_method = require_str(item, "method", backing_id)
-        expected_route = require_str(item, "route", backing_id)
         contract = contract_by_operation.get(backing_id)
         if contract is None:
             errors.append(f"{operation_id}: missing chat backing contract {backing_id}")
             continue
-        if contract.method != expected_method or contract.route != expected_route:
-            errors.append(
-                f"{operation_id}: backing contract {backing_id} is "
-                f"{contract.method} {contract.route}, expected "
-                f"{expected_method} {expected_route}"
-            )
-        if (expected_method, expected_route) not in route_map:
+        if (contract.method, contract.route) not in route_map:
             errors.append(
                 f"{operation_id}: missing chat backing route "
-                f"{expected_method} {expected_route}"
+                f"{contract.method} {contract.route}"
             )
     return errors
-
-
-def require_str(data: dict[str, Any], key: str, label: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{label}: {key} must be a non-empty string")
-    return value
 
 
 def collect_contract_operations(
@@ -380,10 +232,16 @@ def collect_contract_operations(
     return output
 
 
+def register_native_blueprints(app: Flask) -> None:
+    """Register blueprints needed by currently ported native authorities."""
+
+    for blueprint in (activities_bp, support_bp, health_bp, chat_bp, root_bp, body_bp):
+        app.register_blueprint(blueprint)
+
+
 def collect_flask_routes() -> dict[tuple[str, str], Callable[..., Any]]:
     app = Flask(__name__)
-    for blueprint in (activities_bp, support_bp, health_bp, chat_bp, root_bp):
-        app.register_blueprint(blueprint)
+    register_native_blueprints(app)
     routes: dict[tuple[str, str], Callable[..., Any]] = {}
     for rule in app.url_map.iter_rules():
         view = app.view_functions[rule.endpoint]

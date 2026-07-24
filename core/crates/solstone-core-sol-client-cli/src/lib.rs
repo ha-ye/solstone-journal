@@ -138,6 +138,22 @@ pub fn dispatch_sol_call_with_seams(
     })
 }
 
+#[must_use]
+pub fn resolve_sol_call_leaf(args: &[String]) -> Option<&'static aggregate::InventoryEntry> {
+    match_generated_str_path(args).map(|(entry, _handler, _len)| entry)
+}
+
+#[must_use]
+pub fn resolve_surface_leaf(
+    surface: &str,
+    args: &[String],
+) -> Option<&'static aggregate::InventoryEntry> {
+    if surface == "sol-call" {
+        return resolve_sol_call_leaf(args);
+    }
+    match_generated_surface_path(surface, args).map(|(entry, _handler)| entry)
+}
+
 fn match_generated_path(args: &[OsString]) -> Option<(&'static aggregate::InventoryEntry, usize)> {
     let utf8 = args
         .iter()

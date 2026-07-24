@@ -20,6 +20,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from solstone.apps.activities import call as activities_call
+from solstone.apps.body import call as body_call
 from solstone.apps.support import call as support_call
 from solstone.think import chat_cli
 from solstone.think.call import call_app
@@ -453,10 +454,13 @@ def sse_frame(value: object) -> str:
 
 
 def materialize_files(vector: dict[str, Any], temp_dir: Path) -> None:
+    unreadable = {str(path) for path in vector.get("unreadable_files", [])}
     for relative, body in vector.get("files", {}).items():
         path = temp_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(body))
+        if relative in unreadable:
+            path.chmod(0)
     vector["argv"] = [expand_file_token(str(arg), temp_dir) for arg in vector["argv"]]
 
 
@@ -481,6 +485,7 @@ def patched_runtime(
 
     original_get_client = activities_call.get_client
     original_datetime = activities_call.datetime
+    original_body_get_client = body_call.get_client
     original_health_get_client = health_call.get_client
     original_health_datetime = health_call.datetime
     original_support_get_client = support_call.get_client
@@ -510,6 +515,7 @@ def patched_runtime(
 
     activities_call.get_client = lambda: client
     activities_call.datetime = FixedDateTime
+    body_call.get_client = lambda: client
     health_call.get_client = lambda: client
     health_call.datetime = FixedDateTime
     support_call.get_client = lambda: client
@@ -533,6 +539,7 @@ def patched_runtime(
         finally:
             activities_call.get_client = original_get_client
             activities_call.datetime = original_datetime
+            body_call.get_client = original_body_get_client
             health_call.get_client = original_health_get_client
             health_call.datetime = original_health_datetime
             support_call.get_client = original_support_get_client
@@ -555,6 +562,8 @@ def normalize_result(
     for normalization in normalizations:
         if normalization == "invalid-json-error-tail":
             normalize_invalid_json_error_tail(result)
+        elif normalization == "unreadable-file-error":
+            normalize_unreadable_file_error(result)
         else:
             raise AssertionError(f"unsupported normalization {normalization!r}")
     return result
@@ -565,6 +574,16 @@ def normalize_invalid_json_error_tail(result: dict[str, Any]) -> None:
     stderr = str(result.get("stderr", ""))
     if stderr.startswith(prefix):
         result["stderr"] = f"{prefix} <parser error>\n"
+
+
+def normalize_unreadable_file_error(result: dict[str, Any]) -> None:
+    stderr = str(result.get("stderr", ""))
+    if (
+        "not readable" in stderr
+        or "file is not readable" in stderr
+        or ("Invalid value for 'FILES...'" in stderr and "readable" in stderr)
+    ):
+        result["stderr"] = "Error: unreadable fixture file\n"
 
 
 def build_identity_fixture() -> dict[str, object]:

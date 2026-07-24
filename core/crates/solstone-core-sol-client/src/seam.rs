@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sol pbc
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Error, ErrorKind, Result as IoResult};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -305,21 +305,35 @@ impl BuildIdentityProvider for FakeBuildIdentityProvider {
 #[derive(Debug, Clone, Default)]
 pub struct FixtureFileProvider {
     files: HashMap<PathBuf, Vec<u8>>,
+    unreadable: HashSet<PathBuf>,
 }
 
 impl FixtureFileProvider {
     #[must_use]
     pub fn new(files: HashMap<PathBuf, Vec<u8>>) -> Self {
-        Self { files }
+        Self {
+            files,
+            unreadable: HashSet::new(),
+        }
     }
 
     pub fn insert(&mut self, path: impl Into<PathBuf>, body: impl Into<Vec<u8>>) {
         self.files.insert(path.into(), body.into());
     }
+
+    pub fn mark_unreadable(&mut self, path: impl Into<PathBuf>) {
+        self.unreadable.insert(path.into());
+    }
 }
 
 impl FileProvider for FixtureFileProvider {
     fn read(&self, path: &Path) -> IoResult<Vec<u8>> {
+        if self.unreadable.contains(path) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                path.display().to_string(),
+            ));
+        }
         self.files
             .get(path)
             .cloned()

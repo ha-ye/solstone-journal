@@ -187,7 +187,7 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
             None,
         ) {
             Ok(value) => value.as_array().cloned().unwrap_or_default(),
-            Err(error) => return support_error(error),
+            Err(error) => return out.finish_support_error(error),
         };
         if !articles.is_empty() {
             out.stdout.push(String::new());
@@ -225,7 +225,7 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
         None,
     ) {
         Ok(value) => value,
-        Err(error) => return support_error(error),
+        Err(error) => return out.finish_support_error(error),
     };
     out.stdout.push(String::new());
     out.stdout.push("--- Ticket Draft ---".to_string());
@@ -270,7 +270,7 @@ pub fn create(ctx: CommandContext<'_>) -> CommandOutput {
         Some(Value::Object(payload)),
     ) {
         Ok(value) => value,
-        Err(error) => return support_error(error),
+        Err(error) => return out.finish_support_error(error),
     };
     out.stdout.push(format!(
         "Ticket created: #{}",
@@ -441,7 +441,7 @@ pub fn reply(ctx: CommandContext<'_>) -> CommandOutput {
         vec![],
         Some(json!({"content": body})),
     ) {
-        return support_error(error);
+        return out.finish_support_error(error);
     }
     out.stdout
         .push(format!("Reply sent to ticket #{ticket_id}."));
@@ -471,6 +471,9 @@ pub fn attach(ctx: CommandContext<'_>) -> CommandOutput {
     if files.is_empty() {
         return stderr("Error: missing argument 'FILES'.");
     }
+    if let Some(file) = first_unreadable_file(ctx, &files) {
+        return CommandOutput::failure(format!("Error: file is not readable: {file}\n"), 2);
+    }
     let client = SupportClient::new(ctx);
     if let Err(output) = client.check_enabled() {
         return output;
@@ -481,8 +484,12 @@ pub fn attach(ctx: CommandContext<'_>) -> CommandOutput {
             return stderr("Attach one file at a time when preparing a draft for review.");
         }
         let file = &files[0];
-        let Some(body) = read_file(ctx, file) else {
-            return stderr(format!("Error: file not found: {file}"));
+        let body = match read_file(ctx, file) {
+            Ok(body) => body,
+            Err(FileReadError::Missing) => return stderr(format!("Error: file not found: {file}")),
+            Err(FileReadError::Unreadable) => {
+                return CommandOutput::failure(format!("Error: file is not readable: {file}\n"), 2);
+            }
         };
         let filename = file_name(file);
         if let Err(error) = client.upload(
@@ -519,8 +526,12 @@ pub fn attach(ctx: CommandContext<'_>) -> CommandOutput {
     }
     let mut file_bodies = Vec::new();
     for file in &files {
-        let Some(body) = read_file(ctx, file) else {
-            return stderr(format!("Error: file not found: {file}"));
+        let body = match read_file(ctx, file) {
+            Ok(body) => body,
+            Err(FileReadError::Missing) => return stderr(format!("Error: file not found: {file}")),
+            Err(FileReadError::Unreadable) => {
+                return CommandOutput::failure(format!("Error: file is not readable: {file}\n"), 2);
+            }
         };
         file_bodies.push((file.clone(), body));
     }
@@ -563,7 +574,9 @@ pub fn attach(ctx: CommandContext<'_>) -> CommandOutput {
                 "Attached: {filename} (id: {})",
                 display_or(&result["id"], "?")
             )),
-            Err(ClientError::Unreachable { .. }) => return support_unreachable(),
+            Err(error @ ClientError::Unreachable { .. }) => {
+                return out.finish_support_error(error);
+            }
             Err(error) => out
                 .stderr
                 .push(format!("Skipped {filename}: {}", error.message())),
@@ -648,7 +661,7 @@ pub fn feedback(ctx: CommandContext<'_>) -> CommandOutput {
         Some(json!({"body": body, "product": product, "anonymous": anonymous})),
     ) {
         Ok(value) => value,
-        Err(error) => return support_error(error),
+        Err(error) => return out.finish_support_error(error),
     };
     out.stdout.push(format!(
         "Feedback submitted: #{}",
@@ -985,13 +998,32 @@ fn confirm(out: &mut Output, lines: &mut std::str::Lines<'_>, prompt: &str) -> R
     }
 }
 
-fn read_file(ctx: CommandContext<'_>, path: &str) -> Option<Vec<u8>> {
-    let provider = ctx.files?;
+enum FileReadError {
+    Missing,
+    Unreadable,
+}
+
+fn read_file(ctx: CommandContext<'_>, path: &str) -> Result<Vec<u8>, FileReadError> {
+    let provider = ctx.files.ok_or(FileReadError::Missing)?;
     let path = Path::new(path);
     if !provider.exists(path) {
-        return None;
+        return Err(FileReadError::Missing);
     }
-    provider.read(path).ok()
+    provider
+        .read(path)
+        .map_err(|_error| FileReadError::Unreadable)
+}
+
+fn first_unreadable_file(ctx: CommandContext<'_>, paths: &[String]) -> Option<String> {
+    let provider = ctx.files?;
+    paths.iter().find_map(|path| {
+        let file_path = Path::new(path);
+        if provider.exists(file_path) && provider.read(file_path).is_err() {
+            Some(path.clone())
+        } else {
+            None
+        }
+    })
 }
 
 fn file_name(path: &str) -> String {
@@ -1243,6 +1275,17 @@ impl Output {
             },
             exit,
         }
+    }
+
+    fn finish_support_error(mut self, error: ClientError) -> CommandOutput {
+        match error {
+            ClientError::Unreachable { .. } => {
+                self.stderr.push(SUPPORT_FALLBACK_1.to_string());
+                self.stderr.push(SUPPORT_FALLBACK_2.to_string());
+            }
+            other => self.stderr.push(other.message().to_string()),
+        }
+        self.finish(1)
     }
 }
 

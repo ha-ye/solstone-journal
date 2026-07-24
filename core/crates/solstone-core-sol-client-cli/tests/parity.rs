@@ -21,20 +21,29 @@ use solstone_core_sol_client_cli::{
 
 const ACTIVITIES_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/activities.jsonl");
+const ACTIVITIES_COVERAGE_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/activities_coverage.jsonl");
 const CHAT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/chat.jsonl");
 const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
+const HEALTH_COVERAGE_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/health_coverage.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
+const SUPPORT_COVERAGE_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/support_coverage.jsonl");
 const FILE_ROOT: &str = "/native-sol-parity-files";
 
 #[test]
 fn native_matches_sol_call_parity_vectors() {
     for vector in load_vectors(ACTIVITIES_VECTORS)
         .into_iter()
+        .chain(load_vectors(ACTIVITIES_COVERAGE_VECTORS))
         .chain(load_vectors(CHAT_VECTORS))
         .chain(load_vectors(HEALTH_VECTORS))
+        .chain(load_vectors(HEALTH_COVERAGE_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
+        .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))
     {
         run_vector(&vector);
     }
@@ -375,7 +384,16 @@ fn fixture_files(vector: &Value) -> FixtureFileProvider {
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
-    FixtureFileProvider::new(files)
+    let mut provider = FixtureFileProvider::new(files);
+    if let Some(paths) = vector.get("unreadable_files").and_then(Value::as_array) {
+        for relative in paths {
+            provider.mark_unreadable(PathBuf::from(format!(
+                "{FILE_ROOT}/{}",
+                relative.as_str().expect("unreadable path")
+            )));
+        }
+    }
+    provider
 }
 
 fn expand_file_args(args: Vec<String>) -> Vec<String> {
@@ -472,10 +490,21 @@ fn normalize_result(mut value: Value, normalizations: &[String]) -> Value {
     for normalization in normalizations {
         match normalization.as_str() {
             "invalid-json-error-tail" => normalize_invalid_json_stderr(&mut value),
+            "unreadable-file-error" => normalize_unreadable_file_stderr(&mut value),
             other => panic!("unsupported normalization {other}"),
         }
     }
     value
+}
+
+fn normalize_unreadable_file_stderr(value: &mut Value) {
+    let stderr = value["stderr"].as_str().expect("stderr string");
+    if stderr.contains("not readable")
+        || stderr.contains("file is not readable")
+        || (stderr.contains("Invalid value for 'FILES...'") && stderr.contains("readable"))
+    {
+        value["stderr"] = Value::String("Error: unreadable fixture file\n".to_string());
+    }
 }
 
 fn normalize_invalid_json_stderr(value: &mut Value) {

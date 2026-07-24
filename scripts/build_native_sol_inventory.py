@@ -39,6 +39,28 @@ ORACLE_PATH = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
 ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "local"}
 COMMAND_KINDS = {"command", "callback", "top-level"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+FINAL_HTTP_TOTAL = 152
+FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
+FINAL_STUB_COUNTS = {"moved-stub": 2, "local": 1}
+FINAL_HTTP_GROUP_COUNTS = {
+    "activities": 6,
+    "awareness": 4,
+    "body": 3,
+    "chat": 1,
+    "entities": 22,
+    "facets": 3,
+    "health": 4,
+    "import": 5,
+    "ledger": 4,
+    "link": 8,
+    "profile": 4,
+    "settings": 14,
+    "sol": 4,
+    "speakers": 31,
+    "support": 11,
+    "thinking": 23,
+    "transcripts": 5,
+}
 
 
 @dataclass(frozen=True)
@@ -334,6 +356,124 @@ def check_oracle_subset(entries: list[AuthorityEntry], oracle_path: Path) -> lis
                 f"{entry.authority}: {list(entry.path)!r} params differ from frozen oracle"
             )
     return errors
+
+
+def check_complete_partition(
+    entries: list[AuthorityEntry],
+    oracle_path: Path,
+    *,
+    expected_http_total: int = FINAL_HTTP_TOTAL,
+    expected_journal_total: int = FINAL_JOURNAL_PYTHON_COMPAT_TOTAL,
+    expected_stub_counts: dict[str, int] | None = None,
+    expected_http_group_counts: dict[str, int] | None = None,
+) -> list[str]:
+    """Validate the final native/journal/stub partition.
+
+    TODO(native-sol-final-dispatch): wire this into `check-native-sol-inventory`
+    once all 152 HTTP authorities and the `link observer-pause` local stub exist.
+    """
+
+    expected_stub_counts = expected_stub_counts or FINAL_STUB_COUNTS
+    expected_http_group_counts = expected_http_group_counts or FINAL_HTTP_GROUP_COUNTS
+    oracle_errors, oracle_paths = collect_oracle_paths(oracle_path)
+    errors = list(oracle_errors)
+    entries = [entry for entry in entries if entry.surface == "sol-call"]
+    authority_paths: dict[tuple[str, ...], AuthorityEntry] = {}
+    operation_ids: dict[str, AuthorityEntry] = {}
+    for entry in entries:
+        existing_path = authority_paths.get(entry.path)
+        if existing_path is not None:
+            errors.append(
+                f"duplicate authority path {list(entry.path)!r}: "
+                f"{existing_path.authority} and {entry.authority}"
+            )
+        authority_paths[entry.path] = entry
+        existing_operation = operation_ids.get(entry.operation_id)
+        if existing_operation is not None:
+            errors.append(
+                f"duplicate operation_id {entry.operation_id!r}: "
+                f"{existing_operation.authority} and {entry.authority}"
+            )
+        operation_ids[entry.operation_id] = entry
+
+    errors.extend(check_oracle_subset(entries, oracle_path))
+    extra = sorted(set(authority_paths) - oracle_paths)
+    if extra:
+        errors.append(f"authority paths outside frozen oracle: {format_paths(extra)}")
+
+    uncovered = sorted(oracle_paths - set(authority_paths))
+    non_journal_uncovered = [
+        path for path in uncovered if first_group(path) != "journal"
+    ]
+    if len(uncovered) != expected_journal_total:
+        errors.append(
+            f"uncovered oracle path count {len(uncovered)} != "
+            f"journal Python-compat count {expected_journal_total}"
+        )
+    if non_journal_uncovered:
+        errors.append(
+            f"uncovered non-journal oracle paths: {format_paths(non_journal_uncovered)}"
+        )
+    journal_authorities = [
+        entry.path for entry in entries if first_group(entry.path) == "journal"
+    ]
+    if journal_authorities:
+        errors.append(
+            f"journal paths must remain Python: {format_paths(journal_authorities)}"
+        )
+
+    http_entries = [entry for entry in entries if entry.entry_type == "http"]
+    if len(http_entries) != expected_http_total:
+        errors.append(
+            f"HTTP authority count {len(http_entries)} != {expected_http_total}"
+        )
+    for entry_type, expected_count in sorted(expected_stub_counts.items()):
+        actual = sum(1 for entry in entries if entry.entry_type == entry_type)
+        if actual != expected_count:
+            errors.append(f"{entry_type} authority count {actual} != {expected_count}")
+
+    group_counts: dict[str, int] = {}
+    for entry in http_entries:
+        group = first_group(entry.path)
+        group_counts[group] = group_counts.get(group, 0) + 1
+    for group, expected_count in sorted(expected_http_group_counts.items()):
+        actual = group_counts.get(group, 0)
+        if actual != expected_count:
+            errors.append(f"{group} HTTP authority count {actual} != {expected_count}")
+    unexpected_groups = sorted(set(group_counts) - set(expected_http_group_counts))
+    if unexpected_groups:
+        errors.append(f"unexpected HTTP authority groups: {unexpected_groups!r}")
+    return errors
+
+
+def collect_oracle_paths(oracle_path: Path) -> tuple[list[str], set[tuple[str, ...]]]:
+    if not oracle_path.is_file():
+        return [f"{oracle_path} is missing"], set()
+    oracle = json.loads(oracle_path.read_text())
+    errors: list[str] = []
+    paths: set[tuple[str, ...]] = set()
+    for index, entry in enumerate(oracle.get("entries", [])):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if (
+            not isinstance(path, list)
+            or not path
+            or any(not isinstance(item, str) or not item for item in path)
+        ):
+            errors.append(f"{oracle_path}: entries[{index}] has invalid path")
+            continue
+        path_tuple = tuple(path)
+        if path_tuple in paths:
+            errors.append(f"{oracle_path}: duplicate oracle path {path!r}")
+        paths.add(path_tuple)
+    return errors, paths
+
+
+def first_group(path: tuple[str, ...]) -> str:
+    return path[0] if path else ""
+
+
+def format_paths(paths: list[tuple[str, ...]]) -> list[list[str]]:
+    return [list(path) for path in paths]
 
 
 def parse_args() -> argparse.Namespace:

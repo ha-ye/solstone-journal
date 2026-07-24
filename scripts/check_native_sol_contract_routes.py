@@ -11,52 +11,25 @@ from typing import Any
 
 from flask import Flask
 
-from solstone.apps.activities.routes import activities_bp
-from solstone.apps.support.routes import support_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
-from solstone.convey.health import bp as health_bp
 
-MIGRATED_ROUTES: dict[tuple[str, str], str] = {
-    ("GET", "/app/activities/api/day/{day}/records"): "activities.list",
-    ("GET", "/app/activities/api/day/{day}/record/{span_id}"): "activities.get",
-    ("POST", "/app/activities/api/day/{day}/records"): "activities.create",
-    (
-        "POST",
-        "/app/activities/api/day/{day}/record/{span_id}/update",
-    ): "activities.update",
-    (
-        "POST",
-        "/app/activities/api/day/{day}/record/{span_id}/mute",
-    ): "activities.mute",
-    (
-        "POST",
-        "/app/activities/api/day/{day}/record/{span_id}/unmute",
-    ): "activities.unmute",
-    ("GET", "/app/support/api/config"): "support.config",
-    ("POST", "/app/support/api/draft"): "support.draft",
-    ("POST", "/app/support/api/register"): "support.register",
-    ("GET", "/app/support/api/articles"): "support.search",
-    ("GET", "/app/support/api/articles/{slug}"): "support.article",
-    ("GET", "/app/support/api/tickets"): "support.list",
-    ("GET", "/app/support/api/tickets/{ticket_id}"): "support.show",
-    ("POST", "/app/support/api/tickets"): "support.create",
-    ("POST", "/app/support/api/tickets/{ticket_id}/reply"): "support.reply",
-    ("POST", "/app/support/api/tickets/{ticket_id}/attachments"): "support.attach",
-    ("POST", "/app/support/api/feedback"): "support.feedback",
-    ("GET", "/app/support/api/announcements"): "support.announcements",
-    ("GET", "/app/support/api/diagnostics"): "support.diagnose",
-    ("GET", "/api/health/summary"): "health.summary",
-    ("GET", "/api/health/full"): "health.full",
-    ("GET", "/api/health/range"): "health.for_range",
-    ("GET", "/api/health/pipeline"): "health.pipeline",
-}
+try:
+    from scripts.build_native_sol_inventory import REPO_ROOT, AuthorityEntry, discover
+    from scripts.check_native_sol_conformance import register_native_blueprints
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from build_native_sol_inventory import (  # type: ignore[no-redef]
+        REPO_ROOT,
+        AuthorityEntry,
+        discover,
+    )
+    from check_native_sol_conformance import (  # type: ignore[no-redef]
+        register_native_blueprints,
+    )
 
 
 def _route_app() -> Flask:
     app = Flask(__name__)
-    app.register_blueprint(activities_bp)
-    app.register_blueprint(support_bp)
-    app.register_blueprint(health_bp)
+    register_native_blueprints(app)
     return app
 
 
@@ -91,11 +64,41 @@ def _contract_operations(
     return operations, duplicate_errors
 
 
+def _expected_routes(
+    authorities: list[AuthorityEntry] | None = None,
+) -> tuple[dict[tuple[str, str], str], list[str]]:
+    expected: dict[tuple[str, str], str] = {}
+    errors: list[str] = []
+    for entry in authorities if authorities is not None else discover(REPO_ROOT):
+        if entry.surface != "sol-call" or entry.entry_type != "http":
+            continue
+        if (
+            entry.method is None
+            or entry.route is None
+            or entry.contract_operation_id is None
+        ):
+            errors.append(
+                f"{entry.operation_id}: HTTP authority is missing route fields"
+            )
+            continue
+        key = (entry.method, entry.route)
+        existing = expected.get(key)
+        if existing is not None and existing != entry.contract_operation_id:
+            errors.append(
+                f"{entry.operation_id}: duplicate native route {entry.method} "
+                f"{entry.route} already bound to {existing}"
+            )
+            continue
+        expected[key] = entry.contract_operation_id
+    return expected, errors
+
+
 def main() -> int:
-    expected = MIGRATED_ROUTES
+    expected, errors = _expected_routes()
     expected_operation_ids = set(expected.values())
     flask_routes = _flask_routes(_route_app())
-    contract_routes, errors = _contract_operations(build_document())
+    contract_routes, contract_errors = _contract_operations(build_document())
+    errors.extend(contract_errors)
 
     for key, operation_id in sorted(expected.items()):
         if key not in flask_routes:

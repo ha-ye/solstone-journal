@@ -10,7 +10,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+try:
+    from scripts.build_native_sol_inventory import REPO_ROOT, discover
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from build_native_sol_inventory import REPO_ROOT, discover  # type: ignore[no-redef]
+
 ALLOWLIST: dict[tuple[str, str], str] = {}
 
 CLIENT_CRATES = (
@@ -25,13 +29,21 @@ PARITY_TEST_FILE = (
 
 FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("direct-std-process-command", re.compile(r"\bstd::process::Command\b")),
+    ("direct-tokio-process", re.compile(r"\btokio::process\b")),
     ("direct-process-command", re.compile(r"\bprocess::Command\b")),
     ("direct-command-new", re.compile(r"\bCommand::new\s*\(")),
     ("direct-spawn-call", re.compile(r"\.spawn\s*\(")),
     ("direct-output-call", re.compile(r"\.output\s*\(")),
+    ("direct-exec-call", re.compile(r"\bexec(?:[lv][pe]?|ve)?\s*\(")),
+    ("pyo3-reference", re.compile(r"\b(?:pyo3|PyO3)\b")),
+    ("cpython-reference", re.compile(r"\b(?:cpython|CPython)\b")),
     ("python-fallback-symbol", re.compile(r"\bpython_(?:fallback|dispatch)\b")),
     ("compat-dispatch-symbol", re.compile(r"\bcompat(?:ibility)?_dispatch\b")),
     ("fallback-to-python-symbol", re.compile(r"\bfallback_to_python\b")),
+    (
+        "python-fallback-string",
+        re.compile(r"\b(?:fallback|dispatch)[^\n\"]*python3?\b"),
+    ),
 )
 
 
@@ -52,12 +64,14 @@ def rel(path: Path) -> str:
 
 def rust_files_to_scan() -> list[Path]:
     files: set[Path] = set()
-    solstone_root = REPO_ROOT / "solstone"
-    files.update(solstone_root.glob("**/native/*.rs"))
-    files.update(solstone_root.glob("**/native/**/*.rs"))
+    files.update(authority_sources())
     for crate in CLIENT_CRATES:
         files.update(crate.rglob("*.rs"))
     return sorted(path for path in files if path.is_file())
+
+
+def authority_sources() -> set[Path]:
+    return {entry.source for entry in discover(REPO_ROOT)}
 
 
 def collect_violations() -> list[Violation]:

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+use serde_json::{Map, Value};
+
+#[must_use]
+pub fn sorted_json_pretty_ascii(value: &Value) -> String {
+    let sorted = sort_json(value);
+    let pretty = serde_json::to_string_pretty(&sorted).expect("JSON output should serialize");
+    ensure_ascii(&pretty)
+}
+
+fn sort_json(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(sort_json).collect()),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut sorted = Map::new();
+            for key in keys {
+                sorted.insert(key.clone(), sort_json(&object[key]));
+            }
+            Value::Object(sorted)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn ensure_ascii(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii() {
+            output.push(ch);
+        } else {
+            let codepoint = ch as u32;
+            if codepoint <= 0xFFFF {
+                output.push_str(&format!("\\u{codepoint:04x}"));
+            } else {
+                let adjusted = codepoint - 0x1_0000;
+                let high = 0xD800 + (adjusted >> 10);
+                let low = 0xDC00 + (adjusted & 0x3FF);
+                output.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
+            }
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn pretty_prints_objects_with_sorted_keys_and_ascii_escapes() {
+        assert_eq!(
+            sorted_json_pretty_ascii(&json!({"b": "é", "a": {"d": 2, "c": 1}})),
+            "{\n  \"a\": {\n    \"c\": 1,\n    \"d\": 2\n  },\n  \"b\": \"\\u00e9\"\n}"
+        );
+    }
+}

@@ -8,7 +8,11 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+try:
+    from scripts.build_native_sol_inventory import REPO_ROOT, discover
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from build_native_sol_inventory import REPO_ROOT, discover  # type: ignore[no-redef]
+
 SHARED_CLIENT = REPO_ROOT / "core/crates/solstone-core-sol-client/src"
 ALLOWLIST: dict[tuple[str, str], str] = {}
 APP_VOCABULARY_PATTERNS = {
@@ -18,6 +22,45 @@ APP_VOCABULARY_PATTERNS = {
     "/app/",
     "/api/health",
 }
+FORBIDDEN_HTTP_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "native-http-solstone-python-module-ref",
+        re.compile(r"\bsolstone\.(?:apps|think|convey|talent|observe)\.[A-Za-z0-9_.]+"),
+        "native HTTP commands must not reference Python server/domain modules",
+    ),
+    (
+        "native-http-solstone-journal-env",
+        re.compile(r"\bSOLSTONE_JOURNAL\b"),
+        "native HTTP commands must not resolve the journal path",
+    ),
+    (
+        "native-http-journal-path-literal",
+        re.compile(r'"[^"]*(?:journal/|chronicle/)[^"]*"'),
+        "native HTTP commands must not contain journal path literals",
+    ),
+    (
+        "native-http-direct-std-fs",
+        re.compile(r"\bstd::fs::"),
+        "native HTTP commands must use HTTP/client seams, not direct filesystem access",
+    ),
+    (
+        "native-http-direct-file-open",
+        re.compile(r"\bFile::(?:open|create)\s*\("),
+        "native HTTP commands must not open journal files directly",
+    ),
+    (
+        "native-http-direct-open-options",
+        re.compile(r"\bOpenOptions::"),
+        "native HTTP commands must not open journal files directly",
+    ),
+    (
+        "native-http-path-mutation",
+        re.compile(
+            r"\b(?:remove_file|remove_dir|create_dir|create_dir_all|rename)\s*\("
+        ),
+        "native HTTP commands must not mutate filesystem paths",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +83,7 @@ def collect_violations() -> list[Violation]:
     violations.extend(check_no_mirrored_apps_tree())
     violations.extend(check_shared_client_vocab())
     violations.extend(check_authority_adjacency())
+    violations.extend(check_native_http_ownership())
     violations.extend(check_packaging_excludes_native_sources())
     return violations
 
@@ -119,6 +163,21 @@ def check_authority_adjacency() -> list[Violation]:
                     f"declared source {source!r} does not exist beside authority",
                 )
             )
+    return violations
+
+
+def check_native_http_ownership() -> list[Violation]:
+    violations: list[Violation] = []
+    sources = {
+        entry.source
+        for entry in discover(REPO_ROOT)
+        if entry.surface == "sol-call" and entry.entry_type == "http"
+    }
+    for path in sorted(sources):
+        text = path.read_text(encoding="utf-8")
+        for kind, pattern, detail in FORBIDDEN_HTTP_SOURCE_PATTERNS:
+            if pattern.search(text):
+                violations.append(Violation(rel(path), kind, detail))
     return violations
 
 
