@@ -108,6 +108,7 @@
       facetPillsContainer.setAttribute('aria-hidden', 'true');
       facetPillsContainer.removeAttribute('role');
       facetPillsContainer.removeAttribute('aria-label');
+      return;
     } else if (activeFacets.length === 0) {
       facetPillsContainer.removeAttribute('aria-hidden');
       facetPillsContainer.removeAttribute('role');
