@@ -21,6 +21,8 @@ from typer.testing import CliRunner
 
 from solstone.apps.activities import call as activities_call
 from solstone.apps.body import call as body_call
+from solstone.apps.facets import call as facets_call
+from solstone.apps.sol import call as sol_call
 from solstone.apps.support import call as support_call
 from solstone.think import chat_cli
 from solstone.think.call import call_app
@@ -486,8 +488,10 @@ def patched_runtime(
     original_get_client = activities_call.get_client
     original_datetime = activities_call.datetime
     original_body_get_client = body_call.get_client
+    original_facets_get_client = facets_call.get_client
     original_health_get_client = health_call.get_client
     original_health_datetime = health_call.datetime
+    original_sol_get_client = sol_call.get_client
     original_support_get_client = support_call.get_client
     original_local_build_identity = support_call._local_build_identity
     original_build_client = chat_cli._build_client
@@ -516,8 +520,10 @@ def patched_runtime(
     activities_call.get_client = lambda: client
     activities_call.datetime = FixedDateTime
     body_call.get_client = lambda: client
+    facets_call.get_client = lambda: client
     health_call.get_client = lambda: client
     health_call.datetime = FixedDateTime
+    sol_call.get_client = lambda: client
     support_call.get_client = lambda: client
     support_call._local_build_identity = lambda: build_identity_fixture()
     chat_cli._build_client = lambda _base_url: client
@@ -540,8 +546,10 @@ def patched_runtime(
             activities_call.get_client = original_get_client
             activities_call.datetime = original_datetime
             body_call.get_client = original_body_get_client
+            facets_call.get_client = original_facets_get_client
             health_call.get_client = original_health_get_client
             health_call.datetime = original_health_datetime
+            sol_call.get_client = original_sol_get_client
             support_call.get_client = original_support_get_client
             support_call._local_build_identity = original_local_build_identity
             chat_cli._build_client = original_build_client

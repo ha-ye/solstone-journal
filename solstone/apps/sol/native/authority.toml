@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["sol", "set-name"]
+kind = "command"
+help = "Set the agent name."
+operation_id = "sol.set-name"
+entry_type = "http"
+method = "POST"
+route = "/app/sol/api/set-name"
+contract_operation_id = "sol.set-name"
+handler = "set_name"
+params = [
+  { name = "name", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["name"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "status", kind = "option", type = "text", required = false, nargs = 1, multiple = false, default = "chosen", options = ["--status", "-s"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["sol", "reset"]
+kind = "command"
+help = "Reset the agent name to default."
+operation_id = "sol.reset"
+entry_type = "http"
+method = "POST"
+route = "/app/sol/api/reset"
+contract_operation_id = "sol.reset"
+handler = "reset"
+params = []
+
+[[entries]]
+path = ["sol", "set-owner"]
+kind = "command"
+help = "Set the journal owner's name (and optional bio)."
+operation_id = "sol.set-owner"
+entry_type = "http"
+method = "POST"
+route = "/app/sol/api/set-owner"
+contract_operation_id = "sol.set-owner"
+handler = "set_owner"
+params = [
+  { name = "name", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["name"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "bio", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--bio", "-b"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["sol", "sol-init"]
+kind = "command"
+help = "Initialize the identity directory."
+operation_id = "sol.sol-init"
+entry_type = "http"
+method = "POST"
+route = "/app/sol/api/sol-init"
+contract_operation_id = "sol.sol-init"
+handler = "sol_init"
+params = []

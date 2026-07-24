@@ -25,10 +25,12 @@ const ACTIVITIES_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/activities_coverage.jsonl");
 const BODY_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/body.jsonl");
 const CHAT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/chat.jsonl");
+const FACETS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/facets.jsonl");
 const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
 const HEALTH_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/health_coverage.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
+const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.jsonl");
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/support_coverage.jsonl");
@@ -41,9 +43,11 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(ACTIVITIES_COVERAGE_VECTORS))
         .chain(load_vectors(BODY_VECTORS))
         .chain(load_vectors(CHAT_VECTORS))
+        .chain(load_vectors(FACETS_VECTORS))
         .chain(load_vectors(HEALTH_VECTORS))
         .chain(load_vectors(HEALTH_COVERAGE_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
+        .chain(load_vectors(SOL_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))
     {

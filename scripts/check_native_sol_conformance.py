@@ -21,6 +21,8 @@ from flask import Flask
 import solstone.convey.reasons as reasons
 from solstone.apps.activities.routes import activities_bp
 from solstone.apps.body.routes import body_bp
+from solstone.apps.curation.routes import curation_bp
+from solstone.apps.sol.routes import sol_bp
 from solstone.apps.support.routes import support_bp
 from solstone.convey.chat import chat_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
@@ -235,7 +237,16 @@ def collect_contract_operations(
 def register_native_blueprints(app: Flask) -> None:
     """Register blueprints needed by currently ported native authorities."""
 
-    for blueprint in (activities_bp, support_bp, health_bp, chat_bp, root_bp, body_bp):
+    for blueprint in (
+        activities_bp,
+        support_bp,
+        health_bp,
+        chat_bp,
+        root_bp,
+        body_bp,
+        curation_bp,
+        sol_bp,
+    ):
         app.register_blueprint(blueprint)
 
 

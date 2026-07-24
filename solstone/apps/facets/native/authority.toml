@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["facets", "list-candidates"]
+kind = "command"
+help = "List recorded facet review candidates."
+operation_id = "facets.list-candidates"
+entry_type = "http"
+method = "GET"
+route = "/app/curation/api/facet/candidates"
+contract_operation_id = "facets.list-candidates"
+handler = "list_candidates"
+params = [
+  { name = "status", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--status"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["facets", "accept"]
+kind = "command"
+help = "Accept one facet review candidate."
+operation_id = "facets.accept"
+entry_type = "http"
+method = "POST"
+route = "/app/curation/api/facet/accept"
+contract_operation_id = "facets.accept"
+handler = "accept"
+params = [
+  { name = "name_key", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["name_key"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["facets", "dismiss"]
+kind = "command"
+help = "Dismiss one facet review candidate."
+operation_id = "facets.dismiss"
+entry_type = "http"
+method = "POST"
+route = "/app/curation/api/facet/dismiss"
+contract_operation_id = "facets.dismiss"
+handler = "dismiss"
+params = [
+  { name = "name_key", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["name_key"], secondary = [], hidden = false, is_flag = false, count = false },
+]

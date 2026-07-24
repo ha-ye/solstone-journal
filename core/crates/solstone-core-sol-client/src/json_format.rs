@@ -3,11 +3,58 @@
 
 use serde_json::{Map, Value};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsonFormat {
+    pub sort_keys: bool,
+    pub ensure_ascii: bool,
+}
+
 #[must_use]
 pub fn sorted_json_pretty_ascii(value: &Value) -> String {
-    let sorted = sort_json(value);
-    let pretty = serde_json::to_string_pretty(&sorted).expect("JSON output should serialize");
-    ensure_ascii(&pretty)
+    json_pretty(
+        value,
+        JsonFormat {
+            sort_keys: true,
+            ensure_ascii: true,
+        },
+    )
+}
+
+#[must_use]
+pub fn json_pretty_ascii(value: &Value) -> String {
+    json_pretty(
+        value,
+        JsonFormat {
+            sort_keys: false,
+            ensure_ascii: true,
+        },
+    )
+}
+
+#[must_use]
+pub fn json_pretty_utf8(value: &Value) -> String {
+    json_pretty(
+        value,
+        JsonFormat {
+            sort_keys: false,
+            ensure_ascii: false,
+        },
+    )
+}
+
+#[must_use]
+pub fn json_pretty(value: &Value, format: JsonFormat) -> String {
+    let formatted = if format.sort_keys {
+        let sorted = sort_json(value);
+        serde_json::to_string_pretty(&sorted).expect("JSON output should serialize")
+    } else {
+        serde_json::to_string_pretty(value).expect("JSON output should serialize")
+    };
+    if format.ensure_ascii {
+        ensure_ascii(&formatted)
+    } else {
+        formatted
+    }
 }
 
 fn sort_json(value: &Value) -> Value {
@@ -57,6 +104,22 @@ mod tests {
         assert_eq!(
             sorted_json_pretty_ascii(&json!({"b": "é", "a": {"d": 2, "c": 1}})),
             "{\n  \"a\": {\n    \"c\": 1,\n    \"d\": 2\n  },\n  \"b\": \"\\u00e9\"\n}"
+        );
+    }
+
+    #[test]
+    fn pretty_prints_objects_preserving_key_order_with_ascii_escapes() {
+        assert_eq!(
+            json_pretty_ascii(&json!({"b": "é", "a": {"d": 2, "c": 1}})),
+            "{\n  \"b\": \"\\u00e9\",\n  \"a\": {\n    \"d\": 2,\n    \"c\": 1\n  }\n}"
+        );
+    }
+
+    #[test]
+    fn pretty_prints_objects_preserving_key_order_and_utf8() {
+        assert_eq!(
+            json_pretty_utf8(&json!({"b": "é", "a": {"d": 2, "c": 1}})),
+            "{\n  \"b\": \"é\",\n  \"a\": {\n    \"d\": 2,\n    \"c\": 1\n  }\n}"
         );
     }
 }

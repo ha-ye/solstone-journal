@@ -2441,6 +2441,222 @@
         ]
       }
     },
+    "/app/curation/api/facet/accept": {
+      "post": {
+        "description": "Accept one facet review candidate by name_key.",
+        "operationId": "facets.accept",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "name_key": "compiler"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "name_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name_key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "facet_slug": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Facet candidate accept result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not include a candidate name_key.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Facet suggestions could not be locked.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Accept a facet review candidate",
+        "tags": [
+          "facets"
+        ]
+      }
+    },
+    "/app/curation/api/facet/candidates": {
+      "get": {
+        "description": "Return recorded facet review candidates for local CLI filtering.",
+        "operationId": "facets.list-candidates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Facet candidate collection."
+          }
+        },
+        "summary": "List facet review candidates",
+        "tags": [
+          "facets"
+        ]
+      }
+    },
+    "/app/curation/api/facet/dismiss": {
+      "post": {
+        "description": "Dismiss one facet review candidate by name_key.",
+        "operationId": "facets.dismiss",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "name_key": "compiler"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "name_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name_key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "candidate": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Facet candidate dismiss result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not include a candidate name_key.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Facet suggestions could not be locked.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Dismiss a facet review candidate",
+        "tags": [
+          "facets"
+        ]
+      }
+    },
     "/app/home/api/pulse": {
       "get": {
         "description": "Return the home Pulse: a snapshot recomputed per request from journal state. Only the new-owner onboarding signals are named in this contract \u2014 journal_age_days, home_state, and welcome_framing; the rest of the payload is intentionally open and may change without a contract bump.",
@@ -5422,6 +5638,278 @@
         "summary": "Delete observer source",
         "tags": [
           "observer"
+        ]
+      }
+    },
+    "/app/sol/api/reset": {
+      "post": {
+        "description": "Restore the default agent identity fields.",
+        "operationId": "sol.reset",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "name_status": {
+                      "type": "string"
+                    },
+                    "named_date": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Reset agent identity."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The identity config could not be locked.",
+            "x-reason-codes": [
+              "identity_busy"
+            ]
+          }
+        },
+        "summary": "Reset the agent name",
+        "tags": [
+          "sol"
+        ]
+      }
+    },
+    "/app/sol/api/set-name": {
+      "post": {
+        "description": "Set the owner-visible agent name and name status.",
+        "operationId": "sol.set-name",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "name": "Sol",
+                "status": "chosen"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "name_status": {
+                      "type": "string"
+                    },
+                    "named_date": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated agent identity."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body was missing, malformed, or incomplete.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The identity config could not be locked.",
+            "x-reason-codes": [
+              "identity_busy"
+            ]
+          }
+        },
+        "summary": "Set the agent name",
+        "tags": [
+          "sol"
+        ]
+      }
+    },
+    "/app/sol/api/set-owner": {
+      "post": {
+        "description": "Set the journal owner's name and optional bio.",
+        "operationId": "sol.set-owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "bio": "First programmer.",
+                "name": "Ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "bio": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "bio": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "bio"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated owner identity."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body was missing, malformed, or incomplete.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The identity config could not be locked.",
+            "x-reason-codes": [
+              "identity_busy"
+            ]
+          }
+        },
+        "summary": "Set the journal owner",
+        "tags": [
+          "sol"
+        ]
+      }
+    },
+    "/app/sol/api/sol-init": {
+      "post": {
+        "description": "Ensure the identity directory exists.",
+        "operationId": "sol.sol-init",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "identity_dir": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "identity_dir",
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Identity directory status."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The identity config could not be locked.",
+            "x-reason-codes": [
+              "identity_busy"
+            ]
+          }
+        },
+        "summary": "Initialize the identity directory",
+        "tags": [
+          "sol"
         ]
       }
     },
