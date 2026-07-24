@@ -63,9 +63,7 @@ def _write_tombstone_prerequisite(evidence_dir: Path, version: str) -> None:
         "supported_platform_triples": list(
             manifest.CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES
         ),
-        "resolver_checks": dict(
-            manifest.CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS
-        ),
+        "resolver_checks": dict(manifest.CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS),
     }
     (evidence_dir / manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD).write_text(
         json.dumps(payload, sort_keys=True),

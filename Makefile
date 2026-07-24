@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -540,6 +540,12 @@ install-checks: .installed
 	@echo "=== Checking native sol grammar oracle ==="
 	@$(MAKE) check-native-sol-grammar-oracle
 	@echo ""
+	@echo "=== Checking native sol docs links ==="
+	@$(MAKE) check-native-sol-docs-links
+	@echo ""
+	@echo "=== Checking removed time parser readiness ==="
+	@$(MAKE) check-removed-time-parser-ready
+	@echo ""
 	@echo "=== Checking native sol Python manifest ==="
 	@$(MAKE) check-native-sol-python-manifest
 	@echo ""
@@ -767,11 +773,11 @@ check-journal-resolution-vectors: .installed
 	$(VENV_BIN)/python scripts/build_journal_resolution_vectors.py --check
 
 build-native-sol-grammar-oracle: .installed
-	$(VENV_BIN)/python scripts/build_native_sol_grammar_oracle.py
+	$(VENV_BIN)/python scripts/build_native_sol_authority_grammar.py
 
 check-native-sol-grammar-oracle: .installed
 	$(VENV_BIN)/python scripts/check_native_sol_grammar_oracle.py
-	$(VENV_BIN)/python scripts/build_native_sol_grammar_oracle.py --check
+	$(VENV_BIN)/python scripts/build_native_sol_authority_grammar.py --check
 
 check-native-sol-python-manifest:
 	python3 scripts/check_native_sol_python_manifest.py
@@ -799,6 +805,12 @@ check-native-sol-no-python-spawn:
 
 check-native-sol-compat: .installed
 	$(VENV_BIN)/python scripts/check_native_sol_compat.py
+
+check-native-sol-docs-links:
+	python3 scripts/check_native_sol_docs_links.py
+
+check-removed-time-parser-ready:
+	python3 scripts/check_removed_time_parser_ready.py
 
 contract:
 	$(VENV_BIN)/python -m solstone.think.contract_cli build

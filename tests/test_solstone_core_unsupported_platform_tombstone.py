@@ -21,9 +21,7 @@ from solstone.think.probe import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TOMBSTONE_DIR = (
-    REPO_ROOT / "scripts" / "solstone-core-unsupported-platform-tombstone"
-)
+TOMBSTONE_DIR = REPO_ROOT / "scripts" / "solstone-core-unsupported-platform-tombstone"
 ALLOW_BUILD_ENV = "SOLSTONE_CORE_UNSUPPORTED_PLATFORM_TOMBSTONE_ALLOW_BUILD"
 FROZEN_MESSAGE = """solstone requires a native solstone-core wheel for this platform.
 
@@ -134,9 +132,5 @@ def test_unsupported_platform_resolves_to_tombstone_only() -> None:
 def test_unsupported_marker_is_non_vacuous() -> None:
     marker = Marker(solstone_core_unsupported_platform_pin("0.0.0").split(";", 1)[1])
 
-    assert marker.evaluate(
-        {"sys_platform": "linux", "platform_machine": "ppc64le"}
-    )
-    assert not marker.evaluate(
-        {"sys_platform": "linux", "platform_machine": "x86_64"}
-    )
+    assert marker.evaluate({"sys_platform": "linux", "platform_machine": "ppc64le"})
+    assert not marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"})

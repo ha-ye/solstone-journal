@@ -27,15 +27,6 @@ def test_injected_access_heavy_import_goes_red_and_names_offender() -> None:
     result = _run("--inject-heavy-module", "solstone.think.notify_cli")
 
     assert result.returncode == 1
-    assert "sol notify --help" in result.stderr
+    assert "sol notify --help [solstone.think.notify_cli]" in result.stderr
     assert "solstone.think.notify_cli" in result.stderr
     assert "numpy" in result.stderr
-
-
-def test_injected_mounted_app_failure_goes_red_and_names_app() -> None:
-    result = _run("--inject-mounted-app", "import")
-
-    assert result.returncode == 1
-    assert "sol call --help" in result.stderr
-    assert "import" in result.stderr
-    assert "injected mounted app failure: import" in result.stderr

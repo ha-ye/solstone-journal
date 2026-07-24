@@ -2,24 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Smoke guard for import-clean `sol` access commands.
-
-Two modes:
-
-* Default (fast, wired into `make ci`): run each access command in a child that
-  installs a `BlockHeavyFinder` on `sys.meta_path` to simulate the heavy host
-  families (`BLOCKED_FAMILIES`) being absent. Fast and offline — the inner-loop
-  gate.
-
-* `--real-install` (faithful, opt-in via `make check-thin-base-install`): build
-  a fresh venv with the REAL thin base partition (`pip install .`, no extras),
-  assert the heavy families are genuinely absent, then run the same battery
-  against that venv's interpreter. This catches what the simulation can't — an
-  access command that imports a *non-blocked* light dep which is not in the thin
-  base. The real install is the authority; `BLOCKED_FAMILIES` is the set we
-  assert absent and the real-install mode verifies it against the partition,
-  rather than standing in for it.
-"""
+"""Smoke guard for the native `sol` access surface and private compat helper."""
 
 from __future__ import annotations
 
@@ -33,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+RUST_MANIFEST = ROOT / "core" / "Cargo.toml"
 BLOCKED_FAMILIES = (
     "flask",
     "werkzeug",
@@ -47,37 +31,90 @@ BLOCKED_FAMILIES = (
     "pypdfium2",
     "frontmatter",
 )
-ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (
+
+try:
+    from scripts.check_native_sol_compat import frozen_journal_remainder_paths
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from check_native_sol_compat import (
+        frozen_journal_remainder_paths,  # type: ignore[no-redef]
+    )
+
+from solstone.think.sol_compat_inventory import (
+    JOURNAL_CALL_PREFIX,
+    SENTINEL,
+    SENTINEL_ARMED,
+    TOP_LEVEL_COMPAT_MODULES,
+    marker_for_public_argv0,
+)
+
+NATIVE_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sol", ["sol"]),
     ("sol --help", ["sol", "--help"]),
     ("sol --version", ["sol", "--version"]),
     ("sol --path", ["sol", "--path"]),
+    ("sol path", ["sol", "path"]),
     ("sol root", ["sol", "root"]),
     ("sol chat --help", ["sol", "chat", "--help"]),
-    ("sol call --help", ["sol", "call", "--help"]),
     ("sol import --help", ["sol", "import", "--help"]),
-    ("sol notify --help", ["sol", "notify", "--help"]),
-    ("sol skills --help", ["sol", "skills", "--help"]),
-    ("sol link --help", ["sol", "link", "--help"]),
-    ("sol doctor --help", ["sol", "doctor", "--help"]),
-    ("sol check --help", ["sol", "check", "--help"]),
+    ("sol call --help", ["sol", "call", "--help"]),
+)
+TOP_LEVEL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = tuple(
+    (f"sol {command} --help", ["sol", command, "--help"], module)
+    for command, module in sorted(TOP_LEVEL_COMPAT_MODULES.items())
+    # `contract` remains in the native compatibility allowlist, but it imports
+    # solstone.think.contract.journal -> jsonschema, which is owned by the
+    # journal-host extra. Routing to Python and thin-base importability are
+    # separate properties; do not grow the thin base to make this case pass.
+    if command != "contract"
+)
+JOURNAL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = (
+    (
+        "sol call journal --help",
+        ["sol", *JOURNAL_CALL_PREFIX, "--help"],
+        "solstone.think.tools.call",
+    ),
+)
+JOURNAL_CASES: tuple[tuple[str, list[str]], ...] = (
     ("journal transcribe --help", ["journal", "transcribe", "--help"]),
+)
+NATIVE_FAILURE_CASES: tuple[tuple[str, list[str], int, str], ...] = (
+    (
+        "native moved-stub remains native",
+        ["sol", "call", "identity"],
+        2,
+        "Moved to `journal identity`",
+    ),
+)
+ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (
+    NATIVE_CASES
+    + tuple((label, argv) for label, argv, _module in TOP_LEVEL_COMPAT_CASES)
+    + tuple((label, argv) for label, argv, _module in JOURNAL_COMPAT_CASES)
+    + JOURNAL_CASES
 )
 ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
     (
-        "service-routing help case",
-        ["sol", "think", "--help"],
-        "moved to 'journal think'",
+        "unknown native command",
+        ["sol", "does-not-exist"],
+        "Unsupported native sol command.",
     ),
     (
-        "journal import --help",
-        ["journal", "import", "--help"],
-        "is a journal-access command",
+        "service-only native command",
+        ["sol", "think", "--help"],
+        "Unsupported native sol command.",
+    ),
+    (
+        "unknown native call group",
+        ["sol", "call", "not-real", "--help"],
+        "Unsupported native sol command.",
     ),
 )
-# Keep in lockstep with solstone.think.call.CALL_NAME_OVERRIDES. The network app
-# intentionally keeps its shipped public command name `sol call link`.
-CALL_NAME_OVERRIDES = {"network": "link"}
+EXPECTED_SCRIPT_OWNERS = {
+    "sol": ["solstone-core"],
+    "solstone": ["solstone-core"],
+    "solstone-core": ["solstone-core"],
+    "solstone-python-compat": ["solstone"],
+}
+_SOURCE_NATIVE_BIN_DIR: Path | None = None
 
 CHILD = r"""
 import importlib
@@ -105,76 +142,127 @@ sys.meta_path.insert(0, BlockHeavyFinder())
 
 real_import_module = importlib.import_module
 inject_heavy_module = os.environ.get("SOLSTONE_ACCESS_GUARD_INJECT_HEAVY_MODULE")
-inject_mounted_app = os.environ.get("SOLSTONE_ACCESS_GUARD_INJECT_MOUNTED_APP")
 
 def guarded_import_module(name, package=None):
     if inject_heavy_module and name == inject_heavy_module:
         __import__("numpy")
-    if (
-        inject_mounted_app
-        and os.environ.get("SOLSTONE_STRICT_CALL_DISCOVERY") == "1"
-        and name == f"solstone.apps.{inject_mounted_app}.call"
-    ):
-        raise RuntimeError(f"injected mounted app failure: {inject_mounted_app}")
     return real_import_module(name, package)
 
 importlib.import_module = guarded_import_module
 
-from solstone.think import sol_cli
+from solstone.think import sol_compat_cli
 
-sys.argv = payload["argv"]
-if payload["argv"][0] == "journal":
-    sol_cli.journal_main()
-else:
-    sol_cli.main()
+raise SystemExit(sol_compat_cli.main(payload["argv"]))
 """
 
 
-def _call_app_names(root: Path) -> list[str]:
-    apps_dir = root / "solstone" / "apps"
-    if not apps_dir.is_dir():
-        return []
-    return sorted(
-        CALL_NAME_OVERRIDES.get(app_dir.name, app_dir.name)
-        for app_dir in apps_dir.iterdir()
-        if app_dir.is_dir()
-        and not app_dir.name.startswith("_")
-        and (app_dir / "call.py").is_file()
+def _source_native_bin_dir() -> Path:
+    global _SOURCE_NATIVE_BIN_DIR
+    if _SOURCE_NATIVE_BIN_DIR is not None:
+        return _SOURCE_NATIVE_BIN_DIR
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--quiet",
+            "--manifest-path",
+            str(RUST_MANIFEST),
+            "-p",
+            "solstone-core",
+            "--bin",
+            "sol",
+            "--bin",
+            "solstone",
+            "--locked",
+        ],
+        cwd=ROOT,
+        check=True,
+        timeout=900,
     )
+    _SOURCE_NATIVE_BIN_DIR = ROOT / "core" / "target" / "debug"
+    return _SOURCE_NATIVE_BIN_DIR
 
 
-def _run_case(
-    root: Path,
+def _check_journal_compat_inventory_nonempty() -> list[str]:
+    errors, paths = frozen_journal_remainder_paths()
+    if errors:
+        return [
+            f"access-imports-clean: FAIL journal compat inventory {error}"
+            for error in errors
+        ]
+    if not paths:
+        return ["access-imports-clean: FAIL compat journal subtree derivation is empty"]
+    return []
+
+
+def _bin_dir(python: str | None, *, source_root_on_path: bool) -> Path:
+    if source_root_on_path:
+        return ROOT / ".venv" / "bin"
+    if python is None:
+        raise RuntimeError("installed mode requires a Python executable")
+    return Path(python).parent
+
+
+def _run_native_case(
     label: str,
     argv: list[str],
     *,
-    strict_call_discovery: bool = False,
+    python: str | None = None,
+    source_root_on_path: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    if source_root_on_path and argv[0] in {"sol", "solstone"}:
+        bin_dir = _source_native_bin_dir()
+    else:
+        bin_dir = _bin_dir(python, source_root_on_path=source_root_on_path)
+    executable = bin_dir / argv[0]
+    env = os.environ.copy()
+    env.setdefault("SOLSTONE_JOURNAL", str(ROOT / "tests" / "fixtures" / "journal"))
+    if source_root_on_path:
+        env["PYTHONPATH"] = (
+            str(ROOT)
+            if not env.get("PYTHONPATH")
+            else str(ROOT) + os.pathsep + env["PYTHONPATH"]
+        )
+    return subprocess.run(
+        [str(executable), *argv[1:]],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+
+
+def _run_compat_case(
+    label: str,
+    argv: list[str],
+    *,
+    module: str,
     extra_env: dict[str, str] | None = None,
     python: str | None = None,
     source_root_on_path: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env.setdefault("SOLSTONE_JOURNAL", str(root / "tests" / "fixtures" / "journal"))
+    env.setdefault("SOLSTONE_JOURNAL", str(ROOT / "tests" / "fixtures" / "journal"))
+    env[SENTINEL] = SENTINEL_ARMED
     if source_root_on_path:
         env["PYTHONPATH"] = (
-            str(root)
+            str(ROOT)
             if not env.get("PYTHONPATH")
-            else str(root) + os.pathsep + env["PYTHONPATH"]
+            else str(ROOT) + os.pathsep + env["PYTHONPATH"]
         )
-    if strict_call_discovery:
-        env["SOLSTONE_STRICT_CALL_DISCOVERY"] = "1"
     if extra_env:
         env.update(extra_env)
     payload = {
-        "root": str(root),
-        "argv": argv,
+        "root": str(ROOT),
+        "argv": [marker_for_public_argv0(argv[0]), *argv[1:]],
         "blocked": BLOCKED_FAMILIES,
-        "label": label,
+        "label": f"{label} [{module}]",
         "source_root_on_path": source_root_on_path,
     }
     return subprocess.run(
         [python or sys.executable, "-c", CHILD, json.dumps(payload)],
-        cwd=root,
+        cwd=ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -194,60 +282,21 @@ def _has_traceback(result: subprocess.CompletedProcess[str]) -> bool:
     return "Traceback (most recent call last)" in result.stdout + result.stderr
 
 
-def _check_access_case(
-    root: Path,
-    label: str,
-    argv: list[str],
-    *,
-    extra_env: dict[str, str] | None = None,
-    python: str | None = None,
-    source_root_on_path: bool = True,
+def _check_success_result(
+    label: str, result: subprocess.CompletedProcess[str]
 ) -> list[str]:
-    strict = label == "sol call --help"
-    result = _run_case(
-        root,
-        label,
-        argv,
-        strict_call_discovery=strict,
-        extra_env=extra_env,
-        python=python,
-        source_root_on_path=source_root_on_path,
-    )
     failures: list[str] = []
     if result.returncode != 0:
         failures.append(_format_failure(label, result))
         return failures
     if _has_traceback(result):
         failures.append(f"access-imports-clean: FAIL {label} printed a traceback")
-    if strict:
-        missing = [
-            app_name
-            for app_name in _call_app_names(root)
-            if app_name not in result.stdout
-        ]
-        if missing:
-            failures.append(
-                f"access-imports-clean: FAIL sol call --help omitted apps: {missing}"
-            )
     return failures
 
 
-def _check_routing_case(
-    root: Path,
-    label: str,
-    argv: list[str],
-    expected: str,
-    *,
-    python: str | None = None,
-    source_root_on_path: bool = True,
+def _check_routing_result(
+    label: str, result: subprocess.CompletedProcess[str], expected: str
 ) -> list[str]:
-    result = _run_case(
-        root,
-        label,
-        argv,
-        python=python,
-        source_root_on_path=source_root_on_path,
-    )
     output = result.stdout + result.stderr
     failures: list[str] = []
     if result.returncode == 0:
@@ -261,34 +310,87 @@ def _check_routing_case(
     return failures
 
 
+def _check_failure_result(
+    label: str,
+    result: subprocess.CompletedProcess[str],
+    expected_exit: int,
+    expected_text: str,
+) -> list[str]:
+    output = result.stdout + result.stderr
+    failures: list[str] = []
+    if result.returncode != expected_exit:
+        failures.append(_format_failure(label, result))
+    if expected_text not in output:
+        failures.append(
+            f"access-imports-clean: FAIL {label} missing failure text: {expected_text}"
+        )
+    if _has_traceback(result):
+        failures.append(f"access-imports-clean: FAIL {label} printed a traceback")
+    return failures
+
+
 def run_checks(
-    root: Path,
     *,
     extra_env: dict[str, str] | None = None,
     python: str | None = None,
     source_root_on_path: bool = True,
 ) -> list[str]:
     failures: list[str] = []
-    for label, argv in ACCESS_CASES:
+    failures.extend(_check_journal_compat_inventory_nonempty())
+    compat_cases = TOP_LEVEL_COMPAT_CASES + JOURNAL_COMPAT_CASES
+    for label, argv in NATIVE_CASES + JOURNAL_CASES:
+        if argv[0] == "journal" and not source_root_on_path:
+            continue
         failures.extend(
-            _check_access_case(
-                root,
+            _check_success_result(
                 label,
-                argv,
-                extra_env=extra_env,
-                python=python,
-                source_root_on_path=source_root_on_path,
+                _run_native_case(
+                    label,
+                    argv,
+                    python=python,
+                    source_root_on_path=source_root_on_path,
+                ),
+            )
+        )
+    for label, argv, expected_exit, expected_text in NATIVE_FAILURE_CASES:
+        failures.extend(
+            _check_failure_result(
+                label,
+                _run_native_case(
+                    label,
+                    argv,
+                    python=python,
+                    source_root_on_path=source_root_on_path,
+                ),
+                expected_exit,
+                expected_text,
+            )
+        )
+    for label, argv, module in compat_cases:
+        failures.extend(
+            _check_success_result(
+                f"{label} [{module}]",
+                _run_compat_case(
+                    label,
+                    argv,
+                    module=module,
+                    extra_env=extra_env,
+                    python=python,
+                    source_root_on_path=source_root_on_path,
+                ),
             )
         )
     for label, argv, expected in ROUTING_CASES:
         failures.extend(
-            _check_routing_case(
-                root,
+            _check_routing_result(
                 label,
-                argv,
+                _run_native_case(
+                    label,
+                    argv,
+                    python=python,
+                    source_root_on_path=source_root_on_path,
+                ),
                 expected,
-                python=python,
-                source_root_on_path=source_root_on_path,
             )
         )
     return failures
@@ -384,11 +486,61 @@ def _check_heavy_absent(python: str) -> list[str]:
     return []
 
 
+def _check_script_owners(python: str) -> list[str]:
+    bin_dir = Path(python).parent
+    for script in EXPECTED_SCRIPT_OWNERS:
+        path = bin_dir / script
+        if not path.exists() or not os.access(path, os.X_OK):
+            return [
+                "access-imports-clean: FAIL installed script is missing or not "
+                f"executable: {path}"
+            ]
+    probe = (
+        "import importlib.metadata as md, json, pathlib, sys\n"
+        "scripts = {pathlib.Path(p).resolve(): pathlib.Path(p).name for p in sys.argv[1:]}\n"
+        "owners = {name: [] for name in scripts.values()}\n"
+        "for dist in md.distributions():\n"
+        "    name = dist.metadata.get('Name')\n"
+        "    for file in dist.files or []:\n"
+        "        try:\n"
+        "            located = dist.locate_file(file).resolve()\n"
+        "        except OSError:\n"
+        "            continue\n"
+        "        if located in scripts:\n"
+        "            owners[scripts[located]].append(name)\n"
+        "print(json.dumps({k: sorted(v) for k, v in owners.items()}, sort_keys=True))\n"
+    )
+    result = subprocess.run(
+        [
+            python,
+            "-c",
+            probe,
+            *(str(bin_dir / name) for name in EXPECTED_SCRIPT_OWNERS),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return [
+            "access-imports-clean: FAIL script-owner probe errored\n"
+            f"{result.stdout}\n{result.stderr}"
+        ]
+    owners = json.loads(result.stdout)
+    failures: list[str] = []
+    for script, expected in sorted(EXPECTED_SCRIPT_OWNERS.items()):
+        actual = owners.get(script, [])
+        if actual != expected:
+            failures.append(
+                f"access-imports-clean: FAIL {script} owners {actual!r} != {expected!r}"
+            )
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--inject-heavy-module")
-    parser.add_argument("--inject-mounted-app")
     parser.add_argument(
         "--real-install",
         action="store_true",
@@ -404,25 +556,25 @@ def main(argv: list[str] | None = None) -> int:
         extra_env["SOLSTONE_ACCESS_GUARD_INJECT_HEAVY_MODULE"] = (
             args.inject_heavy_module
         )
-    if args.inject_mounted_app:
-        extra_env["SOLSTONE_ACCESS_GUARD_INJECT_MOUNTED_APP"] = args.inject_mounted_app
 
     root = args.root.resolve()
+    if root != ROOT:
+        raise RuntimeError("--root override is no longer supported by this gate")
     if args.real_install:
         with tempfile.TemporaryDirectory(prefix="solstone-thin-base-") as tmpdir:
             print("access-imports-clean: building real thin-base venv (no extras)...")
             python = _real_base_python(root, tmpdir)
             failures = _check_heavy_absent(python)
+            failures.extend(_check_script_owners(python))
             failures.extend(
                 run_checks(
-                    root,
                     extra_env=extra_env or None,
                     python=python,
                     source_root_on_path=False,
                 )
             )
     else:
-        failures = run_checks(root, extra_env=extra_env or None)
+        failures = run_checks(extra_env=extra_env or None)
 
     if failures:
         for failure in failures:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Result as IoResult};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,7 @@ use serde_json::json;
 use solstone_core_journal::{
     ConfigError, HomeError, Source, discover_home, read_config_journal, resolve_journal_path,
 };
+use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::CommandOutput;
 use solstone_core_sol_client::port::read_convey_port;
 use solstone_core_sol_client::seam::{
@@ -33,7 +34,7 @@ const EXIT_USAGE: u8 = 64;
 const EXIT_SOFTWARE: u8 = 70;
 const EXIT_CONFIG: u8 = 78;
 const EXIT_TEMPFAIL: u8 = 75;
-const USAGE: &str = "Usage:\n  solstone-core-sol --version\n  solstone-core-sol help\n  solstone-core-sol status\n  solstone-core-sol path\n  solstone-core-sol call <app> <verb> [args...]\n  solstone-core-sol chat [args...]\n  solstone-core-sol import [args...]\n";
+const USAGE: &str = "Usage:\n  sol --version\n  sol help\n  sol root\n  sol status\n  sol path\n  sol call <app> <verb> [args...]\n  sol chat [args...]\n  sol import [args...]\n";
 const COMPAT_HELPER_NAME: &str = "solstone-python-compat";
 const COMPAT_SENTINEL: &str = "SOLSTONE_NATIVE_COMPAT_ACTIVE";
 const COMPAT_SENTINEL_ARMED: &str = "armed";
@@ -53,8 +54,16 @@ pub fn run() -> ExitCode {
         [command] if command == OsStr::new("--help") || command == OsStr::new("help") => {
             render_output(help_output())
         }
+        [command] if command == OsStr::new("root") => run_root(),
         [command] if command == OsStr::new("path") || command == OsStr::new("--path") => run_path(),
         [command] if command == OsStr::new("status") => run_status(),
+        [command] if command == OsStr::new("call") => render_output(call_help_output()),
+        [command, flag]
+            if command == OsStr::new("call")
+                && (flag == OsStr::new("--help") || flag == OsStr::new("help")) =>
+        {
+            render_output(call_help_output())
+        }
         [command, rest @ ..] if command == OsStr::new("call") => run_dispatched(&args, rest),
         [command, rest @ ..] if command == OsStr::new("chat") => run_dispatched(&args, rest),
         [command, rest @ ..] if command == OsStr::new("import") => run_dispatched(&args, rest),
@@ -82,10 +91,51 @@ fn unsupported_output() -> CommandOutput {
     CommandOutput::failure("Unsupported native sol command.\n", i32::from(EXIT_USAGE))
 }
 
+fn call_help_output() -> CommandOutput {
+    let groups = aggregate::entries()
+        .iter()
+        .filter(|entry| entry.surface == "sol-call")
+        .filter_map(|entry| entry.path.first().copied())
+        .collect::<BTreeSet<_>>();
+    let mut stdout = String::from("Usage:\n  sol call <app> <verb> [args...]\n\nCommands:\n");
+    for group in groups {
+        stdout.push_str(&format!("  {group}\n"));
+    }
+    stdout.push_str("  journal\n");
+    CommandOutput::success(stdout)
+}
+
 fn is_top_level_compat_command(command: &OsStr) -> bool {
     command
         .to_str()
         .is_some_and(|value| TOP_LEVEL_COMPAT_COMMANDS.contains(&value))
+}
+
+fn run_root() -> ExitCode {
+    render_output(CommandOutput::success(format!(
+        "{}\n",
+        resolve_project_root().display()
+    )))
+}
+
+fn resolve_project_root() -> PathBuf {
+    let mut starts = Vec::new();
+    if let Ok(executable) = env::current_exe()
+        && let Some(parent) = executable.parent()
+    {
+        starts.push(parent.to_path_buf());
+    }
+    if let Ok(cwd) = env::current_dir() {
+        starts.push(cwd);
+    }
+    for start in starts {
+        for candidate in start.ancestors() {
+            if candidate.join("pyproject.toml").is_file() && candidate.join("solstone").is_dir() {
+                return candidate.to_path_buf();
+            }
+        }
+    }
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn should_delegate_to_compat_after_native_miss(all_args: &[OsString], outcome: &Outcome) -> bool {
@@ -596,11 +646,22 @@ mod tests {
         let output = help_output();
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit, 0);
-        assert!(
-            output
-                .stdout
-                .contains("solstone-core-sol call <app> <verb>")
-        );
+        assert!(output.stdout.contains("sol call <app> <verb>"));
+    }
+
+    #[test]
+    fn call_help_lists_native_groups_and_journal_compat() {
+        let output = call_help_output();
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.exit, 0);
+        assert!(output.stdout.contains("Usage:\n  sol call <app> <verb>"));
+        assert!(output.stdout.contains("  activities\n"));
+        assert!(output.stdout.contains("  journal\n"));
+    }
+
+    #[test]
+    fn project_root_resolution_returns_an_existing_directory() {
+        assert!(resolve_project_root().is_dir());
     }
 
     #[test]
@@ -790,7 +851,7 @@ mod tests {
             &http_outcome
         ));
 
-        let unknown = os_args(&["call", "transcripts", "list"]);
+        let unknown = os_args(&["call", "not-real", "list"]);
         let unknown_outcome = evaluate_args(&unknown);
         assert!(matches!(unknown_outcome, Outcome::Unsupported { .. }));
         assert!(!should_delegate_to_compat_after_native_miss(

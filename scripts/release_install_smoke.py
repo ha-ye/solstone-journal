@@ -383,10 +383,7 @@ def _default_observe_install(
     )
     after = _solstone_distributions(env_python)
     installed_members: list[Mapping[str, Any]] = []
-    core_paths = {
-        name: _env_bin(env_root, name)
-        for name in CORE_SCRIPT_NAMES
-    }
+    core_paths = {name: _env_bin(env_root, name) for name in CORE_SCRIPT_NAMES}
     for name, core_path in core_paths.items():
         if core_path.is_file() or core_path.is_symlink():
             installed_members.append(_installed_member(core_path, name))
@@ -1362,8 +1359,7 @@ def _validate_proof_semantics(
             _failure(
                 "install proof smoke command set does not match release executables",
                 expected=", ".join(CORE_SCRIPT_NAMES),
-                actual=", ".join(sorted(str(key) for key in smoke_items))
-                or "<empty>",
+                actual=", ".join(sorted(str(key) for key in smoke_items)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )

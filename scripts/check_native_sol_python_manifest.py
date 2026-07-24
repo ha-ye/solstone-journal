@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRE_CUTOVER_COMMIT = "d777abeba213e167b18e9c7a646d112aa4b04ccd"
+SURVIVING_SOL_CLI = "solstone/think/sol_cli.py"
 
 # Pre-cutover deletion-owner manifest. `convey_client.py` is intentionally
 # excluded: solstone.think.link.browser_pairing and solstone.think.spl.blob_receiver
@@ -32,18 +35,18 @@ EXPECTED_BLOBS = {
     "solstone/think/tools/profile.py": "96fe4319bdce13029060806aea8523ca680ac2fb",
     "solstone/think/import_client.py": "31a6c12e341e9144b0f9c1567613abf0aabddc3a",
     "solstone/think/chat_cli.py": "f41e0523c6e5574f1d920c5304cdaf96643bdeee",
-    "solstone/think/sol_cli.py": "a20570fc0994f6215a013e8c89ce7776ddec7d17",
+    SURVIVING_SOL_CLI: "a20570fc0994f6215a013e8c89ce7776ddec7d17",
 }
 EXPECTED_SHA256 = hashlib.sha256(
-    "".join(f"{path}\t{blob}\n" for path, blob in sorted(EXPECTED_BLOBS.items())).encode(
-        "utf-8"
-    )
+    "".join(
+        f"{path}\t{blob}\n" for path, blob in sorted(EXPECTED_BLOBS.items())
+    ).encode("utf-8")
 ).hexdigest()
 
 
 def manifest_bytes() -> bytes:
     raw = subprocess.check_output(
-        ["git", "ls-tree", "HEAD", "--", *EXPECTED_BLOBS],
+        ["git", "ls-tree", PRE_CUTOVER_COMMIT, "--", *EXPECTED_BLOBS],
         cwd=REPO_ROOT,
     )
     lines = raw.splitlines()
@@ -80,16 +83,66 @@ def manifest_bytes() -> bytes:
     )
 
 
+def deletion_errors() -> list[str]:
+    errors: list[str] = []
+    for path in sorted(EXPECTED_BLOBS):
+        current = REPO_ROOT / path
+        if path == SURVIVING_SOL_CLI:
+            if not current.is_file():
+                errors.append(f"{path} must survive as the journal console script")
+            continue
+        if current.exists():
+            errors.append(f"{path} still exists after native-sol cutover")
+    errors.extend(sol_cli_survivor_errors(REPO_ROOT / SURVIVING_SOL_CLI))
+    return errors
+
+
+def sol_cli_survivor_errors(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    errors: list[str] = []
+    for required in ("def journal_main", "_dispatch", "COMMANDS", "ALIASES"):
+        if required not in text:
+            errors.append(
+                f"{SURVIVING_SOL_CLI} missing required journal symbol {required}"
+            )
+    for forbidden in (
+        "def main",
+        "ACCESS_HELP_GROUPS",
+        "SOL_SERVICE_CMD_REMOVED_ERROR",
+        "def print_help",
+    ):
+        if forbidden in text:
+            errors.append(
+                f"{SURVIVING_SOL_CLI} still contains removed sol surface {forbidden}"
+            )
+    if re.search(r"Command\([^)]*[\"']access[\"']", text, re.DOTALL):
+        errors.append(f"{SURVIVING_SOL_CLI} still registers an access command")
+    if re.search(r"Alias\([^)]*[\"']access[\"']", text, re.DOTALL):
+        errors.append(f"{SURVIVING_SOL_CLI} still registers an access alias")
+    return errors
+
+
 def main() -> int:
     data = manifest_bytes()
     digest = hashlib.sha256(data).hexdigest()
+    errors = deletion_errors()
     if digest != EXPECTED_SHA256:
-        print("native sol Python manifest digest drifted")
-        print(f"expected {EXPECTED_SHA256}")
-        print(f"actual   {digest}")
+        errors.insert(
+            0,
+            "native sol Python manifest digest drifted "
+            f"(expected {EXPECTED_SHA256}, actual {digest})",
+        )
+    if errors:
+        print("native sol Python deletion manifest failed:")
+        for error in errors:
+            print(f"- {error}")
         return 1
     print(
-        f"native sol Python manifest ok: files={len(EXPECTED_BLOBS)} sha256={digest}"
+        "native sol Python deletion manifest ok: "
+        f"pre_cutover={PRE_CUTOVER_COMMIT} files={len(EXPECTED_BLOBS)} "
+        f"sha256={digest}"
     )
     return 0
 

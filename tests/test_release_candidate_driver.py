@@ -29,8 +29,8 @@ import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_wheel_contents import (
-    CORE_SCRIPT_NAMES,
     CORE_REQUIRED_SDIST_MEMBERS,
+    CORE_SCRIPT_NAMES,
     CPU_TYPE_ARM64,
     ELF_MACHINE,
     EXPECTED_MODEL_SHA256,

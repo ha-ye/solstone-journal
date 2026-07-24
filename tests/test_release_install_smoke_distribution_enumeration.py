@@ -372,7 +372,9 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
     assert overlap == set()
 
     env_python = _env_python(env_root)
-    install_order = (core_wheel, base_wheel) if reverse_order else (base_wheel, core_wheel)
+    install_order = (
+        (core_wheel, base_wheel) if reverse_order else (base_wheel, core_wheel)
+    )
     result = _run(
         (env_python, "-m", "pip", "install", "--no-index", "--no-deps", *install_order),
         cwd=tmp_path,
@@ -382,7 +384,10 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
 
     core_names = wheel_checker.CORE_SCRIPT_NAMES
     expected_owners = {name: "solstone-core" for name in core_names}
-    assert _installed_script_owners(env_python, core_names, cwd=tmp_path) == expected_owners
+    assert (
+        _installed_script_owners(env_python, core_names, cwd=tmp_path)
+        == expected_owners
+    )
     before = _script_bytes(env_root, core_names)
     for name in core_names:
         output = _run((_env_bin(env_root, name), "--version"), cwd=tmp_path)
@@ -405,14 +410,19 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
     )
     assert reinstall.returncode == 0, reinstall.stderr or reinstall.stdout
     assert _script_bytes(env_root, core_names) == before
-    assert _installed_script_owners(env_python, core_names, cwd=tmp_path) == expected_owners
+    assert (
+        _installed_script_owners(env_python, core_names, cwd=tmp_path)
+        == expected_owners
+    )
 
     uninstall_base = _run(
         (env_python, "-m", "pip", "uninstall", "-y", "solstone"),
         cwd=tmp_path,
         env=dict(smoke.SCRUBBED_COMMAND_ENV),
     )
-    assert uninstall_base.returncode == 0, uninstall_base.stderr or uninstall_base.stdout
+    assert uninstall_base.returncode == 0, (
+        uninstall_base.stderr or uninstall_base.stdout
+    )
     assert all(_env_bin(env_root, name).exists() for name in core_names)
 
     reinstall_base = _run(
@@ -420,12 +430,16 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
         cwd=tmp_path,
         env=dict(smoke.SCRUBBED_COMMAND_ENV),
     )
-    assert reinstall_base.returncode == 0, reinstall_base.stderr or reinstall_base.stdout
+    assert reinstall_base.returncode == 0, (
+        reinstall_base.stderr or reinstall_base.stdout
+    )
     uninstall_core = _run(
         (env_python, "-m", "pip", "uninstall", "-y", "solstone-core"),
         cwd=tmp_path,
         env=dict(smoke.SCRUBBED_COMMAND_ENV),
     )
-    assert uninstall_core.returncode == 0, uninstall_core.stderr or uninstall_core.stdout
+    assert uninstall_core.returncode == 0, (
+        uninstall_core.stderr or uninstall_core.stdout
+    )
     assert not any(_env_bin(env_root, name).exists() for name in core_names)
     assert _env_bin(env_root, "solstone-python-compat").exists()

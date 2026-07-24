@@ -44,7 +44,9 @@ def derive_journal_typer_paths() -> set[tuple[str, ...]]:
     return paths
 
 
-def _walk_click_command(command: object, prefix: tuple[str, ...]) -> set[tuple[str, ...]]:
+def _walk_click_command(
+    command: object, prefix: tuple[str, ...]
+) -> set[tuple[str, ...]]:
     paths: set[tuple[str, ...]] = set()
     callback = getattr(command, "callback", None)
     if callback is not None:
@@ -63,9 +65,7 @@ def frozen_journal_remainder_paths() -> tuple[list[str], set[tuple[str, ...]]]:
     errors.extend(oracle_errors)
     authority_paths = {entry.path for entry in entries if entry.surface == "sol-call"}
     remainder = {
-        path
-        for path in oracle_paths - authority_paths
-        if path and path[0] == "journal"
+        path for path in oracle_paths - authority_paths if path and path[0] == "journal"
     }
     if not remainder:
         errors.append("frozen journal compatibility remainder is empty")
@@ -87,7 +87,9 @@ def check_journal_subtree() -> list[str]:
     if missing:
         errors.append(f"journal compat Typer paths missing: {format_paths(missing)}")
     if extra:
-        errors.append(f"journal compat Typer paths outside oracle: {format_paths(extra)}")
+        errors.append(
+            f"journal compat Typer paths outside oracle: {format_paths(extra)}"
+        )
     return errors
 
 

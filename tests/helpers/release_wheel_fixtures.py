@@ -9,8 +9,8 @@ import base64
 import hashlib
 import struct
 import zipfile
-from pathlib import Path
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import scripts.check_wheel_contents as checker
 

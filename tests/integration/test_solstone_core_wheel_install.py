@@ -56,9 +56,7 @@ def test_locally_built_linux_core_wheel_installs_and_runs(
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as wheel:
         script_members = {
-            Path(name).name
-            for name in wheel.namelist()
-            if ".data/scripts/" in name
+            Path(name).name for name in wheel.namelist() if ".data/scripts/" in name
         }
     assert script_members == set(checker.CORE_SCRIPT_NAMES)
     assert checker.check_core_wheel(wheels[0], checker.MAX_CORE_WHEEL_BYTES) == []

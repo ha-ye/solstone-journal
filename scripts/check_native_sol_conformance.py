@@ -230,7 +230,9 @@ def check_top_level_backing_contracts(
             continue
         contract = contract_by_operation.get(backing_id)
         if contract is None:
-            errors.append(f"{operation_id}: missing {label} backing contract {backing_id}")
+            errors.append(
+                f"{operation_id}: missing {label} backing contract {backing_id}"
+            )
             continue
         if (contract.method, contract.route) not in route_map:
             errors.append(

@@ -231,3 +231,19 @@ def test_channel_adapter_scrub_reports_unreadable_tracked_regular_file(
         ("regular.txt", "tracked-io")
     ]
     assert "errno" in result.findings[0].detail
+
+
+def test_channel_adapter_scrub_skips_deleted_tracked_regular_file(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    tracked = repo / "regular.txt"
+    tracked.write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "add", "regular.txt"], cwd=repo, check=True)
+    tracked.unlink()
+
+    result = scrub.scan_paths(repo, scrub.tracked_entries(repo))
+
+    assert result.findings == ()

@@ -3,10 +3,23 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
+from pathlib import Path
 
 import scripts.build_native_sol_inventory as inventory
-from tests.native_sol.run_python_parity import PARITY_DIR, load_vectors
+
+PARITY_DIR = inventory.REPO_ROOT / "core/fixtures/native-sol/parity"
+
+
+def load_vectors(paths: list[Path]) -> list[dict[str, object]]:
+    vectors: list[dict[str, object]] = []
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                vectors.append(json.loads(line))
+    return vectors
+
 
 VECTORS = (
     load_vectors(sorted(PARITY_DIR.glob("*.jsonl"))) if PARITY_DIR.exists() else []
@@ -113,9 +126,11 @@ def vector_matches_entry(
 ) -> bool:
     if entry.surface != vector.get("surface"):
         return False
+    argv = list(vector.get("argv", []))
     if entry.surface == "sol-chat":
         return tuple(entry.path) == ("chat",)
-    argv = list(vector.get("argv", []))
+    if entry.surface == "sol-import":
+        return tuple(argv[: len(entry.path)]) == entry.path
     return tuple(argv[: len(entry.path)]) == entry.path
 
 
@@ -126,4 +141,6 @@ def argv_tail(
     argv = [str(arg) for arg in vector.get("argv", [])]
     if entry.surface == "sol-chat":
         return argv
+    if entry.surface == "sol-import":
+        return argv[1:]
     return argv[len(entry.path) :]

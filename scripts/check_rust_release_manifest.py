@@ -57,9 +57,7 @@ SCHEMA_ID = "https://solpbc.org/schemas/rust-release-manifest/v1.json"
 SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 PRODUCT = "solstone-core"
 CORE_UNSUPPORTED_TOMBSTONE_PROJECT = "solstone-core-unsupported-platform"
-CORE_UNSUPPORTED_TOMBSTONE_RECORD = (
-    "solstone-core-unsupported-platform-tombstone.json"
-)
+CORE_UNSUPPORTED_TOMBSTONE_RECORD = "solstone-core-unsupported-platform-tombstone.json"
 CORE_UNSUPPORTED_TOMBSTONE_KIND = (
     "solstone-core-unsupported-platform-tombstone-publication/v1"
 )
@@ -114,7 +112,8 @@ PLATFORM_TRIPLES: dict[CorePlatform, str] = {
     ("darwin", "arm64"): "aarch64-apple-darwin",
 }
 CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES = tuple(
-    PLATFORM_TRIPLES[platform_tuple] for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
+    PLATFORM_TRIPLES[platform_tuple]
+    for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
 )
 PLATFORM_LANES: dict[CorePlatform, LaneName] = {
     ("linux", "x86_64"): "linux-x86_64-musl",

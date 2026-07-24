@@ -108,7 +108,10 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         """,
     )
     _write(
-        tmp_path / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py",
+        tmp_path
+        / "scripts"
+        / "solstone-core-unsupported-platform-tombstone"
+        / "setup.py",
         """
         TOMBSTONE_VERSION = "0.0.1"
         """,
@@ -241,8 +244,7 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     assert f'"{solstone_core_unsupported_platform_pin("2.3.4")}"' in root_pyproject
     assert (
         '"solstone-core-unsupported-platform==2.3.4; python_version < '
-        "'3.12'\""
-        in root_pyproject
+        "'3.12'\"" in root_pyproject
     )
     assert '"solstone-journal-models==1.0.0"' in root_pyproject
     tombstone = rendered[

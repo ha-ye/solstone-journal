@@ -109,8 +109,7 @@ def test_normalizer_retains_now_reachable_sol_workspace_records(
     after = _members(archive)
     assert after.keys() == before.keys()
     assert (
-        after["solstone_core-1.2.3/PKG-INFO"]
-        == before["solstone_core-1.2.3/PKG-INFO"]
+        after["solstone_core-1.2.3/PKG-INFO"] == before["solstone_core-1.2.3/PKG-INFO"]
     )
     assert (
         after["solstone_core-1.2.3/core/Cargo.toml"]

@@ -144,9 +144,7 @@ def _candidate(root: Path) -> Path:
         with zipfile.ZipFile(candidate / artifact, "w") as wheel:
             version = artifact.removesuffix(".whl").split("-")[1]
             for name in CORE_SCRIPT_NAMES:
-                info = zipfile.ZipInfo(
-                    f"solstone_core-{version}.data/scripts/{name}"
-                )
+                info = zipfile.ZipInfo(f"solstone_core-{version}.data/scripts/{name}")
                 info.create_system = 3
                 info.external_attr = 0o755 << 16
                 wheel.writestr(info, f"{lane} {name} native member".encode("utf-8"))

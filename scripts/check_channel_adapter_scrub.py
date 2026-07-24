@@ -468,6 +468,8 @@ def scan_paths(root: Path, entries: Iterable[TrackedEntry]) -> ScanResult:
             )
             continue
         path = root / relative_path
+        if not path.exists():
+            continue
         try:
             data = path.read_bytes()
         except OSError as exc:

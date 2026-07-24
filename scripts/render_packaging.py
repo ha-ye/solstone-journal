@@ -78,7 +78,9 @@ def _core_leaf_path(root: Path) -> Path:
 
 
 def _core_unsupported_tombstone_path(root: Path) -> Path:
-    return root / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py"
+    return (
+        root / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py"
+    )
 
 
 def _rewrite_leaf(text: str, version: str) -> str:

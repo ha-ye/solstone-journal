@@ -154,8 +154,14 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
         "solstone_core-1.0.0-py3-none-linux_x86_64.whl",
     ):
         _write_metadata_wheel(candidate_dir / name)
-    native_bytes = b"core"
-    native_sha = hashlib.sha256(native_bytes).hexdigest()
+    native_members = {
+        name: {
+            "path": f"linux-x86/{name}",
+            "sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+            "bytes": len(name.encode("utf-8")),
+        }
+        for name in smoke.CORE_SCRIPT_NAMES
+    }
     digest = candidate_digest(candidate_dir)
     ledger: dict[str, Any] = {
         "source_commit": "b" * 40,
@@ -167,15 +173,7 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
                 for path in sorted(candidate_dir.iterdir(), key=lambda item: item.name)
             ],
         },
-        "native_members": {
-            "linux-x86_64-musl": {
-                "solstone-core": {
-                    "path": "linux-x86/solstone-core",
-                    "sha256": native_sha,
-                    "bytes": len(native_bytes),
-                }
-            }
-        },
+        "native_members": {"linux-x86_64-musl": native_members},
     }
     ledger_bytes = json.dumps(ledger, sort_keys=True).encode("utf-8")
     ledger_sha = hashlib.sha256(ledger_bytes).hexdigest()
@@ -215,9 +213,10 @@ def _write_valid_install_proof(
     env_root = request_dir / "env"
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     python_path = env_root / "bin" / "python"
-    core_path = env_root / "bin" / "solstone-core"
     python_path.write_bytes(b"python")
-    core_path.write_bytes(b"core")
+    core_paths = {name: env_root / "bin" / name for name in smoke.CORE_SCRIPT_NAMES}
+    for name, path in core_paths.items():
+        path.write_text(name, encoding="utf-8")
     install_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=request_payload["target"],
@@ -251,23 +250,27 @@ def _write_valid_install_proof(
                 env=smoke.SCRUBBED_COMMAND_ENV,
             ),
             installed_distributions=smoke.expected_distribution_entries(install_paths),
-            installed_members=(
+            installed_members=tuple(
                 {
-                    "name": "solstone-core",
-                    "path": core_path,
-                    "sha256": ledger["native_members"][request_payload["target"]][
-                        "solstone-core"
-                    ]["sha256"],
+                    "name": name,
+                    "path": path,
+                    "sha256": ledger["native_members"][request_payload["target"]][name][
+                        "sha256"
+                    ],
                     "symlink": False,
-                },
+                }
+                for name, path in sorted(core_paths.items())
             ),
             smoke={
-                "solstone-core": smoke.CommandResult(
-                    argv=(str(core_path), "--version"),
+                name: smoke.CommandResult(
+                    argv=(str(path), "--version"),
                     exit_code=0,
-                    stdout=f"solstone-core {request_payload['version']}",
+                    stdout=(
+                        f"{smoke.CORE_SMOKE_STDOUT[name]} {request_payload['version']}"
+                    ),
                     env=smoke.SCRUBBED_COMMAND_ENV,
                 )
+                for name, path in sorted(core_paths.items())
             },
         ),
         recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),

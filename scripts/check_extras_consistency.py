@@ -55,7 +55,6 @@ THIN_BASE = {
     "setproctitle",
     "typer",
     "requests",
-    "timefhuman",
     "cryptography>=42,<47",
     "pyOpenSSL>=24.0",
     "argon2-cffi",
@@ -160,9 +159,7 @@ def _check_core_pins(base: list[str], root_version: str | None) -> list[str]:
 
 def _check_core_unsupported_pin(base: list[str], root_version: str | None) -> list[str]:
     pins = [
-        dep
-        for dep in base
-        if dep.startswith("solstone-core-unsupported-platform==")
+        dep for dep in base if dep.startswith("solstone-core-unsupported-platform==")
     ]
     expected = solstone_core_unsupported_platform_pin(root_version or "")
     if len(pins) != 1:
@@ -379,7 +376,9 @@ def main(root: Path | None = None) -> int:
         host_core_pins = [
             dep
             for dep in host
-            if dep.startswith(("solstone-core==", "solstone-core-unsupported-platform=="))
+            if dep.startswith(
+                ("solstone-core==", "solstone-core-unsupported-platform==")
+            )
         ]
         if host_core_pins:
             errors.append(

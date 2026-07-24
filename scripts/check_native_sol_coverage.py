@@ -9,12 +9,15 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 try:
     from scripts.build_native_sol_inventory import (
         FINAL_HTTP_TOTAL,
+        FINAL_STUB_COUNTS,
+        FINAL_TOP_LEVEL_CHAT_TOTAL,
         FINAL_TOP_LEVEL_IMPORT_TOTAL,
         REPO_ROOT,
         discover,
@@ -22,6 +25,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
     from build_native_sol_inventory import (  # type: ignore[no-redef]
         FINAL_HTTP_TOTAL,
+        FINAL_STUB_COUNTS,
+        FINAL_TOP_LEVEL_CHAT_TOTAL,
         FINAL_TOP_LEVEL_IMPORT_TOTAL,
         REPO_ROOT,
         discover,
@@ -45,16 +50,30 @@ def main() -> int:
 
 
 def check_coverage(root: Path = REPO_ROOT) -> list[str]:
+    entries = discover(root)
     required = {
         entry.operation_id
-        for entry in discover(root)
+        for entry in entries
         if entry.surface == "sol-call" and entry.entry_type == "http"
+    }
+    required_stubs = {
+        entry.operation_id
+        for entry in entries
+        if entry.surface == "sol-call" and entry.entry_type in {"moved-stub", "local"}
+    }
+    required_top_level_chat = {
+        entry.operation_id
+        for entry in entries
+        if entry.surface == "sol-chat" and entry.entry_type == "top-level-chat"
     }
     required_top_level_import = {
         entry.operation_id
-        for entry in discover(root)
+        for entry in entries
         if entry.surface == "sol-import" and entry.entry_type == "top-level-import"
     }
+    required_dispatch = (
+        required | required_stubs | required_top_level_chat | required_top_level_import
+    )
     vectors = load_vectors(PARITY_DIR)
     resolved = resolve_vectors(PARITY_DIR, vectors)
     applicability, applicability_errors = load_applicability(APPLICABILITY)
@@ -64,6 +83,22 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
     if len(required) != FINAL_HTTP_TOTAL:
         errors.append(
             f"current HTTP authority count {len(required)} != {FINAL_HTTP_TOTAL}"
+        )
+    stub_counts = Counter(
+        entry.entry_type
+        for entry in entries
+        if entry.surface == "sol-call" and entry.entry_type in FINAL_STUB_COUNTS
+    )
+    for entry_type, expected in sorted(FINAL_STUB_COUNTS.items()):
+        if stub_counts[entry_type] != expected:
+            errors.append(
+                f"current {entry_type} authority count {stub_counts[entry_type]} "
+                f"!= {expected}"
+            )
+    if len(required_top_level_chat) != FINAL_TOP_LEVEL_CHAT_TOTAL:
+        errors.append(
+            f"current top-level chat authority count {len(required_top_level_chat)} "
+            f"!= {FINAL_TOP_LEVEL_CHAT_TOTAL}"
         )
     if not applicability_errors:
         entries = applicability["entries"]
@@ -100,6 +135,19 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
         errors.append(
             f"current top-level import authority count {len(required_top_level_import)} "
             f"!= {FINAL_TOP_LEVEL_IMPORT_TOTAL}"
+        )
+    if not required_dispatch:
+        errors.append("native dispatch authority set is empty")
+    resolved_operations = {
+        str(item["operation_id"])
+        for item in resolved.values()
+        if item.get("operation_id") is not None
+    }
+    missing_dispatch = sorted(required_dispatch - resolved_operations)
+    if missing_dispatch:
+        errors.append(
+            "production aggregate dispatch missing required operations "
+            f"{missing_dispatch!r}"
         )
 
     buckets = collect_buckets(vectors, resolved, required, {"http"}, errors)
@@ -345,7 +393,9 @@ def check_top_level_import_cases(
     errors: list[str] = []
     for operation_id, entry in sorted(entries.items()):
         if not isinstance(entry, dict):
-            errors.append(f"{operation_id}: top-level applicability entry must be an object")
+            errors.append(
+                f"{operation_id}: top-level applicability entry must be an object"
+            )
             continue
         case_ids = entry.get("case_ids", {})
         if not isinstance(case_ids, dict):
@@ -353,7 +403,9 @@ def check_top_level_import_cases(
             continue
         for case_name, ids in sorted(case_ids.items()):
             if not isinstance(ids, list) or not ids:
-                errors.append(f"{operation_id}: top-level case {case_name} must be non-empty")
+                errors.append(
+                    f"{operation_id}: top-level case {case_name} must be non-empty"
+                )
                 continue
             for vector_id in ids:
                 if vector_id not in vectors:
