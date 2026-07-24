@@ -31,3 +31,10 @@ def test_native_sol_conformance_self_test_detects_authority_route_mismatch() -> 
     errors = conformance.check_conformance(authorities=authorities)
 
     assert any("activities.list" in error and "route" in error for error in errors)
+
+
+def test_route_reason_annotations_are_union_with_ast_scan() -> None:
+    from solstone.apps.network.routes import pair_start
+
+    assert "pl_revoked" in conformance.route_error_reason_codes(pair_start)
+    assert "pairing_request_invalid" in conformance.route_error_reason_codes(pair_start)

@@ -94,6 +94,118 @@ OPERATIONS: list[OperationSpec] = [
         ),
     ),
     OperationSpec(
+        operation_id="link.devices",
+        method="GET",
+        rule="/app/network/api/devices",
+        summary="List paired link devices",
+        description="Return paired devices for native link list commands.",
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Paired devices.",
+                named_fields=(FieldSpec("devices", "array", required=True),),
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="link.private-link.status",
+        method="GET",
+        rule="/app/network/api/private-link",
+        summary="Read private network status",
+        description="Return private network posture and operation state.",
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Private network status.",
+                named_fields=(
+                    FieldSpec("success", "boolean", required=True),
+                    FieldSpec("service", "string", required=True),
+                    FieldSpec("state", "string", required=True),
+                    FieldSpec("posture", "string", required=True),
+                    FieldSpec("enrolled", "boolean", required=True),
+                    FieldSpec("relay_url", "string", required=True),
+                    FieldSpec("actions", "object", required=True),
+                    FieldSpec("operation", "object", required=True),
+                ),
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="link.private-link.setup",
+        method="POST",
+        rule="/app/network/private-link/enable",
+        summary="Start private network setup",
+        description="Begin SPL private-link enrollment and return operation state.",
+        responses=(
+            ResponseSpec(
+                status=202,
+                description="Private network setup operation started.",
+                named_fields=(
+                    FieldSpec("success", "boolean", required=True),
+                    FieldSpec("service", "string", required=True),
+                    FieldSpec("operation", "object", required=True),
+                ),
+            ),
+            _json_error(
+                400,
+                ("invalid_operation_for_state",),
+                "The private network is already enabled or cannot be enabled.",
+            ),
+            _json_error(
+                500,
+                ("service_operation_failed",),
+                "The consent link could not be prepared.",
+            ),
+            _json_error(
+                503,
+                ("service_busy",),
+                "A service operation is already running.",
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="link.private-link.disable",
+        method="POST",
+        rule="/app/network/private-link/disable",
+        summary="Disable private network",
+        description="Turn off SPL private-link posture.",
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Private network disable result.",
+                named_fields=(
+                    FieldSpec("success", "boolean", required=True),
+                    FieldSpec("service", "string", required=True),
+                    FieldSpec("result", "object", required=True),
+                    FieldSpec("status", "object", required=True),
+                ),
+            ),
+            _json_error(
+                500,
+                ("service_operation_failed",),
+                "The private network could not be disabled.",
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="link.pairNonceStatus",
+        method="GET",
+        rule="/app/network/api/pair/nonce-status",
+        summary="Read pair nonce status",
+        description="Return whether a pairing nonce is present and used.",
+        parameters=(ParamSpec("nonce", "query"),),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Pair nonce status.",
+                named_fields=(
+                    FieldSpec("present", "boolean", required=True),
+                    FieldSpec("used", "boolean", required=True),
+                ),
+            ),
+        ),
+    ),
+    OperationSpec(
         operation_id="link.pair",
         method="POST",
         rule="/app/network/pair",

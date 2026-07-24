@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["link", "authorized-clients"]
+kind = "command"
+help = "List every authorized client cert: fingerprint, label, last-seen (flat view)."
+operation_id = "link.authorized-clients"
+entry_type = "http"
+method = "GET"
+route = "/app/network/api/devices"
+contract_operation_id = "link.devices"
+handler = "authorized_clients"
+params = []
+
+[[entries]]
+path = ["link", "list"]
+kind = "command"
+help = "Print every paired device with its last-seen time."
+operation_id = "link.list"
+entry_type = "http"
+method = "GET"
+route = "/app/network/api/devices"
+contract_operation_id = "link.devices"
+handler = "list"
+params = []
+
+[[entries]]
+path = ["link", "observer-pause"]
+kind = "command"
+help = "Pause linked observers (not yet available)."
+operation_id = "link.observer-pause"
+entry_type = "local"
+handler = "observer_pause"
+params = []
+
+[[entries]]
+path = ["link", "pair"]
+kind = "command"
+help = "Start a pairing link, print join-ready credentials, optionally wait."
+operation_id = "link.pair"
+entry_type = "http"
+method = "POST"
+route = "/app/network/pair-start"
+contract_operation_id = "link.pairStart"
+handler = "pair"
+params = [
+  { name = "device_label", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--device-label"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "as_role", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--as"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "timeout_seconds", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 300, options = ["--timeout"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "no_wait", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--no-wait"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["link", "private-link", "disable"]
+kind = "command"
+help = "Turn off private network."
+operation_id = "link.private-link.disable"
+entry_type = "http"
+method = "POST"
+route = "/app/network/private-link/disable"
+contract_operation_id = "link.private-link.disable"
+handler = "private_link_disable"
+params = []
+
+[[entries]]
+path = ["link", "private-link", "setup"]
+kind = "command"
+help = "Set up private network."
+operation_id = "link.private-link.setup"
+entry_type = "http"
+method = "POST"
+route = "/app/network/private-link/enable"
+contract_operation_id = "link.private-link.setup"
+handler = "private_link_setup"
+params = [
+  { name = "wait_seconds", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 900.0, options = ["--wait-seconds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "poll_interval", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 1.0, options = ["--poll-interval"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["link", "private-link", "status"]
+kind = "command"
+help = "Show private network status."
+operation_id = "link.private-link.status"
+entry_type = "http"
+method = "GET"
+route = "/app/network/api/private-link"
+contract_operation_id = "link.private-link.status"
+handler = "private_link_status"
+params = []
+
+[[entries]]
+path = ["link", "status"]
+kind = "command"
+help = "Report enrollment, listen-WS state, active tunnel count, relay endpoint."
+operation_id = "link.status"
+entry_type = "http"
+method = "GET"
+route = "/app/network/api/status"
+contract_operation_id = "link.status"
+handler = "status"
+params = []
+
+[[entries]]
+path = ["link", "unpair"]
+kind = "command"
+help = "Revoke a paired device. Next reconnect from that device fails at TLS handshake."
+operation_id = "link.unpair"
+entry_type = "http"
+method = "POST"
+route = "/app/network/unpair"
+contract_operation_id = "link.unpair"
+handler = "unpair"
+params = [
+  { name = "target", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["target"], secondary = [], hidden = false, is_flag = false, count = false },
+]

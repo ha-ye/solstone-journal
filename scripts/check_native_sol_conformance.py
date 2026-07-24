@@ -24,6 +24,7 @@ from solstone.apps.activities.routes import activities_bp
 from solstone.apps.awareness.routes import awareness_bp
 from solstone.apps.body.routes import body_bp
 from solstone.apps.curation.routes import curation_bp
+from solstone.apps.network.routes import network_bp
 from solstone.apps.sol.routes import sol_bp
 from solstone.apps.support.routes import support_bp
 from solstone.apps.transcripts.routes import transcripts_bp
@@ -259,6 +260,7 @@ def register_native_blueprints(app: Flask) -> None:
         profiles_bp,
         import_bp,
         transcripts_bp,
+        network_bp,
     ):
         app.register_blueprint(blueprint)
 
@@ -282,7 +284,19 @@ def route_error_reason_codes(view: Callable[..., Any]) -> frozenset[str]:
     if source is None:
         return frozenset()
     functions = module_functions(Path(source))
-    return frozenset(collect_function_reason_codes(view.__name__, functions, set()))
+    discovered = collect_function_reason_codes(view.__name__, functions, set())
+    return frozenset(discovered | annotated_route_reason_codes(view))
+
+
+def annotated_route_reason_codes(view: Callable[..., Any]) -> set[str]:
+    module = inspect.getmodule(view)
+    annotations = getattr(module, "NATIVE_SOL_ROUTE_REASON_CODES", None)
+    if not isinstance(annotations, dict):
+        return set()
+    values = annotations.get(view.__name__, set())
+    if not isinstance(values, (set, frozenset, list, tuple)):
+        return set()
+    return {str(value) for value in values}
 
 
 @lru_cache(maxsize=None)

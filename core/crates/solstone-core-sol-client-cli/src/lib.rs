@@ -78,7 +78,7 @@ fn evaluate_call(args: &[OsString]) -> Outcome {
         };
     };
     match entry.entry_type {
-        "http" => Outcome::Migrated {
+        "http" | "local" => Outcome::Migrated {
             path: args[..len].to_vec(),
         },
         "moved-stub" => Outcome::MovedStub {
@@ -131,7 +131,7 @@ pub fn dispatch_sol_call_with_seams(
         stdin,
         today,
         transport: seams.transport,
-        clock: None,
+        clock: seams.clock,
         chat_events: None,
         files: seams.files,
         build_identity: seams.build_identity,

@@ -133,6 +133,12 @@ network_bp = Blueprint(
     static_url_path="/static",
 )
 
+NATIVE_SOL_ROUTE_REASON_CODES = {
+    "api_status": {"pl_revoked"},
+    "pair_start": {"pl_revoked"},
+    "unpair": {"pl_revoked"},
+}
+
 
 @network_bp.route("/")
 def index() -> str:

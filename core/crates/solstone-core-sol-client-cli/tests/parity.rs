@@ -32,6 +32,7 @@ const HEALTH_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/health_coverage.jsonl");
 const IMPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/import.jsonl");
 const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/ledger.jsonl");
+const LINK_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
 const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.jsonl");
@@ -55,6 +56,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(HEALTH_COVERAGE_VECTORS))
         .chain(load_vectors(IMPORT_VECTORS))
         .chain(load_vectors(LEDGER_VECTORS))
+        .chain(load_vectors(LINK_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(PROFILE_VECTORS))
         .chain(load_vectors(SOL_VECTORS))
@@ -72,7 +74,7 @@ fn run_vector(vector: &Value) {
     let stdin = vector["stdin"].as_str().unwrap_or_default();
     let today = vector["clock"]["today"].as_str().unwrap_or("20260723");
     let transport = ScriptedHttpTransport::new(scripted_calls(vector));
-    let clock = FakeClock::at_unix(0);
+    let clock = FakeClock::at_unix(clock_unix_seconds(vector));
     let chat_events = ScriptedChatEventSource::new(chat_inputs(vector));
     let files = fixture_files(vector);
     let build_identity = FakeBuildIdentityProvider::new(Some(json!({
@@ -108,7 +110,7 @@ fn run_vector(vector: &Value) {
             today,
             DispatchSeams {
                 transport: &transport,
-                clock: None,
+                clock: Some(&clock),
                 chat_events: None,
                 files: Some(&files),
                 build_identity: Some(&build_identity),
@@ -136,6 +138,13 @@ fn load_vectors(text: &str) -> Vec<Value> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("valid parity vector"))
         .collect()
+}
+
+fn clock_unix_seconds(vector: &Value) -> u64 {
+    vector["clock"]
+        .get("unix_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 fn scripted_calls(vector: &Value) -> Vec<ExpectedHttpCall> {

@@ -5174,6 +5174,142 @@
         ]
       }
     },
+    "/app/network/api/devices": {
+      "get": {
+        "description": "Return paired devices for native link list commands.",
+        "operationId": "link.devices",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "devices": {
+                      "items": {},
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "devices"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Paired devices."
+          }
+        },
+        "summary": "List paired link devices",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/network/api/pair/nonce-status": {
+      "get": {
+        "description": "Return whether a pairing nonce is present and used.",
+        "operationId": "link.pairNonceStatus",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "nonce",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "used": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "present",
+                    "used"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Pair nonce status."
+          }
+        },
+        "summary": "Read pair nonce status",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/network/api/private-link": {
+      "get": {
+        "description": "Return private network posture and operation state.",
+        "operationId": "link.private-link.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "actions": {
+                      "type": "object"
+                    },
+                    "enrolled": {
+                      "type": "boolean"
+                    },
+                    "operation": {
+                      "type": "object"
+                    },
+                    "posture": {
+                      "type": "string"
+                    },
+                    "relay_url": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "service",
+                    "state",
+                    "posture",
+                    "enrolled",
+                    "relay_url",
+                    "actions",
+                    "operation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Private network status."
+          }
+        },
+        "summary": "Read private network status",
+        "tags": [
+          "link"
+        ]
+      }
+    },
     "/app/network/api/status": {
       "get": {
         "description": "Return the current link service posture and reachability view.",
@@ -5769,6 +5905,140 @@
           }
         },
         "summary": "Start link pairing",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/network/private-link/disable": {
+      "post": {
+        "description": "Turn off SPL private-link posture.",
+        "operationId": "link.private-link.disable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "result": {
+                      "type": "object"
+                    },
+                    "service": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "object"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "service",
+                    "result",
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Private network disable result."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The private network could not be disabled.",
+            "x-reason-codes": [
+              "service_operation_failed"
+            ]
+          }
+        },
+        "summary": "Disable private network",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/network/private-link/enable": {
+      "post": {
+        "description": "Begin SPL private-link enrollment and return operation state.",
+        "operationId": "link.private-link.setup",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "operation": {
+                      "type": "object"
+                    },
+                    "service": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "service",
+                    "operation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Private network setup operation started."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The private network is already enabled or cannot be enabled.",
+            "x-reason-codes": [
+              "invalid_operation_for_state"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The consent link could not be prepared.",
+            "x-reason-codes": [
+              "service_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A service operation is already running.",
+            "x-reason-codes": [
+              "service_busy"
+            ]
+          }
+        },
+        "summary": "Start private network setup",
         "tags": [
           "link"
         ]

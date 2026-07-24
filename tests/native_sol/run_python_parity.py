@@ -24,6 +24,7 @@ from solstone.apps.activities import call as activities_call
 from solstone.apps.awareness import call as awareness_call
 from solstone.apps.body import call as body_call
 from solstone.apps.facets import call as facets_call
+from solstone.apps.network import call as network_call
 from solstone.apps.sol import call as sol_call
 from solstone.apps.support import call as support_call
 from solstone.apps.transcripts import call as transcripts_call
@@ -315,6 +316,26 @@ class FakeMonotonic:
         self.value += seconds
 
 
+class FakeTime:
+    def __init__(self, unix_seconds: float = 0.0) -> None:
+        self.wall = unix_seconds
+        self.monotonic_value = 0.0
+
+    def time(self) -> float:
+        return self.wall
+
+    def monotonic(self) -> float:
+        return self.monotonic_value
+
+    def sleep(self, seconds: float) -> None:
+        seconds = max(0.0, float(seconds))
+        self.wall += seconds
+        self.monotonic_value += seconds
+
+    def now_utc(self) -> object:
+        return network_call.dt.datetime.fromtimestamp(self.wall, network_call.dt.UTC)
+
+
 class ChatController:
     def __init__(self, vector: dict[str, Any], clock: FakeMonotonic) -> None:
         self.inputs = chat_inputs(vector)
@@ -500,6 +521,8 @@ def patched_runtime(
     original_health_datetime = health_call.datetime
     original_import_get_client = import_call.get_client
     original_ledger_get_client = ledger_call.get_client
+    original_network_get_client = network_call.get_client
+    original_network_now_utc = network_call._now_utc
     original_profile_get_client = profile_call.get_client
     original_sol_get_client = sol_call.get_client
     original_support_get_client = support_call.get_client
@@ -512,8 +535,11 @@ def patched_runtime(
     original_idle_ceiling = chat_cli.IDLE_CEILING_SECONDS
     original_thread = chat_cli.threading.Thread
     original_event = chat_cli.threading.Event
-    original_monotonic = chat_cli.time.monotonic
+    original_time_time = network_call.time.time
+    original_time_monotonic = network_call.time.monotonic
+    original_time_sleep = network_call.time.sleep
     fake_monotonic = FakeMonotonic()
+    fake_time = FakeTime(float(vector.get("clock", {}).get("unix_seconds", 0)))
     chat_controller = ChatController(vector, fake_monotonic)
     client.chat_controller = chat_controller
 
@@ -537,6 +563,15 @@ def patched_runtime(
     health_call.datetime = FixedDateTime
     import_call.get_client = lambda: client
     ledger_call.get_client = lambda: client
+    network_call.get_client = lambda: client
+    network_call._now_utc = fake_time.now_utc
+    network_call.time.time = fake_time.time
+    network_call.time.monotonic = (
+        fake_monotonic.monotonic
+        if vector.get("surface") == "sol-chat"
+        else fake_time.monotonic
+    )
+    network_call.time.sleep = fake_time.sleep
     profile_call.get_client = lambda: client
     sol_call.get_client = lambda: client
     support_call.get_client = lambda: client
@@ -547,7 +582,11 @@ def patched_runtime(
     chat_cli.resolve_base_url = lambda: "http://localhost:5015"
     chat_cli.threading.Thread = ControlledThread
     chat_cli.threading.Event = chat_controller.event
-    chat_cli.time.monotonic = fake_monotonic.monotonic
+    chat_cli.time.monotonic = (
+        fake_monotonic.monotonic
+        if vector.get("surface") == "sol-chat"
+        else fake_time.monotonic
+    )
     with (
         patch.dict(os.environ, env, clear=True),
         patch("solstone.think.identity.ensure_identity_directory", lambda: None),
@@ -568,6 +607,8 @@ def patched_runtime(
             health_call.datetime = original_health_datetime
             import_call.get_client = original_import_get_client
             ledger_call.get_client = original_ledger_get_client
+            network_call.get_client = original_network_get_client
+            network_call._now_utc = original_network_now_utc
             profile_call.get_client = original_profile_get_client
             sol_call.get_client = original_sol_get_client
             support_call.get_client = original_support_get_client
@@ -580,7 +621,9 @@ def patched_runtime(
             chat_cli.IDLE_CEILING_SECONDS = original_idle_ceiling
             chat_cli.threading.Thread = original_thread
             chat_cli.threading.Event = original_event
-            chat_cli.time.monotonic = original_monotonic
+            network_call.time.time = original_time_time
+            network_call.time.monotonic = original_time_monotonic
+            network_call.time.sleep = original_time_sleep
             client.chat_controller = None
 
 
