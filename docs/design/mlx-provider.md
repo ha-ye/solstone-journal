@@ -43,7 +43,7 @@ Implementation note: add the exact-match branch before prefix matches, because i
 
 Decision: keep schema validation central in `solstone/think/models.py`.
 
-Justification: `generate_with_result` already calls `_validate_schema` and populates `result["schema_validation"]`. Provider-level schema validation would create a parallel truth source and diverge from the Gemini pattern.
+Justification: `generate_with_result` already calls `_validate_schema_with_annotations` and populates `result["schema_validation"]`. Provider-level schema validation would create a parallel truth source and diverge from the Gemini pattern.
 
 Implementation note: the MLX provider may use constrained decoding with `build_json_schema_logits_processor` to improve output shape, but it should still return text verbatim and let central validation surface the final advisory result.
 

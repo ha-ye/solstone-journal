@@ -51,8 +51,9 @@ STRICT_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 # Hazard: cloud-provider reductions are request-only. Canonical response
 # validation in models.py still enforces stripped bounds and annotations, so an
 # Anthropic response that overruns future canonical maxItems/maxLength bounds
-# will fail loudly with SchemaValidationError unless an honored annotation
-# truncates that specific instance path first.
+# raises on generate/agenerate or records invalid canonical validation on
+# advisory result paths unless an honored annotation truncates that specific
+# instance path first.
 
 
 def unsupported_keyword_hits(schema: dict[str, Any] | None, provider: str) -> list[str]:

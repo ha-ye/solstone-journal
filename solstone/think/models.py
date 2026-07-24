@@ -1118,9 +1118,9 @@ def _validate_schema_with_annotations(text: str, schema: dict) -> tuple[str, dic
 
     truncated: list[str] = []
 
-    def walk(schema_node: Any, instance: Any, path: list[Any]) -> tuple[Any, bool]:
+    def walk(schema_node: Any, instance: Any, path: list[Any]) -> Any:
         if not isinstance(schema_node, dict):
-            return instance, False
+            return instance
 
         max_length = schema_node.get("maxLength")
         if (
@@ -1132,35 +1132,28 @@ def _validate_schema_with_annotations(text: str, schema: dict) -> tuple[str, dic
             and len(instance) > max_length
         ):
             truncated.append(_build_json_pointer(path))
-            return instance[:max_length], True
+            return instance[:max_length]
 
-        changed = False
         properties = schema_node.get("properties")
         if isinstance(properties, dict) and isinstance(instance, dict):
             for key, child_schema in properties.items():
                 if key not in instance:
                     continue
-                child, child_changed = walk(
+                instance[key] = walk(
                     child_schema,
                     instance[key],
                     [*path, key],
                 )
-                if child_changed:
-                    instance[key] = child
-                    changed = True
 
         items = schema_node.get("items")
         if isinstance(items, dict) and isinstance(instance, list):
             for index, item in enumerate(instance):
-                child, child_changed = walk(items, item, [*path, index])
-                if child_changed:
-                    instance[index] = child
-                    changed = True
+                instance[index] = walk(items, item, [*path, index])
 
-        return instance, changed
+        return instance
 
-    parsed, changed = walk(schema, parsed, [])
-    text_to_validate = json.dumps(parsed, ensure_ascii=False) if changed else text
+    parsed = walk(schema, parsed, [])
+    text_to_validate = json.dumps(parsed, ensure_ascii=False) if truncated else text
     validation = _validate_schema(text_to_validate, schema)
     if truncated:
         validation["truncated"] = truncated
