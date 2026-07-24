@@ -93,6 +93,15 @@ def check_conformance(
     raw_authority_by_operation = load_raw_authority_entries(root)
     contract_by_operation = collect_contract_operations(document)
 
+    if not authorities:
+        errors.append("native sol conformance discovered zero authorities")
+    if not route_map:
+        errors.append("native sol conformance discovered zero Flask routes")
+    if not contract_by_operation:
+        errors.append("native sol conformance discovered zero OpenAPI operations")
+    if not any(authority.entry_type == "top-level-import" for authority in authorities):
+        errors.append("native sol conformance missing top-level import authority")
+
     for authority in sorted(authorities, key=lambda entry: entry.operation_id):
         raw_authority = raw_authority_by_operation.get(authority.operation_id)
         if authority.entry_type == "http":

@@ -89,20 +89,6 @@ def _local_dist_names_for_build_argv(
             for name in expected
             if name.startswith("solstone_core-") and name.endswith(".tar.gz")
         }
-    if args == (
-        "uv",
-        "build",
-        driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
-        "--sdist",
-        "--out-dir",
-        "dist",
-    ):
-        return {
-            name
-            for name in expected
-            if name.startswith("solstone_core_unsupported_platform-")
-            and name.endswith(".tar.gz")
-        }
     if len(args) == 4 and args[:3] == ("uv", "build", "--package"):
         package = args[3]
         prefix = f"{package.replace('-', '_')}-"
@@ -1707,26 +1693,11 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     expected_aarch64_env = _expected_scrubbed_env(
         tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
     )
-    expected_tombstone_env = {
-        **_expected_scrubbed_env(tmp_path, ""),
-        driver.CORE_UNSUPPORTED_TOMBSTONE_ALLOW_BUILD_ENV: "1",
-    }
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         (
             ("python3", "scripts/render_packaging.py", "--check"),
             _expected_scrubbed_env(tmp_path, ""),
-        ),
-        (
-            (
-                "uv",
-                "build",
-                driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
-                "--sdist",
-                "--out-dir",
-                "dist",
-            ),
-            expected_tombstone_env,
         ),
         (
             ("uv", "build", "--package", "solstone"),
@@ -1757,9 +1728,7 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     assert [
         env["MATURIN_PEP517_ARGS"]
         for argv, env in calls
-        if argv[:2] == ("uv", "build")
-        and "--wheel" not in argv
-        and argv[2] != driver.CORE_UNSUPPORTED_TOMBSTONE_DIR
+        if argv[:2] == ("uv", "build") and "--wheel" not in argv
     ] == [driver.CORE_X86_64_MATURIN_ARGS] * 3 + [""]
     assert [env["MATURIN_PEP517_ARGS"] for argv, env in calls if "--wheel" in argv] == [
         driver.CORE_X86_64_MATURIN_ARGS,
@@ -1815,14 +1784,6 @@ def test_default_build_local_dist_honors_include_models_build_selection(
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         ("python3", "scripts/render_packaging.py", "--check"),
-        (
-            "uv",
-            "build",
-            driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
-            "--sdist",
-            "--out-dir",
-            "dist",
-        ),
         ("uv", "build", "--package", "solstone"),
         ("uv", "build", "--package", "solstone-journal"),
         ("uv", "build", "--package", "solstone-journal-cuda"),

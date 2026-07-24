@@ -1296,11 +1296,11 @@ def _model_name_failures(package_names: set[str], expected_count: int) -> list[F
                 repair="use the models version derived from package metadata",
             )
         )
-    if expected_count == 16 and model_like:
+    if expected_count == 15 and model_like:
         failures.append(
             _failure(
-                "16-file candidate contains models archive leftover",
-                expected="no solstone_journal_models archives in a 16-file candidate",
+                "15-file candidate contains models archive leftover",
+                expected="no solstone_journal_models archives in a 15-file candidate",
                 actual=", ".join(sorted(model_like)),
                 repair="remove skipped models artifacts from the release candidate",
             )
@@ -1338,11 +1338,11 @@ def classify_release_dir(
     failures.extend(_case_collision_failures(entries))
     for entry in entries:
         failures.extend(_validate_regular_file(entry, label=entry.name))
-    if len(entries) not in {16, 18}:
+    if len(entries) not in {15, 17}:
         failures.append(
             _failure(
-                "release directory must contain exactly 16 or 18 files",
-                expected="16 files without models or 18 files with models",
+                "release directory must contain exactly 15 or 17 files",
+                expected="15 files without models or 17 files with models",
                 actual=str(len(entries)),
                 repair="validate the exact release candidate payload directory",
             )
@@ -1362,7 +1362,7 @@ def classify_release_dir(
         )
     expected_without_models = set(expected_package_names(include_models=False))
     expected_with_models = set(expected_package_names(include_models=True))
-    include_models = len(entries) == 18
+    include_models = len(entries) == 17
     expected_packages = (
         expected_with_models if include_models else expected_without_models
     )
@@ -1394,7 +1394,7 @@ def classify_release_dir(
                 "release directory contains extra assets",
                 expected=", ".join(sorted(expected_packages)),
                 actual=", ".join(sorted(extra)),
-                repair="remove assets outside the exact 16/18-file release payload",
+                repair="remove assets outside the exact 15/17-file release payload",
             )
         )
     try:

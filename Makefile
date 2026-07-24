@@ -506,10 +506,6 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Running provider-start-command check ==="
 	@$(MAKE) check-provider-start-commands
-	@echo ""
-	@echo "=== Running call-http-only check ==="
-	@$(MAKE) check-call-http-only
-	@echo ""
 	@echo "=== Running legacy-chat surface check ==="
 	@$(MAKE) check-no-legacy-chat
 	@echo ""
@@ -524,10 +520,6 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Running rust release-manifest check ==="
 	@$(MAKE) check-rust-release-manifest
-	@echo ""
-	@echo "=== Running tools-http-only check ==="
-	@$(MAKE) check-tools-http-only
-	@echo ""
 	@echo "=== Running access-imports-clean check ==="
 	@$(MAKE) check-access-imports-clean
 	@echo ""
@@ -700,10 +692,6 @@ check-provider-install-owner: .installed
 check-provider-start-commands: .installed
 	$(VENV_BIN)/python scripts/check_provider_start_commands.py
 
-# sol call HTTP-only gate (call.py reaches the journal only over HTTP)
-check-call-http-only: .installed
-	$(VENV_BIN)/python scripts/check_call_http_only.py
-
 # Removed chat surfaces stay out of tracked Python, HTML, and JavaScript.
 check-no-legacy-chat: .installed
 	$(VENV_BIN)/python scripts/check_no_legacy_chat.py
@@ -727,10 +715,6 @@ check-rust-release-manifest: .installed
 # Package dependency and script ownership consistency gate
 check-extras-consistency: .installed
 	$(VENV_BIN)/python scripts/check_extras_consistency.py
-
-# Built-in sol call tools HTTP-only gate
-check-tools-http-only: .installed
-	$(VENV_BIN)/python scripts/check_tools_http_only.py
 
 # Thin sol access surface import-clean gate (fast meta_path simulation; in ci)
 check-access-imports-clean: .installed

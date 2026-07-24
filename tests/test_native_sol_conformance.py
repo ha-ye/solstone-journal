@@ -7,6 +7,19 @@ from scripts import check_native_sol_conformance as conformance
 from scripts.build_native_sol_inventory import AuthorityEntry
 
 
+def test_native_sol_conformance_rejects_empty_authority_scan() -> None:
+    errors = conformance.check_conformance(
+        authorities=[],
+        route_map={},
+        document={"paths": {}},
+    )
+
+    assert "native sol conformance discovered zero authorities" in errors
+    assert "native sol conformance discovered zero Flask routes" in errors
+    assert "native sol conformance discovered zero OpenAPI operations" in errors
+    assert "native sol conformance missing top-level import authority" in errors
+
+
 def test_native_sol_conformance_self_test_detects_authority_route_mismatch() -> None:
     authorities = [
         AuthorityEntry(

@@ -374,6 +374,21 @@ def test_release_artifacts_include_models_only_when_gate_publishes(
     )
 
 
+def test_release_artifacts_exclude_core_unsupported_tombstone(
+    tmp_path: Path,
+) -> None:
+    artifacts = checker.release_artifacts(
+        tmp_path,
+        release_scope="all-hosts",
+        models_decision="skip",
+    )
+
+    assert not any(
+        path.name.startswith("solstone_core_unsupported_platform-")
+        for path in artifacts
+    )
+
+
 def test_core_sdist_validator_requires_rust_workspace_sources(
     tmp_path: Path,
 ) -> None:

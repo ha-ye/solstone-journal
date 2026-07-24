@@ -239,6 +239,19 @@ def _empty_snapshot(
     return {(project.project, project.version): None for project in projects}
 
 
+def _partially_published_base_snapshot(
+    projects: Sequence[publisher.ProjectExpectation],
+) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
+    snapshot: dict[tuple[str, str], Mapping[str, Any] | None] = dict(
+        _empty_snapshot(projects)
+    )
+    first_project = projects[0]
+    snapshot[(first_project.project, first_project.version)] = _full_snapshot(
+        [first_project]
+    )[(first_project.project, first_project.version)]
+    return snapshot
+
+
 def _divergent_snapshot(
     projects: Sequence[publisher.ProjectExpectation],
 ) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
@@ -576,6 +589,34 @@ def test_production_clean_path_orders_upload_verify_tag_witness(
     assert result.witness_status.state == "created"
 
 
+def test_production_accepts_published_tombstone_with_empty_base_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    result = _run_publish(
+        _config(tmp_path, report, mode="production"),
+        calls=calls,
+        index=index,
+        git_runner=RecordingGit(calls),
+        gh_runner=_gh_runner(calls),
+    )
+
+    queried_projects = {project for snapshot in index.projects for project in snapshot}
+    assert (
+        manifest.CORE_UNSUPPORTED_TOMBSTONE_PROJECT,
+        report.version,
+    ) not in queried_projects
+    assert not any(
+        name.startswith("solstone_core_unsupported_platform-")
+        for name in publisher.expected_package_names(include_models=False)
+    )
+    assert result.upload_state == "uploaded"
+
+
 def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -633,6 +674,10 @@ def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
     assert result.upload_state == "uploaded"
     assert set(ledger_uploads) == expected_uploads
     assert {path.name for path in captured_paths} == expected_uploads
+    assert not any(
+        path.name.startswith("solstone_core_unsupported_platform-")
+        for path in captured_paths
+    )
     for path in captured_paths:
         assert (
             hashlib.sha256(path.read_bytes()).hexdigest() == ledger_uploads[path.name]
@@ -789,6 +834,21 @@ def test_already_published_digest_divergence_refuses_before_upload(
     _patch_recover(monkeypatch, report, rehash_payloads=True)
     calls: list[str] = []
     index = RecordingIndex(calls, [_divergent_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(_config(tmp_path, report), calls=calls, index=index)
+
+    assert _first_failure(excinfo.value) == "release publish package index is divergent"
+    assert calls == ["index"]
+
+
+def test_partially_published_base_index_refuses_before_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_partially_published_base_snapshot])
 
     with pytest.raises(DriverError) as excinfo:
         _run_publish(_config(tmp_path, report), calls=calls, index=index)

@@ -782,10 +782,6 @@ def _release_artifact_members(
         (dist_dir / f"solstone-{version}.tar.gz", "root sdist"),
         (dist_dir / f"solstone-{version}-py3-none-any.whl", "root any wheel"),
         (dist_dir / f"solstone_core-{version}.tar.gz", "core sdist"),
-        (
-            dist_dir / f"solstone_core_unsupported_platform-{version}.tar.gz",
-            "core unsupported-platform tombstone sdist",
-        ),
         (dist_dir / f"solstone_journal-{version}.tar.gz", "journal CPU sdist"),
         (
             dist_dir / f"solstone_journal-{version}-py3-none-any.whl",

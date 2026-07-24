@@ -514,20 +514,20 @@ def test_generate_manifest_valid_lane_shapes(
     )
 
 
-def test_release_dir_accepts_exact_16_without_models(tmp_path: Path) -> None:
+def test_release_dir_accepts_exact_15_without_models(tmp_path: Path) -> None:
     release_dir = _candidate(tmp_path)
 
-    assert len(list(release_dir.iterdir())) == 16
+    assert len(list(release_dir.iterdir())) == 15
     assert (
         checker.validate_release_dir(release_dir, expected_source_commit=VALID_COMMIT)
         == []
     )
 
 
-def test_release_dir_accepts_exact_18_with_models(tmp_path: Path) -> None:
+def test_release_dir_accepts_exact_17_with_models(tmp_path: Path) -> None:
     release_dir = _candidate(tmp_path, include_models=True)
 
-    assert len(list(release_dir.iterdir())) == 18
+    assert len(list(release_dir.iterdir())) == 17
     assert (
         checker.validate_release_dir(release_dir, expected_source_commit=VALID_COMMIT)
         == []
@@ -573,7 +573,7 @@ def test_release_dir_rejects_skipped_model_leftover(tmp_path: Path) -> None:
         release_dir, expected_source_commit=VALID_COMMIT
     )
 
-    _assert_error(failures, "16-file candidate contains models archive leftover")
+    _assert_error(failures, "15-file candidate contains models archive leftover")
 
 
 def test_release_dir_rejects_unknown_missing_extra_assets_and_case_collision(
@@ -1558,7 +1558,7 @@ def test_build_and_promote_candidate_success_is_whole_directory_rename(
     assert failures == []
     assert ready.is_dir()
     assert not (tmp_path / "ready.staging").exists()
-    assert len(list(ready.iterdir())) == 16
+    assert len(list(ready.iterdir())) == 15
     assert (
         checker.validate_release_dir(ready, expected_source_commit=VALID_COMMIT) == []
     )

@@ -105,10 +105,6 @@ CORE_AARCH64_MATURIN_ARGS = (
 ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
-CORE_UNSUPPORTED_TOMBSTONE_DIR = "scripts/solstone-core-unsupported-platform-tombstone"
-CORE_UNSUPPORTED_TOMBSTONE_ALLOW_BUILD_ENV = (
-    "SOLSTONE_CORE_UNSUPPORTED_PLATFORM_TOMBSTONE_ALLOW_BUILD"
-)
 
 
 @dataclass(frozen=True)
@@ -512,10 +508,6 @@ def _expected_local_build_commands(
     *, include_models: bool, version: str
 ) -> tuple[tuple[tuple[str, ...], str], ...]:
     render_check = (("python3", "scripts/render_packaging.py", "--check"), "")
-    tombstone_sdist = (
-        ("uv", "build", CORE_UNSUPPORTED_TOMBSTONE_DIR, "--sdist", "--out-dir", "dist"),
-        "",
-    )
     package_builds = tuple(
         (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS)
         for package in _expected_local_build_packages(include_models=include_models)
@@ -536,7 +528,6 @@ def _expected_local_build_commands(
     )
     return (
         render_check,
-        tombstone_sdist,
         *package_builds,
         core_sdist,
         x86_64_core,
@@ -573,8 +564,6 @@ def _default_build_local_dist(
         version=version,
     ):
         env = _scrubbed_build_env(root, maturin_args)
-        if argv[0:3] == ("uv", "build", CORE_UNSUPPORTED_TOMBSTONE_DIR):
-            env[CORE_UNSUPPORTED_TOMBSTONE_ALLOW_BUILD_ENV] = "1"
         _run_stdout(
             runner,
             list(argv),
