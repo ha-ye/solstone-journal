@@ -33,20 +33,15 @@ const EXIT_USAGE: u8 = 64;
 const EXIT_TEMPFAIL: u8 = 75;
 const USAGE: &str = "Usage:\n  solstone-core-sol --version\n  solstone-core-sol help\n  solstone-core-sol status\n  solstone-core-sol path\n  solstone-core-sol call <app> <verb> [args...]\n  solstone-core-sol chat [args...]\n  solstone-core-sol import [args...]\n";
 
-fn main() -> ExitCode {
+pub fn run() -> ExitCode {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
-        [] => {
-            print!("{USAGE}");
-            ExitCode::SUCCESS
-        }
+        [] => render_output(help_output()),
         [flag] if flag == OsStr::new("--version") || flag == OsStr::new("version") => {
-            println!("solstone-core-sol {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            render_output(version_output())
         }
         [command] if command == OsStr::new("--help") || command == OsStr::new("help") => {
-            print!("{USAGE}");
-            ExitCode::SUCCESS
+            render_output(help_output())
         }
         [command] if command == OsStr::new("path") => run_path(),
         [command] if command == OsStr::new("status") => run_status(),
@@ -54,22 +49,31 @@ fn main() -> ExitCode {
         [command, rest @ ..] if command == OsStr::new("chat") => run_dispatched(&args, rest),
         [command, rest @ ..] if command == OsStr::new("import") => run_dispatched(&args, rest),
         [flag, ..] if flag.to_string_lossy().starts_with('-') => {
-            eprint!("{USAGE}");
-            ExitCode::from(EXIT_USAGE)
+            render_output(usage_error_output())
         }
-        _ => {
-            eprintln!("Unsupported native sol command.");
-            ExitCode::from(EXIT_USAGE)
-        }
+        _ => render_output(unsupported_output()),
     }
+}
+
+fn version_output() -> CommandOutput {
+    CommandOutput::success(format!("solstone-core-sol {}\n", env!("CARGO_PKG_VERSION")))
+}
+
+fn help_output() -> CommandOutput {
+    CommandOutput::success(USAGE)
+}
+
+fn usage_error_output() -> CommandOutput {
+    CommandOutput::failure(USAGE, i32::from(EXIT_USAGE))
+}
+
+fn unsupported_output() -> CommandOutput {
+    CommandOutput::failure("Unsupported native sol command.\n", i32::from(EXIT_USAGE))
 }
 
 fn run_path() -> ExitCode {
     match resolve_process_journal_path() {
-        Ok(line) => {
-            println!("{}\t{}", line.label, line.path.display());
-            ExitCode::SUCCESS
-        }
+        Ok(line) => render_output(path_output(&line)),
         Err(error) => {
             eprintln!("native sol journal resolution failed: {error}");
             ExitCode::from(EXIT_TEMPFAIL)
@@ -81,14 +85,24 @@ fn run_status() -> ExitCode {
     match resolve_process_journal_path() {
         Ok(line) => {
             let port = read_convey_port(&line.path);
-            println!("journal\t{}\nconvey_port\t{port}", line.path.display());
-            ExitCode::SUCCESS
+            render_output(status_output(&line, port))
         }
         Err(error) => {
             eprintln!("native sol journal resolution failed: {error}");
             ExitCode::from(EXIT_TEMPFAIL)
         }
     }
+}
+
+fn path_output(line: &JournalPathLine) -> CommandOutput {
+    CommandOutput::success(format!("{}\t{}\n", line.label, line.path.display()))
+}
+
+fn status_output(line: &JournalPathLine, port: i64) -> CommandOutput {
+    CommandOutput::success(format!(
+        "journal\t{}\nconvey_port\t{port}\n",
+        line.path.display()
+    ))
 }
 
 fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode {
@@ -161,9 +175,7 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
                 client_item_ids: Some(&client_item_ids),
             },
         ),
-        Outcome::Unsupported { .. } => {
-            CommandOutput::failure("Unsupported native sol command.\n", i32::from(EXIT_USAGE))
-        }
+        Outcome::Unsupported { .. } => unsupported_output(),
     };
     render_output(output)
 }
@@ -420,4 +432,105 @@ impl BuildIdentityProvider for RealBuildIdentityProvider {
             }
         }))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use solstone_core_sol_client::seam::ScriptedHttpTransport;
+
+
+    #[test]
+    fn version_output_matches_old_binary_test() {
+        let output = version_output();
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.exit, 0);
+        assert!(output.stdout.starts_with("solstone-core-sol "));
+    }
+
+    #[test]
+    fn help_output_matches_old_binary_test() {
+        let output = help_output();
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.exit, 0);
+        assert!(
+            output
+                .stdout
+                .contains("solstone-core-sol call <app> <verb>")
+        );
+    }
+
+    #[test]
+    fn path_output_matches_old_binary_test() {
+        let line = JournalPathLine {
+            label: "default",
+            path: PathBuf::from("/tmp/journal"),
+        };
+        assert_eq!(
+            path_output(&line),
+            CommandOutput::success("default\t/tmp/journal\n")
+        );
+    }
+
+    #[test]
+    fn status_output_matches_old_binary_test() {
+        let line = JournalPathLine {
+            label: "default",
+            path: PathBuf::from("/tmp/journal"),
+        };
+        assert_eq!(
+            status_output(&line, 5015),
+            CommandOutput::success("journal\t/tmp/journal\nconvey_port\t5015\n")
+        );
+    }
+
+    #[test]
+    fn unknown_command_is_explicitly_unsupported() {
+        assert_eq!(
+            unsupported_output(),
+            CommandOutput::failure("Unsupported native sol command.\n", i32::from(EXIT_USAGE))
+        );
+    }
+
+    #[test]
+    fn invalid_flag_prints_usage() {
+        let output = usage_error_output();
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.exit, i32::from(EXIT_USAGE));
+        assert!(output.stderr.starts_with("Usage:\n"));
+    }
+
+    #[test]
+    fn moved_stub_dispatches_and_exits_two() {
+        let args = vec![
+            "identity".to_string(),
+            "--unknown".to_string(),
+            "extra".to_string(),
+        ];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![]);
+        let output = dispatch_sol_call_with_seams(
+            &args,
+            &env,
+            "",
+            "20260723",
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: None,
+                build_identity: None,
+                client_item_ids: None,
+            },
+        );
+
+        assert_eq!(output.exit, 2);
+        assert_eq!(
+            output.stderr,
+            "Moved to `journal identity` — run that instead.\n"
+        );
+        transport.assert_done();
+    }
+
 }
