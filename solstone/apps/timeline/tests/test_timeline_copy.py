@@ -58,3 +58,12 @@ def test_timeline_static_aria_prefixes_are_folded():
 
     assert 'aria-label="Return to' not in source
     assert 'aria-label="Open ' not in source
+
+
+def test_timeline_rollup_pending_copy_pluralizes_ready_verb():
+    source = _timeline_js()
+
+    assert 'const noun = segmentCount === 1 ? "segment" : "segments";' in source
+    assert 'const verb = segmentCount === 1 ? "is" : "are";' in source
+    assert "`${segmentCount} ${noun} ${verb} ready for a timeline rollup.`," in source
+    assert "} are ready for a timeline rollup" not in source

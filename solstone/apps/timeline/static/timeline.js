@@ -945,9 +945,10 @@ async function renderDay(monthIndex, day) {
   }
   if (!plan.length && segmentCount > 0 && !(data.day_top || []).length) {
     const noun = segmentCount === 1 ? "segment" : "segments";
+    const verb = segmentCount === 1 ? "is" : "are";
     timeline.innerHTML = renderEmptyState(
       `rollup pending for ${dateLabel}`,
-      `${segmentCount} ${noun} are ready for a timeline rollup.`,
+      `${segmentCount} ${noun} ${verb} ready for a timeline rollup.`,
     );
     return;
   }
