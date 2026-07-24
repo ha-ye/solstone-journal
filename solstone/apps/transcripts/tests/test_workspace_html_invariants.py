@@ -711,3 +711,39 @@ def test_workspace_html_tab_pill_spacing_contract():
     assert "padding: 8px 12px;" in tab_css
     assert "margin: 0 -8px;" not in tab_css
     assert not any(line.strip().startswith("margin:") for line in tab_css.splitlines())
+
+
+def test_workspace_html_zoom_rail_empty_state_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+    copy_py = Path(__file__).resolve().parents[1] / "copy.py"
+
+    text = workspace_html.read_text()
+    copy_text = copy_py.read_text()
+
+    zoom_empty_css = _css_rule(text, ".tr-zoom-empty")
+    assert "position: absolute;" in zoom_empty_css
+    assert "inset: 0;" in zoom_empty_css
+    assert "padding: 0 6px;" in zoom_empty_css
+    assert "display: flex;" in zoom_empty_css
+    assert "pointer-events: none;" in zoom_empty_css
+    assert text.count('class="tr-zoom-empty"') == 1
+
+    build_zoom_segments = _slice_between(
+        text,
+        "function buildZoomSegments",
+        "function selectSegment(seg, updateHash = true, requestedTabId = null)",
+    )
+    empty_branch = _slice_between(
+        build_zoom_segments, "if (filtered.length === 0) {", "return;"
+    )
+    assert "window.SurfaceState.empty" not in empty_branch
+    emitted_text = _slice_between(empty_branch, 'class="tr-zoom-empty">', "</div>")
+    assert emitted_text.strip()
+    assert "TR_COPY" not in emitted_text
+    assert "${" not in emitted_text
+    assert "TR_COPY" not in build_zoom_segments
+
+    retired_copy = "widen the time range or pick a different day"
+    assert retired_copy not in text
+    assert retired_copy not in copy_text
+    assert ".tr-zoom-segments > .surface-state" not in text

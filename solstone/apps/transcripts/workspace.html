@@ -1109,25 +1109,18 @@ body.has-app-bar .tr-zoom {
   bottom: 12px;
 }
 
-.tr-zoom-segments > .surface-state {
+.tr-zoom-empty {
   position: absolute;
   inset: 0;
-  padding: 16px 12px;
-  gap: 8px;
-}
-
-.tr-zoom-segments > .surface-state .surface-state-icon svg {
-  width: 32px;
-  height: 32px;
-}
-
-.tr-zoom-segments > .surface-state .surface-state-heading {
-  font-size: 13px;
-}
-
-.tr-zoom-segments > .surface-state .surface-state-desc {
-  font-size: 11px;
-  max-width: 24ch;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
 }
 
 /* Segment pills in zoom view */
@@ -3567,11 +3560,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     zoomSegments.innerHTML = '';
 
     if (filtered.length === 0) {
-      zoomSegments.innerHTML = window.SurfaceState.empty({
-        icon: emptyIcons.nothing,
-        heading: 'no segments in this range',
-        desc: 'widen the time range or pick a different day'
-      });
+      zoomSegments.innerHTML = '<div class="tr-zoom-empty">nothing in this range</div>';
       return;
     }
 
