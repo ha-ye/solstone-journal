@@ -57,6 +57,11 @@ pub fn json_pretty(value: &Value, format: JsonFormat) -> String {
     }
 }
 
+#[must_use]
+pub fn json_compact_ascii(value: &Value) -> String {
+    ensure_ascii(&json_compact(value))
+}
+
 fn sort_json(value: &Value) -> Value {
     match value {
         Value::Array(items) => Value::Array(items.iter().map(sort_json).collect()),
@@ -70,6 +75,36 @@ fn sort_json(value: &Value) -> Value {
             Value::Object(sorted)
         }
         _ => value.clone(),
+    }
+}
+
+fn json_compact(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(true) => "true".to_string(),
+        Value::Bool(false) => "false".to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::String(value) => serde_json::to_string(value).expect("string JSON"),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(json_compact)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(object) => format!(
+            "{{{}}}",
+            object
+                .iter()
+                .map(|(key, value)| format!(
+                    "{}: {}",
+                    serde_json::to_string(key).expect("key JSON"),
+                    json_compact(value)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -120,6 +155,14 @@ mod tests {
         assert_eq!(
             json_pretty_utf8(&json!({"b": "é", "a": {"d": 2, "c": 1}})),
             "{\n  \"b\": \"é\",\n  \"a\": {\n    \"d\": 2,\n    \"c\": 1\n  }\n}"
+        );
+    }
+
+    #[test]
+    fn compact_prints_objects_like_python_default_json_dumps() {
+        assert_eq!(
+            json_compact_ascii(&json!({"b": "é", "a": [1, true, null]})),
+            "{\"b\": \"\\u00e9\", \"a\": [1, true, null]}"
         );
     }
 }

@@ -1202,6 +1202,799 @@
         ]
       }
     },
+    "/api/ledger": {
+      "get": {
+        "description": "Return paginated ledger items.",
+        "operationId": "ledger.list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "counterparty",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "age_days_gte",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "closed_since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "facets",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ledger item collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "One query parameter was invalid.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "List ledger items",
+        "tags": [
+          "ledger"
+        ]
+      }
+    },
+    "/api/ledger/decisions": {
+      "get": {
+        "description": "Return paginated deduplicated ledger decisions.",
+        "operationId": "ledger.decisions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "involving",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "facets",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ledger decision collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The since day was invalid.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          }
+        },
+        "summary": "List ledger decisions",
+        "tags": [
+          "ledger"
+        ]
+      }
+    },
+    "/api/ledger/{item_id}": {
+      "get": {
+        "description": "Return one ledger item.",
+        "operationId": "ledger.get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "age_days": {
+                      "type": "integer"
+                    },
+                    "closed_at": {
+                      "type": "string"
+                    },
+                    "counterparty": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "opened_at": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "when": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "state",
+                    "owner",
+                    "summary",
+                    "age_days",
+                    "opened_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ledger item."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No ledger item matched the id.",
+            "x-reason-codes": [
+              "ledger_item_not_found"
+            ]
+          }
+        },
+        "summary": "Get a ledger item",
+        "tags": [
+          "ledger"
+        ]
+      }
+    },
+    "/api/ledger/{item_id}/close": {
+      "post": {
+        "description": "Close or drop one ledger item.",
+        "operationId": "ledger.close",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "as_state": "closed",
+                "note": "Handled in meeting."
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "as_state": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "note"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "age_days": {
+                      "type": "integer"
+                    },
+                    "closed_at": {
+                      "type": "string"
+                    },
+                    "counterparty": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "opened_at": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "when": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "state",
+                    "owner",
+                    "summary",
+                    "age_days",
+                    "opened_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated ledger item."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body was missing, malformed, or invalid.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "invalid_request_value",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No ledger item matched the id.",
+            "x-reason-codes": [
+              "ledger_item_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The activities store could not be locked.",
+            "x-reason-codes": [
+              "activities_busy"
+            ]
+          }
+        },
+        "summary": "Close a ledger item",
+        "tags": [
+          "ledger"
+        ]
+      }
+    },
+    "/api/profile/{name}": {
+      "get": {
+        "description": "Return full relationship profile context for one entity.",
+        "operationId": "profile.full",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "facets",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_mentions",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "cadence": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "closed_with_them_30d": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "decisions_involving_them": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "facets": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "is_self": {
+                      "type": "boolean"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "open_with_them": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "type",
+                    "facets",
+                    "is_self",
+                    "cadence",
+                    "open_with_them",
+                    "closed_with_them_30d",
+                    "decisions_involving_them"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Full profile."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No profile entity matched the supplied name.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          }
+        },
+        "summary": "Read a full entity profile",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
+    "/api/profile/{name}/brief": {
+      "get": {
+        "description": "Return compact profile fields for one entity.",
+        "operationId": "profile.brief",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "decisions_count_30d": {
+                      "type": "integer"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "last_seen": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "open_loop_count": {
+                      "type": "integer"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "entity_id",
+                    "name",
+                    "type",
+                    "description",
+                    "last_seen",
+                    "open_loop_count",
+                    "decisions_count_30d"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Brief profile."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No profile entity matched the supplied name.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          }
+        },
+        "summary": "Read a brief entity profile",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
+    "/api/profile/{name}/cadence": {
+      "get": {
+        "description": "Return cadence metrics for one entity.",
+        "operationId": "profile.cadence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_mentions",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "avg_interval_days": {
+                      "type": "number"
+                    },
+                    "gone_quiet_since": {
+                      "type": "string"
+                    },
+                    "last_seen": {
+                      "type": "string"
+                    },
+                    "recent_interactions_count_30d": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "recent_interactions_count_30d",
+                    "last_seen",
+                    "avg_interval_days",
+                    "gone_quiet_since"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Profile cadence."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No profile entity matched the supplied name.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          }
+        },
+        "summary": "Read entity cadence",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
+    "/api/profiles/active": {
+      "get": {
+        "description": "Return paginated active profile entity ids.",
+        "operationId": "profile.list-active",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_days",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Active profile id collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The window_days query parameter was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "List active profile ids",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
     "/api/push/register": {
       "delete": {
         "description": "Remove the push token for the current paired device fingerprint.",
@@ -2254,6 +3047,290 @@
         "summary": "Create an activity record",
         "tags": [
           "activities"
+        ]
+      }
+    },
+    "/app/awareness/api/imports": {
+      "get": {
+        "description": "Return import tracking state.",
+        "operationId": "awareness.imports.read",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Import tracking state."
+          }
+        },
+        "summary": "Read import awareness state",
+        "tags": [
+          "awareness"
+        ]
+      },
+      "post": {
+        "description": "Record one import awareness event.",
+        "operationId": "awareness.imports",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "record": "apple_health"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "declined": {
+                    "type": "boolean"
+                  },
+                  "nudge": {
+                    "type": "boolean"
+                  },
+                  "record": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated import tracking state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body was missing, malformed, or ambiguous.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "invalid_request_value",
+              "missing_request_body"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The awareness imports state could not be locked.",
+            "x-reason-codes": [
+              "awareness_busy"
+            ]
+          }
+        },
+        "summary": "Update import awareness state",
+        "tags": [
+          "awareness"
+        ]
+      }
+    },
+    "/app/awareness/api/log": {
+      "get": {
+        "description": "Return paginated awareness log entries.",
+        "operationId": "awareness.log-read",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Awareness log collection."
+          }
+        },
+        "summary": "Read awareness log entries",
+        "tags": [
+          "awareness"
+        ]
+      },
+      "post": {
+        "description": "Append one awareness log entry.",
+        "operationId": "awareness.log",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "kind": "observation",
+                "message": "Observed import need."
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created awareness log entry."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request body was missing, malformed, or incomplete.",
+            "x-reason-codes": [
+              "invalid_json_request",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          }
+        },
+        "summary": "Append an awareness log entry",
+        "tags": [
+          "awareness"
+        ]
+      }
+    },
+    "/app/awareness/api/state": {
+      "get": {
+        "description": "Return current awareness state. Native clients select sections locally.",
+        "operationId": "awareness.status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "section",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Awareness state."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested awareness section was not present.",
+            "x-reason-codes": [
+              "awareness_section_not_found"
+            ]
+          }
+        },
+        "summary": "Read awareness state",
+        "tags": [
+          "awareness"
         ]
       }
     },

@@ -23,13 +23,16 @@ const ACTIVITIES_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/activities.jsonl");
 const ACTIVITIES_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/activities_coverage.jsonl");
+const AWARENESS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/awareness.jsonl");
 const BODY_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/body.jsonl");
 const CHAT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/chat.jsonl");
 const FACETS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/facets.jsonl");
 const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
 const HEALTH_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/health_coverage.jsonl");
+const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/ledger.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
+const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
 const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.jsonl");
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
@@ -41,12 +44,15 @@ fn native_matches_sol_call_parity_vectors() {
     for vector in load_vectors(ACTIVITIES_VECTORS)
         .into_iter()
         .chain(load_vectors(ACTIVITIES_COVERAGE_VECTORS))
+        .chain(load_vectors(AWARENESS_VECTORS))
         .chain(load_vectors(BODY_VECTORS))
         .chain(load_vectors(CHAT_VECTORS))
         .chain(load_vectors(FACETS_VECTORS))
         .chain(load_vectors(HEALTH_VECTORS))
         .chain(load_vectors(HEALTH_COVERAGE_VECTORS))
+        .chain(load_vectors(LEDGER_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
+        .chain(load_vectors(PROFILE_VECTORS))
         .chain(load_vectors(SOL_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))

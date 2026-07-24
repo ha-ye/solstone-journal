@@ -203,7 +203,7 @@ def parse_entry(
         surface=surface,
         path=command_path,
         kind=kind,
-        help=require_string(raw_entry, "help", Path(label)),
+        help=require_text(raw_entry, "help", Path(label)),
         params=canonical_params,
         operation_id=require_string(raw_entry, "operation_id", Path(label)),
         entry_type=entry_type,
@@ -218,6 +218,13 @@ def require_string(data: dict[str, Any], key: str, path: Path) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{path}: {key} must be a non-empty string")
+    return value
+
+
+def require_text(data: dict[str, Any], key: str, path: Path) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{path}: {key} must be a string")
     return value
 
 

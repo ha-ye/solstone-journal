@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["awareness", "status"]
+kind = "command"
+help = "Show current awareness state."
+operation_id = "awareness.status"
+entry_type = "http"
+method = "GET"
+route = "/app/awareness/api/state"
+contract_operation_id = "awareness.status"
+handler = "status"
+params = [
+  { name = "section", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["section"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["awareness", "imports"]
+kind = "command"
+help = "Read or update import tracking state."
+operation_id = "awareness.imports"
+entry_type = "http"
+method = "POST"
+route = "/app/awareness/api/imports"
+contract_operation_id = "awareness.imports"
+handler = "imports"
+params = [
+  { name = "record", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--record", "-r"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "declined", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--declined"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "nudge", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--nudge"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["awareness", "log"]
+kind = "command"
+help = "Append an entry to the daily awareness log."
+operation_id = "awareness.log"
+entry_type = "http"
+method = "POST"
+route = "/app/awareness/api/log"
+contract_operation_id = "awareness.log"
+handler = "log"
+params = [
+  { name = "kind", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["kind"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "message", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["message"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "key", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--key", "-k"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "data", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--data", "-d"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["awareness", "log-read"]
+kind = "command"
+help = "Read entries from the daily awareness log."
+operation_id = "awareness.log-read"
+entry_type = "http"
+method = "GET"
+route = "/app/awareness/api/log"
+contract_operation_id = "awareness.log-read"
+handler = "log_read"
+params = [
+  { name = "day", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "kind", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--kind", "-k"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 0, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+]

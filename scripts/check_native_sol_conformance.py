@@ -20,6 +20,7 @@ from flask import Flask
 
 import solstone.convey.reasons as reasons
 from solstone.apps.activities.routes import activities_bp
+from solstone.apps.awareness.routes import awareness_bp
 from solstone.apps.body.routes import body_bp
 from solstone.apps.curation.routes import curation_bp
 from solstone.apps.sol.routes import sol_bp
@@ -27,6 +28,9 @@ from solstone.apps.support.routes import support_bp
 from solstone.convey.chat import chat_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
 from solstone.convey.health import bp as health_bp
+from solstone.convey.ledger import bp as ledger_bp
+from solstone.convey.profile import bp as profile_bp
+from solstone.convey.profile import profiles_bp
 from solstone.convey.reasons import Reason
 from solstone.convey.root import bp as root_bp
 
@@ -246,6 +250,10 @@ def register_native_blueprints(app: Flask) -> None:
         body_bp,
         curation_bp,
         sol_bp,
+        awareness_bp,
+        ledger_bp,
+        profile_bp,
+        profiles_bp,
     ):
         app.register_blueprint(blueprint)
 
