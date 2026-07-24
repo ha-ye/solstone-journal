@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PRE_CUTOVER_COMMIT = "d777abeba213e167b18e9c7a646d112aa4b04ccd"
+PRE_CUTOVER_COMMIT = "dd04f55c8"
 SURVIVING_SOL_CLI = "solstone/think/sol_cli.py"
 
 # Pre-cutover deletion-owner manifest. `convey_client.py` is intentionally
