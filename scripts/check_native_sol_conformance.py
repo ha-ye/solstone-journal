@@ -25,6 +25,7 @@ from solstone.apps.awareness.routes import awareness_bp
 from solstone.apps.body.routes import body_bp
 from solstone.apps.curation.routes import curation_bp
 from solstone.apps.network.routes import network_bp
+from solstone.apps.settings.routes import settings_bp
 from solstone.apps.sol.routes import sol_bp
 from solstone.apps.support.routes import support_bp
 from solstone.apps.transcripts.routes import transcripts_bp
@@ -261,6 +262,7 @@ def register_native_blueprints(app: Flask) -> None:
         import_bp,
         transcripts_bp,
         network_bp,
+        settings_bp,
     ):
         app.register_blueprint(blueprint)
 

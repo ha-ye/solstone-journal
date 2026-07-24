@@ -7442,6 +7442,597 @@
         ]
       }
     },
+    "/app/settings/api/config": {
+      "get": {
+        "description": "Return the public journal configuration for settings CLI views.",
+        "operationId": "settings.config.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "env": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "identity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "observe": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "runtime_env": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "transcribe": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Public journal configuration."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config could not be read.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read journal settings config",
+        "tags": [
+          "settings"
+        ]
+      },
+      "post": {
+        "description": "Persist a typed journal settings update for identity, env, transcribe, or processing configuration.",
+        "operationId": "settings.config.update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "data": {
+                  "name": "Jer"
+                },
+                "section": "identity"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "section": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "section"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "config": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "key_validation",
+                    "success"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated public journal configuration."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The config update request was invalid.",
+            "x-reason-codes": [
+              "invalid_config_value",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config update failed.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config could not be locked for update.",
+            "x-reason-codes": [
+              "config_busy"
+            ]
+          }
+        },
+        "summary": "Update journal settings config",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/app/settings/api/convey/status": {
+      "get": {
+        "description": "Return the rendered Convey bind and dashboard URL status.",
+        "operationId": "settings.convey.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "dashboard_url": {
+                      "type": "string"
+                    },
+                    "status_text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "dashboard_url",
+                    "status_text"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Convey status payload."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Convey status could not be read.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read Convey status text",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/app/settings/api/observe": {
+      "get": {
+        "description": "Return observer capture settings with defaults and bounds.",
+        "operationId": "settings.observe.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "defaults": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "tmux": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "tmux",
+                    "defaults"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Observer settings."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer settings could not be read.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read observer settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "post": {
+        "description": "Persist observer capture settings.",
+        "operationId": "settings.observe.update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "tmux": {
+                  "capture_interval": 5,
+                  "enabled": true
+                }
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "tmux": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "defaults": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "tmux": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "tmux",
+                    "defaults"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated observer settings."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The observer update request was invalid.",
+            "x-reason-codes": [
+              "invalid_config_value",
+              "missing_request_body"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer settings update failed.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config could not be locked for observer update.",
+            "x-reason-codes": [
+              "config_busy"
+            ]
+          }
+        },
+        "summary": "Update observer settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/app/settings/api/processing": {
+      "get": {
+        "description": "Return effective deferred-processing settings.",
+        "operationId": "settings.processing.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Processing settings."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Processing settings could not be read.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read processing settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/app/settings/api/transcribe": {
+      "get": {
+        "description": "Return transcription backend metadata and current config.",
+        "operationId": "settings.transcribe.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "api_keys": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "backends": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "config": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "resource": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "runtime_label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "backends",
+                    "api_keys",
+                    "config"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Transcription settings."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Transcription settings could not be read.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read transcription settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/app/settings/api/validate-keys": {
+      "get": {
+        "description": "Validate service tokens without persisting the validation cache.",
+        "operationId": "settings.keys.validate",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "key_validation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Service-token validation results."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service-token validation failed.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config could not be locked for validation-cache update.",
+            "x-reason-codes": [
+              "config_busy"
+            ]
+          }
+        },
+        "summary": "Validate configured service tokens",
+        "tags": [
+          "settings"
+        ]
+      },
+      "post": {
+        "description": "Validate service tokens and persist validation-cache results.",
+        "operationId": "settings.keys.validate-cache",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "key_validation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Persisted service-token validation results."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service-token validation failed.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Settings config could not be locked for validation-cache update.",
+            "x-reason-codes": [
+              "config_busy"
+            ]
+          }
+        },
+        "summary": "Validate and persist configured service-token status",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/app/sol/api/reset": {
       "post": {
         "description": "Restore the default agent identity fields.",

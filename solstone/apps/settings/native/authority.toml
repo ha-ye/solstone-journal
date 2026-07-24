@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["settings", "convey", "status"]
+kind = "command"
+help = "Show Convey network and dashboard URL status."
+operation_id = "settings.convey.status"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/convey/status"
+contract_operation_id = "settings.convey.status"
+handler = "convey_status"
+params = []
+
+[[entries]]
+path = ["settings", "identity", "set"]
+kind = "command"
+help = "Update journal owner identity."
+operation_id = "settings.identity.set"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.update"
+handler = "identity_set"
+params = [
+  { name = "name", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--name"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "preferred", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--preferred"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "bio", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--bio"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "timezone_name", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--timezone"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "pronouns", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--pronouns"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "add_email", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--add-email"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "remove_email", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--remove-email"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "add_alias", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--add-alias"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "remove_alias", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--remove-alias"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["settings", "identity", "show"]
+kind = "command"
+help = "Show journal identity config."
+operation_id = "settings.identity.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.get"
+handler = "identity_show"
+params = []
+
+[[entries]]
+path = ["settings", "keys", "clear"]
+kind = "command"
+help = "Clear an API key from journal config."
+operation_id = "settings.keys.clear"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.update"
+handler = "keys_clear"
+params = [
+  { name = "env_var", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["env_var"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["settings", "keys", "set"]
+kind = "command"
+help = "Set an API key in journal config."
+operation_id = "settings.keys.set"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.update"
+handler = "keys_set"
+params = [
+  { name = "env_var", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["env_var"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "value", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["value"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["settings", "keys", "show"]
+kind = "command"
+help = "Show configured API key status."
+operation_id = "settings.keys.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.get"
+handler = "keys_show"
+params = []
+
+[[entries]]
+path = ["settings", "keys", "validate"]
+kind = "command"
+help = "Validate all configured API keys without persisting by default."
+operation_id = "settings.keys.validate"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/validate-keys"
+contract_operation_id = "settings.keys.validate"
+handler = "keys_validate"
+params = [
+  { name = "cache_result", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--cache-result"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["settings", "observer", "set"]
+kind = "command"
+help = "Update observer capture settings."
+operation_id = "settings.observer.set"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/observe"
+contract_operation_id = "settings.observe.update"
+handler = "observer_set"
+params = [
+  { name = "enabled", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, options = ["--enabled"], secondary = ["--no-enabled"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "capture_interval", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, options = ["--capture-interval"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["settings", "observer", "show"]
+kind = "command"
+help = "Show observer configuration with defaults."
+operation_id = "settings.observer.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/observe"
+contract_operation_id = "settings.observe.get"
+handler = "observer_show"
+params = []
+
+[[entries]]
+path = ["settings", "processing", "set"]
+kind = "command"
+help = "Set deferred-processing mode and drain window."
+operation_id = "settings.processing.set"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.update"
+handler = "processing_set"
+params = [
+  { name = "mode", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--mode"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "window_start", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--window-start"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "window_end", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--window-end"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "time_window", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, options = ["--time-window"], secondary = ["--no-time-window"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "display_powersave", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, options = ["--display-powersave"], secondary = ["--no-display-powersave"], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["settings", "processing", "show"]
+kind = "command"
+help = "Show effective deferred-processing settings."
+operation_id = "settings.processing.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/processing"
+contract_operation_id = "settings.processing.get"
+handler = "processing_show"
+params = []
+
+[[entries]]
+path = ["settings", "show"]
+kind = "command"
+help = "Show a summary of journal settings."
+operation_id = "settings.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.get"
+handler = "show"
+params = []
+
+[[entries]]
+path = ["settings", "transcribe", "set-backend"]
+kind = "command"
+help = "Set the transcription backend."
+operation_id = "settings.transcribe.set-backend"
+entry_type = "http"
+method = "POST"
+route = "/app/settings/api/config"
+contract_operation_id = "settings.config.update"
+handler = "transcribe_set_backend"
+params = [
+  { name = "backend", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["backend"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["settings", "transcribe", "show"]
+kind = "command"
+help = "Show transcription backend configuration."
+operation_id = "settings.transcribe.show"
+entry_type = "http"
+method = "GET"
+route = "/app/settings/api/transcribe"
+contract_operation_id = "settings.transcribe.get"
+handler = "transcribe_show"
+params = []

@@ -35,6 +35,7 @@ const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/l
 const LINK_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
+const SETTINGS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/settings.jsonl");
 const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.jsonl");
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
@@ -59,6 +60,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(LINK_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(PROFILE_VECTORS))
+        .chain(load_vectors(SETTINGS_VECTORS))
         .chain(load_vectors(SOL_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))

@@ -25,6 +25,7 @@ from solstone.apps.awareness import call as awareness_call
 from solstone.apps.body import call as body_call
 from solstone.apps.facets import call as facets_call
 from solstone.apps.network import call as network_call
+from solstone.apps.settings import call as settings_call
 from solstone.apps.sol import call as sol_call
 from solstone.apps.support import call as support_call
 from solstone.apps.transcripts import call as transcripts_call
@@ -524,6 +525,7 @@ def patched_runtime(
     original_network_get_client = network_call.get_client
     original_network_now_utc = network_call._now_utc
     original_profile_get_client = profile_call.get_client
+    original_settings_get_client = settings_call.get_client
     original_sol_get_client = sol_call.get_client
     original_support_get_client = support_call.get_client
     original_local_build_identity = support_call._local_build_identity
@@ -573,6 +575,7 @@ def patched_runtime(
     )
     network_call.time.sleep = fake_time.sleep
     profile_call.get_client = lambda: client
+    settings_call.get_client = lambda: client
     sol_call.get_client = lambda: client
     support_call.get_client = lambda: client
     support_call._local_build_identity = lambda: build_identity_fixture()
@@ -610,6 +613,7 @@ def patched_runtime(
             network_call.get_client = original_network_get_client
             network_call._now_utc = original_network_now_utc
             profile_call.get_client = original_profile_get_client
+            settings_call.get_client = original_settings_get_client
             sol_call.get_client = original_sol_get_client
             support_call.get_client = original_support_get_client
             support_call._local_build_identity = original_local_build_identity
