@@ -306,6 +306,29 @@
     equal('ctrl t is not prevented', modifiedT.defaultPrevented, false);
     keydown(document.activeElement, 't');
     equal('t focuses today', document.activeElement.dataset.daygridDate, '20251230');
+
+    // The autoscroll guard only engages past a real overflow threshold.
+    const fitHost = createHost();
+    fitHost.style.width = '5000px';
+    root = mountInHost(fitHost, multiYearData(), { today: '20251230', monthLinks: true });
+    await frame();
+    const fitScroller = root.querySelector('.daygrid-scroller');
+    equal('autoscroll fit has no meaningful overflow', fitScroller.scrollWidth - fitScroller.clientWidth <= 24, true);
+    equal('autoscroll fit keeps scroll at start', fitScroller.scrollLeft, 0);
+
+    const wideHost = createHost();
+    wideHost.style.width = '260px';
+    root = mountInHost(wideHost, multiYearData(), { today: '20251230', monthLinks: true });
+    await frame();
+    const wideScroller = root.querySelector('.daygrid-scroller');
+    const wideTarget = root.querySelector(`[data-daygrid-date="${root.__dayGridScrollTarget}"]`);
+    const wideTargetRect = wideTarget.getBoundingClientRect();
+    const wideScrollerRect = wideScroller.getBoundingClientRect();
+    const wideTargetCenter = wideTargetRect.left + (wideTargetRect.width / 2);
+    const wideScrollerCenter = wideScrollerRect.left + (wideScrollerRect.width / 2);
+    equal('autoscroll wide overflow is above threshold', wideScroller.scrollWidth - wideScroller.clientWidth > 24, true);
+    equal('autoscroll wide overflow centers target', Math.abs(wideTargetCenter - wideScrollerCenter) <= 1, true);
+
     mounted = mount(multiYearData(), { today: '20270101' });
     root = mounted.root;
     const beforeT = root.querySelector('[data-daygrid-date="20250107"]');

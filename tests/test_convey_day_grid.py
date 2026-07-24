@@ -162,3 +162,17 @@ def test_day_grid_css_pins_presence_tone():
     assert ".daygrid-legend-swatch--presence" in css
     assert "color-mix(in srgb, var(--orange) 58%, var(--hairline))" in css
     assert "color-mix(in srgb, var(--orange) 72%, var(--orange-wash))" in css
+
+
+def test_day_grid_js_pins_autoscroll_overflow_guard():
+    js_path = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "convey"
+        / "static"
+        / "day-grid.js"
+    )
+    js = js_path.read_text(encoding="utf-8")
+
+    assert "const MIN_AUTOSCROLL_OVERFLOW = 24;" in js
+    assert "if (maxScroll > MIN_AUTOSCROLL_OVERFLOW) {" in js

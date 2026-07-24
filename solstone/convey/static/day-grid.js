@@ -11,6 +11,7 @@
   const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const DAY_RE = /^\d{8}$/;
   const DAY_ATTR = 'data-daygrid-date';
+  const MIN_AUTOSCROLL_OVERFLOW = 24;
   const stateByHost = new WeakMap();
 
   function dateNav() {
@@ -905,8 +906,11 @@
     const targetElement = targetDay ? root.querySelector(`[${DAY_ATTR}="${targetDay}"]`) : null;
     if (targetElement) {
       requestAnimationFrame(() => {
-        const rawLeft = targetElement.offsetLeft - (scroller.clientWidth / 2) + (targetElement.clientWidth / 2);
-        scroller.scrollLeft = clamp(rawLeft, 0, Math.max(0, scroller.scrollWidth - scroller.clientWidth));
+        const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+        if (maxScroll > MIN_AUTOSCROLL_OVERFLOW) {
+          const rawLeft = targetElement.offsetLeft - (scroller.clientWidth / 2) + (targetElement.clientWidth / 2);
+          scroller.scrollLeft = clamp(rawLeft, 0, maxScroll);
+        }
       });
     }
 
