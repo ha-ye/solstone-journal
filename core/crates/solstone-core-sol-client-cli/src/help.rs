@@ -204,13 +204,7 @@ fn visible_params(entry: &InventoryEntry) -> Vec<Value> {
 }
 
 fn format_param(param: &Value) -> String {
-    let spellings = param["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let spellings = format_spellings(param);
     let name = param["name"].as_str().unwrap_or("");
     let type_name = param["type"].as_str().unwrap_or("value");
     let mut line = if param["is_flag"].as_bool().unwrap_or(false) {
@@ -225,7 +219,7 @@ fn format_param(param: &Value) -> String {
     if !param["default"].is_null() {
         indicators.push(format!("default: {}", value_label(&param["default"])));
     }
-    if !param["flag_value"].is_null() {
+    if !param["flag_value"].is_null() && string_values(param, "secondary").is_empty() {
         indicators.push(format!("flag value: {}", value_label(&param["flag_value"])));
     }
     if param["multiple"].as_bool().unwrap_or(false) {
@@ -238,6 +232,33 @@ fn format_param(param: &Value) -> String {
         line.push_str(&format!(" [{}]", indicators.join(", ")));
     }
     line
+}
+
+fn format_spellings(param: &Value) -> String {
+    let options = string_values(param, "options");
+    let secondary = string_values(param, "secondary");
+    match (options.is_empty(), secondary.is_empty()) {
+        (false, false) => format!("{} / {}", options.join(", "), secondary.join(", ")),
+        (false, true) => options.join(", "),
+        (true, false) => secondary.join(", "),
+        (true, true) => String::new(),
+    }
+}
+
+#[cfg(test)]
+fn all_spellings(param: &Value) -> Vec<&str> {
+    let mut spellings = string_values(param, "options");
+    spellings.extend(string_values(param, "secondary"));
+    spellings
+}
+
+fn string_values<'a>(param: &'a Value, key: &str) -> Vec<&'a str> {
+    param[key]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 fn value_label(value: &Value) -> String {
@@ -337,6 +358,7 @@ mod tests {
     fn every_positive_inventory_leaf_renders_declared_metadata() {
         let mut seen = BTreeSet::new();
         let mut scanned = 0;
+        let mut secondary_scanned = 0;
         for entry in aggregate::entries() {
             if !matches!(entry.surface, "sol-call" | "sol-chat" | "sol-import") {
                 continue;
@@ -361,22 +383,21 @@ mod tests {
             );
             let params = serde_json::from_str::<Vec<Value>>(entry.params_json).unwrap();
             for param in params {
-                let options = param["options"].as_array().unwrap();
+                let spellings = all_spellings(&param);
                 if param["hidden"].as_bool().unwrap_or(false) {
-                    for option in options {
-                        let option = option.as_str().unwrap();
+                    for spelling in spellings {
                         assert!(
-                            !output.contains(option),
-                            "hidden metadata leaked for {key:?}: {option}"
+                            !output.contains(spelling),
+                            "hidden metadata leaked for {key:?}: {spelling}"
                         );
                     }
                     continue;
                 }
-                for option in options {
-                    let option = option.as_str().unwrap();
+                secondary_scanned += string_values(&param, "secondary").len();
+                for spelling in spellings {
                     assert!(
-                        output.contains(option),
-                        "missing option spelling for {key:?}: {option}"
+                        output.contains(spelling),
+                        "missing option spelling for {key:?}: {spelling}"
                     );
                 }
                 if param["required"].as_bool().unwrap_or(false) {
@@ -394,6 +415,7 @@ mod tests {
             }
         }
         assert!(scanned > 0, "positive inventory scan was empty");
+        assert!(secondary_scanned > 0, "secondary alias scan was empty");
     }
 
     #[test]
