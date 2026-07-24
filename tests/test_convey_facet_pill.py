@@ -10,6 +10,27 @@ def _function_body(text: str, name: str) -> str:
     return text[start:nxt]
 
 
+def test_mobile_facet_pills_overflow_override_follows_base_rule():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    base_anchor = ".facet-bar .facet-pills-container {\n  flex: 1;\n  display: flex;"
+    mobile_anchor = (
+        "@media (max-width: 768px) {\n"
+        "  .facet-bar .facet-pills-container {\n"
+        "    overflow-x: auto;"
+    )
+    base_index = css.find(base_anchor)
+    mobile_index = css.find(mobile_anchor)
+
+    assert base_index != -1, "base facet-pills container rule was not found"
+    assert mobile_index != -1, "mobile facet-pills overflow override was not found"
+
+    base_close = css.find("}", base_index)
+    assert base_close != -1, "base facet-pills container rule is not closed"
+    assert base_index < css.find("overflow-x: clip", base_index) < base_close
+    assert base_index < mobile_index
+
+
 def test_selected_pill_defers_to_css_for_contrast_safe_treatment():
     fn = _function_body(
         Path("solstone/convey/static/app.js").read_text(encoding="utf-8"),

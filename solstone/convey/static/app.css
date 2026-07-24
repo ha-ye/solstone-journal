@@ -161,11 +161,6 @@ body.has-app-bar .workspace {
     margin-left: 0 !important;
   }
 
-  .facet-bar .facet-pills-container {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
   .app-bar {
     left: 8px;
     right: 8px;
@@ -666,6 +661,13 @@ body:has(.status-pane.visible) .facet-bar::after {
   overflow-x: clip;
   overflow-y: visible;
   min-width: 0;  /* Allow container to shrink below content size */
+}
+
+@media (max-width: 768px) {
+  .facet-bar .facet-pills-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* Menu Bar (left sidebar) */
