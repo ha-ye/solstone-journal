@@ -348,9 +348,9 @@ Because D4 rejects the `hooks` feature, this design avoids a Cargo feature or
 lock-file change. If implementation unexpectedly changes Cargo metadata or
 `Cargo.lock`, escalate to full `make ci`.
 
-## PORTING.md Divergence Text
+## PORTING.md Native Routing Text
 
-Add this text to `docs/PORTING.md` under `Indexer Selection Seam`:
+Add this text to `docs/PORTING.md` under `Indexer Native Write Routing`:
 
 > Native indexer compound writes are atomic at the logical replacement-unit
 > boundary. A content file replacement deletes old chunks, inserts new chunks,
@@ -362,12 +362,11 @@ Add this text to `docs/PORTING.md` under `Indexer Selection Seam`:
 > recreates index objects transactionally and does not unlink the database, WAL,
 > or SHM files.
 >
-> During the Python/native dual window, journals containing edge source files
-> whose extraction fails can show differing `edge_files` rows between Python and
-> native. Python may delete prior edge rows and advance `edge_files` for the
-> failed source; native preserves the prior rows and mtime so the unchanged file
-> retries on the next scan. Journals with no failing edge sources must remain
-> byte-identical between Python and native index output.
+> Command writes now use the native path only. Journals containing edge source
+> files whose extraction fails preserve prior native `edge_files` rows and mtime
+> so the unchanged file retries on the next scan. The remaining Python
+> in-process bypass consumers keep their existing Python semantics because they
+> do not enter `journal indexer`.
 
 ## Risks And Open Questions
 

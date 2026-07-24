@@ -1,5 +1,11 @@
 # Config-Gated Native Indexer Selection Seam
 
+> Retired historical design. This document is preserved only as context for the
+> removed config-gated native indexer migration path. Active behavior is
+> documented in `docs/PORTING.md` and implemented in
+> `solstone/think/indexer/native.py`; do not follow the decisions below for new
+> work.
+
 This is the review-gate design for routing selected `journal indexer` write-only
 invocations to `solstone-core indexer`. It does not implement the seam.
 

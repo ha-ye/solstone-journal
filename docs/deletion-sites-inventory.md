@@ -70,12 +70,6 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `solstone/think/facets.py:907` | `facets/<name>/` directory | `delete_facet()` | facet path resolves under `journal/facets`, with existing-facet checks before delete | yes (`solstone/think/facets.py:899-906`) | no | `⚠️` | audited write-owner delete path; deferred rather than expanded in this lode |
 
-## think/indexer
-
-| file:line | target | trigger | path validation | audit log | dry-run | class | why |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `solstone/think/indexer/journal.py:876` | SQLite index database file | `reset_journal_index()` | fixed `journal/indexer/<db>` path | no | no | `⚠️` | index artifact reset; infrastructure is out of scope for retention-style parity |
-
 ## think/identity
 
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |

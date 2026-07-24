@@ -155,15 +155,6 @@ def get_journal_index(journal: str | None = None) -> tuple[sqlite3.Connection, s
     return conn, db_path
 
 
-def reset_journal_index(journal: str) -> None:
-    """Remove the journal index database file."""
-    db_path = os.path.join(journal, INDEX_DIR, DB_NAME)
-    try:
-        os.unlink(db_path)
-    except FileNotFoundError:
-        pass
-
-
 def prune_chunks_by_stream(stream: str, journal: str | None = None) -> dict:
     """Remove all index chunks for a stream and their files rows.
 
@@ -1032,7 +1023,7 @@ def sanitize_fts_query(
     quotes, apostrophes, and *.
 
     For plain multi-word queries (no explicit operators or quotes), produces
-    a NEAR-proximity formulation with AND fallback:
+    a NEAR-proximity formulation with an AND alternative:
         NEAR(term1 term2, 10) OR (term1 AND term2)
 
     Returns:

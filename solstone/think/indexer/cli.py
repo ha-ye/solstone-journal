@@ -4,27 +4,20 @@
 """CLI functionality for the indexer."""
 
 import argparse
-import logging
+import sys
 from typing import Any
 
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
-from .edges import rebuild_edges
 from .journal import (
-    index_file,
-    reset_journal_index,
-    scan_journal,
     search_counts,
     search_journal,
 )
-from .native_seam import maybe_run_native_indexer
+from .native import EXIT_USAGE, run_native_indexer
 
-logger = logging.getLogger(__name__)
-
-ZERO_EDGE_HINT = (
-    "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase "
-    "remains modification-time incremental — run journal indexer --rebuild-edges to "
-    "force full edge re-extraction."
+INVALID_RESCAN_FILE_SCAN_MESSAGE = (
+    "journal indexer usage error: --rescan-file cannot be combined with --rescan "
+    "or --rescan-full."
 )
 
 
@@ -87,6 +80,16 @@ def _display_search_results(
         facet = meta.get("facet")
         facet_str = f" ({facet})" if facet else ""
         print(f"{idx}. {meta.get('day')} {label}{facet_str}: {snippet}")
+
+
+def _has_write_operation(args: argparse.Namespace) -> bool:
+    return bool(
+        args.reset
+        or args.rebuild_edges
+        or args.rescan
+        or args.rescan_full
+        or args.rescan_file
+    )
 
 
 def main() -> int | None:
@@ -171,8 +174,6 @@ def main() -> int | None:
     )
 
     args = setup_cli(parser)
-    require_solstone()
-    journal = get_journal()
 
     if (
         not args.rescan
@@ -185,45 +186,17 @@ def main() -> int | None:
         parser.print_help()
         return
 
-    native_exit = maybe_run_native_indexer(args, journal)
-    if native_exit is not None:
-        return native_exit
+    if args.rescan_file and (args.rescan or args.rescan_full):
+        print(INVALID_RESCAN_FILE_SCAN_MESSAGE, file=sys.stderr)
+        return EXIT_USAGE
 
-    if args.reset:
-        reset_journal_index(journal)
+    require_solstone()
+    journal = get_journal()
 
-    if args.rebuild_edges:
-        result = rebuild_edges(journal)
-        logger.info(
-            "indexer edges rebuilt: files=%s rows=%s drops=%s failed=%s skipped=%s",
-            result.get("files", 0),
-            result.get("rows", 0),
-            result.get("drops", 0),
-            result.get("failed", 0),
-            result.get("skipped", 0),
-        )
-
-    if args.rescan_file:
-        # Single file indexing (incompatible with --rescan/--rescan-full)
-        if args.rescan or args.rescan_full:
-            parser.error("--rescan-file cannot be used with --rescan or --rescan-full")
-        try:
-            index_file(journal, args.rescan_file, verbose=args.verbose)
-            logger.info("indexer file indexed: %s", args.rescan_file)
-        except (ValueError, FileNotFoundError) as e:
-            parser.error(str(e))
-    elif args.rescan or args.rescan_full:
-        report = scan_journal(journal, verbose=args.verbose, full=args.rescan_full)
-        if report.changed:
-            logger.info("indexer journal rescan ok")
-        should_emit_zero_edge_hint = (
-            args.rescan_full
-            and not args.rebuild_edges
-            and not args.reset
-            and report.edge_rows_inserted == 0
-        )
-        if should_emit_zero_edge_hint:
-            print(ZERO_EDGE_HINT)
+    if _has_write_operation(args):
+        native_exit = run_native_indexer(args, journal)
+        if native_exit != 0 or args.query is None:
+            return native_exit
 
     if args.query is not None:
         query_kwargs: dict[str, Any] = {}

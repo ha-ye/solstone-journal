@@ -769,18 +769,6 @@ def test_time_bucket_non_segment_empty(journal_fixture):
     conn.close()
 
 
-def test_reset_journal_index(journal_fixture):
-    """Test resetting the journal index."""
-    from solstone.think.indexer.journal import reset_journal_index, scan_journal
-
-    scan_journal(str(journal_fixture))
-    index_path = journal_fixture / "indexer" / "journal.sqlite"
-    assert index_path.exists()
-
-    reset_journal_index(str(journal_fixture))
-    assert not index_path.exists()
-
-
 def test_index_caching(journal_fixture):
     """Test that unchanged files are not re-indexed."""
     from solstone.think.indexer.journal import scan_journal
@@ -1794,6 +1782,87 @@ def test_prune_chunks_by_stream(monkeypatch, tmp_path):
             ).fetchone()[0]
             == 0
         )
+    conn.close()
+
+
+def test_delete_segment_index_rows_removes_only_target_segment(monkeypatch, tmp_path):
+    """delete_segment_index_rows remains an in-process index maintenance helper."""
+    from solstone.think.indexer.journal import (
+        delete_segment_index_rows,
+        get_journal_index,
+        scan_journal,
+    )
+    from solstone.think.streams import write_segment_stream
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    target_rel = "20240101/default/100000_300"
+    target_seg = journal / "chronicle" / target_rel
+    target_talents = target_seg / "talents"
+    target_talents.mkdir(parents=True)
+    (target_talents / "screen.md").write_text(
+        "# Target\n\nTarget segment content.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(target_seg, "default", None, None, 1)
+
+    other_rel = "20240101/default/101000_300"
+    other_seg = journal / "chronicle" / other_rel
+    other_talents = other_seg / "talents"
+    other_talents.mkdir(parents=True)
+    (other_talents / "screen.md").write_text(
+        "# Other\n\nOther segment content.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(other_seg, "default", None, None, 1)
+
+    scan_journal(str(journal), full=True)
+    conn, _ = get_journal_index(str(journal))
+    target_chunks = conn.execute(
+        "SELECT count(*) FROM chunks WHERE path = ? OR path LIKE ?",
+        (target_rel, f"{target_rel}/%"),
+    ).fetchone()[0]
+    target_files = conn.execute(
+        "SELECT count(*) FROM files WHERE path LIKE ?",
+        (f"{target_rel}/%",),
+    ).fetchone()[0]
+    other_chunks = conn.execute(
+        "SELECT count(*) FROM chunks WHERE path = ? OR path LIKE ?",
+        (other_rel, f"{other_rel}/%"),
+    ).fetchone()[0]
+    conn.close()
+
+    assert target_chunks > 0
+    assert target_files > 0
+    assert other_chunks > 0
+
+    result = delete_segment_index_rows(str(journal), target_rel)
+
+    assert result == {"chunks": target_chunks, "files": target_files, "error": None}
+
+    conn, _ = get_journal_index(str(journal))
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM chunks WHERE path = ? OR path LIKE ?",
+            (target_rel, f"{target_rel}/%"),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM files WHERE path LIKE ?",
+            (f"{target_rel}/%",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM chunks WHERE path = ? OR path LIKE ?",
+            (other_rel, f"{other_rel}/%"),
+        ).fetchone()[0]
+        == other_chunks
+    )
     conn.close()
 
 

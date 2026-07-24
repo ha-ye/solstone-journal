@@ -83,7 +83,7 @@ pin, and rerun `make audit`.
 
 ## Owner Timezone
 
-The Python owner-timezone fallback is effectively `identity.timezone` from
+The Python owner-timezone resolution is effectively `identity.timezone` from
 `config/journal.json`, then UTC. The apparent host-local branches in
 `get_owner_timezone()` are dead because CPython `astimezone()` returns a
 fixed-offset `datetime.timezone` without a `.key`. Reproducing host-local time
@@ -172,50 +172,39 @@ lode documents that hazard but does not change Python behavior.
 
 ## Unsupported Inputs
 
-Ports use this vocabulary for unsupported behavior:
+Native ports reserve process exit code 69 for inputs the native command cannot
+process. Wrappers should surface that code unless a command-specific design says
+otherwise. It is distinct from success, usage errors (64), empty-input codes, and
+temporary failures (75). Signal death is normalized to temporary failure (75).
+The supervisor intentionally keeps mapping non-zero scheduled-task exits to
+`error`; command stderr carries the operator-facing detail.
 
-- `on-unsupported = abort`: fail loudly; this is the default.
-- `on-unsupported = abort-silent`: decline without noisy logging when a caller
-  has explicitly requested quiet refusal.
-- `on-unsupported = fallback`: use the Python path while the port is active.
+### Indexer Native Write Routing
 
-The reserved declined process exit code is 69, matching the sysexits meaning
-"service unavailable"; it means this port declines to handle the input. It is
-distinct from existing success, usage, empty-input, and temporary-failure codes.
+`journal indexer` routes command writes (`--reset`, `--rebuild-edges`,
+`--rescan`, `--rescan-full`, and `--rescan-file`) to the sibling
+`solstone-core indexer` binary. Query-only invocations remain in Python. Mixed
+write+query invocations run native writes first; on native success they enter
+the Python query path, and on native non-zero they return that code without
+querying. The command no longer reads journal config for write routing, so stale
+old routing keys in `config/journal.json` are inert.
 
-The first declined-exit wave is the indexer selection seam in the Python
-`journal indexer` wrapper. When the seam routes a write-only invocation to
-`solstone-core indexer`, the native indexer returns 69 when it declines an
-unsupported input. The wrapper handles that code according to
-`config/journal.json` key `core.indexer_on_decline`: `abort` reports the decline
-and exits 69, while `fallback` reruns the same operation on the Python indexer.
-Usage errors (64) and temporary failures (75) are never retried in Python.
-Signal death is normalized to temporary failure (75). The supervisor
-intentionally keeps mapping non-zero scheduled-task exits to `error`;
-abort-by-default makes that classification correct, and decline visibility lives
-in the wrapper's stderr and logs.
+Before launching the native helper, the wrapper checks that the current runtime
+has a compatible `solstone-core` wheel: the normalized host tuple must be in
+`probe.SOLSTONE_CORE_COVERED_PLATFORMS`, and the platform tags advertised by
+`packaging.tags.sys_tags()` must intersect the tag set recorded in
+`probe.SOLSTONE_CORE_PLATFORM_TAGS`. Linux x86_64 and Linux aarch64 require the
+manylinux 2.17 / manylinux2014 glibc floor. macOS requires
+`macosx_14_0_arm64`; older arm64 macOS hosts therefore report no compatible
+wheel. A covered source checkout without `solstone-core` distribution metadata
+also returns 78 for every write-bearing command until the developer runs
+`make install`.
 
-### Indexer Selection Seam
-
-`journal indexer` has a temporary Python/native selection seam for the native
-indexer migration. It reads `config/journal.json` once at command launch.
-Query-only and mixed write+query invocations stay on Python for the whole
-invocation and do not read selection config.
-
-For write-only native-eligible invocations, explicit `core.indexer = "python"`
-runs the Python indexer and remains the rollback switch. Explicit
-`core.indexer = "rust"` selects the sibling `solstone-core indexer` binary
-everywhere and keeps its loud handshake-failure behavior. When `core.indexer` is
-unset, hosts covered by the probe module's solstone-core package predicate
-default to Rust; uncovered hosts keep Python.
-
-When 69 fallback is selected, the wrapper reruns the full operation set in
-Python; any native operations that succeeded before the decline are repeated.
 Backup-restore full rescans, direct `index_file()` callers, chat stream appends,
 importers, day-accumulator writes, and index-mutating deletes bypass
-`journal indexer` and stay on the Python indexer during the dual window.
+`journal indexer` and continue to use the named Python in-process writers.
 
-The seam normalizes `--rescan-file` to an absolute path with the same Python
+The wrapper normalizes `--rescan-file` to an absolute path with the same Python
 journal-path resolver used by `index_file()` before passing it to native. This
 keeps `chronicle/`-prefixed relative paths from being interpreted differently by
 the Rust relative-path resolver.
@@ -230,12 +219,11 @@ and writes both watermarks as one unit. Reset is SQLite-native: it drops and
 recreates index objects transactionally and does not unlink the database, WAL,
 or SHM files.
 
-During the Python/native dual window, journals containing edge source files
-whose extraction fails can show differing `edge_files` rows between Python and
-native. Python may delete prior edge rows and advance `edge_files` for the
-failed source; native preserves the prior rows and mtime so the unchanged file
-retries on the next scan. Journals with no failing edge sources must remain
-byte-identical between Python and native index output.
+Command writes now use the native path only. Journals containing edge source
+files whose extraction fails preserve prior native `edge_files` rows and mtime
+so the unchanged file retries on the next scan. The remaining Python in-process
+bypass consumers keep their existing Python semantics because they do not enter
+`journal indexer`.
 
 The detailed native atomicity design is in
 `docs/design/indexer-native-atomicity.md`.
@@ -249,20 +237,11 @@ Native sol client design records:
 `docs/design/native-sol-client/05-raw-body-parity.md`, and
 `docs/design/native-sol-client/06-cutover-design.md`.
 
-The selection keys are intentionally absent from `journal_default.json`. They
-are a two-release-lifetime migration control: release N kept Python as the
-absent-key default and allowed opt-in Rust; release N+1 defaults absent-key
-native-eligible writes to Rust on covered hosts while still honoring explicit
-Python and keeping uncovered hosts on Python; release N+2 may delete the Python
-orchestration path and remove `core.indexer` / `core.indexer_on_decline` only
-after a completed normal alpha interval and an explicit uncovered-host
-disposition.
-
 ## Dual Paths And Shims
 
-The repository no-shims rule still stands. During an active port, a config-gated
-old/new selection is a deliberate, time-boxed, per-change exception. Each dual
-path needs a named deletion schedule. Do not add fallback aliases,
+The repository no-shims rule still stands. During an active port, a temporary
+old/new route is a deliberate, time-boxed, per-change exception. Each dual path
+needs a named deletion schedule. Do not add compatibility aliases,
 deprecated-parameter handling, or compatibility re-exports.
 
 The native `sol` cutover has one sanctioned temporary delegation boundary: the
@@ -287,17 +266,17 @@ The first behavior port is `get_journal_info()` / `get_journal()` from
 `solstone/think/utils.py`, backed by `solstone/think/user_config.py`.
 
 1. **MSRV is 1.95 for the locked native dependency set.** Rust 1.87 is enough
-   for the safe home fallback, but the current bundled SQLite dependency line
+   for the safe home path, but the current bundled SQLite dependency line
    requires Rust 1.95. The journal resolver uses the hybrid shape: literal
    `HOME` when present, and `std::env::home_dir()` only when `HOME` is absent.
    This avoids a hand-rolled unsafe `getpwuid_r` implementation.
 2. **No unsafe passwd FFI.** Keeping the old 1.85 floor would require libc
-   fallback code with buffer sizing and retry behavior for a home-directory
+   backup code with buffer sizing and retry behavior for a home-directory
    lookup. That defect surface is not justified for this port.
 3. **Home normalization follows `str(Path.home() / "journal")`, not just
    `os.path.expanduser("~")`.** The port reproduces the observed layers needed
    by `user_config.default_journal()`: present-but-empty `HOME` becomes `/`,
-   trailing slashes are stripped with an or-root fallback, repeated separators
+   trailing slashes are stripped with an or-root default, repeated separators
    and `.` components are collapsed lexically, exactly two leading slashes are
    preserved, `..` is not collapsed, and `.` joined with `journal` renders as
    `journal`. If the expanded home still starts with `~`, the port raises the

@@ -112,21 +112,14 @@ def _command(tmp_path: Path, mode: str) -> str:
     return _quote_command(sys.executable, _writer_script(tmp_path), mode)
 
 
-def _python_journal_indexer_command(tmp_path: Path) -> str:
-    script = tmp_path / "run_python_journal_indexer.py"
+def _journal_indexer_command(tmp_path: Path) -> str:
+    script = tmp_path / "run_journal_indexer.py"
     script.write_text(
         """
-import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-journal = Path(os.environ["SOLSTONE_JOURNAL"])
-config_path = journal / "config" / "journal.json"
-config = json.loads(config_path.read_text(encoding="utf-8"))
-config.setdefault("core", {})["indexer"] = "python"
-config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 journal_bin = Path(sys.executable).with_name("journal")
 completed = subprocess.run([str(journal_bin), "indexer", "--rescan-full"], check=False)
 raise SystemExit(completed.returncode)
@@ -413,6 +406,27 @@ def test_stderr_classifier_allows_native_markdown_sanitize_warning() -> None:
     assert classified["unclassified"] == []
 
 
+def test_stderr_classifier_allows_native_edge_skip_warning() -> None:
+    stderr = "\n".join(
+        [
+            f"{harness.NATIVE_EDGE_SKIP_PREFIX}"
+            "20240102/default/234567_300/screen.jsonl"
+            ": invalid segment key 234567_300",
+            "unexpected diagnostic",
+        ]
+    )
+
+    classified = harness.classify_stderr(stderr)
+    native_edge_rule = next(
+        rule
+        for rule in classified["rules"]
+        if rule["name"] == harness.NATIVE_EDGE_SKIP_RULE
+    )
+
+    assert native_edge_rule["count"] == 1
+    assert classified["unclassified"] == ["unexpected diagnostic"]
+
+
 def test_stderr_classifier_rejects_markdown_near_misses() -> None:
     stderr = "\n".join(
         [
@@ -660,7 +674,7 @@ def test_command_failure_is_distinct_and_cli_nonzero(tmp_path: Path, capsys) -> 
 
 
 def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) -> None:
-    command = _python_journal_indexer_command(tmp_path)
+    command = _journal_indexer_command(tmp_path)
 
     report = harness.run_differential(
         journal=FIXTURE_JOURNAL,
@@ -674,7 +688,11 @@ def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) ->
         for table in report["canonical"]["tables"]
     }
     skip_counts = [
-        command_report["stderr_classification"]["rules"][0]["count"]
+        next(
+            rule["count"]
+            for rule in command_report["stderr_classification"]["rules"]
+            if rule["name"] == harness.NATIVE_EDGE_SKIP_RULE
+        )
         for command_report in report["commands"]
     ]
     corpus = report["provenance"]["corpus"]
@@ -865,7 +883,7 @@ def test_functional_fixture_cases_are_non_empty_on_reference_index(
 
 
 def test_fixture_corpus_reports_functionally_equal(tmp_path: Path) -> None:
-    command = _python_journal_indexer_command(tmp_path)
+    command = _journal_indexer_command(tmp_path)
 
     report = harness.run_differential(
         journal=FIXTURE_JOURNAL,

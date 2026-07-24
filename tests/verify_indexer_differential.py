@@ -94,6 +94,8 @@ NATIVE_MARKDOWN_SANITIZE_RULE = "native_markdown_sanitize_drop"
 NATIVE_MARKDOWN_SANITIZE_RE = re.compile(
     r"^warning: Dropped \d+ line\(s\) exceeding 2048 chars during markdown sanitization$"
 )
+NATIVE_EDGE_SKIP_RULE = "native_edge_extraction_skip"
+NATIVE_EDGE_SKIP_PREFIX = "warning: Skipping edge extraction for "
 EXCLUDED_SHADOW_TABLES = [
     "chunks_config",
     "chunks_content",
@@ -295,6 +297,7 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
         "count": 0,
         "examples": [],
     }
+    native_edge_rule = {"name": NATIVE_EDGE_SKIP_RULE, "count": 0, "examples": []}
     unclassified: list[str] = []
     for line in stderr.splitlines():
         if not line.strip():
@@ -305,10 +308,12 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
             _record_rule_hit(markdown_rule, line)
         elif NATIVE_MARKDOWN_SANITIZE_RE.match(line):
             _record_rule_hit(native_markdown_rule, line)
+        elif line.startswith(NATIVE_EDGE_SKIP_PREFIX):
+            _record_rule_hit(native_edge_rule, line)
         else:
             unclassified.append(line)
     return {
-        "rules": [edge_rule, markdown_rule, native_markdown_rule],
+        "rules": [edge_rule, markdown_rule, native_markdown_rule, native_edge_rule],
         "unclassified": unclassified,
     }
 
