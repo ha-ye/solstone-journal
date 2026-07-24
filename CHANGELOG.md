@@ -4,6 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.13] - 2026-07-24
+
+### Added
+
+- the `sol` command can now turn confidential processing on, check its verification again, turn it off, and show where setup stands.
+
+### Changed
+
+- thinking through a local model, confidential processing, or an endpoint you bring now fits each request to the model's real working limit. longer prompts and image-heavy work retry once at a tighter limit instead of repeating the same failure.
+
+### Fixed
+
+- confidential processing now renews its verification before it expires, so a journal can stay connected across long unattended runs. if verification cannot renew, the connection stays closed before any request is sent and recovers on its own after verification succeeds again.
+- a routine confidential-processing status check now shows the operation phase without repeating its one-time setup link.
+- damaged or empty screen video now reaches a finished error state instead of leaving the whole day waiting for analysis forever.
+
 ## [1.0.12] - 2026-07-22
 
 ### Added
