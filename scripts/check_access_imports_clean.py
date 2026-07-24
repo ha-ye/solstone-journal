@@ -630,6 +630,115 @@ def _check_script_owners(python: str) -> list[str]:
     return failures
 
 
+def _check_installed_sol_root_canonicalization(
+    python: str, source_root: Path
+) -> list[str]:
+    failures: list[str] = []
+    bin_dir = Path(python).parent
+    prefix = bin_dir.parent
+    lib = prefix / "lib"
+    lib64 = prefix / "lib64"
+    if not lib.is_dir():
+        return [
+            "access-imports-clean: FAIL installed sol root check expected venv lib "
+            f"directory: {lib}"
+        ]
+    if not lib64.exists():
+        if not hasattr(os, "symlink"):
+            return [
+                "access-imports-clean: FAIL installed sol root check cannot "
+                f"fabricate lib64 alias on this platform: {lib64}"
+            ]
+        os.symlink("lib", lib64)
+        print(
+            "access-imports-clean: fabricated lib64 -> lib alias for installed "
+            f"sol root check: {lib64}"
+        )
+    else:
+        print(
+            "access-imports-clean: found existing lib64 for installed sol root "
+            f"check: {lib64}"
+        )
+    if not lib64.is_dir():
+        return [
+            "access-imports-clean: FAIL installed sol root check expected venv "
+            f"lib64 directory or alias: {lib64}"
+        ]
+
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    probe = (
+        "import importlib.metadata as md, importlib.util as u, json, pathlib, sys\n"
+        "spec = u.find_spec('solstone')\n"
+        "assert spec and spec.origin\n"
+        "dist = md.distribution('solstone')\n"
+        "print(json.dumps({\n"
+        "    'root': str(pathlib.Path(spec.origin).resolve().parent.parent),\n"
+        "    'dist': str(pathlib.Path(dist.locate_file('')).resolve()),\n"
+        "}, sort_keys=True))\n"
+    )
+    with tempfile.TemporaryDirectory(prefix="solstone-root-cwd-") as tmpdir:
+        unrelated = Path(tmpdir) / "unrelated"
+        unrelated.mkdir()
+        probe_result = subprocess.run(
+            [python, "-c", probe],
+            cwd=unrelated,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if probe_result.returncode != 0:
+            return [
+                "access-imports-clean: FAIL installed sol root expected-root probe "
+                f"exited {probe_result.returncode}\n--- stdout ---\n"
+                f"{probe_result.stdout}\n--- stderr ---\n{probe_result.stderr}"
+            ]
+        payload = json.loads(probe_result.stdout)
+        expected_root = Path(payload["root"])
+        dist_root = Path(payload["dist"])
+        source_root = source_root.resolve()
+        if expected_root.is_relative_to(source_root) or dist_root.is_relative_to(
+            source_root
+        ):
+            return [
+                "access-imports-clean: FAIL installed sol root probe resolved the "
+                f"checkout instead of the venv: root={expected_root} dist={dist_root}"
+            ]
+
+        executable = bin_dir / "sol"
+        expected_stdout = f"{expected_root}\n"
+        for label, cwd in (
+            ("unrelated cwd", unrelated),
+            ("source checkout cwd", source_root),
+        ):
+            result = _run_with_terminal_stdin(
+                [str(executable), "root"],
+                cwd=cwd,
+                env=env,
+                timeout=90,
+            )
+            if result.returncode != 0:
+                failures.append(_format_failure(f"sol root {label}", result))
+                continue
+            if result.stdout != expected_stdout:
+                failures.append(
+                    "access-imports-clean: FAIL sol root "
+                    f"{label} stdout {result.stdout!r} != {expected_stdout!r}"
+                )
+            if result.stderr != "":
+                failures.append(
+                    "access-imports-clean: FAIL sol root "
+                    f"{label} stderr {result.stderr!r} != ''"
+                )
+            if result.stdout == expected_stdout and result.stderr == "":
+                print(
+                    f"access-imports-clean: sol root {label} matched installed "
+                    f"root: {expected_root}"
+                )
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -659,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
             python = _real_base_python(root, tmpdir)
             failures = _check_heavy_absent(python)
             failures.extend(_check_script_owners(python))
+            failures.extend(_check_installed_sol_root_canonicalization(python, root))
             failures.extend(
                 run_checks(
                     extra_env=extra_env or None,
