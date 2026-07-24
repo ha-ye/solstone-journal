@@ -945,7 +945,7 @@ def test_main_writes_daily_marker_when_capped_unit_terminal_and_payload_includes
     ]
 
 
-def test_degraded_completion_clears_after_later_complete(journal_copy):
+def test_capped_completion_clears_after_later_complete(journal_copy):
     mod = importlib.import_module("solstone.think.thinking")
     day = "20990317"
     _prepare_main_day(journal_copy, day)
