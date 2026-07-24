@@ -27,7 +27,7 @@ from solstone import __version__
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.processing_record import (
     read_processing_record_header,
-    should_reenter_failed_describe,
+    should_reenter_analysis_output,
 )
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
@@ -1048,16 +1048,19 @@ class FileSensor:
                 if modality_filter == "screen" and suffix not in VIDEO_EXTENSIONS:
                     continue
 
-                # Check if output JSONL exists (already processed)
-                output_path = file_path.with_suffix(".jsonl")
-                if output_path.exists():
-                    record = read_processing_record_header(output_path)
-                    if not should_reenter_failed_describe(record):
-                        continue
-
                 handler_info = self._match_pattern(file_path)
                 if handler_info:
                     handler_name, command = handler_info
+                    # Check if output JSONL exists (already processed)
+                    output_path = file_path.with_suffix(".jsonl")
+                    if output_path.exists():
+                        record = read_processing_record_header(output_path)
+                        if not should_reenter_analysis_output(
+                            record=record,
+                            output_path=output_path,
+                            handler=handler_name,
+                        ):
+                            continue
                     if handler_name == "depict" and is_import_stream(stream_name):
                         continue
                     to_process.append((file_path, handler_name, command))

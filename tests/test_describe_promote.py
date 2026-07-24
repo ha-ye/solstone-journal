@@ -1481,7 +1481,7 @@ async def test_failed_promote_increments_previous_attempts(tmp_path, monkeypatch
             False,
             None,
         ),
-        ("no_record", None, False, None),
+        ("no_record", None, True, 0),
         (
             "corrupt_input",
             {
@@ -1576,7 +1576,7 @@ async def test_existing_output_reenters_only_retryable_describe_failures(
     else:
         assert constructed == []
         assert observed_previous_attempts == []
-    assert output_path.read_bytes() == original
+        assert output_path.read_bytes() == original
 
 
 @pytest.mark.asyncio

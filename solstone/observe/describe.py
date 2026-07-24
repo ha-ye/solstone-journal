@@ -51,7 +51,7 @@ from solstone.observe.processing_record import (
     build_processing_record,
     read_processing_record_header,
     record_attempts,
-    should_reenter_failed_describe,
+    should_reenter_analysis_output,
 )
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
@@ -952,6 +952,14 @@ class VideoProcessor:
                 print(result_line.rstrip("\n"), flush=True)
 
         try:
+            if not had_qualified_frames:
+                # Decoded frames are real work; do not discard them before description.
+                if self.decode_failed:
+                    _promote(STATE_FAILED, REASON_CORRUPT_INPUT)
+                else:
+                    _promote(STATE_EMPTY, REASON_NO_DECODABLE_FRAMES)
+                return
+
             frame_provider, frame_model = resolve_provider("generate")
             if frame_provider == NO_BRAIN_PROVIDER:
                 logger.info("No thinking engine selected; deferring frame description")
@@ -1452,8 +1460,6 @@ class VideoProcessor:
 
             if self.decode_failed:
                 state, reason_code = STATE_FAILED, REASON_CORRUPT_INPUT
-            elif not had_qualified_frames:
-                state, reason_code = STATE_EMPTY, REASON_NO_DECODABLE_FRAMES
             elif not emitted_row_has_error and emitted_frame_ids == qualified_ids:
                 state, reason_code = STATE_ANALYZED, REASON_OK
             else:
@@ -1556,7 +1562,11 @@ async def async_main():
         # Skip if already processed (unless redo mode)
         if not args.redo and output_path.exists():
             record = read_processing_record_header(output_path)
-            if not should_reenter_failed_describe(record):
+            if not should_reenter_analysis_output(
+                record=record,
+                output_path=output_path,
+                handler=HANDLER_DESCRIBE,
+            ):
                 logger.info(f"Already processed: {video_path}")
                 return
             previous_attempts = record_attempts(record)

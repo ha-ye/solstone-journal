@@ -27,6 +27,7 @@ from solstone.observe.processing_record import (
     REASON_ANALYSIS_FAILED,
     REASON_CORRUPT_INPUT,
     REASON_OK,
+    SCREEN_ANALYSIS_ROW_KEY,
     STATE_ANALYZED,
     STATE_EMPTY,
     STATE_FAILED,
@@ -156,12 +157,16 @@ def _processing_record(
 def _write_processing_output(
     media_path: Path,
     record: dict | None,
+    rows: list[dict] | None = None,
 ) -> Path:
     header = {"raw": media_path.name}
     if record is not None:
         header["_solstone_processing"] = record
     output_path = media_path.with_suffix(".jsonl")
-    output_path.write_text(json.dumps(header) + "\n", encoding="utf-8")
+    lines = [json.dumps(header)]
+    if rows is not None:
+        lines.extend(json.dumps(row) for row in rows)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
 
 
@@ -811,6 +816,7 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
         (
             "143000_300",
             _processing_record(state=STATE_ANALYZED, reason_code="ok"),
+            None,
             False,
         ),
         (
@@ -819,15 +825,23 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
                 state=STATE_EMPTY,
                 reason_code="no_decodable_frames",
             ),
+            None,
             False,
         ),
-        ("143002_300", None, False),
+        ("143002_300", None, None, True),
+        (
+            "143008_300",
+            None,
+            [{"frame_id": 1, SCREEN_ANALYSIS_ROW_KEY: 0.0, "analysis": {}}],
+            False,
+        ),
         (
             "143003_300",
             _processing_record(
                 state=STATE_FAILED,
                 reason_code=REASON_CORRUPT_INPUT,
             ),
+            None,
             False,
         ),
         (
@@ -836,6 +850,7 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
                 state=STATE_FAILED,
                 attempts=FAILED_ATTEMPT_BOUND,
             ),
+            None,
             False,
         ),
         (
@@ -845,11 +860,13 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
                 handler=HANDLER_TRANSCRIBE,
                 attempts=1,
             ),
+            None,
             False,
         ),
         (
             "143006_300",
             _processing_record(state=STATE_FAILED),
+            None,
             True,
         ),
         (
@@ -858,12 +875,13 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
                 state=STATE_FAILED,
                 attempts=FAILED_ATTEMPT_BOUND - 1,
             ),
+            None,
             True,
         ),
     ]
-    for segment, record, _expected in cases:
+    for segment, record, rows, _expected in cases:
         media_path = make_segment_file(tmp_path, segment=segment)
-        _write_processing_output(media_path, record)
+        _write_processing_output(media_path, record, rows=rows)
 
     sensor = FileSensor(tmp_path)
     sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
@@ -876,12 +894,12 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
 
     sensor.process_day("20250101", max_jobs=1)
 
-    assert processed == [segment for segment, _record, expected in cases if expected]
+    assert processed == [case[0] for case in cases if case[-1]]
 
 
 def test_process_day_reentry_uses_bounded_first_window(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    media_path = make_segment_file(tmp_path)
+    media_path = make_segment_file(tmp_path, segment="143022_300")
     record = _processing_record(state=STATE_FAILED)
     output_path = media_path.with_suffix(".jsonl")
     output_path.write_bytes(
@@ -890,6 +908,21 @@ def test_process_day_reentry_uses_bounded_first_window(tmp_path, monkeypatch):
         + b'","_solstone_processing":'
         + json.dumps(record).encode("utf-8")
         + b"}\n"
+    )
+    # A record past the bounded first-row window is indeterminate: it re-enters
+    # unless analyzed rows provide evidence that the output is already useful.
+    row_media_path = make_segment_file(tmp_path, segment="143023_300")
+    row_output_path = row_media_path.with_suffix(".jsonl")
+    row_output_path.write_bytes(
+        b'{"pad":"'
+        + (b"x" * MAX_FIRST_ROW_BYTES)
+        + b'","_solstone_processing":'
+        + json.dumps(record).encode("utf-8")
+        + b"}\n"
+        + json.dumps(
+            {"frame_id": 1, SCREEN_ANALYSIS_ROW_KEY: 0.0, "analysis": {}}
+        ).encode("utf-8")
+        + b"\n"
     )
 
     sensor = FileSensor(tmp_path)
@@ -903,7 +936,34 @@ def test_process_day_reentry_uses_bounded_first_window(tmp_path, monkeypatch):
 
     sensor.process_day("20250101", max_jobs=1)
 
-    assert processed == []
+    assert processed == [media_path]
+
+
+def test_ac5_recordless_audio_output_does_not_reenter(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    audio_path = make_segment_file(tmp_path, filename="audio.flac")
+    _write_processing_output(audio_path, None)
+
+    sensor = FileSensor(tmp_path)
+    command = ["journal", "transcribe", "{file}"]
+    sensor.register("*.flac", "transcribe", command)
+
+    to_process, _ = sensor.scan_unprocessed("20250101")
+
+    assert to_process == []
+
+
+def test_ac7_missing_screen_output_still_queues_raw_video(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    media_path = make_segment_file(tmp_path)
+
+    sensor = FileSensor(tmp_path)
+    command = ["journal", "describe", "{file}"]
+    sensor.register("*.webm", "describe", command)
+
+    to_process, _ = sensor.scan_unprocessed("20250101")
+
+    assert to_process == [(media_path, "describe", command)]
 
 
 def test_process_day_retries_failed_describe_until_attempt_bound(tmp_path, monkeypatch):

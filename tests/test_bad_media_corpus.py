@@ -35,6 +35,8 @@ from solstone.observe.processing_record import (
     STATE_ANALYZED,
     STATE_EMPTY,
     STATE_FAILED,
+    is_failure_exhausted,
+    should_reenter_analysis_output,
 )
 from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError
 from solstone.observe.vad import VadResult
@@ -44,8 +46,10 @@ from solstone.think.cluster import (
 )
 from solstone.think.data_state import DataState
 from solstone.think.pipeline_health import (
+    SegmentProgress,
     classify_segment_completion,
     read_segment_progress,
+    segment_fully_sensed,
 )
 
 DAY = "20990501"
@@ -290,7 +294,9 @@ def _drive_describe(
     agenerate_response: str = "{}",
     agenerate_finish_reason: str = "stop",
     expect_runtime_error: bool = False,
-) -> tuple[dict[str, Any], dict[str, Any], AsyncMock]:
+    provider_result: tuple[str, str] = ("google", "gemini-test"),
+    expect_record: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None, AsyncMock]:
     from solstone.observe import describe, processing_record
 
     agenerate = AsyncMock(
@@ -298,7 +304,7 @@ def _drive_describe(
     )
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _interface: ("google", "gemini-test"),
+        lambda _interface: provider_result,
     )
     monkeypatch.setattr(describe, "callosum_send", lambda *args, **kwargs: None)
     monkeypatch.setattr(describe, "select_frames_for_extraction", lambda *a, **k: [])
@@ -325,8 +331,11 @@ def _drive_describe(
         )
 
     header = _read_header(output_path)
-    record = header["_solstone_processing"]
-    assert isinstance(record, dict)
+    record = header.get("_solstone_processing")
+    if expect_record:
+        assert isinstance(record, dict)
+    else:
+        assert record is None
     return header, record, agenerate
 
 
@@ -641,7 +650,6 @@ def test_eof_truncated_screen_terminalizes_corrupt_input(
     monkeypatch,
 ):
     av = pytest.importorskip("av")
-    from solstone.observe.describe import should_reenter_failed_describe
 
     segment = _segment_dir(segment_journal)
     video_path = segment / "screen.webm"
@@ -671,7 +679,105 @@ def test_eof_truncated_screen_terminalizes_corrupt_input(
     assert read_segment_data_state(DAY, SEGMENT) == {
         "screen": DataState.FAILED_FINAL.value
     }
-    assert should_reenter_failed_describe(record) is False
+    assert (
+        should_reenter_analysis_output(
+            record=record,
+            output_path=output_path,
+            handler=HANDLER_DESCRIBE,
+        )
+        is False
+    )
+
+
+def test_ac4_no_provider_truncated_recordless_screen_converges_corrupt_input(
+    segment_journal,
+    monkeypatch,
+):
+    from solstone.think.models import NO_BRAIN_PROVIDER
+
+    segment = _segment_dir(segment_journal, segment="123500_300")
+    video_path = segment / "screen.webm"
+    output_path = segment / "screen.jsonl"
+    _build_truncated_webm(video_path)
+    output_path.write_text(
+        json.dumps({"raw": video_path.name}) + "\n",
+        encoding="utf-8",
+    )
+
+    _header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+        provider_result=(NO_BRAIN_PROVIDER, ""),
+    )
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert agenerate.call_count == 0
+    assert is_failure_exhausted(record) is True
+    assert (
+        should_reenter_analysis_output(
+            record=record,
+            output_path=output_path,
+            handler=HANDLER_DESCRIBE,
+        )
+        is False
+    )
+
+
+def test_ac6_failed_final_screen_record_unblocks_day_with_failed_marker(
+    segment_journal,
+    monkeypatch,
+):
+    from solstone.think.models import NO_BRAIN_PROVIDER
+
+    segment_key = "123600_300"
+    segment = _segment_dir(segment_journal, segment=segment_key)
+    video_path = segment / "screen.webm"
+    output_path = segment / "screen.jsonl"
+    _build_truncated_webm(video_path)
+    output_path.write_text(
+        json.dumps({"raw": video_path.name}) + "\n",
+        encoding="utf-8",
+    )
+
+    _header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+        provider_result=(NO_BRAIN_PROVIDER, ""),
+    )
+    (segment / ".analyze_failed_screen").write_text("{}\n", encoding="utf-8")
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_CORRUPT_INPUT,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert agenerate.call_count == 0
+    data_state = read_segment_data_state(DAY, segment_key)
+    assert data_state == {"screen": DataState.FAILED_FINAL.value}
+    assert segment_fully_sensed(data_state) is True
+
+    progress = {
+        (STREAM, segment_key): SegmentProgress(
+            sensed=True,
+            density="idle",
+            change_class=None,
+            dispatched=frozenset(),
+            completed=frozenset(),
+            unconfigured=frozenset(),
+            capped=frozenset(),
+        )
+    }
+    completion = classify_segment_completion(cluster_segments(DAY), progress)
+    assert completion.blockers == []
+    assert completion.exhausted == (segment_key,)
 
 
 def test_no_video_stream_screen_terminalizes_corrupt_input(
@@ -707,10 +813,7 @@ def test_no_video_stream_screen_terminalizes_corrupt_input(
     }
 
 
-def test_partial_decode_failure_preserves_qualified_count(
-    segment_journal,
-    monkeypatch,
-):
+def _install_partial_decode_failure(monkeypatch, video_path: Path) -> None:
     from fractions import Fraction
 
     av = pytest.importorskip("av")
@@ -756,14 +859,20 @@ def test_partial_decode_failure_preserves_qualified_count(
             yield frame
             raise decode_error
 
+    video_path.write_bytes(b"fake container bytes")
+    monkeypatch.setattr(av, "open", lambda *args, **kwargs: FakeContainer())
+    monkeypatch.setattr(aruco, "detect_markers", lambda _image: None)
+
+
+def test_partial_decode_failure_preserves_qualified_count(
+    segment_journal,
+    monkeypatch,
+):
     segment_key = "125000_300"
     segment = _segment_dir(segment_journal, segment=segment_key)
     video_path = segment / "screen.mp4"
     output_path = segment / "screen.jsonl"
-    video_path.write_bytes(b"fake container bytes")
-
-    monkeypatch.setattr(av, "open", lambda *args, **kwargs: FakeContainer())
-    monkeypatch.setattr(aruco, "detect_markers", lambda _image: None)
+    _install_partial_decode_failure(monkeypatch, video_path)
 
     header, record, agenerate = _drive_describe(
         monkeypatch,
@@ -783,6 +892,48 @@ def test_partial_decode_failure_preserves_qualified_count(
     rows = _read_jsonl(output_path)
     assert len(rows) == 2
     assert rows[1]["frame_id"] == 1
+
+
+def test_partial_decode_failure_without_provider_reenters_recordless_output(
+    segment_journal,
+    monkeypatch,
+):
+    from solstone.think.models import NO_BRAIN_PROVIDER
+
+    segment_key = "125500_300"
+    segment = _segment_dir(segment_journal, segment=segment_key)
+    video_path = segment / "screen.mp4"
+    output_path = segment / "screen.jsonl"
+    _install_partial_decode_failure(monkeypatch, video_path)
+    output_path.write_text(
+        json.dumps({"raw": video_path.name}) + "\n",
+        encoding="utf-8",
+    )
+    original_output = output_path.read_bytes()
+
+    header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+        provider_result=(NO_BRAIN_PROVIDER, ""),
+        expect_record=False,
+    )
+
+    assert header == {"raw": video_path.name}
+    assert record is None
+    assert output_path.read_bytes() == original_output
+    assert agenerate.call_count == 0
+    assert read_segment_data_state(DAY, segment_key) == {
+        "screen": DataState.PENDING.value
+    }
+    assert (
+        should_reenter_analysis_output(
+            record=record,
+            output_path=output_path,
+            handler=HANDLER_DESCRIBE,
+        )
+        is True
+    )
 
 
 def test_aruco_frame_body_index_error_still_propagates(

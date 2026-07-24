@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Shared `_solstone_processing` record vocabulary for media-analysis handlers.
+"""Shared evidence vocabulary for media-analysis outputs.
 
-The screen (`describe`) and audio (`transcribe`) handlers stamp one of these
-records into the metadata header (row 1) of the JSONL they already produce, so
-a downstream reader lode can derive per-segment processing state without
-re-deriving it from raw media. This module is the one authoritative source of
-the closed state / reason_code / handler / schema vocabulary; neither handler
-may carry these literals inline. Failed describe records may also carry an
-``attempts`` counter; absent attempts means 0, and
-``FAILED_ATTEMPT_BOUND`` is the shared retry exhaustion bound.
+This module is the source of truth for the two forms of output evidence:
+``_solstone_processing`` metadata-header records and the JSONL row keys that
+prove audio or screen analysis rows exist. The screen (``describe``) and audio
+(``transcribe``) handlers stamp processing records into the metadata header of
+the JSONL they produce, while row-key detection gives bounded evidence for
+legacy or record-less outputs.
+
+``FileSensor.scan_unprocessed``, ``describe.async_main``, and
+``derive_modality_state`` consume this vocabulary so capture re-entry,
+describe-side skipping, and downstream state derivation share the same reading
+of whether an output is useful, terminal, retryable, or indeterminate.
 """
 
 import json
@@ -21,6 +24,8 @@ SCHEMA = "solstone.processing.v1"
 FAILED_ATTEMPT_BOUND = 3
 ATTEMPTS_KEY = "attempts"
 MAX_FIRST_ROW_BYTES = 64 * 1024
+SCREEN_ANALYSIS_ROW_KEY = "timestamp"
+AUDIO_TRANSCRIPT_ROW_KEY = "start"
 
 # state values (closed set)
 STATE_ANALYZED = "analyzed"
@@ -84,13 +89,55 @@ def read_processing_record_header(path: Path) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
-def should_reenter_failed_describe(record: dict | None) -> bool:
-    """Return whether an existing failed describe output should be retried."""
-    return (
+def jsonl_has_row_with_key(path: Path, row_key: str) -> bool:
+    """Return whether an early JSONL object has the row key.
+
+    Key-based membership test on at most the first two nonblank lines.
+    """
+    try:
+        lines = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                lines.append(line)
+                if len(lines) == 2:
+                    break
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and row_key in parsed:
+            return True
+    return False
+
+
+# an existing analysis output only blocks re-entry when it actually carries
+# evidence — analyzed rows or a processing record. An output with neither is
+# indeterminate, and indeterminate work re-enters until the record ledger can
+# govern it. Decode-determined verdicts terminalize regardless of provider
+# availability.
+def should_reenter_analysis_output(
+    *,
+    record: dict | None,
+    output_path: Path,
+    handler: str,
+) -> bool:
+    """Return whether an existing analysis output should be retried."""
+    if (
         isinstance(record, dict)
         and record.get("state") == STATE_FAILED
         and record.get("handler") == HANDLER_DESCRIBE
         and not is_failure_exhausted(record)
+    ):
+        return True
+    return (
+        record is None
+        and handler == HANDLER_DESCRIBE
+        and not jsonl_has_row_with_key(output_path, SCREEN_ANALYSIS_ROW_KEY)
     )
 
 

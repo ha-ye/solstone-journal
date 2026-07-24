@@ -11,6 +11,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from solstone.observe.processing_record import (
+    AUDIO_TRANSCRIPT_ROW_KEY,
+    SCREEN_ANALYSIS_ROW_KEY,
+    jsonl_has_row_with_key,
+)
 from solstone.observe.screen import format_screen_text
 from solstone.think.browser_formatter import format_browser_text
 from solstone.think.data_state import (
@@ -478,32 +483,6 @@ def _slots_to_ranges(slots: list[datetime]) -> list[tuple[str, str]]:
     return ranges
 
 
-def _jsonl_has_marker_row(path: Path, marker_key: str) -> bool:
-    """Return whether an early JSONL object has the marker key.
-
-    Key-based membership test on at most the first two nonblank lines.
-    """
-    try:
-        lines = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                lines.append(line)
-                if len(lines) == 2:
-                    break
-    except OSError:
-        return False
-    for line in lines:
-        try:
-            parsed = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(parsed, dict) and marker_key in parsed:
-            return True
-    return False
-
-
 def _read_processing_record(jsonl_files: list[Path]) -> dict | None:
     """Return the first processing header record from sorted JSONL files."""
     for path in jsonl_files:
@@ -593,7 +572,8 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
     )
     audio_md_files = _markdown_transcript_files(seg_path)
     audio_analyzed = any(
-        _jsonl_has_marker_row(path, "start") for path in audio_jsonl_files
+        jsonl_has_row_with_key(path, AUDIO_TRANSCRIPT_ROW_KEY)
+        for path in audio_jsonl_files
     ) or any(_has_nonempty_text(path) for path in audio_md_files)
     audio_record = _read_processing_record(audio_jsonl_files)
     audio_has_raw = _has_raw_media(raw_media_paths, AUDIO_EXTENSIONS)
@@ -617,7 +597,8 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
         }
     )
     screen_analyzed = any(
-        _jsonl_has_marker_row(path, "timestamp") for path in screen_jsonl_files
+        jsonl_has_row_with_key(path, SCREEN_ANALYSIS_ROW_KEY)
+        for path in screen_jsonl_files
     )
     screen_record = _read_processing_record(screen_jsonl_files)
     screen_has_raw = _has_raw_media(raw_media_paths, VIDEO_EXTENSIONS)
