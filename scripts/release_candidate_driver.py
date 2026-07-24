@@ -45,6 +45,10 @@ from scripts.check_wheel_contents import (
     MAX_BASE_WHEEL_BYTES,
     check_dist,
 )
+from scripts.normalize_maturin_sdist import (
+    SdistLockError,
+    normalize_core_sdist_workspace_lock,
+)
 from scripts.record_macos_native_wheel import validate_macos_native_record
 from scripts.release_advisory_policy import (
     PolicyRun,
@@ -100,6 +104,7 @@ CORE_AARCH64_MATURIN_ARGS = (
 )
 ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
+CORE_WORKSPACE_PACKAGE = "solstone-core"
 
 
 @dataclass(frozen=True)
@@ -500,25 +505,32 @@ def _expected_local_build_packages(*, include_models: bool) -> tuple[str, ...]:
 
 
 def _expected_local_build_commands(
-    *, include_models: bool
+    *, include_models: bool, version: str
 ) -> tuple[tuple[tuple[str, ...], str], ...]:
     render_check = (("python3", "scripts/render_packaging.py", "--check"), "")
+    package_builds = tuple(
+        (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS)
+        for package in _expected_local_build_packages(include_models=include_models)
+        if package != CORE_WORKSPACE_PACKAGE
+    )
+    core_sdist = (
+        ("uv", "build", "--package", CORE_WORKSPACE_PACKAGE, "--sdist"),
+        "",
+    )
+    core_sdist_path = f"dist/solstone_core-{version}.tar.gz"
+    x86_64_core = (
+        ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
+        CORE_X86_64_MATURIN_ARGS,
+    )
     aarch64_core = (
-        ("uv", "build", "--package", "solstone-core", "--wheel"),
+        ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
         CORE_AARCH64_MATURIN_ARGS,
     )
-    if include_models:
-        return (
-            render_check,
-            (("uv", "build", "--all-packages"), CORE_X86_64_MATURIN_ARGS),
-            aarch64_core,
-        )
     return (
         render_check,
-        *(
-            (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS)
-            for package in _expected_local_build_packages(include_models=False)
-        ),
+        *package_builds,
+        core_sdist,
+        x86_64_core,
         aarch64_core,
     )
 
@@ -538,8 +550,18 @@ def _default_build_local_dist(
         failures.extend(validate_linux_maturin_args(args, target=target))
     if failures:
         raise DriverError(failures)
+    version = _project_version(root)
+    core_sdist_argv = (
+        "uv",
+        "build",
+        "--package",
+        CORE_WORKSPACE_PACKAGE,
+        "--sdist",
+    )
+    core_sdist = root / "dist" / f"solstone_core-{version}.tar.gz"
     for argv, maturin_args in _expected_local_build_commands(
-        include_models=include_models
+        include_models=include_models,
+        version=version,
     ):
         _run_stdout(
             runner,
@@ -547,6 +569,22 @@ def _default_build_local_dist(
             cwd=root,
             env=_scrubbed_build_env(root, maturin_args),
         )
+        if argv == core_sdist_argv:
+            try:
+                normalize_core_sdist_workspace_lock(root, core_sdist)
+            except SdistLockError as exc:
+                raise DriverError(
+                    [
+                        _failure(
+                            "local core sdist workspace lock normalization failed",
+                            expected=(
+                                "Cargo.lock aligned with Maturin's pruned sdist workspace"
+                            ),
+                            actual=str(exc),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                ) from None
     # uv build auto-creates dist/.gitignore with ignore-all content "*".
     # Strip exactly that artifact before the local-dist inventory gate.
     # Leave anything else in dist for the inventory gate to reject.

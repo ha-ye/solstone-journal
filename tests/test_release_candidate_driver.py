@@ -81,38 +81,108 @@ def _local_dist_names_for_build_argv(
 ) -> set[str]:
     args = tuple(argv)
     expected = driver._expected_local_dist_names(include_models=include_models)
-    if args == ("uv", "build", "--all-packages"):
+    if args == ("uv", "build", "--package", "solstone-core", "--sdist"):
         return {
             name
             for name in expected
-            if not (name.startswith("solstone_core-") and "aarch64" in name)
-        }
-    if args == ("uv", "build", "--package", "solstone-core", "--wheel"):
-        return {
-            name
-            for name in expected
-            if name.startswith("solstone_core-") and "aarch64" in name
+            if name.startswith("solstone_core-") and name.endswith(".tar.gz")
         }
     if len(args) == 4 and args[:3] == ("uv", "build", "--package"):
         package = args[3]
         prefix = f"{package.replace('-', '_')}-"
-        names = {name for name in expected if name.startswith(prefix)}
-        if package == "solstone-core":
-            return {name for name in names if "aarch64" not in name}
-        return names
+        return {name for name in expected if name.startswith(prefix)}
     return set()
+
+
+def _write_fake_core_sdist(root: Path, archive: Path) -> None:
+    source_members = ["crates/solstone-core", "crates/solstone-core-sol"]
+    source_manifest = (
+        f'[workspace]\nmembers = {json.dumps(source_members)}\nresolver = "3"\n'
+    )
+    (root / "core" / "crates" / "solstone-core").mkdir(parents=True, exist_ok=True)
+    (root / "core" / "crates" / "solstone-core-sol").mkdir(parents=True, exist_ok=True)
+    (root / "core" / "Cargo.toml").write_text(source_manifest, encoding="utf-8")
+    (root / "core" / "crates" / "solstone-core" / "Cargo.toml").write_text(
+        '[package]\nname = "solstone-core"\nversion = "1.0.13"\n',
+        encoding="utf-8",
+    )
+    (root / "core" / "crates" / "solstone-core-sol" / "Cargo.toml").write_text(
+        '[package]\nname = "solstone-core-sol"\nversion = "1.0.13"\n',
+        encoding="utf-8",
+    )
+    sdist_manifest = (
+        '[workspace]\nmembers = ["crates/solstone-core"]\nresolver = "3"\n'
+    ).encode()
+    sdist_lock = (
+        "version = 4\n\n"
+        '[[package]]\nname = "solstone-core"\nversion = "1.0.13"\n\n'
+        '[[package]]\nname = "solstone-core-sol"\nversion = "1.0.13"\n'
+    ).encode()
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, mode="w:gz") as target:
+        for name, data in (
+            ("solstone_core-1.0.13/core/Cargo.toml", sdist_manifest),
+            ("solstone_core-1.0.13/core/Cargo.lock", sdist_lock),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            target.addfile(member, BytesIO(data))
 
 
 def _fabricate_local_dist_for_build_argv(
     root: Path, argv: Sequence[str], *, include_models: bool
 ) -> None:
+    args = tuple(argv)
     names = _local_dist_names_for_build_argv(argv, include_models=include_models)
-    if not names:
-        return
     dist = root / "dist"
     dist.mkdir(parents=True, exist_ok=True)
+    if args == ("uv", "build", "--package", "solstone-core", "--sdist"):
+        archive = dist / next(iter(names))
+        _write_fake_core_sdist(root, archive)
+        return
+    if (
+        len(args) == 6
+        and args[:2] == ("uv", "build")
+        and args[2].startswith("dist/solstone_core-")
+        and args[3:] == ("--wheel", "--out-dir", "dist")
+    ):
+        core_wheels = {
+            name
+            for name in driver._expected_local_dist_names(include_models=include_models)
+            if name.startswith("solstone_core-") and name.endswith(".whl")
+        }
+        remaining = sorted(name for name in core_wheels if not (dist / name).exists())
+        if remaining:
+            (dist / remaining[0]).write_bytes(b"package")
+        return
     for name in names:
         (dist / name).write_bytes(b"package")
+
+
+def _prepare_fake_build_root(root: Path) -> None:
+    (root / "pyproject.toml").write_text(
+        f'[project]\nversion = "{checker._current_version()}"\n',
+        encoding="utf-8",
+    )
+
+
+def _is_final_core_wheel_build(
+    root: Path, argv: Sequence[str], *, include_models: bool
+) -> bool:
+    args = tuple(argv)
+    if not (
+        len(args) == 6
+        and args[:2] == ("uv", "build")
+        and args[2].startswith("dist/solstone_core-")
+        and args[3:] == ("--wheel", "--out-dir", "dist")
+    ):
+        return False
+    expected = {
+        name
+        for name in driver._expected_local_dist_names(include_models=include_models)
+        if name.startswith("solstone_core-") and name.endswith(".whl")
+    }
+    return all((root / "dist" / name).is_file() for name in expected)
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -1418,6 +1488,8 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
     include_models: bool,
     mutation: str,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
+
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -1426,7 +1498,7 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
             argv,
             include_models=include_models,
         )
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+        if _is_final_core_wheel_build(tmp_path, argv, include_models=include_models):
             dist = tmp_path / "dist"
             if mutation == "unselected":
                 for name in (
@@ -1471,6 +1543,8 @@ def test_default_build_local_dist_strips_uv_dist_gitignore_marker(
     tmp_path: Path,
     marker: bytes,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
+
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -1501,6 +1575,8 @@ def test_default_build_local_dist_strips_uv_dist_gitignore_marker(
 def test_default_build_local_dist_rejects_foreign_dist_gitignore_content(
     tmp_path: Path,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
+
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -1509,7 +1585,7 @@ def test_default_build_local_dist_rejects_foreign_dist_gitignore_content(
             argv,
             include_models=False,
         )
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+        if _is_final_core_wheel_build(tmp_path, argv, include_models=False):
             (tmp_path / "dist" / ".gitignore").write_bytes(b"build/")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -1526,6 +1602,8 @@ def test_default_build_local_dist_rejects_foreign_dist_gitignore_content(
 def test_default_build_local_dist_rejects_foreign_dist_dotfile(
     tmp_path: Path,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
+
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -1534,7 +1612,7 @@ def test_default_build_local_dist_rejects_foreign_dist_dotfile(
             argv,
             include_models=False,
         )
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+        if _is_final_core_wheel_build(tmp_path, argv, include_models=False):
             (tmp_path / "dist" / ".hidden").write_bytes(b"")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -1551,6 +1629,8 @@ def test_default_build_local_dist_rejects_foreign_dist_dotfile(
 def test_default_build_local_dist_rejects_symlink_dist_gitignore(
     tmp_path: Path,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
+
     def runner(
         argv: Sequence[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
@@ -1559,7 +1639,7 @@ def test_default_build_local_dist_rejects_symlink_dist_gitignore(
             argv,
             include_models=False,
         )
-        if tuple(argv) == ("uv", "build", "--package", "solstone-core", "--wheel"):
+        if _is_final_core_wheel_build(tmp_path, argv, include_models=False):
             (tmp_path / "dist" / ".gitignore").symlink_to("uv-generated-marker")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -1574,6 +1654,7 @@ def test_default_build_local_dist_rejects_symlink_dist_gitignore(
 def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
     monkeypatch.setenv("AMBIENT_RELEASE_TOKEN", "do-not-copy")
     calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
@@ -1596,6 +1677,7 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     expected_aarch64_env = _expected_scrubbed_env(
         tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
     )
+    core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         (
             ("python3", "scripts/render_packaging.py", "--check"),
@@ -1603,10 +1685,6 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         ),
         (
             ("uv", "build", "--package", "solstone"),
-            expected_x86_env,
-        ),
-        (
-            ("uv", "build", "--package", "solstone-core"),
             expected_x86_env,
         ),
         (
@@ -1618,7 +1696,15 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
             expected_x86_env,
         ),
         (
-            ("uv", "build", "--package", "solstone-core", "--wheel"),
+            ("uv", "build", "--package", "solstone-core", "--sdist"),
+            _expected_scrubbed_env(tmp_path, ""),
+        ),
+        (
+            ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
+            expected_x86_env,
+        ),
+        (
+            ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
             expected_aarch64_env,
         ),
     ]
@@ -1627,12 +1713,11 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         env["MATURIN_PEP517_ARGS"]
         for argv, env in calls
         if argv[:2] == ("uv", "build") and "--wheel" not in argv
-    ] == [driver.CORE_X86_64_MATURIN_ARGS] * 4
-    assert [
-        env["MATURIN_PEP517_ARGS"]
-        for argv, env in calls
-        if argv == ("uv", "build", "--package", "solstone-core", "--wheel")
-    ] == [driver.CORE_AARCH64_MATURIN_ARGS]
+    ] == [driver.CORE_X86_64_MATURIN_ARGS] * 3 + [""]
+    assert [env["MATURIN_PEP517_ARGS"] for argv, env in calls if "--wheel" in argv] == [
+        driver.CORE_X86_64_MATURIN_ARGS,
+        driver.CORE_AARCH64_MATURIN_ARGS,
+    ]
     assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
     for _argv, env in calls:
         assert Path(env["ZIG_GLOBAL_CACHE_DIR"]).is_relative_to(tmp_path)
@@ -1664,6 +1749,7 @@ def test_scrubbed_build_env_reports_uncreatable_zig_cache_root(
 def test_default_build_local_dist_honors_include_models_build_selection(
     tmp_path: Path,
 ) -> None:
+    _prepare_fake_build_root(tmp_path)
     calls: list[tuple[str, ...]] = []
 
     def runner(
@@ -1679,10 +1765,16 @@ def test_default_build_local_dist_honors_include_models_build_selection(
 
     driver._default_build_local_dist(tmp_path, include_models=True, runner=runner)
 
+    core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         ("python3", "scripts/render_packaging.py", "--check"),
-        ("uv", "build", "--all-packages"),
-        ("uv", "build", "--package", "solstone-core", "--wheel"),
+        ("uv", "build", "--package", "solstone"),
+        ("uv", "build", "--package", "solstone-journal"),
+        ("uv", "build", "--package", "solstone-journal-cuda"),
+        ("uv", "build", "--package", "solstone-journal-models"),
+        ("uv", "build", "--package", "solstone-core", "--sdist"),
+        ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
+        ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
     ]
     assert all("--exclude" not in call for call in calls)
     assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
