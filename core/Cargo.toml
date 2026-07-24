@@ -34,7 +34,7 @@ md5 = "0.8.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rapidfuzz = "0.5.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
+serde_json = { version = "1.0.150", features = ["preserve_order", "float_roundtrip"] }
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
 unicode-normalization = "0.1.25"
 unidecode = "0.3.0"

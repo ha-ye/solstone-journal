@@ -159,11 +159,12 @@ fn clock_unix_seconds(vector: &Value) -> u64 {
 }
 
 fn scripted_calls(vector: &Value) -> Vec<ExpectedHttpCall> {
+    let vector_id = vector["id"].as_str().unwrap_or("<missing-id>");
     vector["transport"]["requests"]
         .as_array()
         .expect("transport requests")
         .iter()
-        .map(scripted_call)
+        .map(|request| scripted_call(vector_id, request))
         .collect()
 }
 
@@ -206,7 +207,7 @@ fn chat_inputs_from_value(value: &Value) -> Vec<ChatInput> {
     (0..count).map(|_| chat_input(value)).collect()
 }
 
-fn scripted_call(request: &Value) -> ExpectedHttpCall {
+fn scripted_call(vector_id: &str, request: &Value) -> ExpectedHttpCall {
     let policy = timeout_policy(request["timeout_policy"].as_str().unwrap_or("api"));
     if request["method"].as_str() == Some("SSE") {
         return ExpectedHttpCall::Sse {
@@ -259,7 +260,7 @@ fn scripted_call(request: &Value) -> ExpectedHttpCall {
                 boundary: None,
                 policy,
             },
-            result: scripted_result(request, policy),
+            result: scripted_result(vector_id, request, policy),
         };
     }
     let query_values = request["query"]
@@ -286,14 +287,18 @@ fn scripted_call(request: &Value) -> ExpectedHttpCall {
         headers: header_pairs(request.get("headers")),
         policy,
     };
-    let result = scripted_result(request, policy);
+    let result = scripted_result(vector_id, request, policy);
     ExpectedHttpCall::Request {
         expected: api_request,
         result,
     }
 }
 
-fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpResponse, ClientError> {
+fn scripted_result(
+    vector_id: &str,
+    request: &Value,
+    policy: TimeoutPolicy,
+) -> Result<HttpResponse, ClientError> {
     if let Some(response) = request.get("response") {
         Ok(HttpResponse {
             status: response
@@ -301,7 +306,7 @@ fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpRespons
                 .and_then(Value::as_u64)
                 .unwrap_or(200) as u16,
             headers: header_pairs(response.get("headers")),
-            body: serde_json::to_vec(&response["json"]).expect("response JSON"),
+            body: scripted_response_body(vector_id, response),
             policy,
         })
     } else {
@@ -348,6 +353,25 @@ fn scripted_result(request: &Value, policy: TimeoutPolicy) -> Result<HttpRespons
                 .map(str::to_string),
             payload: Box::new(fault.get("payload").cloned().unwrap_or(Value::Null)),
         })
+    }
+}
+
+fn scripted_response_body(vector_id: &str, response: &Value) -> Vec<u8> {
+    match (response.get("json"), response.get("raw_body")) {
+        (Some(json), None) => serde_json::to_vec(json).expect("response JSON"),
+        (None, Some(raw_body)) => raw_body
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("parity vector {vector_id}: response.raw_body must be a string")
+            })
+            .as_bytes()
+            .to_vec(),
+        (Some(_), Some(_)) => panic!(
+            "parity vector {vector_id}: response must set exactly one of response.json or response.raw_body"
+        ),
+        (None, None) => panic!(
+            "parity vector {vector_id}: response must set exactly one of response.json or response.raw_body"
+        ),
     }
 }
 

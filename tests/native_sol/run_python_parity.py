@@ -52,6 +52,7 @@ import_call = importlib.import_module("solstone.apps.import.call")
 
 class ScriptedConveyClient:
     def __init__(self, vector: dict[str, Any]) -> None:
+        self._vector_id = str(vector.get("id") or "<missing-id>")
         self._surface = vector.get("surface", "sol-call")
         self._requests = list(vector.get("transport", {}).get("requests", []))
         self.chat_controller: ChatController | None = None
@@ -84,7 +85,7 @@ class ScriptedConveyClient:
             )
         if "fault" in expected:
             raise_fault(expected["fault"])
-        return expected["response"]["json"]
+        return response_payload(self._vector_id, expected["response"])
 
     def open_sse(self) -> Iterable[bytes] | None:
         actual = {
@@ -146,7 +147,7 @@ class ScriptedConveyClient:
             )
         if "fault" in expected:
             raise_fault(expected["fault"])
-        return expected["response"]["json"]
+        return response_payload(self._vector_id, expected["response"])
 
     def assert_done(self) -> None:
         if self._requests:
@@ -186,6 +187,27 @@ def sse_shape(request: dict[str, Any]) -> dict[str, Any]:
         "headers": request.get("headers", []),
         "timeout_policy": request.get("timeout_policy", "sse-open"),
     }
+
+
+def response_payload(vector_id: str, response: dict[str, Any]) -> Any:
+    json_present = "json" in response
+    raw_body_present = "raw_body" in response
+    if json_present and raw_body_present:
+        raise AssertionError(
+            f"parity vector {vector_id}: response must set exactly one of response.json or response.raw_body"
+        )
+    if not json_present and not raw_body_present:
+        raise AssertionError(
+            f"parity vector {vector_id}: response must set exactly one of response.json or response.raw_body"
+        )
+    if json_present:
+        return response["json"]
+    raw_body = response["raw_body"]
+    if not isinstance(raw_body, str):
+        raise AssertionError(
+            f"parity vector {vector_id}: response.raw_body must be a string"
+        )
+    return json.loads(raw_body)
 
 
 def raise_fault(fault: dict[str, Any]) -> None:
