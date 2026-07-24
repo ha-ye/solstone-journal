@@ -50,6 +50,42 @@ def test_fingerprinted_pl_identity_rechecked_each_request(
     assert response.get_json()["reason_code"] == "pl_revoked"
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/app/network/pair-start", {"device_label": "Phone", "role": "phone"}),
+        ("/app/network/unpair", {"fingerprint": FINGERPRINT}),
+    ],
+)
+def test_network_mutations_reject_revoked_pl_identity_before_route_logic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    payload: dict[str, str],
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch)
+    store = AuthorizedClients(authorized_clients_path())
+    store.add(FINGERPRINT, "phone", "inst-1")
+    monkeypatch.setattr(root_module, "get_authorized_clients", lambda: store)
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    client = app.test_client()
+    identity = pl_identity(FINGERPRINT)
+
+    time.sleep(0.02)
+    authorized_clients_path().write_text(json.dumps([], indent=2) + "\n")
+
+    response = client.post(
+        path,
+        json=payload,
+        base_url="https://solstone.local",
+        environ_overrides={"pl.identity": identity},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "pl_revoked"
+
+
 def test_corrupt_authorized_clients_fails_closed_without_last_good_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
