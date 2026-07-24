@@ -894,7 +894,9 @@ def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeyp
 
     sensor.process_day("20250101", max_jobs=1)
 
-    assert processed == [case[0] for case in cases if case[-1]]
+    assert processed == [
+        segment for segment, _record, _rows, expected in cases if expected
+    ]
 
 
 def test_process_day_reentry_uses_bounded_first_window(tmp_path, monkeypatch):

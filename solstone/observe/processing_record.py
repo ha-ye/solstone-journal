@@ -115,18 +115,21 @@ def jsonl_has_row_with_key(path: Path, row_key: str) -> bool:
     return False
 
 
-# an existing analysis output only blocks re-entry when it actually carries
-# evidence — analyzed rows or a processing record. An output with neither is
-# indeterminate, and indeterminate work re-enters until the record ledger can
-# govern it. Decode-determined verdicts terminalize regardless of provider
-# availability.
 def should_reenter_analysis_output(
     *,
     record: dict | None,
     output_path: Path,
     handler: str,
 ) -> bool:
-    """Return whether an existing analysis output should be retried."""
+    """Return whether an existing analysis output should be retried.
+
+    an existing analysis output only blocks re-entry when it actually carries
+    evidence — analyzed rows or a processing record. An output with neither is
+    indeterminate, and indeterminate work re-enters until the record ledger can
+    govern it. Decode-determined verdicts terminalize regardless of provider
+    availability only when there is no frame-description work left to do; a run
+    that still has qualified frames defers instead of discarding them.
+    """
     if (
         isinstance(record, dict)
         and record.get("state") == STATE_FAILED

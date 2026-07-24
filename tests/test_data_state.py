@@ -310,7 +310,7 @@ def test_ac8_screen_disagreement_table_has_no_silent_nonterminal_wedge(
             "reentry": True,
         },
         {
-            "name": "retryable_record_marker_rows",
+            "name": "retryable_record_failed_marker_analysis_rows",
             "jsonl": True,
             "record": retryable_record,
             "rows": True,
@@ -372,7 +372,7 @@ def test_ac8_screen_disagreement_table_has_no_silent_nonterminal_wedge(
             "reentry": False,
         },
         {
-            "name": "analyzed_record_marker_rows",
+            "name": "analyzed_record_failed_marker_analysis_rows",
             "jsonl": True,
             "record": analyzed_record,
             "rows": True,
@@ -393,6 +393,9 @@ def test_ac8_screen_disagreement_table_has_no_silent_nonterminal_wedge(
     for index, case in enumerate(cases):
         if case.get("impossible"):
             assert isinstance(case["impossible"], str)
+            assert case["impossible"].strip()
+            assert "state" not in case
+            assert "reentry" not in case
             continue
         assert case["jsonl"] or not case["record"]
 
