@@ -494,6 +494,44 @@ def check_top_level_partition(entries: list[AuthorityEntry]) -> list[str]:
     return errors
 
 
+def is_strict_path_prefix(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    return len(left) < len(right) and right[: len(left)] == left
+
+
+def check_same_surface_executable_path_prefixes(
+    entries: list[AuthorityEntry],
+) -> list[str]:
+    errors: list[str] = []
+    by_surface: dict[str, list[AuthorityEntry]] = {}
+    for entry in entries:
+        by_surface.setdefault(entry.surface, []).append(entry)
+    for surface, surface_entries in sorted(by_surface.items()):
+        ordered = sorted(
+            surface_entries, key=lambda entry: (entry.path, entry.authority_path)
+        )
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1 :]:
+                prefix: AuthorityEntry | None = None
+                child: AuthorityEntry | None = None
+                if is_strict_path_prefix(left.path, right.path):
+                    prefix = left
+                    child = right
+                elif is_strict_path_prefix(right.path, left.path):
+                    prefix = right
+                    child = left
+                if prefix is None or child is None:
+                    continue
+                # help.rs:is_sol_call_group treats any leaf as not-a-group, so
+                # moved-stub/callback leaves also make child paths unreachable.
+                errors.append(
+                    "native sol executable path prefix conflict on surface "
+                    f"{surface!r}: {list(prefix.path)!r} declared in "
+                    f"{prefix.authority} is a strict prefix of "
+                    f"{list(child.path)!r} declared in {child.authority}"
+                )
+    return errors
+
+
 def collect_oracle_paths(oracle_path: Path) -> tuple[list[str], set[tuple[str, ...]]]:
     if not oracle_path.is_file():
         return [f"{oracle_path} is missing"], set()
@@ -541,6 +579,7 @@ def main() -> int:
     entries = discover(root)
     partition_errors = check_complete_partition(entries, ORACLE_PATH)
     partition_errors.extend(check_top_level_partition(entries))
+    partition_errors.extend(check_same_surface_executable_path_prefixes(entries))
     if partition_errors:
         for error in partition_errors:
             print(error)

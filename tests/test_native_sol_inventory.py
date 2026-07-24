@@ -60,18 +60,21 @@ def entry(
     path: tuple[str, ...],
     operation_id: str,
     entry_type: str,
+    surface: str = "sol-call",
+    kind: str = "command",
+    authority_name: str = "authority.toml",
     method: str | None = None,
     route: str | None = None,
     contract_operation_id: str | None = None,
 ) -> inventory.AuthorityEntry:
     return inventory.AuthorityEntry(
-        authority=tmp_path / "authority.toml",
-        authority_path="authority.toml",
+        authority=tmp_path / authority_name,
+        authority_path=authority_name,
         source=tmp_path / "command.rs",
         module="fixture",
-        surface="sol-call",
+        surface=surface,
         path=path,
-        kind="command",
+        kind=kind,
         help=f"Fixture {'.'.join(path)}.",
         params=[],
         operation_id=operation_id,
@@ -190,3 +193,86 @@ def test_complete_partition_rejects_non_journal_uncovered_paths(tmp_path: Path) 
 
     assert any("uncovered oracle path count" in error for error in errors)
     assert any("uncovered non-journal oracle paths" in error for error in errors)
+
+
+def test_same_surface_executable_path_prefixes_are_rejected(tmp_path: Path) -> None:
+    entries = [
+        entry(
+            tmp_path,
+            path=("chat",),
+            operation_id="chat.root",
+            entry_type="local",
+            authority_name="root-authority.toml",
+        ),
+        entry(
+            tmp_path,
+            path=("chat", "start"),
+            operation_id="chat.start",
+            entry_type="local",
+            authority_name="child-authority.toml",
+        ),
+    ]
+
+    errors = inventory.check_same_surface_executable_path_prefixes(entries)
+
+    assert errors == [
+        "native sol executable path prefix conflict on surface 'sol-call': "
+        f"['chat'] declared in {tmp_path / 'root-authority.toml'} "
+        "is a strict prefix of ['chat', 'start'] declared in "
+        f"{tmp_path / 'child-authority.toml'}"
+    ]
+
+
+def test_cross_surface_executable_path_prefixes_are_allowed(tmp_path: Path) -> None:
+    entries = [
+        entry(
+            tmp_path,
+            surface="sol-chat",
+            path=("chat",),
+            operation_id="chat.top_level",
+            entry_type="top-level-chat",
+            kind="top-level",
+            authority_name="chat-authority.toml",
+        ),
+        entry(
+            tmp_path,
+            surface="sol-call",
+            path=("chat", "start"),
+            operation_id="chat.start",
+            entry_type="local",
+            authority_name="call-authority.toml",
+        ),
+    ]
+
+    errors = inventory.check_same_surface_executable_path_prefixes(entries)
+
+    assert errors == []
+
+
+def test_moved_stub_callbacks_participate_in_prefix_rejection(tmp_path: Path) -> None:
+    entries = [
+        entry(
+            tmp_path,
+            path=("identity",),
+            operation_id="moved.identity",
+            entry_type="moved-stub",
+            kind="callback",
+            authority_name="moved-authority.toml",
+        ),
+        entry(
+            tmp_path,
+            path=("identity", "restore"),
+            operation_id="identity.restore",
+            entry_type="local",
+            authority_name="child-authority.toml",
+        ),
+    ]
+
+    errors = inventory.check_same_surface_executable_path_prefixes(entries)
+
+    assert errors == [
+        "native sol executable path prefix conflict on surface 'sol-call': "
+        f"['identity'] declared in {tmp_path / 'moved-authority.toml'} "
+        "is a strict prefix of ['identity', 'restore'] declared in "
+        f"{tmp_path / 'child-authority.toml'}"
+    ]
