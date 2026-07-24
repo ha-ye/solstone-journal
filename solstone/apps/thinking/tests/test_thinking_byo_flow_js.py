@@ -220,9 +220,6 @@ OPEN_LANE_TEST_HELPERS = """
 let state;
 const calls = [];
 const shownViews = [];
-const messages = [];
-let renderByoCalls = 0;
-let renderAllCalls = 0;
 let renderLaneSwitchCalls = 0;
 let refreshLocalRuntimeCalls = 0;
 
@@ -232,9 +229,6 @@ function resetHarness(nextState) {
   openViewNodes.length = 0;
   calls.length = 0;
   shownViews.length = 0;
-  messages.length = 0;
-  renderByoCalls = 0;
-  renderAllCalls = 0;
   renderLaneSwitchCalls = 0;
   refreshLocalRuntimeCalls = 0;
   state = nextState;
@@ -303,13 +297,9 @@ function showView(name) {
   shownViews.push(name);
 }
 
-function renderByo() {
-  renderByoCalls += 1;
-}
+function renderByo() {}
 
-function renderAll() {
-  renderAllCalls += 1;
-}
+function renderAll() {}
 
 function renderLaneSwitch() {
   renderLaneSwitchCalls += 1;
