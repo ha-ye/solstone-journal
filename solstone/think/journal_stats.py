@@ -100,6 +100,9 @@ def _serialize_backlog_day(day: BacklogDay) -> dict:
             data["segment_repair_cleared"] = day.segment_repair_cleared
         if day.segment_repair_remaining is not None:
             data["segment_repair_remaining"] = day.segment_repair_remaining
+    if day.capped_daily_unit_count > 0:
+        data["capped_daily_unit_count"] = day.capped_daily_unit_count
+        data["capped_daily_unit"] = day.capped_daily_unit
     return data
 
 

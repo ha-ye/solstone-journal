@@ -395,6 +395,60 @@ def test_read_backlog_view_suppresses_stale_segment_repair_fingerprint(
     assert view.stuck_days == 0
 
 
+def test_backlog_complete_day_reports_capped_daily_unit_without_pending(
+    pipeline_journal,
+):
+    capped_day = "20990310"
+    clean_day = "20990311"
+    capped_base = pipeline_journal / "chronicle" / capped_day / "health"
+    clean_base = pipeline_journal / "chronicle" / clean_day / "health"
+    _write_jsonl(
+        capped_base / "001_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "entities:entity_observer",
+                "facet": "vconic",
+                "reason_code": "context_window_exceeded",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "entities:entity_observer",
+                "facet": "vconic",
+                "reason_code": "context_window_exceeded",
+            },
+        ],
+    )
+    _write_jsonl(
+        clean_base / "001_daily.jsonl",
+        [{"event": "talent.complete", "ts": 1, "mode": "daily", "name": "alpha"}],
+    )
+    for day in (capped_day, clean_day):
+        _touch_marker(pipeline_journal, day, "stream.updated", mtime_ms=1000)
+        _touch_marker(pipeline_journal, day, "daily.updated", mtime_ms=2000)
+
+    view = read_backlog_view(window=2)
+    by_day = {item.day: item for item in view.days}
+
+    assert by_day[capped_day].state == BACKLOG_STATE_COMPLETE
+    assert by_day[capped_day].capped_daily_unit_count == 1
+    assert by_day[capped_day].capped_daily_unit == {
+        "name": "entities:entity_observer",
+        "facet": "vconic",
+        "reason_code": "context_window_exceeded",
+        "count": 2,
+    }
+    assert by_day[clean_day].state == BACKLOG_STATE_COMPLETE
+    assert by_day[clean_day].capped_daily_unit_count == 0
+    assert by_day[clean_day].capped_daily_unit is None
+    assert view.pending_days == 0
+    assert view.stuck_days == 0
+
+
 def test_read_completed_units_terminal_presence(pipeline_journal):
     day = "20990202"
     base = pipeline_journal / "chronicle" / day / "health"

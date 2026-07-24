@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from solstone.think.catchup_state import (
 )
 from solstone.think.change_detection import detect_segment_change, resolve_predecessor
 from solstone.think.cluster import cluster_segments, read_segment_data_state
-from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
+from solstone.think.cogitate_policy import failure_capped
 from solstone.think.cortex_client import (
     PATIENT_CLAIM_WINDOWS,
     CortexNotClaimed,
@@ -906,6 +907,22 @@ def check_callosum_available() -> bool:
 _SKIPPED: object = object()
 
 
+@dataclass(frozen=True)
+class CappedDailyUnit:
+    name: str
+    facet: str | None
+    reason_code: str
+    count: int
+
+
+@dataclass(frozen=True)
+class DailyCompletionVerdict:
+    complete: bool
+    daily_units_terminal: bool
+    segment_blockers: tuple[dict[str, str], ...]
+    capped_daily_units: tuple[CappedDailyUnit, ...]
+
+
 class _NotClaimed:
     __slots__ = ("use_id",)
 
@@ -1267,9 +1284,99 @@ def _check_daily_skip(
         return (True, "already_complete")
     if not retry_on_deterministic_failure:
         failure = deterministic_failures.get((name, facet))
-        if failure is not None and failure.count >= DETERMINISTIC_FAILURE_THRESHOLD:
+        # Dispatch uses cogitate_policy.failure_capped, as does
+        # evaluate_daily_completion. retry_on_deterministic_failure affects
+        # dispatch only; completed day finalization ends retries, so forcing
+        # convergence-by-retry with this flag is unsupported.
+        if failure is not None and failure_capped(failure.reason_code, failure.count):
             return (True, "deterministic_failure_no_retry")
     return (False, None)
+
+
+def evaluate_daily_completion(
+    applicable_units: set[tuple[str, str | None]],
+    completed_units: set[tuple[str, str, str | None]],
+    deterministic_failures: dict[tuple[str, str | None], DeterministicFailure],
+    segment_blockers: list[dict[str, str]] | tuple[dict[str, str], ...],
+) -> DailyCompletionVerdict:
+    """Return the terminal daily completion verdict without journal writes."""
+    capped_daily_units: list[CappedDailyUnit] = []
+    daily_units_terminal = True
+
+    # Invariant shared with _check_daily_skip via cogitate_policy.failure_capped:
+    # a unit's failure cap is terminal; the same predicate that stops dispatch
+    # marks the unit terminal-degraded for day completion. Day completion means
+    # all applicable units terminal, not all units succeeded. Degradation is
+    # terminal but visible. This deliberately ignores the dispatch retry override.
+    for name, facet in sorted(
+        applicable_units, key=lambda unit: (unit[0], unit[1] or "")
+    ):
+        if ("daily", name, facet) in completed_units:
+            continue
+        failure = deterministic_failures.get((name, facet))
+        if failure is not None and failure_capped(failure.reason_code, failure.count):
+            capped_daily_units.append(
+                CappedDailyUnit(
+                    name=name,
+                    facet=facet,
+                    reason_code=failure.reason_code,
+                    count=failure.count,
+                )
+            )
+            continue
+        daily_units_terminal = False
+
+    blockers = tuple(segment_blockers)
+    return DailyCompletionVerdict(
+        complete=daily_units_terminal and not blockers,
+        daily_units_terminal=daily_units_terminal,
+        segment_blockers=blockers,
+        capped_daily_units=tuple(capped_daily_units),
+    )
+
+
+def _capped_daily_unit_payload(unit: CappedDailyUnit) -> dict[str, object]:
+    return {
+        "name": unit.name,
+        "facet": unit.facet,
+        "reason_code": unit.reason_code,
+        "count": unit.count,
+    }
+
+
+def finalize_day_completion(
+    day: str, verdict: DailyCompletionVerdict
+) -> dict[str, object]:
+    """Write or withhold the daily marker and return daily_complete extras."""
+    capped_payload = [
+        _capped_daily_unit_payload(unit) for unit in verdict.capped_daily_units
+    ]
+    payload_fragment: dict[str, object] = {}
+    if capped_payload:
+        payload_fragment["capped_daily_units"] = capped_payload
+
+    if verdict.complete:
+        health_dir = day_path(day) / "health"
+        health_dir.mkdir(parents=True, exist_ok=True)
+        (health_dir / "daily.updated").touch()
+        if capped_payload:
+            logging.info(
+                "Day %s complete with capped daily unit(s); wrote daily.updated: capped_daily_units=%s",
+                day,
+                capped_payload,
+            )
+        else:
+            logging.info("Day %s fully complete; wrote daily.updated", day)
+    else:
+        logging.info(
+            "Day %s withholding daily.updated: daily_units_terminal=%s segment_blockers=%s capped_daily_units=%s",
+            day,
+            verdict.daily_units_terminal,
+            list(verdict.segment_blockers),
+            capped_payload,
+        )
+
+    return payload_fragment
 
 
 def run_segment_sense(
@@ -4704,32 +4811,22 @@ def main() -> None:
                 )
 
             # Touch daily.updated marker only after daily and segment work completes.
+            completion_payload_fragment: dict[str, object] = {}
             try:
                 completed = read_completed_units(day)
-                daily_done = all(
-                    ("daily", name, facet) in completed
-                    for name, facet in applicable_units
-                )
+                deterministic_failures = read_daily_deterministic_failures(day)
 
                 segments = cluster_segments(day)
                 progress = read_segment_progress(day)
                 completion = classify_segment_completion(segments, progress)
                 blocked_after_cycle = blocked_segment_keys(segments, progress)
-                blockers = completion.blockers
-
-                if daily_done and not blockers:
-                    health_dir = day_path(day) / "health"
-                    health_dir.mkdir(parents=True, exist_ok=True)
-                    (health_dir / "daily.updated").touch()
-                    logging.info("Day %s fully complete; wrote daily.updated", day)
-                else:
-                    logging.info(
-                        "Day %s withholding daily.updated: "
-                        "daily_units_complete=%s segment_blockers=%s",
-                        day,
-                        daily_done,
-                        blockers,
-                    )
+                verdict = evaluate_daily_completion(
+                    applicable_units,
+                    completed,
+                    deterministic_failures,
+                    completion.blockers,
+                )
+                completion_payload_fragment = finalize_day_completion(day, verdict)
             except Exception:
                 logging.warning("Failed to update daily marker", exc_info=True)
 
@@ -4749,6 +4846,8 @@ def main() -> None:
                 )
             if remaining_cycle is not None:
                 daily_complete_payload["remaining"] = remaining_cycle
+            if completion_payload_fragment:
+                daily_complete_payload.update(completion_payload_fragment)
 
             # Set first_daily_ready awareness flag after first daily analysis
             try:

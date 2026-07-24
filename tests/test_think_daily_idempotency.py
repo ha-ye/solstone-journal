@@ -7,9 +7,18 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_CAPS
+from solstone.think.pipeline_health import (
+    DeterministicFailure,
+    read_completed_units,
+    read_daily_deterministic_failures,
+)
+from solstone.think.utils import updated_days
 
 DAY = "20990301"
 
@@ -172,6 +181,170 @@ def test_check_daily_skip_has_no_freshness_inputs():
     assert "from_scratch" in names
 
 
+@pytest.mark.parametrize("retry_on_deterministic_failure", [False, True])
+@pytest.mark.parametrize("at_cap", [False, True])
+@pytest.mark.parametrize(
+    ("reason_code", "cap"), sorted(DETERMINISTIC_FAILURE_CAPS.items())
+)
+def test_daily_skip_and_completion_cap_predicates_match(
+    retry_on_deterministic_failure,
+    at_cap,
+    reason_code,
+    cap,
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    count = cap if at_cap else cap - 1
+    deterministic_failures = {
+        ("beta", None): DeterministicFailure(count=count, reason_code=reason_code)
+    }
+
+    skip, _reason = mod._check_daily_skip(
+        "beta",
+        None,
+        mode="daily",
+        completed=set(),
+        deterministic_failures=deterministic_failures,
+        retry_on_deterministic_failure=retry_on_deterministic_failure,
+    )
+    verdict = mod.evaluate_daily_completion(
+        {("beta", None)},
+        set(),
+        deterministic_failures,
+        [],
+    )
+    terminal_degraded = bool(verdict.capped_daily_units)
+
+    if retry_on_deterministic_failure:
+        assert skip is False
+        assert terminal_degraded is at_cap
+    else:
+        assert skip is terminal_degraded
+    assert not (skip and not terminal_degraded)
+
+
+def test_evaluate_daily_completion_terminal_cases():
+    mod = importlib.import_module("solstone.think.thinking")
+
+    complete_and_capped = mod.evaluate_daily_completion(
+        {("alpha", None), ("beta", None)},
+        {("daily", "alpha", None)},
+        {
+            ("beta", None): DeterministicFailure(
+                count=2, reason_code="context_window_exceeded"
+            )
+        },
+        [],
+    )
+    assert complete_and_capped.complete is True
+    assert complete_and_capped.daily_units_terminal is True
+    assert complete_and_capped.capped_daily_units == (
+        mod.CappedDailyUnit(
+            name="beta",
+            facet=None,
+            reason_code="context_window_exceeded",
+            count=2,
+        ),
+    )
+
+    below_cap = mod.evaluate_daily_completion(
+        {("beta", None)},
+        set(),
+        {
+            ("beta", None): DeterministicFailure(
+                count=1, reason_code="context_window_exceeded"
+            )
+        },
+        [],
+    )
+    assert below_cap.complete is False
+    assert below_cap.capped_daily_units == ()
+
+
+def test_evaluate_daily_completion_transient_latest_stays_incomplete(journal_copy):
+    mod = importlib.import_module("solstone.think.thinking")
+    day = "20990319"
+    _prepare_main_day(journal_copy, day)
+    _write_health(
+        journal_copy,
+        day,
+        "001_daily.jsonl",
+        [
+            _complete("alpha"),
+            _fail("beta", ts=1, reason_code="context_window_exceeded"),
+            _fail("beta", ts=2, reason_code="context_window_exceeded"),
+            _fail("beta", ts=3, reason_code="schema_invalid"),
+            _fail("beta", ts=4, reason_code="token_budget_exceeded"),
+            _fail("beta", ts=5, reason_code="provider_transient"),
+        ],
+    )
+
+    completed = read_completed_units(day)
+    deterministic_failures = read_daily_deterministic_failures(day)
+
+    assert ("beta", None) not in deterministic_failures
+    transient_latest = mod.evaluate_daily_completion(
+        {("alpha", None), ("beta", None)},
+        completed,
+        deterministic_failures,
+        [],
+    )
+    assert transient_latest.complete is False
+    assert transient_latest.capped_daily_units == ()
+
+
+def test_evaluate_daily_completion_dispatch_without_terminal_stays_incomplete(
+    journal_copy,
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    day = "20990320"
+    _prepare_main_day(journal_copy, day)
+    _write_health(
+        journal_copy,
+        day,
+        "001_daily.jsonl",
+        [
+            _complete("alpha"),
+            {"event": "talent.dispatch", "ts": 2, "mode": "daily", "name": "beta"},
+        ],
+    )
+
+    completed = read_completed_units(day)
+    deterministic_failures = read_daily_deterministic_failures(day)
+
+    assert ("daily", "beta", None) not in completed
+    assert ("beta", None) not in deterministic_failures
+    dispatched_without_terminal = mod.evaluate_daily_completion(
+        {("alpha", None), ("beta", None)},
+        completed,
+        deterministic_failures,
+        [],
+    )
+    assert dispatched_without_terminal.complete is False
+    assert dispatched_without_terminal.capped_daily_units == ()
+
+
+def test_evaluate_daily_completion_withholds_with_segment_blockers():
+    mod = importlib.import_module("solstone.think.thinking")
+
+    verdict = mod.evaluate_daily_completion(
+        {("beta", None)},
+        set(),
+        {
+            ("beta", None): DeterministicFailure(
+                count=2, reason_code="context_window_exceeded"
+            )
+        },
+        [{"segment": "090000_300", "dimension": "not_thought", "detail": "floor"}],
+    )
+
+    assert verdict.complete is False
+    assert verdict.daily_units_terminal is True
+    assert verdict.capped_daily_units
+    assert verdict.segment_blockers == (
+        {"segment": "090000_300", "dimension": "not_thought", "detail": "floor"},
+    )
+
+
 def test_run_daily_prompts_skips_all_completed_units(daily_journal, monkeypatch):
     mod = importlib.import_module("solstone.think.thinking")
     _write_health(
@@ -322,6 +495,68 @@ def test_run_daily_prompts_skips_two_deterministic_failures(daily_journal, monke
         "2 same-day deterministic failures "
         "(context_window_exceeded); not re-dispatching"
     )
+
+
+def test_run_daily_prompts_schema_invalid_retries_until_third_failure(
+    daily_journal, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="schema_invalid"),
+            _fail("alpha", ts=2, reason_code="schema_invalid"),
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
+    dispatched.clear()
+    _write_health(
+        daily_journal,
+        DAY,
+        "003_daily.jsonl",
+        [_fail("alpha", ts=3, reason_code="schema_invalid")],
+    )
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "004_daily.jsonl")
+
+    assert dispatched == []
+    skips = _skip_events(daily_journal, DAY, "004_daily.jsonl")
+    assert skips[0]["reason"] == "deterministic_failure_no_retry"
+    assert skips[0]["detail"] == (
+        "3 same-day deterministic failures (schema_invalid); not re-dispatching"
+    )
+
+
+def test_mixed_deterministic_reason_uses_latest_reason_cap(daily_journal, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [
+            _fail("alpha", ts=1, reason_code="context_window_exceeded"),
+            _fail("alpha", ts=2, reason_code="schema_invalid"),
+            _fail("beta", ts=1, reason_code="schema_invalid"),
+            _fail("beta", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha", "beta"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert [name for name, _config in dispatched] == ["alpha"]
+    skips = _skip_events(daily_journal, DAY, "002_daily.jsonl")
+    assert [(event["name"], event["reason"]) for event in skips] == [
+        ("beta", "deterministic_failure_no_retry")
+    ]
 
 
 def test_run_daily_prompts_reruns_one_deterministic_failure(daily_journal, monkeypatch):
@@ -669,6 +904,84 @@ def test_main_withholds_daily_marker_when_no_output_failure_is_incomplete(
     assert not (health / "daily.updated").exists()
 
 
+def test_main_writes_daily_marker_when_capped_unit_terminal_and_payload_includes_capped_units(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    day = "20990316"
+    health = _prepare_main_day(journal_copy, day)
+    _write_health(
+        journal_copy,
+        day,
+        "001_daily.jsonl",
+        [
+            _complete("alpha"),
+            _fail("beta", ts=1, reason_code="context_window_exceeded"),
+            _fail("beta", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+    _patch_main(monkeypatch, mod, {("alpha", None), ("beta", None)})
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        mod,
+        "emit",
+        lambda event, **fields: emitted.append((event, fields)),
+    )
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", day])
+
+    mod.main()
+
+    assert (health / "daily.updated").exists()
+    daily_complete = next(
+        fields for event, fields in emitted if event == "daily_complete"
+    )
+    assert daily_complete["capped_daily_units"] == [
+        {
+            "name": "beta",
+            "facet": None,
+            "reason_code": "context_window_exceeded",
+            "count": 2,
+        }
+    ]
+
+
+def test_degraded_completion_clears_after_later_complete(journal_copy):
+    mod = importlib.import_module("solstone.think.thinking")
+    day = "20990317"
+    _prepare_main_day(journal_copy, day)
+    _write_health(
+        journal_copy,
+        day,
+        "001_daily.jsonl",
+        [
+            _complete("alpha"),
+            _fail("beta", ts=1, reason_code="context_window_exceeded"),
+            _fail("beta", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+
+    capped = mod.evaluate_daily_completion(
+        {("alpha", None), ("beta", None)},
+        read_completed_units(day),
+        read_daily_deterministic_failures(day),
+        [],
+    )
+
+    assert capped.complete is True
+    assert capped.capped_daily_units
+
+    _write_health(journal_copy, day, "002_daily.jsonl", [_complete("beta", ts=3)])
+    cleared = mod.evaluate_daily_completion(
+        {("alpha", None), ("beta", None)},
+        read_completed_units(day),
+        read_daily_deterministic_failures(day),
+        [],
+    )
+
+    assert cleared.complete is True
+    assert cleared.capped_daily_units == ()
+
+
 def test_main_ignores_not_applicable_incomplete_units(journal_copy, monkeypatch):
     mod = importlib.import_module("solstone.think.thinking")
     day = "20990312"
@@ -708,6 +1021,49 @@ def test_main_does_not_force_refresh_from_stream_marker(journal_copy, monkeypatc
             "from_scratch": False,
         }
     ]
+
+
+def test_capped_terminal_completion_clears_updated_days_until_stream_newer(
+    journal_copy, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    day = "20990318"
+    health = _prepare_main_day(journal_copy, day)
+    _write_health(
+        journal_copy,
+        day,
+        "001_daily.jsonl",
+        [
+            _complete("alpha"),
+            _fail("beta", ts=1, reason_code="context_window_exceeded"),
+            _fail("beta", ts=2, reason_code="context_window_exceeded"),
+        ],
+    )
+    (health / "stream.updated").touch()
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha", "beta"), dispatched)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda *_args, **_kwargs: (True, False)
+    )
+    monkeypatch.setattr(mod, "run_queued_command", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", day])
+
+    assert day in updated_days()
+    mod.main()
+
+    assert dispatched == []
+    assert (health / "daily.updated").exists()
+    assert day not in updated_days()
+
+    os.utime(health / "daily.updated", (1000, 1000))
+    os.utime(health / "stream.updated", (1010, 1010))
+    assert day in updated_days()
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", day])
+
+    mod.main()
+
+    assert dispatched == []
+    assert day not in updated_days()
 
 
 def test_main_passes_from_scratch_to_daily_prompts(journal_copy, monkeypatch):

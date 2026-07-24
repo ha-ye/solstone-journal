@@ -40,6 +40,23 @@ def test_resolve_read_scope_span_is_inclusive():
     ) == ["chronicle/20260425", "chronicle/20260426", "chronicle/20260427"]
 
 
+def test_failure_capped_schema_invalid_cap_is_three():
+    assert cogitate_policy.failure_capped("schema_invalid", 2) is False
+    assert cogitate_policy.failure_capped("schema_invalid", 3) is True
+
+
+def test_failure_capped_default_deterministic_cap_is_two():
+    assert cogitate_policy.failure_capped("context_window_exceeded", 1) is False
+    assert cogitate_policy.failure_capped("context_window_exceeded", 2) is True
+
+
+def test_deterministic_failure_caps_cover_reason_codes_exactly():
+    assert (
+        set(cogitate_policy.DETERMINISTIC_FAILURE_CAPS)
+        == cogitate_policy.DETERMINISTIC_FAILURE_REASON_CODES
+    )
+
+
 def test_policy_denies_write_tools(tmp_path):
     policy = _policy(tmp_path)
 

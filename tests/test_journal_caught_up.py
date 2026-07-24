@@ -229,6 +229,62 @@ def test_journal_caught_up_ok_for_all_complete_view(doctor, monkeypatch):
     assert result.detail == "caught up"
 
 
+def test_journal_caught_up_ok_with_capped_complete_days_detail(doctor, monkeypatch):
+    day = BacklogDay(
+        day="20200229",
+        state=BACKLOG_STATE_COMPLETE,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+        capped_daily_unit_count=1,
+        capped_daily_unit={
+            "name": "entities:entity_observer",
+            "facet": "vconic",
+            "reason_code": "context_window_exceeded",
+            "count": 2,
+        },
+    )
+    view = BacklogView(
+        window=30,
+        days=(day,),
+        pending_days=0,
+        stuck_days=0,
+        oldest_pending_day=None,
+        errors=(),
+    )
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "caught up; 1 day(s) completed with capped daily unit(s)"
+
+
+def test_journal_caught_up_plain_caught_up_without_capped_complete_days(
+    doctor, monkeypatch
+):
+    view = BacklogView(
+        window=30,
+        days=(backlog_day("20200229", BACKLOG_STATE_COMPLETE),),
+        pending_days=0,
+        stuck_days=0,
+        oldest_pending_day=None,
+        errors=(),
+    )
+    monkeypatch.setattr(pipeline_health, "read_backlog_view", lambda: view)
+
+    result = doctor.journal_caught_up_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "caught up"
+
+
 def test_journal_caught_up_reports_backoff_stuck_day(doctor, tmp_path, monkeypatch):
     journal = tmp_path / "journal"
     day = "20990401"

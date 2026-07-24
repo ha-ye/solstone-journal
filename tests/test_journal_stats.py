@@ -214,6 +214,58 @@ def test_serialize_backlog_day_includes_segment_repair_fields_only_when_present(
     assert progressing_data["segment_repair_remaining"] == 5
 
 
+def test_serialize_backlog_day_includes_capped_daily_fields_only_when_present():
+    stats_mod = importlib.import_module("solstone.think.journal_stats")
+    health_mod = importlib.import_module("solstone.think.pipeline_health")
+
+    clean = health_mod.BacklogDay(
+        day="20240101",
+        state=health_mod.BACKLOG_STATE_COMPLETE,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+    )
+    capped = health_mod.BacklogDay(
+        day="20240102",
+        state=health_mod.BACKLOG_STATE_COMPLETE,
+        segments=0,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=None,
+        reason_code=None,
+        provider=None,
+        model=None,
+        error=None,
+        capped_daily_unit_count=1,
+        capped_daily_unit={
+            "name": "entities:entity_observer",
+            "facet": "vconic",
+            "reason_code": "context_window_exceeded",
+            "count": 2,
+        },
+    )
+
+    clean_data = stats_mod._serialize_backlog_day(clean)
+    capped_data = stats_mod._serialize_backlog_day(capped)
+
+    assert "capped_daily_unit_count" not in clean_data
+    assert "capped_daily_unit" not in clean_data
+    assert capped_data["capped_daily_unit_count"] == 1
+    assert capped_data["capped_daily_unit"] == {
+        "name": "entities:entity_observer",
+        "facet": "vconic",
+        "reason_code": "context_window_exceeded",
+        "count": 2,
+    }
+
+
 def test_scan_day(tmp_path, monkeypatch):
     stats_mod = importlib.import_module("solstone.think.journal_stats")
     journal = tmp_path

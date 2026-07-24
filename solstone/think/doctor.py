@@ -904,6 +904,7 @@ def journal_caught_up_check(args: Args) -> CheckResult:
     check = JOURNAL_CAUGHT_UP_CHECK
     try:
         from solstone.think.pipeline_health import (
+            BACKLOG_STATE_COMPLETE,
             BACKLOG_STATE_UNKNOWN,
             read_backlog_view,
         )
@@ -924,6 +925,18 @@ def journal_caught_up_check(args: Args) -> CheckResult:
             "warn",
             f"couldn't fully determine — {unknown_days} day(s) unknown",
             _CAUGHT_UP_CANT_TELL_FIX,
+        )
+
+    capped_complete_days = sum(
+        1
+        for day in view.days
+        if day.state == BACKLOG_STATE_COMPLETE and day.capped_daily_unit_count > 0
+    )
+    if view.pending_days == 0 and view.stuck_days == 0 and capped_complete_days > 0:
+        return make_result(
+            check,
+            "ok",
+            f"caught up; {capped_complete_days} day(s) completed with capped daily unit(s)",
         )
 
     if view.pending_days == 0 and view.stuck_days == 0:

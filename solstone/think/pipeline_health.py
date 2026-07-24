@@ -18,7 +18,10 @@ from solstone.think.catchup_state import (
     read_segment_repair_summary,
 )
 from solstone.think.cluster import cluster_segments
-from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
+from solstone.think.cogitate_policy import (
+    DETERMINISTIC_FAILURE_REASON_CODES,
+    failure_capped,
+)
 from solstone.think.data_state import DataState
 from solstone.think.utils import (
     DEFAULT_STREAM,
@@ -237,6 +240,8 @@ class BacklogDay:
     segment_repair_bounded: bool | None = None
     segment_repair_cleared: int | None = None
     segment_repair_remaining: int | None = None
+    capped_daily_unit_count: int = 0
+    capped_daily_unit: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1401,6 +1406,28 @@ def _non_segment_failed_units(
     return tuple(why)
 
 
+def _capped_daily_complete_fields(day: str) -> dict[str, object]:
+    capped = [
+        {
+            "name": name,
+            "facet": facet,
+            "reason_code": failure.reason_code,
+            "count": failure.count,
+        }
+        for (name, facet), failure in sorted(
+            read_daily_deterministic_failures(day).items(),
+            key=lambda item: (item[0][0], item[0][1] or ""),
+        )
+        if failure_capped(failure.reason_code, failure.count)
+    ]
+    if not capped:
+        return {}
+    return {
+        "capped_daily_unit_count": len(capped),
+        "capped_daily_unit": capped[0],
+    }
+
+
 def _complete_backlog_day(day: str) -> BacklogDay:
     return BacklogDay(
         day=day,
@@ -1414,6 +1441,7 @@ def _complete_backlog_day(day: str) -> BacklogDay:
         provider=None,
         model=None,
         error=None,
+        **_capped_daily_complete_fields(day),
     )
 
 
@@ -1486,6 +1514,7 @@ def _backlog_day_for_complete(day: str, repair: dict | None) -> BacklogDay:
         provider=None,
         model=None,
         error=error,
+        **_capped_daily_complete_fields(day),
         **_segment_repair_fields(repair),
     )
 
