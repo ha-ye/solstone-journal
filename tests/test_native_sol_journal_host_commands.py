@@ -2,6 +2,8 @@
 # Copyright (c) 2026 sol pbc
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 import scripts.build_native_sol_journal_host_commands as journal_host
@@ -9,6 +11,10 @@ import scripts.build_native_sol_journal_host_commands as journal_host
 SERVICE_COMMANDS = ("setup", "think") + tuple(f"svc{i:02d}" for i in range(40))
 UNIVERSAL_COMMANDS = ("check", "contract", "doctor", "link")
 SERVICE_ALIASES = ("down", "up")
+
+
+def _raw_source(lines: list[str]) -> str:
+    return "\n".join([*lines, ""])
 
 
 def _source(commands: dict[str, str], aliases: dict[str, str]) -> str:
@@ -20,7 +26,7 @@ def _source(commands: dict[str, str], aliases: dict[str, str]) -> str:
         f'    "{name}": Alias("module.{name.replace("-", "_")}", [], "{surface}"),'
         for name, surface in sorted(aliases.items())
     ]
-    return "\n".join(
+    return _raw_source(
         [
             "COMMANDS = {",
             *command_lines,
@@ -29,7 +35,6 @@ def _source(commands: dict[str, str], aliases: dict[str, str]) -> str:
             "ALIASES = {",
             *alias_lines,
             "}",
-            "",
         ]
     )
 
@@ -46,8 +51,12 @@ def _base_aliases() -> dict[str, str]:
 
 
 def _error(commands: dict[str, str], aliases: dict[str, str]) -> str:
+    return _raw_error(_source(commands, aliases))
+
+
+def _raw_error(source: str) -> str:
     with pytest.raises(RuntimeError) as error:
-        journal_host.extract_partitions(_source(commands, aliases))
+        journal_host.extract_partitions(source)
     message = str(error.value)
     assert "\n" not in message
     return message
@@ -65,11 +74,308 @@ def _old_combined_service_surface_count(
     return len(service_commands | service_aliases)
 
 
+def _raw_service_command_literal_count(source: str) -> int:
+    tree = ast.parse(source)
+    count = 0
+    for registry_literal in journal_host.scan_registry_literals(tree):
+        if registry_literal.name != "COMMANDS":
+            continue
+        for key, value in zip(
+            registry_literal.node.keys, registry_literal.node.values, strict=True
+        ):
+            key_value = journal_host.literal_key(key)
+            if (
+                key_value is not None
+                and journal_host.call_surface(value, registry_literal.surface_position)
+                == "service"
+            ):
+                count += 1
+    return count
+
+
 def test_extract_keeps_service_commands_and_aliases_as_sorted_moved_list() -> None:
     moved = journal_host.extract(_source(_base_commands(), _base_aliases()))
 
     assert len(moved) == 44
     assert moved == sorted((*SERVICE_COMMANDS, *SERVICE_ALIASES))
+
+
+def test_duplicate_commands_rejected_before_partition_validation() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "ghost": Command("module.ghost", SURFACE),',
+            '    "ghost": Command("module.ghost_again", SURFACE),',
+            "    **EXTRA_COMMANDS,",
+            '    NAME: Command("module.dynamic", "service"),',
+            "}",
+            "",
+            "ALIASES = {",
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'ghost' "
+        "[line 2 surface=<unavailable>, line 3 surface=<unavailable>]"
+    )
+
+
+def test_duplicate_service_command_preserves_old_count_but_is_rejected() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "think": Command("module.think", "service"),',
+            '    "setup": Command("module.setup", "service"),',
+            '    "think": Command("module.think_again", "service"),',
+            '    "svc00": Command("module.svc00", "service"),',
+            '    "svc01": Command("module.svc01", "service"),',
+            '    "svc02": Command("module.svc02", "service"),',
+            '    "svc03": Command("module.svc03", "service"),',
+            '    "svc04": Command("module.svc04", "service"),',
+            '    "svc05": Command("module.svc05", "service"),',
+            '    "svc06": Command("module.svc06", "service"),',
+            '    "svc07": Command("module.svc07", "service"),',
+            '    "svc08": Command("module.svc08", "service"),',
+            '    "svc09": Command("module.svc09", "service"),',
+            '    "svc10": Command("module.svc10", "service"),',
+            '    "svc11": Command("module.svc11", "service"),',
+            '    "svc12": Command("module.svc12", "service"),',
+            '    "svc13": Command("module.svc13", "service"),',
+            '    "svc14": Command("module.svc14", "service"),',
+            '    "svc15": Command("module.svc15", "service"),',
+            '    "svc16": Command("module.svc16", "service"),',
+            '    "svc17": Command("module.svc17", "service"),',
+            '    "svc18": Command("module.svc18", "service"),',
+            '    "svc19": Command("module.svc19", "service"),',
+            '    "svc20": Command("module.svc20", "service"),',
+            '    "svc21": Command("module.svc21", "service"),',
+            '    "svc22": Command("module.svc22", "service"),',
+            '    "svc23": Command("module.svc23", "service"),',
+            '    "svc24": Command("module.svc24", "service"),',
+            '    "svc25": Command("module.svc25", "service"),',
+            '    "svc26": Command("module.svc26", "service"),',
+            '    "svc27": Command("module.svc27", "service"),',
+            '    "svc28": Command("module.svc28", "service"),',
+            '    "svc29": Command("module.svc29", "service"),',
+            '    "svc30": Command("module.svc30", "service"),',
+            '    "svc31": Command("module.svc31", "service"),',
+            '    "svc32": Command("module.svc32", "service"),',
+            '    "svc33": Command("module.svc33", "service"),',
+            '    "svc34": Command("module.svc34", "service"),',
+            '    "svc35": Command("module.svc35", "service"),',
+            '    "svc36": Command("module.svc36", "service"),',
+            '    "svc37": Command("module.svc37", "service"),',
+            '    "svc38": Command("module.svc38", "service"),',
+            '    "check": Command("module.check", "universal"),',
+            '    "contract": Command("module.contract", "universal"),',
+            '    "doctor": Command("module.doctor", "universal"),',
+            '    "link": Command("module.link", "universal"),',
+            "}",
+            "",
+            "ALIASES = {",
+            '    "down": Alias("module.down", [], "service"),',
+            '    "up": Alias("module.up", [], "service"),',
+            "}",
+        ]
+    )
+
+    assert _raw_service_command_literal_count(source) == 42
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'think' "
+        "[line 2 surface=service, line 4 surface=service]"
+    )
+
+
+def test_duplicate_universal_command_is_rejected() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "doctor": Command("module.doctor", "universal"),',
+            '    "doctor": Command("module.doctor_again", "universal"),',
+            "}",
+            "",
+            "ALIASES = {",
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'doctor' "
+        "[line 2 surface=universal, line 3 surface=universal]"
+    )
+
+
+def test_duplicate_service_alias_is_rejected() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            "}",
+            "",
+            "ALIASES = {",
+            '    "up": Alias("module.up", [], "service"),',
+            '    "up": Alias("module.up_again", [], "service"),',
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: ALIASES 'up' "
+        "[line 5 surface=service, line 6 surface=service]"
+    )
+
+
+def test_duplicate_keys_sort_key_names_before_source_order() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "zeta": Command("module.zeta", "service"),',
+            '    "zeta": Command("module.zeta_again", "service"),',
+            '    "alpha": Command("module.alpha", "service"),',
+            '    "alpha": Command("module.alpha_again", "service"),',
+            "}",
+            "",
+            "ALIASES = {",
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'alpha' "
+        "[line 4 surface=service, line 5 surface=service]; COMMANDS 'zeta' "
+        "[line 2 surface=service, line 3 surface=service]"
+    )
+
+
+def test_duplicate_command_reports_disagreeing_surfaces() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "think": Command("module.think", "service"),',
+            '    "think": Command("module.think_again", "universal"),',
+            "}",
+            "",
+            "ALIASES = {",
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'think' "
+        "[line 2 surface=service, line 3 surface=universal]"
+    )
+
+
+def test_duplicates_aggregate_across_plain_and_annotated_assignments() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "think": Command("module.think", "service"),',
+            "}",
+            "COMMANDS: dict[str, Command] = {",
+            '    "think": Command("module.think_again", "service"),',
+            "}",
+            "ALIASES: dict[str, Alias] = {",
+            '    "up": Alias("module.up", [], "service"),',
+            "}",
+            "ALIASES = {",
+            '    "up": Alias("module.up_again", [], "service"),',
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'think' "
+        "[line 2 surface=service, line 5 surface=service]; ALIASES 'up' "
+        "[line 8 surface=service, line 11 surface=service]"
+    )
+
+
+def test_simultaneous_duplicates_report_unavailable_surface() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            '    "think": Command("module.think", "service"),',
+            '    "think": Command("module.think_again", SURFACE),',
+            "}",
+            "ALIASES = {",
+            '    "up": Alias("module.up", [], "service"),',
+            '    "up": Alias("module.up_again", [], alias_surface()),',
+            "    **EXTRA_ALIASES,",
+            '    ALIAS_NAME: Alias("module.dynamic", [], "service"),',
+            "}",
+        ]
+    )
+
+    message = _raw_error(source)
+
+    assert (
+        message == "journal-host duplicate registry keys: COMMANDS 'think' "
+        "[line 2 surface=service, line 3 surface=<unavailable>]; ALIASES 'up' "
+        "[line 6 surface=service, line 7 surface=<unavailable>]"
+    )
+
+
+def test_spread_and_non_literal_keys_are_skipped_on_a_valid_source() -> None:
+    source = _raw_source(
+        [
+            "COMMANDS = {",
+            *[
+                f'    "{name}": Command("module.{name.replace("-", "_")}", "service"),'
+                for name in SERVICE_COMMANDS
+            ],
+            "    **EXTRA_COMMANDS,",
+            '    NAME: Command("module.dynamic", "service"),',
+            *[
+                f'    "{name}": Command("module.{name.replace("-", "_")}", "universal"),'
+                for name in UNIVERSAL_COMMANDS
+            ],
+            "}",
+            "",
+            "ALIASES = {",
+            *[
+                f'    "{name}": Alias("module.{name.replace("-", "_")}", [], "service"),'
+                for name in SERVICE_ALIASES
+            ],
+            "    **EXTRA_ALIASES,",
+            '    ALIAS_NAME: Alias("module.dynamic", [], "service"),',
+            "}",
+        ]
+    )
+
+    moved = journal_host.extract(source)
+
+    assert len(moved) == 44
+    assert moved == sorted((*SERVICE_COMMANDS, *SERVICE_ALIASES))
+
+
+def test_production_registry_extracts_expected_partitions() -> None:
+    partitions = journal_host.extract_partitions()
+
+    assert len(partitions.service_commands) == 42
+    assert set(partitions.service_aliases) == {"up", "down"}
+    assert set(partitions.universal_commands) == {
+        "doctor",
+        "check",
+        "contract",
+        "link",
+    }
+    assert partitions.universal_aliases == ()
+    assert len(journal_host.extract()) == 44
 
 
 def test_service_command_count_rejects_43_service_commands_and_1_alias() -> None:

@@ -19,6 +19,9 @@ EXPECTED_UNIVERSAL_COMMANDS = frozenset({"doctor", "check", "contract", "link"})
 EXPECTED_SERVICE_ALIASES = frozenset({"up", "down"})
 EXPECTED_UNIVERSAL_ALIASES = frozenset()
 SERVICE_SENTINELS = frozenset({"think", "setup"})
+# Declaration order is the duplicate-diagnostic section order.
+REGISTRY_SURFACE_POSITIONS = {"COMMANDS": 1, "ALIASES": 2}
+UNAVAILABLE_SURFACE = "<unavailable>"
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,22 @@ class JournalHostCommandPartitions:
     universal_commands: tuple[str, ...]
     service_aliases: tuple[str, ...]
     universal_aliases: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegistryLiteral:
+    name: str
+    node: ast.Dict
+    surface_position: int
+
+
+@dataclass(frozen=True)
+class RegistryKeyOccurrence:
+    registry: str
+    key: str
+    surface: str
+    lineno: int
+    col_offset: int
 
 
 def call_surface(node: ast.AST, position: int) -> str | None:
@@ -38,10 +57,39 @@ def call_surface(node: ast.AST, position: int) -> str | None:
     return None
 
 
+def literal_key(key: ast.expr | None) -> str | None:
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        return key.value
+    return None
+
+
 def extract_partitions(source_text: str | None = None) -> JournalHostCommandPartitions:
     tree = ast.parse(source_text if source_text is not None else SOURCE.read_text())
+    registry_literals = scan_registry_literals(tree)
+    validate_no_duplicate_registry_keys(registry_literals)
     commands: dict[str, list[str]] = {"service": [], "universal": []}
     aliases: dict[str, list[str]] = {"service": [], "universal": []}
+    for registry_literal in registry_literals:
+        if registry_literal.name == "COMMANDS":
+            extend_names_by_surface(
+                commands, registry_literal.node, registry_literal.surface_position
+            )
+        elif registry_literal.name == "ALIASES":
+            extend_names_by_surface(
+                aliases, registry_literal.node, registry_literal.surface_position
+            )
+    partitions = JournalHostCommandPartitions(
+        service_commands=tuple(sorted(commands["service"])),
+        universal_commands=tuple(sorted(commands["universal"])),
+        service_aliases=tuple(sorted(aliases["service"])),
+        universal_aliases=tuple(sorted(aliases["universal"])),
+    )
+    validate_partitions(partitions)
+    return partitions
+
+
+def scan_registry_literals(tree: ast.Module) -> tuple[RegistryLiteral, ...]:
+    registry_literals: list[RegistryLiteral] = []
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
@@ -53,18 +101,70 @@ def extract_partitions(source_text: str | None = None) -> JournalHostCommandPart
             continue
         if not isinstance(target, ast.Name) or not isinstance(value, ast.Dict):
             continue
-        if target.id == "COMMANDS":
-            extend_names_by_surface(commands, value, 1)
-        elif target.id == "ALIASES":
-            extend_names_by_surface(aliases, value, 2)
-    partitions = JournalHostCommandPartitions(
-        service_commands=tuple(sorted(commands["service"])),
-        universal_commands=tuple(sorted(commands["universal"])),
-        service_aliases=tuple(sorted(aliases["service"])),
-        universal_aliases=tuple(sorted(aliases["universal"])),
-    )
-    validate_partitions(partitions)
-    return partitions
+        surface_position = REGISTRY_SURFACE_POSITIONS.get(target.id)
+        if surface_position is None:
+            continue
+        registry_literals.append(RegistryLiteral(target.id, value, surface_position))
+    return tuple(registry_literals)
+
+
+def scan_registry_key_occurrences(
+    registry_literals: tuple[RegistryLiteral, ...],
+) -> tuple[RegistryKeyOccurrence, ...]:
+    occurrences: list[RegistryKeyOccurrence] = []
+    for registry_literal in registry_literals:
+        for key, value in zip(
+            registry_literal.node.keys, registry_literal.node.values, strict=True
+        ):
+            key_value = literal_key(key)
+            if key_value is None:
+                continue
+            occurrences.append(
+                RegistryKeyOccurrence(
+                    registry=registry_literal.name,
+                    key=key_value,
+                    surface=call_surface(value, registry_literal.surface_position)
+                    or UNAVAILABLE_SURFACE,
+                    lineno=key.lineno,
+                    col_offset=key.col_offset,
+                )
+            )
+    return tuple(occurrences)
+
+
+def validate_no_duplicate_registry_keys(
+    registry_literals: tuple[RegistryLiteral, ...],
+) -> None:
+    occurrences_by_registry: dict[str, dict[str, list[RegistryKeyOccurrence]]] = {
+        registry: {} for registry in REGISTRY_SURFACE_POSITIONS
+    }
+    for occurrence in scan_registry_key_occurrences(registry_literals):
+        occurrences_by_registry[occurrence.registry].setdefault(
+            occurrence.key, []
+        ).append(occurrence)
+
+    duplicate_sections: list[str] = []
+    for registry in REGISTRY_SURFACE_POSITIONS:
+        occurrences_by_key = occurrences_by_registry[registry]
+        for key in sorted(
+            key
+            for key, occurrences in occurrences_by_key.items()
+            if len(occurrences) > 1
+        ):
+            occurrences = sorted(
+                occurrences_by_key[key],
+                key=lambda occurrence: (occurrence.lineno, occurrence.col_offset),
+            )
+            occurrence_text = ", ".join(
+                f"line {occurrence.lineno} surface={occurrence.surface}"
+                for occurrence in occurrences
+            )
+            duplicate_sections.append(f"{registry} {key!r} [{occurrence_text}]")
+
+    if duplicate_sections:
+        raise RuntimeError(
+            f"journal-host duplicate registry keys: {'; '.join(duplicate_sections)}"
+        )
 
 
 def extract(source_text: str | None = None) -> list[str]:
@@ -147,11 +247,12 @@ def extend_names_by_surface(
     names_by_surface: dict[str, list[str]], node: ast.Dict, position: int
 ) -> None:
     for key, value in zip(node.keys, node.values, strict=True):
-        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+        key_value = literal_key(key)
+        if key_value is None:
             continue
         surface = call_surface(value, position)
         if surface in names_by_surface:
-            names_by_surface[surface].append(key.value)
+            names_by_surface[surface].append(key_value)
 
 
 def rust_string(value: str) -> str:
