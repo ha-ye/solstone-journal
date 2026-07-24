@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""CLI functionality for the indexer."""
+"""Journal indexer command routing.
+
+Write-bearing invocations run `solstone-core indexer`. Query, count, display,
+and interactive search stay in Python. Invalid `--rescan-file` combinations exit
+64 before any side effect.
+"""
 
 import argparse
 import sys
