@@ -23,6 +23,7 @@ FRAGMENT_MODULES = [
     "solstone.apps.awareness.contract",
     "solstone.apps.body.contract",
     "solstone.apps.curation.contract",
+    "solstone.apps.entities.contract",
     "solstone.apps.sol.contract",
     "solstone.apps.support.contract",
     "solstone.convey.push_contract",

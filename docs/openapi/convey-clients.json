@@ -3734,6 +3734,2351 @@
         ]
       }
     },
+    "/app/entities/api/accept-merge-candidate": {
+      "post": {
+        "description": "Preview or commit one recorded entity merge candidate.",
+        "operationId": "entities.accept-merge-candidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "commit": false,
+                "facet": "work",
+                "source_slug": "ada",
+                "target_slug": "ada-lovelace"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "commit": {
+                    "type": "boolean"
+                  },
+                  "facet": {
+                    "type": "string"
+                  },
+                  "source_slug": {
+                    "type": "string"
+                  },
+                  "target_slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "facet",
+                  "source_slug",
+                  "target_slug"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Merge candidate result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The merge-candidate request was missing a required field.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Preview or accept merge candidate",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/ambiguities": {
+      "get": {
+        "description": "Return persisted entity resolution ambiguities.",
+        "operationId": "entities.ambiguities",
+        "parameters": [
+          {
+            "description": "Optional status filter.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ambiguity collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The ambiguity status filter was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Ambiguities could not be read.",
+            "x-reason-codes": [
+              "entity_operation_failed"
+            ]
+          }
+        },
+        "summary": "List entity ambiguities",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/ambiguities/{ambiguity_id}/resolve": {
+      "post": {
+        "description": "Resolve one ambiguity to an existing scoped entity.",
+        "operationId": "entities.resolve-ambiguity",
+        "parameters": [
+          {
+            "description": "Ambiguity id.",
+            "in": "path",
+            "name": "ambiguity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "entity_id": "person-ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "entity_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "entity_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ambiguity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "entity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ambiguity"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resolved ambiguity."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The ambiguity resolution request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Ambiguity was not found.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Resolve entity ambiguity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/dismiss-merge-candidate": {
+      "post": {
+        "description": "Dismiss one recorded entity merge candidate.",
+        "operationId": "entities.dismiss-merge-candidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "facet": "work",
+                "source_slug": "ada",
+                "target_slug": "ada-lovelace"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "facet": {
+                    "type": "string"
+                  },
+                  "source_slug": {
+                    "type": "string"
+                  },
+                  "target_slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "facet",
+                  "source_slug",
+                  "target_slug"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Merge candidate dismissal result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The merge-candidate request was missing a required field.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Dismiss merge candidate",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/history": {
+      "get": {
+        "description": "Return newest-first derived edge evidence for an entity pair.",
+        "operationId": "entities.history",
+        "parameters": [
+          {
+            "description": "Entity query.",
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Peer entity query.",
+            "in": "query",
+            "name": "peer",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Repeated or comma-separated relationship kind filter.",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start day.",
+            "in": "query",
+            "name": "day_from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End day.",
+            "in": "query",
+            "name": "day_to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum rows.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Offset.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Entity edge history payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The edge-history request was invalid.",
+            "x-reason-codes": [
+              "entity_operation_failed",
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Edge index is not available.",
+            "x-reason-codes": [
+              "edge_index_unavailable"
+            ]
+          }
+        },
+        "summary": "Read entity edge history",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/journal/entity/{entity_id}/history": {
+      "get": {
+        "description": "Return durable identity version history for a journal entity.",
+        "operationId": "entities.entity-history",
+        "parameters": [
+          {
+            "description": "Journal entity id.",
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "entity_id",
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Entity history."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity was not found.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity history could not be read.",
+            "x-reason-codes": [
+              "entity_operation_failed"
+            ]
+          }
+        },
+        "summary": "List durable entity history",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/journal/entity/{entity_id}/restore": {
+      "post": {
+        "description": "Restore one ordinary durable identity version.",
+        "operationId": "entities.restore-version",
+        "parameters": [
+          {
+            "description": "Journal entity id.",
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "version_id": "v1"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "version_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "version_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "event": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "restored": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "restored"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Restore result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The restore request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity or version was not found.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity history restore failed.",
+            "x-reason-codes": [
+              "entity_operation_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Restore durable entity version",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/merge": {
+      "post": {
+        "description": "Plan or commit a journal entity merge.",
+        "operationId": "entities.merge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "commit": false,
+                "source_slug": "ada",
+                "target_slug": "ada-lovelace"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "commit": {
+                    "type": "boolean"
+                  },
+                  "keep_source_as_aka": {
+                    "type": "boolean"
+                  },
+                  "source_slug": {
+                    "type": "string"
+                  },
+                  "target_slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_slug",
+                  "target_slug"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Merge plan or commit result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The merge request was invalid or failed.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "entity_not_found",
+              "entity_operation_failed",
+              "invalid_request_value",
+              "missing_required_field",
+              "operation_no_longer_available"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Plan or commit entity merge",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/merge-candidates": {
+      "get": {
+        "description": "Return recorded entity merge candidates.",
+        "operationId": "entities.merge-candidates",
+        "parameters": [
+          {
+            "description": "Facet filter.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Status filter.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Merge candidate collection."
+          }
+        },
+        "summary": "List merge candidates",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/merge/{merge_id}/undo": {
+      "post": {
+        "description": "Undo one recorded journal entity merge.",
+        "operationId": "entities.undo-merge",
+        "parameters": [
+          {
+            "description": "Merge operation id.",
+            "in": "path",
+            "name": "merge_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {},
+              "schema": {
+                "additionalProperties": true,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Undo result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The undo request was invalid or failed.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "entity_not_found",
+              "entity_operation_failed",
+              "invalid_request_value",
+              "operation_no_longer_available"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Undo entity merge",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/move": {
+      "post": {
+        "description": "Move one resolved entity between facets.",
+        "operationId": "entities.move",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "entity": "Ada",
+                "from_facet": "work",
+                "to_facet": "personal"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "consent": {
+                    "type": "boolean"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "from_facet": {
+                    "type": "string"
+                  },
+                  "merge": {
+                    "type": "boolean"
+                  },
+                  "to_facet": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "entity",
+                  "from_facet",
+                  "to_facet"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entity": {
+                      "type": "string"
+                    },
+                    "merged": {
+                      "type": "boolean"
+                    },
+                    "moved_from": {
+                      "type": "string"
+                    },
+                    "moved_to": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "entity",
+                    "moved_from",
+                    "moved_to",
+                    "merged"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Move result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The move request was invalid or failed.",
+            "x-reason-codes": [
+              "entity_already_exists",
+              "entity_operation_failed",
+              "missing_required_field"
+            ]
+          }
+        },
+        "summary": "Move facet entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/network": {
+      "get": {
+        "description": "Return one-hop recorded connections for an entity.",
+        "operationId": "entities.network",
+        "parameters": [
+          {
+            "description": "Entity query.",
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Repeated or comma-separated relationship kind filter.",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start day.",
+            "in": "query",
+            "name": "day_from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End day.",
+            "in": "query",
+            "name": "day_to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum rows.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Evidence rows per peer.",
+            "in": "query",
+            "name": "evidence_limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Include principal entity.",
+            "in": "query",
+            "name": "include_principal",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Entity network payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The network request was invalid.",
+            "x-reason-codes": [
+              "entity_operation_failed",
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Edge index is not available.",
+            "x-reason-codes": [
+              "edge_index_unavailable"
+            ]
+          }
+        },
+        "summary": "Read entity network",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/overview": {
+      "get": {
+        "description": "Return a global derived edge network summary.",
+        "operationId": "entities.overview",
+        "parameters": [
+          {
+            "description": "Repeated or comma-separated relationship kind filter.",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Start day.",
+            "in": "query",
+            "name": "day_from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "End day.",
+            "in": "query",
+            "name": "day_to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum rows.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Network overview payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The overview request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Edge index is not available.",
+            "x-reason-codes": [
+              "edge_index_unavailable"
+            ]
+          }
+        },
+        "summary": "Read entity network overview",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/record-merge-candidate": {
+      "post": {
+        "description": "Record or update one entity merge candidate.",
+        "operationId": "entities.record-merge-candidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "day": "20260724",
+                "evidence": "same person",
+                "facet": "work",
+                "source": "Ada",
+                "target": "Ada Lovelace"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "basis": {
+                    "type": "string"
+                  },
+                  "day": {
+                    "type": "string"
+                  },
+                  "detections": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "type": "string"
+                  },
+                  "facet": {
+                    "type": "string"
+                  },
+                  "needs": {
+                    "type": "integer"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "facet",
+                  "day",
+                  "source",
+                  "target",
+                  "evidence"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "created": {
+                      "type": "boolean"
+                    },
+                    "row": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "row",
+                    "created"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Merge candidate row."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The merge-candidate request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Record merge candidate",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/search": {
+      "get": {
+        "description": "Search indexed entities for the native CLI.",
+        "operationId": "entities.search",
+        "parameters": [
+          {
+            "description": "Search text.",
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entity type.",
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Facet slug.",
+            "in": "query",
+            "name": "facet",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Since day.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum rows.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Search result collection."
+          }
+        },
+        "summary": "Search entities",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}": {
+      "get": {
+        "description": "Return attached and detected entities for a facet.",
+        "operationId": "entities.list",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "attached": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "detected": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "attached",
+                    "detected"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Facet entity lists."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Facet entity state could not be read.",
+            "x-reason-codes": [
+              "entity_operation_failed"
+            ]
+          }
+        },
+        "summary": "List facet entities",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/aka": {
+      "post": {
+        "description": "Add one alias to an attached entity.",
+        "operationId": "entities.aka",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "aka": "Ada",
+                "entity_id": "person-ada",
+                "exclude_name": "Ada Lovelace"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "aka": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "entity_id": {
+                    "type": "string"
+                  },
+                  "exclude_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "aka",
+                  "exclude_name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "aka": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated alias list."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The alias request was invalid.",
+            "x-reason-codes": [
+              "entity_alias_conflict",
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity was not attached.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Add entity alias",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/attach": {
+      "post": {
+        "description": "Attach or reactivate one entity in a facet.",
+        "operationId": "entities.attach",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "description": "compiler notes",
+                "name": "Ada",
+                "type": "person"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "attached_at": {
+                      "type": "number"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Attached entity."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The attach request was invalid.",
+            "x-reason-codes": [
+              "entity_already_exists",
+              "entity_blocked",
+              "entity_not_found",
+              "invalid_entity_type",
+              "missing_request_body",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Attach entity to facet",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/detected": {
+      "get": {
+        "description": "Return detected entities for one facet day.",
+        "operationId": "entities.detected.list",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Journal day.",
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Detected entities."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The day query parameter is required.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          }
+        },
+        "summary": "List detected entities",
+        "tags": [
+          "entities"
+        ]
+      },
+      "post": {
+        "description": "Record a detected entity for one facet day.",
+        "operationId": "entities.detect",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "day": "20260724",
+                "description": "compiler notes",
+                "entity": "Ada",
+                "type": "person"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "day": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "day",
+                  "type",
+                  "entity",
+                  "description"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Detected entity result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The detected-entity request was invalid.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "invalid_entity_type",
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Record detected entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/observations": {
+      "get": {
+        "description": "Return observations for one attached entity.",
+        "operationId": "entities.observations",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resolved entity name.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Observation collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name query parameter is required.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          }
+        },
+        "summary": "List entity observations",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/observe": {
+      "post": {
+        "description": "Add one observation to an attached entity.",
+        "operationId": "entities.observe",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "content": "Met today.",
+                "name": "Ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source_day": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "content"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "result": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Observation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The observation request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Record entity observation",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/resolve": {
+      "get": {
+        "description": "Resolve a CLI entity query without mutating state.",
+        "operationId": "entities.resolve",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entity query.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "blocked": {
+                      "type": "boolean"
+                    },
+                    "blocked_name": {
+                      "type": "string"
+                    },
+                    "candidates": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "facet_exists": {
+                      "type": "boolean"
+                    },
+                    "resolved": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "facet_exists",
+                    "candidates",
+                    "blocked"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Resolved entity payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name query parameter is required.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          }
+        },
+        "summary": "Resolve one facet entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/update-description": {
+      "post": {
+        "description": "Update the description for an attached facet entity.",
+        "operationId": "entities.update",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "description": "new notes",
+                "entity_id": "person-ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "entity_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "description"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "entity"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated entity relationship."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The update request was missing a required field.",
+            "x-reason-codes": [
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity was not attached.",
+            "x-reason-codes": [
+              "entity_not_found"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Update facet entity description",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/app/entities/api/{facet_name}/update-detected": {
+      "post": {
+        "description": "Update the description for a detected entity row.",
+        "operationId": "entities.update-detected",
+        "parameters": [
+          {
+            "description": "Facet slug.",
+            "in": "path",
+            "name": "facet_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "day": "20260724",
+                "description": "new notes",
+                "entity": "Ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "day": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "day",
+                  "entity",
+                  "description"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "entity": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated detected entity."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The detected-entity update was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Entity state is busy.",
+            "x-reason-codes": [
+              "entity_busy"
+            ]
+          }
+        },
+        "summary": "Update detected entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
     "/app/home/api/pulse": {
       "get": {
         "description": "Return the home Pulse: a snapshot recomputed per request from journal state. Only the new-owner onboarding signals are named in this contract \u2014 journal_age_days, home_state, and welcome_framing; the rest of the payload is intentionally open and may change without a contract bump.",

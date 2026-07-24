@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 from solstone.apps.activities import call as activities_call
 from solstone.apps.awareness import call as awareness_call
 from solstone.apps.body import call as body_call
+from solstone.apps.entities import call as entities_call
 from solstone.apps.facets import call as facets_call
 from solstone.apps.network import call as network_call
 from solstone.apps.settings import call as settings_call
@@ -517,6 +518,7 @@ def patched_runtime(
     original_datetime = activities_call.datetime
     original_awareness_get_client = awareness_call.get_client
     original_body_get_client = body_call.get_client
+    original_entities_get_client = entities_call.get_client
     original_facets_get_client = facets_call.get_client
     original_health_get_client = health_call.get_client
     original_health_datetime = health_call.datetime
@@ -560,6 +562,7 @@ def patched_runtime(
     activities_call.datetime = FixedDateTime
     awareness_call.get_client = lambda: client
     body_call.get_client = lambda: client
+    entities_call.get_client = lambda: client
     facets_call.get_client = lambda: client
     health_call.get_client = lambda: client
     health_call.datetime = FixedDateTime
@@ -605,6 +608,7 @@ def patched_runtime(
             activities_call.datetime = original_datetime
             awareness_call.get_client = original_awareness_get_client
             body_call.get_client = original_body_get_client
+            entities_call.get_client = original_entities_get_client
             facets_call.get_client = original_facets_get_client
             health_call.get_client = original_health_get_client
             health_call.datetime = original_health_datetime

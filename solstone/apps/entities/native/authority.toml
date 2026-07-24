@@ -1,0 +1,389 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["entities", "accept-merge-candidate"]
+kind = "command"
+help = "Preview or accept one recorded entity merge candidate."
+operation_id = "entities.accept-merge-candidate"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/accept-merge-candidate"
+contract_operation_id = "entities.accept-merge-candidate"
+handler = "accept_merge_candidate"
+params = [
+  { name = "source_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "target_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["target_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = ["--no-commit"], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "aka"]
+kind = "command"
+help = "Add an alias to an attached entity."
+operation_id = "entities.aka"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/{facet_name}/aka"
+contract_operation_id = "entities.aka"
+handler = "aka"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "aka_value", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["aka_value"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "ambiguities"]
+kind = "command"
+help = "List reviewable entity-resolution ambiguities."
+operation_id = "entities.ambiguities"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/ambiguities"
+contract_operation_id = "entities.ambiguities"
+handler = "ambiguities"
+params = [
+  { name = "status", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--status"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "attach"]
+kind = "command"
+help = "Attach an entity permanently to a facet."
+operation_id = "entities.attach"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/{facet_name}/attach"
+contract_operation_id = "entities.attach"
+handler = "attach"
+params = [
+  { name = "type_", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["type_"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "description", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["description"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "detect"]
+kind = "command"
+help = "Record a detected entity for a day in a facet."
+operation_id = "entities.detect"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/{facet_name}/detected"
+contract_operation_id = "entities.detect"
+handler = "detect"
+params = [
+  { name = "type_", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["type_"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "description", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["description"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day", "-d"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "dismiss-merge-candidate"]
+kind = "command"
+help = "Dismiss one recorded entity merge candidate."
+operation_id = "entities.dismiss-merge-candidate"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/dismiss-merge-candidate"
+contract_operation_id = "entities.dismiss-merge-candidate"
+handler = "dismiss_merge_candidate"
+params = [
+  { name = "source_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "target_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["target_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "entity-history"]
+kind = "command"
+help = "Show durable identity versions (not relationship history)."
+operation_id = "entities.entity-history"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/journal/entity/{entity_id}/history"
+contract_operation_id = "entities.entity-history"
+handler = "entity_history"
+params = [
+  { name = "entity_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "history"]
+kind = "command"
+help = "Show recorded connection evidence for an entity pair."
+operation_id = "entities.history"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/history"
+contract_operation_id = "entities.history"
+handler = "history"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "peer", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["peer"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "kinds", kind = "option", type = "text", required = false, nargs = 1, multiple = true, default = [], options = ["--kinds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_from", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_to", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 50, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "offset", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 0, options = ["--offset"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "list"]
+kind = "command"
+help = "List entities for a facet."
+operation_id = "entities.list"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/{facet_name}"
+contract_operation_id = "entities.list"
+handler = "list"
+params = [
+  { name = "facet", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["facet"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet_opt", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day", "-d"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "merge"]
+kind = "command"
+help = "Plan or commit a journal-entity merge."
+operation_id = "entities.merge"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/merge"
+contract_operation_id = "entities.merge"
+handler = "merge"
+params = [
+  { name = "source_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "target_slug", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["target_slug"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = ["--no-commit"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "keep_source_as_aka", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = true, options = ["--keep-source-as-aka"], secondary = ["--no-keep-source-as-aka"], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "merge-candidates"]
+kind = "command"
+help = "List recorded entity merge candidates."
+operation_id = "entities.merge-candidates"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/merge-candidates"
+contract_operation_id = "entities.merge-candidates"
+handler = "merge_candidates"
+params = [
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "status", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--status"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "move"]
+kind = "command"
+help = "Move an entity from one facet to another."
+operation_id = "entities.move"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/move"
+contract_operation_id = "entities.move"
+handler = "move_entity"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "from_facet", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "to_facet", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "merge", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--merge"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "consent", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--consent"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "network"]
+kind = "command"
+help = "Show one-hop recorded connections for an entity."
+operation_id = "entities.network"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/network"
+contract_operation_id = "entities.network"
+handler = "network"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "kinds", kind = "option", type = "text", required = false, nargs = 1, multiple = true, default = [], options = ["--kinds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_from", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_to", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 25, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "evidence_limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 5, options = ["--evidence-limit"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "include_principal", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--include-principal"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "observations"]
+kind = "command"
+help = "List observations for an attached entity."
+operation_id = "entities.observations"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/{facet_name}/observations"
+contract_operation_id = "entities.observations"
+handler = "observations"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "observe"]
+kind = "command"
+help = "Add an observation to an attached entity."
+operation_id = "entities.observe"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/{facet_name}/observe"
+contract_operation_id = "entities.observe"
+handler = "observe"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "content", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["content"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "source_day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--source-day"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "overview"]
+kind = "command"
+help = "Show a global recorded-connections overview."
+operation_id = "entities.overview"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/overview"
+contract_operation_id = "entities.overview"
+handler = "overview"
+params = [
+  { name = "kinds", kind = "option", type = "text", required = false, nargs = 1, multiple = true, default = [], options = ["--kinds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_from", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day_to", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day-to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 25, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "record-merge-candidate"]
+kind = "command"
+help = "Record a proposed entity merge (source variant -> canonical target)."
+operation_id = "entities.record-merge-candidate"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/record-merge-candidate"
+contract_operation_id = "entities.record-merge-candidate"
+handler = "record_merge_candidate"
+params = [
+  { name = "source", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "target", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["target"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day", "-d"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "evidence", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--evidence"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "basis", kind = "option", type = "text", required = false, nargs = 1, multiple = false, default = "name-variant", options = ["--basis"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "detections", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, options = ["--detections"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "needs", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, options = ["--needs"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "resolve-ambiguity"]
+kind = "command"
+help = "Resolve or replace one persisted ambiguity choice."
+operation_id = "entities.resolve-ambiguity"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/ambiguities/{ambiguity_id}/resolve"
+contract_operation_id = "entities.resolve-ambiguity"
+handler = "resolve_ambiguity"
+params = [
+  { name = "ambiguity_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["ambiguity_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "entity_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "yes", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--yes"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "restore-version"]
+kind = "command"
+help = "Restore one ordinary identity version."
+operation_id = "entities.restore-version"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/journal/entity/{entity_id}/restore"
+contract_operation_id = "entities.restore-version"
+handler = "restore_version"
+params = [
+  { name = "entity_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "version_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["version_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "yes", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--yes"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "search"]
+kind = "command"
+help = "Search entities by text, type, facet, or activity."
+operation_id = "entities.search"
+entry_type = "http"
+method = "GET"
+route = "/app/entities/api/search"
+contract_operation_id = "entities.search"
+handler = "search"
+params = [
+  { name = "query_pos", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["query_pos"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "query", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--query", "-q"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "type_", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--type", "-t"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "since", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--since"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 20, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["entities", "undo-merge"]
+kind = "command"
+help = "Undo one recorded entity merge."
+operation_id = "entities.undo-merge"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/merge/{merge_id}/undo"
+contract_operation_id = "entities.undo-merge"
+handler = "undo_merge"
+params = [
+  { name = "merge_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["merge_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "yes", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--yes"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["entities", "update"]
+kind = "command"
+help = "Update an entity description."
+operation_id = "entities.update"
+entry_type = "http"
+method = "POST"
+route = "/app/entities/api/{facet_name}/update-description"
+contract_operation_id = "entities.update"
+handler = "update"
+params = [
+  { name = "entity", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["entity"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "description", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["description"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet", "-f"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "day", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--day", "-d"], secondary = [], hidden = false, is_flag = false, count = false },
+]
