@@ -97,10 +97,10 @@ uv.lock: pyproject.toml packages/*/pyproject.toml
 
 # Install package in editable mode with isolated venv
 install: .installed
-	@(cd /tmp && $(CURDIR)/$(VENV_BIN)/python -c "from solstone.think.sol_cli import main") 2>/dev/null || { \
+	@(cd /tmp && $(CURDIR)/$(VENV_BIN)/python -c "from solstone.think.sol_compat_cli import main") 2>/dev/null || { \
 		echo ">>> re-registering editable install"; \
 		$(UV) pip install -e . --no-deps; \
-		if (cd /tmp && $(CURDIR)/$(VENV_BIN)/python -c "from solstone.think.sol_cli import main"); then \
+		if (cd /tmp && $(CURDIR)/$(VENV_BIN)/python -c "from solstone.think.sol_compat_cli import main"); then \
 			echo ">>> re-registered successfully"; \
 		else \
 			echo ">>> editable install still broken; run make clean-install"; \

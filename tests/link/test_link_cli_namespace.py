@@ -57,10 +57,6 @@ def test_journal_link_routes_to_management_app_help(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from typer.main import get_command
-
-    from solstone.apps.network import call as link_call
-
     monkeypatch.setattr(sys, "argv", ["journal link", "--help"])
 
     with pytest.raises(SystemExit) as exc:
@@ -68,14 +64,11 @@ def test_journal_link_routes_to_management_app_help(
 
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    management_commands = set(get_command(link_call.app).commands)
-    assert "Usage: journal link" in out
-    assert "unpair" in out
-    assert "authorized-clients" in out
-    assert "join" not in management_commands
-    assert "serve" not in management_commands
-    assert "join a solstone with a short code or pair link" not in out
-    assert "serve a loopback proxy over a link tunnel" not in out
+    assert "usage: journal link" in out
+    assert "{join,serve}" in out
+    assert "join a solstone with a short code or pair link" in out
+    assert "serve a loopback proxy over a link tunnel" in out
+    assert "authorized-clients" not in out
 
 
 def test_sol_link_list_is_unknown_client_subcommand(

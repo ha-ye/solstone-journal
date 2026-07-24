@@ -512,34 +512,14 @@ def test_cli_sync_malformed_schedules_prints_path_and_cause(
     assert "Expecting property name" in err
 
 
-def test_cli_registration_is_service_surface_and_sol_rejects_maintenance(
-    monkeypatch, capsys
-):
+def test_cli_registration_is_service_surface():
     from solstone.think import sol_cli
-    from solstone.think.service import Reconciled
 
     module_path, preset_args, surface = sol_cli.resolve_command("maintenance")
     assert module_path == "solstone.think.maintenance_cli"
     assert preset_args == []
     assert surface == "service"
     assert "maintenance" in sol_cli.service_help_group().commands
-
-    monkeypatch.setattr(
-        "solstone.think.service.reconcile_installed_unit",
-        lambda: Reconciled(False, None, None, None),
-    )
-    monkeypatch.setattr(
-        sol_cli,
-        "run_command",
-        lambda _module_path: pytest.fail("service command should not run under sol"),
-    )
-    monkeypatch.setattr(sys, "argv", ["sol", "maintenance"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        sol_cli.main()
-
-    assert exc_info.value.code == 2
-    assert "maintenance" in capsys.readouterr().err
 
 
 def test_register_then_scheduler_init_surfaces_runtime_cap(tmp_path, monkeypatch):

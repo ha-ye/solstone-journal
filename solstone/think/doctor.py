@@ -252,7 +252,7 @@ def sol_importable_check(args: Args) -> CheckResult:
         return make_result(check, "skip", ".venv absent; run make install")
     probe = run_probe(
         check,
-        [str(python_bin), "-c", "from solstone.think.sol_cli import main"],
+        [str(python_bin), "-c", "from solstone.think.sol_compat_cli import main"],
         cwd=Path("/"),
         timeout=2.0,
         allow_nonzero=True,
@@ -265,7 +265,7 @@ def sol_importable_check(args: Args) -> CheckResult:
         return make_result(
             check,
             "ok",
-            "from solstone.think.sol_cli import main succeeded outside repo cwd",
+            "from solstone.think.sol_compat_cli import main succeeded outside repo cwd",
         )
     stderr = probe.stderr.strip()
     if "ModuleNotFoundError: No module named 'solstone'" in stderr:
@@ -278,7 +278,10 @@ def sol_importable_check(args: Args) -> CheckResult:
     first_line = next((line for line in stderr.splitlines() if line.strip()), "")
     detail = truncate(
         first_line
-        or f"from solstone.think.sol_cli import main failed with exit {probe.returncode}",
+        or (
+            "from solstone.think.sol_compat_cli import main failed with exit "
+            f"{probe.returncode}"
+        ),
         120,
     )
     return make_result(check, "fail", detail, fix)

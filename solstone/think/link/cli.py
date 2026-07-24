@@ -34,12 +34,6 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for `sol link`."""
     args = list(sys.argv[1:] if argv is None else argv)
-    if sys.argv[0] == "journal link":
-        from solstone.apps.network.call import app as link_management_app
-
-        link_management_app(args=args, prog_name="journal link")
-        return 0  # unreachable: the Typer app raises SystemExit
-
     parser = _build_parser()
     namespace = parser.parse_args(args)
     if namespace.command is None:

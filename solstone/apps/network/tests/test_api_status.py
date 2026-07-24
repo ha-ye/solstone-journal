@@ -7,15 +7,11 @@ import json
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
 import solstone.convey.bridge as convey_bridge
-from solstone.apps.network import call as link_call
 from solstone.apps.network import copy as link_copy
 from solstone.apps.network import routes as link_routes
 from solstone.apps.network.tests.conftest import _StubWatcher
-from solstone.convey import create_app
-from solstone.think.convey_client import ConveyClient
 from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.paths import LinkState
 from solstone.think.link.window import read_posture
@@ -565,39 +561,3 @@ def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
     assert data["instance_id"] is None
     assert data["home_label"] is None
     assert not (env.journal / "link" / "state.json").exists()
-
-
-def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) -> None:
-    journal = tmp_path / "journal"
-    journal.mkdir()
-    config_dir = journal / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "journal.json").write_text(
-        json.dumps(
-            {
-                "setup": {"completed_at": 1700000000000},
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-    app = create_app(journal=str(journal))
-    app.config["TESTING"] = True
-    test_client = app.test_client()
-    client = ConveyClient(session=test_client, base_url="")
-    monkeypatch.setattr(link_call, "get_client", lambda: client)
-
-    def fail_save(self) -> None:
-        raise AssertionError("LinkState.save should not be called by status")
-
-    monkeypatch.setattr(LinkState, "save", fail_save)
-
-    result = CliRunner().invoke(link_call.app, ["status"])
-
-    assert result.exit_code == 0
-    assert (
-        "Instance ID:   (not provisioned — pair a device to provision)" in result.stdout
-    )
-    assert "Home label:    (not provisioned)" in result.stdout
-    assert not (journal / "link" / "state.json").exists()

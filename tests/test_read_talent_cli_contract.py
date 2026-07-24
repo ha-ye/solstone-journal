@@ -8,15 +8,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import typer
-
-from solstone.apps.entities.call import app as entities_app
+import scripts.build_native_sol_inventory as inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _live_entities_verbs() -> set[str]:
-    return set(typer.main.get_command(entities_app).commands.keys())
+    return {
+        entry.path[1]
+        for entry in inventory.discover(inventory.REPO_ROOT)
+        if entry.surface == "sol-call"
+        and len(entry.path) >= 2
+        and entry.path[0] == "entities"
+    }
 
 
 def _extract_entities_verbs_from_read_talent(text: str) -> set[str]:

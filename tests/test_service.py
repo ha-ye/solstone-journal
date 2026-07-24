@@ -1987,7 +1987,7 @@ class TestRegistry:
     def test_service_group_exists(self):
         from solstone.think import sol_cli as sol
 
-        assert sol.service_help_group().heading == sol.SOL_HELP_GROUP_SERVICE_HEADING
+        assert sol.service_help_group().heading == "Journal service commands"
         assert "service" in sol.service_help_group().commands
 
 

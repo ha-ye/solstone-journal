@@ -7,10 +7,10 @@ import json
 
 from solstone.convey import create_app
 from solstone.convey import health as convey_health
+from solstone.think.brain_health import HEADLINES
 from solstone.think.surfaces import health as health_surface
 from tests._baseline_harness import make_test_client
 from tests.test_surfaces_health import (
-    _brain_snapshot,
     _minimal_facet_tree,
     _segment_backlog,
     _utc_dt,
@@ -40,6 +40,38 @@ def _configure_journal(tmp_path, monkeypatch) -> None:
 
 def _configure_unset_journal(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+
+def _brain_snapshot() -> dict[str, object]:
+    return {
+        "state": "ready",
+        "headline": HEADLINES["ready"],
+        "reason_code": None,
+        "reason_text": None,
+        "failing_component": None,
+        "action": None,
+        "identity": {"lane": "cloud", "provider": "google", "model": "gemini"},
+        "evidence": {
+            "observed_at": "2026-04-10T12:00:00Z",
+            "age_seconds": 60,
+            "age_text": "1m",
+        },
+        "components": {
+            "generate": {
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": "2026-04-10T12:00:00Z",
+            },
+            "cogitate": {
+                "status": "ready",
+                "reason_code": None,
+                "reason_text": None,
+                "observed_at": "2026-04-10T12:00:00Z",
+            },
+        },
+        "progressing": False,
+    }
 
 
 def _freeze_health_surface(tmp_path, monkeypatch) -> None:

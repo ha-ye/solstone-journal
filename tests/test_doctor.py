@@ -131,7 +131,7 @@ class TestSolImportable:
         assert result.status == "ok"
         assert (
             result.detail
-            == "from solstone.think.sol_cli import main succeeded outside repo cwd"
+            == "from solstone.think.sol_compat_cli import main succeeded outside repo cwd"
         )
 
     def test_fail_on_module_not_found(self, doctor, monkeypatch, tmp_path):
@@ -1309,11 +1309,18 @@ def test_journal_readiness_battery_does_not_import_host_or_inference_modules():
     assert "LEAKED" not in result.stdout
 
 
-def test_sol_doctor_subprocess_json_shape():
-    """End-to-end: `sol doctor --json` via the venv entry point produces valid diagnostic JSON."""
+def test_journal_doctor_readiness_subprocess_json_shape():
+    """End-to-end: journal readiness doctor produces valid diagnostic JSON."""
     repo_root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
-        [sys.executable, "-m", "solstone.think.sol_cli", "doctor", "--json"],
+        [
+            sys.executable,
+            "-m",
+            "solstone.think.sol_cli",
+            "doctor",
+            "--readiness",
+            "--json",
+        ],
         capture_output=True,
         text=True,
         cwd=repo_root,
@@ -1328,15 +1335,10 @@ def test_sol_doctor_subprocess_json_shape():
     payload = json.loads(result.stdout)
     assert "checks" in payload and isinstance(payload["checks"], list)
     assert "summary" in payload and isinstance(payload["summary"], dict)
+    from solstone.think import doctor as doctor_module
+
     assert {check["name"] for check in payload["checks"]} == {
-        "python_version",
-        "sol_importable",
-        "journal_leaf_exclusivity",
-        "journal_package_version",
-        "retired_host_shim",
-        "local_bin_sol_reachable",
-        "stale_alias_symlink",
-        "skill_state",
+        check.name for check, _runner in doctor_module.JOURNAL_READINESS_CHECKS
     }
 
 
@@ -1350,7 +1352,14 @@ def test_doctor_runs_with_minimal_path_env(tmp_path):
         "SOLSTONE_JOURNAL": str(journal),
     }
     result = subprocess.run(
-        [sys.executable, "-m", "solstone.think.sol_cli", "doctor", "--json"],
+        [
+            sys.executable,
+            "-m",
+            "solstone.think.sol_cli",
+            "doctor",
+            "--readiness",
+            "--json",
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -1361,20 +1370,12 @@ def test_doctor_runs_with_minimal_path_env(tmp_path):
         f"stdout={result.stdout}\nstderr={result.stderr}"
     )
     payload = json.loads(result.stdout)
+    from solstone.think import doctor as doctor_module
+
     names = {check["name"] for check in payload["checks"]}
     assert names == {
-        "python_version",
-        "sol_importable",
-        "journal_leaf_exclusivity",
-        "journal_package_version",
-        "retired_host_shim",
-        "local_bin_sol_reachable",
-        "stale_alias_symlink",
-        "skill_state",
+        check.name for check, _runner in doctor_module.JOURNAL_READINESS_CHECKS
     }
     assert not any(
-        name.startswith("service_")
-        or name == "journal_sync"
-        or name.startswith("feature:")
-        for name in names
+        name.startswith("service_") or name == "journal_sync" for name in names
     )

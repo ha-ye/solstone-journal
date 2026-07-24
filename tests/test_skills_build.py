@@ -22,6 +22,11 @@ def _copy_fragment_tree(tmp_path: Path) -> Path:
         dst = root / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
+    for src in sorted((REAL_ROOT / "solstone").glob("**/native/**/authority.toml")):
+        rel_path = src.relative_to(REAL_ROOT)
+        dst = root / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
     return root
 
 

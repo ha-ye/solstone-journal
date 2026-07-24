@@ -850,19 +850,6 @@ def test_body_workspace_template_avoids_surveillance_verbs():
         assert found == set(), f"{path.name} contains banned copy terms: {found}"
 
 
-def test_body_call_module_uses_convey_http_only():
-    body_root = Path(body_routes.__file__).resolve().parent
-    source = (body_root / "call.py").read_text(encoding="utf-8")
-
-    assert "solstone.think.convey_client" in source
-    assert '@app.command("window")' in source
-    assert "/app/body/api/window" in source
-    assert "from pathlib" not in source
-    assert "import os" not in source
-    assert "sqlite3" not in source
-    assert "open(" not in source
-
-
 def test_read_routes_create_nothing_in_empty_journal(body_env):
     env = body_env()
     imports_root = env.journal / "imports"

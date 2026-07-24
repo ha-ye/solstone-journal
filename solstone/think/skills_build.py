@@ -5,15 +5,13 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import frontmatter
-import typer
-from typer.main import get_command
 
 from solstone.think.command_polarity import classify_verb
 
@@ -136,33 +134,31 @@ def _load_fragments() -> dict[str, Fragment]:
     return fragments
 
 
-def _resolve_typer_app(app_name: str, source: Path) -> typer.Typer:
-    module_name = (
-        "solstone.think.tools.health"
+def _command_names(app_name: str, source: Path) -> tuple[str, ...]:
+    authority = (
+        ROOT / "solstone" / "think" / "tools" / "native" / app_name / "authority.toml"
         if app_name == "health"
-        else f"solstone.apps.{app_name}.call"
+        else ROOT / "solstone" / "apps" / app_name / "native" / "authority.toml"
     )
     try:
-        module = importlib.import_module(module_name)
+        data = tomllib.loads(authority.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise ValueError(f"{source}: cannot import {module_name}: {exc}") from exc
-
-    app = getattr(module, "app", None)
-    if not isinstance(app, typer.Typer):
-        raise ValueError(f"{source}: {module_name} does not export a Typer app")
-    return app
-
-
-def _command_names(app_name: str, source: Path) -> tuple[str, ...]:
-    app = _resolve_typer_app(app_name, source)
-    try:
-        command = get_command(app)
-        names = tuple(sorted(command.commands.keys()))
-    except Exception as exc:
-        raise ValueError(f"{source}: cannot introspect Typer commands: {exc}") from exc
+        raise ValueError(
+            f"{source}: cannot read native authority {authority}: {exc}"
+        ) from exc
+    names = {
+        path[1]
+        for entry in data.get("entries", [])
+        if isinstance(entry, dict)
+        and isinstance(path := entry.get("path"), list)
+        and len(path) >= 2
+        and path[0] == app_name
+        and isinstance(path[1], str)
+        and path[1]
+    }
     if not names:
-        raise ValueError(f"{source}: Typer app has no commands")
-    return names
+        raise ValueError(f"{source}: native authority has no {app_name} commands")
+    return tuple(sorted(names))
 
 
 def _format_list(values: tuple[str, ...]) -> str:

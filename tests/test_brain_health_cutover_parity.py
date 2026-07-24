@@ -141,52 +141,12 @@ def _snapshot(case: Case, surface: str) -> dict[str, Any]:
     }
 
 
-def _minimal_report(brain: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "range": ["20260721", "20260721"],
-        "capture_health": {
-            "hours_with_capture": 0,
-            "hours_total": 0,
-            "coverage_ratio": None,
-            "facets_with_recent_capture": [],
-            "facets_silent_24h": [],
-            "last_segment_at": None,
-        },
-        "synthesis_health": {
-            "activities_count": 0,
-            "activities_with_participation": 0,
-            "activities_with_story": 0,
-            "activities_user_edited": 0,
-            "activities_anticipated_unfilled": 0,
-            "talent_run_failures_24h": None,
-            "talent_degraded_outputs_24h": None,
-            "indexer_last_rebuild_at": None,
-        },
-        "consumer_signal": {
-            "ledger_open_items_total": 0,
-            "ledger_stale_items_count": 0,
-            "profile_entities_total": 0,
-        },
-        "segment_backlog": {
-            "not_thought": 0,
-            "days_with_backlog": 0,
-            "errors": [],
-        },
-        "brain_health": {
-            "snapshot": brain,
-            "lines": ["Brain Health", f"  {brain['headline']}"],
-        },
-        "notes": [],
-    }
-
-
-def test_state_parity_matrix(monkeypatch, capsys):
+def test_state_parity_matrix(monkeypatch):
     from solstone.apps.health import routes as health_routes
     from solstone.apps.home.health_glance import build_health_glance
     from solstone.apps.support import diagnostics
     from solstone.apps.thinking import routes as thinking_routes
     from solstone.think import doctor, top
-    from solstone.think.tools import health as health_tool
 
     app = Flask(__name__)
     app.register_blueprint(health_routes.health_bp)
@@ -291,11 +251,6 @@ def test_state_parity_matrix(monkeypatch, capsys):
         assert section["snapshot"]["action"] == _expected_action(case, "support")
 
         cli_brain = _snapshot(case, "cli")
-        health_tool._render_summary(_minimal_report(cli_brain))
-        rendered = capsys.readouterr().out
-        assert "Brain Health" in rendered
-        assert HEADLINES[case.state] in rendered
-
         monkeypatch.setattr(
             "solstone.think.brain_health.build_brain_snapshot",
             lambda *_a, **_k: cli_brain,

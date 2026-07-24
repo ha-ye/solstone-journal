@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Tests for think/call.py CLI dispatcher and app discovery."""
+"""Tests for think/call.py journal compatibility dispatcher."""
 
 import json
 
@@ -148,7 +148,7 @@ def merge_journal(tmp_path, monkeypatch):
 
 
 class TestDiscovery:
-    """Tests for app CLI discovery."""
+    """Tests for the surviving journal CLI mount."""
 
     def test_main_prints_corrupt_config_and_exits_nonzero(self, monkeypatch, capsys):
         """main() should surface corrupt config in owner voice."""
@@ -171,18 +171,17 @@ class TestDiscovery:
     def test_no_args_shows_help(self):
         """Running 'sol call' with no args shows help."""
         result = runner.invoke(call_app, [])
-        assert "Call app functions" in result.output
+        assert "Call journal functions" in result.output
 
     def test_unknown_app_fails(self):
         """Unknown app name should produce an error."""
         result = runner.invoke(call_app, ["nonexistent"])
         assert result.exit_code != 0
 
-    def test_network_app_keeps_link_call_name(self):
+    def test_only_journal_group_is_registered(self):
         names = {group.name for group in call_app.registered_groups}
 
-        assert "link" in names
-        assert "network" not in names
+        assert names == {"journal"}
 
 
 class TestJournal:
