@@ -85,6 +85,7 @@ def test_workspace_owner_copy_uses_approved_case_and_ellipsis_folds():
 
     expected_phrases = (
         "your identity information used in AI templates and transcription.",
+        "brief description of yourself used in AI templates",
         "select pronouns…",
         "import audio from Plaud recorder. log into the web portal and extract token from browser console.",
         "key configured (enter new value to replace)",
@@ -186,6 +187,7 @@ def test_workspace_owner_copy_uses_approved_case_and_ellipsis_folds():
         assert phrase in unescaped
 
     retired_phrases = (
+        "brief description of yourself used in ai templates",
         " ✓ Valid",
         "Local transcription",
         "Free memory",
@@ -196,6 +198,7 @@ def test_workspace_owner_copy_uses_approved_case_and_ellipsis_folds():
     for phrase in retired_phrases:
         assert phrase not in unescaped
 
+    assert "used in ai templates" not in text
     assert "lucide icon" in text
     assert "choose lucide icon" in text
     assert "Lucide" in text

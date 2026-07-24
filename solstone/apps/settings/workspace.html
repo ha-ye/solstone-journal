@@ -25,7 +25,7 @@
   position: sticky;
   top: calc(var(--facet-bar-height, 60px) + 1em);
   align-self: flex-start;
-  max-height: calc(100vh - var(--facet-bar-height, 60px) - 2em);
+  max-height: calc(100vh - var(--facet-bar-height, 60px) - var(--app-bar-height, 60px) - 3em);
   overflow-y: auto;
   border-right: 1px solid var(--facet-border, #e5e0db);
   padding-right: 0.75rem;
@@ -223,7 +223,7 @@
   font-size: 0.9em;
 }
 
-.settings-field input,
+.settings-field input:where(:not([type="checkbox"]):not([type="radio"])),
 .settings-field textarea,
 .settings-field select {
   width: 100%;
@@ -2267,7 +2267,7 @@ button:focus:not(:focus-visible) {
       <div class="settings-field">
         <label for="field-bio">bio</label>
         <textarea id="field-bio" data-section="identity" data-key="bio" rows="2" placeholder="e.g., a software engineer interested in AI"></textarea>
-        <small>brief description of yourself used in ai templates</small>
+        <small>brief description of yourself used in AI templates</small>
       </div>
 
       <div class="settings-field">
@@ -2741,7 +2741,7 @@ button:focus:not(:focus-visible) {
           <button type="button" class="settings-preset-btn" data-days="7">7</button>
           <button type="button" class="settings-preset-btn" data-days="30">30</button>
           <button type="button" class="settings-preset-btn" data-days="90">90</button>
-          <input type="number" id="retentionDaysInput" min="1" max="365" style="width: 5em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;" placeholder="custom">
+          <input type="number" id="retentionDaysInput" min="1" max="365" style="width: 7em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;" placeholder="custom">
           <span style="color: #666; font-size: 0.9em;">days</span>
         </div>
         <label for="retentionDontRetain" style="display: flex; align-items: center; gap: 0.5em; margin-top: 0.75em; color: #666; font-size: 0.9em;">
@@ -2767,7 +2767,7 @@ button:focus:not(:focus-visible) {
           <button type="button" class="settings-preset-btn" data-days="7">7</button>
           <button type="button" class="settings-preset-btn" data-days="30">30</button>
           <button type="button" class="settings-preset-btn" data-days="90">90</button>
-          <input type="number" id="logRetentionDaysInput" min="1" max="365" style="width: 5em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;" placeholder="custom">
+          <input type="number" id="logRetentionDaysInput" min="1" max="365" style="width: 7em; padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px;" placeholder="custom">
           <span style="color: #666; font-size: 0.9em;">days</span>
         </div>
         <div id="logRetentionStatus" style="margin-top: 0.75em; color: #666; font-size: 0.9em;">currently: keep operational logs 30 days</div>

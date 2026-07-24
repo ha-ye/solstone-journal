@@ -25,6 +25,22 @@ def _section_block(text: str, section_id: str) -> str:
     return match.group(0)
 
 
+def _css_rule(text: str, selector: str) -> str:
+    match = re.search(
+        rf"{re.escape(selector)}\s*(?=[,{{])[^{{]*\{{(.*?)\}}",
+        text,
+        re.DOTALL,
+    )
+    assert match, f"{selector} CSS rule not found"
+    return match.group(1)
+
+
+def _tag_by_id(text: str, tag: str, element_id: str) -> str:
+    match = re.search(rf"<{tag}\b[^>]*\bid=\"{element_id}\"[^>]*>", text)
+    assert match, f"{tag}#{element_id} not found"
+    return match.group(0)
+
+
 class _SettingsFormButtonParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -94,6 +110,113 @@ def test_settings_form_buttons_are_non_submit_buttons():
     parser.feed(text)
 
     assert parser.non_button_buttons == []
+
+
+def test_settings_nav_reserves_app_bar_space():
+    text = _workspace_text()
+
+    nav_body = _css_rule(text, ".settings-nav")
+    assert " ".join(nav_body.split()) == (
+        "width: 180px; flex-shrink: 0; position: sticky; "
+        "top: calc(var(--facet-bar-height, 60px) + 1em); "
+        "align-self: flex-start; "
+        "max-height: calc(100vh - var(--facet-bar-height, 60px) - "
+        "var(--app-bar-height, 60px) - 3em); overflow-y: auto; "
+        "border-right: 1px solid var(--facet-border, #e5e0db); "
+        "padding-right: 0.75rem;"
+    )
+    assert "- 2em" not in nav_body
+
+    content_body = _css_rule(text, ".settings-content")
+    assert "padding-bottom: calc(var(--app-bar-height, 60px) + 2em);" in content_body
+
+
+def test_settings_field_base_input_selector_excludes_bare_checks_and_radios():
+    text = _workspace_text()
+    base_selector = (
+        '.settings-field input:where(:not([type="checkbox"]):not([type="radio"]))'
+    )
+
+    base_body = _css_rule(text, base_selector)
+    assert "width: 100%;" in base_body
+    assert "font-size: 0.95em;" in base_body
+    assert ":where(" in base_selector
+
+    form_fields = text[
+        text.index("/* Form fields */") : text.index(".settings-field input:focus")
+    ]
+    assert base_selector in form_fields
+    assert ".settings-field input,\n.settings-field textarea" not in form_fields
+
+    media_block = text[text.index("@media (max-width: 480px)") : text.index("</style>")]
+    media_body = _css_rule(
+        media_block,
+        ".settings-field input,\n  .settings-field select,\n  .settings-field textarea",
+    )
+    assert "font-size: 16px;" in media_body
+
+    focus_selector = (
+        ".settings-field input:focus,\n"
+        ".settings-field textarea:focus,\n"
+        ".settings-field select:focus"
+    )
+    focus_body = _css_rule(text, ".settings-field input:focus")
+    assert focus_selector in text
+    assert "border-color: var(--facet-color, #E8923A);" in focus_body
+
+    hover_selector = (
+        ".settings-field input:hover,\n"
+        ".settings-field textarea:hover,\n"
+        ".settings-field select:hover"
+    )
+    hover_body = _css_rule(text, ".settings-field input:hover")
+    assert hover_selector in text
+    assert "border-color: #bbb;" in hover_body
+
+
+def test_settings_bare_controls_and_toggle_switch_widths_stay_scoped():
+    text = _workspace_text()
+    base_selector = (
+        '.settings-field input:where(:not([type="checkbox"]):not([type="radio"]))'
+    )
+
+    toggle_body = _css_rule(text, ".toggle-switch input")
+    assert text.index(".toggle-switch input") > text.index(base_selector)
+    assert "width: 0;" in toggle_body
+    assert "height: 0;" in toggle_body
+
+    for element_id, input_type in (
+        ("field-chat-thinking-on-tap", "radio"),
+        ("field-chat-thinking-always", "radio"),
+        ("field-chat-thinking-never", "radio"),
+        ("retentionDontRetain", "checkbox"),
+    ):
+        tag = _tag_by_id(text, "input", element_id)
+        assert f'type="{input_type}"' in tag
+        assert "style=" not in tag
+        assert "class=" not in tag
+        tag_index = text.index(tag)
+        assert text.rfind('<div class="settings-field"', 0, tag_index) != -1
+
+
+def test_retention_custom_inputs_have_room_without_touching_cleanup_modals():
+    text = _workspace_text()
+
+    for element_id, width in (
+        ("retentionDaysInput", "7em"),
+        ("logRetentionDaysInput", "7em"),
+        ("cleanupDaysInput", "5em"),
+        ("cleanupLogsDaysInput", "5em"),
+    ):
+        tag = _tag_by_id(text, "input", element_id)
+        assert f"width: {width};" in tag
+
+    custom_tags = re.findall(r'<input\b[^>]*\bplaceholder="custom"[^>]*>', text)
+    assert len(custom_tags) == 2
+    assert {re.search(r'\bid="([^"]+)"', tag).group(1) for tag in custom_tags} == {
+        "retentionDaysInput",
+        "logRetentionDaysInput",
+    }
 
 
 def test_redact_add_enter_handler_is_explicit():
