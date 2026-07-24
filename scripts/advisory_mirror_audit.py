@@ -108,7 +108,6 @@ class ReceiptAuthority:
     synced_commit: str
     utc: str
     max_age: int
-    canonical_bytes: bytes
     trusted_comment: str
 
 
@@ -453,7 +452,6 @@ def _read_receipt_authority(receipt: Path) -> ReceiptAuthority:
         synced_commit=synced_commit,
         utc=utc,
         max_age=max_age,
-        canonical_bytes=canonical,
         trusted_comment=_trusted_comment(synced_commit=synced_commit, utc=utc),
     )
 
@@ -664,7 +662,6 @@ def _run_git_checked(
     *,
     bundle: Path,
     error: str,
-    secrets: set[str],
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     _assert_local_git_argv(argv, bundle=bundle)
@@ -867,14 +864,12 @@ def _materialize_and_check(
         ["git", "bundle", "verify", str(bundle)],
         bundle=bundle,
         error="advisory mirror bundle verification failed",
-        secrets=secrets,
     )
     heads = _run_git_checked(
         runner,
         ["git", "bundle", "list-heads", str(bundle)],
         bundle=bundle,
         error="advisory mirror bundle list-heads failed",
-        secrets=secrets,
     )
     _parse_bundle_heads(heads.stdout.strip(), synced_commit=receipt.synced_commit)
 
@@ -883,14 +878,12 @@ def _materialize_and_check(
         ["git", "clone", str(bundle), str(throwaway)],
         bundle=bundle,
         error="advisory mirror bundle clone failed",
-        secrets=secrets,
     )
     head = _run_git_checked(
         runner,
         ["git", "-C", str(throwaway), "rev-parse", "HEAD"],
         bundle=bundle,
         error="advisory mirror clone HEAD read failed",
-        secrets=secrets,
     )
     if head.stdout.strip() != receipt.synced_commit:
         _raise_one(
