@@ -146,6 +146,7 @@ def test_complete_partition_accepts_synthetic_final_shape(tmp_path: Path) -> Non
     errors = inventory.check_complete_partition(
         entries,
         oracle,
+        expected_oracle_total=5,
         expected_http_total=1,
         expected_journal_total=1,
         expected_stub_counts={"moved-stub": 2, "local": 1},
@@ -179,6 +180,7 @@ def test_complete_partition_rejects_non_journal_uncovered_paths(tmp_path: Path) 
     errors = inventory.check_complete_partition(
         entries,
         oracle,
+        expected_oracle_total=3,
         expected_http_total=1,
         expected_journal_total=1,
         expected_stub_counts={},

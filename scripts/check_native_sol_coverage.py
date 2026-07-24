@@ -13,9 +13,13 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.build_native_sol_inventory import REPO_ROOT, discover
+    from scripts.build_native_sol_inventory import FINAL_HTTP_TOTAL, REPO_ROOT, discover
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
-    from build_native_sol_inventory import REPO_ROOT, discover  # type: ignore[no-redef]
+    from build_native_sol_inventory import (  # type: ignore[no-redef]
+        FINAL_HTTP_TOTAL,
+        REPO_ROOT,
+        discover,
+    )
 
 SCHEMA = "native-sol-applicability-v1"
 APPLICABILITY = REPO_ROOT / "core/fixtures/native-sol/applicability.json"
@@ -46,10 +50,18 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
 
     errors: list[str] = []
     errors.extend(applicability_errors)
+    if len(required) != FINAL_HTTP_TOTAL:
+        errors.append(
+            f"current HTTP authority count {len(required)} != {FINAL_HTTP_TOTAL}"
+        )
     if not applicability_errors:
         entries = applicability["entries"]
         keys = set(entries)
         http_count = applicability.get("http_count")
+        if http_count != FINAL_HTTP_TOTAL:
+            errors.append(
+                f"applicability http_count {http_count!r} != {FINAL_HTTP_TOTAL}"
+            )
         if http_count != len(entries):
             errors.append(
                 f"applicability http_count {http_count!r} != entries {len(entries)}"

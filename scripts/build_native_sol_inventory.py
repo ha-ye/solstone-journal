@@ -39,6 +39,7 @@ ORACLE_PATH = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
 ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "local"}
 COMMAND_KINDS = {"command", "callback", "top-level"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+FINAL_ORACLE_TOTAL = 178
 FINAL_HTTP_TOTAL = 152
 FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
 FINAL_STUB_COUNTS = {"moved-stub": 2, "local": 1}
@@ -369,21 +370,22 @@ def check_complete_partition(
     entries: list[AuthorityEntry],
     oracle_path: Path,
     *,
+    expected_oracle_total: int = FINAL_ORACLE_TOTAL,
     expected_http_total: int = FINAL_HTTP_TOTAL,
     expected_journal_total: int = FINAL_JOURNAL_PYTHON_COMPAT_TOTAL,
     expected_stub_counts: dict[str, int] | None = None,
     expected_http_group_counts: dict[str, int] | None = None,
 ) -> list[str]:
-    """Validate the final native/journal/stub partition.
-
-    TODO(native-sol-final-dispatch): wire this into `check-native-sol-inventory`
-    once all 152 HTTP authorities and the `link observer-pause` local stub exist.
-    """
+    """Validate the final native/journal/stub partition."""
 
     expected_stub_counts = expected_stub_counts or FINAL_STUB_COUNTS
     expected_http_group_counts = expected_http_group_counts or FINAL_HTTP_GROUP_COUNTS
     oracle_errors, oracle_paths = collect_oracle_paths(oracle_path)
     errors = list(oracle_errors)
+    if len(oracle_paths) != expected_oracle_total:
+        errors.append(
+            f"oracle path count {len(oracle_paths)} != {expected_oracle_total}"
+        )
     entries = [entry for entry in entries if entry.surface == "sol-call"]
     authority_paths: dict[tuple[str, ...], AuthorityEntry] = {}
     operation_ids: dict[str, AuthorityEntry] = {}
@@ -429,16 +431,28 @@ def check_complete_partition(
             f"journal paths must remain Python: {format_paths(journal_authorities)}"
         )
 
-    http_entries = [entry for entry in entries if entry.entry_type == "http"]
-    if len(http_entries) != expected_http_total:
-        errors.append(
-            f"HTTP authority count {len(http_entries)} != {expected_http_total}"
+    expected_entry_type_counts = {"http": expected_http_total, **expected_stub_counts}
+    actual_entry_type_counts: dict[str, int] = {}
+    for entry in entries:
+        actual_entry_type_counts[entry.entry_type] = (
+            actual_entry_type_counts.get(entry.entry_type, 0) + 1
         )
-    for entry_type, expected_count in sorted(expected_stub_counts.items()):
-        actual = sum(1 for entry in entries if entry.entry_type == entry_type)
+    for entry_type, expected_count in sorted(expected_entry_type_counts.items()):
+        actual = actual_entry_type_counts.get(entry_type, 0)
         if actual != expected_count:
             errors.append(f"{entry_type} authority count {actual} != {expected_count}")
+    unexpected_entry_types = sorted(
+        set(actual_entry_type_counts) - set(expected_entry_type_counts)
+    )
+    if unexpected_entry_types:
+        errors.append(f"unexpected sol-call entry types: {unexpected_entry_types!r}")
 
+    http_entries = [entry for entry in entries if entry.entry_type == "http"]
+    expected_group_total = sum(expected_http_group_counts.values())
+    if expected_group_total != expected_http_total:
+        errors.append(
+            f"expected HTTP group total {expected_group_total} != {expected_http_total}"
+        )
     group_counts: dict[str, int] = {}
     for entry in http_entries:
         group = first_group(entry.path)
@@ -498,9 +512,9 @@ def main() -> int:
     root = args.root.resolve()
     output = args.output.resolve()
     entries = discover(root)
-    oracle_errors = check_oracle_subset(entries, ORACLE_PATH)
-    if oracle_errors:
-        for error in oracle_errors:
+    partition_errors = check_complete_partition(entries, ORACLE_PATH)
+    if partition_errors:
+        for error in partition_errors:
             print(error)
         return 1
     rendered = rustfmt(render(entries, output), output.parent)
