@@ -5,6 +5,8 @@ use crate::aggregate::{Handler, InventoryEntry};
 
 #[path = "../../../../../solstone/apps/activities/native/command.rs"]
 mod solstone_apps_activities_native_command_rs;
+#[path = "../../../../../solstone/apps/body/native/command.rs"]
+mod solstone_apps_body_native_command_rs;
 #[path = "../../../../../solstone/apps/support/native/command.rs"]
 mod solstone_apps_support_native_command_rs;
 #[path = "../../../../../solstone/think/native/chat/command.rs"]
@@ -92,6 +94,45 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/record/{span_id}/unmute"),
         contract_operation_id: Some("activities.unmute"),
         handler: "unmute",
+    },
+    InventoryEntry {
+        surface: "sol-call",
+        path: &["body", "status"],
+        kind: "command",
+        help: "Show imported health data status.",
+        params_json: "[{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"json_output\",\"nargs\":1,\"options\":[\"--json\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"}]",
+        entry_type: "http",
+        operation_id: "body.status",
+        method: Some("GET"),
+        route: Some("/app/body/api/status"),
+        contract_operation_id: Some("body.status"),
+        handler: "status",
+    },
+    InventoryEntry {
+        surface: "sol-call",
+        path: &["body", "day"],
+        kind: "command",
+        help: "Show one day of imported health data.",
+        params_json: "[{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"argument\",\"multiple\":false,\"name\":\"day_value\",\"nargs\":1,\"options\":[\"day_value\"],\"required\":true,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"json_output\",\"nargs\":1,\"options\":[\"--json\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"}]",
+        entry_type: "http",
+        operation_id: "body.day",
+        method: Some("GET"),
+        route: Some("/app/body/api/day/{day}"),
+        contract_operation_id: Some("body.day"),
+        handler: "day",
+    },
+    InventoryEntry {
+        surface: "sol-call",
+        path: &["body", "window"],
+        kind: "command",
+        help: "Show imported health context for a time window.",
+        params_json: "[{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"from_value\",\"nargs\":1,\"options\":[\"--from\"],\"required\":true,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"to_value\",\"nargs\":1,\"options\":[\"--to\"],\"required\":true,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"json_output\",\"nargs\":1,\"options\":[\"--json\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"}]",
+        entry_type: "http",
+        operation_id: "body.window",
+        method: Some("GET"),
+        route: Some("/app/body/api/window"),
+        contract_operation_id: Some("body.window"),
+        handler: "window",
     },
     InventoryEntry {
         surface: "sol-call",
@@ -336,6 +377,9 @@ pub const HANDLERS: &[Handler] = &[
     solstone_apps_activities_native_command_rs::update,
     solstone_apps_activities_native_command_rs::mute,
     solstone_apps_activities_native_command_rs::unmute,
+    solstone_apps_body_native_command_rs::status,
+    solstone_apps_body_native_command_rs::day,
+    solstone_apps_body_native_command_rs::window,
     solstone_apps_support_native_command_rs::register,
     solstone_apps_support_native_command_rs::search,
     solstone_apps_support_native_command_rs::article,

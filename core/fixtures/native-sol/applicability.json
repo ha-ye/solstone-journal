@@ -1,1327 +1,295 @@
 {
   "schema": "native-sol-applicability-v1",
   "note": "Applicability case IDs are requirements-first: each dispatch declares required adversarial behavior here before adding vectors. The coverage gate structurally enforces later multi-request boundaries, upload missing/unreadable/later-file/rejection cases, env explicit/absent or valid-absent cases, and dry-run preview/commit coverage.",
-  "http_count": 21,
+  "http_count": 24,
   "entries": {
     "activities.list": {
-      "path": [
-        "activities",
-        "list"
-      ],
+      "path": ["activities", "list"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "valid_absent",
-        "case_ids": {
-          "valid_absent": [
-            "activities-list-default-today-empty"
-          ],
-          "explicit": [
-            "activities-list-env-facet-alias-human"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "1..n",
-        "case_ids": {
-          "multi_day": [
-            "activities-list-range-filter-json-all"
-          ],
-          "later_boundary_failure": [
-            "activities-list-range-second-day-failure"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "valid_absent", "case_ids": {"valid_absent": ["activities-list-default-today-empty"], "explicit": ["activities-list-env-facet-alias-human"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "1..n", "case_ids": {"multi_day": ["activities-list-range-filter-json-all"], "later_boundary_failure": ["activities-list-range-second-day-failure"]}}
     },
     "activities.get": {
-      "path": [
-        "activities",
-        "get"
-      ],
+      "path": ["activities", "get"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "required",
-        "case_ids": {
-          "explicit": [
-            "activities-get-json-aliases"
-          ],
-          "env": [
-            "activities-get-env-human"
-          ],
-          "absent": [
-            "activities-get-missing-facet",
-            "activities-get-missing-day"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "required", "case_ids": {"explicit": ["activities-get-json-aliases"], "env": ["activities-get-env-human"], "absent": ["activities-get-missing-facet", "activities-get-missing-day"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "activities.create": {
-      "path": [
-        "activities",
-        "create"
-      ],
+      "path": ["activities", "create"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "required",
-        "case_ids": {
-          "explicit": [
-            "activities-create-argv-json-all-options"
-          ],
-          "env": [
-            "activities-create-stdin-env-human"
-          ],
-          "absent": [
-            "activities-create-missing-facet",
-            "activities-create-missing-day"
-          ],
-          "invalid": [
-            "activities-create-invalid-source"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "required", "case_ids": {"explicit": ["activities-create-argv-json-all-options"], "env": ["activities-create-stdin-env-human"], "absent": ["activities-create-missing-facet", "activities-create-missing-day"], "invalid": ["activities-create-invalid-source"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "activities.update": {
-      "path": [
-        "activities",
-        "update"
-      ],
+      "path": ["activities", "update"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "required",
-        "case_ids": {
-          "explicit": [
-            "activities-update-argv-json-all-options"
-          ],
-          "env": [
-            "activities-update-stdin-default-note-env"
-          ],
-          "absent": [
-            "activities-update-missing-facet",
-            "activities-update-missing-day"
-          ],
-          "invalid": [
-            "activities-update-disallowed-fields"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "required", "case_ids": {"explicit": ["activities-update-argv-json-all-options"], "env": ["activities-update-stdin-default-note-env"], "absent": ["activities-update-missing-facet", "activities-update-missing-day"], "invalid": ["activities-update-disallowed-fields"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "activities.mute": {
-      "path": [
-        "activities",
-        "mute"
-      ],
+      "path": ["activities", "mute"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "required",
-        "case_ids": {
-          "explicit": [
-            "activities-mute-json-reason"
-          ],
-          "absent": [
-            "activities-mute-missing-facet",
-            "activities-mute-missing-day"
-          ],
-          "error": [
-            "activities-mute-not-found"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "required", "case_ids": {"explicit": ["activities-mute-json-reason"], "absent": ["activities-mute-missing-facet", "activities-mute-missing-day"], "error": ["activities-mute-not-found"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "activities.unmute": {
-      "path": [
-        "activities",
-        "unmute"
-      ],
+      "path": ["activities", "unmute"],
       "group": "activities",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": true,
-        "vars": [
-          "SOL_DAY",
-          "SOL_FACET"
-        ],
-        "mode": "required",
-        "case_ids": {
-          "explicit": [
-            "activities-unmute-json-reason-aliases"
-          ],
-          "absent": [
-            "activities-unmute-missing-facet",
-            "activities-unmute-missing-day"
-          ],
-          "error": [
-            "activities-unmute-not-found"
-          ]
-        }
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_FACET"], "mode": "required", "case_ids": {"explicit": ["activities-unmute-json-reason-aliases"], "absent": ["activities-unmute-missing-facet", "activities-unmute-missing-day"], "error": ["activities-unmute-not-found"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "support.register": {
-      "path": [
-        "support",
-        "register"
-      ],
+      "path": ["support", "register"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_register": [
-            "support-register-success"
-          ],
-          "later_boundary_failure": [
-            "support-register-post-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_register": ["support-register-success"], "later_boundary_failure": ["support-register-post-error"]}}
     },
     "support.search": {
-      "path": [
-        "support",
-        "search"
-      ],
+      "path": ["support", "search"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_search": [
-            "support-search-success"
-          ],
-          "later_boundary_failure": [
-            "support-search-articles-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_search": ["support-search-success"], "later_boundary_failure": ["support-search-articles-error"]}}
     },
     "support.article": {
-      "path": [
-        "support",
-        "article"
-      ],
+      "path": ["support", "article"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_article": [
-            "support-article-human"
-          ],
-          "later_boundary_failure": [
-            "support-article-not-found"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_article": ["support-article-human"], "later_boundary_failure": ["support-article-not-found"]}}
     },
     "support.create": {
-      "path": [
-        "support",
-        "create"
-      ],
+      "path": ["support", "create"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": true,
-        "prompts": [
-          "Still want to file a ticket?",
-          "Submit this ticket?"
-        ],
-        "case_ids": {
-          "decline": [
-            "support-create-kb-decline",
-            "support-create-submit-decline"
-          ],
-          "accept": [
-            "support-create-submit-invalid-then-yes"
-          ]
-        }
-      },
-      "consent": {
-        "enabled": true,
-        "flags": [
-          "--yes",
-          "--anonymous"
-        ],
-        "default": "named_with_prompt",
-        "case_ids": {
-          "yes": [
-            "support-create-submit-yes-skip-kb"
-          ],
-          "anonymous": [
-            "support-create-dry-run-capture"
-          ]
-        }
-      },
-      "dry_run": {
-        "enabled": true,
-        "flags": [
-          "--submit"
-        ],
-        "default": "preview",
-        "case_ids": {
-          "preview": [
-            "support-create-dry-run-capture"
-          ],
-          "commit": [
-            "support-create-submit-yes-skip-kb"
-          ]
-        }
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2..3",
-        "case_ids": {
-          "draft": [
-            "support-create-dry-run-capture"
-          ],
-          "submit": [
-            "support-create-submit-yes-skip-kb"
-          ],
-          "pre_draft_boundary_failure": [
-            "support-create-diagnostics-portal-error"
-          ],
-          "submit_boundary_failure": [
-            "support-create-submit-portal-error",
-            "support-create-submit-unreachable-final"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": true, "prompts": ["Still want to file a ticket?", "Submit this ticket?"], "case_ids": {"decline": ["support-create-kb-decline", "support-create-submit-decline"], "accept": ["support-create-submit-invalid-then-yes"]}},
+      "consent": {"enabled": true, "flags": ["--yes", "--anonymous"], "default": "named_with_prompt", "case_ids": {"yes": ["support-create-submit-yes-skip-kb"], "anonymous": ["support-create-dry-run-capture"]}},
+      "dry_run": {"enabled": true, "flags": ["--submit"], "default": "preview", "case_ids": {"preview": ["support-create-dry-run-capture"], "commit": ["support-create-submit-yes-skip-kb"]}},
+      "multi_request": {"enabled": true, "request_count": "2..3", "case_ids": {"draft": ["support-create-dry-run-capture"], "submit": ["support-create-submit-yes-skip-kb"], "pre_draft_boundary_failure": ["support-create-diagnostics-portal-error"], "submit_boundary_failure": ["support-create-submit-portal-error", "support-create-submit-unreachable-final"]}}
     },
     "support.list": {
-      "path": [
-        "support",
-        "list"
-      ],
+      "path": ["support", "list"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_list": [
-            "support-list-json-status"
-          ],
-          "later_boundary_failure": [
-            "support-list-portal-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_list": ["support-list-json-status"], "later_boundary_failure": ["support-list-portal-error"]}}
     },
     "support.show": {
-      "path": [
-        "support",
-        "show"
-      ],
+      "path": ["support", "show"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_show": [
-            "support-show-human"
-          ],
-          "later_boundary_failure": [
-            "support-show-portal-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_show": ["support-show-human"], "later_boundary_failure": ["support-show-portal-error"]}}
     },
     "support.reply": {
-      "path": [
-        "support",
-        "reply"
-      ],
+      "path": ["support", "reply"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": true,
-        "prompts": [
-          "Send this reply?"
-        ],
-        "case_ids": {
-          "decline": [
-            "support-reply-decline"
-          ],
-          "accept": [
-            "support-reply-submit-yes"
-          ]
-        }
-      },
-      "consent": {
-        "enabled": true,
-        "flags": [
-          "--yes"
-        ],
-        "default": "prompt",
-        "case_ids": {
-          "yes": [
-            "support-reply-submit-yes"
-          ]
-        }
-      },
-      "dry_run": {
-        "enabled": true,
-        "flags": [
-          "--submit",
-          "--no-submit"
-        ],
-        "default": "commit",
-        "case_ids": {
-          "preview": [
-            "support-reply-dry-run-capture"
-          ],
-          "commit": [
-            "support-reply-submit-yes"
-          ]
-        }
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "draft": [
-            "support-reply-dry-run-capture"
-          ],
-          "submit": [
-            "support-reply-submit-yes"
-          ],
-          "submit_boundary_failure": [
-            "support-reply-submit-consent-portal-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": true, "prompts": ["Send this reply?"], "case_ids": {"decline": ["support-reply-decline"], "accept": ["support-reply-submit-yes"]}},
+      "consent": {"enabled": true, "flags": ["--yes"], "default": "prompt", "case_ids": {"yes": ["support-reply-submit-yes"]}},
+      "dry_run": {"enabled": true, "flags": ["--submit", "--no-submit"], "default": "commit", "case_ids": {"preview": ["support-reply-dry-run-capture"], "commit": ["support-reply-submit-yes"]}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"draft": ["support-reply-dry-run-capture"], "submit": ["support-reply-submit-yes"], "submit_boundary_failure": ["support-reply-submit-consent-portal-error"]}}
     },
     "support.attach": {
-      "path": [
-        "support",
-        "attach"
-      ],
+      "path": ["support", "attach"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": true,
-        "file_count": "multi",
-        "per_file_failure": "continue",
-        "case_ids": {
-          "single": [
-            "support-attach-dry-run-single"
-          ],
-          "multi_continue": [
-            "support-attach-submit-yes-mixed"
-          ],
-          "missing_file": [
-            "support-attach-missing-file"
-          ],
-          "unreadable_file": [
-            "support-attach-unreadable-file"
-          ],
-          "later_file_failure": [
-            "support-attach-submit-yes-mixed",
-            "support-attach-submit-yes-unreachable-second"
-          ],
-          "rejection_before_mutation": [
-            "support-attach-dry-run-multi-error"
-          ]
-        }
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": true,
-        "prompts": [
-          "Upload these files?"
-        ],
-        "case_ids": {
-          "decline": [
-            "support-attach-decline"
-          ],
-          "accept": [
-            "support-attach-submit-yes-mixed"
-          ]
-        }
-      },
-      "consent": {
-        "enabled": true,
-        "flags": [
-          "--yes"
-        ],
-        "default": "prompt",
-        "case_ids": {
-          "yes": [
-            "support-attach-submit-yes-mixed"
-          ]
-        }
-      },
-      "dry_run": {
-        "enabled": true,
-        "flags": [
-          "--submit",
-          "--no-submit"
-        ],
-        "default": "commit",
-        "case_ids": {
-          "preview": [
-            "support-attach-dry-run-single"
-          ],
-          "commit": [
-            "support-attach-submit-yes-mixed"
-          ]
-        }
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2..n",
-        "case_ids": {
-          "draft": [
-            "support-attach-dry-run-single"
-          ],
-          "multi_upload": [
-            "support-attach-submit-yes-mixed"
-          ],
-          "later_boundary_failure": [
-            "support-attach-submit-yes-mixed",
-            "support-attach-submit-yes-unreachable-second"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": true, "file_count": "multi", "per_file_failure": "continue", "case_ids": {"single": ["support-attach-dry-run-single"], "multi_continue": ["support-attach-submit-yes-mixed"], "missing_file": ["support-attach-missing-file"], "unreadable_file": ["support-attach-unreadable-file"], "later_file_failure": ["support-attach-submit-yes-mixed", "support-attach-submit-yes-unreachable-second"], "rejection_before_mutation": ["support-attach-dry-run-multi-error"]}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": true, "prompts": ["Upload these files?"], "case_ids": {"decline": ["support-attach-decline"], "accept": ["support-attach-submit-yes-mixed"]}},
+      "consent": {"enabled": true, "flags": ["--yes"], "default": "prompt", "case_ids": {"yes": ["support-attach-submit-yes-mixed"]}},
+      "dry_run": {"enabled": true, "flags": ["--submit", "--no-submit"], "default": "commit", "case_ids": {"preview": ["support-attach-dry-run-single"], "commit": ["support-attach-submit-yes-mixed"]}},
+      "multi_request": {"enabled": true, "request_count": "2..n", "case_ids": {"draft": ["support-attach-dry-run-single"], "multi_upload": ["support-attach-submit-yes-mixed"], "later_boundary_failure": ["support-attach-submit-yes-mixed", "support-attach-submit-yes-unreachable-second"]}}
     },
     "support.feedback": {
-      "path": [
-        "support",
-        "feedback"
-      ],
+      "path": ["support", "feedback"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": true,
-        "methods": [
-          "POST"
-        ]
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": true,
-        "prompts": [
-          "Submit this feedback (anonymous)?"
-        ],
-        "case_ids": {
-          "decline": [
-            "support-feedback-decline-anonymous"
-          ],
-          "accept": [
-            "support-feedback-submit-yes"
-          ]
-        }
-      },
-      "consent": {
-        "enabled": true,
-        "flags": [
-          "--yes",
-          "--anonymous"
-        ],
-        "default": "named_with_prompt",
-        "case_ids": {
-          "yes": [
-            "support-feedback-submit-yes"
-          ],
-          "anonymous": [
-            "support-feedback-decline-anonymous"
-          ]
-        }
-      },
-      "dry_run": {
-        "enabled": true,
-        "flags": [
-          "--submit"
-        ],
-        "default": "preview",
-        "case_ids": {
-          "preview": [
-            "support-feedback-dry-run-capture-failure"
-          ],
-          "commit": [
-            "support-feedback-submit-yes"
-          ]
-        }
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2..3",
-        "case_ids": {
-          "draft": [
-            "support-feedback-dry-run-capture-failure"
-          ],
-          "submit": [
-            "support-feedback-submit-yes"
-          ],
-          "submit_boundary_failure": [
-            "support-feedback-submit-consent-portal-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": true, "prompts": ["Submit this feedback (anonymous)?"], "case_ids": {"decline": ["support-feedback-decline-anonymous"], "accept": ["support-feedback-submit-yes"]}},
+      "consent": {"enabled": true, "flags": ["--yes", "--anonymous"], "default": "named_with_prompt", "case_ids": {"yes": ["support-feedback-submit-yes"], "anonymous": ["support-feedback-decline-anonymous"]}},
+      "dry_run": {"enabled": true, "flags": ["--submit"], "default": "preview", "case_ids": {"preview": ["support-feedback-dry-run-capture-failure"], "commit": ["support-feedback-submit-yes"]}},
+      "multi_request": {"enabled": true, "request_count": "2..3", "case_ids": {"draft": ["support-feedback-dry-run-capture-failure"], "submit": ["support-feedback-submit-yes"], "submit_boundary_failure": ["support-feedback-submit-consent-portal-error"]}}
     },
     "support.announcements": {
-      "path": [
-        "support",
-        "announcements"
-      ],
+      "path": ["support", "announcements"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": true,
-        "request_count": "2",
-        "case_ids": {
-          "config_then_announcements": [
-            "support-announcements-human"
-          ],
-          "later_boundary_failure": [
-            "support-announcements-portal-error"
-          ]
-        }
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "2", "case_ids": {"config_then_announcements": ["support-announcements-human"], "later_boundary_failure": ["support-announcements-portal-error"]}}
     },
     "support.diagnose": {
-      "path": [
-        "support",
-        "diagnose"
-      ],
+      "path": ["support", "diagnose"],
       "group": "support",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "health.summary": {
-      "path": [
-        "health",
-        "summary"
-      ],
+      "path": ["health", "summary"],
       "group": "health",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "health.full": {
-      "path": [
-        "health",
-        "full"
-      ],
+      "path": ["health", "full"],
       "group": "health",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "health.for_range": {
-      "path": [
-        "health",
-        "for-range"
-      ],
+      "path": ["health", "for-range"],
       "group": "health",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     },
     "health.pipeline": {
-      "path": [
-        "health",
-        "pipeline"
-      ],
+      "path": ["health", "pipeline"],
       "group": "health",
-      "pagination": {
-        "enabled": false,
-        "case_ids": {}
-      },
-      "mutation": {
-        "enabled": false,
-        "methods": []
-      },
-      "upload": {
-        "enabled": false,
-        "file_count": "none",
-        "case_ids": {}
-      },
-      "env_default": {
-        "enabled": false,
-        "vars": [],
-        "case_ids": {}
-      },
-      "confirmation": {
-        "enabled": false,
-        "prompts": [],
-        "case_ids": {}
-      },
-      "consent": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "dry_run": {
-        "enabled": false,
-        "flags": [],
-        "default": "none",
-        "case_ids": {}
-      },
-      "multi_request": {
-        "enabled": false,
-        "request_count": "single",
-        "case_ids": {}
-      }
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "body.status": {
+      "path": ["body", "status"],
+      "group": "body",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "body.day": {
+      "path": ["body", "day"],
+      "group": "body",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "body.window": {
+      "path": ["body", "window"],
+      "group": "body",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
     }
   }
 }

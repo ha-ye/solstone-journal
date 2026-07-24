@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["body", "status"]
+kind = "command"
+help = "Show imported health data status."
+operation_id = "body.status"
+entry_type = "http"
+method = "GET"
+route = "/app/body/api/status"
+contract_operation_id = "body.status"
+handler = "status"
+params = [
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["body", "day"]
+kind = "command"
+help = "Show one day of imported health data."
+operation_id = "body.day"
+entry_type = "http"
+method = "GET"
+route = "/app/body/api/day/{day}"
+contract_operation_id = "body.day"
+handler = "day"
+params = [
+  { name = "day_value", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day_value"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["body", "window"]
+kind = "command"
+help = "Show imported health context for a time window."
+operation_id = "body.window"
+entry_type = "http"
+method = "GET"
+route = "/app/body/api/window"
+contract_operation_id = "body.window"
+handler = "window"
+params = [
+  { name = "from_value", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--from"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "to_value", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--to"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]

@@ -2257,6 +2257,190 @@
         ]
       }
     },
+    "/app/body/api/day/{day}": {
+      "get": {
+        "description": "Return imported body data for one canonical day.",
+        "operationId": "body.day",
+        "parameters": [
+          {
+            "description": "Canonical day in YYYYMMDD form.",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "entry_total": {
+                      "type": "integer"
+                    },
+                    "glucose": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "entry_total",
+                    "glucose"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Imported body data for one day."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested day was not valid.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          }
+        },
+        "summary": "Read one body-data day",
+        "tags": [
+          "body"
+        ]
+      }
+    },
+    "/app/body/api/status": {
+      "get": {
+        "description": "Return import and normalized-record coverage for body data.",
+        "operationId": "body.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "coverage_window": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "imports": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "normalized": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "imports",
+                    "normalized",
+                    "coverage_window"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Imported body data status."
+          }
+        },
+        "summary": "Read imported body data status",
+        "tags": [
+          "body"
+        ]
+      }
+    },
+    "/app/body/api/window": {
+      "get": {
+        "description": "Return imported body context for a bounded time window.",
+        "operationId": "body.window",
+        "parameters": [
+          {
+            "description": "ISO window start.",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ISO window end.",
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "brief_label": {
+                      "type": "string"
+                    },
+                    "entry_total": {
+                      "type": "integer"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to",
+                    "entry_total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Imported body data for a time window."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested window was not valid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "Read body-data window context",
+        "tags": [
+          "body"
+        ]
+      }
+    },
     "/app/home/api/pulse": {
       "get": {
         "description": "Return the home Pulse: a snapshot recomputed per request from journal state. Only the new-owner onboarding signals are named in this contract \u2014 journal_age_days, home_state, and welcome_framing; the rest of the payload is intentionally open and may change without a contract bump.",
