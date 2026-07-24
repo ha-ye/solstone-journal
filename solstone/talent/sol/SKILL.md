@@ -98,8 +98,8 @@ and read/write/other polarity. Regenerate it with `sol skills build` or
 
 ## Paths
 
-`sol root` prints the solstone repo root, useful for scripting:
-`cd $(sol root)`.
+`sol root` prints the source checkout root for source runs and the installed
+`site-packages` root for packaged runs, useful for locating the active install.
 
 ## Environment
 

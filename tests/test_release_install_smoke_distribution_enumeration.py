@@ -348,8 +348,8 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
     wheel_dir = tmp_path / "wheels"
     version = "1.2.3"
     core_scripts = {
-        "sol": f"#!/bin/sh\necho solstone-core-sol {version}\n".encode(),
-        "solstone": f"#!/bin/sh\necho solstone-core-sol {version}\n".encode(),
+        "sol": f"#!/bin/sh\necho 'sol (solstone) {version}'\n".encode(),
+        "solstone": f"#!/bin/sh\necho 'sol (solstone) {version}'\n".encode(),
         "solstone-core": f"#!/bin/sh\necho solstone-core {version}\n".encode(),
     }
     compat_scripts = {

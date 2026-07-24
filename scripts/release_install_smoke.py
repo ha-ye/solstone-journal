@@ -56,8 +56,8 @@ TOP_LEVEL_KEYS = frozenset(
 )
 PROOF_KIND = "solstone-native-install-proof"
 CORE_SMOKE_STDOUT = {
-    "sol": "solstone-core-sol",
-    "solstone": "solstone-core-sol",
+    "sol": "sol (solstone)",
+    "solstone": "sol (solstone)",
     "solstone-core": "solstone-core",
 }
 ENVROOT = "ENVROOT"

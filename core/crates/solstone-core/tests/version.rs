@@ -188,6 +188,65 @@ fn sol_and_solstone_bins_report_the_same_native_version() {
     assert_eq!(solstone.status.code(), Some(0));
     assert_eq!(sol.stdout, solstone.stdout);
     assert_eq!(sol.stderr, solstone.stderr);
+    assert_eq!(
+        String::from_utf8(sol.stdout).expect("stdout should be utf-8"),
+        format!("sol (solstone) {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(
+        String::from_utf8(solstone.stderr).expect("stderr should be utf-8"),
+        ""
+    );
+}
+
+#[test]
+fn sol_root_installed_layout_is_independent_of_cwd() {
+    let env_root = temp_path("sol-root-installed-layout");
+    let bin_dir = env_root.join("bin");
+    let site_packages = env_root
+        .join("lib")
+        .join("python3.13")
+        .join("site-packages");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    fs::create_dir_all(site_packages.join("solstone")).expect("create fake package dir");
+    fs::write(site_packages.join("solstone").join("__init__.py"), "").expect("write init");
+    let fake_sol = bin_dir.join("sol");
+    fs::copy(sol_bin(), &fake_sol).expect("copy sol binary into fake install layout");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&fake_sol)
+            .expect("fake sol metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_sol, permissions).expect("make fake sol executable");
+    }
+
+    let unrelated = env_root.join("unrelated");
+    fs::create_dir_all(&unrelated).expect("create unrelated cwd");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source_checkout = manifest
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .expect("workspace checkout root");
+
+    for cwd in [&unrelated, source_checkout] {
+        let output = Command::new(&fake_sol)
+            .arg("root")
+            .current_dir(cwd)
+            .output()
+            .expect("fake sol should execute");
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+            format!("{}\n", site_packages.display())
+        );
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+            ""
+        );
+    }
+    fs::remove_dir_all(env_root).expect("cleanup fake install layout");
 }
 
 #[cfg(unix)]

@@ -8,7 +8,7 @@ The CLI has two tiers with distinct purposes:
 
 | Tier | Pattern | Framework | Purpose |
 |------|---------|-----------|---------|
-| **Top-level** | `sol <cmd>` / `journal <cmd>` | Native `sol` + Python `journal` dispatcher | Native journal access, host services, and local-only host tools |
+| **Top-level** | `sol <cmd>` / `journal <cmd>` | Native `sol` + Python `journal` dispatcher | Native journal access, plus host services and local-only host tools under `journal` |
 | **Call** | `sol call <app> <cmd>` | Native authority inventory, plus finite journal compatibility | Tool-callable functions — what agents and humans invoke for data operations |
 
 ### The boundary
@@ -43,7 +43,7 @@ has a static `COMMANDS` dict mapping host command names to module paths:
 ```python
 COMMANDS: dict[str, str] = {
     "think": "solstone.think.thinking",
-    "import": "solstone.think.importers.cli",
+    "importer": "solstone.think.importers.cli",
     ...
 }
 ```

@@ -524,7 +524,7 @@ class TestCommandRegistry:
         assert journal_result["module"] == command.module
         assert journal_result["argv"] == [f"journal {name}"]
 
-    def test_journal_import_is_unknown(self, monkeypatch, capsys):
+    def test_journal_import_is_access_rejection(self, monkeypatch, capsys):
         monkeypatch.setattr(
             sol,
             "run_command",
@@ -536,8 +536,9 @@ class TestCommandRegistry:
             sol.journal_main()
 
         captured = capsys.readouterr()
-        assert exc_info.value.code == 1
-        assert "Unknown command: import" in captured.err
+        assert exc_info.value.code == 2
+        assert "is a journal-access command" in captured.err
+        assert "sol import" in captured.err
 
     def test_journal_help_lists_service_and_universal_surfaces(self):
         code = (

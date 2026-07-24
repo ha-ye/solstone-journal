@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -33,12 +34,19 @@ BLOCKED_FAMILIES = (
 )
 
 try:
+    from scripts.build_native_sol_journal_host_commands import (
+        extract as extract_journal_host_commands,
+    )
     from scripts.check_native_sol_compat import frozen_journal_remainder_paths
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from build_native_sol_journal_host_commands import (  # type: ignore[no-redef]
+        extract as extract_journal_host_commands,
+    )
     from check_native_sol_compat import (
         frozen_journal_remainder_paths,  # type: ignore[no-redef]
     )
 
+from solstone.think.generated.access_rejections import JOURNAL_ACCESS_ONLY_COMMANDS
 from solstone.think.sol_compat_inventory import (
     JOURNAL_CALL_PREFIX,
     SENTINEL,
@@ -47,16 +55,32 @@ from solstone.think.sol_compat_inventory import (
     marker_for_public_argv0,
 )
 
+if "import" not in JOURNAL_ACCESS_ONLY_COMMANDS:
+    raise RuntimeError(
+        "generated journal access rejection inventory is missing 'import'"
+    )
+
 NATIVE_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sol", ["sol"]),
+    ("sol -h", ["sol", "-h"]),
+    ("sol help", ["sol", "help"]),
+    ("sol -v", ["sol", "-v"]),
+    ("sol -v --help", ["sol", "-v", "--help"]),
     ("sol --help", ["sol", "--help"]),
     ("sol --version", ["sol", "--version"]),
+    ("sol -V", ["sol", "-V"]),
     ("sol --path", ["sol", "--path"]),
     ("sol path", ["sol", "path"]),
     ("sol root", ["sol", "root"]),
+    ("sol status", ["sol", "status"]),
     ("sol chat --help", ["sol", "chat", "--help"]),
     ("sol import --help", ["sol", "import", "--help"]),
     ("sol call --help", ["sol", "call", "--help"]),
+    ("sol call activities --help", ["sol", "call", "activities", "--help"]),
+    (
+        "sol call activities list --help",
+        ["sol", "call", "activities", "list", "--help"],
+    ),
 )
 TOP_LEVEL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = tuple(
     (f"sol {command} --help", ["sol", command, "--help"], module)
@@ -77,6 +101,14 @@ JOURNAL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = (
 JOURNAL_CASES: tuple[tuple[str, list[str]], ...] = (
     ("journal transcribe --help", ["journal", "transcribe", "--help"]),
 )
+JOURNAL_FAILURE_CASES: tuple[tuple[str, list[str], int, str], ...] = (
+    (
+        "journal import access rejection",
+        ["journal", "import"],
+        2,
+        "is a journal-access command",
+    ),
+)
 NATIVE_FAILURE_CASES: tuple[tuple[str, list[str], int, str], ...] = (
     (
         "native moved-stub remains native",
@@ -91,6 +123,14 @@ ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (
     + tuple((label, argv) for label, argv, _module in JOURNAL_COMPAT_CASES)
     + JOURNAL_CASES
 )
+SERVICE_MOVED_ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = tuple(
+    (
+        f"service-only native command {command}",
+        ["sol", command, "--help"],
+        f"'{command}' moved to 'journal {command}' — run that instead.",
+    )
+    for command in extract_journal_host_commands()
+)
 ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
     (
         "unknown native command",
@@ -98,16 +138,11 @@ ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
         "Unsupported native sol command.",
     ),
     (
-        "service-only native command",
-        ["sol", "think", "--help"],
-        "Unsupported native sol command.",
-    ),
-    (
         "unknown native call group",
         ["sol", "call", "not-real", "--help"],
         "Unsupported native sol command.",
     ),
-)
+) + SERVICE_MOVED_ROUTING_CASES
 EXPECTED_SCRIPT_OWNERS = {
     "sol": ["solstone-core"],
     "solstone": ["solstone-core"],
@@ -223,14 +258,56 @@ def _run_native_case(
             if not env.get("PYTHONPATH")
             else str(ROOT) + os.pathsep + env["PYTHONPATH"]
         )
-    return subprocess.run(
+    return _run_with_terminal_stdin(
         [str(executable), *argv[1:]],
         cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=90,
     )
+
+
+def _run_with_terminal_stdin(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    if not hasattr(os, "openpty"):
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    master_fd, slave_fd = os.openpty()
+    try:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=slave_fd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if isinstance(error.stdout, str) else ""
+        stderr = error.stderr if isinstance(error.stderr, str) else ""
+        return subprocess.CompletedProcess(
+            argv,
+            124,
+            stdout,
+            stderr
+            + "\naccess-imports-clean: native command timed out with terminal stdin\n",
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(slave_fd)
+        with contextlib.suppress(OSError):
+            os.close(master_fd)
 
 
 def _run_compat_case(
@@ -350,6 +427,22 @@ def run_checks(
                     python=python,
                     source_root_on_path=source_root_on_path,
                 ),
+            )
+        )
+    for label, argv, expected_exit, expected_text in JOURNAL_FAILURE_CASES:
+        if not source_root_on_path:
+            continue
+        failures.extend(
+            _check_failure_result(
+                label,
+                _run_native_case(
+                    label,
+                    argv,
+                    python=python,
+                    source_root_on_path=source_root_on_path,
+                ),
+                expected_exit,
+                expected_text,
             )
         )
     for label, argv, expected_exit, expected_text in NATIVE_FAILURE_CASES:

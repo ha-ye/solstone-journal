@@ -66,6 +66,7 @@ def entry(
 ) -> inventory.AuthorityEntry:
     return inventory.AuthorityEntry(
         authority=tmp_path / "authority.toml",
+        authority_path="authority.toml",
         source=tmp_path / "command.rs",
         module="fixture",
         surface="sol-call",
