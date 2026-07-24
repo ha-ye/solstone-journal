@@ -205,7 +205,7 @@ sandbox: .installed
 	echo "Sandbox journal: $$SANDBOX_JOURNAL"; \
 	: "Boot supervisor in background"; \
 	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" SANDBOX_PATH="$(CURDIR)/$(VENV_BIN):$$PATH" SANDBOX_LOG="$$SANDBOX_JOURNAL/health/service.log" JOURNAL_BIN="$(CURDIR)/$(VENV_BIN)/journal" \
-		$(VENV_PY) -c 'import os, subprocess; log = open(os.environ["SANDBOX_LOG"], "ab", buffering=0); env = os.environ.copy(); env["PATH"] = os.environ["SANDBOX_PATH"]; proc = subprocess.Popen([os.environ["JOURNAL_BIN"], "supervisor", "0", "--no-daily"], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True); print(proc.pid)' > .sandbox.pid; \
+		$(VENV_PY) scripts/start_sandbox_supervisor.py > .sandbox.pid; \
 	echo "Supervisor PID: $$(cat .sandbox.pid)"; \
 	: "Poll for readiness"; \
 	echo "Waiting for services..."; \

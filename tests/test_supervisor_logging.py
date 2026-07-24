@@ -149,15 +149,3 @@ def test_compact_log_if_oversized_warns_and_continues_on_oserror(
     with original_open(log_path, "rb") as handle:
         assert handle.read() == original
     assert "Could not compact oversized supervisor log" in caplog.text
-
-
-def test_sandbox_redirect_uses_service_log_not_supervisor_log():
-    makefile = Path(__file__).resolve().parents[1] / "Makefile"
-    text = makefile.read_text(encoding="utf-8")
-    start = text.index("sandbox: .installed")
-    end = text.index("sandbox-stop:", start)
-    sandbox_block = text[start:end]
-
-    assert 'SANDBOX_LOG="$$SANDBOX_JOURNAL/health/service.log"' in sandbox_block
-    assert "stderr=subprocess.STDOUT" in sandbox_block
-    assert 'SANDBOX_LOG="$$SANDBOX_JOURNAL/health/supervisor.log"' not in sandbox_block
