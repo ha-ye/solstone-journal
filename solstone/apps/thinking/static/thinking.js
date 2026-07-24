@@ -2635,7 +2635,7 @@
       showView('confidential-setup');
       return;
     }
-    if (laneIsUsable(lane) && activeBrain().kind !== lane) {
+    if (lane === 'local' && laneIsUsable(lane) && activeBrain().kind !== lane) {
       activateLane(lane).catch((err) => setMessage(`${lane}LaneStatus`, err.message, 'error'));
       return;
     }

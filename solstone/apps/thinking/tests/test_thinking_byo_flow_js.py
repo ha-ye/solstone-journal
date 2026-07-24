@@ -18,6 +18,7 @@ STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
 RENDER_DOM_STUB = """
 const nodes = new Map();
 const hiddenCalls = [];
+const openViewNodes = [];
 const providerEnv = {
   anthropic: 'ANTHROPIC_API_KEY',
   google: 'GOOGLE_API_KEY',
@@ -62,7 +63,9 @@ function makeNode(id = '', tagName = 'div') {
     checked: false,
     type: '',
     name: '',
+    parentElement: null,
     appendChild(child) {
+      child.parentElement = this;
       this.children.push(child);
       return child;
     },
@@ -74,6 +77,15 @@ function makeNode(id = '', tagName = 'div') {
     },
     addEventListener(name, handler) {
       this.events[name] = handler;
+    },
+    closest(selector) {
+      if (selector !== '[data-lane]') return null;
+      let current = this;
+      while (current) {
+        if (current.dataset?.lane) return current;
+        current = current.parentElement;
+      }
+      return null;
     },
   };
 }
@@ -137,6 +149,7 @@ const document = {
   querySelectorAll(selector) {
     if (selector === '[data-provider-card]') return providerCards;
     if (selector === '[data-byo-key-link]') return [];
+    if (selector === '[data-open-view]') return openViewNodes;
     return [];
   },
 };
@@ -203,6 +216,112 @@ def _extract_js_function_exact(source: str, function_name: str) -> str:
     raise AssertionError(f"could not extract {function_name}")
 
 
+OPEN_LANE_TEST_HELPERS = """
+let state;
+const calls = [];
+const shownViews = [];
+const messages = [];
+let renderByoCalls = 0;
+let renderAllCalls = 0;
+let renderLaneSwitchCalls = 0;
+let refreshLocalRuntimeCalls = 0;
+
+function resetHarness(nextState) {
+  nodes.clear();
+  hiddenCalls.length = 0;
+  openViewNodes.length = 0;
+  calls.length = 0;
+  shownViews.length = 0;
+  messages.length = 0;
+  renderByoCalls = 0;
+  renderAllCalls = 0;
+  renderLaneSwitchCalls = 0;
+  refreshLocalRuntimeCalls = 0;
+  state = nextState;
+}
+
+function activeStateJson() {
+  return JSON.stringify({
+    active: state.providers.active || null,
+    active_lane: state.providers.active_lane || null,
+  });
+}
+
+function laneButton(lane, buttonId) {
+  const article = $(`lane-${lane}`);
+  article.dataset.lane = lane;
+  const button = $(buttonId);
+  button.dataset.openView = `${lane}-setup`;
+  button.parentElement = article;
+  assert(!button.dataset.lane, `${buttonId} should inherit lane from parent`);
+  openViewNodes.push(button);
+  bindOpenView(button);
+  return button;
+}
+
+function clickButton(button) {
+  button.events.click({
+    preventDefault() {},
+    stopPropagation() {},
+  });
+}
+
+function clickLane(lane, buttonId) {
+  clickButton(laneButton(lane, buttonId));
+}
+
+async function flushPromises() {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function api(path, options = {}) {
+  const body = options.body ? JSON.parse(options.body) : null;
+  calls.push({path, body});
+  if (path !== 'api/providers') throw new Error(`unexpected path ${path}`);
+  const nextProviders = {
+    ...state.providers,
+    active_lane: {
+      ...(state.providers.active_lane || {}),
+      lane: body.lane,
+    },
+  };
+  if (body.lane === 'local') {
+    nextProviders.active = {provider: 'local', model: state.providers.active?.model || ''};
+  } else if (body.lane === 'byo') {
+    nextProviders.active = {
+      ...(state.providers.active || {}),
+      provider: body.provider || selectedByoProvider(),
+    };
+  }
+  state.providers = nextProviders;
+  return nextProviders;
+}
+
+function showView(name) {
+  shownViews.push(name);
+}
+
+function renderByo() {
+  renderByoCalls += 1;
+}
+
+function renderAll() {
+  renderAllCalls += 1;
+}
+
+function renderLaneSwitch() {
+  renderLaneSwitchCalls += 1;
+}
+
+async function refreshLocalRuntime() {
+  refreshLocalRuntimeCalls += 1;
+  return state.providers.local_runtime || null;
+}
+"""
+
+
 def _node_render_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
@@ -236,6 +355,40 @@ def _node_render_script(body: str) -> str:
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
         "const text = copy.byo_setup;",
         RENDER_DOM_STUB,
+        body,
+    ]
+    return "\n".join(parts)
+
+
+def _node_open_lane_script(body: str) -> str:
+    source = STATIC.read_text(encoding="utf-8")
+    parts = [
+        RENDER_DOM_STUB,
+        extract_js_function(source, "byoModelStepAllowed"),
+        extract_js_function(source, "byoEntryMode"),
+        extract_js_function(source, "byoTierList"),
+        extract_js_function(source, "preselectByoModel"),
+        extract_js_function(source, "configuredProviders"),
+        extract_js_function(source, "localEndpointConfigured"),
+        extract_js_function(source, "byoIsUsable"),
+        extract_js_function(source, "selectedByoProvider"),
+        extract_js_function(source, "defaultByoProvider"),
+        extract_js_function(source, "laneProvider"),
+        extract_js_function(source, "localIsReady"),
+        extract_js_function(source, "activeLanePayload"),
+        extract_js_function(source, "confidentialProvenancePresent"),
+        extract_js_function(source, "byoKindForProvider"),
+        extract_js_function(source, "activeBrain"),
+        extract_js_function(source, "laneIsUsable"),
+        extract_js_function(source, "setSelectedByoProvider"),
+        extract_js_function(source, "clearByoModelResolutionTargets"),
+        extract_js_function(source, "resetByoDraft"),
+        extract_js_function(source, "switchLane"),
+        extract_js_function(source, "activateLane"),
+        extract_js_function(source, "openLane"),
+        extract_js_function(source, "bindOpenView"),
+        "function assert(condition, message) { if (!condition) throw new Error(message); }",
+        OPEN_LANE_TEST_HELPERS,
         body,
     ]
     return "\n".join(parts)
@@ -905,6 +1058,230 @@ runCase(
   true,
 );
 console.log('PASS');
+"""
+        )
+    )
+
+
+def test_open_lane_byo_manage_routes_to_setup_without_activation() -> None:
+    _run_node(
+        _node_open_lane_script(
+            """
+resetHarness({
+  selectedByoProvider: '',
+  byoMode: 'pick',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  byoModelResolutionTargets: ['stale'],
+  pendingSwitchTarget: '',
+  providers: {
+    active: {provider: 'local', model: 'local/qwen'},
+    active_lane: {lane: 'local'},
+    provider_status: {local: {generate_ready: true, cogitate_ready: true}},
+    scout_enabled: false,
+    model_tiers: {
+      anthropic: [{tier: 'lite', label: 'Claude Lite', model: 'claude-lite'}],
+    },
+  },
+  keys: {
+    api_keys: {anthropic: true},
+    key_validation: {anthropic: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
+  },
+});
+const before = activeStateJson();
+
+clickLane('byo', 'byoLaneStatus');
+
+assert(JSON.stringify(shownViews) === JSON.stringify(['byo-setup']), 'BYO manage should open setup');
+assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([]), 'BYO manage should not call APIs');
+assert(activeStateJson() === before, 'BYO manage should not change active lane/provider');
+assert(state.selectedByoProvider === 'anthropic', 'BYO manage should select configured provider');
+assert(state.byoMode === 'model', 'valid configured provider should enter model mode');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_open_lane_byo_active_routes_to_setup_without_side_effect() -> None:
+    _run_node(
+        _node_open_lane_script(
+            """
+resetHarness({
+  selectedByoProvider: '',
+  byoMode: 'pick',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  byoModelResolutionTargets: ['stale'],
+  pendingSwitchTarget: '',
+  providers: {
+    active: {provider: 'anthropic', model: 'claude-lite'},
+    active_lane: {lane: 'byo'},
+    scout_enabled: false,
+    model_tiers: {
+      anthropic: [{tier: 'lite', label: 'Claude Lite', model: 'claude-lite'}],
+    },
+  },
+  keys: {
+    api_keys: {anthropic: true},
+    key_validation: {anthropic: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
+  },
+});
+const before = activeStateJson();
+
+clickLane('byo', 'byoLaneStatus');
+
+assert(JSON.stringify(shownViews) === JSON.stringify(['byo-setup']), 'active BYO manage should open setup');
+assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([]), 'active BYO manage should not call APIs');
+assert(activeStateJson() === before, 'active BYO manage should not change active lane/provider');
+assert(state.byoMode === 'model', 'active valid BYO should enter model mode');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_open_lane_byo_not_usable_routes_to_pick_flow() -> None:
+    _run_node(
+        _node_open_lane_script(
+            """
+resetHarness({
+  selectedByoProvider: '',
+  byoMode: 'model',
+  byoSelectedModel: 'stale-model',
+  byoCustomOpen: true,
+  byoCustomModel: 'stale-custom',
+  byoCustomCheckedModel: 'stale-custom',
+  byoModelResolutionTargets: ['stale'],
+  pendingSwitchTarget: '',
+  providers: {
+    active: {provider: '', model: ''},
+    active_lane: {lane: 'none'},
+    scout_enabled: false,
+  },
+  keys: {
+    api_keys: {},
+    key_validation: {},
+  },
+});
+
+clickLane('byo', 'byoLaneStatus');
+
+assert(JSON.stringify(shownViews) === JSON.stringify(['byo-setup']), 'unusable BYO should still open setup');
+assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([]), 'unusable BYO should not call APIs');
+assert(state.byoMode === 'pick', 'unusable BYO should route to provider pick flow');
+assert(state.byoSelectedModel === '', 'unusable BYO should clear stale model draft');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_open_lane_confidential_routes_to_setup_without_activation() -> None:
+    _run_node(
+        _node_open_lane_script(
+            """
+resetHarness({
+  selectedByoProvider: '',
+  byoMode: 'pick',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  byoModelResolutionTargets: [],
+  pendingSwitchTarget: '',
+  providers: {
+    active: {provider: 'anthropic', model: 'claude-lite'},
+    active_lane: {lane: 'byo'},
+    scout_enabled: false,
+  },
+  keys: {
+    api_keys: {anthropic: true},
+    key_validation: {anthropic: {valid: true}},
+  },
+});
+const before = activeStateJson();
+
+clickLane('confidential', 'confidentialLaneStatus');
+
+assert(JSON.stringify(shownViews) === JSON.stringify(['confidential-setup']), 'confidential should open setup');
+assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([]), 'confidential should not call APIs');
+assert(activeStateJson() === before, 'confidential open should not change active lane/provider');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_open_lane_local_activation_path_is_unchanged() -> None:
+    _run_node(
+        _node_open_lane_script(
+            """
+async function main() {
+  resetHarness({
+    selectedByoProvider: '',
+    byoMode: 'pick',
+    byoSelectedModel: '',
+    byoCustomOpen: false,
+    byoCustomModel: '',
+    byoCustomCheckedModel: '',
+    byoModelResolutionTargets: [],
+    pendingSwitchTarget: '',
+    providers: {
+      active: {provider: '', model: ''},
+      provider_status: {local: {generate_ready: true, cogitate_ready: true}},
+      scout_enabled: false,
+    },
+    keys: {
+      api_keys: {},
+      key_validation: {},
+    },
+  });
+
+  clickLane('local', 'localLaneStatus');
+  await flushPromises();
+
+  assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify(['api/providers']), 'local inactive path should write providers');
+  assert(JSON.stringify(calls[0].body) === JSON.stringify({lane: 'local'}), 'local inactive path should activate local');
+  assert(shownViews.at(-1) === 'local-setup', 'local inactive path should show local setup');
+  assert(refreshLocalRuntimeCalls === 1, 'local inactive path should refresh runtime');
+
+  resetHarness({
+    selectedByoProvider: '',
+    byoMode: 'pick',
+    byoSelectedModel: '',
+    byoCustomOpen: false,
+    byoCustomModel: '',
+    byoCustomCheckedModel: '',
+    byoModelResolutionTargets: [],
+    pendingSwitchTarget: '',
+    providers: {
+      active: {provider: 'anthropic', model: 'claude-lite'},
+      active_lane: {lane: 'byo'},
+      provider_status: {local: {generate_ready: true, cogitate_ready: true}},
+      scout_enabled: false,
+    },
+    keys: {
+      api_keys: {anthropic: true},
+      key_validation: {anthropic: {valid: true}},
+    },
+  });
+
+  clickLane('local', 'localLaneStatus');
+  await flushPromises();
+
+  assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([]), 'local switch confirm path should not immediately write providers');
+  assert(JSON.stringify(shownViews) === JSON.stringify(['lane-switch']), 'local from active BYO should show switch confirmation');
+  assert(state.pendingSwitchTarget === 'local', 'local switch confirm path should set pending target');
+  assert(renderLaneSwitchCalls === 1, 'local switch confirm path should render switch view');
+  console.log('PASS');
+}
+
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
 """
         )
     )
