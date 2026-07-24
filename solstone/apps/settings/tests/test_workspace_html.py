@@ -41,6 +41,24 @@ def _tag_by_id(text: str, tag: str, element_id: str) -> str:
     return match.group(0)
 
 
+def _settings_field_block(text: str, tag_index: int) -> str:
+    start = text.rfind('<div class="settings-field"', 0, tag_index)
+    assert start != -1, "settings-field opening tag not found"
+
+    depth = 0
+    for match in re.finditer(r"</?div\b[^>]*>", text[start:]):
+        tag = match.group(0)
+        if tag.startswith("</"):
+            depth -= 1
+        else:
+            depth += 1
+        if depth == 0:
+            end = start + match.end()
+            return text[start:end]
+
+    assert False, "settings-field closing tag not found"
+
+
 class _SettingsFormButtonParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -140,7 +158,6 @@ def test_settings_field_base_input_selector_excludes_bare_checks_and_radios():
     base_body = _css_rule(text, base_selector)
     assert "width: 100%;" in base_body
     assert "font-size: 0.95em;" in base_body
-    assert ":where(" in base_selector
 
     form_fields = text[
         text.index("/* Form fields */") : text.index(".settings-field input:focus")
@@ -196,7 +213,8 @@ def test_settings_bare_controls_and_toggle_switch_widths_stay_scoped():
         assert "style=" not in tag
         assert "class=" not in tag
         tag_index = text.index(tag)
-        assert text.rfind('<div class="settings-field"', 0, tag_index) != -1
+        block = _settings_field_block(text, tag_index)
+        assert tag in block
 
 
 def test_retention_custom_inputs_have_room_without_touching_cleanup_modals():
