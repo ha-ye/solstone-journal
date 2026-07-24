@@ -10,6 +10,7 @@ pub struct InventoryEntry {
     pub path: &'static [&'static str],
     pub kind: &'static str,
     pub help: &'static str,
+    pub authority_path: &'static str,
     pub params_json: &'static str,
     pub entry_type: &'static str,
     pub operation_id: &'static str,

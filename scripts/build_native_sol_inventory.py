@@ -69,6 +69,7 @@ FINAL_HTTP_GROUP_COUNTS = {
 @dataclass(frozen=True)
 class AuthorityEntry:
     authority: Path
+    authority_path: str
     source: Path
     module: str
     surface: str
@@ -201,6 +202,7 @@ def parse_entry(
 
     return AuthorityEntry(
         authority=authority,
+        authority_path=authority.relative_to(root).as_posix(),
         source=source,
         module=module_name(source.relative_to(root)),
         surface=surface,
@@ -315,6 +317,7 @@ def render(entries: list[AuthorityEntry], output: Path) -> str:
                 f"        path: &[{path_items}],",
                 f"        kind: {rust_string(entry.kind)},",
                 f"        help: {rust_string(entry.help)},",
+                f"        authority_path: {rust_string(entry.authority_path)},",
                 f"        params_json: {rust_string(params_json)},",
                 f"        entry_type: {rust_string(entry.entry_type)},",
                 f"        operation_id: {rust_string(entry.operation_id)},",
