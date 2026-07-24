@@ -6,3 +6,7 @@ from __future__ import annotations
 
 class VerificationError(RuntimeError):
     """Raised when SPP attestation evidence fails appraisal."""
+
+
+class PcrPinMismatchError(VerificationError):
+    """Raised when a TPM PCR fingerprint is outside the pinned policy."""

@@ -34,6 +34,7 @@ PURE_NON_VACUITY = {
     "nvgpu/evidence.py",
     "nvgpu/errors.py",
     "nvgpu/__init__.py",
+    "pins.py",
     "ratls/__init__.py",
     "ratls/contract.py",
     "ratls/verify.py",

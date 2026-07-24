@@ -20,7 +20,10 @@ from solstone.think.services.spp_attest.composite import (
     CompositeVerdict,
     verify_composite,
 )
-from solstone.think.services.spp_attest.errors import VerificationError
+from solstone.think.services.spp_attest.errors import (
+    PcrPinMismatchError,
+    VerificationError,
+)
 from solstone.think.services.spp_attest.ratls.contract import (
     CERTIFICATE_BINDING_DOMAIN,
     COMPOSITE_EVIDENCE_OID,
@@ -28,7 +31,11 @@ from solstone.think.services.spp_attest.ratls.contract import (
     ExporterProof,
     exporter_binding,
 )
-from solstone.think.services.spp_attest.snp import CpuBundle, Policy
+from solstone.think.services.spp_attest.snp import (
+    CpuBundle,
+    Policy,
+    check_pcr_fingerprint,
+)
 from solstone.think.services.spp_attest.tpm_quote import verify_quote
 
 
@@ -120,6 +127,8 @@ def verify_certificate_evidence(
         reason = getattr(exc, "detail", "")
         if "nonce_mismatch" in reason:
             code = "nonce_mismatch"
+        elif "pcr_pin_mismatch" in reason:
+            code = "pcr_pin_mismatch"
         elif "cpu_verification_failed" in reason:
             code = "cpu_verification_failed"
         elif "gpu_nonce_mismatch" in reason:
@@ -147,6 +156,7 @@ def verify_exporter_proof(
     evidence: CompositeEvidence,
     tls_exporter: bytes,
     owner_nonce: bytes,
+    policy: Policy | None = None,
 ) -> None:
     try:
         proof = ExporterProof.from_der(proof_der)
@@ -174,3 +184,8 @@ def verify_exporter_proof(
         )
     except VerificationError:
         raise RatlsVerificationError("exporter_quote_failed")
+
+    try:
+        check_pcr_fingerprint(proof.quote_pcrs, policy or Policy())
+    except PcrPinMismatchError:
+        raise RatlsVerificationError("pcr_pin_mismatch")

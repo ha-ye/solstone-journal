@@ -27,7 +27,10 @@ from solstone.think.services.spp_attest.binding import (
     check_envelope_nonce,
     composite_binding_hash,
 )
-from solstone.think.services.spp_attest.errors import VerificationError
+from solstone.think.services.spp_attest.errors import (
+    PcrPinMismatchError,
+    VerificationError,
+)
 from solstone.think.services.spp_attest.tlv import decode_gpu_envelope
 from solstone.think.services.spp_attest.tpm_quote import verify_quote
 
@@ -349,8 +352,7 @@ def appraise_cpu_leg(
         )
     )
 
-    pcr_sha256 = hashlib.sha256(bundle.quote_pcrs).hexdigest()
-    _check_pcr_policy(pcr_sha256, policy)
+    pcr_sha256 = check_pcr_fingerprint(bundle.quote_pcrs, policy)
     if policy.pcr_mode == "record":
         steps.append(_ok("pcr-policy", f"record-then-pin v1 fingerprint={pcr_sha256}"))
     else:
@@ -638,14 +640,16 @@ def _verify_ak_binding(runtime: dict[str, Any], ak_public_key_pem: bytes) -> Non
         )
 
 
-def _check_pcr_policy(pcr_sha256: str, policy: Policy) -> None:
+def check_pcr_fingerprint(quote_pcrs: bytes, policy: Policy) -> str:
+    pcr_sha256 = hashlib.sha256(quote_pcrs).hexdigest()
     if policy.pcr_mode == "record":
-        return
+        return pcr_sha256
     if policy.pcr_mode != "pin":
         raise VerificationError(f"unknown PCR policy mode {policy.pcr_mode!r}")
     pins = {pin.lower() for pin in policy.pcr_pins}
     if pcr_sha256.lower() not in pins:
-        raise VerificationError(f"PCR fingerprint {pcr_sha256} not in pinned policy")
+        raise PcrPinMismatchError(f"PCR fingerprint {pcr_sha256} not in pinned policy")
+    return pcr_sha256
 
 
 def _is_ca(cert: x509.Certificate) -> bool:

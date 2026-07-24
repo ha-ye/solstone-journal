@@ -88,6 +88,7 @@ _SPP_ATTESTATION_FAILURE_REASON_TO_BRAIN_REASON = {
     "certificate_extension_invalid": "attestation_rejected",
     "certificate_evidence_invalid": "attestation_rejected",
     "nonce_mismatch": "attestation_rejected",
+    "pcr_pin_mismatch": "attestation_rejected",
     "spki_mismatch": "attestation_rejected",
     "cpu_verification_failed": "attestation_rejected",
     "gpu_nonce_mismatch": "attestation_rejected",

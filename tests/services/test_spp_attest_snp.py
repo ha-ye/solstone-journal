@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -20,6 +21,7 @@ from solstone.think.services.spp_attest import (
     load_cpu_bundle,
 )
 from solstone.think.services.spp_attest import snp as snp_module
+from solstone.think.services.spp_attest.snp import check_pcr_fingerprint
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
 PCR_SHA256_HEX = "b162f46105c80d3e45028e37cc649404c9d65297ad1cda8f953208582060b0e3"
@@ -263,6 +265,17 @@ def test_appraise_cpu_leg_rejects_non_matching_pcr_pin() -> None:
 
     with pytest.raises(VerificationError, match="not in pinned policy"):
         _appraise(policy=policy)
+
+
+def test_check_pcr_fingerprint_accepts_rotation_overlap() -> None:
+    old_pcrs = b"old-pcrs"
+    new_pcrs = b"new-pcrs"
+    old_pin = hashlib.sha256(old_pcrs).hexdigest()
+    new_pin = hashlib.sha256(new_pcrs).hexdigest()
+    policy = Policy(pcr_mode="pin", pcr_pins={old_pin, new_pin})
+
+    assert check_pcr_fingerprint(old_pcrs, policy) == old_pin
+    assert check_pcr_fingerprint(new_pcrs, policy) == new_pin
 
 
 def test_appraise_cpu_leg_rejects_tlv_splice_before_appraisal_steps() -> None:

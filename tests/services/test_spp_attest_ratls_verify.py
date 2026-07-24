@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from solstone.think.services.spp_attest.ratls.verify import (
     verify_certificate_evidence,
     verify_exporter_proof,
 )
-from solstone.think.services.spp_attest.snp import AppraisalStep, CpuAppraisal
+from solstone.think.services.spp_attest.snp import AppraisalStep, CpuAppraisal, Policy
 
 NOW = datetime(2026, 7, 12, tzinfo=timezone.utc)
 
@@ -228,6 +229,10 @@ def test_verify_certificate_evidence_rejects_spki_mismatch(tmp_path: Path) -> No
             "cpu_verification_failed",
         ),
         (
+            "the CPU leg rejected the evidence (pcr_pin_mismatch)",
+            "pcr_pin_mismatch",
+        ),
+        (
             "the GPU leg rejected evidence (nvattest_integrity_failed)",
             "nvattest_integrity_failed",
         ),
@@ -313,6 +318,47 @@ def test_verify_exporter_proof_rejects_exporter_mismatch() -> None:
         )
 
     assert exc_info.value.reason_code == "exporter_mismatch"
+
+
+def test_verify_exporter_proof_rejects_pcr_pin_mismatch_after_valid_quote(
+    monkeypatch,
+) -> None:
+    nonce = b"n" * 32
+    _key, spki = _key_and_spki()
+    tls_exporter = b"e" * 32
+    evidence = _evidence(nonce, spki)
+    proof = ExporterProof(
+        nonce,
+        spki,
+        tls_exporter,
+        b"p2-message",
+        b"p2-signature",
+        b"p2-pcrs",
+    )
+    seen: dict[str, Any] = {}
+
+    def verify_quote(**kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(ratls_verify, "verify_quote", verify_quote)
+    policy = Policy(
+        pcr_mode="pin",
+        pcr_pins={hashlib.sha256(evidence.quote_pcrs).hexdigest()},
+    )
+
+    with pytest.raises(RatlsVerificationError) as exc_info:
+        verify_exporter_proof(
+            proof_der=proof.to_der(),
+            evidence=evidence,
+            tls_exporter=tls_exporter,
+            owner_nonce=nonce,
+            policy=policy,
+        )
+
+    assert evidence.quote_pcrs == b"p1-pcrs"
+    assert proof.quote_pcrs == b"p2-pcrs"
+    assert seen["quote_pcrs"] == proof.quote_pcrs
+    assert exc_info.value.reason_code == "pcr_pin_mismatch"
 
 
 def test_verify_exporter_proof_rejects_quote_under_wrong_ak(monkeypatch) -> None:

@@ -424,6 +424,7 @@ def _write_unhealthy_record(journal: Path) -> None:
         ("nvattest_integrity_failed", "nvattest_integrity_failed", "failed"),
         ("gateway_unreachable", "attestation_not_verified", "blocked"),
         ("attestation_failed", "attestation_rejected", "failed"),
+        ("pcr_pin_mismatch", "attestation_rejected", "failed"),
     ],
 )
 def test_spp_prerequisite_maps_failure_reason_code(

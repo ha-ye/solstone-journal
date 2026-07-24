@@ -12,14 +12,29 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID, ObjectIdentifier
 
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.models import AttestationFailedError
 from solstone.think.providers import nvattest_install
 from solstone.think.services import spp, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
+from solstone.think.services.spp_attest.composite import verify_composite
 from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
-from solstone.think.services.spp_attest.ratls.verify import RatlsVerificationError
+from solstone.think.services.spp_attest.ratls.contract import (
+    COMPOSITE_EVIDENCE_OID,
+    CompositeEvidence,
+)
+from solstone.think.services.spp_attest.ratls.verify import (
+    RatlsVerificationError,
+    verify_certificate_evidence,
+)
+from solstone.think.services.spp_attest.snp import Policy
+
+SPP_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
 
 
 class _FakeChannel:
@@ -115,6 +130,64 @@ def _patch_listener(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(spp_transport, "_start_listener_locked", fake_start_listener)
 
 
+def _fixture_owner_nonce() -> bytes:
+    return bytes.fromhex("".join((SPP_FIXTURE_DIR / "nonce.hex").read_text().split()))
+
+
+def _fixture_composite_evidence(owner_nonce: bytes, spki: bytes) -> CompositeEvidence:
+    certs_dir = SPP_FIXTURE_DIR / "certs"
+    return CompositeEvidence(
+        owner_nonce=owner_nonce,
+        tls_spki_der=spki,
+        amd_report=(SPP_FIXTURE_DIR / "report.bin").read_bytes(),
+        hcl_report=(SPP_FIXTURE_DIR / "hcl_report.bin").read_bytes(),
+        ak_public_key_pem=(SPP_FIXTURE_DIR / "akpub.pem").read_bytes(),
+        quote_message=(SPP_FIXTURE_DIR / "quote.msg").read_bytes(),
+        quote_signature=(SPP_FIXTURE_DIR / "quote.sig").read_bytes(),
+        quote_pcrs=(SPP_FIXTURE_DIR / "quote.pcrs").read_bytes(),
+        amd_ark_pem=(certs_dir / "ark.pem").read_bytes(),
+        amd_ask_pem=(certs_dir / "ask.pem").read_bytes(),
+        amd_vcek_pem=(certs_dir / "vcek.pem").read_bytes(),
+        gpu_envelope=(SPP_FIXTURE_DIR / "gpu-envelope.tlv").read_bytes(),
+    )
+
+
+def _key_and_spki() -> tuple[ec.EllipticCurvePrivateKey, bytes]:
+    key = ec.generate_private_key(ec.SECP256R1())
+    spki = key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return key, spki
+
+
+def _certificate_der(
+    key: ec.EllipticCurvePrivateKey,
+    evidence: CompositeEvidence,
+) -> bytes:
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "spp-engine-test")]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(1001)
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=1))
+        .add_extension(
+            x509.UnrecognizedExtension(
+                ObjectIdentifier(COMPOSITE_EVIDENCE_OID),
+                evidence.to_der(),
+            ),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.DER)
+
+
 def _stale_session(verdict: object) -> AttestationSession:
     old = datetime.now(timezone.utc) - timedelta(hours=2)
     return AttestationSession(
@@ -122,6 +195,34 @@ def _stale_session(verdict: object) -> AttestationSession:
         started_at=old,
         tpm_heartbeat_at=old,
         gpu_reattest_at=old,
+    )
+
+
+def test_establish_channel_locked_passes_production_pcr_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    def fake_establish(_endpoint, **kwargs):
+        captured.update(kwargs)
+        return _FakeChannel(object(), epoch=kwargs["epoch"])
+
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", fake_establish)
+
+    spp_transport._establish_channel_locked(
+        block,
+        datetime.now(timezone.utc),
+        nvattest_dir=tmp_path / "nvattest",
+    )
+
+    policy = captured["policy"]
+    assert isinstance(policy, Policy)
+    assert policy.pcr_mode == "pin"
+    assert (
+        "b162f46105c80d3e45028e37cc649404c9d65297ad1cda8f953208582060b0e3"
+        in policy.pcr_pins
     )
 
 
@@ -489,6 +590,7 @@ RATLS_VERIFICATION_REASON_CODES = (
     "certificate_extension_invalid",
     "certificate_evidence_invalid",
     "nonce_mismatch",
+    "pcr_pin_mismatch",
     "spki_mismatch",
     "cpu_verification_failed",
     "gpu_nonce_mismatch",
@@ -554,6 +656,49 @@ def test_attestation_failure_buckets_real_reason_codes_at_transport_catch_site(
     assert failure is not None
     assert failure.kind == kind
     assert failure.reason_code == reason_code
+
+
+def test_pcr_pin_mismatch_reason_records_from_real_composite_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    observed: dict[str, str] = {}
+    monkeypatch.setattr(
+        spp_transport.secrets,
+        "token_bytes",
+        lambda _size: _fixture_owner_nonce(),
+    )
+
+    def fake_establish(_endpoint, **kwargs):
+        key, spki = _key_and_spki()
+        evidence = _fixture_composite_evidence(kwargs["owner_nonce"], spki)
+        bad_policy = Policy(pcr_mode="pin", pcr_pins={"00" * 32})
+        try:
+            verify_certificate_evidence(
+                certificate_der=_certificate_der(key, evidence),
+                owner_nonce=kwargs["owner_nonce"],
+                now=kwargs["now"],
+                nvattest_dir=kwargs["nvattest_dir"],
+                policy=bad_policy,
+                quote_verifier=lambda **_kwargs: None,
+                composite_verifier=verify_composite,
+            )
+        except RatlsVerificationError as exc:
+            observed["reason_code"] = exc.reason_code
+            raise
+        raise AssertionError("fixture unexpectedly passed a non-matching PCR pin")
+
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", fake_establish)
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.verify_confidential_attestation(block)
+
+    assert observed["reason_code"] == "pcr_pin_mismatch"
+    failure = spp.get_attestation_state().failure
+    assert failure is not None
+    assert failure.kind == "failed"
+    assert failure.reason_code == "pcr_pin_mismatch"
 
 
 @pytest.mark.parametrize(

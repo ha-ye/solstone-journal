@@ -14,7 +14,10 @@ from typing import NoReturn
 
 from solstone.think.models import AttestationFailedError
 from solstone.think.services.spp_attest.binding import BINDING_DOMAIN
-from solstone.think.services.spp_attest.errors import VerificationError
+from solstone.think.services.spp_attest.errors import (
+    PcrPinMismatchError,
+    VerificationError,
+)
 from solstone.think.services.spp_attest.nvgpu.appraise import appraise_gpu_leg
 from solstone.think.services.spp_attest.nvgpu.claims import GpuAppraisal
 from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
@@ -77,6 +80,11 @@ def verify_composite(
             roots_dir=roots_dir,
             policy=policy,
             quote_verifier=quote_verifier,
+        )
+    except PcrPinMismatchError:
+        _raise_attestation_failed(
+            "the CPU leg rejected the evidence (pcr_pin_mismatch)",
+            "confidential attestation CPU PCR pin mismatch",
         )
     except VerificationError:
         _raise_attestation_failed(

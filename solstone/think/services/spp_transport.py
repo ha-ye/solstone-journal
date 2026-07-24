@@ -27,6 +27,7 @@ from solstone.think.providers.nvattest_install import (
 from solstone.think.services import spp
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from solstone.think.services.spp_attest.composite import verify_composite
+from solstone.think.services.spp_attest.pins import production_policy
 from solstone.think.services.spp_attest.ratls.channel import (
     AttestedChannel,
     RatlsChannelError,
@@ -221,6 +222,7 @@ def _establish_channel_locked(
             if nvattest_dir is not None
             else resolve_nvattest_dir(block.get("nvattest_dir")),
             now=now,
+            policy=production_policy(),
             composite_verifier=verify_composite,
             monotonic_now=time.monotonic,
             epoch=_EPOCH,

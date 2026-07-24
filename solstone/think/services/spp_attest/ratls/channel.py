@@ -185,6 +185,7 @@ def establish_attested_channel(
             evidence=verified.evidence,
             tls_exporter=tls_exporter,
             owner_nonce=owner_nonce,
+            policy=policy,
         )
         raw.settimeout(None)
         return AttestedChannel(

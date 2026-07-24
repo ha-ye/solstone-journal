@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.snp import (
     AppraisalStep,
     CpuBundle,
+    Policy,
     load_cpu_bundle,
 )
 from solstone.think.services.spp_attest.tlv import GpuEnvelope
@@ -39,6 +41,11 @@ def _envelope_tlv() -> bytes:
 
 def _channel_binding() -> bytes:
     return (FIXTURE_DIR / "guest_x25519.pub.der").read_bytes()
+
+
+def _fixture_pcr_sha256() -> str:
+    data = json.loads((FIXTURE_DIR / "cpu-appraisal.json").read_text(encoding="utf-8"))
+    return data["pcr_sha256"]
 
 
 def _copy_bundle(tmp_path: Path) -> Path:
@@ -274,6 +281,43 @@ def test_verify_composite_rejects_mutated_channel_binding_without_leak(
     assert exc_info.value.detail == (
         "the CPU leg rejected the evidence (cpu_verification_failed)"
     )
+    _assert_owner_message_safe(exc_info.value)
+
+
+def test_verify_composite_enforces_pcr_pin_policy_from_real_cpu_fixture_without_leak(
+    tmp_path: Path,
+) -> None:
+    matching_pin = _fixture_pcr_sha256()
+    positive = verify_composite(
+        _cpu_bundle(),
+        envelope_tlv=_envelope_tlv(),
+        channel_binding=_channel_binding(),
+        owner_nonce=_owner_nonce(),
+        now=NOW,
+        nvattest_dir=tmp_path / "unused",
+        policy=Policy(pcr_mode="pin", pcr_pins={matching_pin}),
+        gpu_appraiser=_safe_gpu_appraiser,
+    )
+    assert positive.verified is True
+
+    wrong_pin = "00" * 32
+    with pytest.raises(AttestationFailedError) as exc_info:
+        verify_composite(
+            _cpu_bundle(),
+            envelope_tlv=_envelope_tlv(),
+            channel_binding=_channel_binding(),
+            owner_nonce=_owner_nonce(),
+            now=NOW,
+            nvattest_dir=tmp_path / "unused",
+            policy=Policy(pcr_mode="pin", pcr_pins={wrong_pin}),
+            gpu_appraiser=_safe_gpu_appraiser,
+        )
+
+    assert exc_info.value.detail == (
+        "the CPU leg rejected the evidence (pcr_pin_mismatch)"
+    )
+    assert matching_pin not in exc_info.value.detail
+    assert wrong_pin not in exc_info.value.detail
     _assert_owner_message_safe(exc_info.value)
 
 
