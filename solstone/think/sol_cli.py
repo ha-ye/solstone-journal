@@ -20,6 +20,8 @@ from typing import Any, Literal, NamedTuple
 
 import setproctitle
 
+from solstone.think.generated.access_rejections import JOURNAL_ACCESS_ONLY_COMMANDS
+
 
 class Command(NamedTuple):
     module: str
@@ -61,6 +63,10 @@ One-time migration for uv tool installs:
 Nothing was changed by this failed command.
 See https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md
 """
+JOURNAL_ACCESS_CMD_ERROR = (
+    "'{cmd}' is a journal-access command — run it with 'sol {cmd}' instead.\n"
+    "('journal' surfaces only journal-service commands; see 'journal --help'.)"
+)
 
 
 def _installed_packaging_versions() -> dict[str, str | None]:
@@ -325,6 +331,10 @@ def _dispatch(binary: str) -> None:
 
         print(get_project_root())
         return
+
+    if cmd in JOURNAL_ACCESS_ONLY_COMMANDS:
+        print(JOURNAL_ACCESS_CMD_ERROR.format(cmd=cmd), file=sys.stderr)
+        sys.exit(2)
 
     rest = sys.argv[2:]
     try:
