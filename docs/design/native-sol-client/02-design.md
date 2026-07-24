@@ -125,7 +125,8 @@ Use a lead-slice manifest for operation-level joins. Keep the 20-file digest gua
 Failure conditions:
 
 - Lead manifest entry has no app-local authority.
-- App-local migrated authority is not in the lead manifest.
+- App-local migrated authority is not covered by the current native conformance
+  join.
 - HTTP authority has no matching server route.
 - HTTP authority has no matching contract fragment.
 - Contract fragment marked native-client lead has no matching route or authority.
