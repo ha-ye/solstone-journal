@@ -8,11 +8,14 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from solstone.observe.processing_record import (
+    HANDLER_DESCRIBE,
     REASON_CORRUPT_INPUT,
     REASON_NO_DECODABLE_FRAMES,
     STATE_EMPTY,
@@ -43,6 +46,18 @@ SEGMENT_B = "091000_300"
 SEGMENT_C = "092000_300"
 SEGMENT_D = "093000_300"
 SEGMENT_E = "094000_300"
+
+
+class _IsolationBreach(BaseException):
+    pass
+
+
+@dataclass
+class _DailyTrace:
+    bounded: list[list[str]] = field(default_factory=list)
+    queued: list[list[str]] = field(default_factory=list)
+    prompts: list[dict[str, object]] = field(default_factory=list)
+    breaches: list[list[str]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -310,24 +325,74 @@ def _write_health(journal: Path, day: str, filename: str, events: list[dict]) ->
     return path
 
 
-def _patch_daily_main(monkeypatch, mod, applicable_units=None) -> None:
+def _patch_daily_main(
+    monkeypatch,
+    mod,
+    applicable_units=None,
+    *,
+    trace: _DailyTrace | None = None,
+    bounded_phase_effects: dict[tuple[str, ...], Callable[[list[str]], None]]
+    | None = None,
+) -> None:
     if applicable_units is None:
         applicable_units = {("alpha", None)}
+    if trace is None:
+        trace = _DailyTrace()
+    if bounded_phase_effects is None:
+        bounded_phase_effects = {}
 
-    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
-    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
-    monkeypatch.setattr(
-        mod,
-        "run_daily_prompts",
-        lambda **kwargs: (len(applicable_units), 0, [], applicable_units),
-    )
+    def fake_bounded_phase(cmd, day, timeout=None):
+        del day, timeout
+        cmd_list = list(cmd)
+        trace.bounded.append(cmd_list)
+        effect = bounded_phase_effects.get(tuple(cmd_list))
+        if effect is not None:
+            effect(cmd_list)
+        return (True, False)
+
+    def fake_queued_command(cmd, day, timeout=600):
+        del day, timeout
+        trace.queued.append(list(cmd))
+        return True
+
+    def fake_daily_prompts(**kwargs):
+        trace.prompts.append(dict(kwargs))
+        return (len(applicable_units), 0, [], applicable_units)
+
+    def fake_run_task(cmd, *args, **kwargs):
+        del args, kwargs
+        cmd_list = list(cmd)
+        trace.breaches.append(cmd_list)
+        joined = " ".join(cmd_list)
+        raise _IsolationBreach(f"bounded-phase fake bypassed: {joined}")
+
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded_phase)
+    monkeypatch.setattr(mod, "run_queued_command", fake_queued_command)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily_prompts)
+    monkeypatch.setattr(mod, "run_task", fake_run_task)
 
 
-def _run_daily_gate(journal: Path, day: str, monkeypatch) -> Path:
+def _run_daily_gate(
+    journal: Path,
+    day: str,
+    monkeypatch,
+    *,
+    trace: _DailyTrace | None = None,
+    bounded_phase_effects: dict[tuple[str, ...], Callable[[list[str]], None]]
+    | None = None,
+) -> Path:
+    if trace is None:
+        trace = _DailyTrace()
     mod = importlib.import_module("solstone.think.thinking")
-    _patch_daily_main(monkeypatch, mod)
+    _patch_daily_main(
+        monkeypatch,
+        mod,
+        trace=trace,
+        bounded_phase_effects=bounded_phase_effects,
+    )
     monkeypatch.setattr("sys.argv", ["sol think", "--day", day])
     mod.main()
+    assert trace.breaches == []
     return journal / "chronicle" / day / "health"
 
 
@@ -818,6 +883,7 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
     caplog,
 ):
     from solstone.think.journal_stats import JournalStats
+    from solstone.think.providers import fanout_policy
 
     day = "20990402"
     _build_all_gate_states(segment_journal, day)
@@ -860,7 +926,79 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
     assert stats["stats"]["segments_pending_think"] == completion.not_thought
 
     caplog.set_level(logging.INFO)
-    health = _run_daily_gate(segment_journal, day, monkeypatch)
+    trace = _DailyTrace()
+    sense_cmd = [
+        "journal",
+        "sense",
+        "--day",
+        day,
+        "-j",
+        str(fanout_policy.default_describe_jobs()),
+    ]
+
+    def fake_sense_repair(cmd: list[str]) -> None:
+        assert cmd == sense_cmd
+        segment_dir = segment_journal / "chronicle" / day / STREAM / SEGMENT_B
+        screen_jsonl = segment_dir / "screen.jsonl"
+        lines = screen_jsonl.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        assert "_solstone_processing" not in header
+
+        before_repair = classify_segment_completion(
+            cluster_segments(day),
+            read_segment_progress(day),
+        )
+        not_sensed_blockers = [
+            blocker
+            for blocker in before_repair.blockers
+            if blocker["dimension"] == "not_sensed"
+        ]
+        assert before_repair.not_sensed == 1
+        assert not_sensed_blockers == [
+            {
+                "segment": SEGMENT_B,
+                "dimension": "not_sensed",
+                "detail": "screen=pending",
+            }
+        ]
+
+        input_size = (segment_dir / "screen.webm").stat().st_size
+        record = build_processing_record(
+            state=STATE_EMPTY,
+            reason_code=REASON_NO_DECODABLE_FRAMES,
+            handler=HANDLER_DESCRIBE,
+            input_size=input_size,
+            attempted_at="2099-04-02T09:10:00Z",
+        )
+        header["_solstone_processing"] = record
+        lines[0] = json.dumps(header)
+        screen_jsonl.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert "source" not in record
+        assert "attempts" not in record
+        assert (
+            classify_segment_completion(
+                cluster_segments(day),
+                read_segment_progress(day),
+            ).not_sensed
+            == 0
+        )
+
+    health = _run_daily_gate(
+        segment_journal,
+        day,
+        monkeypatch,
+        trace=trace,
+        bounded_phase_effects={tuple(sense_cmd): fake_sense_repair},
+    )
+
+    assert trace.bounded == [
+        sense_cmd,
+        ["journal", "think", "--segments", "--day", day],
+        ["journal", "journal-stats"],
+    ]
+    assert trace.queued == [["journal", "indexer", "--rescan"]]
+    assert len(trace.prompts) == 1
 
     assert not (health / "daily.updated").exists()
 
@@ -1399,12 +1537,9 @@ def test_empty_segment_progress_withholds_and_logs_blocker(
     _seed_segment(segment_journal, DAY, SEGMENT)
     _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
     monkeypatch.setattr(mod, "read_segment_progress", lambda day: {})
-    _patch_daily_main(monkeypatch, mod)
-    monkeypatch.setattr("sys.argv", ["sol think", "--day", DAY])
     caplog.set_level(logging.INFO)
 
-    mod.main()
-    health = segment_journal / "chronicle" / DAY / "health"
+    health = _run_daily_gate(segment_journal, DAY, monkeypatch)
 
     assert not (health / "daily.updated").exists()
     assert SEGMENT in caplog.text
