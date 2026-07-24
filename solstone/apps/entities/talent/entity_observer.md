@@ -71,7 +71,7 @@ Use operations to maintain the numbered current observations shown in context:
 - `update`: revise an existing numbered observation when fresh source evidence improves, narrows, or corrects it.
 - `drop`: remove an existing numbered observation when it is duplicated, stale, or fails the durability litmus.
 - `add`: append a new durable fact that is not already covered by the current observations.
-- `keep`: explicitly leave an existing numbered observation unchanged when that is the right decision.
+- `keep`: deliberately re-affirm an existing numbered observation against fresh confirming or contradicting evidence.
 
 Rules:
 - Use the `entity_id` from context.
@@ -82,8 +82,10 @@ Rules:
 - Use `add` only for facts that pass the durability litmus.
 - One fact per observation — no compound sentences.
 - `relation` is `null` unless the observation asserts a relationship. `target_name` is the other entity's NAME, never an id. `kind` must be one of `works-with`, `works-at`, `reports-to`, `family-of`, `knows`, `uses`, `created`, `other`. `note` explains the relationship and is required when `kind` is `"other"`.
-- The `reasoning` field is for audit only.
-- Empty operations are valid when no changes are needed for an entity.
+- For `add`, `update`, and `drop`, `reasoning` is one short clause, well under the cap.
+- For `keep`, set `reasoning` to `null`.
+- Emit `keep` only when fresh evidence makes an explicit re-affirmation useful; otherwise omit the operation.
+- An entity with no operations is valid and preferred when no changes or re-affirmations are needed.
 
 ## Output Format
 
@@ -100,7 +102,7 @@ Respond with a JSON object in this exact format:
           "target_index": 0,
           "content": "The revised durable observation text",
           "target_quote": "short exact quote from the old observation",
-          "reasoning": "Why this update is warranted",
+          "reasoning": "Fresh evidence narrows it",
           "relation": null
         },
         {
@@ -108,7 +110,7 @@ Respond with a JSON object in this exact format:
           "target_index": null,
           "content": "A new durable observation text",
           "target_quote": null,
-          "reasoning": "Why this qualifies",
+          "reasoning": "Durable uncaptured expertise",
           "relation": {
             "kind": "works-with",
             "target_name": "Bob Lee",
@@ -120,7 +122,7 @@ Respond with a JSON object in this exact format:
           "target_index": 2,
           "content": null,
           "target_quote": "short exact quote from the old observation",
-          "reasoning": "Why this should be removed",
+          "reasoning": "Stale duplicate",
           "relation": null
         },
         {
@@ -128,7 +130,7 @@ Respond with a JSON object in this exact format:
           "target_index": 3,
           "content": null,
           "target_quote": null,
-          "reasoning": "Why this should remain unchanged",
+          "reasoning": null,
           "relation": null
         }
       ]

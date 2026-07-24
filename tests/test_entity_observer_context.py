@@ -532,7 +532,7 @@ def test_post_process_applies_operations_and_writes_outcome(tmp_path, monkeypatc
                             {
                                 "op": "keep",
                                 "target_index": 2,
-                                "reasoning": "Still durable.",
+                                "reasoning": None,
                             },
                             {
                                 "op": "add",

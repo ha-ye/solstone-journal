@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 
 from solstone.talent.story import ALLOWED_RELATION_KINDS
 from solstone.think.schema_bounds import unbounded_nodes
+from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 from solstone.think.talent import get_talent
 
 SCHEMA_PATH = (
@@ -89,6 +90,72 @@ def test_valid_operations_payload():
             "summary": "four operations",
         }
     )
+
+
+def test_reasoning_null_validates_for_each_operation_type():
+    validator = Draft202012Validator(_load_schema())
+
+    assert validator.is_valid(
+        {
+            "entities": [
+                {
+                    "entity_id": "alice_johnson",
+                    "operations": [
+                        {
+                            "op": "update",
+                            "target_index": 0,
+                            "content": "Updated durable observation text",
+                            "target_quote": "old durable observation",
+                            "reasoning": None,
+                            "relation": None,
+                        },
+                        {
+                            "op": "add",
+                            "target_index": None,
+                            "content": "New durable observation text",
+                            "target_quote": None,
+                            "reasoning": None,
+                            "relation": None,
+                        },
+                        {
+                            "op": "drop",
+                            "target_index": 2,
+                            "content": None,
+                            "target_quote": "stale observation",
+                            "reasoning": None,
+                            "relation": None,
+                        },
+                        {
+                            "op": "keep",
+                            "target_index": 3,
+                            "content": None,
+                            "target_quote": None,
+                            "reasoning": None,
+                            "relation": None,
+                        },
+                    ],
+                }
+            ],
+            "summary": "null reasoning validates",
+        }
+    )
+
+
+def test_audit_fields_carry_truncation_annotation():
+    schema = _load_schema()
+    operation = schema["properties"]["entities"]["items"]["properties"]["operations"][
+        "items"
+    ]["properties"]
+
+    reasoning = operation["reasoning"]
+    summary = schema["properties"]["summary"]
+
+    assert reasoning["type"] == ["string", "null"]
+    assert reasoning["maxLength"] == 300
+    assert reasoning[SCHEMA_TRUNCATE_KEY] is True
+    assert summary["type"] == "string"
+    assert summary["maxLength"] == 500
+    assert summary[SCHEMA_TRUNCATE_KEY] is True
 
 
 def test_invalid_missing_top_required():

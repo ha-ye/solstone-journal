@@ -66,8 +66,12 @@
                   "maxLength": 300
                 },
                 "reasoning": {
-                  "type": "string",
-                  "maxLength": 300
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 300,
+                  "x-truncate": true
                 },
                 "relation": {
                   "type": [
@@ -112,7 +116,8 @@
     },
     "summary": {
       "type": "string",
-      "maxLength": 500
+      "maxLength": 500,
+      "x-truncate": true
     }
   }
 }
