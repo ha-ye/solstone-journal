@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle build-native-sol-root-contract check-native-sol-root-contract build-native-sol-journal-host-commands check-native-sol-journal-host-commands build-journal-access-rejection-inventory check-journal-access-rejection-inventory check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -532,6 +532,15 @@ install-checks: .installed
 	@echo "=== Checking native sol grammar oracle ==="
 	@$(MAKE) check-native-sol-grammar-oracle
 	@echo ""
+	@echo "=== Checking native sol root contract ==="
+	@$(MAKE) check-native-sol-root-contract
+	@echo ""
+	@echo "=== Checking native sol journal-host command inventory ==="
+	@$(MAKE) check-native-sol-journal-host-commands
+	@echo ""
+	@echo "=== Checking journal access rejection inventory ==="
+	@$(MAKE) check-journal-access-rejection-inventory
+	@echo ""
 	@echo "=== Checking native sol docs links ==="
 	@$(MAKE) check-native-sol-docs-links
 	@echo ""
@@ -762,6 +771,24 @@ build-native-sol-grammar-oracle: .installed
 check-native-sol-grammar-oracle: .installed
 	$(VENV_BIN)/python scripts/check_native_sol_grammar_oracle.py
 	$(VENV_BIN)/python scripts/build_native_sol_authority_grammar.py --check
+
+build-native-sol-root-contract:
+	python3 scripts/build_native_sol_root_contract.py
+
+check-native-sol-root-contract:
+	python3 scripts/check_native_sol_root_contract.py
+
+build-native-sol-journal-host-commands:
+	python3 scripts/build_native_sol_journal_host_commands.py
+
+check-native-sol-journal-host-commands:
+	python3 scripts/build_native_sol_journal_host_commands.py --check
+
+build-journal-access-rejection-inventory:
+	python3 scripts/build_journal_access_rejection_inventory.py
+
+check-journal-access-rejection-inventory:
+	python3 scripts/build_journal_access_rejection_inventory.py --check
 
 check-native-sol-python-manifest:
 	python3 scripts/check_native_sol_python_manifest.py
