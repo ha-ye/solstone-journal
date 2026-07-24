@@ -30,6 +30,7 @@ body.has-app-bar .tr-card {
 
 /* Left timeline */
 .tr-timeline {
+  --tr-legend-h: 30px;
   position: sticky;
   top: calc(var(--facet-bar-height) + 16px);
   align-self: start;
@@ -67,13 +68,19 @@ body.has-app-bar .tr-card {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 12px;
+  height: var(--tr-legend-h);
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-content: center;
   justify-content: center;
-  gap: 12px;
+  box-sizing: border-box;
+  column-gap: 8px;
+  row-gap: 0;
+  padding: 0 4px;
   font-size: 12px;
+  line-height: 14px;
   color: #9ca3af;
+  background: #fff;
   pointer-events: none;
   z-index: 3;
 }
@@ -84,13 +91,15 @@ body.has-app-bar .tr-card {
   height: 8px;
   border-radius: 50%;
   margin-right: 4px;
-  vertical-align: middle;
+  vertical-align: baseline;
+  position: relative;
+  top: 1px;
 }
 
 .tr-grid {
   position: absolute;
   top: 16px;
-  bottom: 12px;
+  bottom: var(--tr-legend-h, 12px);
   left: 0;
   right: 0;
 }
@@ -113,7 +122,7 @@ body.has-app-bar .tr-card {
   position: absolute;
   left: 0;
   top: 16px;
-  bottom: 12px;
+  bottom: var(--tr-legend-h, 12px);
   width: 64px;
   background: #f9fafb;
   border-right: 1px solid #e5e7eb;
@@ -136,7 +145,7 @@ body.has-app-bar .tr-card {
   left: 64px;
   right: 8px;
   pointer-events: none;
-  z-index: 2;
+  z-index: 4;
 }
 
 .tr-sel {
@@ -207,7 +216,7 @@ body.has-app-bar .tr-card {
   left: 64px;
   right: 0;
   top: 16px;
-  bottom: 12px;
+  bottom: var(--tr-legend-h, 12px);
   pointer-events: none;
   z-index: 1;
 }
@@ -281,7 +290,7 @@ body.has-app-bar .tr-card {
      200px day column instead of clipping. */
   left: 168px;
   top: 16px;
-  bottom: 12px;
+  bottom: var(--tr-legend-h, 12px);
   width: 24px;
   pointer-events: none;
   z-index: 1;
@@ -2200,7 +2209,6 @@ body.has-app-bar .tr-zoom {
 /* ── Presentation mode (?present=1) — back-row legibility on a projector ── */
 body.presentation-mode .tr-card { --tr-day-col: 240px; --tr-zoom-col: 150px; }
 body.presentation-mode .tr-timeline-label,
-body.presentation-mode .tr-timeline-legend,
 body.presentation-mode .tr-zoom-timeline-label { font-size: 14px; font-weight: 700; }
 body.presentation-mode .tr-label,
 body.presentation-mode .tr-zoom-label { font-size: 14px; color: #1f2937; }
@@ -5551,7 +5559,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   function updateZoom() {
     zoom.setAttribute('aria-label', 'Detail timeline (' + hhmm(range.start) + '\u2013' + hhmm(range.end) + ')');
-    zoomHeight = zoom.clientHeight - PADDING;
+    zoomHeight = zoom.clientHeight - ZOOM_PADDING;
     const rangeLen = range.end - range.start;
     if (rangeLen > 0) {
       zoomPpm = zoomHeight / rangeLen;
@@ -5560,10 +5568,12 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     }
   }
 
-  // Rail content (.tr-grid/.tr-labels/.tr-segments/.tr-body-events and
-  // zoom-rail equivalents) is inset HEADER_HEIGHT from the top of the rail's
-  // padding box and 12px from the bottom.
-  const PADDING = HEADER_HEIGHT + 12;
+  // Rail content is inset below the header; the day rail reserves the legend
+  // band while the zoom rail keeps its compact bottom gutter.
+  const LEGEND_HEIGHT = 30;   // must equal --tr-legend-h in the .tr-timeline rule
+  const ZOOM_BOTTOM = 12;
+  const DAY_PADDING = HEADER_HEIGHT + LEGEND_HEIGHT;
+  const ZOOM_PADDING = HEADER_HEIGHT + ZOOM_BOTTOM;
 
 	  // Load combined transcript data
 	  function loadDayData() {
@@ -5595,7 +5605,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       timeline.setAttribute('aria-label', 'Day timeline (' + hhmm(timelineStart) + '\u2013' + hhmm(timelineEnd) + ')');
 
       // Recalculate pixels-per-minute with new bounds
-      height = timeline.clientHeight - PADDING;
+      height = timeline.clientHeight - DAY_PADDING;
       ppm = height / (timelineEnd - timelineStart);
 
       // Set initial selection range within bounds
@@ -5716,7 +5726,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function initTranscripts() {
     // Resize observers
     new ResizeObserver(() => {
-      height = timeline.clientHeight - PADDING;
+      height = timeline.clientHeight - DAY_PADDING;
       ppm = height / (timelineEnd - timelineStart);
       buildGrid();
       renderTimeline();

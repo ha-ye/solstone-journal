@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import re
 from pathlib import Path
 
 from solstone.apps.transcripts.copy import (
@@ -21,6 +22,25 @@ def _slice_between(text: str, start: str, end: str) -> str:
     assert end in text[start_idx:], f"missing end anchor after {start}: {end}"
     end_idx = text.index(end, start_idx)
     return text[start_idx:end_idx]
+
+
+def _css_rule(text: str, selector: str) -> str:
+    """Return the declaration body of a top-level CSS rule.
+
+    Newline-anchored so a variant rule (``body.presentation-mode .tr-tab``) can
+    never satisfy the anchor.
+    """
+    return _slice_between(text, f"\n{selector} {{", "}")
+
+
+def _js_const_expr(text: str, name: str) -> str:
+    """Return the right-hand-side expression of a single ``const NAME = ...;``."""
+    prefix = f"const {name} = "
+    lines = [
+        line.strip() for line in text.splitlines() if line.strip().startswith(prefix)
+    ]
+    assert len(lines) == 1, f"expected exactly one const declaration for {name}"
+    return lines[0].split(prefix, 1)[1].split(";", 1)[0].strip()
 
 
 def test_workspace_html_single_purge_notice_emission():
@@ -509,29 +529,34 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
 
     text = workspace_html.read_text()
 
-    header_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("const HEADER_HEIGHT = ")
-    ]
-    assert len(header_lines) == 1
-    header_value = int(
-        header_lines[0].split("const HEADER_HEIGHT = ", 1)[1].split(";", 1)[0]
-    )
+    header_value = int(_js_const_expr(text, "HEADER_HEIGHT"))
+    legend_height_expr = _js_const_expr(text, "LEGEND_HEIGHT")
+    assert legend_height_expr == "30"
+    legend_height = int(legend_height_expr)
+    zoom_bottom = int(_js_const_expr(text, "ZOOM_BOTTOM"))
+    day_padding_expr = _js_const_expr(text, "DAY_PADDING")
+    zoom_padding_expr = _js_const_expr(text, "ZOOM_PADDING")
 
-    padding_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("const PADDING = ")
+    assert [token.strip() for token in day_padding_expr.split("+")] == [
+        "HEADER_HEIGHT",
+        "LEGEND_HEIGHT",
     ]
-    assert len(padding_lines) == 1
-    padding_expr = padding_lines[0].split("const PADDING = ", 1)[1].split(";", 1)[0]
-    padding_prefix = "HEADER_HEIGHT + "
-    assert padding_expr.startswith(padding_prefix), (
-        "PADDING must derive from HEADER_HEIGHT"
-    )
-    bottom_inset = int(padding_expr.split(padding_prefix, 1)[1])
-    assert "const PADDING = 24" not in text
+    assert [token.strip() for token in zoom_padding_expr.split("+")] == [
+        "HEADER_HEIGHT",
+        "ZOOM_BOTTOM",
+    ]
+    assert re.search(r"\bPADDING\b", text) is None
+
+    timeline_css = _css_rule(text, ".tr-timeline")
+    legend_var_lines = [
+        line.strip()
+        for line in timeline_css.splitlines()
+        if line.strip().startswith("--tr-legend-h:")
+    ]
+    assert len(legend_var_lines) == 1
+    legend_css_value = legend_var_lines[0].split(":", 1)[1].split(";", 1)[0].strip()
+    assert legend_css_value.endswith("px")
+    assert int(legend_css_value.removesuffix("px")) == legend_height
 
     render_timeline = _slice_between(
         text, "function renderTimeline", "function buildZoomGrid"
@@ -549,18 +574,20 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
     click_handler = _slice_between(text, "timeline.addEventListener('click'", "});")
     assert "const py = e.clientY - box.top - HEADER_HEIGHT;" in click_handler
 
-    rail_selectors = (
+    day_rail_selectors = (
         ".tr-grid",
         ".tr-labels",
         ".tr-segments",
         ".tr-body-events",
+    )
+    zoom_rail_selectors = (
         ".tr-zoom-labels",
         ".tr-zoom-grid",
         ".tr-zoom-segments",
     )
 
-    for selector in rail_selectors:
-        css_block = _slice_between(text, f"{selector} {{", "}")
+    for selector in day_rail_selectors + zoom_rail_selectors:
+        css_block = _css_rule(text, selector)
         top_lines = [
             line.strip()
             for line in css_block.splitlines()
@@ -572,6 +599,20 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
             f"{selector} top inset {top_inset}px != HEADER_HEIGHT {header_value}px"
         )
 
+    for selector in day_rail_selectors:
+        css_block = _css_rule(text, selector)
+        bottom_lines = [
+            line.strip()
+            for line in css_block.splitlines()
+            if line.strip().startswith("bottom:")
+        ]
+        assert len(bottom_lines) == 1, (
+            f"{selector} must define exactly one bottom inset"
+        )
+        assert bottom_lines[0] == "bottom: var(--tr-legend-h, 12px);"
+
+    for selector in zoom_rail_selectors:
+        css_block = _css_rule(text, selector)
         bottom_lines = [
             line.strip()
             for line in css_block.splitlines()
@@ -581,12 +622,62 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
             f"{selector} must define exactly one bottom inset"
         )
         bottom = int(bottom_lines[0].split("bottom:", 1)[1].split("px", 1)[0])
-        assert bottom == bottom_inset, (
-            f"{selector} bottom inset {bottom}px != PADDING - HEADER_HEIGHT "
-            f"{bottom_inset}px"
-        )
+        assert bottom == zoom_bottom
 
-    assert "zoom.clientHeight - 24" not in text
+    update_zoom = _slice_between(text, "function updateZoom", "const rangeLen")
+    load_day_height = _slice_between(
+        text,
+        "// Recalculate pixels-per-minute with new bounds",
+        "// Set initial selection range within bounds",
+    )
+    init_transcripts = _slice_between(
+        text, "function initTranscripts", "// Handle browser back/forward"
+    )
+    assert update_zoom.count("zoom.clientHeight - ZOOM_PADDING") == 1
+    assert load_day_height.count("timeline.clientHeight - DAY_PADDING") == 1
+    assert init_transcripts.count("timeline.clientHeight - DAY_PADDING") == 1
+    assert "zoom.clientHeight - DAY_PADDING" not in text
+    assert "timeline.clientHeight - ZOOM_PADDING" not in text
+
+
+def test_workspace_html_timeline_legend_band_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    legend_css = _css_rule(text, ".tr-timeline-legend")
+    assert "height: var(--tr-legend-h);" in legend_css
+    assert "display: flex;" in legend_css
+    assert "flex-wrap: wrap;" in legend_css
+    assert "align-content: center;" in legend_css
+    assert "box-sizing: border-box;" in legend_css
+    assert "column-gap: 8px;" in legend_css
+    assert "row-gap: 0;" in legend_css
+    assert "padding: 0 4px;" in legend_css
+    assert "line-height: 14px;" in legend_css
+    assert "background: #fff;" in legend_css
+    assert "height: 12px;" not in legend_css
+    assert "align-items: center;" not in legend_css
+    assert not any(line.strip().startswith("gap:") for line in legend_css.splitlines())
+
+    dot_css = _css_rule(text, ".tr-legend-dot")
+    assert "vertical-align: baseline;" in dot_css
+    assert "position: relative;" in dot_css
+    assert "top: 1px;" in dot_css
+    assert "vertical-align: middle;" not in dot_css
+
+    font_bump = _slice_between(text, "\nbody.presentation-mode .tr-timeline-label", "}")
+    assert "body.presentation-mode .tr-timeline-legend" not in text
+    assert ".tr-timeline-legend" not in font_bump
+    assert "body.presentation-mode .tr-zoom-timeline-label" in font_bump
+
+    selection_css = _css_rule(text, ".tr-sel-wrap")
+    z_index_lines = [
+        line.strip()
+        for line in selection_css.splitlines()
+        if line.strip().startswith("z-index:")
+    ]
+    assert z_index_lines == ["z-index: 4;"]
 
 
 def test_workspace_html_card_grid_and_panel_overflow_contract():
