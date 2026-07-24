@@ -59,6 +59,16 @@ AGENT_LABELS = {
     "import": "Import",
 }
 
+
+def _agent_label(agent: str | None) -> str:
+    if not agent:
+        return ""
+    mapped = AGENT_LABELS.get(agent)
+    if mapped is not None:
+        return mapped
+    return " ".join(agent.replace("_", " ").split()).title()
+
+
 DAY_RE = re.compile(r"^\d{8}$")
 DAY_BOUND_SENTINELS = {"00000000", "99999999"}
 
@@ -160,7 +170,7 @@ def _format_result(result: dict, query: str, facets_map: dict) -> dict:
         "day": meta.get("day", ""),
         "agent": agent,
         "agent_icon": AGENT_ICONS.get(agent, "📄"),
-        "agent_label": AGENT_LABELS.get(agent, agent.title()),
+        "agent_label": _agent_label(agent),
         "facet": facet_name,
         "facet_title": facet_info.get("title", facet_name),
         "facet_color": facet_info.get("color", ""),
@@ -307,7 +317,7 @@ def search_journal_api() -> Any:
         agents_list.append(
             {
                 "name": agent,
-                "label": AGENT_LABELS.get(agent, agent.title()),
+                "label": _agent_label(agent),
                 "icon": AGENT_ICONS.get(agent, "📄"),
                 "count": count,
             }
