@@ -171,9 +171,21 @@ impl std::fmt::Display for ProjectRootError {
 
 impl std::error::Error for ProjectRootError {}
 
+fn resolve_canonical_site_packages(candidates: &[PathBuf]) -> Option<PathBuf> {
+    let mut canonical = candidates
+        .iter()
+        .filter_map(|candidate| fs::canonicalize(candidate).ok())
+        .collect::<Vec<_>>();
+    // Canonicalize before sorting so read_dir order and lib64 -> lib aliases collapse.
+    canonical.sort();
+    canonical.dedup();
+    canonical.into_iter().next()
+}
+
 fn installed_site_packages_from_executable_dir(executable_dir: &Path) -> Option<PathBuf> {
     let prefix = executable_dir.parent()?;
     let entries = fs::read_dir(prefix).ok()?;
+    let mut candidates = Vec::new();
     for lib_entry in entries.flatten() {
         let lib_path = lib_entry.path();
         if !lib_path.is_dir() {
@@ -203,12 +215,12 @@ fn installed_site_packages_from_executable_dir(executable_dir: &Path) -> Option<
                 let package_dir = python_path.join(package_dir_name);
                 let init = package_dir.join("solstone").join("__init__.py");
                 if fs::metadata(&init).is_ok_and(|metadata| metadata.is_file()) {
-                    return Some(package_dir);
+                    candidates.push(package_dir);
                 }
             }
         }
     }
-    None
+    resolve_canonical_site_packages(&candidates)
 }
 
 fn is_solstone_checkout_root(candidate: &Path) -> bool {
@@ -914,6 +926,66 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         env::temp_dir().join(format!("solstone-core-sol-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn canonical_site_packages_empty_candidates_return_none() {
+        assert_eq!(resolve_canonical_site_packages(&[]), None);
+    }
+
+    #[test]
+    fn canonical_site_packages_returns_single_plain_candidate() {
+        let root = temp_path("single-site-packages");
+        let site_packages = root.join("lib").join("python3.13").join("site-packages");
+        fs::create_dir_all(&site_packages).expect("create site-packages");
+        let expected = fs::canonicalize(&site_packages).expect("canonical site-packages");
+
+        assert_eq!(
+            resolve_canonical_site_packages(std::slice::from_ref(&site_packages)),
+            Some(expected)
+        );
+        fs::remove_dir_all(root).expect("cleanup single-site-packages");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_site_packages_collapses_lib64_alias_in_both_orders() {
+        let root = temp_path("lib64-site-packages");
+        let site_packages = root.join("lib").join("python3.13").join("site-packages");
+        fs::create_dir_all(&site_packages).expect("create lib site-packages");
+        std::os::unix::fs::symlink("lib", root.join("lib64")).expect("create lib64 symlink");
+        let lib64_site_packages = root.join("lib64").join("python3.13").join("site-packages");
+        let expected = fs::canonicalize(&site_packages).expect("canonical lib site-packages");
+
+        assert_eq!(
+            resolve_canonical_site_packages(&[site_packages.clone(), lib64_site_packages.clone()]),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            resolve_canonical_site_packages(&[lib64_site_packages, site_packages]),
+            Some(expected)
+        );
+        fs::remove_dir_all(root).expect("cleanup lib64-site-packages");
+    }
+
+    #[test]
+    fn canonical_site_packages_selects_distinct_real_candidates_deterministically() {
+        let root = temp_path("distinct-site-packages");
+        let first = root.join("a").join("python3.13").join("site-packages");
+        let second = root.join("z").join("python3.13").join("site-packages");
+        fs::create_dir_all(&first).expect("create first site-packages");
+        fs::create_dir_all(&second).expect("create second site-packages");
+        let expected = fs::canonicalize(&first).expect("canonical first site-packages");
+
+        assert_eq!(
+            resolve_canonical_site_packages(&[second.clone(), first.clone()]),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            resolve_canonical_site_packages(&[first, second]),
+            Some(expected)
+        );
+        fs::remove_dir_all(root).expect("cleanup distinct-site-packages");
     }
 
     #[test]
