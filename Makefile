@@ -173,9 +173,8 @@ check-rust-deny:
 
 audit:
 	@$(REQUIRE_CARGO)
-	@python3 scripts/check_release_preflight.py cargo-deny
-	@cargo deny --manifest-path $(RUST_MANIFEST) fetch db || { echo "ERROR: RustSec advisory refresh failed; no current advisory result was produced. Restore network access and rerun 'make audit'." >&2; exit 1; }
-	cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline check advisories
+	@python3 scripts/check_release_preflight.py cargo-deny >&2
+	@python3 scripts/advisory_mirror_audit.py --bundle "$(AUDIT_ADVISORY_BUNDLE)" --receipt "$(AUDIT_ADVISORY_RECEIPT)" --pubkey "$(AUDIT_ADVISORY_PUBKEY)" --locator "$(AUDIT_ADVISORY_LOCATOR)"
 
 # Setup skill symlinks
 skills:

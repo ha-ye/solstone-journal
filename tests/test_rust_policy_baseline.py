@@ -64,28 +64,39 @@ def test_check_rust_deny_recipe_is_version_asserted_locked_and_offline() -> None
         assert command in block
 
 
-def test_audit_recipe_refreshes_then_checks_offline_fail_closed() -> None:
+def test_audit_recipe_uses_signed_packet_without_fetch_db() -> None:
     block = _makefile_block("audit", "skills")
-    fetch = "cargo deny --manifest-path $(RUST_MANIFEST) fetch db"
-    check = (
-        "cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline "
-        "check advisories"
-    )
     required_commands = [
         "scripts/check_release_preflight.py cargo-deny",
-        fetch,
-        check,
+        "scripts/advisory_mirror_audit.py",
+        "AUDIT_ADVISORY_BUNDLE",
+        "AUDIT_ADVISORY_RECEIPT",
+        "AUDIT_ADVISORY_PUBKEY",
+        "AUDIT_ADVISORY_LOCATOR",
+        "--bundle",
+        "--receipt",
+        "--pubkey",
+        "--locator",
     ]
 
     assert required_commands
     for command in required_commands:
         assert command in block
-    assert block.index(fetch) < block.index(check)
+    assert "fetch db" not in block
 
-    fetch_line = next(line for line in block.splitlines() if fetch in line)
-    assert "no current advisory result was produced" in fetch_line
-    assert "ERROR: RustSec advisory refresh failed" in fetch_line
-    assert "exit 1" in fetch_line
+    # make audit stdout must be exactly the witness JSON; the private locator must never be echoed.
+    preflight_line = next(
+        line
+        for line in block.splitlines()
+        if "check_release_preflight.py cargo-deny" in line
+    )
+    audit_line = next(
+        line
+        for line in block.splitlines()
+        if "scripts/advisory_mirror_audit.py" in line
+    )
+    assert ">&2" in preflight_line
+    assert audit_line.lstrip("\t").startswith("@")
 
 
 def test_release_candidate_driver_binds_policy_before_artifact_construction() -> None:
