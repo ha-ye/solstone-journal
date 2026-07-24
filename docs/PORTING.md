@@ -43,9 +43,43 @@ target, document the blocker and stop the conversion before merging it.
 | Rust lint | `make check-rust-clippy` | GNU-host check | Runs the existing clippy `-D warnings` gate. |
 | Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host. |
 | Rust dependency policy | `make check-rust-deny` | GNU-host check | Locked, offline bans/licenses/sources policy over the supported cargo-deny graph. |
-| Rust advisories | `make audit` | GNU-host check | Refreshes the advisory DB, then performs a locked offline advisory check. |
+| Rust advisories | `make audit` | GNU-host check | Verifies a signed advisory mirror packet, materializes its bundle locally, then performs a locked offline advisory check without refreshing or mutating the operator inputs. |
 | iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate. |
 | Release candidate rail | `scripts/release.sh --candidate` / `scripts/release.sh --recover <version> <source-commit>` | Local readiness evidence | DESTRUCTIVE: `--candidate` is fresh construction; before policy or build work it deletes prior raw build/dist outputs and that version's stale payload/evidence. It binds candidate payload, ledger, and per-target install/smoke proofs, then reports canonical local readiness JSON. `--recover` is retained-byte-only, read-only validation; it preserves retained payload, ledger, and proofs and never rebuilds or refreshes. Proofs cover local candidate bytes and native smoke only; publication is temporarily locked out of this rail. |
+
+### Signed Advisory Mirror Audit
+
+`make audit` requires four operator-provided inputs: `AUDIT_ADVISORY_BUNDLE`
+for the local advisory bundle, `AUDIT_ADVISORY_RECEIPT` for the freshness
+receipt, `AUDIT_ADVISORY_PUBKEY` for the approved minisign public key, and
+`AUDIT_ADVISORY_LOCATOR` for the private mirror locator. The signature selector
+is derived from the receipt path as `<receipt>.minisig`; there is no separate
+signature option.
+
+The audit is local-only. Git verifies and clones only the local bundle file, and
+the locator is used only as cargo-deny's advisory database identity in the
+offline check. It is never used as a clone source, fetched, pulled, or probed.
+Use a placeholder such as `PRIVATE_MIRROR_LOCATOR` in notes and logs; do not
+record a real private host, path, credential, or URL-derived token.
+
+The public trust pins are key ID `5FCC81CD3DE12315` and public-key SHA-256
+`c9fb713fe57791afbdebddde7b334e950ce1efcc167d49daf4cc1cbd930bb122`. The
+receipt must be canonical JSON, its adjacent minisign signature must carry the
+trusted comment for the same advisory commit and UTC time, and the receipt UTC
+is the only freshness authority.
+
+On success, stdout is exactly one compact JSON object with these fields:
+`product`, `advisory_cohort`, `synced_commit`, `receipt_utc`, `max_age`,
+`checked_at`, `cargo_lock_sha256`, `cargo_deny_version`, and `verdict`.
+The witness contains no paths, locators, credentials, or child process output.
+
+The audit is non-destructive: packet inputs, the source tree, ambient Cargo
+state, and release candidate/evidence directories are not modified. The
+bundle-cloned advisory database and cargo-deny config are owned temporary
+materialization and are removed before the success witness is emitted.
+If any gate fails, reacquire the signed packet from the controlled mirror
+process, place the adjacent signature next to the receipt, verify the public key
+pin, and rerun `make audit`.
 
 ## Owner Timezone
 

@@ -24,7 +24,9 @@ To acquire a conforming snapshot, write a cargo-deny config that sets the same
 second run is intentional: cargo-deny 0.20.2 does not write ``.git/FETCH_HEAD`` on the
 first clone into an empty db root, but it does on subsequent fetches. Do not run
 manual ``git fetch`` or ``git reset``. ``make audit`` is not this acquisition
-operation; it uses cargo-deny's default db path, not a controlled release db root.
+operation. ``make audit`` is the separate signed-packet mirror-bound advisory
+audit implemented by ``scripts/advisory_mirror_audit.py``; this module remains
+the release-candidate advisory acquisition and receipt path.
 """
 
 from __future__ import annotations
