@@ -81,13 +81,21 @@ def test_jobs_and_dispatch_origin_copy_bytes():
     assert chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT == "sol is running {count} jobs"
 
 
+def _thinking_option_values() -> tuple[str, str, str]:
+    return (
+        chat_copy.CHAT_THINKING_OPT_ON_TAP,
+        chat_copy.CHAT_THINKING_OPT_ALWAYS,
+        chat_copy.CHAT_THINKING_OPT_NEVER,
+    )
+
+
 def test_thinking_copy_bytes():
     expected = """CHAT_THINKING_EXPANDER_LABEL = "show thinking"
 CHAT_THINKING_COLLAPSER_LABEL = "hide thinking"
 CHAT_THINKING_SETTING_LABEL = "thinking surfaces"
-CHAT_THINKING_OPT_ON_TAP = "Show on tap"
-CHAT_THINKING_OPT_ALWAYS = "Always show"
-CHAT_THINKING_OPT_NEVER = "Never show"
+CHAT_THINKING_OPT_ON_TAP = "show on tap"
+CHAT_THINKING_OPT_ALWAYS = "always show"
+CHAT_THINKING_OPT_NEVER = "never show"
 CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. choose how much you want to see."
 """
     actual = "\n".join(
@@ -104,6 +112,8 @@ CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. choose how
     )
 
     assert actual == expected
+    for value in _thinking_option_values():
+        assert value == value.lower()
 
 
 def test_js_parity():
@@ -167,13 +177,26 @@ def test_js_parity():
     expected_js_thinking = """CHAT_THINKING_EXPANDER_LABEL: "show thinking",
 CHAT_THINKING_COLLAPSER_LABEL: "hide thinking",
 CHAT_THINKING_SETTING_LABEL: "thinking surfaces",
-CHAT_THINKING_OPT_ON_TAP: "Show on tap",
-CHAT_THINKING_OPT_ALWAYS: "Always show",
-CHAT_THINKING_OPT_NEVER: "Never show",
+CHAT_THINKING_OPT_ON_TAP: "show on tap",
+CHAT_THINKING_OPT_ALWAYS: "always show",
+CHAT_THINKING_OPT_NEVER: "never show",
 CHAT_THINKING_SETTING_HELP: "sol does some thinking before replying. choose how much you want to see.",
 """
     for expected_line in expected_js_thinking.splitlines():
         assert expected_line in text
+
+
+def test_thinking_copy_old_titlecase_literal_removed():
+    paths = (
+        Path("solstone/apps/chat/copy.py"),
+        Path("solstone/convey/static/chat_copy.js"),
+        Path("tests/test_chat_copy.py"),
+    )
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for value in _thinking_option_values():
+            assert value.capitalize() not in text
 
 
 def test_closer_constants_byte_parity():

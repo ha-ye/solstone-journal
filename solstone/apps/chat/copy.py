@@ -41,9 +41,9 @@ CHAT_THINKING_COLLAPSER_LABEL = "hide thinking"
 CHAT_ERROR_DETAIL_EXPANDER_LABEL = "show details"
 CHAT_ERROR_DETAIL_COLLAPSER_LABEL = "hide details"
 CHAT_THINKING_SETTING_LABEL = "thinking surfaces"
-CHAT_THINKING_OPT_ON_TAP = "Show on tap"
-CHAT_THINKING_OPT_ALWAYS = "Always show"
-CHAT_THINKING_OPT_NEVER = "Never show"
+CHAT_THINKING_OPT_ON_TAP = "show on tap"
+CHAT_THINKING_OPT_ALWAYS = "always show"
+CHAT_THINKING_OPT_NEVER = "never show"
 CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. choose how much you want to see."
 
 # Deterministic support-offer gate (backend-emitted; rides the sol_message text).
