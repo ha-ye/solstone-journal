@@ -19,7 +19,7 @@
   display: grid;
   --tr-day-col: 200px;
   --tr-zoom-col: 120px;
-  grid-template-columns: var(--tr-day-col) var(--tr-zoom-col) 1fr;
+  grid-template-columns: var(--tr-day-col) var(--tr-zoom-col) minmax(0, 1fr);
 }
 
 body.has-app-bar .tr-card {
@@ -1004,7 +1004,7 @@ body.has-app-bar .tr-card {
 .tr-panel {
   flex: 1;
   padding: 16px;
-  overflow-x: hidden;
+  overflow-x: auto;
   font-size: 14px;
   line-height: 1.5;
   transition: opacity 0.1s ease;

@@ -587,3 +587,22 @@ def test_workspace_html_timeline_rail_vertical_math_contract():
         )
 
     assert "zoom.clientHeight - 24" not in text
+
+
+def test_workspace_html_card_grid_and_panel_overflow_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    card_css = _css_rule(text, ".tr-card")
+    assert (
+        "grid-template-columns: var(--tr-day-col) var(--tr-zoom-col) minmax(0, 1fr);"
+    ) in card_css
+    assert (
+        "grid-template-columns: var(--tr-day-col) var(--tr-zoom-col) 1fr;"
+        not in card_css
+    )
+
+    panel_css = _css_rule(text, ".tr-panel")
+    assert "overflow-x: auto;" in panel_css
+    assert "overflow-x: hidden;" not in panel_css
