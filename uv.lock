@@ -30,7 +30,10 @@ members = [
     "solstone-journal-cuda",
     "solstone-journal-models",
 ]
-overrides = [{ name = "solstone-journal-host", marker = "python_full_version < '3.12'", specifier = "==0.7.0" }]
+overrides = [
+    { name = "solstone-core-unsupported-platform", marker = "python_full_version < '3.12'", specifier = "==1.0.14" },
+    { name = "solstone-journal-host", marker = "python_full_version < '3.12'", specifier = "==0.7.0" },
+]
 
 [[package]]
 name = "agent-client-protocol"
@@ -4372,7 +4375,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "1.0.13"
+version = "1.0.14"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
@@ -4381,6 +4384,7 @@ dependencies = [
     { name = "pyopenssl" },
     { name = "requests" },
     { name = "setproctitle" },
+    { name = "solstone-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "timefhuman" },
     { name = "typer" },
     { name = "userpath" },
@@ -4424,7 +4428,6 @@ journal-host = [
     { name = "python-slugify" },
     { name = "rapidfuzz" },
     { name = "scikit-learn" },
-    { name = "solstone-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "solstone-journal-models" },
     { name = "soundfile" },
     { name = "tokenizers" },
@@ -4513,9 +4516,10 @@ requires-dist = [
     { name = "solstone", extras = ["pdf"], marker = "extra == 'journal-host'" },
     { name = "solstone", extras = ["pdf-export"], marker = "extra == 'pdf'" },
     { name = "solstone", extras = ["pdf-import"], marker = "extra == 'pdf'" },
-    { name = "solstone-core", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'journal-host'", editable = "packages/solstone-core" },
-    { name = "solstone-core", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'journal-host'", editable = "packages/solstone-core" },
-    { name = "solstone-core", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'journal-host'", editable = "packages/solstone-core" },
+    { name = "solstone-core", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", editable = "packages/solstone-core" },
+    { name = "solstone-core", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", editable = "packages/solstone-core" },
+    { name = "solstone-core", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", editable = "packages/solstone-core" },
+    { name = "solstone-core-unsupported-platform", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')", specifier = "==1.0.14" },
     { name = "solstone-journal-host", marker = "extra == 'journal'", specifier = "==0.7.0" },
     { name = "solstone-journal-host", marker = "extra == 'journal-cuda'", specifier = "==0.7.0" },
     { name = "solstone-journal-models", marker = "extra == 'journal-host'", editable = "packages/solstone-journal-models" },
@@ -4550,12 +4554,12 @@ journal-cuda = [{ name = "solstone-journal-cuda", editable = "packages/solstone-
 
 [[package]]
 name = "solstone-core"
-version = "1.0.13"
+version = "1.0.14"
 source = { editable = "packages/solstone-core" }
 
 [[package]]
 name = "solstone-journal"
-version = "1.0.13"
+version = "1.0.14"
 source = { editable = "packages/solstone-journal" }
 dependencies = [
     { name = "onnxruntime" },
@@ -4571,7 +4575,7 @@ requires-dist = [
 
 [[package]]
 name = "solstone-journal-cuda"
-version = "1.0.13"
+version = "1.0.14"
 source = { editable = "packages/solstone-journal-cuda" }
 dependencies = [
     { name = "nvidia-cublas-cu12" },

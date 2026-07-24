@@ -12,7 +12,10 @@ from textwrap import dedent
 
 import pytest
 
-from solstone.think.probe import SOLSTONE_CORE_PLATFORM_MARKERS
+from solstone.think.probe import (
+    SOLSTONE_CORE_PLATFORM_MARKERS,
+    solstone_core_unsupported_platform_pin,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "render_packaging.py"
 SPEC = importlib.util.spec_from_file_location("render_packaging", SCRIPT)
@@ -51,20 +54,29 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         f'    "solstone-core==0.0.1; {marker}",'
         for marker in SOLSTONE_CORE_PLATFORM_MARKERS
     )
+    unsupported_pin = solstone_core_unsupported_platform_pin("0.0.1")
     _write(
         tmp_path / "pyproject.toml",
         f"""
         [project]
         name = "solstone"
         version = "{root_version}"
+        dependencies = [
+        {core_pins}
+            "{unsupported_pin}",
+        ]
 
         [project.optional-dependencies]
         journal-host = [
             "solstone-journal-models==1.0.0",
-        {core_pins}
         ]
         journal = ["solstone-journal-host==0.7.0"]
         journal-cuda = ["solstone-journal-host==0.7.0"]
+
+        [tool.uv]
+        override-dependencies = [
+            "solstone-core-unsupported-platform==0.0.1; python_version < '3.12'",
+        ]
         """,
     )
     for package_name in ("solstone-journal", "solstone-journal-cuda"):
@@ -93,6 +105,12 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         manifest-path = "../../core/crates/solstone-core/Cargo.toml"
         profile = "release"
         strip = true
+        """,
+    )
+    _write(
+        tmp_path / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py",
+        """
+        TOMBSTONE_VERSION = "0.0.1"
         """,
     )
     _write(
@@ -220,6 +238,17 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     root_pyproject = rendered[root / "pyproject.toml"]
     for marker in SOLSTONE_CORE_PLATFORM_MARKERS:
         assert f'"solstone-core==2.3.4; {marker}"' in root_pyproject
+    assert f'"{solstone_core_unsupported_platform_pin("2.3.4")}"' in root_pyproject
+    assert (
+        '"solstone-core-unsupported-platform==2.3.4; python_version < '
+        "'3.12'\""
+        in root_pyproject
+    )
+    assert '"solstone-journal-models==1.0.0"' in root_pyproject
+    tombstone = rendered[
+        root / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py"
+    ]
+    assert 'TOMBSTONE_VERSION = "2.3.4"' in tombstone
 
 
 def test_check_reports_synthetic_packaging_drift(
@@ -235,6 +264,9 @@ def test_check_reports_synthetic_packaging_drift(
     assert "packaging metadata is stale" in out
     assert "drifted: pyproject.toml" in out
     assert "drifted: packages/solstone-core/pyproject.toml" in out
+    assert (
+        "drifted: scripts/solstone-core-unsupported-platform-tombstone/setup.py" in out
+    )
     assert "drifted: core/Cargo.lock" in out
 
 

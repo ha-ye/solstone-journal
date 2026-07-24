@@ -1,7 +1,7 @@
 # Native Sol Cutover Design
 
-This design records the native-`sol` distribution cutover. It assumes the
-1.0.13 prep preconditions passed and the cutover version is 1.0.14.
+This design records the native-`sol` distribution cutover. It assumes the prep
+preconditions passed and the cutover version is the next root package version.
 
 ## 1. Script Ownership Model
 
@@ -341,7 +341,7 @@ Version move to 1.0.14:
   complement tombstone pin, private compat script presence, and removal of
   public root `sol`/`solstone` scripts.
 - Not covered and should stay historical: `transparency-head-log.jsonl` existing
-  seq 2 for 1.0.13. A 1.0.14 transparency entry is appended only by the
+  prior-version entry. The new transparency entry is appended only by the
   transparency publication flow.
 - Test fixtures must derive expected version from one authority, normally root
   `[project].version`, rather than hardcoding `1.0.14` across release and
@@ -570,8 +570,8 @@ Modify:
 - `tests/test_preflight.py`
 - `docs/PORTING.md`
 - `CHANGELOG.md`
-- version-derived release/package tests listed in commit 1 where hardcoded
-  `1.0.13` appears
+- version-derived release/package tests listed in commit 1 where the prior
+  version appears
 
 Delete:
 

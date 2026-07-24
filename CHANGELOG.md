@@ -4,6 +4,17 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.14] - 2026-07-24
+
+### Added
+
+- `sol` and `solstone` are now native commands on supported Linux and Apple Silicon Mac systems, with the same Python compatibility commands still available while the final porting work finishes.
+- unsupported platforms now stop during installation with a clear message instead of installing without a working `sol`.
+
+### Changed
+
+- the native command package now owns `sol`, `solstone`, and `solstone-core`, so installs have one deterministic owner for each executable.
+
 ## [1.0.13] - 2026-07-24
 
 ### Added

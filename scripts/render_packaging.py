@@ -16,17 +16,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from solstone.think.probe import solstone_core_marker_pins  # noqa: E402
+from solstone.think.probe import (  # noqa: E402
+    SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
+    solstone_core_marker_pins,
+    solstone_core_unsupported_platform_pin,
+)
 
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
 CPU_PYPROJECT = ROOT / "packages" / "solstone-journal" / "pyproject.toml"
 CUDA_PYPROJECT = ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
+CORE_UNSUPPORTED_TOMBSTONE_OVERRIDE_MARKER = "python_version < '3.12'"
 HOST_PIN_RE = re.compile(r'(?P<quote>")solstone\[journal-host\]==[^"]+(?P=quote)')
 CORE_PIN_RE = re.compile(
     r'(?P<quote>")solstone-core==[^";]+; (?P<marker>[^"]+)(?P=quote)'
 )
+CORE_UNSUPPORTED_PIN_RE = re.compile(
+    r'(?P<quote>")solstone-core-unsupported-platform==[^";]+; (?P<marker>[^"]+)(?P=quote)'
+)
 VERSION_RE = re.compile(r'(?m)^version = "[^"]+"')
+TOMBSTONE_VERSION_RE = re.compile(r'(?m)^TOMBSTONE_VERSION = "[^"]+"')
 CARGO_WORKSPACE_VERSION_RE = re.compile(
     r'(?ms)(?P<prefix>^\[workspace\.package\]\n(?:(?!^\[).)*?^version = )"[^"]+"'
 )
@@ -66,6 +75,10 @@ def _leaf_paths(root: Path) -> tuple[Path, Path]:
 
 def _core_leaf_path(root: Path) -> Path:
     return root / "packages" / "solstone-core" / "pyproject.toml"
+
+
+def _core_unsupported_tombstone_path(root: Path) -> Path:
+    return root / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py"
 
 
 def _rewrite_leaf(text: str, version: str) -> str:
@@ -116,6 +129,57 @@ def _rewrite_root_core_pins(text: str, version: str) -> str:
         raise PackagingRenderError(
             "root pyproject solstone-core marker pins must be exactly "
             + ", ".join(sorted(expected))
+        )
+    return rewritten
+
+
+def _rewrite_root_core_unsupported_pin(text: str, version: str) -> str:
+    expected_base = solstone_core_unsupported_platform_pin(version)
+    expected_override = (
+        "solstone-core-unsupported-platform=="
+        f"{version}; {CORE_UNSUPPORTED_TOMBSTONE_OVERRIDE_MARKER}"
+    )
+    seen_markers: list[str] = []
+
+    def replacement(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        marker = (
+            CORE_UNSUPPORTED_TOMBSTONE_OVERRIDE_MARKER
+            if marker == CORE_UNSUPPORTED_TOMBSTONE_OVERRIDE_MARKER
+            else SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER
+        )
+        seen_markers.append(marker)
+        return (
+            f"{match.group('quote')}solstone-core-unsupported-platform=={version}; "
+            f"{marker}{match.group('quote')}"
+        )
+
+    rewritten, pin_count = CORE_UNSUPPORTED_PIN_RE.subn(replacement, text)
+    if pin_count != 2:
+        raise PackagingRenderError(
+            "root pyproject must contain exactly two marker-gated "
+            f"solstone-core-unsupported-platform== pin; found {pin_count}"
+        )
+    actual = {
+        f"solstone-core-unsupported-platform=={version}; {marker}"
+        for marker in seen_markers
+    }
+    if actual != {expected_base, expected_override}:
+        raise PackagingRenderError(
+            "root pyproject solstone-core-unsupported-platform marker pins must be "
+            f"exactly {sorted((expected_base, expected_override))}"
+        )
+    return rewritten
+
+
+def _rewrite_tombstone_setup(text: str, version: str) -> str:
+    rewritten, version_count = TOMBSTONE_VERSION_RE.subn(
+        f'TOMBSTONE_VERSION = "{version}"', text
+    )
+    if version_count != 1:
+        raise PackagingRenderError(
+            "solstone-core unsupported-platform tombstone setup.py must contain "
+            f"exactly one TOMBSTONE_VERSION line; found {version_count}"
         )
     return rewritten
 
@@ -279,10 +343,16 @@ def render(root: Path = ROOT) -> dict[Path, str]:
     root = Path(root)
     root_text = (root / "pyproject.toml").read_text(encoding="utf-8")
     version = _read_version(root_text)
+    root_text = _rewrite_root_core_pins(root_text, version)
+    root_text = _rewrite_root_core_unsupported_pin(root_text, version)
     expected = {
-        root / "pyproject.toml": _rewrite_root_core_pins(root_text, version),
+        root / "pyproject.toml": root_text,
         _core_leaf_path(root): _rewrite_core_leaf(
             _core_leaf_path(root).read_text(encoding="utf-8"), version
+        ),
+        _core_unsupported_tombstone_path(root): _rewrite_tombstone_setup(
+            _core_unsupported_tombstone_path(root).read_text(encoding="utf-8"),
+            version,
         ),
     }
     expected.update(
