@@ -1,7 +1,7 @@
 {
   "schema": "native-sol-applicability-v1",
   "note": "Applicability case IDs are requirements-first: each dispatch declares required adversarial behavior here before adding vectors. The coverage gate structurally enforces later multi-request boundaries, upload missing/unreadable/later-file/rejection cases, env explicit/absent or valid-absent cases, and dry-run preview/commit coverage.",
-  "http_count": 43,
+  "http_count": 53,
   "entries": {
     "activities.list": {
       "path": ["activities", "list"],
@@ -518,6 +518,126 @@
       "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
       "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
       "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "import.list-staged": {
+      "path": ["import", "list-staged"],
+      "group": "import",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "import.resolve-config": {
+      "path": ["import", "resolve-config"],
+      "group": "import",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "import.resolve-config-all": {
+      "path": ["import", "resolve-config-all"],
+      "group": "import",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "import.resolve-entity": {
+      "path": ["import", "resolve-entity"],
+      "group": "import",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "import.resolve-staged-facet": {
+      "path": ["import", "resolve-staged-facet"],
+      "group": "import",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": true, "methods": ["POST"]},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "transcripts.read": {
+      "path": ["transcripts", "read"],
+      "group": "transcripts",
+      "pagination": {"enabled": true, "kind": "client-truncate", "case_ids": {"not_truncated": ["transcripts-read-default-explicit"], "truncation": ["transcripts-read-start-length-truncated"], "unlimited": ["transcripts-read-start-unlimited"]}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY", "SOL_SEGMENT", "SOL_STREAM"], "mode": "required_with_invalid", "case_ids": {"explicit": ["transcripts-read-default-explicit"], "valid_absent": ["transcripts-read-hidden-audio-screen-env-selectors"], "absent": ["transcripts-read-absent-day"], "invalid": ["transcripts-read-invalid-day"], "optional_selector": ["transcripts-read-hidden-audio-screen-env-selectors", "transcripts-read-segments-env-stream"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "transcripts.scan": {
+      "path": ["transcripts", "scan"],
+      "group": "transcripts",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY"], "mode": "required_with_invalid", "case_ids": {"explicit": ["transcripts-scan-success-pending"], "env": ["transcripts-scan-env-empty"], "absent": ["transcripts-scan-absent-day"], "invalid": ["transcripts-scan-invalid-day"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "transcripts.segments": {
+      "path": ["transcripts", "segments"],
+      "group": "transcripts",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": true, "vars": ["SOL_DAY"], "mode": "required_with_invalid", "case_ids": {"explicit": ["transcripts-segments-success"], "env": ["transcripts-segments-env"], "absent": ["transcripts-segments-absent-day"], "invalid": ["transcripts-segments-invalid-day"]}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "transcripts.speakers": {
+      "path": ["transcripts", "speakers"],
+      "group": "transcripts",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": false, "request_count": "single", "case_ids": {}}
+    },
+    "transcripts.stats": {
+      "path": ["transcripts", "stats"],
+      "group": "transcripts",
+      "pagination": {"enabled": false, "case_ids": {}},
+      "mutation": {"enabled": false, "methods": []},
+      "upload": {"enabled": false, "file_count": "none", "case_ids": {}},
+      "env_default": {"enabled": false, "vars": [], "case_ids": {}},
+      "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
+      "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
+      "multi_request": {"enabled": true, "request_count": "1..n", "case_ids": {"stats_then_ranges": ["transcripts-stats-success-multi"], "empty_days": ["transcripts-stats-empty"], "later_boundary_failure": ["transcripts-stats-ranges-boundary-failure"]}}
     }
   }
 }

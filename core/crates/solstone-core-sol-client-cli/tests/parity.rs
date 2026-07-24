@@ -30,6 +30,7 @@ const FACETS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/f
 const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
 const HEALTH_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/health_coverage.jsonl");
+const IMPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/import.jsonl");
 const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/ledger.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
@@ -37,6 +38,8 @@ const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/support_coverage.jsonl");
+const TRANSCRIPTS_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/transcripts.jsonl");
 const FILE_ROOT: &str = "/native-sol-parity-files";
 
 #[test]
@@ -50,12 +53,14 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(FACETS_VECTORS))
         .chain(load_vectors(HEALTH_VECTORS))
         .chain(load_vectors(HEALTH_COVERAGE_VECTORS))
+        .chain(load_vectors(IMPORT_VECTORS))
         .chain(load_vectors(LEDGER_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(PROFILE_VECTORS))
         .chain(load_vectors(SOL_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))
+        .chain(load_vectors(TRANSCRIPTS_VECTORS))
     {
         run_vector(&vector);
     }

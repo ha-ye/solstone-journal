@@ -62,6 +62,11 @@ pub fn json_compact_ascii(value: &Value) -> String {
     ensure_ascii(&json_compact(value))
 }
 
+#[must_use]
+pub fn json_compact_utf8(value: &Value) -> String {
+    json_compact(value)
+}
+
 fn sort_json(value: &Value) -> Value {
     match value {
         Value::Array(items) => Value::Array(items.iter().map(sort_json).collect()),
@@ -163,6 +168,14 @@ mod tests {
         assert_eq!(
             json_compact_ascii(&json!({"b": "é", "a": [1, true, null]})),
             "{\"b\": \"\\u00e9\", \"a\": [1, true, null]}"
+        );
+    }
+
+    #[test]
+    fn compact_prints_objects_with_utf8_when_requested() {
+        assert_eq!(
+            json_compact_utf8(&json!({"b": "é", "a": [1, true, null]})),
+            "{\"b\": \"é\", \"a\": [1, true, null]}"
         );
     }
 }

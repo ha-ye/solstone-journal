@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from solstone.apps.body import call as body_call
 from solstone.apps.facets import call as facets_call
 from solstone.apps.sol import call as sol_call
 from solstone.apps.support import call as support_call
+from solstone.apps.transcripts import call as transcripts_call
 from solstone.think import chat_cli
 from solstone.think.call import call_app
 from solstone.think.convey_client import (
@@ -39,6 +41,7 @@ from solstone.think.utils import require_solstone
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PARITY_DIR = REPO_ROOT / "core/fixtures/native-sol/parity"
+import_call = importlib.import_module("solstone.apps.import.call")
 
 
 class ScriptedConveyClient:
@@ -495,11 +498,13 @@ def patched_runtime(
     original_facets_get_client = facets_call.get_client
     original_health_get_client = health_call.get_client
     original_health_datetime = health_call.datetime
+    original_import_get_client = import_call.get_client
     original_ledger_get_client = ledger_call.get_client
     original_profile_get_client = profile_call.get_client
     original_sol_get_client = sol_call.get_client
     original_support_get_client = support_call.get_client
     original_local_build_identity = support_call._local_build_identity
+    original_transcripts_get_client = transcripts_call.get_client
     original_build_client = chat_cli._build_client
     original_open_sse = chat_cli._open_sse
     original_resolve_base_url = chat_cli.resolve_base_url
@@ -530,11 +535,13 @@ def patched_runtime(
     facets_call.get_client = lambda: client
     health_call.get_client = lambda: client
     health_call.datetime = FixedDateTime
+    import_call.get_client = lambda: client
     ledger_call.get_client = lambda: client
     profile_call.get_client = lambda: client
     sol_call.get_client = lambda: client
     support_call.get_client = lambda: client
     support_call._local_build_identity = lambda: build_identity_fixture()
+    transcripts_call.get_client = lambda: client
     chat_cli._build_client = lambda _base_url: client
     chat_cli._open_sse = lambda _base_url: client.open_sse()
     chat_cli.resolve_base_url = lambda: "http://localhost:5015"
@@ -559,11 +566,13 @@ def patched_runtime(
             facets_call.get_client = original_facets_get_client
             health_call.get_client = original_health_get_client
             health_call.datetime = original_health_datetime
+            import_call.get_client = original_import_get_client
             ledger_call.get_client = original_ledger_get_client
             profile_call.get_client = original_profile_get_client
             sol_call.get_client = original_sol_get_client
             support_call.get_client = original_support_get_client
             support_call._local_build_identity = original_local_build_identity
+            transcripts_call.get_client = original_transcripts_get_client
             chat_cli._build_client = original_build_client
             chat_cli._open_sse = original_open_sse
             chat_cli.resolve_base_url = original_resolve_base_url

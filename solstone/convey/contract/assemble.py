@@ -33,6 +33,7 @@ FRAGMENT_MODULES = [
     "solstone.convey.root_contract",
     "solstone.convey.voice_contract",
     "solstone.apps.import.contract",
+    "solstone.apps.transcripts.contract",
 ]
 
 CALLOSUM_REGISTRY: dict[str, list[str]] = {

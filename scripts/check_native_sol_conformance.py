@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import sys
 import tomllib
@@ -25,6 +26,7 @@ from solstone.apps.body.routes import body_bp
 from solstone.apps.curation.routes import curation_bp
 from solstone.apps.sol.routes import sol_bp
 from solstone.apps.support.routes import support_bp
+from solstone.apps.transcripts.routes import transcripts_bp
 from solstone.convey.chat import chat_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
 from solstone.convey.health import bp as health_bp
@@ -48,6 +50,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
     )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+import_bp = importlib.import_module("solstone.apps.import.routes").import_bp
 REASON_CODES_BY_NAME = {
     name: value.code
     for name, value in vars(reasons).items()
@@ -254,6 +257,8 @@ def register_native_blueprints(app: Flask) -> None:
         ledger_bp,
         profile_bp,
         profiles_bp,
+        import_bp,
+        transcripts_bp,
     ):
         app.register_blueprint(blueprint)
 

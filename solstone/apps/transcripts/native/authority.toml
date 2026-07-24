@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["transcripts", "read"]
+kind = "command"
+help = "Read transcript content for a day, segment, or time range."
+operation_id = "transcripts.read"
+entry_type = "http"
+method = "GET"
+route = "/app/transcripts/api/read/{day}"
+contract_operation_id = "transcripts.read"
+handler = "read"
+params = [
+  { name = "day", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "start", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--start"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "length", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, options = ["--length"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segments", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--segments"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "full", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--full"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "raw", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--raw"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "transcripts", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--transcripts"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "audio", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--audio"], secondary = [], hidden = true, is_flag = true, count = false, flag_value = true },
+  { name = "percepts", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--percepts"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "screen", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--screen"], secondary = [], hidden = true, is_flag = true, count = false, flag_value = true },
+  { name = "agents", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--agents"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "max_bytes", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 16384, options = ["--max"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["transcripts", "scan"]
+kind = "command"
+help = "List transcript coverage ranges for a day."
+operation_id = "transcripts.scan"
+entry_type = "http"
+method = "GET"
+route = "/app/transcripts/api/day/{day}"
+contract_operation_id = "transcripts.scan"
+handler = "scan"
+params = [
+  { name = "day", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["transcripts", "segments"]
+kind = "command"
+help = "List recording segments for a day."
+operation_id = "transcripts.segments"
+entry_type = "http"
+method = "GET"
+route = "/app/transcripts/api/segments/{day}"
+contract_operation_id = "transcripts.segments"
+handler = "segments"
+params = [
+  { name = "day", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["transcripts", "speakers"]
+kind = "command"
+help = "List speaker correction rows for one transcript segment."
+operation_id = "transcripts.speakers"
+entry_type = "http"
+method = "GET"
+route = "/app/transcripts/api/segment/{day}/{stream}/{segment_key}"
+contract_operation_id = "transcripts.speakers"
+handler = "speakers"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["transcripts", "stats"]
+kind = "command"
+help = "Show daily transcript coverage counts for a month."
+operation_id = "transcripts.stats"
+entry_type = "http"
+method = "GET"
+route = "/app/transcripts/api/stats/{month}"
+contract_operation_id = "transcripts.stats"
+handler = "stats"
+params = [
+  { name = "month", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["month"], secondary = [], hidden = false, is_flag = false, count = false },
+]

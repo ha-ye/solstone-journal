@@ -3788,6 +3788,460 @@
         ]
       }
     },
+    "/app/import/api/journal-sources/{name}/resolve-config": {
+      "post": {
+        "description": "Apply or keep one staged config field from a journal source.",
+        "operationId": "import.resolve-config",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "action": "apply",
+                "field": "identity.name"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "type": "string"
+                  },
+                  "field": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "field",
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Config field resolution applied."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested resolution action or value was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The journal source or staged import item was not found.",
+            "x-reason-codes": [
+              "import_not_found",
+              "journal_source_problem"
+            ]
+          }
+        },
+        "summary": "Resolve staged journal-source config field",
+        "tags": [
+          "import"
+        ]
+      }
+    },
+    "/app/import/api/journal-sources/{name}/resolve-config-all": {
+      "post": {
+        "description": "Apply all staged config fields in one category.",
+        "operationId": "import.resolve-config-all",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "category": "transferable"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "category"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "count": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Config category resolution applied."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested resolution action or value was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The journal source or staged import item was not found.",
+            "x-reason-codes": [
+              "import_not_found",
+              "journal_source_problem"
+            ]
+          }
+        },
+        "summary": "Resolve staged journal-source config category",
+        "tags": [
+          "import"
+        ]
+      }
+    },
+    "/app/import/api/journal-sources/{name}/resolve-entity": {
+      "post": {
+        "description": "Merge, create, or skip one staged entity from a journal source.",
+        "operationId": "import.resolve-entity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "action": "merge",
+                "source_id": "person_ada",
+                "target": "ada"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "type": "string"
+                  },
+                  "source_id": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_id",
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Entity resolution applied."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested resolution action or value was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The journal source or staged import item was not found.",
+            "x-reason-codes": [
+              "import_not_found",
+              "journal_source_problem"
+            ]
+          }
+        },
+        "summary": "Resolve staged journal-source entity",
+        "tags": [
+          "import"
+        ]
+      }
+    },
+    "/app/import/api/journal-sources/{name}/resolve-facet": {
+      "post": {
+        "description": "Apply or skip one staged facet file from a journal source.",
+        "operationId": "import.resolve-staged-facet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "mode": "apply",
+                "staged_file": "work/facet/foo.staged.json"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "mode": {
+                    "type": "string"
+                  },
+                  "staged_file": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "staged_file",
+                  "mode"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Facet resolution applied."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested resolution action or value was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The journal source or staged import item was not found.",
+            "x-reason-codes": [
+              "import_not_found",
+              "journal_source_problem"
+            ]
+          }
+        },
+        "summary": "Resolve staged journal-source facet",
+        "tags": [
+          "import"
+        ]
+      }
+    },
+    "/app/import/api/journal-sources/{name}/staged": {
+      "get": {
+        "description": "Return staged entity, facet, and config items for a journal source.",
+        "operationId": "import.list-staged",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "area",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Staged import collection."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The requested staged area was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The named journal source was not found.",
+            "x-reason-codes": [
+              "journal_source_problem"
+            ]
+          }
+        },
+        "summary": "List staged journal-source imports",
+        "tags": [
+          "import"
+        ]
+      }
+    },
     "/app/import/api/meta": {
       "post": {
         "description": "Update allowlisted metadata fields on a not-yet-started import.",
@@ -7887,6 +8341,449 @@
         "summary": "Reply to a support ticket",
         "tags": [
           "support"
+        ]
+      }
+    },
+    "/app/transcripts/api/day/{day}": {
+      "get": {
+        "description": "Return transcript and percept ranges plus segment metadata.",
+        "operationId": "transcripts.scan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "audio": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "screen": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "segments": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "audio",
+                    "screen",
+                    "segments"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Transcript day scan."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day was invalid or not found.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          }
+        },
+        "summary": "Read transcript day scan",
+        "tags": [
+          "transcripts"
+        ]
+      }
+    },
+    "/app/transcripts/api/ranges/{day}": {
+      "get": {
+        "description": "Return transcript and percept ranges for one day.",
+        "operationId": "transcripts.ranges",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "audio": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "screen": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "audio",
+                    "screen"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Day transcript and percept ranges."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day was invalid or not found.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          }
+        },
+        "summary": "Read transcript day ranges",
+        "tags": [
+          "transcripts"
+        ]
+      }
+    },
+    "/app/transcripts/api/read/{day}": {
+      "get": {
+        "description": "Return transcript markdown for a day, span, segment, or range.",
+        "operationId": "transcripts.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "transcripts",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "percepts",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agents",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "segment",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "segments",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "markdown": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "markdown"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Transcript markdown."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day, segment, or stream was invalid.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_segment_or_stream"
+            ]
+          }
+        },
+        "summary": "Read transcript markdown",
+        "tags": [
+          "transcripts"
+        ]
+      }
+    },
+    "/app/transcripts/api/segment/{day}/{stream}/{segment_key}": {
+      "get": {
+        "description": "Return segment timeline chunks and speaker-label metadata.",
+        "operationId": "transcripts.speakers",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stream",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "segment_key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "chunks": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "speaker_labels": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "chunks",
+                    "speaker_labels"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Segment timeline and speaker metadata."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day, segment, or stream was invalid.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_segment_or_stream"
+            ]
+          }
+        },
+        "summary": "Read transcript segment speakers",
+        "tags": [
+          "transcripts"
+        ]
+      }
+    },
+    "/app/transcripts/api/segments/{day}": {
+      "get": {
+        "description": "Return segment selector rows for one day.",
+        "operationId": "transcripts.segments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "segments": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "segments"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Segment rows."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied day was invalid or not found.",
+            "x-reason-codes": [
+              "invalid_day"
+            ]
+          }
+        },
+        "summary": "List transcript segments",
+        "tags": [
+          "transcripts"
+        ]
+      }
+    },
+    "/app/transcripts/api/stats/{month}": {
+      "get": {
+        "description": "Return day-count mapping for a transcript coverage month.",
+        "operationId": "transcripts.stats",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "month",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Month day-count mapping."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The supplied month was invalid.",
+            "x-reason-codes": [
+              "invalid_month"
+            ]
+          }
+        },
+        "summary": "Read transcript month stats",
+        "tags": [
+          "transcripts"
         ]
       }
     },

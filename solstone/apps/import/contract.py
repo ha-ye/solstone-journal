@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from solstone.convey.contract import FieldSpec, OperationSpec, RequestSpec, ResponseSpec
+from solstone.convey.contract import (
+    FieldSpec,
+    OperationSpec,
+    ParamSpec,
+    RequestSpec,
+    ResponseSpec,
+)
 
 
 def _json_error(
@@ -125,6 +131,23 @@ _SAVE_RESPONSE_EXAMPLE = {
         "source_inference": "extension",
     },
 }
+_JOURNAL_SOURCE_ERROR = _json_error(
+    404,
+    ("journal_source_problem",),
+    "The named journal source was not found.",
+)
+_JOURNAL_SOURCE_RESOLVE_ERRORS = (
+    _json_error(
+        404,
+        ("journal_source_problem", "import_not_found"),
+        "The journal source or staged import item was not found.",
+    ),
+    _json_error(
+        400,
+        ("invalid_request_value",),
+        "The requested resolution action or value was invalid.",
+    ),
+)
 
 
 OPERATIONS: list[OperationSpec] = [
@@ -371,6 +394,135 @@ OPERATIONS: list[OperationSpec] = [
                 ("pl_revoked",),
                 "Access gate rejected a revoked paired-link identity.",
             ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.list-staged",
+        method="GET",
+        rule="/app/import/api/journal-sources/<name>/staged",
+        summary="List staged journal-source imports",
+        description="Return staged entity, facet, and config items for a journal source.",
+        parameters=(
+            ParamSpec("name", "path"),
+            ParamSpec("area", "query"),
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Staged import collection.",
+                named_fields=(
+                    FieldSpec(
+                        "items",
+                        "array",
+                        required=True,
+                        raw_schema={
+                            "type": "array",
+                            "items": _FREE_OBJECT,
+                        },
+                    ),
+                    FieldSpec("total", "integer", required=True),
+                ),
+            ),
+            _JOURNAL_SOURCE_ERROR,
+            _json_error(
+                400,
+                ("invalid_request_value",),
+                "The requested staged area was invalid.",
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.resolve-entity",
+        method="POST",
+        rule="/app/import/api/journal-sources/<name>/resolve-entity",
+        summary="Resolve staged journal-source entity",
+        description="Merge, create, or skip one staged entity from a journal source.",
+        parameters=(ParamSpec("name", "path"),),
+        request=RequestSpec(
+            fields=(
+                FieldSpec("source_id", "string", required=True),
+                FieldSpec("action", "string", required=True),
+                FieldSpec("target", "string"),
+            ),
+            example={
+                "source_id": "person_ada",
+                "action": "merge",
+                "target": "ada",
+            },
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Entity resolution applied.",
+                free_form=True,
+            ),
+            *_JOURNAL_SOURCE_RESOLVE_ERRORS,
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.resolve-staged-facet",
+        method="POST",
+        rule="/app/import/api/journal-sources/<name>/resolve-facet",
+        summary="Resolve staged journal-source facet",
+        description="Apply or skip one staged facet file from a journal source.",
+        parameters=(ParamSpec("name", "path"),),
+        request=RequestSpec(
+            fields=(
+                FieldSpec("staged_file", "string", required=True),
+                FieldSpec("mode", "string", required=True),
+            ),
+            example={"staged_file": "work/facet/foo.staged.json", "mode": "apply"},
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Facet resolution applied.",
+                named_fields=(FieldSpec("status", "string", required=True),),
+            ),
+            *_JOURNAL_SOURCE_RESOLVE_ERRORS,
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.resolve-config",
+        method="POST",
+        rule="/app/import/api/journal-sources/<name>/resolve-config",
+        summary="Resolve staged journal-source config field",
+        description="Apply or keep one staged config field from a journal source.",
+        parameters=(ParamSpec("name", "path"),),
+        request=RequestSpec(
+            fields=(
+                FieldSpec("field", "string", required=True),
+                FieldSpec("action", "string", required=True),
+            ),
+            example={"field": "identity.name", "action": "apply"},
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Config field resolution applied.",
+                named_fields=(FieldSpec("status", "string", required=True),),
+            ),
+            *_JOURNAL_SOURCE_RESOLVE_ERRORS,
+        ),
+    ),
+    OperationSpec(
+        operation_id="import.resolve-config-all",
+        method="POST",
+        rule="/app/import/api/journal-sources/<name>/resolve-config-all",
+        summary="Resolve staged journal-source config category",
+        description="Apply all staged config fields in one category.",
+        parameters=(ParamSpec("name", "path"),),
+        request=RequestSpec(
+            fields=(FieldSpec("category", "string", required=True),),
+            example={"category": "transferable"},
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Config category resolution applied.",
+                named_fields=(FieldSpec("count", "integer", required=True),),
+            ),
+            *_JOURNAL_SOURCE_RESOLVE_ERRORS,
         ),
     ),
 ]
