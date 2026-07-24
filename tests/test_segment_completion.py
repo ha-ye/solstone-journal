@@ -49,7 +49,7 @@ SEGMENT_E = "094000_300"
 
 
 class _IsolationBreach(BaseException):
-    pass
+    """Bypass run_bounded_phase's bare Exception handler when run_task leaks."""
 
 
 @dataclass
@@ -1002,13 +1002,12 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
 
     assert not (health / "daily.updated").exists()
 
-    # The gate's sense-repair pre-phase re-enters SEGMENT_B's header-only
-    # record-less output and its record terminalizes, clearing that one
-    # not_sensed blocker; the three not_thought segments still withhold the
-    # day. Classifier and gate must therefore agree on the *post-repair*
-    # classification. Comparing the gate's log to the pre-gate snapshot only
-    # held while sense repair was a no-op, which is the absorbing state this
-    # scope removes -- the agreement property itself is unweakened.
+    # This test simulates the daily gate's sense-repair outcome for SEGMENT_B
+    # via an exact-command callback: the record-less header terminalizes
+    # in-process, clearing that one not_sensed blocker. The real re-entry path
+    # is covered by the focused data-state, sense, and describe-promote tests;
+    # this test owns the daily gate's post-repair classification and marker
+    # withholding behavior.
     post_repair = classify_segment_completion(
         cluster_segments(day),
         read_segment_progress(day),
