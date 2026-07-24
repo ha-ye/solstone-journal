@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.think.journal_io.locking import hold_lock
-from solstone.think.models import AttestationFailedError, AttestationStaleError
+from solstone.think.models import AttestationFailedError
 from solstone.think.providers import nvattest_install
 from solstone.think.services import spp, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
@@ -124,7 +125,7 @@ def _stale_session(verdict: object) -> AttestationSession:
     )
 
 
-def test_verify_confidential_attestation_reuses_then_raises_stale_once_then_reestablishes(
+def test_verify_confidential_attestation_reuses_then_rotates_stale_session_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -145,14 +146,6 @@ def test_verify_confidential_attestation_reuses_then_raises_stale_once_then_rees
     assert spp.get_attestation_state().session is not None
 
     spp.record_attestation_verified(_stale_session(verdict))
-    with pytest.raises(AttestationStaleError):
-        spp_transport.verify_confidential_attestation(block)
-
-    state = spp.get_attestation_state()
-    assert state.session is not None
-    assert state.session.status(datetime.now(timezone.utc)) == "stale"
-    assert establish.call_count == 1
-
     spp_transport.verify_confidential_attestation(block)
 
     assert establish.call_count == 2
@@ -161,6 +154,76 @@ def test_verify_confidential_attestation_reuses_then_raises_stale_once_then_rees
         spp.get_attestation_state().session.status(datetime.now(timezone.utc))
         == "verified"
     )
+    spp_transport.verify_confidential_attestation(block)
+    assert establish.call_count == 2
+
+
+def test_concurrent_stale_rotation_establishes_one_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    _patch_listener(monkeypatch)
+    old_verdict = object()
+    old_channel = _FakeChannel(old_verdict)
+    spp.record_attestation_verified(_stale_session(old_verdict))
+    with spp_transport._LOCK:
+        spp_transport._LISTENER = _FakeListener()
+        spp_transport._LISTENER_THREAD = _AliveThread()
+        spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:1111"
+        spp_transport._POOL[:] = [old_channel]
+
+    ensure_barrier = threading.Barrier(2)
+    ensure_calls = 0
+
+    def delayed_ensure(_block):
+        nonlocal ensure_calls
+        ensure_calls += 1
+        ensure_barrier.wait(timeout=2)
+        return Path("/tmp/solstone-nvattest-test")
+
+    establish_started = threading.Event()
+    release_establish = threading.Event()
+
+    def delayed_establish(*_args, **kwargs):
+        establish_started.set()
+        assert release_establish.wait(timeout=2)
+        return _FakeChannel(object(), epoch=kwargs["epoch"])
+
+    establish = Mock(side_effect=delayed_establish)
+    monkeypatch.setattr(
+        spp_transport,
+        "_ensure_nvattest_for_attestation",
+        delayed_ensure,
+    )
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+
+    errors: list[BaseException] = []
+
+    def verify() -> None:
+        try:
+            spp_transport.verify_confidential_attestation(block)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    first = threading.Thread(target=verify)
+    second = threading.Thread(target=verify)
+    first.start()
+    second.start()
+    assert establish_started.wait(timeout=2)
+    assert first.is_alive()
+    assert second.is_alive()
+    release_establish.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert errors == []
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert ensure_calls == 2
+    assert establish.call_count == 1
+    assert old_channel.closed is True
+    assert spp.get_attestation_state().session is not None
 
 
 def test_confidential_egress_base_url_returns_forwarder_not_configured_endpoint(
@@ -236,6 +299,50 @@ def test_confidential_forwarder_base_url_requires_verified_forwarder(
 
     with pytest.raises(AttestationFailedError):
         spp_transport.confidential_forwarder_base_url()
+
+
+def test_stale_rotation_failure_returns_no_forwarder_and_later_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    _patch_listener(monkeypatch)
+    old_verdict = object()
+    spp.record_attestation_verified(_stale_session(old_verdict))
+    old_channel = _FakeChannel(old_verdict)
+    spp_transport._POOL[:] = [old_channel]
+    establish = Mock(
+        side_effect=[
+            RatlsChannelError("gateway_unreachable"),
+            _FakeChannel(object()),
+        ]
+    )
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    pump = Mock(return_value="local_closed")
+    monkeypatch.setattr(spp_transport, "_pump", pump)
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.confidential_egress_base_url(block["endpoint_url"])
+    assert old_channel.closed is True
+    assert spp_transport._FORWARDER_BASE_URL is None
+    assert spp_transport._LISTENER is None
+    assert spp_transport._POOL == []
+    assert spp_transport._ACTIVE == set()
+    assert spp.get_attestation_state().session is None
+    assert spp.get_attestation_state().failure is not None
+    local = _FakeLocal()
+    spp_transport._handle_loopback_connection(local)
+    assert local.closed is True
+    pump.assert_not_called()
+
+    assert (
+        spp_transport.confidential_egress_base_url(block["endpoint_url"])
+        == "http://127.0.0.1:4567"
+    )
+    assert establish.call_count == 2
+    assert spp.get_attestation_state().session is not None
+    assert spp_transport._POOL
+    assert all(channel is not old_channel for channel in spp_transport._POOL)
 
 
 def test_confidential_probe_status_reads_state_without_attestation(

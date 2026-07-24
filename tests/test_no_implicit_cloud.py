@@ -823,8 +823,11 @@ def test_confidential_stt_attestation_failure_blocks_remote_audio_egress(
     establish.assert_called_once()
 
 
-def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypatch):
+def test_confidential_stt_stale_session_replacement_failure_defers_before_egress(
+    tmp_path, monkeypatch
+):
     from solstone.think.services import spp, spp_transport
+    from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
 
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
@@ -835,6 +838,8 @@ def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypat
     spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:4567"
     spp.record_attestation_verified(_stale_session(object()))
     mocks = _install_stt_backend_mocks(monkeypatch, confidential_result=None)
+    establish = Mock(side_effect=RatlsChannelError("gateway_unreachable"))
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
     httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
 
@@ -843,9 +848,10 @@ def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypat
     with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
         transcribe("confidential", _stt_audio(), 16000, {})
 
-    assert exc_info.value.reason_code == "attestation_stale"
+    assert exc_info.value.reason_code == "attestation_unreachable"
     mocks["parakeet"].assert_not_called()
     httpx_post.assert_not_called()
+    establish.assert_called_once()
 
 
 def test_confidential_stt_setting_off_gate_blocks_confidential_only(

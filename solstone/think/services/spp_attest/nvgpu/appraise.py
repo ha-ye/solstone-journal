@@ -28,6 +28,7 @@ from solstone.think.services.spp_attest.snp import AppraisalStep
 from solstone.think.services.spp_attest.tlv import GpuEnvelope
 
 log = logging.getLogger(__name__)
+NVATTEST_TIMEOUT_S = 60.0
 
 
 def appraise_gpu_leg(
@@ -85,7 +86,15 @@ def appraise_gpu_leg(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=NVATTEST_TIMEOUT_S,
             )
+        except subprocess.TimeoutExpired as exc:
+            _log_gpu_appraisal_failure(
+                "gpu_appraisal_failed",
+                exception_class=type(exc).__name__,
+                stderr=exc.stderr,
+            )
+            raise GpuAppraisalError("gpu_appraisal_failed") from exc
         except OSError as exc:
             _log_gpu_appraisal_failure(
                 "nvattest_unavailable",

@@ -27,12 +27,16 @@ from solstone.think.providers.brain_state import (
     DEFAULT_READY_EVIDENCE_TTL,
     BrainProbeOutcome,
     BrainStateConflictError,
+    BrainStateExpectedFingerprintStaleError,
     BrainStateValidationError,
+    abandon_brain_prerequisite_renewal,
     abandon_brain_refresh,
+    begin_brain_prerequisite_renewal,
     begin_brain_refresh,
     brain_fingerprint_key_path,
     brain_state_path,
     build_active_brain_fingerprint,
+    finish_brain_prerequisite_renewal,
     finish_brain_refresh,
     inspect_brain_state,
     project_brain_state,
@@ -1050,6 +1054,392 @@ def test_runtime_failure_ingress_rejects_stale_fingerprint_without_write(
     assert result["rejected_reason"] == "fingerprint_mismatch"
     assert state_path.read_bytes() == prior_bytes
     assert _read_raw_record(tmp_path)["revision"] == prior_revision
+
+
+def test_begin_refresh_expected_active_fingerprint_stales_after_switch(
+    tmp_path: Path,
+) -> None:
+    original = _spp_config(account_id="acct-a")
+    _write_ready_record(tmp_path, original)
+    expected = _current_fingerprint(tmp_path, original)
+    before_record = brain_state_path(journal_path=tmp_path).read_bytes()
+    before_key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+    _write_config(tmp_path, _spp_config(account_id="acct-b"))
+
+    with pytest.raises(BrainStateExpectedFingerprintStaleError):
+        begin_brain_refresh(
+            NOW + timedelta(seconds=1),
+            expected_active_fingerprint_sha256=expected,
+            journal_path=tmp_path,
+        )
+
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == before_record
+    assert brain_fingerprint_key_path(journal_path=tmp_path).read_bytes() == before_key
+
+
+def test_begin_refresh_expected_absent_fingerprint_bootstraps_key(
+    tmp_path: Path,
+) -> None:
+    _write_config(tmp_path, _spp_config())
+    assert not brain_fingerprint_key_path(journal_path=tmp_path).exists()
+
+    permit = begin_brain_refresh(
+        NOW,
+        expect_active_fingerprint_absent=True,
+        journal_path=tmp_path,
+    )
+
+    assert permit is not None
+    assert brain_fingerprint_key_path(journal_path=tmp_path).exists()
+    record = finish_brain_refresh(
+        permit,
+        _ready_outcome(NOW + timedelta(seconds=1)),
+        NOW + timedelta(seconds=1),
+        journal_path=tmp_path,
+    )
+    assert record["aggregate_state"] == "ready"
+    assert record["active_lane"] == "spp"
+
+
+def test_begin_refresh_expected_absent_fingerprint_stales_when_key_exists(
+    tmp_path: Path,
+) -> None:
+    _write_ready_record(tmp_path, _spp_config())
+    before_record = brain_state_path(journal_path=tmp_path).read_bytes()
+    before_key = brain_fingerprint_key_path(journal_path=tmp_path).read_bytes()
+
+    with pytest.raises(BrainStateExpectedFingerprintStaleError):
+        begin_brain_refresh(
+            NOW + timedelta(seconds=1),
+            expect_active_fingerprint_absent=True,
+            journal_path=tmp_path,
+        )
+
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == before_record
+    assert brain_fingerprint_key_path(journal_path=tmp_path).read_bytes() == before_key
+
+
+def test_prerequisite_renewal_preserves_same_fingerprint_model_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    before = _read_raw_record(tmp_path)
+    expected = _current_fingerprint(tmp_path, config)
+    begin = begin_brain_prerequisite_renewal(
+        NOW + timedelta(minutes=1),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+
+    assert begin["status"] == "started"
+    checking = _read_raw_record(tmp_path)
+    assert checking["aggregate_state"] == "checking"
+    assert checking["evidence"]["generate"] == before["evidence"]["generate"]
+    assert checking["evidence"]["cogitate"] == before["evidence"]["cogitate"]
+
+    finish_now = NOW + timedelta(minutes=2)
+    record = finish_brain_prerequisite_renewal(
+        begin["permit"],
+        _component(finish_now, expires_at=finish_now + timedelta(minutes=10)),
+        finish_now,
+        journal_path=tmp_path,
+    )
+
+    assert record["aggregate_state"] == "ready"
+    assert record["revision"] == before["revision"] + 2
+    assert record["evidence"]["configuration"] == before["evidence"]["configuration"]
+    assert record["evidence"]["generate"] == before["evidence"]["generate"]
+    assert record["evidence"]["cogitate"] == before["evidence"]["cogitate"]
+    assert (
+        record["evidence"]["lane_prerequisites"]["observed_at"]
+        == finish_now.isoformat()
+    )
+
+
+def test_prerequisite_renewal_refuses_expired_model_evidence(tmp_path: Path) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    raw = _read_raw_record(tmp_path)
+    raw["evidence"]["generate"]["expires_at"] = (NOW - timedelta(seconds=1)).isoformat()
+    atomic_replace(brain_state_path(journal_path=tmp_path), json.dumps(raw), mode=0o600)
+    expected = _current_fingerprint(tmp_path, config)
+
+    result = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+
+    assert result["status"] == "unsafe"
+    assert _read_raw_record(tmp_path)["revision"] == raw["revision"]
+
+
+def test_prerequisite_renewal_reports_busy_when_refresh_lease_is_held(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    holder = begin_brain_refresh(NOW + timedelta(seconds=1), journal_path=tmp_path)
+    assert holder is not None
+    try:
+        result = begin_brain_prerequisite_renewal(
+            NOW + timedelta(seconds=2),
+            expected_fingerprint_sha256=_current_fingerprint(tmp_path, config),
+            journal_path=tmp_path,
+        )
+    finally:
+        holder.release()
+
+    assert result["status"] == "busy"
+
+
+def test_prerequisite_renewal_refuses_non_spp_lane(tmp_path: Path) -> None:
+    config = _cloud_config()
+    _write_ready_record(tmp_path, config)
+    before = brain_state_path(journal_path=tmp_path).read_bytes()
+
+    result = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256=_current_fingerprint(tmp_path, config),
+        journal_path=tmp_path,
+    )
+
+    assert result["status"] == "unsafe"
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda raw: raw["evidence"].__setitem__("generate", None),
+        lambda raw: raw["evidence"]["generate"].__setitem__("status", "failed"),
+        lambda raw: raw["evidence"]["generate"].__setitem__("expires_at", "not-time"),
+    ),
+)
+def test_prerequisite_renewal_refuses_missing_malformed_or_non_ok_model_evidence(
+    tmp_path: Path,
+    mutation,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    raw = _read_raw_record(tmp_path)
+    mutation(raw)
+    atomic_replace(brain_state_path(journal_path=tmp_path), json.dumps(raw), mode=0o600)
+    before = brain_state_path(journal_path=tmp_path).read_bytes()
+
+    result = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256=_current_fingerprint(tmp_path, config),
+        journal_path=tmp_path,
+    )
+
+    assert result["status"] == "unsafe"
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == before
+
+
+def test_prerequisite_renewal_expected_fingerprint_mismatch_is_no_write(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    before = brain_state_path(journal_path=tmp_path).read_bytes()
+
+    result = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256="0" * 64,
+        journal_path=tmp_path,
+    )
+
+    assert result["status"] == "unsafe"
+    assert result["reason"] == "fingerprint_mismatch"
+    assert brain_state_path(journal_path=tmp_path).read_bytes() == before
+
+
+def test_prerequisite_renewal_recovers_orphaned_checking_after_lease_released(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    first = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert first["status"] == "started"
+    first["permit"].release()
+    orphaned = _read_raw_record(tmp_path)
+    assert orphaned["aggregate_state"] == "checking"
+
+    second = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=2),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert second["status"] == "started"
+    recovered = _read_raw_record(tmp_path)
+    assert recovered["revision"] == orphaned["revision"] + 1
+    assert recovered["checking"]["run_id"] != orphaned["checking"]["run_id"]
+    second["permit"].release()
+
+
+def test_prerequisite_renewal_expired_permit_conflicts_and_releases(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    begin = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert begin["status"] == "started"
+    permit = begin["permit"]
+
+    with pytest.raises(BrainStateConflictError):
+        finish_brain_prerequisite_renewal(
+            permit,
+            _component(
+                permit.expires_at, expires_at=permit.expires_at + timedelta(minutes=10)
+            ),
+            permit.expires_at,
+            journal_path=tmp_path,
+        )
+
+    retry = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert retry["status"] == "started"
+    retry["permit"].release()
+
+
+def test_prerequisite_renewal_conflicts_on_revision_drift_and_releases(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    begin = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert begin["status"] == "started"
+    raw = _read_raw_record(tmp_path)
+    raw["revision"] += 1
+    raw["checking"]["checking_revision"] = raw["revision"]
+    atomic_replace(brain_state_path(journal_path=tmp_path), json.dumps(raw), mode=0o600)
+
+    with pytest.raises(BrainStateConflictError):
+        finish_brain_prerequisite_renewal(
+            begin["permit"],
+            _component(NOW + timedelta(seconds=1)),
+            NOW + timedelta(seconds=1),
+            journal_path=tmp_path,
+        )
+
+    retry = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=2),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert retry["status"] == "started"
+    retry["permit"].release()
+
+
+def test_prerequisite_renewal_conflicts_on_runtime_marker_drift_and_releases(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    begin = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert begin["status"] == "started"
+    raw = _read_raw_record(tmp_path)
+    raw["checking"]["runtime_failure_marker_seen"] = "changed-marker"
+    atomic_replace(brain_state_path(journal_path=tmp_path), json.dumps(raw), mode=0o600)
+
+    with pytest.raises(BrainStateConflictError):
+        finish_brain_prerequisite_renewal(
+            begin["permit"],
+            _component(NOW + timedelta(seconds=1)),
+            NOW + timedelta(seconds=1),
+            journal_path=tmp_path,
+        )
+
+    retry = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=2),
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert retry["status"] == "started"
+    retry["permit"].release()
+
+
+def test_prerequisite_renewal_conflicts_on_fingerprint_drift(tmp_path: Path) -> None:
+    config = _spp_config(account_id="acct-a")
+    _write_ready_record(tmp_path, config)
+    expected = _current_fingerprint(tmp_path, config)
+    begin = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=expected,
+        journal_path=tmp_path,
+    )
+    assert begin["status"] == "started"
+    _write_config(tmp_path, _spp_config(account_id="acct-b"))
+
+    with pytest.raises(BrainStateConflictError):
+        finish_brain_prerequisite_renewal(
+            begin["permit"],
+            _component(NOW, expires_at=NOW + timedelta(minutes=10)),
+            NOW,
+            journal_path=tmp_path,
+        )
+
+    retry = begin_brain_prerequisite_renewal(
+        NOW + timedelta(seconds=1),
+        expected_fingerprint_sha256=_current_fingerprint(
+            tmp_path, _spp_config(account_id="acct-b")
+        ),
+        journal_path=tmp_path,
+    )
+    assert retry["status"] == "unsafe"
+
+
+def test_prerequisite_renewal_abandon_records_failure_without_losing_model_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _spp_config()
+    _write_ready_record(tmp_path, config)
+    before = _read_raw_record(tmp_path)
+    begin = begin_brain_prerequisite_renewal(
+        NOW,
+        expected_fingerprint_sha256=_current_fingerprint(tmp_path, config),
+        journal_path=tmp_path,
+    )
+    assert begin["status"] == "started"
+
+    record = abandon_brain_prerequisite_renewal(
+        begin["permit"],
+        "probe_internal_error",
+        NOW + timedelta(seconds=1),
+        journal_path=tmp_path,
+    )
+
+    assert record["reason_code"] == "probe_internal_error"
+    assert record["evidence"]["lane_prerequisites"]["reason_code"] == (
+        "probe_internal_error"
+    )
+    assert record["evidence"]["generate"] == before["evidence"]["generate"]
+    assert record["evidence"]["cogitate"] == before["evidence"]["cogitate"]
 
 
 def test_key_replacement_invalidates_prior_ready_record(tmp_path: Path) -> None:

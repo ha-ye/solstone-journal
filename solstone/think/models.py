@@ -292,8 +292,9 @@ class AttestationStaleError(AttestationNotVerifiedError):
 
 
 # Attestation failures are non-retryable. AttestationFailedError is raised by
-# solstone.think.services.spp_attest.composite.verify_composite; AttestationStaleError
-# is reserved for the follow-on verifier when a session's cadence windows lapse.
+# solstone.think.services.spp_attest.composite.verify_composite. AttestationStaleError
+# remains part of the verifier contract; the process-local egress transport rotates
+# stale live sessions inline before forwarding bytes.
 _CONFIDENTIAL_ATTESTATION_VERIFIER: Callable[[dict[str, Any]], None] | None = None
 
 

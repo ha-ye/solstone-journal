@@ -588,6 +588,7 @@ def test_get_command_name():
     assert get(["journal", "indexer", "--rescan"]) == "indexer"
     assert get(["sol", "insight", "20240101"]) == "insight"
     assert get(["journal", "think", "--day", "20240101"]) == "daily"
+    assert get(["journal", "brain", "renew-prerequisites"]) == "brain"
     assert get(["journal", "maintenance", "list"]) == "maintenance"
     assert get(["journal", "maintenance", "run", "foo:bar"]) == "maintenance:foo:bar"
     assert get(["journal", "maintenance", "run", "baz:qux"]) == "maintenance:baz:qux"

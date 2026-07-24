@@ -34,15 +34,20 @@ from solstone.think.providers.brain_state import (
     BrainEvidenceComponent,
     BrainProbeOutcome,
     BrainStateConflictError,
+    BrainStateExpectedFingerprintStaleError,
     BrainStateInspection,
     BrainStateRecord,
+    abandon_brain_prerequisite_renewal,
     abandon_brain_refresh,
+    begin_brain_prerequisite_renewal,
     begin_brain_refresh,
     brain_state_path,
     build_active_brain_fingerprint,
+    finish_brain_prerequisite_renewal,
     finish_brain_refresh,
     inspect_brain_state,
     probe_brain_refresh_lease_held,
+    read_active_brain_fingerprint_sha256,
     runtime_phase_reason,
 )
 from solstone.think.providers.runtime_health import (
@@ -331,6 +336,21 @@ def _expected_fingerprint_matches(expected: str) -> bool:
     return _current_bundled_runtime_fingerprint(config) == expected
 
 
+def _expected_active_fingerprint_matches(expected: str) -> bool:
+    try:
+        return read_active_brain_fingerprint_sha256() == expected
+    except Exception:
+        return False
+
+
+def _expected_refresh_fingerprint_matches(
+    args: argparse.Namespace, expected: str
+) -> bool:
+    if getattr(args, "expected_active_fingerprint", False):
+        return _expected_active_fingerprint_matches(expected)
+    return _expected_fingerprint_matches(expected)
+
+
 def _runtime_diagnostic(
     reason_code: str,
     *,
@@ -422,6 +442,7 @@ def _spp_prerequisite(now: datetime) -> tuple[BrainEvidenceComponent, str | None
     try:
         recheck_confidential_attestation()
     except AttestationStaleError:
+        # Compatibility for verifier implementations that report stale directly.
         return _failed_component(now, "attestation_expired"), "attestation_expired"
     except AttestationFailedError:
         return _failed_component(now, "attestation_rejected"), "attestation_rejected"
@@ -620,10 +641,82 @@ def _render_stale_expected(args: argparse.Namespace) -> int:
     return brain_exit_code(refresh_outcome="stale_expected_fingerprint")
 
 
+def _refresh_args_for_active_fallback(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        json=args.json,
+        expected_fingerprint=args.expected_fingerprint,
+        expected_active_fingerprint=True,
+        expect_active_fingerprint_absent=False,
+    )
+
+
+def _run_renew_prerequisites(args: argparse.Namespace) -> int:
+    now = _now()
+    expected = args.expected_fingerprint
+    if expected and not _expected_active_fingerprint_matches(expected):
+        return _render_stale_expected(args)
+
+    begin = begin_brain_prerequisite_renewal(
+        now,
+        expected_fingerprint_sha256=expected,
+        run_id=uuid.uuid4().hex,
+    )
+    if begin["status"] == "busy":
+        inspection = inspect_brain_state(now)
+        view = _view_from_inspection(inspection, now)
+        busy = _transient_view(
+            "busy",
+            active_lane=view.active_lane,
+            active_provider=view.active_provider,
+            active_model=view.active_model,
+            fingerprint_sha256=view.fingerprint_sha256,
+        )
+        render(busy, json_output=args.json)
+        return brain_exit_code(refresh_outcome="busy")
+    if begin["status"] == "unsafe":
+        return _run_refresh(_refresh_args_for_active_fallback(args))
+
+    permit = begin["permit"]
+    try:
+        lane_prerequisites, _reason = _spp_prerequisite(now)
+    except Exception:
+        LOG.exception("brain prerequisite renewal probe failed")
+        try:
+            record = abandon_brain_prerequisite_renewal(
+                permit,
+                "probe_internal_error",
+                now,
+            )
+        except BrainStateConflictError:
+            lost = _transient_view("lost_fence")
+            render(lost, json_output=args.json)
+            return brain_exit_code(refresh_outcome="lost_fence")
+    else:
+        try:
+            record = finish_brain_prerequisite_renewal(
+                permit,
+                lane_prerequisites,
+                now,
+            )
+        except BrainStateConflictError:
+            lost = _transient_view("lost_fence")
+            render(lost, json_output=args.json)
+            return brain_exit_code(refresh_outcome="lost_fence")
+
+    inspection = inspect_brain_state(now)
+    view = _view_from_inspection(inspection, now)
+    render(view, json_output=args.json)
+    return brain_exit_code(aggregate_state=record["aggregate_state"])
+
+
 def _run_refresh(args: argparse.Namespace) -> int:
     now = _now()
     expected = args.expected_fingerprint
-    if expected and not _expected_fingerprint_matches(expected):
+    expected_active = getattr(args, "expected_active_fingerprint", False)
+    expected_absent = getattr(args, "expect_active_fingerprint_absent", False)
+    if expected and expected_absent:
+        return _render_stale_expected(args)
+    if expected and not _expected_refresh_fingerprint_matches(args, expected):
         return _render_stale_expected(args)
 
     inspection = inspect_brain_state(now)
@@ -631,11 +724,24 @@ def _run_refresh(args: argparse.Namespace) -> int:
     if view.reason_code == "configuration_invalid":
         render(view, json_output=args.json)
         return brain_exit_code(aggregate_state=view.aggregate_state)
-    if expected and view.aggregate_state == "ready":
+    if (
+        expected
+        and not expected_active
+        and not expected_absent
+        and view.aggregate_state == "ready"
+    ):
         render(view, json_output=args.json)
         return brain_exit_code(aggregate_state=view.aggregate_state)
 
-    permit = begin_brain_refresh(now, run_id=uuid.uuid4().hex)
+    try:
+        permit = begin_brain_refresh(
+            now,
+            run_id=uuid.uuid4().hex,
+            expected_active_fingerprint_sha256=expected if expected_active else None,
+            expect_active_fingerprint_absent=expected_absent,
+        )
+    except BrainStateExpectedFingerprintStaleError:
+        return _render_stale_expected(args)
     if permit is None:
         busy = False
         try:
@@ -719,6 +825,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-fingerprint",
         help="Only refresh if the bundled runtime fingerprint still matches",
     )
+    refresh_parser.add_argument(
+        "--expected-active-fingerprint",
+        action="store_true",
+        help="Interpret --expected-fingerprint as the active brain fingerprint",
+    )
+    refresh_parser.add_argument(
+        "--expect-active-fingerprint-absent",
+        action="store_true",
+        help="Only refresh if no active brain fingerprint exists yet",
+    )
+    renew_parser = subparsers.add_parser(
+        "renew-prerequisites",
+        help=argparse.SUPPRESS,
+    )
+    renew_parser.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    renew_parser.add_argument(
+        "--expected-fingerprint",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -727,6 +852,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return _run_status(args)
     if args.subcommand == "refresh":
         return _run_refresh(args)
+    if args.subcommand == "renew-prerequisites":
+        return _run_renew_prerequisites(args)
     parser.print_help()
     return 2
 

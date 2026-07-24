@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from OpenSSL import SSL
 
-from solstone.think.models import AttestationFailedError, AttestationStaleError
+from solstone.think.models import AttestationFailedError
 from solstone.think.providers.nvattest_install import (
     ensure_nvattest_installed,
     nvattest_cache_ready,
@@ -260,7 +260,7 @@ def _establish_and_record_locked(
     )
 
 
-def _reuse_or_raise_stale_locked(now: datetime) -> bool:
+def _reuse_or_teardown_stale_locked(now: datetime) -> bool:
     state = spp.get_attestation_state()
     if (
         state.session is not None
@@ -274,9 +274,6 @@ def _reuse_or_raise_stale_locked(now: datetime) -> bool:
         and _transport_live_locked()
     ):
         _teardown_locked()
-        raise AttestationStaleError(
-            "the confidential attestation cadence lapsed (attestation_stale)"
-        )
     return False
 
 
@@ -286,13 +283,13 @@ def verify_confidential_attestation(block: dict[str, Any]) -> None:
     now = datetime.now(timezone.utc)
     with _LOCK:
         _CONFIDENTIAL_BLOCK = dict(block)
-        if _reuse_or_raise_stale_locked(now):
+        if _reuse_or_teardown_stale_locked(now):
             return
 
     nvattest_dir = _ensure_nvattest_for_attestation(block)
     with _LOCK:
         _CONFIDENTIAL_BLOCK = dict(block)
-        if _reuse_or_raise_stale_locked(now):
+        if _reuse_or_teardown_stale_locked(now):
             return
         _establish_and_record_locked(block, now, nvattest_dir=nvattest_dir)
 

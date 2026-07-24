@@ -26,14 +26,20 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from solstone.think.callosum import CallosumConnection
 from solstone.think.models import calc_agent_cost
-from solstone.think.providers.brain_state import inspect_brain_state
+from solstone.think.providers.brain_state import (
+    inspect_brain_state,
+    read_active_brain_fingerprint_sha256,
+)
 from solstone.think.runner import _atomic_symlink
+from solstone.think.services.spp_attest.cadence import TPM_HEARTBEAT_INTERVAL
 from solstone.think.talent import get_output_path
 from solstone.think.talents import TALENT_EXECUTION_MODULE
 from solstone.think.utils import get_journal, get_rev, now_ms
@@ -100,10 +106,546 @@ class TalentProcess:
             return
 
 
+SPP_RENEWAL_ATTEMPT_BOUND_S = 120.0
+SPP_REFRESH_OBSERVATION_BOUND_S = 300.0
+SPP_RENEWAL_RETRY_DELAYS_S = (5.0, 10.0, 20.0, 40.0, 60.0)
+SPP_RENEWAL_PROACTIVE_MARGIN_S = (
+    SPP_RENEWAL_ATTEMPT_BOUND_S + SPP_RENEWAL_RETRY_DELAYS_S[0]
+)
+SPP_RENEWAL_ACK_TIMEOUT_S = 15.0
+SPP_RENEWAL_MAX_WAIT_S = 60.0
+assert SPP_RENEWAL_PROACTIVE_MARGIN_S < TPM_HEARTBEAT_INTERVAL.total_seconds() / 2
+
+
+class SppRenewalController:
+    """Unattended SPP prerequisite renewal controller for Cortex."""
+
+    def __init__(
+        self,
+        *,
+        callosum: CallosumConnection,
+        stop_event: threading.Event,
+        logger: logging.Logger,
+        clock: Callable[[], datetime],
+        wait: Callable[[float], bool],
+        journal_path: Path,
+    ) -> None:
+        self.callosum = callosum
+        self.stop_event = stop_event
+        self.logger = logger
+        self.clock = clock
+        self.wait = wait
+        self.journal_path = journal_path
+        self._pending_ref: str | None = None
+        self._pending_action: str | None = None
+        self._pending_fingerprint: str | None = None
+        self._pending_expect_fingerprint_absent = False
+        self._pending_observed_at: datetime | None = None
+        self._pending_expires_at: datetime | None = None
+        self._ack_deadline: datetime | None = None
+        self._running_ref: str | None = None
+        self._running_action: str | None = None
+        self._running_fingerprint: str | None = None
+        self._running_expect_fingerprint_absent = False
+        self._running_observed_at: datetime | None = None
+        self._running_expires_at: datetime | None = None
+        self._running_deadline: datetime | None = None
+        self._successor_after_ref: str | None = None
+        self._successor_deadline: datetime | None = None
+        self._retry_index = 0
+        self._retry_after: datetime | None = None
+        self._last_mode: str | None = None
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                delay = self.step()
+            except Exception as exc:
+                now = self._now()
+                self._handle_step_exception(exc, now)
+                delay = self._seconds_until(
+                    self._retry_after, now, default=SPP_RENEWAL_RETRY_DELAYS_S[0]
+                )
+            self.wait(max(0.0, min(delay, SPP_RENEWAL_MAX_WAIT_S)))
+
+    def step(self) -> float:
+        now = self._now()
+        try:
+            return self._step(now)
+        except Exception as exc:
+            self._handle_step_exception(exc, now)
+            return self._seconds_until(
+                self._retry_after, now, default=SPP_RENEWAL_RETRY_DELAYS_S[0]
+            )
+
+    def _step(self, now: datetime) -> float:
+        if self._spp_disabled(now):
+            self._clear_demand()
+            if self._last_mode != "disabled":
+                self._log("disabled", reason="non_spp_lane")
+            self._last_mode = "disabled"
+            return 30.0
+        if self._pending_ref is not None:
+            if self._ack_deadline is not None and now >= self._ack_deadline:
+                self._log("failed", reason="start_ack_timeout", ref=self._pending_ref)
+                self._clear_pending()
+                self._schedule_retry(now)
+            return self._seconds_until(self._ack_deadline, now, default=5.0)
+        if self._running_ref is not None:
+            if self._running_deadline is not None and now >= self._running_deadline:
+                self._log(
+                    "stale", reason="running_observation_timeout", ref=self._running_ref
+                )
+                self._clear_running()
+                self._schedule_retry(now)
+                return self._seconds_until(
+                    self._retry_after, now, default=SPP_RENEWAL_RETRY_DELAYS_S[0]
+                )
+            return self._seconds_until(self._running_deadline, now, default=5.0)
+        if self._successor_after_ref is not None:
+            if self._successor_deadline is not None and now < self._successor_deadline:
+                return self._seconds_until(
+                    self._successor_deadline,
+                    now,
+                    default=5.0,
+                )
+            self._log(
+                "stale",
+                reason="successor_observation_timeout",
+                active_ref=self._successor_after_ref,
+            )
+            self._clear_successor()
+        if self._retry_after is not None:
+            if now < self._retry_after:
+                return self._seconds_until(self._retry_after, now, default=5.0)
+            self._retry_after = None
+
+        plan = self._plan(now)
+        if plan["action"] == "disabled":
+            self._clear_demand()
+            if self._last_mode != "disabled":
+                self._log("disabled", reason=plan.get("reason"))
+            self._last_mode = "disabled"
+            return 30.0
+        self._last_mode = plan["action"]
+        if plan["action"] == "checking":
+            return 5.0
+        if plan["action"] == "wait":
+            return float(plan["delay"])
+        if plan["action"] in {"renew", "refresh"}:
+            if self._send_request(plan):
+                return SPP_RENEWAL_ACK_TIMEOUT_S
+            return self._seconds_until(
+                self._retry_after,
+                now,
+                default=SPP_RENEWAL_RETRY_DELAYS_S[0],
+            )
+        return 30.0
+
+    def _spp_disabled(self, now: datetime) -> bool:
+        inspection = inspect_brain_state(now, journal_path=self.journal_path)
+        return inspection["projection"]["active_lane"] != "spp"
+
+    def handle_supervisor_message(self, message: dict[str, Any]) -> None:
+        if message.get("tract") != "supervisor":
+            return
+        event = message.get("event")
+        ref = message.get("ref")
+        now = self._now()
+        if event == "started" and ref == self._pending_ref:
+            self._running_ref = self._pending_ref
+            self._running_action = self._pending_action
+            self._running_fingerprint = self._pending_fingerprint
+            self._running_expect_fingerprint_absent = (
+                self._pending_expect_fingerprint_absent
+            )
+            self._running_observed_at = self._pending_observed_at
+            self._running_expires_at = self._pending_expires_at
+            self._running_deadline = datetime.fromtimestamp(
+                now.timestamp() + self._observation_bound(self._pending_action),
+                tz=timezone.utc,
+            )
+            self._log("in_flight", ref=self._running_ref, action=self._running_action)
+            self._clear_pending(keep_retry=True)
+            return
+        if event == "skipped" and ref == self._pending_ref:
+            active_ref = message.get("active_ref")
+            self._log(
+                "in_flight",
+                reason=str(message.get("reason") or "skipped"),
+                ref=ref,
+                active_ref=str(active_ref) if active_ref else None,
+            )
+            self._successor_after_ref = str(active_ref) if active_ref else None
+            self._successor_deadline = (
+                datetime.fromtimestamp(
+                    now.timestamp() + SPP_REFRESH_OBSERVATION_BOUND_S,
+                    tz=timezone.utc,
+                )
+                if self._successor_after_ref is not None
+                else None
+            )
+            self._clear_pending(keep_retry=True)
+            if self._successor_after_ref is None:
+                self._schedule_retry(now)
+            return
+        if event == "stopped":
+            if ref == self._running_ref:
+                self._verify_running_result(self._exit_code(message), now)
+                return
+            if ref == self._successor_after_ref:
+                self._clear_successor()
+
+    def _plan(self, now: datetime) -> dict[str, Any]:
+        inspection = inspect_brain_state(now, journal_path=self.journal_path)
+        projection = inspection["projection"]
+        if projection["active_lane"] != "spp":
+            return {"action": "disabled", "reason": "non_spp_lane"}
+        if projection["aggregate_state"] == "checking":
+            return {"action": "checking"}
+
+        fingerprint = read_active_brain_fingerprint_sha256(
+            journal_path=self.journal_path
+        )
+        if fingerprint is None:
+            return {
+                "action": "refresh",
+                "fingerprint": None,
+                "expect_fingerprint_absent": True,
+            }
+        record = inspection["record"]
+        component = None
+        if record is not None:
+            component = record["evidence"].get("lane_prerequisites")
+        observed_at = None
+        expires_at = None
+        if isinstance(component, dict):
+            observed_at = self._parse_time(component.get("observed_at"))
+            expires_at = self._parse_time(component.get("expires_at"))
+        if (
+            projection["aggregate_state"] != "ready"
+            or not isinstance(record, dict)
+            or record.get("fingerprint_sha256") != fingerprint
+            or not isinstance(component, dict)
+            or component.get("status") != "ok"
+        ):
+            return {
+                "action": "refresh",
+                "fingerprint": fingerprint,
+                "observed_at": observed_at,
+                "expires_at": expires_at,
+            }
+
+        if observed_at is None or expires_at is None:
+            return {
+                "action": "refresh",
+                "fingerprint": fingerprint,
+                "observed_at": observed_at,
+                "expires_at": expires_at,
+            }
+        if now >= expires_at:
+            return {
+                "action": "refresh",
+                "fingerprint": fingerprint,
+                "observed_at": observed_at,
+                "expires_at": expires_at,
+            }
+        renew_at = expires_at.timestamp() - SPP_RENEWAL_PROACTIVE_MARGIN_S
+        delay = renew_at - now.timestamp()
+        if delay > 0:
+            self._log("scheduled", delay_s=round(delay, 3))
+            return {"action": "wait", "delay": delay}
+        return {
+            "action": "renew",
+            "fingerprint": fingerprint,
+            "observed_at": observed_at,
+            "expires_at": expires_at,
+        }
+
+    def _send_request(self, plan: dict[str, Any]) -> bool:
+        action = str(plan["action"])
+        fingerprint = plan.get("fingerprint")
+        ref = f"spp-renewal-{uuid.uuid4().hex}"
+        if action == "renew":
+            cmd = [
+                "journal",
+                "brain",
+                "renew-prerequisites",
+                "--json",
+                "--expected-fingerprint",
+                str(fingerprint),
+            ]
+        else:
+            expect_absent = bool(plan.get("expect_fingerprint_absent"))
+            if fingerprint is None and not expect_absent:
+                self._log("failed", reason="fingerprint_unavailable", action=action)
+                self._schedule_retry(self._now())
+                return False
+            cmd = ["journal", "brain", "refresh", "--json"]
+            if expect_absent:
+                cmd.append("--expect-active-fingerprint-absent")
+            else:
+                cmd.extend(
+                    [
+                        "--expected-fingerprint",
+                        str(fingerprint),
+                        "--expected-active-fingerprint",
+                    ]
+                )
+        now = self._now()
+        try:
+            self.callosum.emit(
+                "supervisor",
+                "request",
+                cmd=cmd,
+                ref=ref,
+                scheduler_name="spp-renewal",
+            )
+        except Exception as exc:
+            self._log("failed", reason=type(exc).__name__, action=action)
+            self._schedule_retry(now)
+            return False
+        self._pending_ref = ref
+        self._pending_action = action
+        self._pending_fingerprint = str(fingerprint) if fingerprint else None
+        self._pending_expect_fingerprint_absent = bool(
+            plan.get("expect_fingerprint_absent")
+        )
+        self._pending_observed_at = plan.get("observed_at")
+        self._pending_expires_at = plan.get("expires_at")
+        self._ack_deadline = datetime.fromtimestamp(
+            now.timestamp() + SPP_RENEWAL_ACK_TIMEOUT_S, tz=timezone.utc
+        )
+        self._log("in_flight", ref=ref, action=action)
+        return True
+
+    def _verify_running_result(self, exit_code: int, now: datetime) -> None:
+        action = self._running_action
+        fingerprint = self._running_fingerprint
+        expect_absent = self._running_expect_fingerprint_absent
+        previous_observed = self._running_observed_at
+        previous_expires = self._running_expires_at
+        ref = self._running_ref
+        self._clear_running()
+        if action == "renew" and self._persisted_spp_prerequisite_verified(
+            fingerprint,
+            previous_observed,
+            previous_expires,
+            now,
+            require_ready=False,
+        ):
+            self._retry_index = 0
+            self._retry_after = None
+            self._log("verified", ref=ref)
+            return
+        if (
+            action == "refresh"
+            and exit_code == 0
+            and (
+                self._persisted_spp_prerequisite_verified(
+                    fingerprint,
+                    previous_observed,
+                    previous_expires,
+                    now,
+                    require_ready=True,
+                )
+                if not expect_absent
+                else self._persisted_spp_absence_bootstrap_verified(
+                    previous_observed,
+                    previous_expires,
+                    now,
+                )
+            )
+        ):
+            self._retry_index = 0
+            self._retry_after = None
+            self._log("verified", ref=ref, action="refresh")
+            return
+        self._log("failed", ref=ref, action=action, exit_code=exit_code)
+        self._schedule_retry(now)
+
+    def _persisted_spp_prerequisite_verified(
+        self,
+        fingerprint: str | None,
+        previous_observed: datetime | None,
+        previous_expires: datetime | None,
+        now: datetime,
+        *,
+        require_ready: bool,
+    ) -> bool:
+        if fingerprint is None:
+            return False
+        try:
+            active_fingerprint = read_active_brain_fingerprint_sha256(
+                journal_path=self.journal_path
+            )
+            inspection = inspect_brain_state(now, journal_path=self.journal_path)
+        except Exception:
+            return False
+        if active_fingerprint != fingerprint:
+            return False
+        projection = inspection["projection"]
+        if projection["active_lane"] != "spp":
+            return False
+        if require_ready and projection["aggregate_state"] != "ready":
+            return False
+        record = inspection["record"]
+        if record is None or record["active_lane"] != "spp":
+            return False
+        if record["fingerprint_sha256"] != fingerprint:
+            return False
+        component = record["evidence"].get("lane_prerequisites")
+        if not isinstance(component, dict) or component.get("status") != "ok":
+            return False
+        observed_at = self._parse_time(component.get("observed_at"))
+        expires_at = self._parse_time(component.get("expires_at"))
+        return (
+            observed_at is not None
+            and expires_at is not None
+            and (previous_observed is None or observed_at > previous_observed)
+            and (previous_expires is None or expires_at > previous_expires)
+        )
+
+    def _persisted_spp_absence_bootstrap_verified(
+        self,
+        previous_observed: datetime | None,
+        previous_expires: datetime | None,
+        now: datetime,
+    ) -> bool:
+        try:
+            active_fingerprint = read_active_brain_fingerprint_sha256(
+                journal_path=self.journal_path
+            )
+            inspection = inspect_brain_state(now, journal_path=self.journal_path)
+        except Exception:
+            return False
+        if active_fingerprint is None:
+            return False
+        projection = inspection["projection"]
+        if (
+            projection["active_lane"] != "spp"
+            or projection["aggregate_state"] != "ready"
+        ):
+            return False
+        record = inspection["record"]
+        if record is None or record["active_lane"] != "spp":
+            return False
+        if record["fingerprint_sha256"] != active_fingerprint:
+            return False
+        component = record["evidence"].get("lane_prerequisites")
+        if not isinstance(component, dict) or component.get("status") != "ok":
+            return False
+        observed_at = self._parse_time(component.get("observed_at"))
+        expires_at = self._parse_time(component.get("expires_at"))
+        return (
+            observed_at is not None
+            and expires_at is not None
+            and (previous_observed is None or observed_at > previous_observed)
+            and (previous_expires is None or expires_at > previous_expires)
+        )
+
+    def _schedule_retry(self, now: datetime) -> None:
+        delay = SPP_RENEWAL_RETRY_DELAYS_S[
+            min(self._retry_index, len(SPP_RENEWAL_RETRY_DELAYS_S) - 1)
+        ]
+        self._retry_index += 1
+        self._retry_after = datetime.fromtimestamp(
+            now.timestamp() + delay, tz=timezone.utc
+        )
+        self._log("retrying", delay_s=delay)
+
+    def _handle_step_exception(self, exc: Exception, now: datetime) -> None:
+        self._log("failed", reason=type(exc).__name__)
+        self._clear_pending(keep_retry=True)
+        self._clear_running()
+        self._clear_successor()
+        self._schedule_retry(now)
+
+    def _observation_bound(self, action: str | None) -> float:
+        if action == "refresh":
+            return SPP_REFRESH_OBSERVATION_BOUND_S
+        return SPP_RENEWAL_ATTEMPT_BOUND_S
+
+    def _exit_code(self, message: dict[str, Any]) -> int:
+        value = message.get("exit_code")
+        if value is None:
+            return -1
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
+
+    def _clear_pending(self, *, keep_retry: bool = False) -> None:
+        self._pending_ref = None
+        self._pending_action = None
+        self._pending_fingerprint = None
+        self._pending_expect_fingerprint_absent = False
+        self._pending_observed_at = None
+        self._pending_expires_at = None
+        self._ack_deadline = None
+        if not keep_retry:
+            self._retry_after = None
+
+    def _clear_running(self) -> None:
+        self._running_ref = None
+        self._running_action = None
+        self._running_fingerprint = None
+        self._running_expect_fingerprint_absent = False
+        self._running_observed_at = None
+        self._running_expires_at = None
+        self._running_deadline = None
+
+    def _clear_successor(self) -> None:
+        self._successor_after_ref = None
+        self._successor_deadline = None
+
+    def _clear_demand(self) -> None:
+        self._clear_pending()
+        self._clear_running()
+        self._clear_successor()
+        self._retry_index = 0
+        self._retry_after = None
+
+    def _now(self) -> datetime:
+        return self.clock().astimezone(timezone.utc)
+
+    def _seconds_until(
+        self, deadline: datetime | None, now: datetime, *, default: float
+    ) -> float:
+        if deadline is None:
+            return default
+        return max(0.0, deadline.timestamp() - now.timestamp())
+
+    def _parse_time(self, value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+                timezone.utc
+            )
+        except ValueError:
+            return None
+
+    def _log(self, event: str, **fields: object) -> None:
+        safe = " ".join(
+            f"{key}={value}"
+            for key, value in sorted(fields.items())
+            if value is not None
+        )
+        suffix = f" {safe}" if safe else ""
+        self.logger.info("event=spp_renewal_%s%s", event, suffix)
+
+
 class CortexService:
     """Callosum-based talent process manager."""
 
-    def __init__(self, journal_path: Optional[str] = None):
+    def __init__(
+        self,
+        journal_path: Optional[str] = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        wait: Callable[[float], bool] | None = None,
+    ):
         self.journal_path = Path(journal_path or get_journal())
         self.talents_dir = self.journal_path / "talents"
         self.talents_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +659,10 @@ class CortexService:
         self.spawn_queue: queue.Queue = queue.Queue()
         self._pending_spawns: int = 0
         self._spawn_worker: threading.Thread | None = None
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._wait = wait or self.stop_event.wait
+        self._spp_renewal_controller: SppRenewalController | None = None
+        self._spp_renewal_worker: threading.Thread | None = None
 
         # Callosum connection for receiving requests and broadcasting events
         self.callosum = CallosumConnection(defaults={"rev": get_rev()})
@@ -264,6 +810,7 @@ class CortexService:
             daemon=True,
         )
         self._spawn_worker.start()
+        self._start_spp_renewal_controller()
 
         self.logger.info("Cortex service started, listening for talent requests")
 
@@ -285,16 +832,38 @@ class CortexService:
 
     def _should_request_brain_refresh(self) -> bool:
         try:
-            inspection = inspect_brain_state(datetime.now(timezone.utc))
+            inspection = inspect_brain_state(
+                self._clock(), journal_path=self.journal_path
+            )
         except Exception:
             return True
         projection = inspection["projection"]
+        if projection["active_lane"] == "spp":
+            return False
         if projection["aggregate_state"] in {"checking", "ready"}:
             return False
         return not projection["runtime_transition_in_progress"]
 
+    def _start_spp_renewal_controller(self) -> None:
+        self._spp_renewal_controller = SppRenewalController(
+            callosum=self.callosum,
+            stop_event=self.stop_event,
+            logger=self.logger,
+            clock=self._clock,
+            wait=self._wait,
+            journal_path=self.journal_path,
+        )
+        self._spp_renewal_worker = threading.Thread(
+            target=self._spp_renewal_controller.run,
+            name="cortex-spp-renewal",
+            daemon=True,
+        )
+        self._spp_renewal_worker.start()
+
     def _handle_callosum_message(self, message: Dict[str, Any]) -> None:
         """Handle incoming Callosum messages (callback)."""
+        if self._spp_renewal_controller is not None:
+            self._spp_renewal_controller.handle_supervisor_message(message)
         # Filter for cortex tract and request event
         if message.get("tract") != "cortex" or message.get("event") != "request":
             return
@@ -906,6 +1475,9 @@ class CortexService:
 
         if self.callosum:
             self.callosum.stop()
+
+        if self._spp_renewal_worker is not None:
+            self._spp_renewal_worker.join(timeout=2.0)
 
         # Let the spawn worker finish its current item and exit (~2s bound; the
         # worker's 0.5s get-timeout guarantees it observes stop_event promptly).

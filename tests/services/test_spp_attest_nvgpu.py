@@ -396,6 +396,45 @@ def test_gpu_appraisal_failure_log_uses_bounded_stderr_digest(
     assert "collector detail" not in message
 
 
+def test_nvattest_timeout_is_bounded_redacted_and_cleans_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nvattest_dir = _fake_nvattest_dir(tmp_path)
+    observed: dict[str, Any] = {}
+    marker = "timeout-secret-nonce_from_ar"
+
+    def timeout_run(argv, **kwargs):
+        observed["timeout"] = kwargs["timeout"]
+        evidence_path = Path(argv[argv.index("--gpu-evidence-file") + 1])
+        observed["evidence_path"] = evidence_path
+        assert evidence_path.exists()
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], stderr=marker)
+
+    monkeypatch.setattr(appraise_module.subprocess, "run", timeout_run)
+    caplog.set_level(logging.WARNING, logger=appraise_module.log.name)
+
+    with pytest.raises(GpuAppraisalError) as exc_info:
+        appraise_module.appraise_gpu_leg(
+            _envelope(),
+            _owner_nonce(),
+            nvattest_dir=nvattest_dir,
+        )
+
+    assert exc_info.value.reason == "gpu_appraisal_failed"
+    assert observed["timeout"] == appraise_module.NVATTEST_TIMEOUT_S
+    assert not observed["evidence_path"].exists()
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=nvattest_gpu_appraisal_failed" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "exception=TimeoutExpired" in messages[0]
+    assert marker not in messages[0]
+
+
 def test_bool_false_returncode_rejects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

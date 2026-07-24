@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -66,6 +67,125 @@ def _active_path(journal_path: Path, use_id: str, name: str = "chat") -> Path:
 
 def _completed_path(journal_path: Path, use_id: str, name: str = "chat") -> Path:
     return journal_path / "talents" / name.replace(":", "--") / f"{use_id}.jsonl"
+
+
+class _FakeClock:
+    def __init__(self, now: datetime):
+        self.now = now
+        self.waits: list[float] = []
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+    def wait(self, seconds: float) -> bool:
+        self.waits.append(seconds)
+        self.advance(seconds)
+        return False
+
+
+class _FakeCallosum:
+    def __init__(self) -> None:
+        self.emitted: list[tuple[tuple, dict]] = []
+
+    def emit(self, *args, **kwargs) -> None:
+        self.emitted.append((args, kwargs))
+
+
+def _spp_inspector(state: dict):
+    def inspect(now: datetime, *, journal_path=None):
+        lane = state.get("lane", "spp")
+        aggregate = state.get("aggregate", "ready")
+        fingerprint = state.get("fingerprint", "a" * 64)
+        record_fingerprint = state.get("record_fingerprint", fingerprint)
+        observed = state.get("observed", now)
+        expires = state.get("expires", now + timedelta(minutes=10))
+        record = None
+        if lane == "spp" and state.get("record_present", True):
+            component = None
+            if state.get("component_present", True):
+                component = {
+                    "status": state.get("component_status", "ok"),
+                    "observed_at": observed.isoformat(),
+                    "expires_at": expires.isoformat(),
+                }
+                reason = state.get("component_reason")
+                if reason is not None:
+                    component["reason_code"] = reason
+            record = {
+                "active_lane": "spp",
+                "fingerprint_sha256": record_fingerprint,
+                "evidence": {"lane_prerequisites": component},
+            }
+        return {
+            "status": "ok",
+            "path": "/redacted",
+            "record": record,
+            "projection": {
+                "aggregate_state": aggregate,
+                "active_lane": lane,
+                "fingerprint_sha256": fingerprint,
+                "runtime_transition_in_progress": False,
+            },
+            "reason_code": None,
+            "error": None,
+        }
+
+    return inspect
+
+
+def _make_spp_controller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    state: dict,
+    clock: _FakeClock | None = None,
+    logger: MagicMock | None = None,
+    callosum: _FakeCallosum | None = None,
+):
+    from solstone.think import cortex
+
+    clock = clock or _FakeClock(datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc))
+    callosum = callosum or _FakeCallosum()
+    logger = logger or MagicMock()
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state.get("fingerprint", "a" * 64),
+    )
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=logger,
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+    return controller, clock, callosum, logger
+
+
+def _commands(callosum: _FakeCallosum) -> list[list[str]]:
+    return [kwargs["cmd"] for _args, kwargs in callosum.emitted]
+
+
+def _assert_fenced_refresh_command(command: list[str], fingerprint: str) -> None:
+    assert command[:4] == ["journal", "brain", "refresh", "--json"]
+    assert "--expected-active-fingerprint" in command
+    expected_index = command.index("--expected-fingerprint")
+    assert command[expected_index + 1] == fingerprint
+
+
+def _assert_absence_fenced_refresh_command(command: list[str]) -> None:
+    assert command == [
+        "journal",
+        "brain",
+        "refresh",
+        "--json",
+        "--expect-active-fingerprint-absent",
+    ]
 
 
 @pytest.fixture
@@ -173,6 +293,884 @@ def test_start_starts_spawn_worker_and_stays_resident(cortex_service, monkeypatc
         if cortex_service._spawn_worker is not None:
             cortex_service._spawn_worker.join(timeout=1)
         service_thread.join(timeout=1)
+
+
+def test_spp_renewal_controller_replaces_prerequisites_for_seventy_virtual_minutes(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    start = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(start)
+    state = {
+        "fingerprint": "a" * 64,
+        "observed": start,
+        "expires": start + timedelta(minutes=10),
+    }
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state["fingerprint"],
+    )
+    callosum = _FakeCallosum()
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=MagicMock(),
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    committed: list[tuple[datetime, datetime]] = []
+    while clock.now < start + timedelta(minutes=72):
+        delay = controller.step()
+        if delay > 0:
+            clock.advance(delay)
+        assert state["expires"] > clock.now
+        controller.step()
+        ref = callosum.emitted[-1][1]["ref"]
+        controller.handle_supervisor_message(
+            {"tract": "supervisor", "event": "started", "ref": ref}
+        )
+        state["observed"] = clock.now
+        state["expires"] = clock.now + timedelta(minutes=10)
+        committed.append((state["observed"], state["expires"]))
+        controller.handle_supervisor_message(
+            {"tract": "supervisor", "event": "stopped", "ref": ref, "exit_code": 0}
+        )
+
+    commands = _commands(callosum)
+    assert commands
+    assert len(committed) >= 9
+    assert clock.now >= start + timedelta(minutes=72)
+    assert start + timedelta(minutes=72) > start + timedelta(minutes=60)
+    assert any(observed >= start + timedelta(minutes=30) for observed, _ in committed)
+    assert any(observed >= start + timedelta(minutes=60) for observed, _ in committed)
+    assert all(
+        later[0] > earlier[0] and later[1] > earlier[1]
+        for earlier, later in zip(committed, committed[1:])
+    )
+    assert all(
+        command[:3] == ["journal", "brain", "renew-prerequisites"]
+        for command in commands
+    )
+    assert not any(
+        command[:3] == ["journal", "brain", "refresh"] for command in commands
+    )
+    assert not any(
+        "generate" in command or "cogitate" in command for command in commands
+    )
+
+
+def test_spp_renewal_controller_tracks_skipped_active_ref_successor(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(now)
+    state = {
+        "fingerprint": "b" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state["fingerprint"],
+    )
+    callosum = _FakeCallosum()
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=MagicMock(),
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    controller.step()
+    first_ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {
+            "tract": "supervisor",
+            "event": "skipped",
+            "ref": first_ref,
+            "active_ref": "active-brain",
+            "reason": "still_running",
+        }
+    )
+    controller.step()
+    assert len(callosum.emitted) == 1
+
+    controller.handle_supervisor_message(
+        {
+            "tract": "supervisor",
+            "event": "stopped",
+            "ref": "active-brain",
+            "exit_code": 0,
+        }
+    )
+    controller.step()
+    assert len(callosum.emitted) == 2
+    assert callosum.emitted[-1][1]["ref"] != first_ref
+
+
+def test_spp_renewal_controller_times_out_missed_successor_stop(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "b" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    first_ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {
+            "tract": "supervisor",
+            "event": "skipped",
+            "ref": first_ref,
+            "active_ref": "active-brain",
+            "reason": "still_running",
+        }
+    )
+    clock.advance(cortex.SPP_REFRESH_OBSERVATION_BOUND_S + 1)
+
+    controller.step()
+
+    assert controller._successor_after_ref is None
+    assert len(callosum.emitted) == 2
+    assert callosum.emitted[-1][1]["ref"] != first_ref
+
+
+def test_spp_renewal_controller_accepts_full_refresh_exit_zero_without_retry(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "aggregate": "unknown",
+        "fingerprint": "e" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    _assert_fenced_refresh_command(callosum.emitted[-1][1]["cmd"], state["fingerprint"])
+    ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": ref}
+    )
+    assert controller._running_deadline is not None
+    assert (
+        controller._running_deadline - clock.now
+    ).total_seconds() == cortex.SPP_REFRESH_OBSERVATION_BOUND_S
+
+    clock.advance(1)
+    state["aggregate"] = "ready"
+    state["observed"] = clock.now
+    state["expires"] = clock.now + timedelta(minutes=10)
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": ref, "exit_code": 0}
+    )
+
+    assert controller._retry_after is None
+    assert controller._running_ref is None
+    delay = controller.step()
+    assert len(callosum.emitted) == 1
+    assert delay > 0
+
+
+@pytest.mark.parametrize("case", ("unchanged", "unhealthy", "wrong_fingerprint"))
+def test_spp_renewal_controller_rejects_exit_zero_without_new_ready_refresh_proof(
+    tmp_path,
+    monkeypatch,
+    case,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    original_fingerprint = "e" * 64
+    state = {
+        "aggregate": "unknown",
+        "fingerprint": original_fingerprint,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    _assert_fenced_refresh_command(callosum.emitted[-1][1]["cmd"], original_fingerprint)
+    ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": ref}
+    )
+
+    clock.advance(1)
+    if case == "unchanged":
+        state["aggregate"] = "ready"
+    elif case == "unhealthy":
+        state["aggregate"] = "unhealthy"
+        state["component_status"] = "failed"
+        state["component_reason"] = "attestation_rejected"
+        state["observed"] = clock.now
+        state["expires"] = clock.now + timedelta(minutes=10)
+    else:
+        state["aggregate"] = "ready"
+        state["fingerprint"] = "f" * 64
+        state["record_fingerprint"] = "f" * 64
+        state["observed"] = clock.now
+        state["expires"] = clock.now + timedelta(minutes=10)
+
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": ref, "exit_code": 0}
+    )
+
+    assert controller._retry_after is not None
+    logged = "\n".join(
+        " ".join(str(part) for part in call.args) for call in logger.info.call_args_list
+    )
+    assert "verified" not in logged
+    assert "failed" in logged
+
+
+def test_spp_renewal_controller_running_timeout_clears_and_retries(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "f" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": ref}
+    )
+    assert controller._running_deadline is not None
+    assert (
+        controller._running_deadline - clock.now
+    ).total_seconds() == cortex.SPP_RENEWAL_ATTEMPT_BOUND_S
+    clock.advance(cortex.SPP_RENEWAL_ATTEMPT_BOUND_S + 1)
+    delay = controller.step()
+
+    assert controller._running_ref is None
+    assert controller._retry_after is not None
+    assert delay == 5.0
+
+    clock.advance(delay)
+    controller.step()
+    assert len(callosum.emitted) == 2
+    assert callosum.emitted[-1][1]["ref"] != ref
+
+
+@pytest.mark.parametrize(
+    "state_update",
+    (
+        {"record_present": False},
+        {"component_status": "failed", "component_reason": "attestation_not_verified"},
+        {"record_fingerprint": "0" * 64},
+        {"expires": datetime(2026, 7, 24, 11, 59, tzinfo=timezone.utc)},
+    ),
+)
+def test_spp_renewal_controller_unsafe_spp_records_fall_back_to_full_refresh(
+    tmp_path,
+    monkeypatch,
+    state_update,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "9" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+        **state_update,
+    }
+    _controller, _clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    _controller.step()
+
+    _assert_fenced_refresh_command(callosum.emitted[-1][1]["cmd"], state["fingerprint"])
+
+
+def test_spp_renewal_controller_bootstraps_with_absence_fenced_refresh(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "aggregate": "unknown",
+        "fingerprint": None,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    assert controller.step() == cortex.SPP_RENEWAL_ACK_TIMEOUT_S
+    _assert_absence_fenced_refresh_command(callosum.emitted[-1][1]["cmd"])
+    ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": ref}
+    )
+    clock.advance(1)
+    state["aggregate"] = "ready"
+    state["fingerprint"] = "a" * 64
+    state["record_fingerprint"] = "a" * 64
+    state["observed"] = clock.now
+    state["expires"] = clock.now + timedelta(minutes=10)
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": ref, "exit_code": 0}
+    )
+
+    assert controller._retry_after is None
+    logged = "\n".join(str(call.args) for call in logger.info.call_args_list)
+    assert "verified" in logged
+
+
+def test_spp_renewal_controller_absence_fenced_refresh_retries_when_key_appears(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "aggregate": "unknown",
+        "fingerprint": None,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    _assert_absence_fenced_refresh_command(callosum.emitted[-1][1]["cmd"])
+    ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": ref}
+    )
+    state["fingerprint"] = "b" * 64
+    state["record_fingerprint"] = "b" * 64
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": ref, "exit_code": 3}
+    )
+
+    assert controller._retry_after is not None
+    clock.advance((controller._retry_after - clock.now).total_seconds())
+    controller.step()
+    _assert_fenced_refresh_command(callosum.emitted[-1][1]["cmd"], "b" * 64)
+
+
+def test_spp_renewal_controller_restarts_from_ready_vs_stale_record(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    ready_state = {
+        "fingerprint": "1" * 64,
+        "observed": now,
+        "expires": now + timedelta(minutes=10),
+    }
+    ready, _clock, ready_callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=ready_state,
+        clock=_FakeClock(now),
+    )
+
+    delay = ready.step()
+    assert ready_callosum.emitted == []
+    assert delay > 0
+
+    stale_state = {
+        "fingerprint": "1" * 64,
+        "observed": now - timedelta(minutes=20),
+        "expires": now - timedelta(seconds=1),
+    }
+    stale, _clock, stale_callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=stale_state,
+        clock=_FakeClock(now),
+    )
+
+    stale.step()
+    _assert_fenced_refresh_command(
+        stale_callosum.emitted[-1][1]["cmd"],
+        stale_state["fingerprint"],
+    )
+
+
+def test_spp_renewal_controller_pending_fingerprint_switch_is_refenced(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    first_fingerprint = "2" * 64
+    second_fingerprint = "3" * 64
+    state = {
+        "fingerprint": first_fingerprint,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    first_ref = callosum.emitted[-1][1]["ref"]
+    assert first_fingerprint in callosum.emitted[-1][1]["cmd"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": first_ref}
+    )
+    state["fingerprint"] = second_fingerprint
+    state["record_fingerprint"] = second_fingerprint
+    state["observed"] = clock.now
+    state["expires"] = clock.now + timedelta(seconds=30)
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": first_ref, "exit_code": 3}
+    )
+    assert controller._retry_after is not None
+
+    clock.advance((controller._retry_after - clock.now).total_seconds())
+    controller.step()
+
+    assert len(callosum.emitted) == 2
+    assert second_fingerprint in callosum.emitted[-1][1]["cmd"]
+
+
+def test_spp_renewal_controller_refresh_fallback_is_refenced_after_switch(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    first_fingerprint = "2" * 64
+    second_fingerprint = "3" * 64
+    state = {
+        "aggregate": "unknown",
+        "fingerprint": first_fingerprint,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    controller.step()
+    first_cmd = callosum.emitted[-1][1]["cmd"]
+    _assert_fenced_refresh_command(first_cmd, first_fingerprint)
+    first_ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": first_ref}
+    )
+    state["fingerprint"] = second_fingerprint
+    state["record_fingerprint"] = second_fingerprint
+    state["observed"] = clock.now
+    state["expires"] = clock.now + timedelta(seconds=30)
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "stopped", "ref": first_ref, "exit_code": 3}
+    )
+    assert controller._retry_after is not None
+
+    clock.advance((controller._retry_after - clock.now).total_seconds())
+    controller.step()
+
+    assert len(callosum.emitted) == 2
+    _assert_fenced_refresh_command(callosum.emitted[-1][1]["cmd"], second_fingerprint)
+
+
+def test_spp_renewal_controller_clock_jumps_do_not_duplicate(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "4" * 64,
+        "observed": now,
+        "expires": now + timedelta(minutes=10),
+    }
+    controller, clock, callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+
+    delay = controller.step()
+    assert delay >= 0
+    assert callosum.emitted == []
+
+    clock.advance(delay + 1)
+    controller.step()
+    assert callosum.emitted[-1][1]["cmd"][:3] == [
+        "journal",
+        "brain",
+        "renew-prerequisites",
+    ]
+
+    backward_state = {
+        "fingerprint": "5" * 64,
+        "observed": now,
+        "expires": now + timedelta(minutes=10),
+    }
+    backward, backward_clock, backward_callosum, _logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=backward_state,
+        clock=_FakeClock(now),
+    )
+    backward_delay = backward.step()
+    backward_clock.advance(-600)
+    later_delay = backward.step()
+
+    assert backward_delay >= 0
+    assert later_delay >= 0
+    assert backward_callosum.emitted == []
+
+
+def test_spp_renewal_controller_recovers_from_inspection_and_fingerprint_errors(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "6" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    clock = _FakeClock(now)
+    callosum = _FakeCallosum()
+    logger = MagicMock()
+    inspect_calls = 0
+
+    def flaky_inspect(current: datetime, *, journal_path=None):
+        nonlocal inspect_calls
+        inspect_calls += 1
+        if inspect_calls == 1:
+            raise OSError("SECRET-SENTINEL path")
+        return _spp_inspector(state)(current, journal_path=journal_path)
+
+    monkeypatch.setattr(cortex, "inspect_brain_state", flaky_inspect)
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state["fingerprint"],
+    )
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=logger,
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    assert controller.step() == 5.0
+    clock.advance(5.0)
+    controller.step()
+    assert callosum.emitted[-1][1]["cmd"][:3] == [
+        "journal",
+        "brain",
+        "renew-prerequisites",
+    ]
+
+    fingerprint_calls = 0
+
+    def flaky_fingerprint(*, journal_path=None):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        if fingerprint_calls == 1:
+            raise OSError("SECRET-SENTINEL path")
+        return state["fingerprint"]
+
+    callosum = _FakeCallosum()
+    logger = MagicMock()
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex, "read_active_brain_fingerprint_sha256", flaky_fingerprint
+    )
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=logger,
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    assert controller.step() == 5.0
+    clock.advance(5.0)
+    controller.step()
+    assert callosum.emitted[-1][1]["cmd"][:3] == [
+        "journal",
+        "brain",
+        "renew-prerequisites",
+    ]
+
+    logged = "\n".join(
+        " ".join(str(part) for part in call.args) for call in logger.info.call_args_list
+    )
+    assert "SECRET-SENTINEL" not in logged
+    assert str(tmp_path) not in logged
+
+
+def test_spp_renewal_controller_run_contains_unexpected_step_exception(
+    tmp_path,
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "fingerprint": "8" * 64,
+        "observed": now,
+        "expires": now + timedelta(minutes=10),
+    }
+    controller, _clock, _callosum, logger = _make_spp_controller(
+        tmp_path,
+        monkeypatch,
+        state=state,
+        clock=_FakeClock(now),
+    )
+    controller.step = MagicMock(side_effect=RuntimeError("SECRET-SENTINEL"))
+
+    def stop_after_wait(_seconds: float) -> bool:
+        controller.stop_event.set()
+        return True
+
+    controller.wait = stop_after_wait
+    controller.run()
+
+    logged = "\n".join(
+        " ".join(str(part) for part in call.args) for call in logger.info.call_args_list
+    )
+    assert "RuntimeError" in logged
+    assert "retrying" in logged
+    assert "SECRET-SENTINEL" not in logged
+
+
+def test_spp_renewal_controller_retries_with_cap_and_clears_on_disable(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(now)
+    state = {
+        "fingerprint": "c" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+    }
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state["fingerprint"],
+    )
+    controller = cortex.SppRenewalController(
+        callosum=_FakeCallosum(),
+        stop_event=threading.Event(),
+        logger=MagicMock(),
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    delays: list[float] = []
+    for _ in range(6):
+        controller.step()
+        clock.advance(cortex.SPP_RENEWAL_ACK_TIMEOUT_S + 1)
+        controller.step()
+        assert controller._retry_after is not None
+        delays.append((controller._retry_after - clock.now).total_seconds())
+        clock.advance(delays[-1])
+    assert delays == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0]
+
+    controller.step()
+    assert controller._pending_ref is not None
+    state["lane"] = "byo-cloud"
+    controller.step()
+    assert controller._pending_ref is None
+    assert controller._retry_after is None
+
+
+def test_spp_renewal_controller_logs_lifecycle_events_without_secrets(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think import cortex
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(now)
+    state = {
+        "lane": "byo-cloud",
+        "fingerprint": "d" * 64,
+        "observed": now - timedelta(minutes=9),
+        "expires": now + timedelta(seconds=30),
+        "secret": "SECRET-SENTINEL",
+    }
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    monkeypatch.setattr(
+        cortex,
+        "read_active_brain_fingerprint_sha256",
+        lambda *, journal_path=None: state["fingerprint"],
+    )
+    logger = MagicMock()
+    callosum = _FakeCallosum()
+    controller = cortex.SppRenewalController(
+        callosum=callosum,
+        stop_event=threading.Event(),
+        logger=logger,
+        clock=clock,
+        wait=clock.wait,
+        journal_path=tmp_path,
+    )
+
+    assert controller.step() == 30.0
+    assert callosum.emitted == []
+
+    state["lane"] = "spp"
+    state["expires"] = clock.now + timedelta(minutes=10)
+    scheduled_delay = controller.step()
+    assert scheduled_delay > 0
+    clock.advance(scheduled_delay)
+    controller.step()
+    assert callosum.emitted[-1][1]["cmd"][:3] == [
+        "journal",
+        "brain",
+        "renew-prerequisites",
+    ]
+    verified_ref = callosum.emitted[-1][1]["ref"]
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": verified_ref}
+    )
+    clock.advance(1)
+    state["observed"] = clock.now
+    state["expires"] = clock.now + timedelta(minutes=10)
+    controller.handle_supervisor_message(
+        {
+            "tract": "supervisor",
+            "event": "stopped",
+            "ref": verified_ref,
+            "exit_code": 0,
+        }
+    )
+
+    state["expires"] = clock.now + timedelta(seconds=30)
+    controller.step()
+    failed_ref = callosum.emitted[-1][1]["ref"]
+    clock.advance(cortex.SPP_RENEWAL_ACK_TIMEOUT_S + 1)
+    controller.step()
+    clock.advance(5.0)
+    controller.step()
+    stale_ref = callosum.emitted[-1][1]["ref"]
+    assert stale_ref != failed_ref
+    controller.handle_supervisor_message(
+        {"tract": "supervisor", "event": "started", "ref": stale_ref}
+    )
+    clock.advance(cortex.SPP_RENEWAL_ATTEMPT_BOUND_S + 1)
+    controller.step()
+
+    logged = "\n".join(
+        " ".join(str(part) for part in call.args) for call in logger.info.call_args_list
+    )
+    for event in (
+        "disabled",
+        "scheduled",
+        "in_flight",
+        "verified",
+        "failed",
+        "stale",
+        "retrying",
+    ):
+        assert event in logged
+    assert "SECRET-SENTINEL" not in logged
+    assert str(tmp_path) not in logged
+    assert "SECRET-SENTINEL" not in json.dumps(callosum.emitted)
+
+
+def test_cortex_stop_wakes_and_joins_spp_renewal_worker(
+    mock_journal,
+    monkeypatch,
+):
+    from solstone.think import cortex
+    from solstone.think.cortex import CortexService
+
+    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+    state = {"lane": "byo-cloud", "fingerprint": "7" * 64}
+    monkeypatch.setattr(cortex, "inspect_brain_state", _spp_inspector(state))
+    service = CortexService(str(mock_journal), clock=lambda: now)
+    service.callosum = MagicMock()
+
+    service._start_spp_renewal_controller()
+    assert service._spp_renewal_worker is not None
+    deadline = time.monotonic() + 1.0
+    while not service._spp_renewal_worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert service._spp_renewal_worker.is_alive()
+
+    service.stop()
+
+    assert not service._spp_renewal_worker.is_alive()
 
 
 def test_handle_request_dedups_existing_active_file(

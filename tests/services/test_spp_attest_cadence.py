@@ -88,6 +88,25 @@ def test_attestation_session_verified_before_all_windows() -> None:
     )
 
 
+def test_attestation_session_verified_one_microsecond_before_each_boundary() -> None:
+    assert (
+        _session(tpm_heartbeat_at=NOW - TPM_HEARTBEAT_INTERVAL).status(
+            NOW - timedelta(microseconds=1)
+        )
+        == "verified"
+    )
+    assert (
+        _session(gpu_reattest_at=NOW - GPU_REATTEST_INTERVAL).status(
+            NOW - timedelta(microseconds=1)
+        )
+        == "verified"
+    )
+    assert (
+        _session(started_at=NOW - SESSION_CAP).status(NOW - timedelta(microseconds=1))
+        == "verified"
+    )
+
+
 def test_attestation_session_stale_when_tpm_heartbeat_lapses() -> None:
     session = _session(tpm_heartbeat_at=NOW - TPM_HEARTBEAT_INTERVAL)
 

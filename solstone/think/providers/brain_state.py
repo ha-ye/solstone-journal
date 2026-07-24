@@ -523,6 +523,15 @@ class BrainRuntimeFailureResult(TypedDict):
     error: str | None
 
 
+BrainPrerequisiteRenewalStatus = Literal["started", "busy", "unsafe"]
+
+
+class BrainPrerequisiteRenewalBeginResult(TypedDict):
+    status: BrainPrerequisiteRenewalStatus
+    permit: NotRequired["BrainRefreshPermit"]
+    reason: NotRequired[str]
+
+
 class BrainStateValidationError(ValueError):
     """Raised when a persisted brain state record violates the closed schema."""
 
@@ -534,6 +543,10 @@ class BrainStateValidationError(ValueError):
 
 class BrainStateConflictError(RuntimeError):
     """Raised when a stale refresh permit attempts to finalize."""
+
+
+class BrainStateExpectedFingerprintStaleError(BrainStateConflictError):
+    """Raised when a fenced refresh observes a different active fingerprint state."""
 
 
 @dataclass
@@ -1885,18 +1898,39 @@ def begin_brain_refresh(
     now: datetime,
     *,
     run_id: str | None = None,
+    expected_active_fingerprint_sha256: str | None = None,
+    expect_active_fingerprint_absent: bool = False,
     journal_path: str | Path | None = None,
 ) -> BrainRefreshPermit | None:
     now = _utc(now)
+    if expected_active_fingerprint_sha256 is not None:
+        try:
+            _validate_hex(
+                expected_active_fingerprint_sha256,
+                "expected_active_fingerprint_sha256",
+            )
+        except BrainStateValidationError as exc:
+            raise BrainStateExpectedFingerprintStaleError(str(exc)) from exc
+    if (
+        expected_active_fingerprint_sha256 is not None
+        and expect_active_fingerprint_absent
+    ):
+        raise ValueError(
+            "expected active fingerprint and expected absence are mutually exclusive"
+        )
+    expected_contract = (
+        expected_active_fingerprint_sha256 is not None
+        or expect_active_fingerprint_absent
+    )
     try:
         config = read_journal_config(journal_path)
     except (CorruptConfigError, OSError):
         return None
     lane, provider, model = _derive_lane(config)
     path = brain_state_path(journal_path=journal_path)
-    if lane is None:
+    if lane is None and not expected_contract:
         return None
-    if lane == "none":
+    if lane == "none" and not expected_contract:
         _begin_nonrefresh_record(
             now,
             path=path,
@@ -1908,18 +1942,72 @@ def begin_brain_refresh(
     if lease is None:
         return None
     try:
-        try:
-            key = _load_or_generate_fingerprint_key(journal_path=journal_path)
-        except Exception:
-            lease.release()
-            return None
-        fingerprint = build_active_brain_fingerprint(config, hmac_key=key)
-        if fingerprint["active_lane"] is None or not fingerprint["ok"]:
-            lease.release()
-            return None
         run_id = run_id or uuid.uuid4().hex
         expires_at = now + CHECKING_TTL
         with hold_lock(path, mode=BRAIN_FILE_MODE):
+            try:
+                config = read_journal_config(journal_path)
+            except (CorruptConfigError, OSError):
+                lease.release()
+                return None
+            lane, provider, model = _derive_lane(config)
+            if lane is None:
+                if expected_contract:
+                    raise BrainStateExpectedFingerprintStaleError(
+                        "active brain fingerprint is unavailable"
+                    )
+                lease.release()
+                return None
+            if lane == "none":
+                if expected_contract:
+                    raise BrainStateExpectedFingerprintStaleError(
+                        "active brain fingerprint is unavailable"
+                    )
+                _begin_nonrefresh_record(
+                    now,
+                    path=path,
+                    active_provider=provider,
+                    active_model=model,
+                )
+                lease.release()
+                return None
+            try:
+                key = _load_existing_fingerprint_key(journal_path=journal_path)
+                if expect_active_fingerprint_absent:
+                    if key is not None:
+                        raise BrainStateExpectedFingerprintStaleError(
+                            "active brain fingerprint is present"
+                        )
+                    key = _load_or_generate_fingerprint_key(journal_path=journal_path)
+                elif expected_active_fingerprint_sha256 is not None:
+                    if key is None:
+                        raise BrainStateExpectedFingerprintStaleError(
+                            "active brain fingerprint is absent"
+                        )
+                else:
+                    key = _load_or_generate_fingerprint_key(journal_path=journal_path)
+            except BrainStateExpectedFingerprintStaleError:
+                raise
+            except Exception:
+                lease.release()
+                return None
+            assert key is not None
+            fingerprint = build_active_brain_fingerprint(config, hmac_key=key)
+            if (
+                expected_active_fingerprint_sha256 is not None
+                and fingerprint["fingerprint_sha256"]
+                != expected_active_fingerprint_sha256
+            ):
+                raise BrainStateExpectedFingerprintStaleError(
+                    "active brain fingerprint changed"
+                )
+            if fingerprint["active_lane"] is None or not fingerprint["ok"]:
+                if expected_contract:
+                    raise BrainStateExpectedFingerprintStaleError(
+                        "active brain fingerprint is unavailable"
+                    )
+                lease.release()
+                return None
             current = _read_record_unlocked(path)
             revision = _next_revision(current)
             marker_seen = _runtime_failure_marker_id(current)
@@ -1997,6 +2085,52 @@ def read_active_brain_fingerprint_sha256(
     if not fingerprint["ok"]:
         return None
     return fingerprint["fingerprint_sha256"]
+
+
+def _component_ok_unexpired(
+    component: BrainEvidenceComponent | None,
+    component_name: str,
+    now: datetime,
+) -> bool:
+    if component is None or component["status"] != "ok":
+        return False
+    try:
+        expires_at = _parse_timestamp(
+            component.get("expires_at"), f"evidence.{component_name}.expires_at"
+        )
+    except BrainStateValidationError:
+        return False
+    return now < expires_at
+
+
+def _safe_prerequisite_renewal_evidence(
+    current: BrainStateRecord,
+    now: datetime,
+) -> BrainEvidenceRecord | None:
+    if current["active_lane"] != "spp":
+        return None
+    if _record_timestamp_invalid(current, now):
+        return None
+    evidence = current["evidence"]
+    preserved: dict[str, BrainEvidenceComponent | None] = dict(evidence)
+    for component_name in ("configuration", "generate", "cogitate"):
+        if not _component_ok_unexpired(preserved[component_name], component_name, now):
+            return None
+    return cast(BrainEvidenceRecord, preserved)
+
+
+def _prerequisite_renewal_begin_result(
+    status: BrainPrerequisiteRenewalStatus,
+    *,
+    permit: BrainRefreshPermit | None = None,
+    reason: str | None = None,
+) -> BrainPrerequisiteRenewalBeginResult:
+    result: BrainPrerequisiteRenewalBeginResult = {"status": status}
+    if permit is not None:
+        result["permit"] = permit
+    if reason is not None:
+        result["reason"] = reason
+    return result
 
 
 def _record_from_evidence(
@@ -2080,6 +2214,208 @@ def _assert_finish_allowed(
         raise BrainStateConflictError("brain refresh revision changed")
     if checking["runtime_failure_marker_seen"] != permit.runtime_failure_marker_seen:
         raise BrainStateConflictError("brain runtime failure marker changed")
+
+
+def begin_brain_prerequisite_renewal(
+    now: datetime,
+    *,
+    expected_fingerprint_sha256: str | None = None,
+    run_id: str | None = None,
+    journal_path: str | Path | None = None,
+) -> BrainPrerequisiteRenewalBeginResult:
+    """Begin a fenced SPP prerequisite-only renewal.
+
+    This is deliberately narrower than ``begin_brain_refresh``: it preserves
+    same-fingerprint model evidence and refuses to start unless replacing only
+    ``lane_prerequisites`` can be made safe.
+    """
+
+    try:
+        now = _utc(now)
+    except ValueError as exc:
+        return _prerequisite_renewal_begin_result("unsafe", reason=str(exc))
+    if expected_fingerprint_sha256 is not None:
+        try:
+            _validate_hex(expected_fingerprint_sha256, "expected_fingerprint_sha256")
+        except BrainStateValidationError:
+            return _prerequisite_renewal_begin_result(
+                "unsafe", reason="fingerprint_mismatch"
+            )
+    path = brain_state_path(journal_path=journal_path)
+    lease = acquire_file_lease(brain_refresh_lease_path(journal_path=journal_path))
+    if lease is None:
+        return _prerequisite_renewal_begin_result("busy", reason="lease_held")
+    try:
+        try:
+            _config, key, fingerprint = _load_fingerprint_for_write(
+                journal_path=journal_path
+            )
+        except (CorruptConfigError, OSError, BrainStateValidationError) as exc:
+            lease.release()
+            return _prerequisite_renewal_begin_result("unsafe", reason=str(exc))
+        if key is None or fingerprint is None or not fingerprint["ok"]:
+            lease.release()
+            return _prerequisite_renewal_begin_result(
+                "unsafe", reason="fingerprint_not_available"
+            )
+        if fingerprint["active_lane"] != "spp":
+            lease.release()
+            return _prerequisite_renewal_begin_result("unsafe", reason="non_spp_lane")
+        fingerprint_sha = fingerprint["fingerprint_sha256"]
+        if fingerprint_sha is None or (
+            expected_fingerprint_sha256 is not None
+            and fingerprint_sha != expected_fingerprint_sha256
+        ):
+            lease.release()
+            return _prerequisite_renewal_begin_result(
+                "unsafe", reason="fingerprint_mismatch"
+            )
+
+        run_id = run_id or uuid.uuid4().hex
+        expires_at = now + CHECKING_TTL
+        with hold_lock(path, mode=BRAIN_FILE_MODE):
+            try:
+                current = _read_record_unlocked(path)
+            except (
+                OSError,
+                BrainStateValidationError,
+                MalformedDataError,
+                json.JSONDecodeError,
+            ):
+                lease.release()
+                return _prerequisite_renewal_begin_result(
+                    "unsafe", reason="brain_record_unavailable"
+                )
+            if current is None or current["fingerprint_sha256"] != fingerprint_sha:
+                lease.release()
+                return _prerequisite_renewal_begin_result(
+                    "unsafe", reason="brain_record_missing"
+                )
+            evidence = _safe_prerequisite_renewal_evidence(current, now)
+            if evidence is None:
+                lease.release()
+                return _prerequisite_renewal_begin_result(
+                    "unsafe", reason="unsafe_evidence"
+                )
+            revision = _next_revision(current)
+            marker_seen = _runtime_failure_marker_id(current)
+            checking: BrainCheckingRecord = {
+                "run_id": run_id,
+                "started_at": _iso(now),
+                "expires_at": _iso(expires_at),
+                "fingerprint_sha256": fingerprint_sha,
+                "checking_revision": revision,
+                "runtime_failure_marker_seen": marker_seen,
+            }
+            record = _record(
+                revision=revision,
+                aggregate_state="checking",
+                reason_code="brain_check_in_progress",
+                active_lane="spp",
+                active_provider=fingerprint["active_provider"],
+                active_model=fingerprint["active_model"],
+                fingerprint_sha256=fingerprint_sha,
+                checking=checking,
+                evidence=evidence,
+                runtime_failure_marker=current["runtime_failure_marker"],
+                diagnostic={},
+                now=now,
+            )
+            _write_record(path, record)
+        return _prerequisite_renewal_begin_result(
+            "started",
+            permit=BrainRefreshPermit(
+                run_id=run_id,
+                started_at=now,
+                expires_at=expires_at,
+                fingerprint_sha256=fingerprint_sha,
+                checking_revision=revision,
+                runtime_failure_marker_seen=marker_seen,
+                lease=lease,
+            ),
+        )
+    except BaseException:
+        lease.release()
+        raise
+
+
+def _validate_lane_prerequisite_component(
+    component: Mapping[str, Any],
+) -> BrainEvidenceComponent:
+    validated = _validate_component(
+        component,
+        "lane_prerequisites",
+        component_name="lane_prerequisites",
+    )
+    if validated is None or validated["status"] == "not_attempted":
+        raise BrainStateValidationError(
+            "lane_prerequisites.status",
+            "prerequisite renewal requires ok or declared failure",
+        )
+    return validated
+
+
+def finish_brain_prerequisite_renewal(
+    permit: BrainRefreshPermit,
+    lane_prerequisites: Mapping[str, Any],
+    now: datetime,
+    *,
+    journal_path: str | Path | None = None,
+) -> BrainStateRecord:
+    now = _utc(now)
+    path = brain_state_path(journal_path=journal_path)
+    try:
+        component = _validate_lane_prerequisite_component(lane_prerequisites)
+        _config, key, fingerprint = _load_fingerprint_for_write(
+            journal_path=journal_path
+        )
+        if key is None or fingerprint is None:
+            raise BrainStateConflictError("brain fingerprint key is unavailable")
+        with hold_lock(path, mode=BRAIN_FILE_MODE):
+            current = _read_record_unlocked(path)
+            _assert_finish_allowed(permit, current, now)
+            if fingerprint["fingerprint_sha256"] != permit.fingerprint_sha256:
+                raise BrainStateConflictError("brain fingerprint changed")
+            if fingerprint["active_lane"] != "spp":
+                raise BrainStateConflictError("brain lane changed")
+            assert current is not None
+            evidence = _safe_prerequisite_renewal_evidence(current, now)
+            if evidence is None:
+                raise BrainStateConflictError("brain prerequisite evidence is unsafe")
+            evidence["lane_prerequisites"] = component
+            record = _record_from_evidence(
+                evidence=evidence,
+                fingerprint=fingerprint,
+                revision=_next_revision(current),
+                now=now,
+                checking=None,
+                runtime_failure_marker=None,
+            )
+            return _write_record(path, record)
+    finally:
+        permit.release()
+
+
+def abandon_brain_prerequisite_renewal(
+    permit: BrainRefreshPermit,
+    reason_code: BrainReasonCode,
+    now: datetime,
+    *,
+    diagnostic: Mapping[str, BrainDiagnosticValue] | None = None,
+    journal_path: str | Path | None = None,
+) -> BrainStateRecord:
+    component = _component(
+        _component_status_for_reason(reason_code),
+        _utc(now),
+        reason_code=reason_code,
+        diagnostic=diagnostic,
+    )
+    return finish_brain_prerequisite_renewal(
+        permit,
+        component,
+        now,
+        journal_path=journal_path,
+    )
 
 
 def finish_brain_refresh(
@@ -2320,23 +2656,29 @@ __all__ = [
     "BrainLaneId",
     "BrainProbeOutcome",
     "BrainProjection",
+    "BrainPrerequisiteRenewalBeginResult",
+    "BrainPrerequisiteRenewalStatus",
     "BrainReasonCode",
     "BrainRefreshPermit",
     "BrainRuntimeFailureComponent",
     "BrainRuntimeFailureMarker",
     "BrainRuntimeFailureResult",
+    "BrainStateExpectedFingerprintStaleError",
     "BrainStateConflictError",
     "BrainStateInspection",
     "BrainStateRecord",
     "BrainStateValidationError",
     "abandon_brain_refresh",
+    "abandon_brain_prerequisite_renewal",
     "brain_fingerprint_key_path",
     "brain_refresh_lease_path",
     "brain_state_path",
     "begin_brain_refresh",
+    "begin_brain_prerequisite_renewal",
     "build_active_brain_fingerprint",
     "derive_active_brain_lane",
     "finish_brain_refresh",
+    "finish_brain_prerequisite_renewal",
     "inspect_brain_state",
     "project_brain_state",
     "read_active_brain_fingerprint_sha256",
