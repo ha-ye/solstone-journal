@@ -25,8 +25,6 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from timefhuman import timefhuman
-
 from solstone.think.media import MIME_TYPES
 from solstone.think.providers import managed_provider_env_keys
 
@@ -978,50 +976,6 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     init_cli_runtime(args.verbose, args.debug)
 
     return (args, extra) if parse_known else args
-
-
-def parse_time_range(text: str) -> Optional[tuple[str, str, str]]:
-    """Return ``(day, start, end)`` from a natural language time range.
-
-    Parameters
-    ----------
-    text:
-        Natural language description of a time range.
-
-    Returns
-    -------
-    tuple[str, str, str] | None
-        ``(day, start, end)`` if a single range within one day was detected.
-        ``day`` is ``YYYYMMDD`` and ``start``/``end`` are ``HHMMSS``. ``None``
-        if parsing fails.
-    """
-
-    try:
-        result = timefhuman(text)
-    except Exception as exc:  # pragma: no cover - unexpected library failure
-        logging.info("timefhuman failed for %s: %s", text, exc)
-        return None
-
-    logging.debug("timefhuman(%s) -> %r", text, result)
-
-    if len(result) != 1:
-        logging.info("timefhuman did not return a single expression for %s", text)
-        return None
-
-    range_item = result[0]
-    if not isinstance(range_item, tuple) or len(range_item) != 2:
-        logging.info("Expected a range from %s but got %r", text, range_item)
-        return None
-
-    start_dt, end_dt = range_item
-    if start_dt.date() != end_dt.date():
-        logging.info("Range must be within a single day: %s -> %s", start_dt, end_dt)
-        return None
-
-    day = start_dt.strftime("%Y%m%d")
-    start = start_dt.strftime("%H%M%S")
-    end = end_dt.strftime("%H%M%S")
-    return day, start, end
 
 
 def get_raw_file(day: str, name: str) -> tuple[str, str, Any]:

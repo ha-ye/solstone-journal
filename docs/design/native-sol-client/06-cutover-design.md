@@ -282,8 +282,8 @@ New case table:
 - compat journal subtree: `sol call journal --help`,
   `sol call journal search --help`
 - journal host: `journal transcribe --help`
-- routing errors: `sol think --help` must produce the native moved-to-journal
-  service error; `journal import --help` must still produce the journal-access
+- routing errors: invoking the native binary with `think --help` must produce
+  the unsupported-command error; `journal import --help` must still produce the journal-access
   rejection
 
 `--real-install` becomes the authority. It installs the root package into a temp
@@ -556,8 +556,8 @@ Modify:
 
 Add:
 
-- `tests/test_timefhuman_removal_guard.py`
-- optional `scripts/check_timefhuman_removal_ready.py`
+- `tests/test_removed_time_parser_guard.py`
+- `scripts/check_removed_time_parser_ready.py`
 - `docs/design/native-sol-client/06-cutover-design.md`
 
 Modify:

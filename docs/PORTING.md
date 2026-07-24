@@ -240,6 +240,15 @@ byte-identical between Python and native index output.
 The detailed native atomicity design is in
 `docs/design/indexer-native-atomicity.md`.
 
+Native sol client design records:
+`docs/design/native-sol-client/00-prep-findings.md`,
+`docs/design/native-sol-client/01-oracle-repro.md`,
+`docs/design/native-sol-client/02-design.md`,
+`docs/design/native-sol-client/03-batch-prep.md`,
+`docs/design/native-sol-client/04-batch-design.md`,
+`docs/design/native-sol-client/05-raw-body-parity.md`, and
+`docs/design/native-sol-client/06-cutover-design.md`.
+
 The selection keys are intentionally absent from `journal_default.json`. They
 are a two-release-lifetime migration control: release N kept Python as the
 absent-key default and allowed opt-in Rust; release N+1 defaults absent-key
@@ -255,6 +264,15 @@ The repository no-shims rule still stands. During an active port, a config-gated
 old/new selection is a deliberate, time-boxed, per-change exception. Each dual
 path needs a named deletion schedule. Do not add fallback aliases,
 deprecated-parameter handling, or compatibility re-exports.
+
+The native `sol` cutover has one sanctioned temporary delegation boundary: the
+finite private compatibility inventory in `solstone/think/sol_compat_inventory.py`,
+checked by `scripts/check_native_sol_compat.py`. The inventory is the only
+authority for that command set; do not copy the list into docs or gates. The
+removal criterion is zero Python delegation from supported-platform native
+`sol`: every remaining compatibility path has a native authority and production
+aggregate handler, then the compatibility inventory, helper, and exec bridge are
+deleted together.
 
 ## Version Lockstep
 

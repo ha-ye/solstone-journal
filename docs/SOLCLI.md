@@ -8,8 +8,8 @@ The CLI has two tiers with distinct purposes:
 
 | Tier | Pattern | Framework | Purpose |
 |------|---------|-----------|---------|
-| **Top-level** | `sol <cmd>` / `journal <cmd>` | Custom dispatcher + argparse | System infrastructure — pipelines, daemons, orchestration, local-only host tools |
-| **Call** | `sol call <app> <cmd>` | Typer (auto-discovered) | Tool-callable functions — what agents and humans invoke for data operations |
+| **Top-level** | `sol <cmd>` / `journal <cmd>` | Native `sol` + Python `journal` dispatcher | Native journal access, host services, and local-only host tools |
+| **Call** | `sol call <app> <cmd>` | Native authority inventory, plus finite journal compatibility | Tool-callable functions — what agents and humans invoke for data operations |
 
 ### The boundary
 
@@ -33,7 +33,12 @@ executable on PATH.
 
 ### How they work
 
-`solstone/think/sol_cli.py` contains a static `COMMANDS` dict mapping command names to module paths:
+The public `sol` / `solstone` binaries are native Rust entry points owned by
+`solstone-core`. Their top-level native commands are declared beside their Rust
+handlers under `solstone/think/native/<command>/authority.toml`.
+
+`solstone/think/sol_cli.py` now contains only the `journal` host dispatcher. It
+has a static `COMMANDS` dict mapping host command names to module paths:
 
 ```python
 COMMANDS: dict[str, str] = {
@@ -45,7 +50,7 @@ COMMANDS: dict[str, str] = {
 
 Each module must export a `main()` function. The dispatcher does `importlib.import_module(path)` then calls `module.main()`.
 
-Commands are organized into `GROUPS` for help display, and `ALIASES` provide shortcuts (e.g., `journal up` → `journal service up`).
+`ALIASES` provide shortcuts (e.g., `journal up` → `journal service up`).
 
 ### Adding a top-level command
 
@@ -71,78 +76,49 @@ COMMANDS: dict[str, str] = {
 }
 ```
 
-3. **Add to a group** in `GROUPS` for help display.
-
-4. **No skill or AGENTS.md changes needed** — top-level commands aren't agent tools.
+3. **No skill or AGENTS.md changes needed** — host commands aren't agent tools.
 
 ### Files to maintain
 
 | File | What to do |
 |------|-----------|
 | `solstone/think/sol_cli.py` `COMMANDS` dict | Register the command |
-| `solstone/think/sol_cli.py` `GROUPS` dict | Add to appropriate group |
 | Module file (e.g., `solstone/think/my_cmd.py`) | Implement with `main()` |
 
 ## Call Commands (`sol call <app> <cmd>`)
 
 ### How they work
 
-`solstone/think/call.py` is the gateway. It creates a root `typer.Typer()` and mounts sub-apps from two sources:
+Native `sol call` commands are declared by `authority.toml` files beside Rust
+handlers under `solstone/apps/*/native/` and `solstone/think/tools/native/`.
+The production aggregate inventory is generated into
+`core/crates/solstone-core-sol-client/src/generated/inventory.rs`.
 
-**Auto-discovered apps** — scans `solstone/apps/*/call.py` at import time:
-```
-apps/entities/call.py   → sol call entities ...
-apps/activities/call.py → sol call activities ...
-apps/skills/call.py     → sol call skills ...
-```
-
-Each `call.py` must export `app = typer.Typer()`. The directory name becomes the sub-command name. Errors in one app don't prevent others from loading.
-
-**Manually mounted built-ins** — journal-access tools that live under `solstone/think/`:
+The only remaining Python Typer mount is the finite private compatibility path
+for `sol call journal`:
 ```python
 # think/call.py
 from solstone.think.tools.call import app as journal_app
-from solstone.think.tools.health import app as health_app
-from solstone.think.tools.ledger import app as ledger_app
-from solstone.think.tools.profile import app as profile_app
 
-call_app.add_typer(health_app, name="health")
 call_app.add_typer(journal_app, name="journal")
-call_app.add_typer(ledger_app, name="ledger")
-call_app.add_typer(profile_app, name="profile")
 ```
 
 Local-only service tools such as `journal navigate` and `journal identity` are
 registered in `COMMANDS` instead of mounted under `sol call`.
 
-### Adding a new auto-discovered app
+### Adding a new native app command
 
 This is the happy path for most new commands.
 
-1. **Create `solstone/apps/<name>/call.py`**:
+1. **Create or update `solstone/apps/<name>/native/authority.toml`** with the
+   path, params, operation id, HTTP method, route, and handler.
 
-```python
-# solstone/apps/myapp/call.py
-import typer
-from solstone.think.facets import log_call_action
+2. **Implement `solstone/apps/<name>/native/command.rs`** and bind the handler
+   declared by the authority.
 
-app = typer.Typer(help="Short description of what this app does.")
+3. **Regenerate the inventory** with `make build-native-sol-inventory`.
 
-@app.command("list")
-def list_items(
-    day: str | None = typer.Option(None, "--day", "-d", help="Day YYYYMMDD."),
-    facet: str | None = typer.Option(None, "--facet", "-f", help="Facet name."),
-) -> None:
-    """List items."""
-    from solstone.think.utils import resolve_sol_day, resolve_sol_facet
-    day = resolve_sol_day(day)
-    facet = resolve_sol_facet(facet)
-    # ... implementation
-```
-
-2. **That's it for the CLI.** Auto-discovery picks it up on next run.
-
-3. **Update the app command fragment** (if agents should use these commands).
+4. **Update the app command fragment** (if agents should use these commands).
    `sol skills build` discovers these fragments automatically from
    `solstone/apps/*/talent/*/SKILL.md`:
 
@@ -191,11 +167,12 @@ the journal host and depends heavily on `solstone/think/` internals.
 
 | File | What to do | Required? |
 |------|-----------|-----------|
-| `solstone/apps/<name>/call.py` | Typer app with commands | Yes |
+| `solstone/apps/<name>/native/authority.toml` | Native command path, params, and route contract | Yes |
+| `solstone/apps/<name>/native/command.rs` | Native handler implementation | Yes |
 | `solstone/apps/<name>/talent/<name>/SKILL.md` | App command guidance fragment used by `sol skills build` | If agents should use it |
 | `solstone/talent/sol/references/commands.md` | Generated `sol call <app>` inventory | Auto-generated by `sol skills build` |
 | `solstone/talent/journal/references/commands.md` | Generated journal-host command guidance | Auto-generated by `sol skills build` |
-| `tests/test_<name>_call.py` | CLI tests | Yes |
+| `core/fixtures/native-sol/parity/<name>.jsonl` | Native parity vectors | Yes |
 
 ## Conventions
 
@@ -389,7 +366,7 @@ proc.wait()
 solstone/
 ├── think/
 │   ├── sol_cli.py                  # Entry point + COMMANDS registry
-│   ├── call.py                     # sol call gateway (Typer root + mounts)
+│   ├── call.py                     # sol call journal compatibility mount
 │   ├── tools/
 │   │   ├── call.py                 # sol call journal (built-in)
 │   │   ├── navigate.py             # journal navigate (built-in)
@@ -397,15 +374,14 @@ solstone/
 │   └── *.py                        # Top-level command modules
 ├── solstone/apps/
 │   ├── activities/
-│   │   ├── call.py                 # sol call activities (auto-discovered)
+│   │   ├── native/                 # sol call activities native authority/handler
 │   │   └── talent/activities/SKILL.md # builder source for generated router refs
-│   ├── entities/call.py
-│   ├── speakers/call.py
-│   ├── support/call.py
-│   ├── transcripts/call.py
-│   ├── agent/call.py
-│   ├── awareness/call.py
-│   └── ... (web-only apps without call.py)
+│   ├── entities/native/
+│   ├── speakers/native/
+│   ├── support/native/
+│   ├── transcripts/native/
+│   ├── awareness/native/
+│   └── ...
 ├── talent/
 │   ├── sol/SKILL.md                # installed sol router skill
 │   ├── journal/SKILL.md            # installed journal router skill
@@ -418,7 +394,8 @@ solstone/
 
 ### The `solstone/apps/` dual role
 
-`solstone/apps/` contains both CLI apps (with `call.py`) and convey web routes (without). The presence of `call.py` is the marker for "this app exposes CLI commands." Web-only apps (home, search, stats, etc.) only serve the convey UI.
+`solstone/apps/` contains convey web routes and, when an app exposes agent-facing
+CLI commands, a native `native/authority.toml` plus `native/command.rs`.
 
 ## Current Command Inventory
 
@@ -443,14 +420,14 @@ solstone/
 
 | App | Source | Commands |
 |-----|--------|----------|
-| `activities` | `solstone/apps/activities/call.py` | list, get, create, update, mute, unmute |
-| `entities` | `solstone/apps/entities/call.py` | list, move, detect, attach, update, aka, record-merge-candidate, merge-candidates, accept-merge-candidate, dismiss-merge-candidate, merge, undo-merge, ambiguities, resolve-ambiguity, entity-history, restore-version, network, history, overview, observations, observe, search |
-| `speakers` | `solstone/apps/speakers/call.py` | list, show, detect-owner, confirm-owner, clusters, suggest |
-| `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
-| `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
-| `sol` | `solstone/apps/sol/call.py` | set-name, reset, set-owner, sol-init |
-| `settings` | `solstone/apps/settings/call.py` | personal service keys (show/set/delete). Thinking provider selection lives in the Thinking app; local provider install lives at `journal install-provider local`. |
-| `awareness` | `solstone/apps/awareness/call.py` | status, imports, log, log-read |
+| `activities` | `solstone/apps/activities/native/authority.toml` | list, get, create, update, mute, unmute |
+| `entities` | `solstone/apps/entities/native/authority.toml` | list, move, detect, attach, update, aka, record-merge-candidate, merge-candidates, accept-merge-candidate, dismiss-merge-candidate, merge, undo-merge, ambiguities, resolve-ambiguity, entity-history, restore-version, network, history, overview, observations, observe, search |
+| `speakers` | `solstone/apps/speakers/native/authority.toml` | list, show, detect-owner, confirm-owner, clusters, suggest |
+| `transcripts` | `solstone/apps/transcripts/native/authority.toml` | list, read, segments |
+| `support` | `solstone/apps/support/native/authority.toml` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
+| `sol` | `solstone/apps/sol/native/authority.toml` | set-name, reset, set-owner, sol-init |
+| `settings` | `solstone/apps/settings/native/authority.toml` | personal service keys (show/set/delete). Thinking provider selection lives in the Thinking app; local provider install lives at `journal install-provider local`. |
+| `awareness` | `solstone/apps/awareness/native/authority.toml` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 
 `sol skills` builds generated router references and manages coding-agent skill installation.
@@ -464,13 +441,13 @@ Project skill installation installs exactly two router skills into both `journal
 - App command fragments: `solstone/apps/<name>/talent/<name>/SKILL.md`
 - Generated references: `solstone/talent/sol/references/commands.md`, `solstone/talent/journal/references/commands.md`
 
-App command fragments are builder source. `sol skills build` folds their guidance into deterministic, checked-in generated references. The generated references aggregate per-app command guidance, including health's `sol call health` commands and health's journal-host `journal health` / `journal talent` guidance. There is no in-repo `vit` skill.
+App command fragments are builder source. `sol skills build` folds their guidance into deterministic, checked-in generated references. The generated references aggregate per-app command guidance from native authority files, including health's `sol call health` commands and health's journal-host `journal health` / `journal talent` guidance. There is no in-repo `vit` skill.
 
 Fragments document CLI commands and add behavioral guidance beyond what `--help` shows (e.g., "check entity context before attaching a new relationship to avoid duplicates"). Agents consume that guidance through the `sol` and `journal` router skill references.
 
 ### Keeping skills in sync
 
-When you add or change a `sol call` command, update both the app's `call.py` verb and the corresponding app command fragment. The generated router references are what agents actually read — they don't parse `--help` output. Include:
+When you add or change a `sol call` command, update both the native authority/handler and the corresponding app command fragment. The generated router references are what agents actually read — they don't parse `--help` output. Include:
 - Full command syntax with all flags
 - Behavior notes (edge cases, defaults, validation)
 - Examples showing common usage patterns

@@ -282,7 +282,8 @@ def run_probe(
 
 
 def _is_source_checkout() -> bool:
-    # Inline solstone.think.utils.is_source_checkout; importing utils pulls timefhuman.
+    # Inline solstone.think.utils.is_source_checkout so preflight can run before
+    # broader utility imports and provider dependency checks.
     return (ROOT / "pyproject.toml").exists() and (ROOT / ".git").exists()
 
 
