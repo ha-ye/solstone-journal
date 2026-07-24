@@ -129,6 +129,14 @@ def should_reenter_analysis_output(
     govern it. Decode-determined verdicts terminalize regardless of provider
     availability only when there is no frame-description work left to do; a run
     that still has qualified frames defers instead of discarding them.
+
+    This is the primary, automatic remedy for a record-less output: the handler
+    *determines* the verdict on re-entry. ``backfill_processing_records`` is the
+    operator bulk tool for the same on-disk shape — CLI-only, and it *stamps a
+    guessed* ``state=empty`` rather than determining one, so it is scoped to
+    marker-less, chunk-less legacy fleets and declines anything carrying a
+    marker or an existing record. Re-entry deliberately covers the marker-
+    bearing case the backfill refuses.
     """
     if (
         isinstance(record, dict)

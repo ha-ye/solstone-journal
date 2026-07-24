@@ -863,7 +863,22 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
     health = _run_daily_gate(segment_journal, day, monkeypatch)
 
     assert not (health / "daily.updated").exists()
-    assert str(completion.blockers) in caplog.text
+
+    # The gate's sense-repair pre-phase re-enters SEGMENT_B's header-only
+    # record-less output and its record terminalizes, clearing that one
+    # not_sensed blocker; the three not_thought segments still withhold the
+    # day. Classifier and gate must therefore agree on the *post-repair*
+    # classification. Comparing the gate's log to the pre-gate snapshot only
+    # held while sense repair was a no-op, which is the absorbing state this
+    # scope removes -- the agreement property itself is unweakened.
+    post_repair = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert post_repair.not_sensed == 0
+    assert post_repair.not_thought == 3
+    assert str(post_repair.blockers) in caplog.text
 
 
 def test_media_terminal_without_sense_complete_is_no_sense_complete(
@@ -1176,7 +1191,17 @@ def test_unterminated_downstream_withholds(segment_journal, monkeypatch):
 
 
 def test_not_fully_sensed_segment_withholds(segment_journal, monkeypatch, caplog):
-    _seed_segment(segment_journal, DAY, SEGMENT, state="pending")
+    # A record-less output whose raw media is gone: nothing for the gate's
+    # sense-repair pre-phase to re-attempt, so the modality stays "pending"
+    # and remains a genuine not_sensed blocker. With the media present, that
+    # output is no longer a lasting blocker -- re-entry re-attempts it and the
+    # handler determines a verdict -- so it would withhold only until its
+    # record terminalizes. Asserting the withhold on a re-enterable fixture
+    # would test that re-entry never fires, the absorbing state this scope
+    # removes, rather than the invariant this test owns: a segment that is not
+    # sensed withholds the day.
+    seg_path = _seed_segment(segment_journal, DAY, SEGMENT, state="pending")
+    (seg_path / "screen.webm").unlink()
     _write_health(segment_journal, DAY, "001_daily.jsonl", [_daily_complete()])
     _write_health(
         segment_journal, DAY, "002_segment.jsonl", _complete_segment_events(SEGMENT)
@@ -1263,9 +1288,18 @@ def test_empty_idle_segment_allows_daily_gate(
     assert (health / "daily.updated").exists()
 
 
-def test_backfill_unblocks_stuck_empty_day(segment_journal, monkeypatch):
+def test_backfill_stamps_marker_less_output_and_completes_day(
+    segment_journal, monkeypatch
+):
+    # Backfill is the operator bulk tool for marker-less, chunk-less legacy
+    # outputs; re-entry is the primary automatic remedy. It is therefore run
+    # here before the gate: once the gate's sense-repair pre-phase re-enters
+    # the output and stamps a real record, backfill correctly declines it as
+    # SKIP_HAS_RECORD. The dropped "gate withholds first" assertion asserted
+    # that such files are never re-attempted -- the absorbing behavior this
+    # scope removes -- not backfill's own contract, which is unchanged.
     day = "20990419"
-    _seed_segment(segment_journal, day, SEGMENT, state="pending")
+    seg_path = _seed_segment(segment_journal, day, SEGMENT, state="pending")
     _write_health(segment_journal, day, "001_daily.jsonl", [_daily_complete()])
     _write_health(
         segment_journal,
@@ -1274,12 +1308,15 @@ def test_backfill_unblocks_stuck_empty_day(segment_journal, monkeypatch):
         _complete_segment_events(SEGMENT, density="idle"),
     )
 
-    health = _run_daily_gate(segment_journal, day, monkeypatch)
-    assert not (health / "daily.updated").exists()
+    from solstone.think.backfill_processing_records import Outcome, run_backfill
 
-    from solstone.think.backfill_processing_records import run_backfill
+    counts = run_backfill(day, commit=True)
 
-    run_backfill(day, commit=True)
+    assert counts[Outcome.STAMP_EMPTY] == 1
+    header = json.loads(
+        (seg_path / "screen.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert header["_solstone_processing"]["source"] == "backfill"
 
     health = _run_daily_gate(segment_journal, day, monkeypatch)
     assert (health / "daily.updated").exists()
