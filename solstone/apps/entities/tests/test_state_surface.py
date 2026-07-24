@@ -22,6 +22,15 @@ def _function_body(text, name):
     return text[start:nxt]
 
 
+def _css_rule(text: str, selector: str) -> str:
+    start = f"\n{selector} {{"
+    assert text.count(start) == 1, f"expected exactly one CSS rule for {selector}"
+    start_idx = text.index(start) + len(start)
+    assert "}" in text[start_idx:], f"missing end of CSS rule for {selector}"
+    end_idx = text.index("}", start_idx)
+    return text[start_idx:end_idx]
+
+
 def test_detected_empty_and_no_match_states(html):
     fn = _function_body(html, "renderDetectedTable")
 
@@ -147,6 +156,32 @@ def test_entity_type_grouping_is_normalized_and_shared(html):
     assert "const type = entity.type || 'Other';" not in cards
     assert "orderedTypes" not in journal
     assert "orderedTypes" not in cards
+
+
+def test_entity_detail_type_badge_lowercases_without_js_munging(html):
+    css = _css_rule(html, ".entity-detail-type")
+
+    assert "text-transform: lowercase;" in css
+
+    assignment_lines = [
+        line.strip()
+        for line in html.splitlines()
+        if "document.getElementById('journal-detail-type').textContent =" in line
+        and "''" not in line
+    ]
+    assert (
+        "document.getElementById('journal-detail-type').textContent = entity.type;"
+        in assignment_lines
+    )
+    assert (
+        "document.getElementById('journal-detail-type').textContent = type;"
+        in assignment_lines
+    )
+    for line in assignment_lines:
+        assert ".toLowerCase()" not in line
+        assert ".toUpperCase()" not in line
+        assert "textTransform" not in line
+        assert "text-transform" not in line
 
 
 def test_connection_mounts_and_renderers_are_shared(html):
