@@ -66,6 +66,13 @@ def _file_entry(path: Path) -> dict[str, Any]:
     }
 
 
+def _core_members(prefix: str, sha: str) -> dict[str, dict[str, Any]]:
+    return {
+        name: {"path": f"{prefix}/{name}", "sha256": sha, "bytes": 5}
+        for name in smoke.CORE_SCRIPT_NAMES
+    }
+
+
 def _ledger(candidate: Path) -> dict[str, Any]:
     return {
         "source_commit": SOURCE_COMMIT,
@@ -78,26 +85,10 @@ def _ledger(candidate: Path) -> dict[str, Any]:
             ],
         },
         "native_members": {
-            "linux-x86_64-musl": {
-                "solstone-core": {
-                    "path": "linux-x86/solstone-core",
-                    "sha256": "1" * 64,
-                    "bytes": 5,
-                }
-            },
-            "linux-aarch64-musl": {
-                "solstone-core": {
-                    "path": "linux-aarch64/solstone-core",
-                    "sha256": "2" * 64,
-                    "bytes": 5,
-                }
-            },
+            "linux-x86_64-musl": _core_members("linux-x86", "1" * 64),
+            "linux-aarch64-musl": _core_members("linux-aarch64", "2" * 64),
             "macos-arm64": {
-                "solstone-core": {
-                    "path": "macos/solstone-core",
-                    "sha256": "3" * 64,
-                    "bytes": 5,
-                },
+                **_core_members("macos", "3" * 64),
                 "parakeet-helper": {
                     "path": "macos/parakeet-helper",
                     "sha256": "4" * 64,
@@ -119,7 +110,8 @@ def _observation(
     env_root = candidate.parent / f"env-{target}"
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     (env_root / "bin" / "python").write_bytes(b"python")
-    (env_root / "bin" / "solstone-core").write_bytes(b"core")
+    for name in smoke.CORE_SCRIPT_NAMES:
+        (env_root / "bin" / name).write_bytes(b"core")
     install_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=target,
@@ -127,11 +119,12 @@ def _observation(
     )
     members = [
         {
-            "name": "solstone-core",
-            "path": env_root / "bin" / "solstone-core",
-            "sha256": ledger["native_members"][target]["solstone-core"]["sha256"],
+            "name": name,
+            "path": env_root / "bin" / name,
+            "sha256": ledger["native_members"][target][name]["sha256"],
             "symlink": False,
         }
+        for name in smoke.CORE_SCRIPT_NAMES
     ]
     if target == "macos-arm64":
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
@@ -161,12 +154,13 @@ def _observation(
         "installed_distributions": smoke.expected_distribution_entries(install_paths),
         "installed_members": tuple(members),
         "smoke": {
-            "solstone-core": smoke.CommandResult(
-                argv=(str(env_root / "bin" / "solstone-core"), "--version"),
+            name: smoke.CommandResult(
+                argv=(str(env_root / "bin" / name), "--version"),
                 exit_code=0,
-                stdout=f"solstone-core {version}",
+                stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} {version}",
                 env=smoke.SCRUBBED_COMMAND_ENV,
             )
+            for name in smoke.CORE_SCRIPT_NAMES
         },
     }
     if mutate is not None:

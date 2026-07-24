@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+import scripts.check_rust_release_manifest as manifest
 import scripts.release_publish as publisher
 from scripts.release_candidate_driver import CandidateReport, DriverError
 from scripts.transparency_core import failure
@@ -50,6 +51,26 @@ def _manifest_names() -> list[str]:
         f"{artifact}.rust-release-manifest.json"
         for artifact in publisher.rust_artifact_targets()
     ]
+
+
+def _write_tombstone_prerequisite(evidence_dir: Path, version: str) -> None:
+    payload = {
+        "schema_version": 1,
+        "kind": manifest.CORE_UNSUPPORTED_TOMBSTONE_KIND,
+        "project": manifest.CORE_UNSUPPORTED_TOMBSTONE_PROJECT,
+        "version": version,
+        "status": manifest.CORE_UNSUPPORTED_TOMBSTONE_STATUS,
+        "supported_platform_triples": list(
+            manifest.CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES
+        ),
+        "resolver_checks": dict(
+            manifest.CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS
+        ),
+    }
+    (evidence_dir / manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD).write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _candidate(
@@ -102,6 +123,7 @@ def _candidate(
     (evidence_dir / "ledger.json").write_text(
         json.dumps(ledger, sort_keys=True), encoding="utf-8"
     )
+    _write_tombstone_prerequisite(evidence_dir, candidate_version)
 
     proof_hashes: dict[str, str] = {}
     for target in PROOF_TARGETS:
@@ -853,6 +875,30 @@ def test_production_source_commit_missing_refuses_before_transport(
 
     assert _first_failure(excinfo.value) == (
         "release source commit is not present in repository"
+    )
+    assert calls == ["source-check"]
+
+
+def test_production_requires_core_unsupported_tombstone_before_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path)
+    (report.evidence_dir / manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD).unlink()
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report, mode="production"),
+            calls=calls,
+            index=index,
+            git_runner=RecordingGit(calls),
+            gh_runner=_gh_runner(calls),
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "core unsupported-platform tombstone prerequisite is missing"
     )
     assert calls == ["source-check"]
 

@@ -87,7 +87,7 @@ import sys
 
 payload = json.loads(sys.argv[1])
 root = payload["root"]
-if root not in sys.path:
+if payload.get("source_root_on_path", True) and root not in sys.path:
     sys.path.insert(0, root)
 
 blocked = tuple(payload["blocked"])
@@ -151,14 +151,16 @@ def _run_case(
     strict_call_discovery: bool = False,
     extra_env: dict[str, str] | None = None,
     python: str | None = None,
+    source_root_on_path: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("SOLSTONE_JOURNAL", str(root / "tests" / "fixtures" / "journal"))
-    env["PYTHONPATH"] = (
-        str(root)
-        if not env.get("PYTHONPATH")
-        else str(root) + os.pathsep + env["PYTHONPATH"]
-    )
+    if source_root_on_path:
+        env["PYTHONPATH"] = (
+            str(root)
+            if not env.get("PYTHONPATH")
+            else str(root) + os.pathsep + env["PYTHONPATH"]
+        )
     if strict_call_discovery:
         env["SOLSTONE_STRICT_CALL_DISCOVERY"] = "1"
     if extra_env:
@@ -168,6 +170,7 @@ def _run_case(
         "argv": argv,
         "blocked": BLOCKED_FAMILIES,
         "label": label,
+        "source_root_on_path": source_root_on_path,
     }
     return subprocess.run(
         [python or sys.executable, "-c", CHILD, json.dumps(payload)],
@@ -198,6 +201,7 @@ def _check_access_case(
     *,
     extra_env: dict[str, str] | None = None,
     python: str | None = None,
+    source_root_on_path: bool = True,
 ) -> list[str]:
     strict = label == "sol call --help"
     result = _run_case(
@@ -207,6 +211,7 @@ def _check_access_case(
         strict_call_discovery=strict,
         extra_env=extra_env,
         python=python,
+        source_root_on_path=source_root_on_path,
     )
     failures: list[str] = []
     if result.returncode != 0:
@@ -234,8 +239,15 @@ def _check_routing_case(
     expected: str,
     *,
     python: str | None = None,
+    source_root_on_path: bool = True,
 ) -> list[str]:
-    result = _run_case(root, label, argv, python=python)
+    result = _run_case(
+        root,
+        label,
+        argv,
+        python=python,
+        source_root_on_path=source_root_on_path,
+    )
     output = result.stdout + result.stderr
     failures: list[str] = []
     if result.returncode == 0:
@@ -254,51 +266,88 @@ def run_checks(
     *,
     extra_env: dict[str, str] | None = None,
     python: str | None = None,
+    source_root_on_path: bool = True,
 ) -> list[str]:
     failures: list[str] = []
     for label, argv in ACCESS_CASES:
         failures.extend(
-            _check_access_case(root, label, argv, extra_env=extra_env, python=python)
+            _check_access_case(
+                root,
+                label,
+                argv,
+                extra_env=extra_env,
+                python=python,
+                source_root_on_path=source_root_on_path,
+            )
         )
     for label, argv, expected in ROUTING_CASES:
-        failures.extend(_check_routing_case(root, label, argv, expected, python=python))
+        failures.extend(
+            _check_routing_case(
+                root,
+                label,
+                argv,
+                expected,
+                python=python,
+                source_root_on_path=source_root_on_path,
+            )
+        )
     return failures
 
 
 def _real_base_python(root: Path, tmpdir: str) -> str:
-    """Build a fresh venv with the REAL thin base partition (no extras) and
-    return its interpreter. `pip install .` resolves exactly what
-    [project.dependencies] declares — the faithful counterpart to the in-CI
-    BlockHeavyFinder simulation."""
+    """Build a fresh venv with the REAL thin base partition (no extras)."""
     venv = Path(tmpdir) / "thin-base-venv"
     uv = shutil.which("uv")
-    if uv:
-        subprocess.run(
-            [uv, "venv", str(venv)], check=True, capture_output=True, text=True
+    if not uv:
+        raise RuntimeError("--real-install requires uv")
+    dist = Path(tmpdir) / "thin-base-dist"
+    dist.mkdir()
+    subprocess.run([uv, "venv", str(venv)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [uv, "build", "--package", "solstone-core", "--wheel", "--out-dir", str(dist)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(dist)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    python = str(venv / "bin" / "python")
+    root_wheels = sorted(
+        path
+        for path in dist.glob("solstone-*.whl")
+        if path.name.endswith("-py3-none-any.whl")
+    )
+    core_wheels = sorted(dist.glob("solstone_core-*.whl"))
+    if len(root_wheels) != 1 or len(core_wheels) != 1:
+        raise RuntimeError(
+            "real thin-base install expected one root wheel and one core wheel; "
+            f"found root={len(root_wheels)} core={len(core_wheels)}"
         )
-        python = str(venv / "bin" / "python")
-        subprocess.run(
-            [uv, "pip", "install", "--python", python, str(root)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
-    else:
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(venv)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        python = str(venv / "bin" / "python")
-        subprocess.run(
-            [python, "-m", "pip", "install", str(root)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
+    subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            python,
+            "--offline",
+            "--find-links",
+            str(dist),
+            str(root_wheels[0]),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
     return python
 
 
@@ -365,7 +414,12 @@ def main(argv: list[str] | None = None) -> int:
             python = _real_base_python(root, tmpdir)
             failures = _check_heavy_absent(python)
             failures.extend(
-                run_checks(root, extra_env=extra_env or None, python=python)
+                run_checks(
+                    root,
+                    extra_env=extra_env or None,
+                    python=python,
+                    source_root_on_path=False,
+                )
             )
     else:
         failures = run_checks(root, extra_env=extra_env or None)

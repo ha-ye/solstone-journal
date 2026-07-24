@@ -14,7 +14,7 @@ import pytest
 
 import scripts.record_macos_native_wheel as native
 import scripts.release_tool_pins as pins
-from scripts.check_wheel_contents import PARAKEET_HELPER_MEMBER
+from scripts.check_wheel_contents import CORE_SCRIPT_NAMES, PARAKEET_HELPER_MEMBER
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -36,7 +36,12 @@ def _root_wheel(tmp_path: Path, content: bytes = b"root-helper") -> Path:
 
 def _core_wheel(tmp_path: Path, content: bytes = b"core-script") -> Path:
     path = tmp_path / "solstone_core-1.2.3-py3-none-macosx_14_0_arm64.whl"
-    _write_member_wheel(path, "solstone_core-1.2.3.data/scripts/solstone-core", content)
+    with zipfile.ZipFile(path, "w") as wheel:
+        for name in CORE_SCRIPT_NAMES:
+            info = zipfile.ZipInfo(f"solstone_core-1.2.3.data/scripts/{name}")
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            wheel.writestr(info, content)
     return path
 
 
@@ -61,6 +66,10 @@ def _facts_file(tmp_path: Path, facts: dict) -> Path:
     path = tmp_path / "facts.json"
     path.write_text(json.dumps(facts), encoding="utf-8")
     return path
+
+
+def _core_facts(content: bytes) -> dict:
+    return {"members": {name: _facts(content) for name in CORE_SCRIPT_NAMES}}
 
 
 def test_native_record_cli_and_makefile_use_package_module() -> None:
@@ -95,7 +104,7 @@ def test_exactly_two_role_records_are_written_and_not_interchangeable(
     core = native.build_macos_native_record(
         role="core",
         wheel_path=core_wheel,
-        signing_facts=_facts(b"core"),
+        signing_facts=_core_facts(b"core"),
         source_commit=SOURCE_COMMIT,
         core_lock_sha256=CORE_LOCK,
     )
@@ -269,7 +278,7 @@ def test_record_validation_rejects_wheel_hash_and_repacked_core_mismatch(
     record = native.build_macos_native_record(
         role="core",
         wheel_path=wheel,
-        signing_facts=_facts(b"core"),
+        signing_facts=_core_facts(b"core"),
         source_commit=SOURCE_COMMIT,
         core_lock_sha256=CORE_LOCK,
     )

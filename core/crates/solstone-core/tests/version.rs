@@ -9,6 +9,14 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-core")
 }
 
+fn sol_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_sol")
+}
+
+fn solstone_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_solstone")
+}
+
 fn temp_path(name: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -163,4 +171,93 @@ fn journal_path_config_tilde_is_literal() {
         "config\t~/journal\n"
     );
     fs::remove_dir_all(home).expect("cleanup config home");
+}
+
+#[test]
+fn sol_and_solstone_bins_report_the_same_native_version() {
+    let sol = Command::new(sol_bin())
+        .arg("--version")
+        .output()
+        .expect("sol should execute");
+    let solstone = Command::new(solstone_bin())
+        .arg("--version")
+        .output()
+        .expect("solstone should execute");
+
+    assert_eq!(sol.status.code(), Some(0));
+    assert_eq!(solstone.status.code(), Some(0));
+    assert_eq!(sol.stdout, solstone.stdout);
+    assert_eq!(sol.stderr, solstone.stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn sol_and_solstone_bins_forward_compat_with_public_argv0_identity() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    let helper = PathBuf::from(sol_bin()).with_file_name("solstone-python-compat");
+    let previous = fs::read(&helper).ok();
+    let previous_mode = fs::metadata(&helper)
+        .ok()
+        .map(|metadata| metadata.permissions().mode());
+    fs::write(
+        &helper,
+        "#!/bin/sh\n".to_string()
+            + "printf 'sentinel=%s\\n' \"$SOLSTONE_NATIVE_COMPAT_ACTIVE\"\n"
+            + "printf 'marker=%s\\n' \"$1\"\n"
+            + "shift\n"
+            + "printf 'args='\n"
+            + "for arg in \"$@\"; do printf '<%s>' \"$arg\"; done\n"
+            + "printf '\\nstdin='\n"
+            + "cat\n"
+            + "printf 'compat stderr\\n' >&2\n"
+            + "exit 23\n",
+    )
+    .expect("write fake compatibility helper");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755))
+        .expect("make fake compatibility helper executable");
+
+    for (bin_path, expected_marker) in [
+        (sol_bin(), "__solstone_native_argv0=sol"),
+        (solstone_bin(), "__solstone_native_argv0=solstone"),
+    ] {
+        let mut child = Command::new(bin_path)
+            .args(["notify", "message"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("native bin should spawn");
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin should be piped")
+            .write_all(b"payload")
+            .expect("write stdin");
+        let output = child.wait_with_output().expect("wait for native bin");
+
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+            format!(
+                "sentinel=armed\nmarker={expected_marker}\nargs=<notify><message>\nstdin=payload"
+            )
+        );
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+            "compat stderr\n"
+        );
+    }
+
+    if let Some(content) = previous {
+        fs::write(&helper, content).expect("restore previous helper");
+        if let Some(mode) = previous_mode {
+            fs::set_permissions(&helper, fs::Permissions::from_mode(mode))
+                .expect("restore previous helper mode");
+        }
+    } else {
+        fs::remove_file(&helper).expect("remove fake compatibility helper");
+    }
 }

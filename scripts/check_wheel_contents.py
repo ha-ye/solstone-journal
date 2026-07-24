@@ -47,6 +47,7 @@ MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
 PARAKEET_HELPER_MEMBER = (
     "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
 )
+CORE_SCRIPT_NAMES = ("sol", "solstone", "solstone-core")
 ELF_MAGIC = b"\x7fELF"
 ELF_CLASS_64 = 2
 ELF_DATA_LITTLE_ENDIAN = 1
@@ -72,11 +73,71 @@ CORE_REQUIRED_SDIST_MEMBERS = {
     "core/Cargo.lock",
     "core/Cargo.toml",
     "core/crates/solstone-core/Cargo.toml",
+    "core/crates/solstone-core/src/bin/sol.rs",
+    "core/crates/solstone-core/src/bin/solstone.rs",
     "core/crates/solstone-core/src/main.rs",
     "core/crates/solstone-core-cli/Cargo.toml",
     "core/crates/solstone-core-cli/src/lib.rs",
     "core/crates/solstone-core-journal/Cargo.toml",
     "core/crates/solstone-core-journal/src/lib.rs",
+    "core/crates/solstone-core-sol/Cargo.toml",
+    "core/crates/solstone-core-sol/src/lib.rs",
+    "core/crates/solstone-core-sol-client/Cargo.toml",
+    "core/crates/solstone-core-sol-client/src/aggregate.rs",
+    "core/crates/solstone-core-sol-client/src/command.rs",
+    "core/crates/solstone-core-sol-client/src/decode.rs",
+    "core/crates/solstone-core-sol-client/src/error.rs",
+    "core/crates/solstone-core-sol-client/src/generated/inventory.rs",
+    "core/crates/solstone-core-sol-client/src/generated/mod.rs",
+    "core/crates/solstone-core-sol-client/src/json_format.rs",
+    "core/crates/solstone-core-sol-client/src/lib.rs",
+    "core/crates/solstone-core-sol-client/src/pagination.rs",
+    "core/crates/solstone-core-sol-client/src/port.rs",
+    "core/crates/solstone-core-sol-client/src/seam.rs",
+    "core/crates/solstone-core-sol-client/src/sse.rs",
+    "core/crates/solstone-core-sol-client/src/transport.rs",
+    "core/crates/solstone-core-sol-client-cli/Cargo.toml",
+    "core/crates/solstone-core-sol-client-cli/src/lib.rs",
+    "solstone/apps/activities/native/authority.toml",
+    "solstone/apps/activities/native/command.rs",
+    "solstone/apps/awareness/native/authority.toml",
+    "solstone/apps/awareness/native/command.rs",
+    "solstone/apps/body/native/authority.toml",
+    "solstone/apps/body/native/command.rs",
+    "solstone/apps/chat/native/authority.toml",
+    "solstone/apps/chat/native/command.rs",
+    "solstone/apps/entities/native/authority.toml",
+    "solstone/apps/entities/native/command.rs",
+    "solstone/apps/facets/native/authority.toml",
+    "solstone/apps/facets/native/command.rs",
+    "solstone/apps/import/native/authority.toml",
+    "solstone/apps/import/native/command.rs",
+    "solstone/apps/network/native/authority.toml",
+    "solstone/apps/network/native/command.rs",
+    "solstone/apps/settings/native/authority.toml",
+    "solstone/apps/settings/native/command.rs",
+    "solstone/apps/sol/native/authority.toml",
+    "solstone/apps/sol/native/command.rs",
+    "solstone/apps/speakers/native/authority.toml",
+    "solstone/apps/speakers/native/command.rs",
+    "solstone/apps/support/native/authority.toml",
+    "solstone/apps/support/native/command.rs",
+    "solstone/apps/thinking/native/authority.toml",
+    "solstone/apps/thinking/native/command.rs",
+    "solstone/apps/transcripts/native/authority.toml",
+    "solstone/apps/transcripts/native/command.rs",
+    "solstone/think/native/chat/authority.toml",
+    "solstone/think/native/chat/command.rs",
+    "solstone/think/native/import/authority.toml",
+    "solstone/think/native/import/command.rs",
+    "solstone/think/native/moved/authority.toml",
+    "solstone/think/native/moved/command.rs",
+    "solstone/think/tools/native/health/authority.toml",
+    "solstone/think/tools/native/health/command.rs",
+    "solstone/think/tools/native/ledger/authority.toml",
+    "solstone/think/tools/native/ledger/command.rs",
+    "solstone/think/tools/native/profile/authority.toml",
+    "solstone/think/tools/native/profile/command.rs",
 }
 CORE_TAG_PLATFORMS = {
     tag: platform for platform, tag in SOLSTONE_CORE_PLATFORM_TAGS.items()
@@ -607,11 +668,15 @@ def _check_base_platform_helper(
 
 
 def core_wheel_script_members(wheel: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
-    return [
-        info
-        for info in wheel.infolist()
-        if info.filename.endswith(".data/scripts/solstone-core")
-    ]
+    return sorted(
+        (
+            info
+            for info in wheel.infolist()
+            if ".data/scripts/" in info.filename
+            and Path(info.filename).name in CORE_SCRIPT_NAMES
+        ),
+        key=lambda info: info.filename,
+    )
 
 
 def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
@@ -630,34 +695,43 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     platform_tuple = CORE_TAG_PLATFORMS.get(tag)
     with zipfile.ZipFile(path) as wheel:
         scripts = core_wheel_script_members(wheel)
-        if len(scripts) != 1:
+        script_names = {Path(info.filename).name for info in scripts}
+        if len(scripts) != len(CORE_SCRIPT_NAMES) or script_names != set(
+            CORE_SCRIPT_NAMES
+        ):
             errors.append(
                 _failure(
                     path.name,
-                    "wrong solstone-core script member count",
-                    expected="exactly one .data/scripts/solstone-core",
-                    actual=str(len(scripts)),
+                    "wrong solstone-core script member set",
+                    expected=", ".join(
+                        f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES
+                    ),
+                    actual=", ".join(info.filename for info in scripts) or "<empty>",
                     repair="bash scripts/release.sh --dry-run-linux",
                 )
             )
-        elif ((scripts[0].external_attr >> 16) & 0o111) == 0:
-            errors.append(
-                _failure(
-                    path.name,
-                    "solstone-core script is not executable",
-                    expected="executable mode bit set",
-                    actual=oct((scripts[0].external_attr >> 16) & 0o777),
-                    repair="bash scripts/release.sh --dry-run-linux",
-                )
-            )
-        elif platform_tuple is not None:
-            errors.extend(
-                _check_core_binary(
-                    f"{path.name}:{scripts[0].filename}",
-                    wheel.read(scripts[0]),
-                    platform_tuple,
-                )
-            )
+        else:
+            for script in scripts:
+                script_label = Path(script.filename).name
+                if ((script.external_attr >> 16) & 0o111) == 0:
+                    errors.append(
+                        _failure(
+                            path.name,
+                            f"{script_label} script is not executable",
+                            expected="executable mode bit set",
+                            actual=oct((script.external_attr >> 16) & 0o777),
+                            repair="bash scripts/release.sh --dry-run-linux",
+                        )
+                    )
+                    continue
+                if platform_tuple is not None:
+                    errors.extend(
+                        _check_core_binary(
+                            f"{path.name}:{script.filename}",
+                            wheel.read(script),
+                            platform_tuple,
+                        )
+                    )
         errors.extend(_check_record(path, wheel))
 
     return errors
@@ -708,6 +782,10 @@ def _release_artifact_members(
         (dist_dir / f"solstone-{version}.tar.gz", "root sdist"),
         (dist_dir / f"solstone-{version}-py3-none-any.whl", "root any wheel"),
         (dist_dir / f"solstone_core-{version}.tar.gz", "core sdist"),
+        (
+            dist_dir / f"solstone_core_unsupported_platform-{version}.tar.gz",
+            "core unsupported-platform tombstone sdist",
+        ),
         (dist_dir / f"solstone_journal-{version}.tar.gz", "journal CPU sdist"),
         (
             dist_dir / f"solstone_journal-{version}-py3-none-any.whl",

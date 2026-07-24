@@ -23,6 +23,7 @@ from scripts.check_rust_release_manifest import (
     rust_artifact_targets,
 )
 from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
     PARAKEET_HELPER_MEMBER,
     core_wheel_script_members,
 )
@@ -220,9 +221,9 @@ def validate_native_members(value: Any) -> list[Failure]:
     for target in sorted(set(value) & expected_targets):
         members = value[target]
         expected_member_names = (
-            {"solstone-core", "parakeet-helper"}
+            {*CORE_SCRIPT_NAMES, "parakeet-helper"}
             if target == "macos-arm64"
-            else {"solstone-core"}
+            else set(CORE_SCRIPT_NAMES)
         )
         if not isinstance(members, Mapping):
             failures.append(
@@ -563,22 +564,37 @@ def _wheel_member_entry(
     )
 
 
-def _core_member_from_wheel(path: Path) -> tuple[dict[str, Any] | None, list[Failure]]:
+def _core_members_from_wheel(
+    path: Path,
+) -> tuple[dict[str, dict[str, Any]], list[Failure]]:
     try:
         with zipfile.ZipFile(path) as wheel:
             scripts = core_wheel_script_members(wheel)
-            if len(scripts) != 1:
-                return None, [
+            script_names = {Path(info.filename).name for info in scripts}
+            if len(scripts) != len(CORE_SCRIPT_NAMES) or script_names != set(
+                CORE_SCRIPT_NAMES
+            ):
+                return {}, [
                     _failure(
-                        "core wheel native member count is wrong",
-                        expected="exactly one .data/scripts/solstone-core",
-                        actual=str(len(scripts)),
+                        "core wheel native member set is wrong",
+                        expected=", ".join(
+                            f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES
+                        ),
+                        actual=", ".join(info.filename for info in scripts)
+                        or "<empty>",
                         repair="python3 scripts/check_rust_release_manifest.py",
                     )
                 ]
-            member_name = scripts[0].filename
+            entries: dict[str, dict[str, Any]] = {}
+            for member in scripts:
+                member_bytes = wheel.read(member)
+                entries[Path(member.filename).name] = {
+                    "path": member.filename,
+                    "sha256": hashlib.sha256(member_bytes).hexdigest(),
+                    "bytes": len(member_bytes),
+                }
     except (OSError, zipfile.BadZipFile) as exc:
-        return None, [
+        return {}, [
             _failure(
                 "core wheel native member could not be read",
                 expected="valid core wheel with native script member",
@@ -586,7 +602,7 @@ def _core_member_from_wheel(path: Path) -> tuple[dict[str, Any] | None, list[Fai
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
-    return _wheel_member_entry(path, member_name=member_name, label="core wheel")
+    return entries, []
 
 
 def _root_wheel_name_from_record(
@@ -664,10 +680,10 @@ def _native_members_from_wheels(
     for artifact, (lane, _target) in sorted(targets.items()):
         if lane == "source":
             continue
-        core_member, core_failures = _core_member_from_wheel(release_dir / artifact)
+        core_members, core_failures = _core_members_from_wheel(release_dir / artifact)
         failures.extend(core_failures)
-        if core_member is not None:
-            members.setdefault(lane, {})["solstone-core"] = core_member
+        if core_members:
+            members.setdefault(lane, {}).update(core_members)
     helper_member, helper_failures = _wheel_member_entry(
         release_dir / root_wheel_name,
         member_name=PARAKEET_HELPER_MEMBER,

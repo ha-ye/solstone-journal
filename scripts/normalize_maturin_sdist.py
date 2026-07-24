@@ -26,6 +26,11 @@ PACKAGE_BLOCK_RE = re.compile(r"(?ms)^\[\[package\]\]\n.*?(?=^\[\[package\]\]\n|
 DEPENDENCY_RE = re.compile(
     r"^(?P<name>\S+)(?: (?P<version>\S+)(?: \((?P<source>.+)\))?)?$"
 )
+NATIVE_SOL_SOURCE_GLOBS = (
+    "solstone/apps/*/native/*",
+    "solstone/think/native/**/*",
+    "solstone/think/tools/native/**/*",
+)
 
 
 def _workspace_members(manifest: bytes, *, label: str) -> tuple[str, ...]:
@@ -232,14 +237,37 @@ def _read_archive(
         raise SdistLockError(f"sdist archive is unreadable: {exc}") from None
 
 
-def _replace_archive_lock(
+def _native_sol_sdist_files(root: Path) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    for pattern in NATIVE_SOL_SOURCE_GLOBS:
+        for path in sorted(root.glob(pattern)):
+            if path.is_dir():
+                continue
+            if path.is_symlink():
+                raise SdistLockError(
+                    f"native sol source member is a symlink: {path.relative_to(root)}"
+                )
+            if not path.is_file():
+                raise SdistLockError(
+                    f"native sol source member is not a regular file: {path.relative_to(root)}"
+                )
+            relative = path.relative_to(root).as_posix()
+            if relative in files:
+                continue
+            files[relative] = path.read_bytes()
+    return files
+
+
+def _replace_archive_files(
     archive: Path,
     *,
     entries: list[tuple[tarfile.TarInfo, bytes | None]],
     lock_name: str,
     lock_bytes: bytes,
+    extra_files: dict[str, bytes],
 ) -> None:
     archive_stat = archive.stat()
+    existing_names = {member.name for member, _data in entries}
     descriptor, temporary_name = tempfile.mkstemp(
         dir=archive.parent, prefix=f".{archive.name}.", suffix=".tmp"
     )
@@ -253,13 +281,25 @@ def _replace_archive_lock(
                     fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
                 ) as target:
                     for member, original_data in entries:
-                        data = lock_bytes if member.name == lock_name else original_data
+                        data = (
+                            lock_bytes
+                            if member.name == lock_name
+                            else extra_files.get(member.name, original_data)
+                        )
                         if member.isfile():
                             assert data is not None
                             member.size = len(data)
                             target.addfile(member, io.BytesIO(data))
                         else:
                             target.addfile(member)
+                    for name, data in sorted(extra_files.items()):
+                        if name in existing_names:
+                            continue
+                        member = tarfile.TarInfo(name)
+                        member.mode = 0o644
+                        member.mtime = 0
+                        member.size = len(data)
+                        target.addfile(member, io.BytesIO(data))
             raw.flush()
             os.fsync(raw.fileno())
         os.chmod(temporary, stat.S_IMODE(archive_stat.st_mode))
@@ -267,6 +307,22 @@ def _replace_archive_lock(
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _archive_needs_update(
+    *,
+    entries: list[tuple[tarfile.TarInfo, bytes | None]],
+    lock_name: str,
+    lock_bytes: bytes,
+    extra_files: dict[str, bytes],
+) -> bool:
+    for member, original_data in entries:
+        if member.name == lock_name and original_data != lock_bytes:
+            return True
+        if member.name in extra_files and original_data != extra_files[member.name]:
+            return True
+    existing_files = {member.name for member, _data in entries if member.isfile()}
+    return any(name not in existing_files for name in extra_files)
 
 
 def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str, ...]:
@@ -309,7 +365,24 @@ def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str,
         raise SdistLockError("retained source workspace package names are not unique")
     if retained_names & pruned_names:
         raise SdistLockError("source workspace package names are not unique")
+    native_files = {
+        f"{archive_root}/{relative}": content
+        for relative, content in _native_sol_sdist_files(root).items()
+    }
     if not pruned_names:
+        if _archive_needs_update(
+            entries=entries,
+            lock_name=f"{archive_root}/core/Cargo.lock",
+            lock_bytes=lock_bytes,
+            extra_files=native_files,
+        ):
+            _replace_archive_files(
+                archive,
+                entries=entries,
+                lock_name=f"{archive_root}/core/Cargo.lock",
+                lock_bytes=lock_bytes,
+                extra_files=native_files,
+            )
         return ()
 
     rewritten = _retain_reachable_lock_packages(
@@ -317,12 +390,18 @@ def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str,
         retained_names=retained_names,
         pruned_names=pruned_names,
     )
-    if rewritten == lock_bytes:
+    if not _archive_needs_update(
+        entries=entries,
+        lock_name=f"{archive_root}/core/Cargo.lock",
+        lock_bytes=rewritten,
+        extra_files=native_files,
+    ):
         return ()
-    _replace_archive_lock(
+    _replace_archive_files(
         archive,
         entries=entries,
         lock_name=f"{archive_root}/core/Cargo.lock",
         lock_bytes=rewritten,
+        extra_files=native_files,
     )
     return tuple(sorted(pruned_names))

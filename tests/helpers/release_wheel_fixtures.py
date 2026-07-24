@@ -10,6 +10,7 @@ import hashlib
 import struct
 import zipfile
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 
 import scripts.check_wheel_contents as checker
 
@@ -80,13 +81,12 @@ def write_core_wheel(
     tag: str = "manylinux_2_17_x86_64.manylinux2014_x86_64",
     executable: bool = True,
     record_ok: bool = True,
-    script_name: str | None = None,
+    script_names: Sequence[str] | None = None,
     binary: bytes | None = None,
+    binaries: Mapping[str, bytes] | None = None,
     version: str = "1.2.3",
 ) -> Path:
     wheel_path = path / f"solstone_core-{version}-py3-none-{tag}.whl"
-    if script_name is None:
-        script_name = f"solstone_core-{version}.data/scripts/solstone-core"
     if binary is None:
         if "aarch64" in tag:
             binary = minimal_elf(checker.ELF_MACHINE["aarch64"])
@@ -94,13 +94,19 @@ def write_core_wheel(
             binary = minimal_macho(checker.CPU_TYPE_ARM64)
         else:
             binary = minimal_elf(checker.ELF_MACHINE["x86_64"])
+    if script_names is None:
+        script_names = tuple(
+            f"solstone_core-{version}.data/scripts/{name}"
+            for name in checker.CORE_SCRIPT_NAMES
+        )
     members = {
         f"solstone_core-{version}.dist-info/METADATA": (
             f"Name: solstone-core\nVersion: {version}\n".encode()
         ),
         f"solstone_core-{version}.dist-info/WHEEL": b"Wheel-Version: 1.0\n",
-        script_name: binary,
     }
+    for script_name in script_names:
+        members[script_name] = binaries.get(script_name, binary) if binaries else binary
     rows = [
         f"{name},{record_hash(content)},{len(content)}"
         for name, content in members.items()
@@ -111,7 +117,11 @@ def write_core_wheel(
         record = record.replace(b"sha256=", b"sha256=broken", 1)
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         for name, content in members.items():
-            mode = 0o755 if name.endswith("/solstone-core") and executable else 0o644
+            mode = (
+                0o755
+                if Path(name).name in checker.CORE_SCRIPT_NAMES and executable
+                else 0o644
+            )
             _write_member(wheel, name, content, mode=mode)
         _write_member(wheel, f"solstone_core-{version}.dist-info/RECORD", record)
     return wheel_path

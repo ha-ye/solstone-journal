@@ -29,6 +29,7 @@ import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
     CORE_REQUIRED_SDIST_MEMBERS,
     CPU_TYPE_ARM64,
     ELF_MACHINE,
@@ -39,6 +40,7 @@ from scripts.check_wheel_contents import (
 from scripts.release_advisory_policy import PolicyRun
 from scripts.release_build_host import BuildHostResult, SourceBundle
 from scripts.release_install_smoke import (
+    CORE_SMOKE_STDOUT,
     SCRUBBED_COMMAND_ENV,
     CommandResult,
     InstallObservation,
@@ -87,6 +89,20 @@ def _local_dist_names_for_build_argv(
             for name in expected
             if name.startswith("solstone_core-") and name.endswith(".tar.gz")
         }
+    if args == (
+        "uv",
+        "build",
+        driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
+        "--sdist",
+        "--out-dir",
+        "dist",
+    ):
+        return {
+            name
+            for name in expected
+            if name.startswith("solstone_core_unsupported_platform-")
+            and name.endswith(".tar.gz")
+        }
     if len(args) == 4 and args[:3] == ("uv", "build", "--package"):
         package = args[3]
         prefix = f"{package.replace('-', '_')}-"
@@ -95,6 +111,7 @@ def _local_dist_names_for_build_argv(
 
 
 def _write_fake_core_sdist(root: Path, archive: Path) -> None:
+    version = archive.name.removeprefix("solstone_core-").removesuffix(".tar.gz")
     source_members = ["crates/solstone-core", "crates/solstone-core-sol"]
     source_manifest = (
         f'[workspace]\nmembers = {json.dumps(source_members)}\nresolver = "3"\n'
@@ -103,26 +120,27 @@ def _write_fake_core_sdist(root: Path, archive: Path) -> None:
     (root / "core" / "crates" / "solstone-core-sol").mkdir(parents=True, exist_ok=True)
     (root / "core" / "Cargo.toml").write_text(source_manifest, encoding="utf-8")
     (root / "core" / "crates" / "solstone-core" / "Cargo.toml").write_text(
-        '[package]\nname = "solstone-core"\nversion = "1.0.13"\n',
+        f'[package]\nname = "solstone-core"\nversion = "{version}"\n',
         encoding="utf-8",
     )
     (root / "core" / "crates" / "solstone-core-sol" / "Cargo.toml").write_text(
-        '[package]\nname = "solstone-core-sol"\nversion = "1.0.13"\n',
+        f'[package]\nname = "solstone-core-sol"\nversion = "{version}"\n',
         encoding="utf-8",
     )
     sdist_manifest = (
-        '[workspace]\nmembers = ["crates/solstone-core"]\nresolver = "3"\n'
+        '[workspace]\nmembers = ["crates/solstone-core", "crates/solstone-core-sol"]\n'
+        'resolver = "3"\n'
     ).encode()
     sdist_lock = (
         "version = 4\n\n"
-        '[[package]]\nname = "solstone-core"\nversion = "1.0.13"\n\n'
-        '[[package]]\nname = "solstone-core-sol"\nversion = "1.0.13"\n'
+        f'[[package]]\nname = "solstone-core"\nversion = "{version}"\n\n'
+        f'[[package]]\nname = "solstone-core-sol"\nversion = "{version}"\n'
     ).encode()
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, mode="w:gz") as target:
         for name, data in (
-            ("solstone_core-1.0.13/core/Cargo.toml", sdist_manifest),
-            ("solstone_core-1.0.13/core/Cargo.lock", sdist_lock),
+            (f"solstone_core-{version}/core/Cargo.toml", sdist_manifest),
+            (f"solstone_core-{version}/core/Cargo.lock", sdist_lock),
         ):
             member = tarfile.TarInfo(name)
             member.size = len(data)
@@ -333,6 +351,10 @@ def _facts(content: bytes) -> dict[str, Any]:
     }
 
 
+def _core_facts(content: bytes) -> dict[str, Any]:
+    return {"members": {name: _facts(content) for name in CORE_SCRIPT_NAMES}}
+
+
 def _write_macos_host_outputs(
     output_dir: Path,
     *,
@@ -371,7 +393,7 @@ def _write_macos_host_outputs(
     core_record = native.build_macos_native_record(
         role="core",
         wheel_path=core_wheel,
-        signing_facts=_facts(core_bytes),
+        signing_facts=_core_facts(core_bytes),
         source_commit=SOURCE_COMMIT,
         core_lock_sha256=LOCK_SHA,
     )
@@ -414,18 +436,21 @@ def _proof_observation(
 ) -> InstallObservation:
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     (env_root / "bin" / "python").write_bytes(b"python")
-    (env_root / "bin" / "solstone-core").write_bytes(b"core")
+    for name in CORE_SCRIPT_NAMES:
+        (env_root / "bin" / name).write_bytes(b"core")
+    core_sha = {
+        "linux-x86_64-musl": hashlib.sha256(LINUX_X86_CORE).hexdigest(),
+        "linux-aarch64-musl": hashlib.sha256(LINUX_AARCH64_CORE).hexdigest(),
+        "macos-arm64": hashlib.sha256(MACOS_CORE).hexdigest(),
+    }[target]
     members = [
         {
-            "name": "solstone-core",
-            "path": env_root / "bin" / "solstone-core",
-            "sha256": {
-                "linux-x86_64-musl": hashlib.sha256(LINUX_X86_CORE).hexdigest(),
-                "linux-aarch64-musl": hashlib.sha256(LINUX_AARCH64_CORE).hexdigest(),
-                "macos-arm64": hashlib.sha256(MACOS_CORE).hexdigest(),
-            }[target],
+            "name": name,
+            "path": env_root / "bin" / name,
+            "sha256": core_sha,
             "symlink": False,
         }
+        for name in CORE_SCRIPT_NAMES
     ]
     if target == "macos-arm64":
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
@@ -457,12 +482,13 @@ def _proof_observation(
         installed_distributions=expected_distribution_entries(install_paths),
         installed_members=tuple(members),
         smoke={
-            "solstone-core": CommandResult(
-                argv=(str(env_root / "bin" / "solstone-core"), "--version"),
+            name: CommandResult(
+                argv=(str(env_root / "bin" / name), "--version"),
                 exit_code=0,
-                stdout=f"solstone-core {version}",
+                stdout=f"{CORE_SMOKE_STDOUT[name]} {version}",
                 env=SCRUBBED_COMMAND_ENV,
             )
+            for name in CORE_SCRIPT_NAMES
         },
     )
 
@@ -666,7 +692,11 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
     with zipfile.ZipFile(first.release_dir / root_name) as wheel:
         assert wheel.read(PARAKEET_HELPER_MEMBER) == MACOS_HELPER
     with zipfile.ZipFile(first.release_dir / core_name) as wheel:
-        [member] = core_wheel_script_members(wheel)
+        member = next(
+            member
+            for member in core_wheel_script_members(wheel)
+            if Path(member.filename).name == "solstone-core"
+        )
         assert wheel.read(member) == MACOS_CORE
 
     recovered = _recover(first_root)
@@ -1677,11 +1707,26 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     expected_aarch64_env = _expected_scrubbed_env(
         tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
     )
+    expected_tombstone_env = {
+        **_expected_scrubbed_env(tmp_path, ""),
+        driver.CORE_UNSUPPORTED_TOMBSTONE_ALLOW_BUILD_ENV: "1",
+    }
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         (
             ("python3", "scripts/render_packaging.py", "--check"),
             _expected_scrubbed_env(tmp_path, ""),
+        ),
+        (
+            (
+                "uv",
+                "build",
+                driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
+                "--sdist",
+                "--out-dir",
+                "dist",
+            ),
+            expected_tombstone_env,
         ),
         (
             ("uv", "build", "--package", "solstone"),
@@ -1712,7 +1757,9 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     assert [
         env["MATURIN_PEP517_ARGS"]
         for argv, env in calls
-        if argv[:2] == ("uv", "build") and "--wheel" not in argv
+        if argv[:2] == ("uv", "build")
+        and "--wheel" not in argv
+        and argv[2] != driver.CORE_UNSUPPORTED_TOMBSTONE_DIR
     ] == [driver.CORE_X86_64_MATURIN_ARGS] * 3 + [""]
     assert [env["MATURIN_PEP517_ARGS"] for argv, env in calls if "--wheel" in argv] == [
         driver.CORE_X86_64_MATURIN_ARGS,
@@ -1768,6 +1815,14 @@ def test_default_build_local_dist_honors_include_models_build_selection(
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         ("python3", "scripts/render_packaging.py", "--check"),
+        (
+            "uv",
+            "build",
+            driver.CORE_UNSUPPORTED_TOMBSTONE_DIR,
+            "--sdist",
+            "--out-dir",
+            "dist",
+        ),
         ("uv", "build", "--package", "solstone"),
         ("uv", "build", "--package", "solstone-journal"),
         ("uv", "build", "--package", "solstone-journal-cuda"),
@@ -2132,11 +2187,14 @@ def test_recovery_rejects_self_consistent_native_member_forgery(
         if proof["target"] == "linux-x86_64-musl":
             proof["installed_members"] = [
                 {
-                    "name": "solstone-core",
-                    "wheel_member_path": forged["path"],
-                    "installed_path": "ENVROOT/bin/solstone-core",
-                    "sha256": forged["sha256"],
+                    "name": name,
+                    "wheel_member_path": member["path"],
+                    "installed_path": f"ENVROOT/bin/{name}",
+                    "sha256": member["sha256"],
                 }
+                for name, member in sorted(
+                    payload["native_members"]["linux-x86_64-musl"].items()
+                )
             ]
         proof_path.write_bytes(checker.canonical_json_bytes(proof))
 

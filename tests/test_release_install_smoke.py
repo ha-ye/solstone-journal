@@ -23,6 +23,17 @@ CORE_LOCK = "b" * 64
 LEDGER_SHA = "c" * 64
 
 
+def _core_member_payload(prefix: str, *, sha256: str = "d" * 64) -> dict[str, dict]:
+    return {
+        name: {
+            "path": f"{prefix}/{name}",
+            "sha256": sha256,
+            "bytes": 5,
+        }
+        for name in checker.CORE_SCRIPT_NAMES
+    }
+
+
 def _wheel_metadata(name: str) -> tuple[str, str]:
     parts = name.removesuffix(".whl").split("-")
     distribution = parts[0]
@@ -82,26 +93,10 @@ def _ledger_payload(digest: str, candidate: Path) -> dict:
             },
         },
         "native_members": {
-            "linux-x86_64-musl": {
-                "solstone-core": {
-                    "path": "linux-x86/solstone-core",
-                    "sha256": "d" * 64,
-                    "bytes": 5,
-                }
-            },
-            "linux-aarch64-musl": {
-                "solstone-core": {
-                    "path": "linux-aarch64/solstone-core",
-                    "sha256": "d" * 64,
-                    "bytes": 5,
-                }
-            },
+            "linux-x86_64-musl": _core_member_payload("linux-x86"),
+            "linux-aarch64-musl": _core_member_payload("linux-aarch64"),
             "macos-arm64": {
-                "solstone-core": {
-                    "path": "macos/solstone-core",
-                    "sha256": "d" * 64,
-                    "bytes": 5,
-                },
+                **_core_member_payload("macos"),
                 "parakeet-helper": {
                     "path": "macos/parakeet-helper",
                     "sha256": "e" * 64,
@@ -121,17 +116,19 @@ def _observation(
     member_hash: str = "d" * 64,
 ) -> smoke.InstallObservation:
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
-    (env_root / "bin" / "solstone-core").write_bytes(b"core")
+    for name in checker.CORE_SCRIPT_NAMES:
+        (env_root / "bin" / name).write_bytes(b"core")
     (env_root / "bin" / "python").write_bytes(b"python")
     if macos:
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
     members = [
         {
-            "name": "solstone-core",
-            "path": env_root / "bin" / "solstone-core",
+            "name": name,
+            "path": env_root / "bin" / name,
             "sha256": member_hash,
             "symlink": False,
         }
+        for name in checker.CORE_SCRIPT_NAMES
     ]
     if macos:
         members.append(
@@ -162,12 +159,13 @@ def _observation(
         installed_distributions=smoke.expected_distribution_entries(install_paths),
         installed_members=tuple(members),
         smoke={
-            "solstone-core": smoke.CommandResult(
-                argv=(str(env_root / "bin" / "solstone-core"), "--version"),
+            name: smoke.CommandResult(
+                argv=(str(env_root / "bin" / name), "--version"),
                 exit_code=0,
-                stdout="solstone-core 1.0.0",
+                stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} 1.0.0",
                 env=smoke.SCRUBBED_COMMAND_ENV,
             )
+            for name in checker.CORE_SCRIPT_NAMES
         },
     )
 
@@ -232,10 +230,9 @@ def test_install_proof_records_inventory_normalized_argv_and_paths(
     assert "macosx_14_0_arm64" not in argv
     assert "ENVROOT/bin/python" in argv
     assert all(f"CANDIDATE/{path.name}" in argv for path in install_paths)
-    assert proof["installed_members"][0]["wheel_member_path"] == "macos/solstone-core"
-    assert (
-        proof["installed_members"][0]["installed_path"] == "ENVROOT/bin/solstone-core"
-    )
+    installed = {member["name"]: member for member in proof["installed_members"]}
+    assert installed["solstone-core"]["wheel_member_path"] == "macos/solstone-core"
+    assert installed["solstone-core"]["installed_path"] == "ENVROOT/bin/solstone-core"
     assert proof["recorded_at"] == "2026-07-20T12:34:56Z"
 
 
@@ -969,12 +966,11 @@ def _linux_context(
             lambda observation, _tmp_path: replace(
                 observation,
                 smoke={
-                    "solstone-core": smoke.CommandResult(
+                    **observation.smoke,
+                    "solstone-core": replace(
+                        observation.smoke["solstone-core"],
                         argv=("ENVROOT/bin/solstone-core",),
-                        exit_code=0,
-                        stdout="solstone-core 1.0.0",
-                        env=smoke.SCRUBBED_COMMAND_ENV,
-                    )
+                    ),
                 },
             ),
             "install proof smoke command argv is not exact",
@@ -983,12 +979,11 @@ def _linux_context(
             lambda observation, _tmp_path: replace(
                 observation,
                 smoke={
-                    "solstone-core": smoke.CommandResult(
-                        argv=observation.smoke["solstone-core"].argv,
-                        exit_code=0,
+                    **observation.smoke,
+                    "solstone-core": replace(
+                        observation.smoke["solstone-core"],
                         stdout="solstone-core wrong",
-                        env=smoke.SCRUBBED_COMMAND_ENV,
-                    )
+                    ),
                 },
             ),
             "install proof smoke stdout is not exact",

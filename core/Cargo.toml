@@ -25,6 +25,7 @@ solstone-core-cli = { path = "crates/solstone-core-cli" }
 solstone-core-indexer = { path = "crates/solstone-core-indexer" }
 solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
+solstone-core-sol = { path = "crates/solstone-core-sol" }
 solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
 solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

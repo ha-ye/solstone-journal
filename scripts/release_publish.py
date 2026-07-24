@@ -31,9 +31,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.check_rust_release_manifest import (  # noqa: E402
+    CORE_UNSUPPORTED_TOMBSTONE_RECORD,
     Failure,
     expected_package_names,
     rust_artifact_targets,
+    validate_core_unsupported_tombstone_record,
 )
 from scripts.release_candidate_driver import CandidateReport, DriverError  # noqa: E402
 from scripts.release_ledger import read_retained_ledger  # noqa: E402
@@ -477,6 +479,54 @@ def _verify_recover(config: PublishConfig) -> CandidateReport:
             ]
         )
     return report
+
+
+def _verify_core_unsupported_tombstone_prerequisite(config: PublishConfig) -> None:
+    if config.mode != "production":
+        return
+    path = (
+        config.root
+        / "target"
+        / "release-evidence"
+        / config.version
+        / CORE_UNSUPPORTED_TOMBSTONE_RECORD
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise DriverError(
+            [
+                failure(
+                    "core unsupported-platform tombstone prerequisite is missing",
+                    expected=str(path),
+                    actual="missing",
+                    repair=(
+                        "publish and verify solstone-core-unsupported-platform before "
+                        "publishing solstone"
+                    ),
+                )
+            ]
+        ) from None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DriverError(
+            [
+                failure(
+                    "core unsupported-platform tombstone prerequisite could not be read",
+                    expected="valid tombstone publication verification JSON",
+                    actual=type(exc).__name__,
+                    repair=(
+                        "publish and verify solstone-core-unsupported-platform before "
+                        "publishing solstone"
+                    ),
+                )
+            ]
+        ) from None
+    failures = validate_core_unsupported_tombstone_record(
+        payload,
+        version=config.version,
+    )
+    if failures:
+        raise DriverError(failures)
 
 
 def _ensure_source_commit_exists(config: PublishConfig, runner: ProcessRunner) -> None:
@@ -1014,6 +1064,7 @@ def publish_release(
     _verify_recover(config)
     if config.mode == "production":
         _ensure_source_commit_exists(config, git_runner)
+        _verify_core_unsupported_tombstone_prerequisite(config)
     classified = classify_candidate_artifacts(config)
     changelog_block = ""
     if config.mode == "production":

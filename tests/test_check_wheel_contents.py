@@ -64,12 +64,16 @@ def test_core_wheel_validator_accepts_static_manylinux_wheel(tmp_path: Path) -> 
 def test_core_wheel_validator_rejects_wrong_script_member(tmp_path: Path) -> None:
     wheel = write_core_wheel(
         tmp_path,
-        script_name="solstone_core-1.2.3.data/scripts/solstone-core-renamed",
+        script_names=(
+            "solstone_core-1.2.3.data/scripts/sol",
+            "solstone_core-1.2.3.data/scripts/solstone",
+            "solstone_core-1.2.3.data/scripts/solstone-core-renamed",
+        ),
     )
 
     errors = checker.check_core_wheel(wheel, checker.MAX_CORE_WHEEL_BYTES)
 
-    assert any("wrong solstone-core script member count" in error for error in errors)
+    assert any("wrong solstone-core script member set" in error for error in errors)
 
 
 def test_core_wheel_validator_rejects_bare_linux_tag(tmp_path: Path) -> None:

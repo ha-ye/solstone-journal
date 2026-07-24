@@ -12,6 +12,7 @@ from packaging.markers import Marker
 from solstone.think.probe import (
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_MARKERS,
+    SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
     is_solstone_core_covered_platform,
 )
 
@@ -23,12 +24,24 @@ MARKER_PLATFORM_RE = re.compile(
 
 def _core_pin_markers() -> list[str]:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    host = data["project"]["optional-dependencies"]["journal-host"]
+    deps = data["project"]["dependencies"]
     return [
         dep.split(";", 1)[1].strip()
-        for dep in host
+        for dep in deps
         if dep.startswith("solstone-core==")
     ]
+
+
+def _unsupported_pin_marker() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    deps = data["project"]["dependencies"]
+    matches = [
+        dep.split(";", 1)[1].strip()
+        for dep in deps
+        if dep.startswith("solstone-core-unsupported-platform==")
+    ]
+    assert len(matches) == 1
+    return matches[0]
 
 
 def _marker_platform_tuple(marker_text: str) -> tuple[str, str]:
@@ -40,7 +53,10 @@ def _marker_platform_tuple(marker_text: str) -> tuple[str, str]:
 def test_core_pin_markers_match_probe_covered_platforms() -> None:
     marker_texts = _core_pin_markers()
     assert sorted(marker_texts) == sorted(SOLSTONE_CORE_PLATFORM_MARKERS)
+    unsupported_marker_text = _unsupported_pin_marker()
+    assert unsupported_marker_text == SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER
     markers = [Marker(text) for text in marker_texts]
+    unsupported_marker = Marker(unsupported_marker_text)
     platform_tuples = sorted(
         {
             *SOLSTONE_CORE_COVERED_PLATFORMS,
@@ -63,3 +79,9 @@ def test_core_pin_markers_match_probe_covered_platforms() -> None:
         assert sum(marker_matches) == int(
             is_solstone_core_covered_platform(system, machine)
         )
+        assert unsupported_marker.evaluate(
+            {
+                "sys_platform": system,
+                "platform_machine": machine,
+            }
+        ) != is_solstone_core_covered_platform(system, machine)

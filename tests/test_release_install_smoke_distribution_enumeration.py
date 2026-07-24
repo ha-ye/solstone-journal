@@ -15,6 +15,7 @@ enumerated as a real solstone distribution.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import json
 import os
@@ -25,10 +26,12 @@ import sys
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from io import StringIO
 from pathlib import Path
 
 import pytest
 
+import scripts.check_wheel_contents as wheel_checker
 import scripts.release_install_smoke as smoke
 
 
@@ -60,7 +63,13 @@ def _record_hash(content: bytes) -> str:
     return f"sha256={encoded}"
 
 
-def _write_py3_wheel(wheel_dir: Path, distribution: str, version: str) -> Path:
+def _write_py3_wheel(
+    wheel_dir: Path,
+    distribution: str,
+    version: str,
+    *,
+    scripts: Mapping[str, bytes] | None = None,
+) -> Path:
     wheel_dir.mkdir(parents=True, exist_ok=True)
     normalized = distribution.replace("-", "_")
     dist_info = f"{normalized}-{version}.dist-info"
@@ -76,6 +85,8 @@ def _write_py3_wheel(wheel_dir: Path, distribution: str, version: str) -> Path:
             b"Tag: py3-none-any\n"
         ),
     }
+    for script_name, script_content in (scripts or {}).items():
+        members[f"{normalized}-{version}.data/scripts/{script_name}"] = script_content
     rows = [
         f"{name},{_record_hash(content)},{len(content)}"
         for name, content in members.items()
@@ -83,9 +94,79 @@ def _write_py3_wheel(wheel_dir: Path, distribution: str, version: str) -> Path:
     rows.append(f"{dist_info}/RECORD,,")
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         for name, content in members.items():
-            wheel.writestr(name, content)
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = (
+                0o100755 << 16 if ".data/scripts/" in name else 0o100644 << 16
+            )
+            wheel.writestr(info, content)
         wheel.writestr(f"{dist_info}/RECORD", "\n".join(rows) + "\n")
     return wheel_path
+
+
+def _env_bin(env_root: Path, name: str) -> Path:
+    if sys.platform == "win32":
+        return env_root / "Scripts" / f"{name}.exe"
+    return env_root / "bin" / name
+
+
+def _script_bytes(env_root: Path, names: Sequence[str]) -> dict[str, bytes]:
+    return {name: _env_bin(env_root, name).read_bytes() for name in names}
+
+
+def _record_script_paths(wheel_path: Path) -> set[str]:
+    with zipfile.ZipFile(wheel_path) as wheel:
+        record_name = next(
+            name for name in wheel.namelist() if name.endswith(".dist-info/RECORD")
+        )
+        rows = csv.reader(StringIO(wheel.read(record_name).decode("utf-8")))
+        return {row[0] for row in rows if ".data/scripts/" in row[0]}
+
+
+def _installed_script_owners(
+    env_python: Path,
+    scripts: Sequence[str],
+    *,
+    cwd: Path,
+) -> dict[str, str]:
+    script = """
+import csv
+import importlib.metadata as metadata
+import json
+from pathlib import PurePosixPath
+
+targets = set(json.loads(__import__("os").environ["SCRIPT_NAMES"]))
+owners = {}
+for dist in metadata.distributions():
+    name = dist.metadata.get("Name", "")
+    path = getattr(dist, "_path", None)
+    if path is None:
+        continue
+    record = path / "RECORD"
+    if not record.exists():
+        continue
+    with record.open(newline="") as handle:
+        for row in csv.reader(handle):
+            if not row:
+                continue
+            basename = PurePosixPath(row[0].replace("\\\\", "/")).name
+            if basename.endswith(".exe"):
+                basename = basename[:-4]
+            if basename in targets:
+                owners.setdefault(basename, []).append(name)
+print(json.dumps({key: sorted(value) for key, value in owners.items()}, sort_keys=True))
+"""
+    result = _run(
+        (env_python, "-c", script),
+        cwd=cwd,
+        env={
+            **smoke.SCRUBBED_COMMAND_ENV,
+            "SCRIPT_NAMES": json.dumps(list(scripts)),
+        },
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    raw = json.loads(result.stdout)
+    return {name: owners[0] for name, owners in raw.items() if len(owners) == 1}
 
 
 def _create_venv(interpreter: Path, env_root: Path) -> bool:
@@ -247,3 +328,104 @@ def test_solstone_distributions_preserves_distinct_duplicate_dist_infos(
 
     assert len(observed) == 2
     assert _distribution_pairs(observed) == Counter({("solstone", "1.0.0"): 2})
+
+
+@pytest.mark.parametrize(
+    "target",
+    ("linux-x86_64-musl", "linux-aarch64-musl", "macos-arm64"),
+)
+@pytest.mark.parametrize("reverse_order", (False, True))
+def test_core_script_ownership_is_order_independent_and_reinstall_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    reverse_order: bool,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    env_root = tmp_path / f"env-{target}-{'reverse' if reverse_order else 'forward'}"
+    if not _create_venv(Path(sys.executable), env_root):
+        pytest.skip("could not create scratch venv")
+    wheel_dir = tmp_path / "wheels"
+    version = "1.2.3"
+    core_scripts = {
+        "sol": f"#!/bin/sh\necho solstone-core-sol {version}\n".encode(),
+        "solstone": f"#!/bin/sh\necho solstone-core-sol {version}\n".encode(),
+        "solstone-core": f"#!/bin/sh\necho solstone-core {version}\n".encode(),
+    }
+    compat_scripts = {
+        "solstone-python-compat": b"#!/bin/sh\necho compat\n",
+    }
+    core_wheel = _write_py3_wheel(
+        wheel_dir,
+        "solstone-core",
+        version,
+        scripts=core_scripts,
+    )
+    base_wheel = _write_py3_wheel(
+        wheel_dir,
+        "solstone",
+        version,
+        scripts=compat_scripts,
+    )
+
+    overlap = _record_script_paths(core_wheel) & _record_script_paths(base_wheel)
+    assert overlap == set()
+
+    env_python = _env_python(env_root)
+    install_order = (core_wheel, base_wheel) if reverse_order else (base_wheel, core_wheel)
+    result = _run(
+        (env_python, "-m", "pip", "install", "--no-index", "--no-deps", *install_order),
+        cwd=tmp_path,
+        env=dict(smoke.SCRUBBED_COMMAND_ENV),
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    core_names = wheel_checker.CORE_SCRIPT_NAMES
+    expected_owners = {name: "solstone-core" for name in core_names}
+    assert _installed_script_owners(env_python, core_names, cwd=tmp_path) == expected_owners
+    before = _script_bytes(env_root, core_names)
+    for name in core_names:
+        output = _run((_env_bin(env_root, name), "--version"), cwd=tmp_path)
+        assert output.returncode == 0
+        assert output.stdout.strip().endswith(version)
+
+    reinstall = _run(
+        (
+            env_python,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-index",
+            "--no-deps",
+            core_wheel,
+        ),
+        cwd=tmp_path,
+        env=dict(smoke.SCRUBBED_COMMAND_ENV),
+    )
+    assert reinstall.returncode == 0, reinstall.stderr or reinstall.stdout
+    assert _script_bytes(env_root, core_names) == before
+    assert _installed_script_owners(env_python, core_names, cwd=tmp_path) == expected_owners
+
+    uninstall_base = _run(
+        (env_python, "-m", "pip", "uninstall", "-y", "solstone"),
+        cwd=tmp_path,
+        env=dict(smoke.SCRUBBED_COMMAND_ENV),
+    )
+    assert uninstall_base.returncode == 0, uninstall_base.stderr or uninstall_base.stdout
+    assert all(_env_bin(env_root, name).exists() for name in core_names)
+
+    reinstall_base = _run(
+        (env_python, "-m", "pip", "install", "--no-index", "--no-deps", base_wheel),
+        cwd=tmp_path,
+        env=dict(smoke.SCRUBBED_COMMAND_ENV),
+    )
+    assert reinstall_base.returncode == 0, reinstall_base.stderr or reinstall_base.stdout
+    uninstall_core = _run(
+        (env_python, "-m", "pip", "uninstall", "-y", "solstone-core"),
+        cwd=tmp_path,
+        env=dict(smoke.SCRUBBED_COMMAND_ENV),
+    )
+    assert uninstall_core.returncode == 0, uninstall_core.stderr or uninstall_core.stdout
+    assert not any(_env_bin(env_root, name).exists() for name in core_names)
+    assert _env_bin(env_root, "solstone-python-compat").exists()

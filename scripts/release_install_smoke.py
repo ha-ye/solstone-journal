@@ -27,6 +27,7 @@ from scripts.check_rust_release_manifest import (
     Failure,
     canonical_json_bytes,
 )
+from scripts.check_wheel_contents import CORE_SCRIPT_NAMES
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
 
@@ -54,6 +55,11 @@ TOP_LEVEL_KEYS = frozenset(
     )
 )
 PROOF_KIND = "solstone-native-install-proof"
+CORE_SMOKE_STDOUT = {
+    "sol": "solstone-core-sol",
+    "solstone": "solstone-core-sol",
+    "solstone-core": "solstone-core",
+}
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
 RETAINED_PROOF_REPAIR = (
@@ -377,23 +383,28 @@ def _default_observe_install(
     )
     after = _solstone_distributions(env_python)
     installed_members: list[Mapping[str, Any]] = []
-    core_path = _env_bin(env_root, "solstone-core")
-    if core_path.is_file() or core_path.is_symlink():
-        installed_members.append(_installed_member(core_path, "solstone-core"))
+    core_paths = {
+        name: _env_bin(env_root, name)
+        for name in CORE_SCRIPT_NAMES
+    }
+    for name, core_path in core_paths.items():
+        if core_path.is_file() or core_path.is_symlink():
+            installed_members.append(_installed_member(core_path, name))
     helper_path = _find_single(env_root, "parakeet-helper")
     if target == "macos-arm64" and helper_path is not None:
         installed_members.append(_installed_member(helper_path, "parakeet-helper"))
     smoke: dict[str, CommandResult] = {}
-    if core_path.exists() or core_path.is_symlink():
-        smoke["solstone-core"] = _run_command((str(core_path), "--version"))
-    else:
-        smoke["solstone-core"] = CommandResult(
-            argv=(str(core_path), "--version"),
-            exit_code=127,
-            stdout="",
-            stderr="missing executable",
-            env=SCRUBBED_COMMAND_ENV,
-        )
+    for name, core_path in core_paths.items():
+        if core_path.exists() or core_path.is_symlink():
+            smoke[name] = _run_command((str(core_path), "--version"))
+        else:
+            smoke[name] = CommandResult(
+                argv=(str(core_path), "--version"),
+                exit_code=127,
+                stdout="",
+                stderr="missing executable",
+                env=SCRUBBED_COMMAND_ENV,
+            )
     return InstallObservation(
         env_root=env_root,
         preexisting_distributions=before,
@@ -844,7 +855,7 @@ def _validate_observation(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_smoke_names = {"solstone-core"}
+    expected_smoke_names = set(CORE_SCRIPT_NAMES)
     if set(observation.smoke) != expected_smoke_names:
         failures.append(
             _failure(
@@ -863,7 +874,7 @@ def _validate_observation(
             )
             for token in normalize_argv(result.argv)
         )
-        expected_smoke_argv = (f"{ENVROOT}/bin/solstone-core", "--version")
+        expected_smoke_argv = (f"{ENVROOT}/bin/{name}", "--version")
         if normalized_smoke_argv != expected_smoke_argv:
             failures.append(
                 _failure(
@@ -883,7 +894,7 @@ def _validate_observation(
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
-        expected_stdout = f"solstone-core {version}"
+        expected_stdout = f"{CORE_SMOKE_STDOUT.get(name, name)} {version}"
         if result.stdout != expected_stdout:
             failures.append(
                 _failure(
@@ -1345,21 +1356,43 @@ def _validate_proof_semantics(
                 )
             )
     smoke = proof.get("smoke")
-    smoke_core = smoke.get("solstone-core") if isinstance(smoke, Mapping) else {}
-    if isinstance(smoke_core, Mapping):
+    smoke_items = smoke if isinstance(smoke, Mapping) else {}
+    if set(smoke_items) != set(CORE_SCRIPT_NAMES):
+        failures.append(
+            _failure(
+                "install proof smoke command set does not match release executables",
+                expected=", ".join(CORE_SCRIPT_NAMES),
+                actual=", ".join(sorted(str(key) for key in smoke_items))
+                or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    for name in CORE_SCRIPT_NAMES:
+        smoke_entry = smoke_items.get(name) if isinstance(smoke_items, Mapping) else {}
+        if not isinstance(smoke_entry, Mapping):
+            failures.append(
+                _failure(
+                    "install proof smoke result does not match release version",
+                    expected=f"{name} smoke result object",
+                    actual=type(smoke_entry).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        expected_stdout = f"{CORE_SMOKE_STDOUT[name]} {version}"
         expected_smoke = {
-            "argv": [f"{ENVROOT}/bin/solstone-core", "--version"],
+            "argv": [f"{ENVROOT}/bin/{name}", "--version"],
             "env": dict(SCRUBBED_COMMAND_ENV),
             "exit_code": 0,
-            "stdout": f"solstone-core {version}",
+            "stdout": expected_stdout,
             "stderr": "",
         }
-        if dict(smoke_core) != expected_smoke:
+        if dict(smoke_entry) != expected_smoke:
             failures.append(
                 _failure(
                     "install proof smoke result does not match release version",
                     expected=repr(expected_smoke),
-                    actual=repr(dict(smoke_core)),
+                    actual=repr(dict(smoke_entry)),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
@@ -1749,11 +1782,11 @@ def validate_install_proof(
                     )
                 )
     smoke = proof.get("smoke")
-    if not isinstance(smoke, Mapping) or set(smoke) != {"solstone-core"}:
+    if not isinstance(smoke, Mapping) or set(smoke) != set(CORE_SCRIPT_NAMES):
         failures.append(
             _failure(
                 "install proof smoke section is invalid",
-                expected="solstone-core smoke result",
+                expected=", ".join(CORE_SCRIPT_NAMES) + " smoke results",
                 actual=repr(smoke),
                 repair="python3 scripts/check_rust_release_manifest.py",
             )

@@ -30,7 +30,7 @@ for _path in (str(ROOT), str(_SCRIPTS_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from check_wheel_contents import release_artifacts  # noqa: E402
+from check_wheel_contents import CORE_SCRIPT_NAMES, release_artifacts  # noqa: E402
 
 from scripts.release_tool_pins import (  # noqa: E402
     CARGO_DENY_PIN,
@@ -56,6 +56,19 @@ SCHEMA_SHA256 = "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875
 SCHEMA_ID = "https://solpbc.org/schemas/rust-release-manifest/v1.json"
 SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 PRODUCT = "solstone-core"
+CORE_UNSUPPORTED_TOMBSTONE_PROJECT = "solstone-core-unsupported-platform"
+CORE_UNSUPPORTED_TOMBSTONE_RECORD = (
+    "solstone-core-unsupported-platform-tombstone.json"
+)
+CORE_UNSUPPORTED_TOMBSTONE_KIND = (
+    "solstone-core-unsupported-platform-tombstone-publication/v1"
+)
+CORE_UNSUPPORTED_TOMBSTONE_STATUS = "published-and-verified"
+CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS = {
+    "windows-amd64": "build-failed-with-frozen-message",
+    "macos-x86_64": "build-failed-with-frozen-message",
+    "linux-unsupported-arch": "build-failed-with-frozen-message",
+}
 SOURCE_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(
@@ -100,6 +113,9 @@ PLATFORM_TRIPLES: dict[CorePlatform, str] = {
     ("linux", "aarch64"): "aarch64-unknown-linux-musl",
     ("darwin", "arm64"): "aarch64-apple-darwin",
 }
+CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES = tuple(
+    PLATFORM_TRIPLES[platform_tuple] for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
+)
 PLATFORM_LANES: dict[CorePlatform, LaneName] = {
     ("linux", "x86_64"): "linux-x86_64-musl",
     ("linux", "aarch64"): "linux-aarch64-musl",
@@ -256,6 +272,99 @@ def _models_expected_names() -> frozenset[str]:
     skip = set(expected_package_names(include_models=False))
     publish = set(expected_package_names(include_models=True))
     return frozenset(publish - skip)
+
+
+def validate_core_unsupported_tombstone_record(
+    payload: Any,
+    *,
+    version: str,
+) -> list[Failure]:
+    from scripts.release_public_evidence import validate_public_evidence_tree
+
+    failures: list[Failure] = []
+    if not isinstance(payload, Mapping):
+        return [
+            _failure(
+                "core unsupported-platform tombstone prerequisite is invalid",
+                expected="publication verification JSON object",
+                actual=type(payload).__name__,
+                repair=(
+                    "publish and verify solstone-core-unsupported-platform before "
+                    "publishing solstone"
+                ),
+            )
+        ]
+    expected_keys = {
+        "schema_version",
+        "kind",
+        "project",
+        "version",
+        "status",
+        "supported_platform_triples",
+        "resolver_checks",
+    }
+    if set(payload) != expected_keys:
+        failures.append(
+            _failure(
+                "core unsupported-platform tombstone prerequisite key set is invalid",
+                expected=", ".join(sorted(expected_keys)),
+                actual=", ".join(sorted(str(key) for key in payload)) or "<empty>",
+                repair=(
+                    "publish and verify solstone-core-unsupported-platform before "
+                    "publishing solstone"
+                ),
+            )
+        )
+    expected_scalars = {
+        "schema_version": 1,
+        "kind": CORE_UNSUPPORTED_TOMBSTONE_KIND,
+        "project": CORE_UNSUPPORTED_TOMBSTONE_PROJECT,
+        "version": version,
+        "status": CORE_UNSUPPORTED_TOMBSTONE_STATUS,
+    }
+    for key, expected in expected_scalars.items():
+        if payload.get(key) != expected:
+            failures.append(
+                _failure(
+                    f"core unsupported-platform tombstone prerequisite {key} is invalid",
+                    expected=repr(expected),
+                    actual=repr(payload.get(key)),
+                    repair=(
+                        "publish and verify solstone-core-unsupported-platform before "
+                        "publishing solstone"
+                    ),
+                )
+            )
+    if payload.get("supported_platform_triples") != list(
+        CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES
+    ):
+        failures.append(
+            _failure(
+                "core unsupported-platform tombstone supported triples are invalid",
+                expected=repr(list(CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES)),
+                actual=repr(payload.get("supported_platform_triples")),
+                repair=(
+                    "publish and verify solstone-core-unsupported-platform before "
+                    "publishing solstone"
+                ),
+            )
+        )
+    if payload.get("resolver_checks") != CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS:
+        failures.append(
+            _failure(
+                "core unsupported-platform tombstone resolver checks are invalid",
+                expected=repr(CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS),
+                actual=repr(payload.get("resolver_checks")),
+                repair=(
+                    "publish and verify solstone-core-unsupported-platform before "
+                    "publishing solstone"
+                ),
+            )
+        )
+    failures.extend(
+        validate_public_evidence_tree("core_unsupported_tombstone", payload)
+    )
+    return failures
 
 
 def rust_artifact_targets() -> dict[str, tuple[LaneName, dict[str, Any]]]:
@@ -1188,11 +1297,11 @@ def _model_name_failures(package_names: set[str], expected_count: int) -> list[F
                 repair="use the models version derived from package metadata",
             )
         )
-    if expected_count == 15 and model_like:
+    if expected_count == 16 and model_like:
         failures.append(
             _failure(
-                "15-file candidate contains models archive leftover",
-                expected="no solstone_journal_models archives in a 15-file candidate",
+                "16-file candidate contains models archive leftover",
+                expected="no solstone_journal_models archives in a 16-file candidate",
                 actual=", ".join(sorted(model_like)),
                 repair="remove skipped models artifacts from the release candidate",
             )
@@ -1230,11 +1339,11 @@ def classify_release_dir(
     failures.extend(_case_collision_failures(entries))
     for entry in entries:
         failures.extend(_validate_regular_file(entry, label=entry.name))
-    if len(entries) not in {15, 17}:
+    if len(entries) not in {16, 18}:
         failures.append(
             _failure(
-                "release directory must contain exactly 15 or 17 files",
-                expected="15 files without models or 17 files with models",
+                "release directory must contain exactly 16 or 18 files",
+                expected="16 files without models or 18 files with models",
                 actual=str(len(entries)),
                 repair="validate the exact release candidate payload directory",
             )
@@ -1254,7 +1363,7 @@ def classify_release_dir(
         )
     expected_without_models = set(expected_package_names(include_models=False))
     expected_with_models = set(expected_package_names(include_models=True))
-    include_models = len(entries) == 17
+    include_models = len(entries) == 18
     expected_packages = (
         expected_with_models if include_models else expected_without_models
     )
@@ -1286,7 +1395,7 @@ def classify_release_dir(
                 "release directory contains extra assets",
                 expected=", ".join(sorted(expected_packages)),
                 actual=", ".join(sorted(extra)),
-                repair="remove assets outside the exact 15/17-file release payload",
+                repair="remove assets outside the exact 16/18-file release payload",
             )
         )
     try:
@@ -1890,18 +1999,21 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
         metadata = f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n"
         return dist_info, metadata
 
+    def core_data_prefix(name: str) -> str:
+        version = name.removesuffix(".whl").split("-")[1]
+        return f"solstone_core-{version}.data/scripts"
+
     for name in expected_package_names(include_models=include_models):
         path = dist_dir / name
         if name in core_wheel_names:
-            info = zipfile.ZipInfo(
-                f"{name.removesuffix('.whl')}.data/scripts/solstone-core"
-            )
-            info.create_system = 3
-            info.external_attr = 0o755 << 16
             with zipfile.ZipFile(path, "w") as wheel:
                 meta_name, metadata = metadata_member(name)
                 wheel.writestr(meta_name, metadata)
-                wheel.writestr(info, f"inert solstone-core for {name}\n")
+                for script_name in CORE_SCRIPT_NAMES:
+                    info = zipfile.ZipInfo(f"{core_data_prefix(name)}/{script_name}")
+                    info.create_system = 3
+                    info.external_attr = 0o755 << 16
+                    wheel.writestr(info, f"inert {script_name} for {name}\n")
             continue
         if (
             name.startswith("solstone-")
@@ -2143,6 +2255,7 @@ def run_fixtures_mode() -> list[Failure]:
             from scripts.release_advisory_policy import PolicyRun
             from scripts.release_digest import candidate_digest, file_sha256_size
             from scripts.release_install_smoke import (
+                CORE_SMOKE_STDOUT,
                 PROOF_TARGETS,
                 SCRUBBED_COMMAND_ENV,
                 CommandResult,
@@ -2206,6 +2319,13 @@ def run_fixtures_mode() -> list[Failure]:
                     "sha256": "d" * 64,
                     "bytes": 6,
                 },
+                "members": {
+                    "parakeet-helper": {
+                        "path": "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper",
+                        "sha256": "d" * 64,
+                        "bytes": 6,
+                    }
+                },
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",
                 "signing": {
@@ -2227,6 +2347,14 @@ def run_fixtures_mode() -> list[Failure]:
                     "path": "solstone_core-1.0.0.data/scripts/solstone-core",
                     "sha256": "f" * 64,
                     "bytes": 6,
+                },
+                "members": {
+                    name: {
+                        "path": f"solstone_core-1.0.0.data/scripts/{name}",
+                        "sha256": "f" * 64,
+                        "bytes": 6,
+                    }
+                    for name in CORE_SCRIPT_NAMES
                 },
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",
@@ -2268,7 +2396,8 @@ def run_fixtures_mode() -> list[Failure]:
             candidate_paths = sorted(path for path in ready.iterdir() if path.is_file())
             env_root = root / "fixture-env"
             (env_root / "bin").mkdir(parents=True, exist_ok=True)
-            (env_root / "bin" / "solstone-core").write_bytes(b"fixture-core")
+            for name in CORE_SCRIPT_NAMES:
+                (env_root / "bin" / name).write_bytes(b"fixture-core")
             (env_root / "bin" / "parakeet-helper").write_bytes(b"fixture-helper")
             proofs_dir = evidence_root / _current_version() / "proofs"
             for target in PROOF_TARGETS:
@@ -2280,11 +2409,12 @@ def run_fixtures_mode() -> list[Failure]:
                 retained_members = ledger_payload["native_members"][target]
                 installed_members = [
                     {
-                        "name": "solstone-core",
-                        "path": env_root / "bin" / "solstone-core",
-                        "sha256": retained_members["solstone-core"]["sha256"],
+                        "name": name,
+                        "path": env_root / "bin" / name,
+                        "sha256": retained_members[name]["sha256"],
                         "symlink": False,
                     }
+                    for name in CORE_SCRIPT_NAMES
                 ]
                 if target == "macos-arm64":
                     installed_members.append(
@@ -2327,15 +2457,13 @@ def run_fixtures_mode() -> list[Failure]:
                         ),
                         installed_members=tuple(installed_members),
                         smoke={
-                            "solstone-core": CommandResult(
-                                argv=(
-                                    str(env_root / "bin" / "solstone-core"),
-                                    "--version",
-                                ),
+                            name: CommandResult(
+                                argv=(str(env_root / "bin" / name), "--version"),
                                 exit_code=0,
-                                stdout=f"solstone-core {_current_version()}",
+                                stdout=f"{CORE_SMOKE_STDOUT[name]} {_current_version()}",
                                 env=SCRUBBED_COMMAND_ENV,
                             )
+                            for name in CORE_SCRIPT_NAMES
                         },
                     ),
                     recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),

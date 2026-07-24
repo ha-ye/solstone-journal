@@ -98,6 +98,12 @@ SOLSTONE_CORE_PLATFORM_MARKERS: tuple[str, ...] = tuple(
     _solstone_core_platform_marker(platform_tuple)
     for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
 )
+SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER = (
+    "(sys_platform != 'linux' and sys_platform != 'darwin') or "
+    "(sys_platform == 'linux' and platform_machine != 'x86_64' and "
+    "platform_machine != 'aarch64') or "
+    "(sys_platform == 'darwin' and platform_machine != 'arm64')"
+)
 SOLSTONE_CORE_PLATFORM_TAGS: dict[CorePlatform, str] = {
     platform_tuple: _solstone_core_platform_tag(platform_tuple)
     for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
@@ -137,6 +143,13 @@ def solstone_core_marker_pins(version: str) -> tuple[str, ...]:
     return tuple(
         f"solstone-core=={version}; {marker}"
         for marker in SOLSTONE_CORE_PLATFORM_MARKERS
+    )
+
+
+def solstone_core_unsupported_platform_pin(version: str) -> str:
+    return (
+        f"solstone-core-unsupported-platform=={version}; "
+        f"{SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER}"
     )
 
 

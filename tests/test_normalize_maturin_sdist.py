@@ -23,6 +23,8 @@ def _source_workspace(root: Path) -> None:
         "crates/solstone-core-journal",
         "crates/solstone-core-sol",
         "crates/solstone-core-sol-client",
+        "crates/solstone-core-sol-client-cli",
+        "crates/solstone-core-unused",
     )
     (root / "core").mkdir(parents=True)
     (root / "core" / "Cargo.toml").write_text(
@@ -35,17 +37,19 @@ def _source_workspace(root: Path) -> None:
         path = root / "core" / member
         path.mkdir(parents=True)
         (path / "Cargo.toml").write_text(
-            f'[package]\nname = "{Path(member).name}"\nversion = "1.0.13"\n',
+            f'[package]\nname = "{Path(member).name}"\nversion = "1.2.3"\n',
             encoding="utf-8",
         )
 
 
 def _archive(root: Path, *, pruned_source: bool = False) -> Path:
-    archive = root / "dist" / "solstone_core-1.0.13.tar.gz"
+    archive = root / "dist" / "solstone_core-1.2.3.tar.gz"
     archive.parent.mkdir()
     manifest = (
         "[workspace]\n"
-        'members = ["crates/solstone-core", "crates/solstone-core-journal"]\n'
+        'members = ["crates/solstone-core", "crates/solstone-core-journal", '
+        '"crates/solstone-core-sol", "crates/solstone-core-sol-client", '
+        '"crates/solstone-core-sol-client-cli"]\n'
         'resolver = "3"\n'
     ).encode()
     source_line = (
@@ -59,18 +63,21 @@ def _archive(root: Path, *, pruned_source: bool = False) -> Path:
         'source = "registry+https://github.com/rust-lang/crates.io-index"\n\n'
         '[[package]]\nname = "ureq"\nversion = "3.1.4"\n'
         'source = "registry+https://github.com/rust-lang/crates.io-index"\n\n'
-        '[[package]]\nname = "solstone-core"\nversion = "1.0.13"\n'
+        '[[package]]\nname = "solstone-core"\nversion = "1.2.3"\n'
         'dependencies = ["serde"]\n\n'
-        '[[package]]\nname = "solstone-core-journal"\nversion = "1.0.13"\n\n'
-        f'[[package]]\nname = "solstone-core-sol"\nversion = "1.0.13"{source_line}\n\n'
-        '[[package]]\nname = "solstone-core-sol-client"\nversion = "1.0.13"\n'
-        'dependencies = ["ureq"]\n'
+        '[[package]]\nname = "solstone-core-journal"\nversion = "1.2.3"\n\n'
+        '[[package]]\nname = "solstone-core-sol"\nversion = "1.2.3"\n\n'
+        '[[package]]\nname = "solstone-core-sol-client"\nversion = "1.2.3"\n'
+        'dependencies = ["ureq"]\n\n'
+        '[[package]]\nname = "solstone-core-sol-client-cli"\nversion = "1.2.3"\n'
+        'dependencies = ["solstone-core-sol-client"]\n\n'
+        f'[[package]]\nname = "solstone-core-unused"\nversion = "1.2.3"{source_line}\n'
     ).encode()
     with tarfile.open(archive, mode="w:gz") as target:
         for name, data in (
-            ("solstone_core-1.0.13/PKG-INFO", b"metadata\n"),
-            ("solstone_core-1.0.13/core/Cargo.toml", manifest),
-            ("solstone_core-1.0.13/core/Cargo.lock", lock),
+            ("solstone_core-1.2.3/PKG-INFO", b"metadata\n"),
+            ("solstone_core-1.2.3/core/Cargo.toml", manifest),
+            ("solstone_core-1.2.3/core/Cargo.lock", lock),
         ):
             member = tarfile.TarInfo(name)
             member.mode = 0o644
@@ -89,7 +96,7 @@ def _members(archive: Path) -> dict[str, bytes]:
         }
 
 
-def test_normalizer_removes_only_pruned_workspace_package_records(
+def test_normalizer_retains_now_reachable_sol_workspace_records(
     tmp_path: Path,
 ) -> None:
     _source_workspace(tmp_path)
@@ -98,24 +105,28 @@ def test_normalizer_removes_only_pruned_workspace_package_records(
 
     removed = normalize_core_sdist_workspace_lock(tmp_path, archive)
 
-    assert removed == ("solstone-core-sol", "solstone-core-sol-client")
+    assert removed == ("solstone-core-unused",)
     after = _members(archive)
     assert after.keys() == before.keys()
     assert (
-        after["solstone_core-1.0.13/PKG-INFO"]
-        == before["solstone_core-1.0.13/PKG-INFO"]
+        after["solstone_core-1.2.3/PKG-INFO"]
+        == before["solstone_core-1.2.3/PKG-INFO"]
     )
     assert (
-        after["solstone_core-1.0.13/core/Cargo.toml"]
-        == before["solstone_core-1.0.13/core/Cargo.toml"]
+        after["solstone_core-1.2.3/core/Cargo.toml"]
+        == before["solstone_core-1.2.3/core/Cargo.toml"]
     )
-    packages = tomllib.loads(after["solstone_core-1.0.13/core/Cargo.lock"].decode())[
+    packages = tomllib.loads(after["solstone_core-1.2.3/core/Cargo.lock"].decode())[
         "package"
     ]
     assert [package["name"] for package in packages] == [
         "serde",
+        "ureq",
         "solstone-core",
         "solstone-core-journal",
+        "solstone-core-sol",
+        "solstone-core-sol-client",
+        "solstone-core-sol-client-cli",
     ]
 
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -129,3 +140,29 @@ def test_normalizer_refuses_to_remove_registry_package_record(tmp_path: Path) ->
 
     with pytest.raises(SdistLockError, match="is not a workspace package"):
         normalize_core_sdist_workspace_lock(tmp_path, archive)
+
+
+def test_normalizer_injects_native_sol_sources(tmp_path: Path) -> None:
+    _source_workspace(tmp_path)
+    source = tmp_path / "solstone" / "apps" / "sample" / "native" / "command.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("// native source\n", encoding="utf-8")
+    authority = source.with_name("authority.toml")
+    authority.write_text("# native authority\n", encoding="utf-8")
+    archive = _archive(tmp_path)
+
+    normalize_core_sdist_workspace_lock(tmp_path, archive)
+
+    after = _members(archive)
+    assert (
+        after["solstone_core-1.2.3/solstone/apps/sample/native/command.rs"]
+        == b"// native source\n"
+    )
+    assert (
+        after["solstone_core-1.2.3/solstone/apps/sample/native/authority.toml"]
+        == b"# native authority\n"
+    )
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert normalize_core_sdist_workspace_lock(tmp_path, archive) == ()
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == digest

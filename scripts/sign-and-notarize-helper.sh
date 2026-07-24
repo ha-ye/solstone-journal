@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 #
-# Sign and notarize a bare Mach-O helper binary for the macOS platform wheel.
+# Sign and notarize a bare Mach-O native binary for the macOS platform wheel.
 # Stapling is intentionally skipped — bare Mach-O binaries are not stapleable;
 # Gatekeeper performs an online check on first run instead.
 

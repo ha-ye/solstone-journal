@@ -22,6 +22,7 @@ from scripts.check_rust_release_manifest import (
     canonical_json_bytes,
 )
 from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
     PARAKEET_HELPER_MEMBER,
     core_wheel_script_members,
 )
@@ -55,6 +56,7 @@ TOP_LEVEL_KEYS = frozenset(
         "target",
         "wheel",
         "member",
+        "members",
         "tools",
         "signing_mode",
         "signing",
@@ -80,22 +82,25 @@ def _failure(error: str, *, expected: str, actual: str, repair: str) -> Failure:
     return Failure(error=error, expected=expected, actual=actual, repair=repair)
 
 
-def _member_for_role(
+def _members_for_role(
     wheel: zipfile.ZipFile, role: NativeRole
-) -> zipfile.ZipInfo | None:
+) -> dict[str, zipfile.ZipInfo] | None:
     if role == "root":
         helpers = [
             info for info in wheel.infolist() if info.filename == PARAKEET_HELPER_MEMBER
         ]
-        return helpers[0] if len(helpers) == 1 else None
+        return {"parakeet-helper": helpers[0]} if len(helpers) == 1 else None
     scripts = core_wheel_script_members(wheel)
-    return scripts[0] if len(scripts) == 1 else None
+    names = {Path(info.filename).name for info in scripts}
+    if len(scripts) != len(CORE_SCRIPT_NAMES) or names != set(CORE_SCRIPT_NAMES):
+        return None
+    return {Path(info.filename).name: info for info in scripts}
 
 
 def _expected_member_path(role: NativeRole) -> str:
     if role == "root":
         return PARAKEET_HELPER_MEMBER
-    return ".data/scripts/solstone-core"
+    return ", ".join(f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES)
 
 
 def _role_matches_wheel(role: NativeRole, wheel_name: str) -> bool:
@@ -104,9 +109,9 @@ def _role_matches_wheel(role: NativeRole, wheel_name: str) -> bool:
     return wheel_name.startswith("solstone_core-") and wheel_name.endswith(".whl")
 
 
-def _read_member(
+def _read_members(
     wheel_path: Path, role: NativeRole
-) -> tuple[str, bytes] | list[Failure]:
+) -> dict[str, tuple[str, bytes]] | list[Failure]:
     if wheel_path.is_symlink():
         return [
             _failure(
@@ -126,17 +131,20 @@ def _read_member(
             )
         ]
     with zipfile.ZipFile(wheel_path) as wheel:
-        member = _member_for_role(wheel, role)
-        if member is None:
+        members = _members_for_role(wheel, role)
+        if members is None:
             return [
                 _failure(
                     "macOS native wheel member count is wrong",
-                    expected=f"exactly one {_expected_member_path(role)}",
+                    expected=f"exactly {_expected_member_path(role)}",
                     actual="missing or duplicate",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             ]
-        return member.filename, wheel.read(member)
+        return {
+            name: (member.filename, wheel.read(member))
+            for name, member in sorted(members.items())
+        }
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -237,6 +245,69 @@ def _validate_facts(facts: Mapping[str, Any]) -> list[Failure]:
     return failures
 
 
+def _facts_by_member(
+    role: NativeRole,
+    signing_facts: Mapping[str, Any],
+) -> tuple[dict[str, Mapping[str, Any]], list[Failure]]:
+    if role == "root":
+        return {"parakeet-helper": signing_facts}, _validate_facts(signing_facts)
+
+    if set(signing_facts) != {"members"}:
+        return {}, [
+            _failure(
+                "macOS core signing facts key set is wrong",
+                expected="members",
+                actual=", ".join(sorted(str(key) for key in signing_facts))
+                or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    members = signing_facts.get("members")
+    if not isinstance(members, Mapping):
+        return {}, [
+            _failure(
+                "macOS core signing facts are missing members",
+                expected="members object keyed by sol, solstone, solstone-core",
+                actual=type(members).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    if set(members) != set(CORE_SCRIPT_NAMES):
+        return {}, [
+            _failure(
+                "macOS core signing facts member set is wrong",
+                expected=", ".join(CORE_SCRIPT_NAMES),
+                actual=", ".join(sorted(str(key) for key in members)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    failures: list[Failure] = []
+    normalized: dict[str, Mapping[str, Any]] = {}
+    for name in sorted(CORE_SCRIPT_NAMES):
+        facts = members.get(name)
+        if not isinstance(facts, Mapping):
+            failures.append(
+                _failure(
+                    f"macOS core signing facts for {name} are invalid",
+                    expected="JSON object",
+                    actual=type(facts).__name__,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+            continue
+        failures.extend(_validate_facts(facts))
+        normalized[name] = facts
+    return normalized, failures
+
+
+def _member_entry(member_path: str, member_bytes: bytes) -> dict[str, Any]:
+    return {
+        "path": member_path,
+        "sha256": _sha256_bytes(member_bytes),
+        "bytes": len(member_bytes),
+    }
+
+
 def build_macos_native_record(
     *,
     role: NativeRole,
@@ -246,7 +317,7 @@ def build_macos_native_record(
     core_lock_sha256: str,
     python_version: str = PYTHON_MACOS_VERSION,
 ) -> dict[str, Any]:
-    failures = _validate_facts(signing_facts)
+    facts_by_member, failures = _facts_by_member(role, signing_facts)
     if not SOURCE_COMMIT_RE.fullmatch(source_commit):
         failures.append(
             _failure(
@@ -274,29 +345,50 @@ def build_macos_native_record(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    member = _read_member(wheel_path, role)
-    if isinstance(member, list):
-        failures.extend(member)
-        member_path = _expected_member_path(role)
-        member_bytes = b""
+    wheel_members = _read_members(wheel_path, role)
+    if isinstance(wheel_members, list):
+        failures.extend(wheel_members)
+        member_payloads = {}
     else:
-        member_path, member_bytes = member
-    member_sha256 = _sha256_bytes(member_bytes)
-    signed_sha256 = signing_facts.get("signed_binary_sha256")
-    if isinstance(signed_sha256, str) and member_sha256 != signed_sha256:
-        failures.append(
-            _failure(
-                "macOS signed binary hash does not match final wheel member",
-                expected=signed_sha256,
-                actual=member_sha256,
-                repair="python3 scripts/check_rust_release_manifest.py",
+        member_payloads = {
+            name: _member_entry(member_path, member_bytes)
+            for name, (member_path, member_bytes) in wheel_members.items()
+        }
+        for name, (_member_path, member_bytes) in wheel_members.items():
+            facts = facts_by_member.get(name, {})
+            signed_sha256 = facts.get("signed_binary_sha256")
+            member_sha256 = _sha256_bytes(member_bytes)
+            if isinstance(signed_sha256, str) and member_sha256 != signed_sha256:
+                failures.append(
+                    _failure(
+                        "macOS signed binary hash does not match final wheel member",
+                        expected=signed_sha256,
+                        actual=member_sha256,
+                        repair="python3 scripts/check_rust_release_manifest.py",
+                    )
+                )
+    if facts_by_member:
+        tool_payloads = {
+            canonical_json_bytes(facts["tools"])
+            for facts in facts_by_member.values()
+            if isinstance(facts.get("tools"), Mapping)
+        }
+        if len(tool_payloads) != 1:
+            failures.append(
+                _failure(
+                    "macOS signing tool facts differ across core members",
+                    expected="identical signing tool facts for every core member",
+                    actual=str(len(tool_payloads)),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
             )
-        )
     if failures:
         raise NativeRecordError(failures)
 
     wheel_sha256, wheel_bytes = file_sha256_size(wheel_path)
-    tools = signing_facts["tools"]
+    primary_name = "parakeet-helper" if role == "root" else "solstone-core"
+    primary_facts = facts_by_member[primary_name]
+    tools = primary_facts["tools"]
     record: dict[str, Any] = {
         "schema_version": 1,
         "kind": KIND,
@@ -309,11 +401,8 @@ def build_macos_native_record(
             "sha256": wheel_sha256,
             "bytes": wheel_bytes,
         },
-        "member": {
-            "path": member_path,
-            "sha256": member_sha256,
-            "bytes": len(member_bytes),
-        },
+        "member": member_payloads[primary_name],
+        "members": {key: member_payloads[key] for key in sorted(member_payloads)},
         "tools": {
             "python": python_version,
             "xcode": tools["xcode"],
@@ -322,8 +411,8 @@ def build_macos_native_record(
             "notarytool": tools["notarytool"],
         },
         "signing_mode": MACOS_SIGNING_MODE,
-        "signing": {key: signing_facts[key] for key in sorted(SIGNING_KEYS)},
-        "notarization_status": signing_facts["notarization_status"],
+        "signing": {key: primary_facts[key] for key in sorted(SIGNING_KEYS)},
+        "notarization_status": primary_facts["notarization_status"],
     }
     record_failures = validate_macos_native_record(
         record,
@@ -433,22 +522,31 @@ def validate_macos_native_record(
                     )
                 )
 
-    member = _read_member(wheel_path, role)
-    if isinstance(member, list):
-        failures.extend(member)
+    wheel_members = _read_members(wheel_path, role)
+    if isinstance(wheel_members, list):
+        failures.extend(wheel_members)
     else:
-        member_path, member_bytes = member
-        expected_member = {
-            "path": member_path,
-            "sha256": _sha256_bytes(member_bytes),
-            "bytes": len(member_bytes),
+        expected_members = {
+            name: _member_entry(member_path, member_bytes)
+            for name, (member_path, member_bytes) in wheel_members.items()
         }
+        primary_name = "parakeet-helper" if role == "root" else "solstone-core"
+        expected_member = expected_members[primary_name]
         if record.get("member") != expected_member:
             failures.append(
                 _failure(
                     "macOS native record member does not match wheel",
                     expected=repr(expected_member),
                     actual=repr(record.get("member")),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        if record.get("members") != expected_members:
+            failures.append(
+                _failure(
+                    "macOS native record members do not match wheel",
+                    expected=repr(expected_members),
+                    actual=repr(record.get("members")),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )

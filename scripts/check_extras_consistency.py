@@ -3,24 +3,25 @@
 # Copyright (c) 2026 sol pbc
 """Lint: the thin-base / journal leaf package menu stays internally consistent.
 
-After the package split, the root distribution ships only the thin `sol` /
-`solstone` access scripts. `solstone-journal` and `solstone-journal-cuda` are
-leaf packages that own the host-only `journal` and `mlx-vlm-server` console
-scripts and compose the root `[journal-host]` building block with exactly one
-ONNX runtime.
+After the package split, solstone-core owns the public native `sol` /
+`solstone` scripts. The root distribution keeps the Python access dependency
+partition plus the private compatibility helper. `solstone-journal` and
+`solstone-journal-cuda` are leaf packages that own the host-only `journal` and
+`mlx-vlm-server` console scripts and compose the root `[journal-host]` building
+block with exactly one ONNX runtime.
 
 The invariants are:
 
-  1. Base `[project.dependencies]` is exactly the thin access partition — the
-     boundary the access-surface import-clean guard enforces. No heavy host
-     dependency may leak into base.
+  1. Base `[project.dependencies]` is exactly the thin access partition plus
+     marker-gated solstone-core pins for covered platforms and the unsupported
+     platform tombstone for the complement. No heavy host dependency may leak
+     into base.
   2. There is no `[all]` extra.
   3. Root `[journal]` and `[journal-cuda]` are tombstones pinned exactly to
      `solstone-journal-host==0.7.0`.
   4. `[journal-host]` stays in root, folds in the `[pdf]` building block, pins
-     `solstone-journal-models==<models leaf version>`, marker-gated
-     `solstone-core==<root version>` for the covered binary platforms, and
-     pins the tested LiteLLM runtime used by OpenHands.
+     `solstone-journal-models==<models leaf version>`, and pins the tested
+     LiteLLM runtime used by OpenHands.
   5. The CPU leaf depends on `solstone[journal-host]==<root version>`, pulls
      CPU `onnxruntime`, and does not pull `onnxruntime-gpu`.
   6. The CUDA leaf depends on `solstone[journal-host]==<root version>`, pulls
@@ -28,12 +29,12 @@ The invariants are:
      `onnxruntime`.
   7. The two leaves never depend on each other.
   8. Both leaves own exactly the host-only console scripts.
-  9. Root scripts stay exactly the thin access scripts.
+  9. Root scripts stay exactly the private compatibility helper script.
  10. Each leaf has metadata-only setuptools config, a workspace source for
      `solstone`, the expected package name, and the root version.
  11. uv workspace members/sources are exactly the two journal leaves plus
      models plus core; `solstone-journal-host` is absent.
- 12. `[tool.uv].override-dependencies` contains the tombstone pin.
+ 12. `[tool.uv].override-dependencies` contains both tombstone pins.
  13. The Makefile no longer uses root journal extra spellings.
 """
 
@@ -42,7 +43,10 @@ import tomllib
 from pathlib import Path
 
 from solstone.think.features import FEATURES
-from solstone.think.probe import solstone_core_marker_pins
+from solstone.think.probe import (
+    solstone_core_marker_pins,
+    solstone_core_unsupported_platform_pin,
+)
 
 # The thin access partition. Adding anything here must keep the `sol` access
 # commands import-clean (scripts/check_access_imports_clean.py) — keep this in
@@ -60,8 +64,7 @@ THIN_BASE = {
     "userpath>=1.9.2,<2",
 }
 ROOT_SCRIPTS = {
-    "sol": "solstone.think.sol_cli:main",
-    "solstone": "solstone.think.sol_cli:main",
+    "solstone-python-compat": "solstone.think.sol_compat_cli:main",
 }
 HOST_SCRIPTS = {
     "journal": "solstone.think.sol_cli:journal_main",
@@ -139,19 +142,39 @@ def _check_models_pin(extras: dict, member_version: str | None) -> list[str]:
     return []
 
 
-def _check_core_pins(extras: dict, root_version: str | None) -> list[str]:
-    host = extras.get("journal-host", [])
-    pins = sorted(dep for dep in host if dep.startswith("solstone-core=="))
+def _check_core_pins(base: list[str], root_version: str | None) -> list[str]:
+    pins = sorted(dep for dep in base if dep.startswith("solstone-core=="))
     expected = sorted(solstone_core_marker_pins(root_version or ""))
     if len(pins) != len(expected):
         return [
-            "[journal-host] must contain exactly "
+            "base [project.dependencies] must contain exactly "
             f"{len(expected)} marker-gated solstone-core== pins; found {len(pins)}"
         ]
     if root_version is not None and pins != expected:
         return [
-            "[journal-host] solstone-core marker pins must be exactly "
+            "base [project.dependencies] solstone-core marker pins must be exactly "
             f"{expected}; found {pins}"
+        ]
+    return []
+
+
+def _check_core_unsupported_pin(base: list[str], root_version: str | None) -> list[str]:
+    pins = [
+        dep
+        for dep in base
+        if dep.startswith("solstone-core-unsupported-platform==")
+    ]
+    expected = solstone_core_unsupported_platform_pin(root_version or "")
+    if len(pins) != 1:
+        return [
+            "base [project.dependencies] must contain exactly one "
+            "solstone-core-unsupported-platform== pin; found "
+            f"{len(pins)}"
+        ]
+    if root_version is not None and pins[0] != expected:
+        return [
+            "base [project.dependencies] unsupported-platform tombstone pin must be "
+            f"{expected}; found {pins[0]}"
         ]
     return []
 
@@ -291,10 +314,17 @@ def main(root: Path | None = None) -> int:
         )
         models_version = None
 
-    # 1. Base stays exactly the thin access partition.
-    if set(base) != THIN_BASE:
-        missing = sorted(THIN_BASE - set(base))
-        unexpected = sorted(set(base) - THIN_BASE)
+    expected_base = (
+        THIN_BASE
+        | set(solstone_core_marker_pins(root_version or ""))
+        | {solstone_core_unsupported_platform_pin(root_version or "")}
+    )
+
+    # 1. Base stays exactly the thin access partition plus native-core
+    # platform split.
+    if set(base) != expected_base:
+        missing = sorted(expected_base - set(base))
+        unexpected = sorted(set(base) - expected_base)
         errors.append("base [project.dependencies] drifted from the thin partition")
         if unexpected:
             errors.append(
@@ -344,7 +374,18 @@ def main(root: Path | None = None) -> int:
         if "solstone[pdf]" not in host:
             errors.append("[journal-host] must fold in solstone[pdf]")
         errors.extend(_check_models_pin(extras, models_version))
-        errors.extend(_check_core_pins(extras, root_version))
+        errors.extend(_check_core_pins(base, root_version))
+        errors.extend(_check_core_unsupported_pin(base, root_version))
+        host_core_pins = [
+            dep
+            for dep in host
+            if dep.startswith(("solstone-core==", "solstone-core-unsupported-platform=="))
+        ]
+        if host_core_pins:
+            errors.append(
+                "[journal-host] must not contain native-core platform pins; "
+                f"found {host_core_pins}"
+            )
         litellm_requirements = [
             dep
             for dep in host
@@ -414,12 +455,22 @@ def main(root: Path | None = None) -> int:
     if "solstone-journal-host" in root_sources:
         errors.append("root [tool.uv.sources] must not include solstone-journal-host")
 
-    # 12. uv override prunes the tombstone pin from workspace resolution.
+    # 12. uv override prunes tombstone pins from workspace resolution.
     override_deps = root_uv.get("override-dependencies", [])
     if not any(dep.split(";", 1)[0].strip() == TOMBSTONE_PIN for dep in override_deps):
         errors.append(
             "[tool.uv].override-dependencies must contain "
             f"{TOMBSTONE_PIN!r} with any marker"
+        )
+    core_tombstone_pin = solstone_core_unsupported_platform_pin(root_version or "")
+    if not any(
+        dep.split(";", 1)[0].strip()
+        == f"solstone-core-unsupported-platform=={root_version or ''}"
+        for dep in override_deps
+    ):
+        errors.append(
+            "[tool.uv].override-dependencies must contain "
+            f"{core_tombstone_pin!r} with any marker"
         )
 
     # 13. Makefile no longer installs retired journal extras.

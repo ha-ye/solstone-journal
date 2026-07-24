@@ -14,6 +14,7 @@ import scripts.check_rust_release_manifest as checker
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_rust_release_manifest import canonical_json_bytes
+from scripts.check_wheel_contents import CORE_SCRIPT_NAMES
 from scripts.release_advisory_policy import PolicyRun
 
 SOURCE_COMMIT = "a" * 40
@@ -58,6 +59,24 @@ def _policy() -> PolicyRun:
 
 
 def _native(role: str, wheel_name: str, member_path: str) -> dict:
+    members = (
+        {
+            "parakeet-helper": {
+                "path": member_path,
+                "sha256": "f" * 64,
+                "bytes": 6,
+            }
+        }
+        if role == "root"
+        else {
+            name: {
+                "path": f"solstone_core-1.2.3.data/scripts/{name}",
+                "sha256": "f" * 64,
+                "bytes": 6,
+            }
+            for name in CORE_SCRIPT_NAMES
+        }
+    )
     return {
         "schema_version": 1,
         "kind": "macos-native-record/v1",
@@ -71,6 +90,7 @@ def _native(role: str, wheel_name: str, member_path: str) -> dict:
         },
         "wheel": {"name": wheel_name, "sha256": "e" * 64, "bytes": 12},
         "member": {"path": member_path, "sha256": "f" * 64, "bytes": 6},
+        "members": members,
         "tools": {
             "python": pins.PYTHON_MACOS_VERSION,
             "xcode": pins.MACOS_XCODE_PIN,
@@ -121,13 +141,15 @@ def _candidate(root: Path) -> Path:
     for artifact, (lane, _target) in checker.rust_artifact_targets().items():
         if lane == "source":
             continue
-        info = zipfile.ZipInfo(
-            f"{artifact.removesuffix('.whl')}.data/scripts/solstone-core"
-        )
-        info.create_system = 3
-        info.external_attr = 0o755 << 16
         with zipfile.ZipFile(candidate / artifact, "w") as wheel:
-            wheel.writestr(info, f"{lane} native member".encode("utf-8"))
+            version = artifact.removesuffix(".whl").split("-")[1]
+            for name in CORE_SCRIPT_NAMES:
+                info = zipfile.ZipInfo(
+                    f"solstone_core-{version}.data/scripts/{name}"
+                )
+                info.create_system = 3
+                info.external_attr = 0o755 << 16
+                wheel.writestr(info, f"{lane} {name} native member".encode("utf-8"))
     root_wheel = next(
         name
         for name in checker.expected_package_names(include_models=False)
@@ -235,7 +257,7 @@ def test_ledger_key_set_excludes_transport_and_bundle_state(tmp_path: Path) -> N
     assert payload["tool_evidence"]["source"]["uv"] == pins.UV_LINUX_FIXTURE_BANNER
     assert set(payload["native_members"]) == set(ledger.PROOF_TARGETS)
     assert set(payload["native_members"]["macos-arm64"]) == {
-        "solstone-core",
+        *ledger.CORE_SCRIPT_NAMES,
         "parakeet-helper",
     }
 

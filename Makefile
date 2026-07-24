@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -350,9 +350,13 @@ wheel-macos: parakeet-helper
 	CORE_TMP=$$(mktemp -d); \
 	trap 'rm -rf "$$CORE_TMP" "$$CORE_FACTS"' EXIT; \
 	python3 -m zipfile -e "$$CORE_MAC_WHEEL" "$$CORE_TMP"; \
-	CORE_BINARY=$$(find "$$CORE_TMP" -path '*.data/scripts/solstone-core' -type f -print -quit); \
-	test -n "$$CORE_BINARY" || { echo "missing solstone-core binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
-	./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY" > "$$CORE_FACTS"; \
+	for name in sol solstone solstone-core; do \
+		CORE_BINARY=$$(find "$$CORE_TMP" -path "*.data/scripts/$$name" -type f -print -quit); \
+		test -n "$$CORE_BINARY" || { echo "missing $$name binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
+		echo "==> signing and notarizing $$name"; \
+		./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY" > "$$CORE_TMP/$$name.signing-facts.json"; \
+	done; \
+	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("sol", "solstone", "solstone-core"); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$CORE_TMP" "$$CORE_FACTS"; \
 	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"; \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
@@ -713,6 +717,10 @@ check-schema-bounds: .installed
 # Rust release-manifest schema, semantic, determinism, and transaction gate
 check-rust-release-manifest: .installed
 	$(VENV_BIN)/python scripts/check_rust_release_manifest.py
+
+# Package dependency and script ownership consistency gate
+check-extras-consistency: .installed
+	$(VENV_BIN)/python scripts/check_extras_consistency.py
 
 # Built-in sol call tools HTTP-only gate
 check-tools-http-only: .installed

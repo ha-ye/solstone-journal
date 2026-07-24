@@ -53,6 +53,10 @@ dependencies = [
     "websockets>=13.0",
     "psutil",
     "userpath>=1.9.2,<2",
+    "solstone-core==1.0.14; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "solstone-core==1.0.14; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "solstone-core==1.0.14; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "solstone-core-unsupported-platform==1.0.14; (sys_platform != 'linux' and sys_platform != 'darwin') or (sys_platform == 'linux' and platform_machine != 'x86_64' and platform_machine != 'aarch64') or (sys_platform == 'darwin' and platform_machine != 'arm64')",
 ]
 
 [project.optional-dependencies]
@@ -71,9 +75,10 @@ dependencies = [
 # ONNX runtime or the NVIDIA CUDA runtime; [pdf] is a convenience composite of
 # [pdf-import] and [pdf-export], while the split extras back focused feature hints.
 #
-# Base solstone keeps only the `sol`/`solstone` scripts. Install exactly one
-# journal leaf; the CPU and GPU ONNX wheels own the same `onnxruntime/` import
-# dir and clobber each other.
+# Base solstone keeps only the private compatibility helper script. The public
+# `sol`/`solstone` scripts are native binaries owned by solstone-core. Install
+# exactly one journal leaf; the CPU and GPU ONNX wheels own the same
+# `onnxruntime/` import dir and clobber each other.
 # ---------------------------------------------------------------------------
 pdf-import = [
     "pypdfium2>=5.11,<6",
@@ -94,9 +99,6 @@ pdf = [
 # user-facing extra — always pulled in by a leaf package.
 journal-host = [
     "solstone-journal-models==1.0.0",
-    "solstone-core==1.0.13; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "solstone-core==1.0.13; sys_platform == 'linux' and platform_machine == 'aarch64'",
-    "solstone-core==1.0.13; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "python-dotenv",
     "pyhpke==0.6.4",
     "Flask[async]",
@@ -172,15 +174,9 @@ journal = ["solstone-journal-host==0.7.0"]
 journal-cuda = ["solstone-journal-host==0.7.0"]
 
 [project.scripts]
-# The base distribution ships only the thin `sol` access CLI. Host-only
-# console scripts (`journal`, `mlx-vlm-server`) live in the journal leaf
-# distributions (`solstone-journal` or `solstone-journal-cuda`).
-sol = "solstone.think.sol_cli:main"
-# `solstone` is an alias for the `sol` access CLI so `uvx solstone` /
-# `uv tool run solstone` resolve to the thin client instead of erroring on a
-# missing console script. The thin base's small footprint makes the ephemeral
-# `uvx solstone ...` one-shot fast (CI, Docker, a second machine, agents).
-solstone = "solstone.think.sol_cli:main"
+# The public `sol`/`solstone` scripts are native binaries owned by
+# solstone-core. The base distribution owns only this private helper for the
+# native binary's finite Python compatibility set.
 solstone-python-compat = "solstone.think.sol_compat_cli:main"
 
 [project.urls]
@@ -209,14 +205,16 @@ exclude = ["*.tests", "*.tests.*"]
 build_py = "build_hooks.BuildPyWithoutTests"
 
 [tool.uv]
-# The [journal]/[journal-cuda] tombstones pin solstone-journal-host==0.7.0, a
-# build-fails-by-design distribution that must NOT resolve during workspace
-# development. This override prunes it from workspace resolution: the marker
-# `python_version < '3.12'` contradicts requires-python = ">=3.12", so uv drops
-# the requirement entirely (uv lock succeeds; no tombstone node lands in
-# uv.lock). [tool.uv] is never published, so end-user wheel METADATA still
-# carries the tombstone pin and fails loudly at install time.
-override-dependencies = ["solstone-journal-host==0.7.0; python_version < '3.12'"]
+# Tombstone dependencies are build-fails-by-design distributions that must NOT
+# resolve during workspace development. This override prunes them from workspace
+# resolution: the marker `python_version < '3.12'` contradicts requires-python =
+# ">=3.12", so uv drops the requirement entirely (uv lock succeeds; no tombstone
+# node lands in uv.lock). [tool.uv] is never published, so end-user wheel
+# METADATA still carries the tombstone pins and fails loudly at install time.
+override-dependencies = [
+    "solstone-journal-host==0.7.0; python_version < '3.12'",
+    "solstone-core-unsupported-platform==1.0.14; python_version < '3.12'",
+]
 
 [tool.uv.workspace]
 members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models", "packages/solstone-core"]
