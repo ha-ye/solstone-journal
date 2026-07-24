@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{env, fs, path::PathBuf};
+use std::io::ErrorKind;
+use std::process::{Command, Output};
+use std::thread::sleep;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{env, fs, path::Path, path::PathBuf};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-core")
@@ -23,6 +25,27 @@ fn temp_path(name: &str) -> PathBuf {
         .expect("time should be available")
         .as_nanos();
     env::temp_dir().join(format!("solstone-core-{name}-{stamp}"))
+}
+
+/// Run `sol root` from a binary this test just copied into place.
+///
+/// `fs::copy` closes its own descriptors, but the test harness is
+/// multi-threaded: any thread that forks while the copy's write descriptor is
+/// still open hands the child an inherited copy of it, and the kernel refuses
+/// to exec the file with `ETXTBSY` until that child execs or exits. The window
+/// is short and the condition always clears, so retry past it rather than
+/// failing a test that is not about process spawning.
+fn sol_root_output(program: &Path, cwd: &Path) -> Output {
+    for _ in 0..100 {
+        match Command::new(program).arg("root").current_dir(cwd).output() {
+            Ok(output) => return output,
+            Err(error) if error.kind() == ErrorKind::ExecutableFileBusy => {
+                sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("fake sol should execute: {error:?}"),
+        }
+    }
+    panic!("fake sol stayed busy after retries: {}", program.display())
 }
 
 #[test]
@@ -231,11 +254,7 @@ fn sol_root_installed_layout_is_independent_of_cwd() {
         .expect("workspace checkout root");
 
     for cwd in [&unrelated, source_checkout] {
-        let output = Command::new(&fake_sol)
-            .arg("root")
-            .current_dir(cwd)
-            .output()
-            .expect("fake sol should execute");
+        let output = sol_root_output(&fake_sol, cwd);
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
@@ -284,11 +303,7 @@ fn sol_root_installed_layout_canonicalizes_lib64_alias_independent_of_cwd() {
         .expect("workspace checkout root");
 
     for cwd in [&unrelated, source_checkout] {
-        let output = Command::new(&fake_sol)
-            .arg("root")
-            .current_dir(cwd)
-            .output()
-            .expect("fake sol should execute");
+        let output = sol_root_output(&fake_sol, cwd);
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
