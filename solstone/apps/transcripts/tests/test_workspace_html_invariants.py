@@ -606,3 +606,17 @@ def test_workspace_html_card_grid_and_panel_overflow_contract():
     panel_css = _css_rule(text, ".tr-panel")
     assert "overflow-x: auto;" in panel_css
     assert "overflow-x: hidden;" not in panel_css
+
+
+def test_workspace_html_tab_pill_spacing_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    tabs_css = _css_rule(text, ".tr-tabs")
+    assert "gap: 8px;" in tabs_css
+
+    tab_css = _css_rule(text, ".tr-tab")
+    assert "padding: 8px 12px;" in tab_css
+    assert "margin: 0 -8px;" not in tab_css
+    assert not any(line.strip().startswith("margin:") for line in tab_css.splitlines())
