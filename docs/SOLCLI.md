@@ -52,38 +52,29 @@ Each module must export a `main()` function. The dispatcher does `importlib.impo
 
 `ALIASES` provide shortcuts (e.g., `journal up` → `journal service up`).
 
-### Adding a top-level command
+### Adding a top-level public `sol` command
 
-1. **Create the module** with a `main()` function:
+1. **Create `solstone/think/native/<command>/authority.toml`** with the command
+   path, params, entry type, operation id, and handler name.
 
-```python
-# solstone/think/my_cmd.py
-import argparse
+2. **Implement `solstone/think/native/<command>/command.rs`** and bind the
+   handler declared by the authority.
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="sol my-cmd")
-    parser.add_argument("--day", help="Day YYYYMMDD")
-    args = parser.parse_args()
-    # ... implementation
-```
+3. **Regenerate the inventory** with `make build-native-sol-inventory`.
 
-2. **Register in `solstone/think/sol_cli.py`** — add to `COMMANDS`:
+4. **Update parity fixtures and native-sol gates** for the new command.
 
-```python
-COMMANDS: dict[str, str] = {
-    ...
-    "my-cmd": "solstone.think.my_cmd",
-}
-```
-
-3. **No skill or AGENTS.md changes needed** — host commands aren't agent tools.
+For host-only commands, use the `journal` dispatcher instead: create a Python
+module with `main()` and register it in `solstone/think/sol_cli.py` with the
+appropriate service or universal surface.
 
 ### Files to maintain
 
 | File | What to do |
 |------|-----------|
-| `solstone/think/sol_cli.py` `COMMANDS` dict | Register the command |
-| Module file (e.g., `solstone/think/my_cmd.py`) | Implement with `main()` |
+| `solstone/think/native/<command>/authority.toml` | Declare the public native command |
+| `solstone/think/native/<command>/command.rs` | Implement the native handler |
+| `solstone/think/sol_cli.py` `COMMANDS` dict | Register host-only `journal` commands |
 
 ## Call Commands (`sol call <app> <cmd>`)
 

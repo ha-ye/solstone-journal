@@ -24,13 +24,13 @@ Each package has a README.md symlink pointing to its documentation in `docs/`.
 - **Python**: Requires Python 3.11+
 - **Modules**: Each top-level folder is a Python package with `__init__.py` unless it is data-only (e.g., `tests/fixtures/`)
 - **Imports**: Prefer absolute imports (e.g., `from solstone.think.utils import setup_cli`) whenever feasible
-- **Entry Points**: Commands are registered in `solstone/think/sol_cli.py`'s `COMMANDS` dict (pyproject.toml defines the `sol` and `journal` entry points)
+- **Entry Points**: Public `sol` / `solstone` commands are native binaries from `solstone-core`; `journal` host commands are registered in `solstone/think/sol_cli.py`'s `COMMANDS` dict
 - **Journal**: Data stored under `journal/` at the project root; day content lives under `journal/chronicle/`
 - **Calling**: When calling other modules as a separate process always use the registered CLI surface and never call using `python -m ...` (e.g., use `journal indexer`, NOT `python -m solstone.think.indexer`)
 
 ## CLI Routing
 
-`solstone/think/sol_cli.py`'s `COMMANDS` dict maps command names to module paths. The unified CLI is `sol`. Run `sol` to see status and available commands. `sol call` routes to `solstone/think/call.py`, which discovers `solstone/apps/*/call.py` Typer sub-apps and mounts them as subcommands.
+The public `sol` / `solstone` binaries route through native authority entries under `solstone/think/native/`, `solstone/apps/*/native/`, and `solstone/think/tools/native/`. `solstone/think/sol_cli.py` maps `journal` host command names to Python modules. The only Python `sol call` subtree is the finite `sol call journal` compatibility path documented in `docs/PORTING.md`.
 
 ## Agent & Skill Organization
 

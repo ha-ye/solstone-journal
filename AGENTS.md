@@ -17,10 +17,10 @@ For the journal-side runtime entry point, see `journal/AGENTS.md`.
 Read, in order, when you enter the repo for a coding task:
 
 1. **This file through §8** — the invariants must be in working memory before your first edit.
-2. **`solstone/think/sol_cli.py`** — the CLI entry point. Skim the `COMMANDS`, `ALIASES`, and `GROUPS` dicts. ~340 lines, scannable in one pass. You now know the whole top-level command surface.
+2. **`docs/SOLCLI.md`** — the CLI routing map. Public `sol` / `solstone` commands are native Rust authority entries; `solstone/think/sol_cli.py` is now the `journal` host dispatcher.
 3. **`solstone/think/top.py` (first ~100 lines)** — the interactive TUI. Ties callosum + supervisor + service status together in one vantage point. Good "oh, this is how it connects" moment.
 4. **The area you're about to touch:**
-   - User-visible feature or `sol call <app> <verb>` → `solstone/apps/<name>/call.py` + `solstone/apps/<name>/routes.py` + `solstone/apps/<name>/templates/`.
+   - User-visible feature or `sol call <app> <verb>` → `solstone/apps/<name>/native/{authority.toml,command.rs}` + `solstone/apps/<name>/routes.py` + `solstone/apps/<name>/templates/`.
    - Think pipeline → `solstone/think/<module>.py` + its tests.
    - AI talent prompt or behavior → `solstone/talent/<name>.md` (+ optional `.py` post-hook).
    - Capture / observe → `solstone/observe/<module>.py`.
@@ -33,11 +33,11 @@ Read, in order, when you enter the repo for a coding task:
 
 | Dir | Purpose | Go here when | Depth doc |
 |-----|---------|--------------|-----------|
-| `solstone/think/sol_cli.py` | CLI entry point — `COMMANDS` / `ALIASES` / `GROUPS` dicts | adding a top-level `sol <cmd>` | `docs/SOLCLI.md` |
+| `solstone/think/sol_cli.py` | Journal-host CLI dispatcher — service/universal `COMMANDS` and `ALIASES` for the `journal` script | adding a `journal <cmd>` or host-only Python command | `docs/SOLCLI.md` |
 | `solstone/observe/` | Multimodal capture — screen, audio, transcribe, describe, sense, transfer | capture-side bugs, new input modalities | `docs/OBSERVE.md` |
 | `solstone/think/` | Post-processing core — cortex, talent, callosum, indexer, entities, facets, activities, scheduler, heartbeat, supervisor | anything downstream of capture; most coder work lives here | `docs/THINK.md`, `docs/CORTEX.md`, `docs/COGITATE.md`, `docs/CALLOSUM.md` |
 | `solstone/convey/` | Web app framework — app discovery, routing, bridge | layout / framework-level UI changes | `docs/CONVEY.md` |
-| `solstone/apps/` | Convey apps — each self-contained (`call.py` Typer sub-app + `routes.py` + `templates/`) | adding a user-facing feature, a `sol call <app>` verb, a UI surface | `docs/APPS.md` (required reading before modifying `solstone/apps/`) |
+| `solstone/apps/` | Convey apps — each self-contained (`native/` authority + Rust command, `routes.py`, `templates/`) | adding a user-facing feature, a `sol call <app>` verb, a UI surface | `docs/APPS.md` (required reading before modifying `solstone/apps/`) |
 | `solstone/talent/` | AI talent configs (markdown prompts + optional `.py` post-hooks) + installed router skills (`sol`, `journal`); app fragments feed generated router references | defining or tuning a talent; updating router guidance | `solstone/talent/journal/SKILL.md`, `docs/PROMPT_TEMPLATES.md` |
 | `core/` | Rust wave-0 workspace — thin `solstone-core` bin plus library-first adapter crates | Rust scaffold, gates, or Python→Rust porting doctrine | `docs/PORTING.md` |
 | `scripts/` | Repo maintenance scripts — `check_layer_hygiene.py` | tooling that guards the codebase; wired into `make ci` | channel adapters: `docs/CHANNEL_ADAPTERS.md` |
@@ -70,13 +70,13 @@ Top-level dirs intentionally not in the table: `.venv/`, `scratch/`, `logs/`, `t
 
 Two surfaces:
 
-- **`sol <command>`** — access commands registered in `solstone/think/sol_cli.py`'s `COMMANDS` dict (e.g., `sol import`, `sol chat`).
-- **`journal <command>`** — host/service commands from the same registry (e.g., `journal think`, `journal supervisor`, `journal heartbeat`). `ALIASES` provides shorthand compound commands (`journal start` → `journal supervisor`, `journal up/down` → `journal service up/down`). `doctor` is universal: `sol doctor` checks CLI usability; `journal doctor` checks journal-host health.
-- **`sol call <app> <verb>`** — routes to `solstone/think/call.py`, which discovers each `solstone/apps/*/call.py` Typer sub-app and mounts it as a subcommand. Example: `sol call entities list`, `sol call activities create`, `sol call journal search`.
+- **`sol <command>`** — native access commands declared under `solstone/think/native/<command>/authority.toml` and implemented by the matching Rust `command.rs` (e.g., `sol import`, `sol chat`).
+- **`journal <command>`** — host/service commands from `solstone/think/sol_cli.py` (e.g., `journal think`, `journal supervisor`, `journal heartbeat`). `ALIASES` provides shorthand compound commands (`journal start` → `journal supervisor`, `journal up/down` → `journal service up/down`). `doctor` is universal: `sol doctor` checks CLI usability; `journal doctor` checks journal-host health.
+- **`sol call <app> <verb>`** — native app commands declared under `solstone/apps/<app>/native/` and generated into the native aggregate inventory. The only remaining Python subtree is the finite private compatibility path for `sol call journal`; see `docs/PORTING.md` for the inventory and removal criterion.
 
-**Adding a top-level command:** add an entry to `COMMANDS` in `solstone/think/sol_cli.py`; ensure the module has a `main()` function.
+**Adding a top-level `sol` command:** add a native authority under `solstone/think/native/<command>/` and wire the Rust handler into the generated native inventory path. Use `solstone/think/native/chat/` and `solstone/think/native/import/` as the current patterns.
 
-**Adding a `sol call` sub-verb:** add it to the app's `solstone/apps/<app>/call.py` Typer sub-app. No central registration needed — `solstone/think/call.py` discovers apps automatically.
+**Adding a `sol call` sub-verb:** update `solstone/apps/<app>/native/authority.toml`, implement the handler in `command.rs`, and regenerate the native inventory.
 `sol call journal export` is the CLI entry for portable journal ZIPs; read-only archive validation lives in `solstone/think/importers/journal_archive.py`.
 
 Run `sol` (no args) for live status plus the full grouped command list.
@@ -320,12 +320,12 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 
 If you're about to write to a domain from a module not in this table, stop and route through the owner.
 
-**`sol call <app> <verb>` handlers are pure Convey HTTP clients.** Each
-journal-data `solstone/apps/*/call.py` reaches the journal only over the Convey
-HTTP client (`solstone.think.convey_client`) — never importing a journal/domain
-module or touching the filesystem directly. `scripts/check_call_http_only.py`
-enforces this for every journal-data `call.py` with no documented exceptions:
-the gate's excluded-file set and its allowlist are both empty.
+**Native `sol call <app> <verb>` handlers keep the HTTP boundary.** Each
+journal-data command is declared by an app-local native authority and reaches the
+journal through the generated native HTTP client. The positive native-sol
+inventory, coverage, architecture, and conformance gates enforce that boundary.
+The only Python `sol call` subtree is the finite `sol call journal`
+compatibility path documented in `docs/PORTING.md`.
 
 ### L3 — Naming is a contract
 

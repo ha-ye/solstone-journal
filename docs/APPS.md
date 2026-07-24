@@ -40,7 +40,9 @@ apps/my_app/
 ├── workspace.html     # Required: Main content template
 ├── routes.py          # Optional: Flask blueprint (only if custom routes needed)
 ├── tools.py           # Optional: App tool functions for agent workflows
-├── call.py            # Optional: CLI commands via Typer (auto-discovered)
+├── native/            # Optional: Native `sol call` authority and Rust handler
+│   ├── authority.toml
+│   └── command.rs
 ├── events.py          # Optional: Server-side event handlers (auto-discovered)
 ├── app.json           # Optional: Metadata (icon, label, facet support)
 ├── app_bar.html       # Optional: Bottom bar controls (forms, buttons)
@@ -58,7 +60,7 @@ apps/my_app/
 | `workspace.html` | **Yes** | Main app content (rendered in container) |
 | `routes.py` | No | Flask blueprint for custom routes (API endpoints, forms, etc.) |
 | `tools.py` | No | Callable tool functions for AI agent workflows |
-| `call.py` | No | CLI commands via Typer, accessed as `sol call <app>` (auto-discovered) |
+| `native/authority.toml` + `native/command.rs` | No | Native CLI commands accessed as `sol call <app> <verb>` |
 | `events.py` | No | Server-side Callosum event handlers (auto-discovered) |
 | `app.json` | No | Icon, label, facet support overrides |
 | `app_bar.html` | No | Bottom fixed bar for app controls |
@@ -251,38 +253,21 @@ Define plain callable tool functions for your app in `tools.py`.
 
 ---
 
-### 7. `call.py` - CLI Commands
+### 7. `native/` - CLI Commands
 
-Define CLI commands for your app that are automatically discovered and available via `sol call <app> <command>`.
+Define app CLI commands as native authorities under `solstone/apps/<app>/native/`.
+Each command pairs an `authority.toml` entry with a Rust handler in `command.rs`
+and is regenerated into the production native aggregate inventory.
 
 **Key Points:**
-- Only create `call.py` if your app needs human-friendly CLI access to its operations
-- Export an `app = typer.Typer()` instance with commands defined via `@app.command()`
-- Automatically discovered and mounted at startup
-- Errors in one app's CLI don't prevent other apps from loading
-- CLI commands call the same app/data layer as routes or tool functions, but print formatted console output
-
-**Required export:**
-```python
-import typer
-
-app = typer.Typer(help="Description of your app commands.")
-```
-
-**Command pattern:** Define commands using Typer's `@app.command()` decorator with `typer.Argument` for positional args and `typer.Option` for flags. Call the underlying data layer directly (not tool helper wrappers) and print output via `typer.echo()`.
-
-**CLI vs tool functions:** CLI commands parallel tool functions but are optimized for interactive terminal use. Key differences:
-- Tool functions may accept a `Context` parameter for caller metadata; CLI has no context object
-- Print formatted text instead of returning dicts
-- Use `typer.Exit(1)` for errors instead of returning error dicts
-
-**Discovery behavior:** The `sol call` dispatcher scans `solstone/apps/*/call.py` at startup, imports modules, and mounts any `app` variable that is a `typer.Typer` instance as a sub-command. Private apps (directories starting with `_`) are skipped.
+- Only add a native authority when the app needs human-friendly CLI access to an HTTP operation.
+- Keep `authority.toml` as the source for path, params, operation id, HTTP method, route, and handler name.
+- Implement the handler in `command.rs` using the generated native HTTP client conventions.
+- Regenerate the inventory with `make build-native-sol-inventory`.
 
 **Reference implementations:**
-- Discovery logic: `solstone/think/call.py` - `_discover_app_calls()` function
-- App CLI example: `solstone/apps/entities/call.py` - Entity search command
-
-**Entities app reference:** `solstone/apps/entities/call.py` is the current pattern for a data-backed app CLI. Its verb list has drifted from hand-copied doc mentions twice already, so this reference does not repeat it — see the `entities` row in [SOLCLI.md](SOLCLI.md)'s Call command inventory for the current, complete list. Like every journal-data `call.py`, it reaches the journal only over HTTP via the Convey client (`solstone.think.convey_client`), importing no journal/domain module and doing no filesystem I/O of its own. The think-side write-owners it ultimately drives live under `solstone/think/entities/` (e.g. `journal.py`, `saving.py`, `merge.py`, `relationships.py`), which own `journal/entities/<slug>/entity.json` and the per-entity `.npz` embedding files.
+- Authority + handler: `solstone/apps/entities/native/{authority.toml,command.rs}`
+- Native CLI routing: [SOLCLI.md](SOLCLI.md)'s Call command inventory
 
 ---
 
