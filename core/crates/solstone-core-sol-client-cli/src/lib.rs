@@ -7,13 +7,15 @@ use std::ffi::{OsStr, OsString};
 use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
 use solstone_core_sol_client::seam::{
-    BuildIdentityProvider, ChatEventSource, Clock, FileProvider, HttpTransport,
+    BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
+    HttpTransport,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Migrated { path: Vec<OsString> },
     Chat { args: Vec<OsString> },
+    Import { args: Vec<OsString> },
     MovedStub { name: OsString },
     Unsupported { args: Vec<OsString> },
 }
@@ -24,6 +26,7 @@ pub struct DispatchSeams<'a> {
     pub chat_events: Option<&'a dyn ChatEventSource>,
     pub files: Option<&'a dyn FileProvider>,
     pub build_identity: Option<&'a dyn BuildIdentityProvider>,
+    pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
 }
 
 #[must_use]
@@ -36,6 +39,16 @@ pub fn evaluate_args(args: &[OsString]) -> Outcome {
                     args: args.to_vec(),
                 },
                 |_entry| Outcome::Chat {
+                    args: rest.to_vec(),
+                },
+            )
+        }
+        [command, rest @ ..] if command == OsStr::new("import") => {
+            match_generated_surface_path("sol-import", &[String::from("import")]).map_or_else(
+                || Outcome::Unsupported {
+                    args: args.to_vec(),
+                },
+                |_entry| Outcome::Import {
                     args: rest.to_vec(),
                 },
             )
@@ -68,6 +81,33 @@ pub fn dispatch_sol_chat_with_seams(
         chat_events: seams.chat_events,
         files: seams.files,
         build_identity: seams.build_identity,
+        client_item_ids: seams.client_item_ids,
+    })
+}
+
+#[must_use]
+pub fn dispatch_sol_import_with_seams(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    seams: DispatchSeams<'_>,
+) -> CommandOutput {
+    let Some((_, handler)) = match_generated_surface_path("sol-import", &[String::from("import")])
+    else {
+        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+    };
+    handler(CommandContext {
+        args,
+        env,
+        stdin,
+        today,
+        transport: seams.transport,
+        clock: seams.clock,
+        chat_events: None,
+        files: seams.files,
+        build_identity: seams.build_identity,
+        client_item_ids: seams.client_item_ids,
     })
 }
 
@@ -109,6 +149,7 @@ pub fn dispatch_sol_call(
             chat_events: None,
             files: None,
             build_identity: None,
+            client_item_ids: None,
         },
     )
 }
@@ -135,6 +176,7 @@ pub fn dispatch_sol_call_with_seams(
         chat_events: None,
         files: seams.files,
         build_identity: seams.build_identity,
+        client_item_ids: seams.client_item_ids,
     })
 }
 
@@ -234,6 +276,16 @@ mod tests {
             evaluate_args(&args(&["chat", "hello"])),
             Outcome::Chat {
                 args: args(&["hello"])
+            }
+        );
+    }
+
+    #[test]
+    fn routes_top_level_import_to_import_shell() {
+        assert_eq!(
+            evaluate_args(&args(&["import", "sample.txt"])),
+            Outcome::Import {
+                args: args(&["sample.txt"])
             }
         );
     }

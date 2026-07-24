@@ -53,10 +53,15 @@ pub trait BuildIdentityProvider {
     fn build_identity(&self, journal: &Path) -> Option<serde_json::Value>;
 }
 
+pub trait ClientItemIdProvider {
+    fn client_item_id(&self) -> String;
+}
+
 pub trait FileProvider {
     fn read(&self, path: &Path) -> IoResult<Vec<u8>>;
     fn read_to_string(&self, path: &Path) -> std::io::Result<String>;
     fn exists(&self, path: &Path) -> bool;
+    fn is_file(&self, path: &Path) -> bool;
     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf>;
 }
 
@@ -302,6 +307,26 @@ impl BuildIdentityProvider for FakeBuildIdentityProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FakeClientItemIdProvider {
+    value: String,
+}
+
+impl FakeClientItemIdProvider {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
+impl ClientItemIdProvider for FakeClientItemIdProvider {
+    fn client_item_id(&self) -> String {
+        self.value.clone()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FixtureFileProvider {
     files: HashMap<PathBuf, Vec<u8>>,
@@ -347,6 +372,10 @@ impl FileProvider for FixtureFileProvider {
 
     fn exists(&self, path: &Path) -> bool {
         self.files.contains_key(path)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.exists(path)
     }
 
     fn canonicalize(&self, path: &Path) -> IoResult<PathBuf> {
@@ -414,6 +443,12 @@ mod tests {
             provider.build_identity(Path::new("/tmp/journal")),
             Some(json!({"revision": "build-1"}))
         );
+    }
+
+    #[test]
+    fn deterministic_client_item_id_fake_returns_configured_value() {
+        let provider = FakeClientItemIdProvider::new("fixed-client-id");
+        assert_eq!(provider.client_item_id(), "fixed-client-id");
     }
 
     #[test]

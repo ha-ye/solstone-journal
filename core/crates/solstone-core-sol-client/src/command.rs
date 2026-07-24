@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::seam::{BuildIdentityProvider, ChatEventSource, Clock, FileProvider, HttpTransport};
+use crate::seam::{
+    BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
+    HttpTransport,
+};
 
 #[derive(Clone, Copy)]
 pub struct CommandContext<'a> {
@@ -16,6 +19,7 @@ pub struct CommandContext<'a> {
     pub chat_events: Option<&'a dyn ChatEventSource>,
     pub files: Option<&'a dyn FileProvider>,
     pub build_identity: Option<&'a dyn BuildIdentityProvider>,
+    pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

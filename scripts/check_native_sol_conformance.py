@@ -101,11 +101,24 @@ def check_conformance(
             errors.extend(check_non_http_entry(authority, contract_by_operation))
         elif authority.entry_type == "top-level-chat":
             errors.extend(
-                check_top_level_chat(
+                check_top_level_backing_contracts(
                     authority,
                     raw_authority,
                     contract_by_operation,
                     route_map,
+                    "top-level-chat",
+                    "chat",
+                )
+            )
+        elif authority.entry_type == "top-level-import":
+            errors.extend(
+                check_top_level_backing_contracts(
+                    authority,
+                    raw_authority,
+                    contract_by_operation,
+                    route_map,
+                    "top-level-import",
+                    "import",
                 )
             )
         else:
@@ -193,11 +206,13 @@ def check_non_http_entry(
     return errors
 
 
-def check_top_level_chat(
+def check_top_level_backing_contracts(
     authority: AuthorityEntry,
     raw_authority: RawAuthorityEntry | None,
     contract_by_operation: dict[str, ContractOperation],
     route_map: dict[tuple[str, str], Callable[..., Any]],
+    entry_type: str,
+    label: str,
 ) -> list[str]:
     errors = check_non_http_entry(authority, contract_by_operation)
     operation_id = authority.operation_id
@@ -207,7 +222,7 @@ def check_top_level_chat(
         else None
     )
     if not isinstance(authority_ids, list) or not authority_ids:
-        errors.append(f"{operation_id}: top-level-chat must declare backing contracts")
+        errors.append(f"{operation_id}: {entry_type} must declare backing contracts")
         return errors
     for backing_id in authority_ids:
         if not isinstance(backing_id, str) or not backing_id:
@@ -215,11 +230,11 @@ def check_top_level_chat(
             continue
         contract = contract_by_operation.get(backing_id)
         if contract is None:
-            errors.append(f"{operation_id}: missing chat backing contract {backing_id}")
+            errors.append(f"{operation_id}: missing {label} backing contract {backing_id}")
             continue
         if (contract.method, contract.route) not in route_map:
             errors.append(
-                f"{operation_id}: missing chat backing route "
+                f"{operation_id}: missing {label} backing route "
                 f"{contract.method} {contract.route}"
             )
     return errors

@@ -2,6 +2,23 @@
   "schema": "native-sol-applicability-v1",
   "note": "Applicability case IDs are requirements-first: each dispatch declares required adversarial behavior here before adding vectors. The coverage gate structurally enforces later multi-request boundaries, upload missing/unreadable/later-file/rejection cases, env explicit/absent or valid-absent cases, and dry-run preview/commit coverage.",
   "http_count": 152,
+  "top_level_entries": {
+    "import.top_level": {
+      "surface": "sol-import",
+      "path": ["import"],
+      "entry_type": "top-level-import",
+      "backing_contract_operation_ids": ["import.save", "import.savePath", "import.start"],
+      "case_ids": {
+        "file_success": ["import-top-level-file-success"],
+        "save_path_success": ["import-top-level-save-path-success"],
+        "host_rejections": ["import-top-level-reject-dry-run", "import-top-level-reject-backends", "import-top-level-reject-list-importers", "import-top-level-reject-sync", "import-top-level-reject-save", "import-top-level-reject-path", "import-top-level-reject-auto-guidance", "import-top-level-reject-journal-source"],
+        "json_output": ["import-top-level-json-output"],
+        "malformed": ["import-top-level-malformed-save"],
+        "unreachable": ["import-top-level-unreachable-save"],
+        "partial_failure": ["import-top-level-partial-start-failure"]
+      }
+    }
+  },
   "entries": {
     "activities.list": {
       "path": ["activities", "list"],

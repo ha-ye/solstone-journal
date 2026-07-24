@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use solstone_core_sol_client::error::ClientError;
 use solstone_core_sol_client::seam::{
-    ChatInput, ExpectedHttpCall, FakeBuildIdentityProvider, FakeClock, FixtureFileProvider,
-    RecordedHttpCall, ScriptedChatEventSource, ScriptedHttpTransport,
+    ChatInput, ExpectedHttpCall, FakeBuildIdentityProvider, FakeClientItemIdProvider, FakeClock,
+    FixtureFileProvider, RecordedHttpCall, ScriptedChatEventSource, ScriptedHttpTransport,
 };
 use solstone_core_sol_client::sse::iter_sse_events;
 use solstone_core_sol_client::transport::{
@@ -17,6 +17,7 @@ use solstone_core_sol_client::transport::{
 };
 use solstone_core_sol_client_cli::{
     DispatchSeams, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
+    dispatch_sol_import_with_seams,
 };
 
 const ACTIVITIES_VECTORS: &str =
@@ -98,6 +99,12 @@ fn run_vector(vector: &Value) {
             "python": "3.test"
         }
     })));
+    let client_item_ids = FakeClientItemIdProvider::new(
+        vector
+            .get("client_item_id")
+            .and_then(Value::as_str)
+            .unwrap_or("11111111111141118111111111111111"),
+    );
 
     let output = if vector["surface"].as_str() == Some("sol-chat") {
         dispatch_sol_chat_with_seams(
@@ -111,6 +118,23 @@ fn run_vector(vector: &Value) {
                 chat_events: Some(&chat_events),
                 files: Some(&files),
                 build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
+            },
+        )
+    } else if vector["surface"].as_str() == Some("sol-import") {
+        let import_args = argv.iter().skip(1).cloned().collect::<Vec<_>>();
+        dispatch_sol_import_with_seams(
+            &import_args,
+            &env,
+            stdin,
+            today,
+            DispatchSeams {
+                transport: &transport,
+                clock: Some(&clock),
+                chat_events: None,
+                files: Some(&files),
+                build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
             },
         )
     } else {
@@ -125,6 +149,7 @@ fn run_vector(vector: &Value) {
                 chat_events: None,
                 files: Some(&files),
                 build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
             },
         )
     };

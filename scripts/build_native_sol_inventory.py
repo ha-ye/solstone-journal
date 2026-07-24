@@ -36,12 +36,14 @@ PARAM_KEYS = {
 }
 PARAM_REQUIRED_KEYS = PARAM_KEYS - {"default", "flag_value"}
 ORACLE_PATH = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
-ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "local"}
+ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "top-level-import", "local"}
 COMMAND_KINDS = {"command", "callback", "top-level"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 FINAL_ORACLE_TOTAL = 178
 FINAL_HTTP_TOTAL = 152
 FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
+FINAL_TOP_LEVEL_CHAT_TOTAL = 1
+FINAL_TOP_LEVEL_IMPORT_TOTAL = 1
 FINAL_STUB_COUNTS = {"moved-stub": 2, "local": 1}
 FINAL_HTTP_GROUP_COUNTS = {
     "activities": 6,
@@ -143,7 +145,7 @@ def parse_entry(
         raise ValueError(f"{label}: path must be a non-empty string list")
     command_path = tuple(raw_path)
     surface = raw_entry.get("surface", "sol-call")
-    if surface not in {"sol-call", "sol-chat"}:
+    if surface not in {"sol-call", "sol-chat", "sol-import"}:
         raise ValueError(f"{label}: unsupported surface {surface!r}")
     kind = require_string(raw_entry, "kind", Path(label))
     if kind not in COMMAND_KINDS:
@@ -467,6 +469,28 @@ def check_complete_partition(
     return errors
 
 
+def check_top_level_partition(entries: list[AuthorityEntry]) -> list[str]:
+    errors: list[str] = []
+    expected = {
+        ("sol-chat", "top-level-chat"): FINAL_TOP_LEVEL_CHAT_TOTAL,
+        ("sol-import", "top-level-import"): FINAL_TOP_LEVEL_IMPORT_TOTAL,
+    }
+    actual: dict[tuple[str, str], int] = {}
+    for entry in entries:
+        if entry.surface == "sol-call":
+            continue
+        key = (entry.surface, entry.entry_type)
+        actual[key] = actual.get(key, 0) + 1
+    for key, expected_count in sorted(expected.items()):
+        actual_count = actual.get(key, 0)
+        if actual_count != expected_count:
+            errors.append(f"{key} authority count {actual_count} != {expected_count}")
+    unexpected = sorted(set(actual) - set(expected))
+    if unexpected:
+        errors.append(f"unexpected top-level native authorities: {unexpected!r}")
+    return errors
+
+
 def collect_oracle_paths(oracle_path: Path) -> tuple[list[str], set[tuple[str, ...]]]:
     if not oracle_path.is_file():
         return [f"{oracle_path} is missing"], set()
@@ -513,6 +537,7 @@ def main() -> int:
     output = args.output.resolve()
     entries = discover(root)
     partition_errors = check_complete_partition(entries, ORACLE_PATH)
+    partition_errors.extend(check_top_level_partition(entries))
     if partition_errors:
         for error in partition_errors:
             print(error)

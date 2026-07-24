@@ -13,10 +13,16 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.build_native_sol_inventory import FINAL_HTTP_TOTAL, REPO_ROOT, discover
+    from scripts.build_native_sol_inventory import (
+        FINAL_HTTP_TOTAL,
+        FINAL_TOP_LEVEL_IMPORT_TOTAL,
+        REPO_ROOT,
+        discover,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
     from build_native_sol_inventory import (  # type: ignore[no-redef]
         FINAL_HTTP_TOTAL,
+        FINAL_TOP_LEVEL_IMPORT_TOTAL,
         REPO_ROOT,
         discover,
     )
@@ -43,6 +49,11 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
         entry.operation_id
         for entry in discover(root)
         if entry.surface == "sol-call" and entry.entry_type == "http"
+    }
+    required_top_level_import = {
+        entry.operation_id
+        for entry in discover(root)
+        if entry.surface == "sol-import" and entry.entry_type == "top-level-import"
     }
     vectors = load_vectors(PARITY_DIR)
     resolved = resolve_vectors(PARITY_DIR, vectors)
@@ -72,15 +83,55 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
                 f"authority count {len(required)}"
             )
         errors.extend(compare_sets("applicability keys", required, keys))
+        top_level_entries = applicability.get("top_level_entries", {})
+        if not isinstance(top_level_entries, dict):
+            errors.append("applicability top_level_entries must be an object")
+            top_level_entries = {}
+        import_keys = set(top_level_entries)
+        errors.extend(
+            compare_sets(
+                "top-level import applicability keys",
+                required_top_level_import,
+                import_keys,
+            )
+        )
 
-    buckets = collect_buckets(vectors, resolved, required, errors)
+    if len(required_top_level_import) != FINAL_TOP_LEVEL_IMPORT_TOTAL:
+        errors.append(
+            f"current top-level import authority count {len(required_top_level_import)} "
+            f"!= {FINAL_TOP_LEVEL_IMPORT_TOTAL}"
+        )
+
+    buckets = collect_buckets(vectors, resolved, required, {"http"}, errors)
     for bucket_name in ("request_binding", "success", "failure"):
         errors.extend(compare_sets(bucket_name, required, buckets[bucket_name]))
+    import_buckets = collect_buckets(
+        vectors,
+        resolved,
+        required_top_level_import,
+        {"top-level-import"},
+        errors,
+    )
+    for bucket_name in ("request_binding", "success", "failure"):
+        errors.extend(
+            compare_sets(
+                f"top-level import {bucket_name}",
+                required_top_level_import,
+                import_buckets[bucket_name],
+            )
+        )
 
     if not applicability_errors:
         errors.extend(
             check_applicability_requirements(
                 applicability["entries"], vectors, resolved, buckets
+            )
+        )
+        errors.extend(
+            check_top_level_import_cases(
+                applicability.get("top_level_entries", {}),
+                vectors,
+                resolved,
             )
         )
     return errors
@@ -120,6 +171,9 @@ def load_applicability(path: Path) -> tuple[dict[str, Any], list[str]]:
             ):
                 if key not in entry:
                     errors.append(f"{operation_id}: missing applicability field {key}")
+    top_level_entries = payload.get("top_level_entries", {})
+    if top_level_entries is not None and not isinstance(top_level_entries, dict):
+        errors.append("applicability top_level_entries must be an object")
     return payload, errors
 
 
@@ -193,6 +247,7 @@ def collect_buckets(
     vectors: dict[str, dict[str, Any]],
     resolved: dict[str, dict[str, Any]],
     required: set[str],
+    entry_types: set[str],
     errors: list[str],
 ) -> dict[str, set[str]]:
     buckets: dict[str, set[str]] = {
@@ -208,7 +263,7 @@ def collect_buckets(
                 f"{vector_id}: argv did not resolve through production dispatch"
             )
             continue
-        if entry_type != "http" or operation_id not in required:
+        if entry_type not in entry_types or operation_id not in required:
             continue
         expected = vector.get("expected") or {}
         requests = expected.get("requests") if isinstance(expected, dict) else None
@@ -277,6 +332,41 @@ def compare_sets(label: str, required: set[str], actual: set[str]) -> list[str]:
         errors.append(f"{label} missing {missing!r}")
     if extra:
         errors.append(f"{label} extra {extra!r}")
+    return errors
+
+
+def check_top_level_import_cases(
+    entries: Any,
+    vectors: dict[str, dict[str, Any]],
+    resolved: dict[str, dict[str, Any]],
+) -> list[str]:
+    if not isinstance(entries, dict):
+        return []
+    errors: list[str] = []
+    for operation_id, entry in sorted(entries.items()):
+        if not isinstance(entry, dict):
+            errors.append(f"{operation_id}: top-level applicability entry must be an object")
+            continue
+        case_ids = entry.get("case_ids", {})
+        if not isinstance(case_ids, dict):
+            errors.append(f"{operation_id}: top-level case_ids must be an object")
+            continue
+        for case_name, ids in sorted(case_ids.items()):
+            if not isinstance(ids, list) or not ids:
+                errors.append(f"{operation_id}: top-level case {case_name} must be non-empty")
+                continue
+            for vector_id in ids:
+                if vector_id not in vectors:
+                    errors.append(
+                        f"{operation_id}: top-level case {case_name} unknown vector {vector_id!r}"
+                    )
+                    continue
+                mapped = resolved[vector_id].get("operation_id")
+                if mapped != operation_id:
+                    errors.append(
+                        f"{operation_id}: top-level case {case_name} vector "
+                        f"{vector_id!r} maps to {mapped!r}"
+                    )
     return errors
 
 

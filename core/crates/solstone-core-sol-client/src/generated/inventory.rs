@@ -33,6 +33,8 @@ mod solstone_apps_thinking_native_command_rs;
 mod solstone_apps_transcripts_native_command_rs;
 #[path = "../../../../../solstone/think/native/chat/command.rs"]
 mod solstone_think_native_chat_command_rs;
+#[path = "../../../../../solstone/think/native/import/command.rs"]
+mod solstone_think_native_import_command_rs;
 #[path = "../../../../../solstone/think/native/moved/command.rs"]
 mod solstone_think_native_moved_command_rs;
 #[path = "../../../../../solstone/think/tools/native/health/command.rs"]
@@ -1890,6 +1892,19 @@ pub const ENTRIES: &[InventoryEntry] = &[
         handler: "chat",
     },
     InventoryEntry {
+        surface: "sol-import",
+        path: &["import"],
+        kind: "top-level",
+        help: "Import media through the journal",
+        params_json: "[{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"argument\",\"multiple\":false,\"name\":\"media\",\"nargs\":1,\"options\":[\"media\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":true,\"is_flag\":false,\"kind\":\"argument\",\"multiple\":false,\"name\":\"extra\",\"nargs\":-1,\"options\":[\"extra\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"timestamp\",\"nargs\":1,\"options\":[\"--timestamp\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"facet\",\"nargs\":1,\"options\":[\"--facet\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"setting\",\"nargs\":1,\"options\":[\"--setting\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"source\",\"nargs\":1,\"options\":[\"--source\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"force\",\"nargs\":1,\"options\":[\"--force\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"auto\",\"nargs\":1,\"options\":[\"--auto\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"deterministic_only\",\"nargs\":1,\"options\":[\"--deterministic-only\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"dry_run\",\"nargs\":1,\"options\":[\"--dry-run\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"json\",\"nargs\":1,\"options\":[\"--json\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"verbose\",\"nargs\":1,\"options\":[\"-v\",\"--verbose\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"backends\",\"nargs\":1,\"options\":[\"--backends\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"sync\",\"nargs\":1,\"options\":[\"--sync\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"save\",\"nargs\":1,\"options\":[\"--save\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"path\",\"nargs\":1,\"options\":[\"--path\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"list_importers\",\"nargs\":1,\"options\":[\"--list-importers\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"argument\",\"multiple\":false,\"name\":\"journal_source\",\"nargs\":1,\"options\":[\"journal-source\"],\"required\":false,\"secondary\":[],\"type\":\"text\"}]",
+        entry_type: "top-level-import",
+        operation_id: "import.top_level",
+        method: None,
+        route: None,
+        contract_operation_id: None,
+        handler: "import_top_level",
+    },
+    InventoryEntry {
         surface: "sol-call",
         path: &["identity"],
         kind: "callback",
@@ -2216,6 +2231,7 @@ pub const HANDLERS: &[Handler] = &[
     solstone_apps_transcripts_native_command_rs::speakers,
     solstone_apps_transcripts_native_command_rs::stats,
     solstone_think_native_chat_command_rs::chat,
+    solstone_think_native_import_command_rs::import_top_level,
     solstone_think_native_moved_command_rs::identity,
     solstone_think_native_moved_command_rs::navigate,
     solstone_think_tools_native_health_command_rs::summary,

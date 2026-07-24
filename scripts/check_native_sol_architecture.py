@@ -171,7 +171,8 @@ def check_native_http_ownership() -> list[Violation]:
     sources = {
         entry.source
         for entry in discover(REPO_ROOT)
-        if entry.surface == "sol-call" and entry.entry_type == "http"
+        if (entry.surface == "sol-call" and entry.entry_type == "http")
+        or entry.entry_type == "top-level-import"
     }
     for path in sorted(sources):
         text = path.read_text(encoding="utf-8")

@@ -63,6 +63,11 @@ pub fn json_compact_ascii(value: &Value) -> String {
 }
 
 #[must_use]
+pub fn sorted_json_compact_ascii(value: &Value) -> String {
+    ensure_ascii(&json_compact(&sort_json(value)))
+}
+
+#[must_use]
 pub fn json_compact_utf8(value: &Value) -> String {
     json_compact(value)
 }
@@ -168,6 +173,14 @@ mod tests {
         assert_eq!(
             json_compact_ascii(&json!({"b": "é", "a": [1, true, null]})),
             "{\"b\": \"\\u00e9\", \"a\": [1, true, null]}"
+        );
+    }
+
+    #[test]
+    fn compact_prints_objects_with_sorted_keys() {
+        assert_eq!(
+            sorted_json_compact_ascii(&json!({"b": 2, "a": {"d": 4, "c": 3}})),
+            "{\"a\": {\"c\": 3, \"d\": 4}, \"b\": 2}"
         );
     }
 

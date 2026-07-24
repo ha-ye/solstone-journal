@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::{Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 use chrono::Local;
@@ -19,19 +19,19 @@ use solstone_core_journal::{
 use solstone_core_sol_client::command::CommandOutput;
 use solstone_core_sol_client::port::read_convey_port;
 use solstone_core_sol_client::seam::{
-    BuildIdentityProvider, ChatEventSource, ChatInput, Clock, FileProvider, HttpTransport,
-    ProcessOutput, ProcessSpawner,
+    BuildIdentityProvider, ChatEventSource, ChatInput, ClientItemIdProvider, Clock, FileProvider,
+    HttpTransport, ProcessOutput, ProcessSpawner,
 };
 use solstone_core_sol_client::sse::SseDecoder;
 use solstone_core_sol_client::transport::UreqHttpTransport;
 use solstone_core_sol_client_cli::{
     DispatchSeams, Outcome, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    evaluate_args,
+    dispatch_sol_import_with_seams, evaluate_args,
 };
 
 const EXIT_USAGE: u8 = 64;
 const EXIT_TEMPFAIL: u8 = 75;
-const USAGE: &str = "Usage:\n  solstone-core-sol --version\n  solstone-core-sol help\n  solstone-core-sol status\n  solstone-core-sol path\n  solstone-core-sol call <app> <verb> [args...]\n  solstone-core-sol chat [args...]\n";
+const USAGE: &str = "Usage:\n  solstone-core-sol --version\n  solstone-core-sol help\n  solstone-core-sol status\n  solstone-core-sol path\n  solstone-core-sol call <app> <verb> [args...]\n  solstone-core-sol chat [args...]\n  solstone-core-sol import [args...]\n";
 
 fn main() -> ExitCode {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -52,6 +52,7 @@ fn main() -> ExitCode {
         [command] if command == OsStr::new("status") => run_status(),
         [command, rest @ ..] if command == OsStr::new("call") => run_dispatched(&args, rest),
         [command, rest @ ..] if command == OsStr::new("chat") => run_dispatched(&args, rest),
+        [command, rest @ ..] if command == OsStr::new("import") => run_dispatched(&args, rest),
         [flag, ..] if flag.to_string_lossy().starts_with('-') => {
             eprint!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -114,6 +115,7 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
     let clock = SystemClock::default();
     let files = RealFileProvider;
     let build_identity = RealBuildIdentityProvider;
+    let client_item_ids = RealClientItemIdProvider;
     let chat_events = ChannelChatEventSource::default();
 
     let output = match outcome {
@@ -128,6 +130,7 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
                 chat_events: None,
                 files: Some(&files),
                 build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
             },
         ),
         Outcome::Chat { .. } => dispatch_sol_chat_with_seams(
@@ -141,6 +144,21 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
                 chat_events: Some(&chat_events),
                 files: Some(&files),
                 build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
+            },
+        ),
+        Outcome::Import { .. } => dispatch_sol_import_with_seams(
+            &args,
+            &env,
+            &stdin,
+            &today,
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: Some(&files),
+                build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
             },
         ),
         Outcome::Unsupported { .. } => {
@@ -327,8 +345,33 @@ impl FileProvider for RealFileProvider {
         path.exists()
     }
 
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
     fn canonicalize(&self, path: &Path) -> IoResult<PathBuf> {
         fs::canonicalize(path)
+    }
+}
+
+struct RealClientItemIdProvider;
+
+impl ClientItemIdProvider for RealClientItemIdProvider {
+    fn client_item_id(&self) -> String {
+        let mut bytes = [0_u8; 16];
+        let read = fs::File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut bytes))
+            .is_ok();
+        if !read {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            bytes.copy_from_slice(&nanos.to_be_bytes());
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }
 

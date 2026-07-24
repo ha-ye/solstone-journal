@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+surface = "sol-import"
+path = ["import"]
+kind = "top-level"
+help = "Import media through the journal"
+operation_id = "import.top_level"
+entry_type = "top-level-import"
+handler = "import_top_level"
+backing_contract_operation_ids = ["import.save", "import.savePath", "import.start"]
+params = [
+  { name = "media", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["media"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "extra", kind = "argument", type = "text", required = false, nargs = -1, multiple = false, options = ["extra"], secondary = [], hidden = true, is_flag = false, count = false },
+  { name = "timestamp", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--timestamp"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "facet", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--facet"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "setting", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--setting"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "source", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--source"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "force", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--force"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "auto", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--auto"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "deterministic_only", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--deterministic-only"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "dry_run", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--dry-run"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "verbose", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["-v", "--verbose"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "backends", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--backends"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "sync", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--sync"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "save", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--save"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "path", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--path"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "list_importers", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--list-importers"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "journal_source", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["journal-source"], secondary = [], hidden = false, is_flag = false, count = false },
+]

@@ -697,6 +697,7 @@ mod tests {
             chat_events: Some(&events),
             files: None,
             build_identity: None,
+            client_item_ids: None,
         });
 
         assert_eq!(

@@ -41,10 +41,10 @@ fn main() -> Result<(), String> {
                         .ok_or_else(|| format!("{}:{}: non-string argv", path.display(), index + 1))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let lookup_args = if surface == "sol-chat" {
-                vec!["chat".to_string()]
-            } else {
-                argv
+            let lookup_args = match surface {
+                "sol-chat" => vec!["chat".to_string()],
+                "sol-import" => vec!["import".to_string()],
+                _ => argv,
             };
             let entry = resolve_surface_leaf(surface, &lookup_args);
             println!(

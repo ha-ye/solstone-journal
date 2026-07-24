@@ -446,6 +446,7 @@ mod tests {
             chat_events: None,
             files: None,
             build_identity: None,
+            client_item_ids: None,
         });
 
         assert_eq!(
@@ -547,6 +548,7 @@ mod tests {
             chat_events: None,
             files: None,
             build_identity: None,
+            client_item_ids: None,
         });
 
         assert_eq!(
