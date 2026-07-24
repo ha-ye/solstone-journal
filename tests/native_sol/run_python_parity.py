@@ -23,11 +23,13 @@ from typer.testing import CliRunner
 from solstone.apps.activities import call as activities_call
 from solstone.apps.awareness import call as awareness_call
 from solstone.apps.body import call as body_call
+from solstone.apps.chat import call as chat_call
 from solstone.apps.entities import call as entities_call
 from solstone.apps.facets import call as facets_call
 from solstone.apps.network import call as network_call
 from solstone.apps.settings import call as settings_call
 from solstone.apps.sol import call as sol_call
+from solstone.apps.speakers import call as speakers_call
 from solstone.apps.support import call as support_call
 from solstone.apps.thinking import call as thinking_call
 from solstone.apps.transcripts import call as transcripts_call
@@ -519,6 +521,7 @@ def patched_runtime(
     original_datetime = activities_call.datetime
     original_awareness_get_client = awareness_call.get_client
     original_body_get_client = body_call.get_client
+    original_chat_get_client = chat_call.get_client
     original_entities_get_client = entities_call.get_client
     original_facets_get_client = facets_call.get_client
     original_health_get_client = health_call.get_client
@@ -530,6 +533,8 @@ def patched_runtime(
     original_profile_get_client = profile_call.get_client
     original_settings_get_client = settings_call.get_client
     original_sol_get_client = sol_call.get_client
+    original_speakers_get_client = speakers_call.get_client
+    original_speakers_time_monotonic = speakers_call.time.monotonic
     original_support_get_client = support_call.get_client
     original_local_build_identity = support_call._local_build_identity
     original_thinking_get_client = thinking_call.get_client
@@ -566,6 +571,7 @@ def patched_runtime(
     activities_call.datetime = FixedDateTime
     awareness_call.get_client = lambda: client
     body_call.get_client = lambda: client
+    chat_call.get_client = lambda: client
     entities_call.get_client = lambda: client
     facets_call.get_client = lambda: client
     health_call.get_client = lambda: client
@@ -584,6 +590,8 @@ def patched_runtime(
     profile_call.get_client = lambda: client
     settings_call.get_client = lambda: client
     sol_call.get_client = lambda: client
+    speakers_call.get_client = lambda: client
+    speakers_call.time.monotonic = fake_time.monotonic
     support_call.get_client = lambda: client
     support_call._local_build_identity = lambda: build_identity_fixture()
     thinking_call.get_client = lambda: client
@@ -615,6 +623,7 @@ def patched_runtime(
             activities_call.datetime = original_datetime
             awareness_call.get_client = original_awareness_get_client
             body_call.get_client = original_body_get_client
+            chat_call.get_client = original_chat_get_client
             entities_call.get_client = original_entities_get_client
             facets_call.get_client = original_facets_get_client
             health_call.get_client = original_health_get_client
@@ -626,6 +635,8 @@ def patched_runtime(
             profile_call.get_client = original_profile_get_client
             settings_call.get_client = original_settings_get_client
             sol_call.get_client = original_sol_get_client
+            speakers_call.get_client = original_speakers_get_client
+            speakers_call.time.monotonic = original_speakers_time_monotonic
             support_call.get_client = original_support_get_client
             support_call._local_build_identity = original_local_build_identity
             thinking_call.get_client = original_thinking_get_client

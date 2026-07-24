@@ -611,6 +611,136 @@
         ]
       }
     },
+    "/api/chat/start": {
+      "post": {
+        "description": "Start a sol-initiated chat request from the CLI.",
+        "operationId": "chat.start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "category": "planning",
+                "dedupe": "morning-plan",
+                "dedupe_window": "24h",
+                "message": "Want to review the priorities?",
+                "since_ts": 1781803200000,
+                "summary": "Check in about the morning plan",
+                "trigger_talent": "schedule"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  },
+                  "dedupe": {
+                    "type": "string"
+                  },
+                  "dedupe_window": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "since_ts": {
+                    "type": "integer"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "trigger_talent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "summary",
+                  "category",
+                  "dedupe",
+                  "since_ts",
+                  "trigger_talent"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "category": "planning",
+                  "dedupe": "morning-plan",
+                  "dedupe_window": "24h",
+                  "message": "Want to review the priorities?",
+                  "request_id": "sol-chat-1781803200000",
+                  "since_ts": 1781803200000,
+                  "summary": "Check in about the morning plan",
+                  "trigger_talent": "schedule"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "category": {
+                      "type": "string"
+                    },
+                    "dedupe": {
+                      "type": "string"
+                    },
+                    "dedupe_window": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "since_ts": {
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "trigger_talent": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "summary",
+                    "category",
+                    "dedupe",
+                    "since_ts",
+                    "trigger_talent"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sol-initiated chat request started."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The chat start request was invalid.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "Start sol chat request",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/support/draft/cancel": {
       "post": {
         "description": "Cancel a captured support draft without submitting it.",
@@ -10647,6 +10777,1355 @@
         "summary": "Initialize the identity directory",
         "tags": [
           "sol"
+        ]
+      }
+    },
+    "/app/speakers/api/attribute-segment": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.attribute-segment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_segment_or_stream",
+              "missing_required_field",
+              "speaker_labels_busy",
+              "speaker_owner_centroid_required",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers attribute-segment",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/backfill": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.backfill",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers backfill",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/backfill-last-seen": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.backfill-last-seen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers backfill-last-seen",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/bootstrap": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.bootstrap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_owner_centroid_required"
+            ]
+          }
+        },
+        "summary": "Speakers bootstrap",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/correct-attribution": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.correct",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "invalid_day",
+              "invalid_segment_or_stream",
+              "missing_request_body",
+              "missing_required_field",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_owner_voice_too_close",
+              "speaker_review_unavailable",
+              "speaker_sentence_missing",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers correct",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/cluster/{cluster_id}/presence": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.presence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_review_unavailable"
+            ]
+          }
+        },
+        "summary": "Speakers presence",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/dismiss": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.dismiss-cluster",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field",
+              "speaker_command_failed",
+              "speaker_review_unavailable"
+            ]
+          }
+        },
+        "summary": "Speakers dismiss-cluster",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/dismissals": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.dismissals",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers dismissals",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/identify-cli": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.identify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_entity_type",
+              "invalid_request_value",
+              "missing_required_field",
+              "speaker_command_failed",
+              "speaker_identify_conflict",
+              "speaker_identify_operation_not_found",
+              "speaker_identify_recoverable",
+              "speaker_identify_repair_required",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers identify",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/identify/operations": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.identify-operations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers identify-operations",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/identify/operations/{operation_id}": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.identify-operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_identify_operation_not_found"
+            ]
+          }
+        },
+        "summary": "Speakers identify-operation",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/identify/undo": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.identify-undo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_entity_type",
+              "invalid_request_value",
+              "missing_required_field",
+              "speaker_command_failed",
+              "speaker_identify_conflict",
+              "speaker_identify_operation_not_found",
+              "speaker_identify_recoverable",
+              "speaker_identify_repair_required",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers identify-undo",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/discovery/scan": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.discover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers discover",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/link-import": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.link-import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_command_failed"
+            ]
+          }
+        },
+        "summary": "Speakers link-import",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/merge-names": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.merge-names",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_command_failed"
+            ]
+          }
+        },
+        "summary": "Speakers merge-names",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/name-variants/keep-separate": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.keep-separate-list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers keep-separate-list",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/build-from-tags": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.build-from-tags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "entity_not_found",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers build-from-tags",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/confirm-cli": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.confirm-owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_command_failed",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers confirm-owner",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/detect": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.detect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers detect",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/ready": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.owner-ready",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers owner-ready",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/rebuild": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.rebuild-owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers rebuild-owner",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/reject-cli": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.reject-owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers reject-owner",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/owner/tag-cli": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.tag-owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "invalid_day",
+              "invalid_request_value",
+              "invalid_segment_or_stream",
+              "missing_request_body",
+              "missing_required_field",
+              "speaker_attribution_state_invalid",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_owner_identity_required",
+              "speaker_owner_voice_too_close",
+              "speaker_review_unavailable",
+              "speaker_sentence_missing",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers tag-owner",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/propagate-correction": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.propagate-correction",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "entity_blocked",
+              "invalid_request_value",
+              "missing_required_field",
+              "speaker_labels_busy",
+              "speaker_not_found",
+              "speaker_voiceprint_busy"
+            ]
+          }
+        },
+        "summary": "Speakers propagate-correction",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/resolve-names": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.resolve-names",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers resolve-names",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/review-cli/{day}/{stream}/{segment_key}/{source}": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.sentences",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stream",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "segment_key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_segment_or_stream",
+              "speaker_review_unavailable"
+            ]
+          }
+        },
+        "summary": "Speakers sentences",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/seed-from-imports": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.seed-from-imports",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "speaker_owner_centroid_required"
+            ]
+          }
+        },
+        "summary": "Speakers seed-from-imports",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/segments-cli/{day}": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.day-segments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_day",
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "Speakers day-segments",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/status": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers status",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/suggest": {
+      "get": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.suggest",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker command rejected.",
+            "x-reason-codes": [
+              "invalid_request_value"
+            ]
+          }
+        },
+        "summary": "Speakers suggest",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/app/speakers/api/wipe": {
+      "post": {
+        "description": "Native speakers CLI route.",
+        "operationId": "speakers.wipe",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Speaker command result."
+          }
+        },
+        "summary": "Speakers wipe",
+        "tags": [
+          "speakers"
         ]
       }
     },

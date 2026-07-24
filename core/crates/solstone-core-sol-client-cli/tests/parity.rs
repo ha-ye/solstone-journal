@@ -26,6 +26,8 @@ const ACTIVITIES_COVERAGE_VECTORS: &str =
 const AWARENESS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/awareness.jsonl");
 const BODY_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/body.jsonl");
 const CHAT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/chat.jsonl");
+const CHAT_START_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/chat_start.jsonl");
 const ENTITIES_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/entities.jsonl");
 const FACETS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/facets.jsonl");
 const HEALTH_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/health.jsonl");
@@ -38,6 +40,7 @@ const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/mo
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
 const SETTINGS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/settings.jsonl");
 const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.jsonl");
+const SPEAKERS_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/speakers.jsonl");
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/support_coverage.jsonl");
@@ -54,6 +57,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(AWARENESS_VECTORS))
         .chain(load_vectors(BODY_VECTORS))
         .chain(load_vectors(CHAT_VECTORS))
+        .chain(load_vectors(CHAT_START_VECTORS))
         .chain(load_vectors(ENTITIES_VECTORS))
         .chain(load_vectors(FACETS_VECTORS))
         .chain(load_vectors(HEALTH_VECTORS))
@@ -65,6 +69,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(PROFILE_VECTORS))
         .chain(load_vectors(SETTINGS_VECTORS))
         .chain(load_vectors(SOL_VECTORS))
+        .chain(load_vectors(SPEAKERS_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))
         .chain(load_vectors(THINKING_VECTORS))

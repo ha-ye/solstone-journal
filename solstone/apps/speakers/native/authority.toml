@@ -1,0 +1,476 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["speakers", "attribute-segment"]
+kind = "command"
+help = "Run speaker attribution (Layers 1-3) on a single segment.\n\nClassifies each sentence using owner detection, structural heuristics,\nand acoustic voiceprint matching.  Optionally writes speaker_labels.json\nand accumulates high-confidence voiceprints."
+operation_id = "speakers.attribute-segment"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/attribute-segment"
+contract_operation_id = "speakers.attribute-segment"
+handler = "attribute_segment"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "save", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = true, options = ["--save"], secondary = ["--no-save"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "accumulate", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = true, options = ["--accumulate"], secondary = ["--no-accumulate"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "backfill"]
+kind = "command"
+help = "Run speaker attribution across all segments with embeddings.\n\nProcesses segments oldest-first for progressive voiceprint building.\nSkips segments that already have speaker_labels.json (safe to re-run)."
+operation_id = "speakers.backfill"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/backfill"
+contract_operation_id = "speakers.backfill"
+handler = "backfill"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "reattribute", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--reattribute"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "backfill-last-seen"]
+kind = "command"
+help = "Backfill last_seen_ts on existing voiceprint metadata rows."
+operation_id = "speakers.backfill-last-seen"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/backfill-last-seen"
+contract_operation_id = "speakers.backfill-last-seen"
+handler = "backfill_last_seen"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "bootstrap"]
+kind = "command"
+help = "Bootstrap voiceprints from single-speaker segments.\n\nScans the full journal for segments where speakers.json lists exactly\none speaker. In those segments, all non-owner embeddings belong to that\nspeaker. Saves them as voiceprints using the owner centroid for\nowner subtraction."
+operation_id = "speakers.bootstrap"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/bootstrap"
+contract_operation_id = "speakers.bootstrap"
+handler = "bootstrap"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "build-from-tags"]
+kind = "command"
+help = "Build the owner voice centroid from validated manual owner tags."
+operation_id = "speakers.build-from-tags"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/build-from-tags"
+contract_operation_id = "speakers.build-from-tags"
+handler = "build_from_tags"
+params = [
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "confirm-owner"]
+kind = "command"
+help = "Confirm the owner voice candidate and save the centroid.\n\nBy default, automatically runs attribution backfill on all segments\nafter saving the centroid."
+operation_id = "speakers.confirm-owner"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/confirm-cli"
+contract_operation_id = "speakers.confirm-owner"
+handler = "confirm_owner"
+params = [
+  { name = "backfill_after", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = true, options = ["--backfill"], secondary = ["--no-backfill"], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "correct"]
+kind = "command"
+help = "Correct one speaker attribution immediately."
+operation_id = "speakers.correct"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/correct-attribution"
+contract_operation_id = "speakers.correct"
+handler = "correct"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "source", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "sentence_id", kind = "argument", type = "integer", required = true, nargs = 1, multiple = false, options = ["sentence_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "new_speaker", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["new_speaker"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "day-segments"]
+kind = "command"
+help = "List speaker-review segments for a day."
+operation_id = "speakers.day-segments"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/segments-cli/{day}"
+contract_operation_id = "speakers.day-segments"
+handler = "day_segments"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 20, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "detect"]
+kind = "command"
+help = "Run owner voice candidate detection."
+operation_id = "speakers.detect"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/detect"
+contract_operation_id = "speakers.detect"
+handler = "detect"
+params = [
+  { name = "force", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--force"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "discover"]
+kind = "command"
+help = "Discover recurring unknown speakers across segments."
+operation_id = "speakers.discover"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/discovery/scan"
+contract_operation_id = "speakers.discover"
+handler = "discover"
+params = [
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "dismiss-cluster"]
+kind = "command"
+help = "Dismiss a current discovery cluster from listing surfaces."
+operation_id = "speakers.dismiss-cluster"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/discovery/dismiss"
+contract_operation_id = "speakers.dismiss-cluster"
+handler = "dismiss_cluster"
+params = [
+  { name = "cluster_id", kind = "argument", type = "integer", required = true, nargs = 1, multiple = false, options = ["cluster_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "disposition", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--disposition"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "dismissals"]
+kind = "command"
+help = "List folded speaker cluster dismissals."
+operation_id = "speakers.dismissals"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/discovery/dismissals"
+contract_operation_id = "speakers.dismissals"
+handler = "dismissals"
+params = []
+
+[[entries]]
+path = ["speakers", "identify"]
+kind = "command"
+help = "Identify a discovered unknown speaker cluster."
+operation_id = "speakers.identify"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/discovery/identify-cli"
+contract_operation_id = "speakers.identify"
+handler = "identify"
+params = [
+  { name = "cluster_id", kind = "argument", type = "integer", required = true, nargs = 1, multiple = false, options = ["cluster_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "name", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["name"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "entity_id", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--entity-id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "create", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--create"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "entity_type", kind = "option", type = "text", required = false, nargs = 1, multiple = false, default = "Person", options = ["--entity-type"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "resolve_only", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--resolve-only"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "request_id", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--request-id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "reviewed_near_match_entity_id", kind = "option", type = "text", required = false, nargs = 1, multiple = true, options = ["--reviewed-near-match-entity-id"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "identify-operation"]
+kind = "command"
+help = "Show one redacted speaker identify operation."
+operation_id = "speakers.identify-operation"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/discovery/identify/operations/{operation_id}"
+contract_operation_id = "speakers.identify-operation"
+handler = "identify_operation"
+params = [
+  { name = "operation_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["operation_id"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "identify-operations"]
+kind = "command"
+help = "List redacted speaker identify operations."
+operation_id = "speakers.identify-operations"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/discovery/identify/operations"
+contract_operation_id = "speakers.identify-operations"
+handler = "identify_operations"
+params = []
+
+[[entries]]
+path = ["speakers", "identify-undo"]
+kind = "command"
+help = "Undo a committed speaker identify operation."
+operation_id = "speakers.identify-undo"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/discovery/identify/undo"
+contract_operation_id = "speakers.identify-undo"
+handler = "identify_undo"
+params = [
+  { name = "operation_id", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["operation_id"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "keep-separate-list"]
+kind = "command"
+help = "List folded speaker keep-separate assertions."
+operation_id = "speakers.keep-separate-list"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/name-variants/keep-separate"
+contract_operation_id = "speakers.keep-separate-list"
+handler = "keep_separate_list"
+params = []
+
+[[entries]]
+path = ["speakers", "link-import"]
+kind = "command"
+help = "Link an import participant name as an aka on an existing entity."
+operation_id = "speakers.link-import"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/link-import"
+contract_operation_id = "speakers.link-import"
+handler = "link_import"
+params = [
+  { name = "name", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["name"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "entity_id", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--entity-id"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "merge-names"]
+kind = "command"
+help = "Merge a speaker name variant into a canonical entity."
+operation_id = "speakers.merge-names"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/merge-names"
+contract_operation_id = "speakers.merge-names"
+handler = "merge_names"
+params = [
+  { name = "alias", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["alias"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "canonical", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["canonical"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "owner-ready"]
+kind = "command"
+help = "Check if owner voice detection should be surfaced to the user."
+operation_id = "speakers.owner-ready"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/ready"
+contract_operation_id = "speakers.owner-ready"
+handler = "owner_ready"
+params = []
+
+[[entries]]
+path = ["speakers", "presence"]
+kind = "command"
+help = "Show who was around a discovered unknown voice cluster."
+operation_id = "speakers.presence"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/discovery/cluster/{cluster_id}/presence"
+contract_operation_id = "speakers.presence"
+handler = "presence"
+params = [
+  { name = "cluster_id", kind = "argument", type = "integer", required = true, nargs = 1, multiple = false, options = ["cluster_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "propagate-correction"]
+kind = "command"
+help = "Preview or apply scoped correction propagation.\n\nReversal uses the same verb with the two speaker ids swapped."
+operation_id = "speakers.propagate-correction"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/propagate-correction"
+contract_operation_id = "speakers.propagate-correction"
+handler = "propagate_correction"
+params = [
+  { name = "old_speaker", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["old_speaker"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "new_speaker", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["new_speaker"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "rebuild-owner"]
+kind = "command"
+help = "Rebuild the owner voice centroid from current manual owner tags."
+operation_id = "speakers.rebuild-owner"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/rebuild"
+contract_operation_id = "speakers.rebuild-owner"
+handler = "rebuild_owner"
+params = [
+  { name = "override", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--override"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "reject-owner"]
+kind = "command"
+help = "Reject the owner voice candidate and enter 14-day cooldown."
+operation_id = "speakers.reject-owner"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/reject-cli"
+contract_operation_id = "speakers.reject-owner"
+handler = "reject_owner"
+params = []
+
+[[entries]]
+path = ["speakers", "resolve-names"]
+kind = "command"
+help = "Resolve speaker name variants using voiceprint similarity.\n\nCompares voiceprint centroids between all entities. Pairs with cosine\nsimilarity > 0.90 are flagged as the same person. Unambiguous variants\n(short name is first word of full name) are auto-merged by adding the\nshort name as an aka on the canonical entity."
+operation_id = "speakers.resolve-names"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/resolve-names"
+contract_operation_id = "speakers.resolve-names"
+handler = "resolve_names"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "seed-from-imports"]
+kind = "command"
+help = "Seed voiceprints from import segments with speaker-attributed transcripts.\n\nScans import streams for segments with both conversation_transcript.jsonl\n(with speaker labels) and audio embeddings. Maps each embedding to a speaker\nvia time-based alignment, matches speakers to existing entities, and saves\nembeddings as voiceprints with owner contamination guard."
+operation_id = "speakers.seed-from-imports"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/seed-from-imports"
+contract_operation_id = "speakers.seed-from-imports"
+handler = "seed_from_imports"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "sentences"]
+kind = "command"
+help = "List sentence ids for one speaker-review source."
+operation_id = "speakers.sentences"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/review-cli/{day}/{stream}/{segment_key}/{source}"
+contract_operation_id = "speakers.sentences"
+handler = "sentences"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "source", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "status"]
+kind = "command"
+help = "Show speaker subsystem status as JSON."
+operation_id = "speakers.status"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/status"
+contract_operation_id = "speakers.status"
+handler = "status"
+params = [
+  { name = "section", kind = "argument", type = "text", required = false, nargs = 1, multiple = false, options = ["section"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["speakers", "suggest"]
+kind = "command"
+help = "Suggest speaker curation opportunities."
+operation_id = "speakers.suggest"
+entry_type = "http"
+method = "GET"
+route = "/app/speakers/api/suggest"
+contract_operation_id = "speakers.suggest"
+handler = "suggest"
+params = [
+  { name = "limit", kind = "option", type = "integer", required = false, nargs = 1, multiple = false, default = 5, options = ["--limit", "-n"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "tag-owner"]
+kind = "command"
+help = "Tag one sentence as the owner voice."
+operation_id = "speakers.tag-owner"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/owner/tag-cli"
+contract_operation_id = "speakers.tag-owner"
+handler = "tag_owner"
+params = [
+  { name = "day", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["day"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "stream", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["stream"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "segment", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["segment"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "source", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["source"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "sentence_id", kind = "argument", type = "integer", required = true, nargs = 1, multiple = false, options = ["sentence_id"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["speakers", "wipe"]
+kind = "command"
+help = "Remove all legacy speaker artifacts from the journal (DESTRUCTIVE).\n\nDESTRUCTIVE. Without --commit, prints a report of what would be\nremoved. With --commit, permanently deletes segment-embedding NPZs,\nspeaker labels/corrections, per-entity voiceprints, owner centroids,\nand the owner-candidate snapshot."
+operation_id = "speakers.wipe"
+entry_type = "http"
+method = "POST"
+route = "/app/speakers/api/wipe"
+contract_operation_id = "speakers.wipe"
+handler = "wipe"
+params = [
+  { name = "commit", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--commit"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+  { name = "json_output", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--json"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
