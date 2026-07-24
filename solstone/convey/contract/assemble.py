@@ -35,6 +35,7 @@ FRAGMENT_MODULES = [
     "solstone.convey.voice_contract",
     "solstone.apps.import.contract",
     "solstone.apps.settings.contract",
+    "solstone.apps.thinking.contract",
     "solstone.apps.transcripts.contract",
 ]
 

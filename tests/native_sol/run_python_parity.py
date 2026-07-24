@@ -29,6 +29,7 @@ from solstone.apps.network import call as network_call
 from solstone.apps.settings import call as settings_call
 from solstone.apps.sol import call as sol_call
 from solstone.apps.support import call as support_call
+from solstone.apps.thinking import call as thinking_call
 from solstone.apps.transcripts import call as transcripts_call
 from solstone.think import chat_cli
 from solstone.think.call import call_app
@@ -531,6 +532,9 @@ def patched_runtime(
     original_sol_get_client = sol_call.get_client
     original_support_get_client = support_call.get_client
     original_local_build_identity = support_call._local_build_identity
+    original_thinking_get_client = thinking_call.get_client
+    original_thinking_time_monotonic = thinking_call.time.monotonic
+    original_thinking_time_sleep = thinking_call.time.sleep
     original_transcripts_get_client = transcripts_call.get_client
     original_build_client = chat_cli._build_client
     original_open_sse = chat_cli._open_sse
@@ -582,6 +586,9 @@ def patched_runtime(
     sol_call.get_client = lambda: client
     support_call.get_client = lambda: client
     support_call._local_build_identity = lambda: build_identity_fixture()
+    thinking_call.get_client = lambda: client
+    thinking_call.time.monotonic = fake_time.monotonic
+    thinking_call.time.sleep = fake_time.sleep
     transcripts_call.get_client = lambda: client
     chat_cli._build_client = lambda _base_url: client
     chat_cli._open_sse = lambda _base_url: client.open_sse()
@@ -621,6 +628,9 @@ def patched_runtime(
             sol_call.get_client = original_sol_get_client
             support_call.get_client = original_support_get_client
             support_call._local_build_identity = original_local_build_identity
+            thinking_call.get_client = original_thinking_get_client
+            thinking_call.time.monotonic = original_thinking_time_monotonic
+            thinking_call.time.sleep = original_thinking_time_sleep
             transcripts_call.get_client = original_transcripts_get_client
             chat_cli._build_client = original_build_client
             chat_cli._open_sse = original_open_sse

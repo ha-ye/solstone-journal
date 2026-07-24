@@ -1,0 +1,312 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+path = ["thinking", "clear-local-endpoint"]
+kind = "command"
+help = "Clear the BYO local provider endpoint."
+operation_id = "thinking.clear-local-endpoint"
+entry_type = "http"
+method = "DELETE"
+route = "/app/thinking/api/local/endpoint"
+contract_operation_id = "thinking.local.endpoint.delete"
+handler = "clear_local_endpoint"
+params = []
+
+[[entries]]
+path = ["thinking", "confidential", "disable"]
+kind = "command"
+help = "Disable confidential processing."
+operation_id = "thinking.confidential.disable"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/confidential/disable"
+contract_operation_id = "thinking.confidential.disable"
+handler = "confidential_disable"
+params = []
+
+[[entries]]
+path = ["thinking", "confidential", "enable"]
+kind = "command"
+help = "Enable confidential processing."
+operation_id = "thinking.confidential.enable"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/confidential/enable"
+contract_operation_id = "thinking.confidential.enable"
+handler = "confidential_enable"
+params = [
+  { name = "wait_seconds", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 900.0, options = ["--wait-seconds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "poll_interval", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 1.0, options = ["--poll-interval"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "confidential", "recheck"]
+kind = "command"
+help = "Recheck confidential processing."
+operation_id = "thinking.confidential.recheck"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/confidential/recheck"
+contract_operation_id = "thinking.confidential.recheck"
+handler = "confidential_recheck"
+params = []
+
+[[entries]]
+path = ["thinking", "confidential", "status"]
+kind = "command"
+help = "Show confidential processing status."
+operation_id = "thinking.confidential.status"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/providers"
+contract_operation_id = "thinking.providers.get"
+handler = "confidential_status"
+params = []
+
+[[entries]]
+path = ["thinking", "keys", "clear"]
+kind = "command"
+help = "Clear an AI key from journal config."
+operation_id = "thinking.keys.clear"
+entry_type = "http"
+method = "PUT"
+route = "/app/thinking/api/keys"
+contract_operation_id = "thinking.keys.update"
+handler = "keys_clear"
+params = [
+  { name = "env_var", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["env_var"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "keys", "set"]
+kind = "command"
+help = "Set an AI key in journal config."
+operation_id = "thinking.keys.set"
+entry_type = "http"
+method = "PUT"
+route = "/app/thinking/api/keys"
+contract_operation_id = "thinking.keys.update"
+handler = "keys_set"
+params = [
+  { name = "env_var", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["env_var"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "value", kind = "argument", type = "text", required = true, nargs = 1, multiple = false, options = ["value"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "keys", "show"]
+kind = "command"
+help = "Show configured AI key status."
+operation_id = "thinking.keys.show"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/keys"
+contract_operation_id = "thinking.keys.get"
+handler = "keys_show"
+params = []
+
+[[entries]]
+path = ["thinking", "keys", "validate"]
+kind = "command"
+help = "Validate configured AI keys."
+operation_id = "thinking.keys.validate"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/validate-keys"
+contract_operation_id = "thinking.keys.validate"
+handler = "keys_validate"
+params = [
+  { name = "cache_result", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--cache-result"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["thinking", "local", "availability"]
+kind = "command"
+help = "Show local model availability."
+operation_id = "thinking.local.availability"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/local/availability"
+contract_operation_id = "thinking.local.availability"
+handler = "local_availability"
+params = [
+  { name = "model", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--model"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "local", "bootstrap"]
+kind = "command"
+help = "Start local model setup."
+operation_id = "thinking.local.bootstrap"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/local/bootstrap"
+contract_operation_id = "thinking.local.bootstrap"
+handler = "local_bootstrap"
+params = [
+  { name = "model", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--model"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "local", "bootstrap-status"]
+kind = "command"
+help = "Show local setup status."
+operation_id = "thinking.local.bootstrap-status"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/local/bootstrap/status"
+contract_operation_id = "thinking.local.bootstrap-status"
+handler = "local_bootstrap_status"
+params = [
+  { name = "model", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--model"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "local", "models"]
+kind = "command"
+help = "List local models."
+operation_id = "thinking.local.models"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/local/models"
+contract_operation_id = "thinking.local.models"
+handler = "local_models"
+params = []
+
+[[entries]]
+path = ["thinking", "local", "readiness"]
+kind = "command"
+help = "Show local provider readiness."
+operation_id = "thinking.local.readiness"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/providers/local/status"
+contract_operation_id = "thinking.local.provider-status"
+handler = "local_readiness"
+params = []
+
+[[entries]]
+path = ["thinking", "local", "status"]
+kind = "command"
+help = "Show local provider status."
+operation_id = "thinking.local.status"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/providers/local/status"
+contract_operation_id = "thinking.local.provider-status"
+handler = "local_status"
+params = []
+
+[[entries]]
+path = ["thinking", "providers", "set-active"]
+kind = "command"
+help = "Set the provider and model used for all thinking."
+operation_id = "thinking.providers.set-active"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/providers"
+contract_operation_id = "thinking.providers.update"
+handler = "providers_set_active"
+params = [
+  { name = "provider", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--provider"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "model", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--model"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "providers", "show"]
+kind = "command"
+help = "Show provider configuration."
+operation_id = "thinking.providers.show"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/providers"
+contract_operation_id = "thinking.providers.get"
+handler = "providers_show"
+params = [
+  { name = "human", kind = "option", type = "boolean", required = false, nargs = 1, multiple = false, default = false, options = ["--human"], secondary = [], hidden = false, is_flag = true, count = false, flag_value = true },
+]
+
+[[entries]]
+path = ["thinking", "scout", "check"]
+kind = "command"
+help = "Check scout status over the connection."
+operation_id = "thinking.scout.check"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/scout/check"
+contract_operation_id = "thinking.scout.check"
+handler = "scout_check"
+params = []
+
+[[entries]]
+path = ["thinking", "scout", "disable"]
+kind = "command"
+help = "Disable scout."
+operation_id = "thinking.scout.disable"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/scout/disable"
+contract_operation_id = "thinking.scout.disable"
+handler = "scout_disable"
+params = []
+
+[[entries]]
+path = ["thinking", "scout", "enable"]
+kind = "command"
+help = "Enable scout \u2014 a Gemini key we provision on your behalf."
+operation_id = "thinking.scout.enable"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/scout/enable"
+contract_operation_id = "thinking.scout.enable"
+handler = "scout_enable"
+params = [
+  { name = "wait_seconds", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 900.0, options = ["--wait-seconds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "poll_interval", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 1.0, options = ["--poll-interval"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "scout", "refresh"]
+kind = "command"
+help = "Refresh scout status."
+operation_id = "thinking.scout.refresh"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/scout/refresh"
+contract_operation_id = "thinking.scout.refresh"
+handler = "scout_refresh"
+params = [
+  { name = "wait_seconds", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 900.0, options = ["--wait-seconds"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "poll_interval", kind = "option", type = "float", required = false, nargs = 1, multiple = false, default = 1.0, options = ["--poll-interval"], secondary = [], hidden = false, is_flag = false, count = false },
+]
+
+[[entries]]
+path = ["thinking", "scout", "status"]
+kind = "command"
+help = "Show scout status."
+operation_id = "thinking.scout.status"
+entry_type = "http"
+method = "GET"
+route = "/app/thinking/api/scout"
+contract_operation_id = "thinking.scout.status"
+handler = "scout_status"
+params = []
+
+[[entries]]
+path = ["thinking", "set-local-endpoint"]
+kind = "command"
+help = "Set the BYO local provider endpoint."
+operation_id = "thinking.set-local-endpoint"
+entry_type = "http"
+method = "POST"
+route = "/app/thinking/api/local/endpoint"
+contract_operation_id = "thinking.local.endpoint.set"
+handler = "set_local_endpoint"
+params = [
+  { name = "url", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--url"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "model", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--model"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "credential", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--credential"], secondary = [], hidden = false, is_flag = false, count = false },
+]

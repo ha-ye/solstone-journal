@@ -29,6 +29,7 @@ from solstone.apps.network.routes import network_bp
 from solstone.apps.settings.routes import settings_bp
 from solstone.apps.sol.routes import sol_bp
 from solstone.apps.support.routes import support_bp
+from solstone.apps.thinking.routes import thinking_bp
 from solstone.apps.transcripts.routes import transcripts_bp
 from solstone.convey.chat import chat_bp
 from solstone.convey.contract.assemble import build_document, rule_to_openapi_path
@@ -265,6 +266,7 @@ def register_native_blueprints(app: Flask) -> None:
         transcripts_bp,
         network_bp,
         settings_bp,
+        thinking_bp,
     ):
         app.register_blueprint(blueprint)
 

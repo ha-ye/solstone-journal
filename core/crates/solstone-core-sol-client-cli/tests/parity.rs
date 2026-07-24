@@ -41,6 +41,7 @@ const SOL_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/sol.
 const SUPPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/support.jsonl");
 const SUPPORT_COVERAGE_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/support_coverage.jsonl");
+const THINKING_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/thinking.jsonl");
 const TRANSCRIPTS_VECTORS: &str =
     include_str!("../../../fixtures/native-sol/parity/transcripts.jsonl");
 const FILE_ROOT: &str = "/native-sol-parity-files";
@@ -66,6 +67,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(SOL_VECTORS))
         .chain(load_vectors(SUPPORT_VECTORS))
         .chain(load_vectors(SUPPORT_COVERAGE_VECTORS))
+        .chain(load_vectors(THINKING_VECTORS))
         .chain(load_vectors(TRANSCRIPTS_VECTORS))
     {
         run_vector(&vector);

@@ -11550,6 +11550,1046 @@
         ]
       }
     },
+    "/app/thinking/api/confidential/disable": {
+      "post": {
+        "description": "Disable confidential processing state.",
+        "operationId": "thinking.confidential.disable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Confidential disable result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Disable confidential processing",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/confidential/enable": {
+      "post": {
+        "description": "Start confidential processing enrollment.",
+        "operationId": "thinking.confidential.enable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Confidential enable operation."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "service_busy",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Enable confidential processing",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/confidential/recheck": {
+      "post": {
+        "description": "Recheck confidential attestation and provider state.",
+        "operationId": "thinking.confidential.recheck",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Confidential recheck result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Recheck confidential processing",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/keys": {
+      "get": {
+        "description": "Return configured AI key status.",
+        "operationId": "thinking.keys.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "api_keys": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "env": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "AI key state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_config_value",
+              "invalid_request_value",
+              "missing_request_body",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read AI keys",
+        "tags": [
+          "thinking"
+        ]
+      },
+      "put": {
+        "description": "Set or clear one AI key in journal config.",
+        "operationId": "thinking.keys.update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "env_var": "OPENAI_API_KEY",
+                "value": "sk-test"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "env_var",
+                  "value"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated key validation state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_config_value",
+              "invalid_request_value",
+              "missing_request_body",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Update AI key",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/local/availability": {
+      "get": {
+        "description": "Return local model availability for an optional model id.",
+        "operationId": "thinking.local.availability",
+        "parameters": [
+          {
+            "description": "Local model id.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local availability payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read local model availability",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/local/bootstrap": {
+      "post": {
+        "description": "Start local model setup for an optional model id.",
+        "operationId": "thinking.local.bootstrap",
+        "parameters": [
+          {
+            "description": "Local model id.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local bootstrap payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Start local model bootstrap",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/local/bootstrap/status": {
+      "get": {
+        "description": "Return local model setup status for an optional model id.",
+        "operationId": "thinking.local.bootstrap-status",
+        "parameters": [
+          {
+            "description": "Local model id.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local bootstrap status payload."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read local model bootstrap status",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/local/endpoint": {
+      "delete": {
+        "description": "Clear the BYO local provider endpoint.",
+        "operationId": "thinking.local.endpoint.delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Cleared local endpoint state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_operation_for_state",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Clear local endpoint",
+        "tags": [
+          "thinking"
+        ]
+      },
+      "post": {
+        "description": "Configure the BYO local OpenAI-compatible endpoint.",
+        "operationId": "thinking.local.endpoint.set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "endpoint_url": "http://localhost:8000/v1",
+                "served_model_id": "local-model"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "credential": {
+                    "type": "string"
+                  },
+                  "endpoint_url": {
+                    "type": "string"
+                  },
+                  "served_model_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "endpoint_url",
+                  "served_model_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local endpoint state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_config_value",
+              "invalid_operation_for_state",
+              "invalid_request_value",
+              "missing_request_body",
+              "missing_required_field",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Set local endpoint",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/local/models": {
+      "get": {
+        "description": "Return local model definitions.",
+        "operationId": "thinking.local.models",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "models": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local model list."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "List local models",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/providers": {
+      "get": {
+        "description": "Return provider status, active lane, key status, and local override.",
+        "operationId": "thinking.providers.get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "active": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "active_lane": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "api_keys": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "key_validation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "local_override": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "provider_status": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "providers": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Provider status."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read thinking providers",
+        "tags": [
+          "thinking"
+        ]
+      },
+      "post": {
+        "description": "Set the active provider lane and optional model.",
+        "operationId": "thinking.providers.update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "lane": "byo",
+                "model": "gpt-5",
+                "provider": "openai"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "lane": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lane",
+                  "provider"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated provider state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_config_value",
+              "invalid_operation_for_state",
+              "invalid_request_value",
+              "missing_request_body",
+              "missing_required_field",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Update active thinking provider",
+        "tags": [
+          "thinking"
+        ]
+      },
+      "put": {
+        "description": "PUT variant of the provider update route.",
+        "operationId": "thinking.providers.update-put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "lane": "byo",
+                "model": "gpt-5",
+                "provider": "openai"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "lane": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lane",
+                  "provider"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated provider state."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "invalid_config_value",
+              "invalid_operation_for_state",
+              "invalid_request_value",
+              "missing_request_body",
+              "missing_required_field",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Update active thinking provider via PUT",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/providers/local/status": {
+      "get": {
+        "description": "Return local provider readiness/runtime status.",
+        "operationId": "thinking.local.provider-status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Local provider status."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read local provider status",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/scout": {
+      "get": {
+        "description": "Return Scout state and operation metadata.",
+        "operationId": "thinking.scout.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "operation": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scout status."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Read Scout status",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/scout/check": {
+      "post": {
+        "description": "Check Scout status over the connection.",
+        "operationId": "thinking.scout.check",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scout check result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Check Scout",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/scout/disable": {
+      "post": {
+        "description": "Disable Scout and return status metadata.",
+        "operationId": "thinking.scout.disable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scout disable result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Disable Scout",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/scout/enable": {
+      "post": {
+        "description": "Start Scout enablement and return operation metadata.",
+        "operationId": "thinking.scout.enable",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scout enable operation."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "service_busy",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Enable Scout",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/scout/refresh": {
+      "post": {
+        "description": "Refresh Scout state and return operation metadata.",
+        "operationId": "thinking.scout.refresh",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scout refresh operation."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "invalid_operation_for_state",
+              "service_busy",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Refresh Scout",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
+    "/app/thinking/api/validate-keys": {
+      "get": {
+        "description": "Validate AI keys without persisting the cache.",
+        "operationId": "thinking.keys.validate",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Key validation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Validate AI keys",
+        "tags": [
+          "thinking"
+        ]
+      },
+      "post": {
+        "description": "Validate AI keys and persist the cache result.",
+        "operationId": "thinking.keys.validate-cache",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Cached key validation result."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request rejected with a standard Convey error envelope.",
+            "x-reason-codes": [
+              "config_busy",
+              "settings_operation_failed"
+            ]
+          }
+        },
+        "summary": "Validate and cache AI keys",
+        "tags": [
+          "thinking"
+        ]
+      }
+    },
     "/app/transcripts/api/day/{day}": {
       "get": {
         "description": "Return transcript and percept ranges plus segment metadata.",
