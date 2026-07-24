@@ -650,7 +650,7 @@ mod tests {
                 },
                 result: Ok(json_response(
                     json!({
-                        "path": "/journal/imports/20260101_120000/sample.txt",
+                        "path": "/staged/imports/20260101_120000/sample.txt",
                         "timestamp": "20260101_120000"
                     }),
                     TimeoutPolicy::Upload,
@@ -662,7 +662,7 @@ mod tests {
                     path: "/app/import/api/start".to_string(),
                     params: vec![],
                     json: Some(json!({
-                        "path": "/journal/imports/20260101_120000/sample.txt",
+                        "path": "/staged/imports/20260101_120000/sample.txt",
                         "timestamp": "20260101_120000",
                         "force": true,
                     })),
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(
             output,
             CommandOutput {
-                stdout: "staged /journal/imports/20260101_120000/sample.txt\ntimestamp 20260101_120000\nqueued processing task task-file\n".to_string(),
+                stdout: "staged /staged/imports/20260101_120000/sample.txt\ntimestamp 20260101_120000\nqueued processing task task-file\n".to_string(),
                 stderr: String::new(),
                 exit: 0,
             }
@@ -723,7 +723,7 @@ mod tests {
                 },
                 result: Ok(json_response(
                     json!({
-                        "path": "/journal/imports/20260101_130000/source-dir",
+                        "path": "/staged/imports/20260101_130000/source-dir",
                         "timestamp": "20260101_130000"
                     }),
                     TimeoutPolicy::Api,
@@ -735,7 +735,7 @@ mod tests {
                     path: "/app/import/api/start".to_string(),
                     params: vec![],
                     json: Some(json!({
-                        "path": "/journal/imports/20260101_130000/source-dir",
+                        "path": "/staged/imports/20260101_130000/source-dir",
                         "timestamp": "20260202_030405",
                         "force": false,
                     })),
@@ -762,7 +762,7 @@ mod tests {
 
         assert_eq!(
             output.stdout,
-            "staged /journal/imports/20260101_130000/source-dir\ntimestamp 20260101_130000\nqueued processing task task-path\n"
+            "staged /staged/imports/20260101_130000/source-dir\ntimestamp 20260101_130000\nqueued processing task task-path\n"
         );
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit, 0);
@@ -788,7 +788,7 @@ mod tests {
                 },
                 result: Ok(json_response(
                     json!({
-                        "path": "/journal/imports/20260101_140000/media.txt",
+                        "path": "/staged/imports/20260101_140000/media.txt",
                         "timestamp": "20260101_140000"
                     }),
                     TimeoutPolicy::Api,
@@ -800,7 +800,7 @@ mod tests {
                     path: "/app/import/api/start".to_string(),
                     params: vec![],
                     json: Some(json!({
-                        "path": "/journal/imports/20260101_140000/media.txt",
+                        "path": "/staged/imports/20260101_140000/media.txt",
                         "timestamp": "20260101_140000",
                         "force": false,
                     })),
@@ -823,7 +823,7 @@ mod tests {
 
         assert_eq!(
             output.stdout,
-            "{\"path\": \"/journal/imports/20260101_140000/media.txt\", \"save\": {\"path\": \"/journal/imports/20260101_140000/media.txt\", \"timestamp\": \"20260101_140000\"}, \"start\": {\"status\": \"ok\", \"task_id\": \"task-json\"}, \"status\": \"queued\", \"timestamp\": \"20260101_140000\"}\n"
+            "{\"path\": \"/staged/imports/20260101_140000/media.txt\", \"save\": {\"path\": \"/staged/imports/20260101_140000/media.txt\", \"timestamp\": \"20260101_140000\"}, \"start\": {\"status\": \"ok\", \"task_id\": \"task-json\"}, \"status\": \"queued\", \"timestamp\": \"20260101_140000\"}\n"
         );
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit, 0);
@@ -1012,7 +1012,7 @@ mod tests {
                 },
                 result: Ok(json_response(
                     json!({
-                        "path": "/journal/imports/20260101_160000/media.txt",
+                        "path": "/staged/imports/20260101_160000/media.txt",
                         "timestamp": "20260101_160000"
                     }),
                     TimeoutPolicy::Api,
@@ -1024,7 +1024,7 @@ mod tests {
                     path: "/app/import/api/start".to_string(),
                     params: vec![],
                     json: Some(json!({
-                        "path": "/journal/imports/20260101_160000/media.txt",
+                        "path": "/staged/imports/20260101_160000/media.txt",
                         "timestamp": "20260101_160000",
                         "force": false,
                     })),
@@ -1046,7 +1046,7 @@ mod tests {
         assert_eq!(output.stdout, "");
         assert_eq!(
             output.stderr,
-            "sol import: staged /journal/imports/20260101_160000/media.txt but processing was not queued: queue failed\n"
+            "sol import: staged /staged/imports/20260101_160000/media.txt but processing was not queued: queue failed\n"
         );
         assert_eq!(output.exit, 1);
         assert!(!output.stdout.contains("queued processing"));

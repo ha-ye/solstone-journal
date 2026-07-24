@@ -30,8 +30,18 @@ use solstone_core_sol_client_cli::{
 };
 
 const EXIT_USAGE: u8 = 64;
+const EXIT_SOFTWARE: u8 = 70;
+const EXIT_CONFIG: u8 = 78;
 const EXIT_TEMPFAIL: u8 = 75;
 const USAGE: &str = "Usage:\n  solstone-core-sol --version\n  solstone-core-sol help\n  solstone-core-sol status\n  solstone-core-sol path\n  solstone-core-sol call <app> <verb> [args...]\n  solstone-core-sol chat [args...]\n  solstone-core-sol import [args...]\n";
+const COMPAT_HELPER_NAME: &str = "solstone-python-compat";
+const COMPAT_SENTINEL: &str = "SOLSTONE_NATIVE_COMPAT_ACTIVE";
+const COMPAT_SENTINEL_ARMED: &str = "armed";
+const COMPAT_ARGV0_MARKER_PREFIX: &str = "__solstone_native_argv0=";
+const COMPAT_RECURSION_ERROR: &str =
+    "sol: compatibility dispatch recursion detected. Reinstall solstone and solstone-core.";
+const TOP_LEVEL_COMPAT_COMMANDS: &[&str] =
+    &["notify", "doctor", "check", "contract", "skills", "link"];
 
 pub fn run() -> ExitCode {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -43,7 +53,7 @@ pub fn run() -> ExitCode {
         [command] if command == OsStr::new("--help") || command == OsStr::new("help") => {
             render_output(help_output())
         }
-        [command] if command == OsStr::new("path") => run_path(),
+        [command] if command == OsStr::new("path") || command == OsStr::new("--path") => run_path(),
         [command] if command == OsStr::new("status") => run_status(),
         [command, rest @ ..] if command == OsStr::new("call") => run_dispatched(&args, rest),
         [command, rest @ ..] if command == OsStr::new("chat") => run_dispatched(&args, rest),
@@ -51,6 +61,7 @@ pub fn run() -> ExitCode {
         [flag, ..] if flag.to_string_lossy().starts_with('-') => {
             render_output(usage_error_output())
         }
+        [command, ..] if is_top_level_compat_command(command) => delegate_to_compat(&args),
         _ => render_output(unsupported_output()),
     }
 }
@@ -69,6 +80,26 @@ fn usage_error_output() -> CommandOutput {
 
 fn unsupported_output() -> CommandOutput {
     CommandOutput::failure("Unsupported native sol command.\n", i32::from(EXIT_USAGE))
+}
+
+fn is_top_level_compat_command(command: &OsStr) -> bool {
+    command
+        .to_str()
+        .is_some_and(|value| TOP_LEVEL_COMPAT_COMMANDS.contains(&value))
+}
+
+fn should_delegate_to_compat_after_native_miss(all_args: &[OsString], outcome: &Outcome) -> bool {
+    matches!(outcome, Outcome::Unsupported { .. }) && is_compat_public_args(all_args)
+}
+
+fn is_compat_public_args(all_args: &[OsString]) -> bool {
+    match all_args {
+        [command, ..] if is_top_level_compat_command(command) => true,
+        [command, group, ..] if command == OsStr::new("call") && group == OsStr::new("journal") => {
+            true
+        }
+        _ => false,
+    }
 }
 
 fn run_path() -> ExitCode {
@@ -106,6 +137,10 @@ fn status_output(line: &JournalPathLine, port: i64) -> CommandOutput {
 }
 
 fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode {
+    let outcome = evaluate_args(all_args);
+    if should_delegate_to_compat_after_native_miss(all_args, &outcome) {
+        return delegate_to_compat(all_args);
+    }
     let today = Local::now().format("%Y%m%d").to_string();
     let args = match os_strings_to_strings(command_args) {
         Some(args) => args,
@@ -114,7 +149,6 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
             return ExitCode::from(EXIT_USAGE);
         }
     };
-    let outcome = evaluate_args(all_args);
     let journal = match resolve_process_journal_path() {
         Ok(line) => line,
         Err(error) => {
@@ -178,6 +212,111 @@ fn run_dispatched(all_args: &[OsString], command_args: &[OsString]) -> ExitCode 
         Outcome::Unsupported { .. } => unsupported_output(),
     };
     render_output(output)
+}
+
+fn delegate_to_compat(all_args: &[OsString]) -> ExitCode {
+    let existing_sentinel = env::var_os(COMPAT_SENTINEL);
+    if let Err(output) = compat_env_preflight(existing_sentinel.as_deref()) {
+        return render_output(output);
+    }
+    let executable = env::current_exe().unwrap_or_else(|_| PathBuf::from("sol"));
+    let helper = helper_path_for_executable(&executable);
+    if !is_executable(&helper) {
+        return render_output(missing_helper_output(&helper));
+    }
+    let public_argv0 = public_argv0_for_executable(&executable);
+    let args = compat_exec_args(&public_argv0, all_args);
+    exec_compat(&helper, &args)
+}
+
+fn helper_path_for_executable(executable: &Path) -> PathBuf {
+    executable.with_file_name(COMPAT_HELPER_NAME)
+}
+
+fn missing_helper_message(path: &Path) -> String {
+    format!(
+        "sol: native compatibility helper is missing or not executable: {}. Reinstall solstone and solstone-core.",
+        path.display()
+    )
+}
+
+fn missing_helper_output(path: &Path) -> CommandOutput {
+    CommandOutput::failure(
+        format!("{}\n", missing_helper_message(path)),
+        i32::from(EXIT_CONFIG),
+    )
+}
+
+fn compat_recursion_output() -> CommandOutput {
+    CommandOutput::failure(
+        format!("{COMPAT_RECURSION_ERROR}\n"),
+        i32::from(EXIT_SOFTWARE),
+    )
+}
+
+fn compat_env_preflight(existing_sentinel: Option<&OsStr>) -> Result<(), CommandOutput> {
+    if existing_sentinel.is_some() {
+        Err(compat_recursion_output())
+    } else {
+        Ok(())
+    }
+}
+
+fn public_argv0_for_executable(executable: &Path) -> String {
+    match executable.file_name().and_then(OsStr::to_str) {
+        Some("solstone") => "solstone".to_string(),
+        _ => "sol".to_string(),
+    }
+}
+
+fn compat_exec_args(public_argv0: &str, all_args: &[OsString]) -> Vec<OsString> {
+    let mut args = vec![OsString::from(format!(
+        "{COMPAT_ARGV0_MARKER_PREFIX}{public_argv0}"
+    ))];
+    args.extend(all_args.iter().cloned());
+    args
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(unix)]
+fn exec_compat(helper: &Path, args: &[OsString]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+
+    let error = Command::new(helper)
+        .args(args)
+        .env(COMPAT_SENTINEL, COMPAT_SENTINEL_ARMED)
+        .exec();
+    eprintln!(
+        "sol: native compatibility helper failed to execute: {}: {error}. Reinstall solstone and solstone-core.",
+        helper.display()
+    );
+    ExitCode::from(EXIT_CONFIG)
+}
+
+#[cfg(not(unix))]
+fn exec_compat(helper: &Path, _args: &[OsString]) -> ExitCode {
+    eprintln!(
+        "sol: native compatibility helper failed to execute: {}: exec is unavailable. Reinstall solstone and solstone-core.",
+        helper.display()
+    );
+    ExitCode::from(EXIT_CONFIG)
 }
 
 fn render_output(output: CommandOutput) -> ExitCode {
@@ -440,6 +579,9 @@ mod tests {
 
     use solstone_core_sol_client::seam::ScriptedHttpTransport;
 
+    fn os_args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
 
     #[test]
     fn version_output_matches_old_binary_test() {
@@ -533,4 +675,127 @@ mod tests {
         transport.assert_done();
     }
 
+    #[test]
+    fn helper_path_replaces_executable_filename() {
+        assert_eq!(
+            helper_path_for_executable(Path::new("/opt/bin/sol")),
+            PathBuf::from("/opt/bin/solstone-python-compat")
+        );
+    }
+
+    #[test]
+    fn public_argv0_preserves_solstone_and_defaults_to_sol() {
+        assert_eq!(
+            public_argv0_for_executable(Path::new("/opt/bin/solstone")),
+            "solstone"
+        );
+        assert_eq!(
+            public_argv0_for_executable(Path::new("/opt/bin/sol")),
+            "sol"
+        );
+        assert_eq!(
+            public_argv0_for_executable(Path::new("/opt/bin/solstone-core-sol")),
+            "sol"
+        );
+    }
+
+    #[test]
+    fn compat_argv_uses_leading_marker_and_preserves_public_args() {
+        let args = os_args(&["call", "journal", "search", "needle"]);
+        assert_eq!(
+            compat_exec_args("solstone", &args),
+            os_args(&[
+                "__solstone_native_argv0=solstone",
+                "call",
+                "journal",
+                "search",
+                "needle"
+            ])
+        );
+    }
+
+    #[test]
+    fn compat_exec_arms_the_sentinel() {
+        assert_eq!(COMPAT_SENTINEL, "SOLSTONE_NATIVE_COMPAT_ACTIVE");
+        assert_eq!(COMPAT_SENTINEL_ARMED, "armed");
+    }
+
+    #[test]
+    fn missing_helper_message_is_actionable() {
+        let path = PathBuf::from("/opt/bin/solstone-python-compat");
+        let message = "sol: native compatibility helper is missing or not executable: /opt/bin/solstone-python-compat. Reinstall solstone and solstone-core.";
+        assert_eq!(missing_helper_message(&path), message);
+        assert_eq!(
+            missing_helper_output(&path),
+            CommandOutput::failure(format!("{message}\n"), i32::from(EXIT_CONFIG))
+        );
+    }
+
+    #[test]
+    fn recursion_preflight_exits_seventy() {
+        let expected = CommandOutput::failure(
+            "sol: compatibility dispatch recursion detected. Reinstall solstone and solstone-core.\n",
+            i32::from(EXIT_SOFTWARE),
+        );
+        assert_eq!(compat_recursion_output(), expected);
+        assert_eq!(
+            compat_env_preflight(Some(OsStr::new("active"))),
+            Err(expected)
+        );
+        assert_eq!(compat_env_preflight(None), Ok(()));
+    }
+
+    #[test]
+    fn missing_helper_is_not_executable() {
+        let path = env::temp_dir().join("solstone-core-sol-missing-helper");
+        let _ = fs::remove_file(&path);
+        assert!(!is_executable(&path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_helper_is_incoherent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = env::temp_dir().join(format!(
+            "solstone-core-sol-nonexec-helper-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::write(&path, "#!/bin/sh\n").expect("write helper");
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&path, permissions).expect("chmod helper");
+        assert!(!is_executable(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn call_journal_delegates_only_after_native_miss() {
+        let journal = os_args(&["call", "journal", "search"]);
+        let journal_outcome = evaluate_args(&journal);
+        assert!(matches!(journal_outcome, Outcome::Unsupported { .. }));
+        assert!(should_delegate_to_compat_after_native_miss(
+            &journal,
+            &journal_outcome
+        ));
+
+        let http_leaf = os_args(&["call", "entities", "search"]);
+        let http_outcome = evaluate_args(&http_leaf);
+        assert!(matches!(http_outcome, Outcome::Migrated { .. }));
+        assert!(!should_delegate_to_compat_after_native_miss(
+            &http_leaf,
+            &http_outcome
+        ));
+
+        let unknown = os_args(&["call", "transcripts", "list"]);
+        let unknown_outcome = evaluate_args(&unknown);
+        assert!(matches!(unknown_outcome, Outcome::Unsupported { .. }));
+        assert!(!should_delegate_to_compat_after_native_miss(
+            &unknown,
+            &unknown_outcome
+        ));
+    }
 }

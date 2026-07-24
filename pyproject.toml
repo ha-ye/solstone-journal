@@ -181,6 +181,7 @@ sol = "solstone.think.sol_cli:main"
 # missing console script. The thin base's small footprint makes the ephemeral
 # `uvx solstone ...` one-shot fast (CI, Docker, a second machine, agents).
 solstone = "solstone.think.sol_cli:main"
+solstone-python-compat = "solstone.think.sol_compat_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/solpbc/solstone-journal"

@@ -49,9 +49,10 @@ Consequences:
 
 - `core/crates/solstone-core/Cargo.toml` adds bin targets and dependencies on
   `solstone-core-sol`, plus any transitive deps needed only by the thin bins.
-- `core/crates/solstone-core-sol/Cargo.toml` gains a library target. Its current
-  process-shell logic moves from `src/main.rs` into `src/lib.rs`; `src/main.rs`
-  can remain as a dev-only wrapper.
+- `core/crates/solstone-core-sol/Cargo.toml` gains the implicit library target
+  from `src/lib.rs`. Its current process-shell logic moves from `src/main.rs`
+  into `src/lib.rs`, and `src/main.rs` is deleted so no duplicate `sol` wrapper
+  remains.
 - `scripts/normalize_maturin_sdist.py` must stop pruning newly reachable
   workspace members from the core sdist lock graph.
 - `scripts/check_wheel_contents.py::CORE_REQUIRED_SDIST_MEMBERS` must include
@@ -192,9 +193,12 @@ Recursion prevention uses two independent mechanisms:
 Forwarding contract:
 
 - Native uses exec replacement, not spawn-and-wait.
-- `argv` is forwarded as the original public argv with `sol`/`solstone`
-  preserved as `argv[0]`-semantic context in an env field or leading internal
-  argument. The compat entry strips only the private helper name.
+- `argv` is forwarded with leading internal marker
+  `__solstone_native_argv0=<sol|solstone>`, followed by the original public
+  arguments. The compat entry accepts and strips exactly that marker, then
+  rebuilds downstream `sys.argv` as `sol <cmd> ...`, `solstone <cmd> ...`, or
+  `sol call journal ...` / `solstone call journal ...` so target modules retain
+  the public argv identity.
 - stdin, stdout, stderr, cwd, and environment are inherited unchanged except for
   the sentinel.
 - Exit status and Unix signal behavior are those of the compat process. Exec is
