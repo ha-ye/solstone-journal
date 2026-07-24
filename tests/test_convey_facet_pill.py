@@ -21,6 +21,18 @@ def _run_node(script: str) -> None:
     subprocess.run([node, "-e", script], check=True, text=True)
 
 
+def _class_specificity(selector: str) -> int:
+    return selector.count(".")
+
+
+def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
+    index = css.find(f"{selector} {{", start)
+    assert index != -1, f"{selector} rule was not found"
+    close = css.find("}", index)
+    assert close != -1, f"{selector} rule is not closed"
+    return index, css[index : close + 1]
+
+
 def _render_facet_chooser_script(body: str) -> str:
     fn = _function_body(
         Path("solstone/convey/static/app.js").read_text(encoding="utf-8"),
@@ -150,6 +162,161 @@ def test_mobile_facet_pills_overflow_override_follows_base_rule():
     assert base_close != -1, "base facet-pills container rule is not closed"
     assert base_index < css.find("overflow-x: clip", base_index) < base_close
     assert base_index < mobile_index
+
+
+def test_mobile_facet_pills_block_prevents_pill_compression_below_content_width():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    mobile_anchor = (
+        "@media (max-width: 768px) {\n"
+        "  .facet-bar .facet-pills-container {\n"
+        "    overflow-x: auto;"
+    )
+    mobile_index = css.find(mobile_anchor)
+    assert mobile_index != -1, "mobile facet-pills block was not found"
+
+    depth = 0
+    mobile_close = -1
+    for index in range(mobile_index, len(css)):
+        char = css[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                mobile_close = index
+                break
+
+    assert mobile_close != -1, "mobile facet-pills block is not closed"
+    mobile_block = css[mobile_index : mobile_close + 1]
+    _, container_rule = _rule_block(mobile_block, ".facet-bar .facet-pills-container")
+    _, pill_rule = _rule_block(
+        mobile_block, ".facet-bar .facet-pills-container .facet-pill"
+    )
+
+    assert "overflow-x: auto;" in container_rule
+    assert "justify-content: flex-start;" in container_rule
+    assert "flex-shrink: 0;" in pill_rule
+
+
+def test_mobile_facet_pill_flex_shrink_override_wins_by_specificity():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    mobile_selector = ".facet-bar .facet-pills-container .facet-pill"
+    competing_selector = ".facet-pill"
+    mobile_index, mobile_rule = _rule_block(css, mobile_selector)
+    competing_anchor = f"\n{competing_selector} {{\n"
+    competing_index = css.find(competing_anchor)
+    assert competing_index != -1, "unconditional .facet-pill rule was not found"
+    competing_close = css.find("}", competing_index)
+    assert competing_close != -1, "unconditional .facet-pill rule is not closed"
+    competing_rule = css[competing_index + 1 : competing_close + 1]
+
+    assert mobile_selector.endswith(competing_selector)
+    assert _class_specificity(mobile_selector) == 3
+    assert _class_specificity(competing_selector) == 1
+    assert _class_specificity(mobile_selector) > _class_specificity(competing_selector)
+    assert mobile_index < competing_index, (
+        "source order runs against the mobile flex-shrink override; specificity carries it"
+    )
+    assert "flex-shrink: 0;" in mobile_rule
+    assert "flex-shrink: 1;" in competing_rule
+
+
+def test_mobile_facet_container_justify_override_wins_by_source_order():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    selector = ".facet-bar .facet-pills-container"
+    base_index, base_rule = _rule_block(css, selector)
+    mobile_index, mobile_rule = _rule_block(css, selector, base_index + 1)
+    base_justify_index = css.find("justify-content: center;", base_index)
+    mobile_justify_index = css.find("justify-content: flex-start;", mobile_index)
+
+    assert _class_specificity(selector) == 2
+    assert "justify-content: center;" in base_rule
+    assert "justify-content: flex-start;" in mobile_rule
+    assert base_index < base_justify_index < mobile_index
+    assert mobile_index < mobile_justify_index
+    assert mobile_justify_index > base_justify_index
+
+
+def test_base_facet_layout_rules_remain_unchanged():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    base_container = (
+        ".facet-bar .facet-pills-container {\n"
+        "  flex: 1;\n"
+        "  display: flex;\n"
+        "  gap: 10px;\n"
+        "  align-items: center;\n"
+        "  justify-content: center;\n"
+        "  overflow-x: clip;\n"
+        "  overflow-y: visible;\n"
+        "  min-width: 0;  /* Allow container to shrink below content size */\n"
+        "}"
+    )
+    base_pill = (
+        ".facet-pill {\n"
+        "  appearance: none;\n"
+        "  font-family: inherit;\n"
+        "  color: inherit;\n"
+        "  line-height: inherit;\n"
+        "  display: flex;\n"
+        "  align-items: center;\n"
+        "  padding: 8px 16px;\n"
+        "  border-radius: 20px;\n"
+        "  background: var(--pill-bg-rest, #f5f5f5);\n"
+        "  border: 1px solid var(--facet-border, #e5e0db);\n"
+        "  cursor: pointer;\n"
+        "  font-size: 15px;\n"
+        "  font-weight: 500;\n"
+        "  transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;\n"
+        "  user-select: none;\n"
+        "  position: relative;\n"
+        "  min-width: 0;        /* Allow pill to shrink below content size */\n"
+        "  flex-shrink: 1;      /* Allow shrinking when space is tight */\n"
+        "}"
+    )
+
+    assert base_container in css
+    assert base_pill in css
+
+
+def test_facet_pill_label_ellipsis_rule_remains_unchanged():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    label_rule = (
+        ".facet-pill .label {\n"
+        "  overflow: hidden;\n"
+        "  text-overflow: ellipsis;\n"
+        "  white-space: nowrap;\n"
+        "  min-width: 0;        /* Can shrink to zero width */\n"
+        "  flex-shrink: 1;\n"
+        "  user-select: none;\n"
+        "  pointer-events: none;\n"
+        "}"
+    )
+
+    assert label_rule in css
+
+
+def test_mobile_flex_shrink_override_is_scoped_to_rendered_facet_row():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+    app_js = Path("solstone/convey/static/app.js").read_text(encoding="utf-8")
+    fn = _function_body(app_js, "renderFacetChooser")
+
+    override_selector = ".facet-bar .facet-pills-container .facet-pill"
+    class_assignment = "pill.className = 'facet-pill';"
+    append_call = "facetPillsContainer.appendChild(pill);"
+    class_index = fn.find(class_assignment)
+    append_index = fn.find(append_call)
+
+    assert f"  {override_selector} {{\n    flex-shrink: 0;" in css
+    assert override_selector.startswith(".facet-bar .facet-pills-container ")
+    assert app_js.count(class_assignment) == 1
+    assert class_index != -1, "renderFacetChooser does not create facet pills"
+    assert append_index != -1, "renderFacetChooser does not append facet pills"
+    assert class_index < append_index
 
 
 def test_selected_pill_defers_to_css_for_contrast_safe_treatment():

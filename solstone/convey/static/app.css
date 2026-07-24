@@ -667,6 +667,14 @@ body:has(.status-pane.visible) .facet-bar::after {
   .facet-bar .facet-pills-container {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    justify-content: flex-start;  /* Beats the base center by source order */
+  }
+
+  /* Mobile: pills keep their content width so the row overflows and scrolls
+     instead of compressing. Wins the unconditional .facet-pill flex-shrink: 1
+     below by specificity, since that rule is later in source. */
+  .facet-bar .facet-pills-container .facet-pill {
+    flex-shrink: 0;
   }
 }
 
