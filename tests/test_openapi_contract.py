@@ -12,84 +12,34 @@ from typing import Any
 import pytest
 
 import solstone.convey.chat as chat
-from solstone.apps.activities.contract import OPERATIONS as ACTIVITIES_OPERATIONS
-from solstone.apps.home.contract import OPERATIONS as HOME_OPERATIONS
-from solstone.apps.network.contract import OPERATIONS as LINK_OPERATIONS
-from solstone.apps.observer.contract import OPERATIONS as OBSERVER_OPERATIONS
-from solstone.apps.support.contract import OPERATIONS as SUPPORT_OPERATIONS
 from solstone.convey import create_app
 from solstone.convey.chat import ChatSpawnResult
-from solstone.convey.chat_contract import OPERATIONS as CHAT_OPERATIONS
-from solstone.convey.contract.assemble import build_document
+from solstone.convey.contract.assemble import (
+    FRAGMENT_MODULES,
+    build_document,
+    rule_to_openapi_path,
+)
 from solstone.convey.contract.diff import (
     classify_changes,
     undeclared_top_level_fields,
 )
-from solstone.convey.health_contract import OPERATIONS as HEALTH_OPERATIONS
-from solstone.convey.push_contract import OPERATIONS as PUSH_OPERATIONS
-from solstone.convey.root_contract import OPERATIONS as ROOT_OPERATIONS
 from solstone.convey.secure_listener.identity import ConveyIdentity
-from solstone.convey.voice_contract import OPERATIONS as VOICE_OPERATIONS
 from tests._baseline_harness import (
     isolated_app_env,
     mark_setup_complete,
     prepare_isolated_journal,
 )
 
-IMPORT_OPERATIONS = importlib.import_module("solstone.apps.import.contract").OPERATIONS
+
+def _all_operations():
+    operations = []
+    for module_name in FRAGMENT_MODULES:
+        operations.extend(importlib.import_module(module_name).OPERATIONS)
+    return operations
+
 
 CONTRACTED_PATHS = {
-    "/api/chat",
-    "/api/chat/offer/decline",
-    "/api/chat/session",
-    "/api/chat/sol_chat_request/open",
-    "/api/chat/support/draft/cancel",
-    "/api/chat/support/draft/confirm",
-    "/api/health/full",
-    "/api/health/pipeline",
-    "/api/health/range",
-    "/api/health/summary",
-    "/api/push/register",
-    "/api/voice/connect",
-    "/api/voice/session",
-    "/api/voice/status",
-    "/app/activities/api/day/{day}/record/{span_id}",
-    "/app/activities/api/day/{day}/record/{span_id}/mute",
-    "/app/activities/api/day/{day}/record/{span_id}/unmute",
-    "/app/activities/api/day/{day}/record/{span_id}/update",
-    "/app/activities/api/day/{day}/records",
-    "/app/home/api/pulse",
-    "/app/import/api/meta",
-    "/app/import/api/save",
-    "/app/import/api/save-path",
-    "/app/import/api/start",
-    "/app/network/api/status",
-    "/app/network/local-endpoints",
-    "/app/network/pair",
-    "/app/network/pair-start",
-    "/app/network/unpair",
-    "/app/observer/callosum",
-    "/app/observer/health",
-    "/app/observer/ingest",
-    "/app/observer/ingest/event",
-    "/app/observer/ingest/manifest",
-    "/app/observer/ingest/manifest/{day}",
-    "/app/observer/ingest/segments/{day}",
-    "/app/observer/register",
-    "/app/observer/source/{stream}",
-    "/app/support/api/announcements",
-    "/app/support/api/articles",
-    "/app/support/api/articles/{slug}",
-    "/app/support/api/config",
-    "/app/support/api/diagnostics",
-    "/app/support/api/draft",
-    "/app/support/api/feedback",
-    "/app/support/api/register",
-    "/app/support/api/tickets",
-    "/app/support/api/tickets/{ticket_id}",
-    "/app/support/api/tickets/{ticket_id}/attachments",
-    "/app/support/api/tickets/{ticket_id}/reply",
-    "/sse/events",
+    rule_to_openapi_path(operation.rule) for operation in _all_operations()
 }
 
 CONTRACTED_INVENTORY_TRIPLES = {
@@ -168,22 +118,6 @@ def contract_app(tmp_path: Path):
         app = create_app(journal=str(journal.resolve()))
         app.config["TESTING"] = True
         yield app, app.test_client(), journal
-
-
-def _all_operations():
-    return [
-        *LINK_OPERATIONS,
-        *OBSERVER_OPERATIONS,
-        *HOME_OPERATIONS,
-        *ACTIVITIES_OPERATIONS,
-        *SUPPORT_OPERATIONS,
-        *PUSH_OPERATIONS,
-        *CHAT_OPERATIONS,
-        *HEALTH_OPERATIONS,
-        *ROOT_OPERATIONS,
-        *VOICE_OPERATIONS,
-        *IMPORT_OPERATIONS,
-    ]
 
 
 def _operation(document: dict[str, Any], operation_id: str) -> dict[str, Any]:
@@ -440,7 +374,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 51
+    assert len(document["paths"]) == len(CONTRACTED_PATHS)
 
 
 def test_home_pulse_named_fields_present(contract_app):

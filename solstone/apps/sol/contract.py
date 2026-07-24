@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""OpenAPI fragment for the native-client sol identity routes."""
+"""OpenAPI fragment for the native-client identity routes."""
 
 from __future__ import annotations
 

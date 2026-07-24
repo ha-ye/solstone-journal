@@ -488,6 +488,16 @@ def _set_bundle_version(files: dict[Path, str], version: str) -> None:
     _set_manifest(files, manifest)
 
 
+def _next_minor_version() -> str:
+    major, minor, _patch = observer_bundle.parse_semver(observer_bundle.BUNDLE_SEMVER)
+    return f"{major}.{minor + 1}.0"
+
+
+def _next_major_version() -> str:
+    major, _minor, _patch = observer_bundle.parse_semver(observer_bundle.BUNDLE_SEMVER)
+    return f"{major + 1}.0.0"
+
+
 def _refresh_manifest_inventory(files: dict[Path, str]) -> None:
     manifest = _manifest(files)
     payload_paths = sorted(
@@ -2243,7 +2253,7 @@ def test_observer_client_bundle_history_equal_and_downgrade_failures(
     downgrade_repo = tmp_path / "downgrade"
     _init_git_repo(downgrade_repo)
     previous = _clone_bundle_files(bundle_files)
-    _set_bundle_version(previous, "2.1.0")
+    _set_bundle_version(previous, _next_minor_version())
     _commit_bundle(downgrade_repo, previous, "minor bundle")
     _assert_history_failure(downgrade_repo, bundle_files, "downgraded")
 
@@ -2296,7 +2306,7 @@ def test_observer_client_bundle_history_major_and_mixed_insufficient_bumps_fail(
     _commit_bundle(closed_repo, bundle_files, "bundle")
     _assert_history_failure(
         closed_repo,
-        _closed_status_add_candidate(bundle_files, "2.1.0"),
+        _closed_status_add_candidate(bundle_files, _next_minor_version()),
         "major change",
         enforce_current_contract=False,
     )
@@ -2304,7 +2314,7 @@ def test_observer_client_bundle_history_major_and_mixed_insufficient_bumps_fail(
     mixed_repo = tmp_path / "mixed"
     _init_git_repo(mixed_repo)
     _commit_bundle(mixed_repo, bundle_files, "bundle")
-    mixed = _operation_removed_candidate(bundle_files, "2.1.0")
+    mixed = _operation_removed_candidate(bundle_files, _next_minor_version())
     projection = _payload(mixed, observer_bundle.PROJECTION_REL)
     projection["paths"]["/app/observer/ingest"]["post"]["responses"]["200"]["content"][
         "application/json"
@@ -2329,7 +2339,7 @@ def test_observer_client_bundle_history_extensible_addition_accepts_minor(
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
             repo,
-            _extensible_chat_add_candidate(bundle_files, "2.1.0"),
+            _extensible_chat_add_candidate(bundle_files, _next_minor_version()),
             enforce_current_contract=False,
         )
         == []
@@ -2351,7 +2361,7 @@ def test_observer_client_bundle_history_vector_removed_requires_major(
         if vector["id"] != "observer.auth.handle"
     ]
     _set_payload(removed, observer_bundle.VECTORS_REL, vectors)
-    _set_bundle_version(removed, "2.1.0")
+    _set_bundle_version(removed, _next_minor_version())
 
     _assert_history_failure(repo, removed, "major change")
 
@@ -2378,7 +2388,7 @@ def test_observer_client_bundle_history_does_not_apply_current_vector_policy_to_
     _set_payload(baseline, observer_bundle.VECTORS_REL, vectors)
     _commit_bundle(repo, baseline, "legacy vector policy")
     candidate = _clone_bundle_files(bundle_files)
-    _set_bundle_version(candidate, "3.0.0")
+    _set_bundle_version(candidate, _next_major_version())
 
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
@@ -2455,7 +2465,7 @@ def test_observer_client_bundle_history_new_independent_vector_accepts_minor(
     )
     vectors["vectors"] = sorted(vectors["vectors"], key=lambda item: item["id"])
     _set_payload(added, observer_bundle.VECTORS_REL, vectors)
-    _set_bundle_version(added, "2.1.0")
+    _set_bundle_version(added, _next_minor_version())
 
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
@@ -2477,14 +2487,14 @@ def test_observer_client_bundle_history_semantic_vector_change_is_never_patch(
 
     _assert_history_failure(
         repo,
-        _semantic_status_fixture_candidate(bundle_files, "2.1.0"),
+        _semantic_status_fixture_candidate(bundle_files, _next_minor_version()),
         "major change",
         enforce_current_contract=False,
     )
     assert (
         observer_bundle_compatibility.check_bundle_compatibility(
             repo,
-            _semantic_status_fixture_candidate(bundle_files, "3.0.0"),
+            _semantic_status_fixture_candidate(bundle_files, _next_major_version()),
             enforce_current_contract=False,
         )
         == []

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from solstone.convey.contract import (
-    FieldSpec,
     OperationSpec,
     ParamSpec,
     RequestSpec,
@@ -167,7 +166,7 @@ OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="speakers.day-segments",
         method="GET",
-        rule="/app/speakers/api/segments-cli/{day}",
+        rule="/app/speakers/api/segments-cli/<day>",
         summary="Speakers day-segments",
         description="Native speakers CLI route.",
         parameters=(
@@ -290,7 +289,7 @@ OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="speakers.identify-operation",
         method="GET",
-        rule="/app/speakers/api/discovery/identify/operations/{operation_id}",
+        rule="/app/speakers/api/discovery/identify/operations/<operation_id>",
         summary="Speakers identify-operation",
         description="Native speakers CLI route.",
         parameters=(ParamSpec("operation_id", "path", required=True),),
@@ -418,7 +417,7 @@ OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="speakers.presence",
         method="GET",
-        rule="/app/speakers/api/discovery/cluster/{cluster_id}/presence",
+        rule="/app/speakers/api/discovery/cluster/<int:cluster_id>/presence",
         summary="Speakers presence",
         description="Native speakers CLI route.",
         parameters=(ParamSpec("cluster_id", "path", required=True),),
@@ -528,7 +527,7 @@ OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="speakers.sentences",
         method="GET",
-        rule="/app/speakers/api/review-cli/{day}/{stream}/{segment_key}/{source}",
+        rule="/app/speakers/api/review-cli/<day>/<stream>/<segment_key>/<source>",
         summary="Speakers sentences",
         description="Native speakers CLI route.",
         parameters=(
