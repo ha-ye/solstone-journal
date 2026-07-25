@@ -8,7 +8,8 @@ import contextlib
 import json
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,6 +24,12 @@ from tests.link.secure_listener_harness import SecureListenerHarness
 class _DrainGate:
     entered: asyncio.Event
     release: asyncio.Event
+
+
+@dataclass
+class _PendingDrain:
+    data: bytearray = field(default_factory=bytearray)
+    flushed: asyncio.Event | None = None
 
 
 def _pair_body(label: str) -> dict[str, str]:
@@ -40,7 +47,7 @@ def _install_listener_drain_gate(
     release = asyncio.Event()
     real_write = asyncio.StreamWriter.write
     real_drain = asyncio.StreamWriter.drain
-    pending: dict[asyncio.StreamWriter, bytearray] = {}
+    pending: dict[asyncio.StreamWriter, _PendingDrain] = {}
     armed = True
 
     def _in_listener_loop() -> bool:
@@ -50,23 +57,32 @@ def _install_listener_drain_gate(
             return False
 
     def gated_write(self: asyncio.StreamWriter, data: bytes) -> None:
-        nonlocal armed
-        if armed and _in_listener_loop() and gate_when():
-            pending.setdefault(self, bytearray()).extend(data)
+        if _in_listener_loop() and (self in pending or (armed and gate_when())):
+            pending.setdefault(self, _PendingDrain()).data.extend(data)
             return
         real_write(self, data)
 
     async def gated_drain(self: asyncio.StreamWriter) -> None:
         nonlocal armed
-        buffered = pending.pop(self, None)
+        buffered = pending.get(self)
         if buffered is None:
             await real_drain(self)
             return
+        if buffered.flushed is not None:
+            await buffered.flushed.wait()
+            return
+        buffered.flushed = asyncio.Event()
         armed = False
         entered.set()
-        await release.wait()
-        real_write(self, bytes(buffered))
-        await real_drain(self)
+        try:
+            await release.wait()
+            data = bytes(buffered.data)
+            pending.pop(self, None)
+            if data:
+                real_write(self, data)
+            await real_drain(self)
+        finally:
+            buffered.flushed.set()
 
     monkeypatch.setattr(asyncio.StreamWriter, "write", gated_write)
     monkeypatch.setattr(asyncio.StreamWriter, "drain", gated_drain)
@@ -96,7 +112,7 @@ def _assert_complete_pair_response(
     harness: SecureListenerHarness,
     response: join_cli.PairResponse,
     payload: dict[str, Any],
-) -> str:
+) -> None:
     assert response.client_cert
     assert response.ca_chain
     assert response.instance_id
@@ -104,7 +120,6 @@ def _assert_complete_pair_response(
     assert isinstance(fingerprint, str)
     assert fingerprint.startswith("sha256:")
     assert harness.authorized.get(fingerprint) is not None
-    return fingerprint
 
 
 def _only_certless_handle(harness: SecureListenerHarness) -> Any:
@@ -176,7 +191,7 @@ def _run_two_request_pairing_client(
     ],
 )
 async def test_real_secure_listener_certless_pair_survives_forced_reap(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     nonce: str,
@@ -211,7 +226,7 @@ async def test_real_secure_listener_certless_pair_survives_forced_reap(
 
 @pytest.mark.asyncio
 async def test_reaper_skips_inflight_pair_after_pair_lock_released(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     label = "lock-phone"
@@ -250,7 +265,7 @@ async def test_reaper_skips_inflight_pair_after_pair_lock_released(
 
 @pytest.mark.asyncio
 async def test_inflight_certless_pair_does_not_reopen_window_for_second_request(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     label = "second-phone"
@@ -302,7 +317,7 @@ async def test_inflight_certless_pair_does_not_reopen_window_for_second_request(
 
 @pytest.mark.asyncio
 async def test_stop_returns_promptly_with_pair_response_in_flight(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     label = "stop-phone"

@@ -18,14 +18,16 @@ from solstone.convey.secure_listener import runtime as rt
 from solstone.convey.secure_listener.accept import (
     CERTLESS_PAIR_FAILURE_CAP,
     CERTLESS_TUNNEL_CAP,
+    CertlessConnection,
     SecureListener,
     certless_admission_mode,
 )
-from solstone.convey.secure_listener.wsgi import DispatchResult
+from solstone.think.link import client as link_client
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
 from solstone.think.link.paths import ca_dir, nonces_path, state_path
 from tests.link.certless_helpers import write_config
+from tests.link.secure_listener_harness import SecureListenerHarness
 
 
 def test_reuse_port_allows_coexisting_bind():
@@ -394,27 +396,51 @@ async def test_certless_reap_two_live_nonces_consuming_one_keeps_idle_connection
 
 
 @pytest.mark.asyncio
-async def test_certless_pair_failure_cap_tears_down_after_third_pair_failure() -> None:
-    listener = _listener()
-    handle, writer, mux, task = _register_fake_certless(listener)
-    result = DispatchResult(endpoint="app:network.pair", status=403)
+async def test_certless_pair_failure_cap_tears_down_after_third_pair_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = await SecureListenerHarness.start(tmp_path, monkeypatch)
+    close_complete = asyncio.Event()
+    real_close = harness.listener._close_certless_connection
+    session: link_client.TunnelSession | None = None
+    tcp_writer: asyncio.StreamWriter | None = None
 
+    async def observed_close(handle: CertlessConnection) -> None:
+        await real_close(handle)
+        close_complete.set()
+
+    monkeypatch.setattr(harness.listener, "_close_certless_connection", observed_close)
     try:
-        for _index in range(CERTLESS_PAIR_FAILURE_CAP - 1):
-            assert await listener._record_certless_dispatch(handle, result) is False
-            assert handle.connection_id in listener._certless_connections
+        harness.seed_nonce("10000000000000000000000000000031", "failure-phone")
+        tcp_reader, tcp_writer = await asyncio.open_connection(
+            harness.host, harness.port
+        )
+        session = await link_client._open_pairing_session(
+            link_client._TcpEncryptedTransport(tcp_reader, tcp_writer),
+        )
 
-        assert await listener._record_certless_dispatch(handle, result) is True
-        await listener._close_certless_connection(handle)
+        for _index in range(CERTLESS_PAIR_FAILURE_CAP):
+            status, _headers, _body = await session.request(
+                "POST",
+                "/app/network/pair",
+                headers={"content-type": "application/json"},
+                body=b"{}",
+            )
+            assert status == 400
 
-        assert handle.connection_id not in listener._certless_connections
-        assert writer.closed is True
-        assert mux.closed is True
+        await asyncio.wait_for(close_complete.wait(), timeout=5.0)
+
+        assert harness.listener._certless_connections == {}
     finally:
-        if handle.connection_id in listener._certless_connections:
-            await listener._close_certless_connection(handle)
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if session is not None:
+            with contextlib.suppress(Exception):
+                await session.close()
+        elif tcp_writer is not None:
+            tcp_writer.close()
+            with contextlib.suppress(Exception):
+                await tcp_writer.wait_closed()
+        await harness.close()
 
 
 @pytest.mark.asyncio

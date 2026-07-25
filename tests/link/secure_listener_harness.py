@@ -36,12 +36,12 @@ class SecureListenerHarness:
 
     @classmethod
     async def start(
-        cls,
+        cls: type[SecureListenerHarness],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         *,
         link: dict[str, Any] | None = None,
-    ) -> "SecureListenerHarness":
+    ) -> SecureListenerHarness:
         app, journal = make_convey_app(
             tmp_path,
             monkeypatch,
