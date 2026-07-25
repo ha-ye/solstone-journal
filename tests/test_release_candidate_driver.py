@@ -835,10 +835,12 @@ def _assert_reserved_parent_failure(
     denied_access: bool = False,
 ) -> None:
     policy = driver.DIST_PREFLIGHT_POLICIES[operation]
-    expected_error = (
-        policy.reserved_access_error if denied_access else policy.reserved_unsafe_error
-    )
-    assert expected_error is not None
+    if denied_access:
+        reserved_access = policy.reserved_access
+        assert reserved_access is not None
+        expected_error = reserved_access.access_error
+    else:
+        expected_error = policy.reserved_unsafe_error
     assert exc.value.failures[0].error == expected_error
     assert exc.value.failures[0].expected == driver._reserved_expected(policy)
     assert exc.value.failures[0].actual == actual

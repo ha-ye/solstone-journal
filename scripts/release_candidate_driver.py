@@ -167,18 +167,6 @@ class DistPreflightPolicy:
     reserved_unsafe_error: str
     reserved_check_error: str
 
-    @property
-    def reserved_access_prose(self) -> str | None:
-        if self.reserved_access is None:
-            return None
-        return self.reserved_access.access_prose
-
-    @property
-    def reserved_access_error(self) -> str | None:
-        if self.reserved_access is None:
-            return None
-        return self.reserved_access.access_error
-
 
 @dataclass(frozen=True)
 class DistPreflightVerdict:
