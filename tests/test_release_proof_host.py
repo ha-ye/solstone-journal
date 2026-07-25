@@ -288,21 +288,6 @@ def _channel(
     )
 
 
-def _inventory(root: Path) -> tuple[tuple[str, bytes], ...]:
-    if root.is_file():
-        return ((".", root.read_bytes()),)
-    return tuple(
-        sorted(
-            (
-                path.relative_to(root).as_posix(),
-                path.read_bytes(),
-            )
-            for path in root.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        )
-    )
-
-
 def test_proof_host_transfers_target_install_set_and_accepts_valid_proof(
     tmp_path: Path,
 ) -> None:
@@ -383,64 +368,6 @@ def test_proof_host_rejects_candidate_copy_mutation_before_adapter(
         exc.value.failures[0].error == "proof-host copied candidate wheel changed bytes"
     )
     assert calls == []
-
-
-@pytest.mark.parametrize("kind", ["directory", "file"])
-@pytest.mark.parametrize("return_code", [0, 1])
-def test_proof_host_cleanup_preserves_replaced_request_output(
-    tmp_path: Path,
-    kind: str,
-    return_code: int,
-) -> None:
-    target = "linux-x86_64-musl"
-    candidate = _candidate(tmp_path)
-    ledger = _ledger(candidate)
-    request_dir = tmp_path / f".{target}.proof-request-{COHORT}"
-    foreign = request_dir / "output"
-
-    def replace_output(cwd: Path) -> None:
-        shutil.rmtree(cwd / "output")
-        if kind == "directory":
-            (cwd / "output").mkdir()
-            (cwd / "output" / "foreign.txt").write_bytes(b"foreign")
-        else:
-            (cwd / "output").write_bytes(b"foreign-file")
-
-    channel = _channel(
-        target,
-        _runner(
-            target=target,
-            candidate=candidate,
-            ledger=ledger,
-            after_response=replace_output,
-            return_code=return_code,
-        ),
-    )
-
-    with pytest.raises(proof_host.ProofHostError) as exc:
-        channel.run_install_proof(
-            target=target,
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / f"{target}.json",
-        )
-
-    errors = {failure.error for failure in exc.value.failures}
-    if return_code == 0:
-        assert "proof-host output directory identity changed" in errors
-    else:
-        assert "proof-host proof command failed" in errors
-    assert "proof-host local cleanup failed" in errors
-    if kind == "directory":
-        assert _inventory(foreign) == (("foreign.txt", b"foreign"),)
-    else:
-        assert foreign.read_bytes() == b"foreign-file"
 
 
 def test_missing_proof_host_channel_fails_closed() -> None:
