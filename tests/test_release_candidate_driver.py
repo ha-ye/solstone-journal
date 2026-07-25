@@ -9,12 +9,13 @@ import inspect
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 import tomllib
 import zipfile
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -64,6 +65,10 @@ LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
 MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
 MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
 ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
+PRIOR_RETAINED_VERSION = "1.0.13"
+assert PRIOR_RETAINED_VERSION != checker._current_version()
+assert not PRIOR_RETAINED_VERSION.startswith(checker._current_version())
+assert not checker._current_version().startswith(PRIOR_RETAINED_VERSION)
 
 
 class GuardedEnv(dict):
@@ -644,17 +649,157 @@ def _recover(root: Path) -> driver.CandidateReport:
     )
 
 
-def _tree_snapshot(path: Path) -> dict[str, bytes]:
-    return {
-        item.relative_to(path).as_posix(): item.read_bytes()
-        for item in sorted(path.rglob("*"))
-        if item.is_file() and not item.is_symlink()
-    }
+@dataclass(frozen=True)
+class TreeSnapshotEntry:
+    relative: str
+    kind: str
+    mode: int
+    symlink_target: str | None
+    empty_dir: bool
+    size: int | None
+    sha256: str | None
 
 
-def _skip_if_root_chmod_is_ignored() -> None:
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        pytest.skip("root bypasses chmod permission checks")
+def _snapshot_kind(mode: int) -> str:
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return "regular"
+    return "special"
+
+
+def _structural_snapshot(path: Path) -> tuple[TreeSnapshotEntry, ...]:
+    if not path.exists() and not path.is_symlink():
+        return ()
+    entries: list[TreeSnapshotEntry] = []
+
+    def visit(current: Path, relative: Path) -> None:
+        entry = current.lstat()
+        kind = _snapshot_kind(entry.st_mode)
+        children: list[Path] = []
+        symlink_target: str | None = None
+        size: int | None = None
+        digest: str | None = None
+        if kind == "symlink":
+            symlink_target = os.readlink(current)
+        elif kind == "regular":
+            data = current.read_bytes()
+            size = len(data)
+            digest = hashlib.sha256(data).hexdigest()
+        elif kind == "directory":
+            children = sorted(current.iterdir(), key=lambda child: child.name)
+        entries.append(
+            TreeSnapshotEntry(
+                relative=relative.as_posix() if relative.parts else ".",
+                kind=kind,
+                mode=stat.S_IMODE(entry.st_mode),
+                symlink_target=symlink_target,
+                empty_dir=kind == "directory" and not children,
+                size=size,
+                sha256=digest,
+            )
+        )
+        if kind == "directory":
+            for child in children:
+                visit(child, relative / child.name)
+
+    visit(path, Path())
+    return tuple(entries)
+
+
+def _access_spy(
+    monkeypatch: pytest.MonkeyPatch, *, denied_path: Path | None = None
+) -> list[tuple[Path, int]]:
+    original_access = os.access
+    recorded: list[tuple[Path, int]] = []
+
+    def access(path: object, mask: int, *args: object, **kwargs: object) -> bool:
+        recorded_path = Path(path)
+        recorded.append((recorded_path, mask))
+        if denied_path is not None and recorded_path == denied_path:
+            return False
+        return original_access(path, mask, *args, **kwargs)
+
+    monkeypatch.setattr(os, "access", access)
+    return recorded
+
+
+def _enumeration_spy(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    original_listdir = os.listdir
+    original_scandir = os.scandir
+    recorded: list[Path] = []
+
+    def record(path: object) -> None:
+        if isinstance(path, int):
+            return
+        try:
+            recorded.append(Path(path))
+        except TypeError:
+            return
+
+    def listdir(path: object = ".") -> list[str]:
+        record(path)
+        return original_listdir(path)
+
+    def scandir(path: object = ".") -> object:
+        record(path)
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
+    return recorded
+
+
+def _same_or_descendant(path: Path, parent: Path) -> bool:
+    return path == parent or path.is_relative_to(parent)
+
+
+def _write_directory_sentinel(path: Path) -> None:
+    marker = path / "inside" / "marker.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"inside {path.name}", encoding="utf-8")
+    outside = path.parent / f"outside-{path.name}.txt"
+    outside.write_text(f"outside {path.name}", encoding="utf-8")
+
+
+def _write_cleanup_preflight_sentinels(
+    root: Path,
+    dist_payload_root: Path | None,
+    *,
+    version: str,
+) -> None:
+    for path in (
+        root / "build",
+        root / "root-stale.egg-info",
+        root / "packages" / "solstone-journal" / "solstone_journal.egg-info",
+        root / "packages" / "solstone-journal-cuda" / "solstone_journal_cuda.egg-info",
+        root
+        / "packages"
+        / "solstone-journal-models"
+        / "solstone_journal_models.egg-info",
+        root / "target" / "release-evidence" / version,
+        root / "target" / "release-evidence" / f"{version}.staging",
+        root / "target" / "release-transfer" / version,
+        root / "target" / "release-transfer" / f".{version}.source.bundle",
+        root / "target" / "release-transfer" / f".{version}.request-abc123",
+        root / "target" / "release-zig-cache",
+    ):
+        _write_directory_sentinel(path)
+    if dist_payload_root is None:
+        return
+    dist_payload_root.mkdir(parents=True, exist_ok=True)
+    (dist_payload_root / "raw-build-output.whl").write_bytes(b"raw")
+    _write_directory_sentinel(dist_payload_root / "raw-dir")
+    reserved = dist_payload_root / driver.RESERVED_CANDIDATE_DIRNAME
+    for name in (
+        version,
+        f"{version}.payload-staging",
+        f"{version}.payload-staging.staging",
+        f"{version}.payload-staging.quarantine",
+    ):
+        _write_directory_sentinel(reserved / name)
 
 
 def _reserved_candidate_path(root: Path) -> Path:
@@ -683,14 +828,35 @@ def _existing_expected_artifact_facts(
 
 
 def _assert_reserved_parent_failure(
-    exc: pytest.ExceptionInfo[driver.DriverError], *, actual: str
+    exc: pytest.ExceptionInfo[driver.DriverError],
+    *,
+    operation: driver.DistPreflightOperation,
+    actual: str,
+    denied_access: bool = False,
 ) -> None:
+    policy = driver.DIST_PREFLIGHT_POLICIES[operation]
+    expected_error = (
+        policy.reserved_access_error if denied_access else policy.reserved_unsafe_error
+    )
+    assert expected_error is not None
+    assert exc.value.failures[0].error == expected_error
+    assert exc.value.failures[0].expected == driver._reserved_expected(policy)
+    assert exc.value.failures[0].actual == actual
+    assert exc.value.failures[0].repair == "bash scripts/release.sh --candidate"
+
+
+def _assert_dist_preflight_failure(
+    exc: pytest.ExceptionInfo[driver.DriverError],
+    *,
+    operation: driver.DistPreflightOperation,
+    actual: str,
+    denied_access: bool = False,
+) -> None:
+    policy = driver.DIST_PREFLIGHT_POLICIES[operation]
     assert exc.value.failures[0].error == (
-        "dist/release-candidate reserved parent is unsafe"
+        policy.dist_access_error if denied_access else policy.dist_unsafe_error
     )
-    assert exc.value.failures[0].expected == (
-        "dist/release-candidate absent or an owned non-symlink readable directory"
-    )
+    assert exc.value.failures[0].expected == driver._dist_expected(policy)
     assert exc.value.failures[0].actual == actual
     assert exc.value.failures[0].repair == "bash scripts/release.sh --candidate"
 
@@ -754,8 +920,8 @@ def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
 ) -> None:
     root = _repo(tmp_path)
     report = driver.run_candidate(root, _env(), _services(root))
-    before_payload = _tree_snapshot(report.release_dir)
-    before_evidence = _tree_snapshot(report.evidence_dir)
+    before_payload = _structural_snapshot(report.release_dir)
+    before_evidence = _structural_snapshot(report.evidence_dir)
     (root / "pyproject.toml").unlink()
     shutil.rmtree(root / "packages")
 
@@ -766,8 +932,8 @@ def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
     )
 
     assert recovered.heading == "retained-candidate-valid"
-    assert _tree_snapshot(report.release_dir) == before_payload
-    assert _tree_snapshot(report.evidence_dir) == before_evidence
+    assert _structural_snapshot(report.release_dir) == before_payload
+    assert _structural_snapshot(report.evidence_dir) == before_evidence
 
 
 def test_recovery_ignores_current_release_metadata_drift(
@@ -798,16 +964,16 @@ def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
 ) -> None:
     root = _repo(tmp_path)
     report = driver.run_candidate(root, _env(), _services(root))
-    before_payload = _tree_snapshot(report.release_dir)
-    before_evidence = _tree_snapshot(report.evidence_dir)
+    before_payload = _structural_snapshot(report.release_dir)
+    before_evidence = _structural_snapshot(report.evidence_dir)
     raw_dist_file = root / "dist" / "raw-build-output.whl"
     raw_dist_file.write_bytes(b"raw")
 
     driver._default_clean_outputs(root, "9.9.9")
 
     assert not raw_dist_file.exists()
-    assert _tree_snapshot(report.release_dir) == before_payload
-    assert _tree_snapshot(report.evidence_dir) == before_evidence
+    assert _structural_snapshot(report.release_dir) == before_payload
+    assert _structural_snapshot(report.evidence_dir) == before_evidence
     recovered = driver.run_recover(
         root,
         version=report.version,
@@ -1867,11 +2033,11 @@ def test_local_dist_inventory_accepts_owned_reserved_candidate_parent_for_both_m
     reserved = _reserved_candidate_path(root)
     (reserved / "retained" / "marker.txt").parent.mkdir(parents=True)
     (reserved / "retained" / "marker.txt").write_text("keep", encoding="utf-8")
-    before = _tree_snapshot(reserved)
+    before = _structural_snapshot(reserved)
 
     driver._validate_local_dist_inventory(root / "dist", include_models=include_models)
 
-    assert _tree_snapshot(reserved) == before
+    assert _structural_snapshot(reserved) == before
 
 
 def test_local_dist_inventory_does_not_enumerate_reserved_candidate_parent(
@@ -1924,6 +2090,28 @@ def test_local_dist_inventory_accepts_first_release_without_reserved_candidate_p
     driver._validate_local_dist_inventory(root / "dist", include_models=False)
 
 
+def test_local_dist_inventory_rejects_denied_dist_read_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+    dist = root / "dist"
+    facts_before = _existing_expected_artifact_facts(root, include_models=False)
+    access_calls = _access_spy(monkeypatch, denied_path=dist)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._validate_local_dist_inventory(dist, include_models=False)
+
+    _assert_dist_preflight_failure(
+        exc,
+        operation="inventory",
+        actual="dist/ lacks read/search access",
+        denied_access=True,
+    )
+    assert access_calls == [(dist, os.R_OK | os.X_OK)]
+    assert _existing_expected_artifact_facts(root, include_models=False) == facts_before
+
+
 def test_fresh_cleanup_preserves_retained_candidates_and_removes_only_current_candidate_transients(
     tmp_path: Path,
 ) -> None:
@@ -1931,7 +2119,7 @@ def test_fresh_cleanup_preserves_retained_candidates_and_removes_only_current_ca
     version = checker._current_version()
     reserved = _reserved_candidate_path(root)
     prior_names = (
-        f"prior-{version}",
+        PRIOR_RETAINED_VERSION,
         f"{version}0",
         f"{version}0.payload-staging",
     )
@@ -1939,7 +2127,9 @@ def test_fresh_cleanup_preserves_retained_candidates_and_removes_only_current_ca
         marker = reserved / name / "nested" / "marker.txt"
         marker.parent.mkdir(parents=True)
         marker.write_text(f"keep {name}", encoding="utf-8")
-    retained_before = {name: _tree_snapshot(reserved / name) for name in prior_names}
+    retained_before = {
+        name: _structural_snapshot(reserved / name) for name in prior_names
+    }
     lock = reserved / ".rust-release-candidate.lock"
     lock.write_text("lock", encoding="utf-8")
     lock_before = lock.read_bytes()
@@ -1960,33 +2150,39 @@ def test_fresh_cleanup_preserves_retained_candidates_and_removes_only_current_ca
 
     driver._default_clean_outputs(root, version)
 
-    assert {name: _tree_snapshot(reserved / name) for name in prior_names} == (
-        retained_before
-    )
+    retained_after_cleanup = {
+        name: _structural_snapshot(reserved / name) for name in prior_names
+    }
+    assert retained_after_cleanup == retained_before
     assert lock.read_bytes() == lock_before
     assert all(not path.exists() for path in current_paths)
     assert all(not path.exists() for path in raw_artifacts)
 
     _write_expected_local_dist(root, include_models=False)
     driver._validate_local_dist_inventory(root / "dist", include_models=False)
+    assert {name: _structural_snapshot(reserved / name) for name in prior_names} == (
+        retained_before
+    )
 
 
 @pytest.mark.parametrize(
     ("reserved_kind", "actual"),
     [
-        ("symlink", "symlink"),
-        ("regular", "regular file"),
-        ("fifo", "special file"),
-        ("unusable-directory", "directory without read/search access"),
+        ("symlink", "dist/release-candidate is symlink"),
+        ("regular", "dist/release-candidate is regular file"),
+        ("fifo", "dist/release-candidate is special file"),
+        (
+            "denied-directory",
+            "dist/release-candidate lacks write/search access",
+        ),
     ],
 )
 def test_fresh_cleanup_rejects_unsafe_reserved_candidate_parent_before_any_mutation(
     tmp_path: Path,
     reserved_kind: str,
     actual: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if reserved_kind == "unusable-directory":
-        _skip_if_root_chmod_is_ignored()
     root = _repo(tmp_path)
     version = checker._current_version()
     build_keep = root / "build" / "keep"
@@ -1995,116 +2191,193 @@ def test_fresh_cleanup_rejects_unsafe_reserved_candidate_parent_before_any_mutat
     reserved = _reserved_candidate_path(root)
     reserved.parent.mkdir(parents=True)
     outside = tmp_path / "outside"
-    outside_before: dict[str, bytes] | None = None
+    outside_before: tuple[TreeSnapshotEntry, ...] | None = None
     if reserved_kind == "symlink":
         marker = outside / version / "nested" / "keep.txt"
         marker.parent.mkdir(parents=True)
         marker.write_text("keep", encoding="utf-8")
-        outside_before = _tree_snapshot(outside)
+        outside_before = _structural_snapshot(outside)
         reserved.symlink_to(outside, target_is_directory=True)
     elif reserved_kind == "regular":
         reserved.write_text("unsafe", encoding="utf-8")
     elif reserved_kind == "fifo":
         os.mkfifo(reserved)
-    elif reserved_kind == "unusable-directory":
+    elif reserved_kind == "denied-directory":
         reserved.mkdir()
-        reserved.chmod(0)
 
-    try:
-        with pytest.raises(driver.DriverError) as exc:
-            driver._default_clean_outputs(root, version)
-    finally:
-        if reserved_kind == "unusable-directory" and reserved.exists():
-            reserved.chmod(0o700)
-
-    _assert_reserved_parent_failure(exc, actual=actual)
-    assert build_keep.read_text(encoding="utf-8") == "keep"
-    if reserved_kind == "symlink":
-        assert reserved.is_symlink()
-        assert outside_before is not None
-        assert _tree_snapshot(outside) == outside_before
-
-
-def test_fresh_cleanup_does_not_reach_candidate_transients_through_a_symlinked_dist(
-    tmp_path: Path,
-) -> None:
-    root = _repo(tmp_path)
-    version = checker._current_version()
-    outside = tmp_path / "outside"
-    transient_parent = outside / driver.RESERVED_CANDIDATE_DIRNAME
-    # These mirror _payload_transient_paths; without the verdict gate, cleanup
-    # would reach them through the symlinked dist and rmtree the external dirs.
-    transient_names = (
-        version,
-        f"{version}.payload-staging",
-        f"{version}.payload-staging.staging",
-        f"{version}.payload-staging.quarantine",
+    access_calls = _access_spy(
+        monkeypatch,
+        denied_path=reserved if reserved_kind == "denied-directory" else None,
     )
-    for name in transient_names:
-        marker = transient_parent / name / "nested" / "marker.txt"
-        marker.parent.mkdir(parents=True)
-        marker.write_text(f"keep {name}", encoding="utf-8")
-    before = _tree_snapshot(outside)
-    dist = root / "dist"
-    dist.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(driver.DriverError) as exc:
         driver._default_clean_outputs(root, version)
 
-    assert any("symlink residue" in failure.error for failure in exc.value.failures)
-    assert dist.is_symlink()
-    assert _tree_snapshot(outside) == before
+    denied_access = reserved_kind == "denied-directory"
+    _assert_reserved_parent_failure(
+        exc,
+        operation="cleanup",
+        actual=actual,
+        denied_access=denied_access,
+    )
+    expected_access_calls = [(root / "dist", os.R_OK | os.W_OK | os.X_OK)]
+    if denied_access:
+        expected_access_calls.append((reserved, os.W_OK | os.X_OK))
+    assert access_calls == expected_access_calls
+    assert build_keep.read_text(encoding="utf-8") == "keep"
+    if reserved_kind == "symlink":
+        assert reserved.is_symlink()
+        assert outside_before is not None
+        assert _structural_snapshot(outside) == outside_before
+
+
+@pytest.mark.parametrize(
+    ("dist_kind", "actual"),
+    [
+        ("symlink", "dist/ is symlink"),
+        ("regular", "dist/ is regular file"),
+        ("fifo", "dist/ is special file"),
+        ("denied-directory", "dist/ lacks read/write/search access"),
+    ],
+)
+def test_fresh_cleanup_rejects_unsafe_dist_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dist_kind: str,
+    actual: str,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    dist = root / "dist"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "external-target" / "marker.txt").parent.mkdir()
+    (outside / "external-target" / "marker.txt").write_text(
+        "external", encoding="utf-8"
+    )
+    if dist_kind == "symlink":
+        _write_cleanup_preflight_sentinels(root, outside, version=version)
+        dist.symlink_to(outside, target_is_directory=True)
+    elif dist_kind == "regular":
+        _write_cleanup_preflight_sentinels(root, None, version=version)
+        dist.write_text("unsafe", encoding="utf-8")
+    elif dist_kind == "fifo":
+        _write_cleanup_preflight_sentinels(root, None, version=version)
+        os.mkfifo(dist)
+    elif dist_kind == "denied-directory":
+        _write_cleanup_preflight_sentinels(root, dist, version=version)
+
+    root_before = _structural_snapshot(root)
+    outside_before = _structural_snapshot(outside)
+    blocked_calls: list[str] = []
+
+    def fail_if_called(name: str) -> object:
+        def wrapper(*_args: object, **_kwargs: object) -> object:
+            blocked_calls.append(name)
+            raise AssertionError(f"{name} must not run after failed dist preflight")
+
+        return wrapper
+
+    for name in (
+        "_remove_owned_path",
+        "_remove_owned_relative",
+        "_owned_glob",
+        "_clean_raw_dist_outputs",
+        "_payload_transient_paths",
+    ):
+        monkeypatch.setattr(driver, name, fail_if_called(name))
+    access_calls = _access_spy(
+        monkeypatch,
+        denied_path=dist if dist_kind == "denied-directory" else None,
+    )
+    with monkeypatch.context() as enumeration_patch:
+        enumerated = _enumeration_spy(enumeration_patch)
+
+        with pytest.raises(driver.DriverError) as exc:
+            driver._default_clean_outputs(root, version)
+
+        assert blocked_calls == []
+        assert all(not _same_or_descendant(path, dist) for path in enumerated)
+
+    _assert_dist_preflight_failure(
+        exc,
+        operation="cleanup",
+        actual=actual,
+        denied_access=dist_kind == "denied-directory",
+    )
+    expected_access_calls: list[tuple[Path, int]] = []
+    if dist_kind == "denied-directory":
+        expected_access_calls.append((dist, os.R_OK | os.W_OK | os.X_OK))
+    assert access_calls == expected_access_calls
+    assert _structural_snapshot(root) == root_before
+    assert _structural_snapshot(outside) == outside_before
 
 
 @pytest.mark.parametrize(
     ("reserved_kind", "actual"),
     [
-        ("symlink", "symlink"),
-        ("regular", "regular file"),
-        ("fifo", "special file"),
-        ("unusable-directory", "directory without read/search access"),
+        ("symlink", "dist/release-candidate is symlink"),
+        ("regular", "dist/release-candidate is regular file"),
+        ("fifo", "dist/release-candidate is special file"),
     ],
 )
 def test_local_dist_inventory_rejects_unsafe_reserved_candidate_parent_without_mutating_artifacts(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     reserved_kind: str,
     actual: str,
 ) -> None:
-    if reserved_kind == "unusable-directory":
-        _skip_if_root_chmod_is_ignored()
     root = _repo(tmp_path)
     _write_expected_local_dist(root, include_models=False)
     facts_before = _existing_expected_artifact_facts(root, include_models=False)
     reserved = _reserved_candidate_path(root)
     outside = tmp_path / "outside"
-    outside_before: dict[str, bytes] | None = None
+    outside_before: tuple[TreeSnapshotEntry, ...] | None = None
     if reserved_kind == "symlink":
         marker = outside / "nested" / "keep.txt"
         marker.parent.mkdir(parents=True)
         marker.write_text("keep", encoding="utf-8")
-        outside_before = _tree_snapshot(outside)
+        outside_before = _structural_snapshot(outside)
         reserved.symlink_to(outside, target_is_directory=True)
     elif reserved_kind == "regular":
         reserved.write_text("unsafe", encoding="utf-8")
     elif reserved_kind == "fifo":
         os.mkfifo(reserved)
-    elif reserved_kind == "unusable-directory":
-        reserved.mkdir()
-        reserved.chmod(0)
+    access_calls = _access_spy(monkeypatch)
 
-    try:
-        with pytest.raises(driver.DriverError) as exc:
-            driver._validate_local_dist_inventory(root / "dist", include_models=False)
-    finally:
-        if reserved_kind == "unusable-directory" and reserved.exists():
-            reserved.chmod(0o700)
+    with pytest.raises(driver.DriverError) as exc:
+        driver._validate_local_dist_inventory(root / "dist", include_models=False)
 
-    _assert_reserved_parent_failure(exc, actual=actual)
+    _assert_reserved_parent_failure(exc, operation="inventory", actual=actual)
+    assert access_calls == [(root / "dist", os.R_OK | os.X_OK)]
     assert _existing_expected_artifact_facts(root, include_models=False) == facts_before
     if reserved_kind == "symlink":
         assert reserved.is_symlink()
         assert outside_before is not None
-        assert _tree_snapshot(outside) == outside_before
+        assert _structural_snapshot(outside) == outside_before
+
+
+def test_local_dist_inventory_accepts_reserved_directory_without_reserved_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+    reserved = _reserved_candidate_path(root)
+    marker = reserved / "retained" / "marker.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("keep", encoding="utf-8")
+    reserved.chmod(0o700)
+    before = _structural_snapshot(reserved)
+    access_calls = _access_spy(monkeypatch, denied_path=reserved)
+
+    try:
+        reserved.chmod(0)
+        driver._validate_local_dist_inventory(root / "dist", include_models=False)
+    finally:
+        reserved.chmod(0o700)
+
+    assert access_calls == [(root / "dist", os.R_OK | os.X_OK)]
+    assert _structural_snapshot(reserved) == before
 
 
 @pytest.mark.parametrize(
@@ -2201,7 +2474,14 @@ def test_fresh_cleanup_preserves_symlink_targets_and_surfaces_residue(
 
     assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert link.is_symlink()
-    assert any("symlink residue" in failure.error for failure in exc.value.failures)
+    if relative == "dist":
+        _assert_dist_preflight_failure(
+            exc,
+            operation="cleanup",
+            actual="dist/ is symlink",
+        )
+    else:
+        assert any("symlink residue" in failure.error for failure in exc.value.failures)
 
 
 @pytest.mark.parametrize(

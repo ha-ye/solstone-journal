@@ -18,7 +18,7 @@ import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from scripts.check_extras_consistency import WORKSPACE_SOURCES
 from scripts.check_release_preflight import (
@@ -106,9 +106,10 @@ ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
 RESERVED_CANDIDATE_DIRNAME = "release-candidate"
-RESERVED_CANDIDATE_EXPECTED = (
-    "dist/release-candidate absent or an owned non-symlink readable directory"
-)
+
+DistPreflightOperation = Literal["cleanup", "inventory"]
+DistState = Literal["missing", "directory", "unsafe"]
+ReservedState = Literal["unchecked", "absent", "directory", "unsafe"]
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,86 @@ class CandidateServices:
     cleanup_transients: Callable[[Sequence[Path]], None]
     run_install_proof: Callable[..., Path]
     transaction_hook: Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class ReservedAccessPolicy:
+    mask: int
+    access_prose: str
+    access_error: str
+
+
+@dataclass(frozen=True)
+class DistPreflightPolicy:
+    dist_mask: int
+    reserved_access: ReservedAccessPolicy | None
+    dist_access_prose: str
+    dist_unsafe_error: str
+    dist_access_error: str
+    reserved_unsafe_error: str
+    reserved_check_error: str
+
+    @property
+    def reserved_access_prose(self) -> str | None:
+        if self.reserved_access is None:
+            return None
+        return self.reserved_access.access_prose
+
+    @property
+    def reserved_access_error(self) -> str | None:
+        if self.reserved_access is None:
+            return None
+        return self.reserved_access.access_error
+
+
+@dataclass(frozen=True)
+class DistPreflightVerdict:
+    dist_state: DistState
+    reserved_state: ReservedState
+    failures: tuple[Failure, ...]
+
+
+DIST_PREFLIGHT_POLICIES: Mapping[DistPreflightOperation, DistPreflightPolicy] = {
+    "cleanup": DistPreflightPolicy(
+        dist_mask=os.R_OK | os.W_OK | os.X_OK,
+        reserved_access=ReservedAccessPolicy(
+            mask=os.W_OK | os.X_OK,
+            access_prose="write/search access",
+            access_error=(
+                "fresh release cleanup cannot use dist/release-candidate reserved "
+                "parent with denied access"
+            ),
+        ),
+        dist_access_prose="read/write/search access",
+        dist_unsafe_error="fresh release cleanup requires dist/ to be an owned directory",
+        dist_access_error="fresh release cleanup cannot use dist/ with denied access",
+        reserved_unsafe_error=(
+            "fresh release cleanup found unsafe dist/release-candidate reserved parent"
+        ),
+        reserved_check_error=(
+            "fresh release cleanup could not inspect dist/release-candidate reserved parent"
+        ),
+    ),
+    "inventory": DistPreflightPolicy(
+        dist_mask=os.R_OK | os.X_OK,
+        reserved_access=None,
+        dist_access_prose="read/search access",
+        dist_unsafe_error=(
+            "local release build inventory requires dist/ to be an owned directory"
+        ),
+        dist_access_error=(
+            "local release build inventory cannot use dist/ with denied access"
+        ),
+        reserved_unsafe_error=(
+            "local release build inventory found unsafe "
+            "dist/release-candidate reserved parent"
+        ),
+        reserved_check_error=(
+            "local release build inventory could not inspect "
+            "dist/release-candidate reserved parent"
+        ),
+    ),
+}
 
 
 class DriverError(RuntimeError):
@@ -324,58 +405,132 @@ def _owned_glob(
     return list(parent.glob(pattern)), []
 
 
-def _reserved_candidate_directory_state(dist_dir: Path) -> tuple[bool, list[Failure]]:
-    """Report whether dist/release-candidate is a present, owned, usable directory."""
+def _path_kind(entry: os.stat_result) -> str:
+    if stat.S_ISLNK(entry.st_mode):
+        return "symlink"
+    if stat.S_ISREG(entry.st_mode):
+        return "regular file"
+    if stat.S_ISDIR(entry.st_mode):
+        return "directory"
+    return "special file"
+
+
+def _dist_expected(policy: DistPreflightPolicy) -> str:
+    return f"dist/ owned non-symlink directory with {policy.dist_access_prose}"
+
+
+def _reserved_expected(policy: DistPreflightPolicy) -> str:
+    expected = "dist/release-candidate absent or an owned non-symlink directory"
+    if policy.reserved_access is not None:
+        expected = f"{expected} with {policy.reserved_access.access_prose}"
+    return expected
+
+
+def _dist_preflight(
+    dist_dir: Path, *, operation: DistPreflightOperation
+) -> DistPreflightVerdict:
+    """Check dist and its retained-candidate child before release mutations."""
+    policy = DIST_PREFLIGHT_POLICIES[operation]
     try:
         dist_entry = dist_dir.lstat()
     except FileNotFoundError:
-        return False, []
+        return DistPreflightVerdict(
+            dist_state="missing", reserved_state="unchecked", failures=()
+        )
     if stat.S_ISLNK(dist_entry.st_mode) or not stat.S_ISDIR(dist_entry.st_mode):
-        return False, []
+        return DistPreflightVerdict(
+            dist_state="unsafe",
+            reserved_state="unchecked",
+            failures=(
+                _failure(
+                    policy.dist_unsafe_error,
+                    expected=_dist_expected(policy),
+                    actual=f"dist/ is {_path_kind(dist_entry)}",
+                    repair="bash scripts/release.sh --candidate",
+                ),
+            ),
+        )
+    if not os.access(dist_dir, policy.dist_mask):
+        return DistPreflightVerdict(
+            dist_state="directory",
+            reserved_state="unchecked",
+            failures=(
+                _failure(
+                    policy.dist_access_error,
+                    expected=_dist_expected(policy),
+                    actual=f"dist/ lacks {policy.dist_access_prose}",
+                    repair="bash scripts/release.sh --candidate",
+                ),
+            ),
+        )
     path = dist_dir / RESERVED_CANDIDATE_DIRNAME
     try:
         entry = path.lstat()
     except FileNotFoundError:
-        return False, []
-    except OSError as exc:
-        return False, [
-            _failure(
-                "dist/release-candidate reserved parent could not be checked",
-                expected=RESERVED_CANDIDATE_EXPECTED,
-                actual=type(exc).__name__,
-                repair="bash scripts/release.sh --candidate",
-            )
-        ]
-    if stat.S_ISLNK(entry.st_mode):
-        actual = "symlink"
-    elif stat.S_ISREG(entry.st_mode):
-        actual = "regular file"
-    elif stat.S_ISDIR(entry.st_mode):
-        if os.access(path, os.R_OK | os.X_OK):
-            return True, []
-        actual = "directory without read/search access"
-    else:
-        actual = "special file"
-    return False, [
-        _failure(
-            "dist/release-candidate reserved parent is unsafe",
-            expected=RESERVED_CANDIDATE_EXPECTED,
-            actual=actual,
-            repair="bash scripts/release.sh --candidate",
+        return DistPreflightVerdict(
+            dist_state="directory", reserved_state="absent", failures=()
         )
-    ]
+    except OSError as exc:
+        return DistPreflightVerdict(
+            dist_state="directory",
+            reserved_state="unsafe",
+            failures=(
+                _failure(
+                    policy.reserved_check_error,
+                    expected=_reserved_expected(policy),
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --candidate",
+                ),
+            ),
+        )
+    if stat.S_ISLNK(entry.st_mode):
+        actual = "dist/release-candidate is symlink"
+    elif stat.S_ISREG(entry.st_mode):
+        actual = "dist/release-candidate is regular file"
+    elif stat.S_ISDIR(entry.st_mode):
+        if policy.reserved_access is None:
+            return DistPreflightVerdict(
+                dist_state="directory", reserved_state="directory", failures=()
+            )
+        if os.access(path, policy.reserved_access.mask):
+            return DistPreflightVerdict(
+                dist_state="directory", reserved_state="directory", failures=()
+            )
+        return DistPreflightVerdict(
+            dist_state="directory",
+            reserved_state="unsafe",
+            failures=(
+                _failure(
+                    policy.reserved_access.access_error,
+                    expected=_reserved_expected(policy),
+                    actual=(
+                        "dist/release-candidate lacks "
+                        f"{policy.reserved_access.access_prose}"
+                    ),
+                    repair="bash scripts/release.sh --candidate",
+                ),
+            ),
+        )
+    else:
+        actual = "dist/release-candidate is special file"
+    return DistPreflightVerdict(
+        dist_state="directory",
+        reserved_state="unsafe",
+        failures=(
+            _failure(
+                policy.reserved_unsafe_error,
+                expected=_reserved_expected(policy),
+                actual=actual,
+                repair="bash scripts/release.sh --candidate",
+            ),
+        ),
+    )
 
 
-def _clean_raw_dist_outputs(
-    root: Path, *, reserved_candidate_directory: bool
-) -> list[Failure]:
-    dist = root / "dist"
-    try:
-        entry = dist.lstat()
-    except FileNotFoundError:
+def _clean_raw_dist_outputs(root: Path, verdict: DistPreflightVerdict) -> list[Failure]:
+    if verdict.dist_state != "directory":
         return []
-    if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
-        return _remove_owned_path(dist, label="dist")
+    dist = root / "dist"
     failures: list[Failure] = []
     try:
         children = sorted(dist.iterdir(), key=lambda path: path.name)
@@ -389,7 +544,10 @@ def _clean_raw_dist_outputs(
             )
         ]
     for child in children:
-        if reserved_candidate_directory and child.name == RESERVED_CANDIDATE_DIRNAME:
+        if (
+            verdict.reserved_state == "directory"
+            and child.name == RESERVED_CANDIDATE_DIRNAME
+        ):
             continue
         failures.extend(_remove_owned_path(child, label=f"dist/{child.name}"))
     return failures
@@ -415,18 +573,12 @@ def _source_bundle_staging_path(root: Path, version: str) -> Path:
 
 
 def _default_clean_outputs(root: Path, version: str) -> None:
-    reserved_candidate_directory, reserved_failures = (
-        _reserved_candidate_directory_state(root / "dist")
-    )
-    if reserved_failures:
-        raise DriverError(reserved_failures)
+    verdict = _dist_preflight(root / "dist", operation="cleanup")
+    if verdict.failures:
+        raise DriverError(verdict.failures)
     failures: list[Failure] = []
     failures.extend(_remove_owned_path(root / "build", label="build"))
-    failures.extend(
-        _clean_raw_dist_outputs(
-            root, reserved_candidate_directory=reserved_candidate_directory
-        )
-    )
+    failures.extend(_clean_raw_dist_outputs(root, verdict))
     root_egg_infos, root_glob_failures = _owned_glob(
         root, "*.egg-info", label="repository root"
     )
@@ -453,7 +605,7 @@ def _default_clean_outputs(root: Path, version: str) -> None:
         _zig_cache_root(root).relative_to(root),
     ):
         failures.extend(_remove_owned_relative(root, relative))
-    if reserved_candidate_directory:
+    if verdict.reserved_state == "directory":
         for path in _payload_transient_paths(root, version):
             failures.extend(_remove_owned_path(path, label=path.name))
     transfer_parent = root / "target" / "release-transfer"
@@ -927,8 +1079,9 @@ def _expected_local_dist_names(*, include_models: bool) -> frozenset[str]:
 
 
 def _validate_local_dist_inventory(dist_dir: Path, *, include_models: bool) -> None:
+    verdict = _dist_preflight(dist_dir, operation="inventory")
     failures: list[Failure] = []
-    if _is_missing(dist_dir):
+    if verdict.dist_state == "missing":
         raise DriverError(
             [
                 _failure(
@@ -939,29 +1092,14 @@ def _validate_local_dist_inventory(dist_dir: Path, *, include_models: bool) -> N
                 )
             ]
         )
-    try:
-        entry = dist_dir.lstat()
-    except FileNotFoundError:
-        entry = None
-    if entry is None or stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
-        raise DriverError(
-            [
-                _failure(
-                    "local release build dist is not an owned directory",
-                    expected="non-symlink dist directory",
-                    actual=dist_dir.name,
-                    repair="bash scripts/release.sh --candidate",
-                )
-            ]
-        )
-    reserved_candidate_directory, reserved_failures = (
-        _reserved_candidate_directory_state(dist_dir)
-    )
-    if reserved_failures:
-        raise DriverError(reserved_failures)
+    if verdict.failures:
+        raise DriverError(verdict.failures)
     names: set[str] = set()
     for path in dist_dir.iterdir():
-        if reserved_candidate_directory and path.name == RESERVED_CANDIDATE_DIRNAME:
+        if (
+            verdict.reserved_state == "directory"
+            and path.name == RESERVED_CANDIDATE_DIRNAME
+        ):
             continue
         child = path.lstat()
         if stat.S_ISREG(child.st_mode):
