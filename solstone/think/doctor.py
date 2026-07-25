@@ -746,6 +746,12 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
             "ok",
             f"{binary} alias absent or owned by this repo",
         )
+    if state is foreign and install_guard.is_app_owned_child_launcher(alias, binary):
+        return make_result(
+            check,
+            "ok",
+            f"~/.local/bin/{binary} is an app-owned child launcher for this runtime",
+        )
 
     if state in {cross_repo, dangling, foreign} and other is not None:
         tag = _recognized_legacy_target(other)

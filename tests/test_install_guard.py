@@ -544,6 +544,131 @@ class TestWrapperHelpers:
             install_guard.validate_journal_path_for_wrapper("/tmp/bad\npath")
 
 
+class TestAppOwnedChildLauncher:
+    @staticmethod
+    def write_app_owned_launcher(
+        home_root: Path,
+        *,
+        binary: str,
+        target: Path,
+        mode: int = 0o755,
+    ) -> tuple[Path, bytes, int]:
+        alias = home_root / ".local" / "bin" / binary
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text(
+            install_guard.render_app_owned_child_launcher(str(target), binary),
+            encoding="utf-8",
+        )
+        alias.chmod(mode)
+        return alias, alias.read_bytes(), alias.stat().st_mode & 0o777
+
+    def test_render_app_owned_child_launcher_exact_body(self):
+        content = install_guard.render_app_owned_child_launcher(
+            "/tmp/it's/bin/sol",
+            "sol",
+        )
+
+        assert (
+            content == "#!/bin/sh\n"
+            "# managed-version: app-owned-child\n"
+            "exec '/tmp/it'\\''s/bin/sol' \"$@\"\n"
+        )
+
+    def test_numeric_managed_wrappers_still_parse(self):
+        journal = "/tmp/solstone"
+        sol_bin = "/tmp/repo/.venv/bin/sol"
+        cases = [
+            (render_v1_wrapper(journal, sol_bin), 1),
+            (render_v2_wrapper(journal=journal, sol_bin=sol_bin), 2),
+            (render_v3_wrapper(journal=journal, sol_bin=sol_bin), 3),
+            (render_v4_wrapper(journal=journal, sol_bin=sol_bin), 4),
+            (render_v5_wrapper(journal=journal, sol_bin=sol_bin), 5),
+            (render_v6_wrapper(journal=journal, sol_bin=sol_bin), 6),
+            (install_guard.render_wrapper(journal, sol_bin, "sol"), 7),
+        ]
+
+        for content, version in cases:
+            assert install_guard.parse_wrapper(content) == {
+                "journal": journal,
+                "sol_bin": sol_bin,
+                "version": version,
+            }
+
+    def test_cmd_uninstall_refuses_app_owned_child_launcher_and_preserves_bytes(
+        self, home_root, tmp_path, monkeypatch, capsys
+    ):
+        repo = make_repo(tmp_path).resolve()
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        alias, before_bytes, before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="sol",
+            target=bin_dir / "sol",
+        )
+
+        rc = install_guard.cmd_uninstall(repo)
+        captured = capsys.readouterr()
+
+        assert rc == 1
+        assert captured.out == ""
+        assert "not a symlink" in captured.err
+        assert alias.read_bytes() == before_bytes
+        assert alias.stat().st_mode & 0o777 == before_mode
+
+    def test_cmd_install_refuses_app_owned_child_launcher_without_force(
+        self, home_root, tmp_path, monkeypatch, capsys
+    ):
+        repo = make_repo(tmp_path).resolve()
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        alias, before_bytes, before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="sol",
+            target=bin_dir / "sol",
+        )
+
+        rc = install_guard.cmd_install(repo)
+        captured = capsys.readouterr()
+
+        assert rc == 1
+        assert captured.out == ""
+        assert "not a symlink" in captured.err
+        assert alias.read_bytes() == before_bytes
+        assert alias.stat().st_mode & 0o777 == before_mode
+
+    def test_provision_wrappers_backs_up_app_owned_child_launcher_before_replacing(
+        self, home_root, tmp_path, monkeypatch
+    ):
+        repo = make_repo(tmp_path)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        backup_dir = tmp_path / "legacy-backups"
+        backup_dir.mkdir()
+        monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+        alias, before_bytes, _before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="sol",
+            target=bin_dir / "sol",
+        )
+        journal = tmp_path / "journal"
+
+        install_guard.provision_wrappers(repo, str(journal))
+
+        backups = list(backup_dir.glob("sol.old-symlink-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == before_bytes
+        parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+        assert parsed == {
+            "journal": str(journal),
+            "sol_bin": str(bin_dir / "sol"),
+            "version": 7,
+        }
+        for binary, wrapper in install_guard.alias_paths().items():
+            state, _other = install_guard.check_alias(repo, binary)
+            assert state is install_guard.AliasState.OWNED
+            parsed_wrapper = install_guard.parse_wrapper(
+                wrapper.read_text(encoding="utf-8")
+            )
+            assert parsed_wrapper is not None
+
+
 class TestCheckAlias:
     def test_absent(self, home_root, tmp_path):
         repo = make_repo(tmp_path)

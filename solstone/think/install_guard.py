@@ -47,6 +47,12 @@ fi
 exec "$SOL_BIN" "$@"
 """
 
+APP_OWNED_CHILD_TEMPLATE = """\
+#!/bin/sh
+# managed-version: app-owned-child
+exec '{target}' "$@"
+"""
+
 WRAPPER_MARKER = "# managed-version: 7"
 WRAPPER_VERSION = 7
 
@@ -143,6 +149,39 @@ def render_wrapper(journal: str, sol_bin: str, binary: str) -> str:
         journal=journal,
         sol_bin=escaped_sol_bin,
     )
+
+
+def render_app_owned_child_launcher(target: str, binary: str) -> str:
+    """Render the app-owned child launcher for ~/.local/bin/<binary>."""
+    _validate_binary(binary)
+    escaped_target = target.replace("'", "'\\''")
+    return APP_OWNED_CHILD_TEMPLATE.format(target=escaped_target)
+
+
+# EXAMINE ONLY: recognized only by doctor.stale_alias_symlink_check.
+# Setup/install/provision/uninstall ownership still flows through check_alias.
+def is_app_owned_child_launcher(alias: Path, binary: str) -> bool:
+    """Return True for the canonical app-owned child launcher.
+
+    Matches only a regular non-symlink ~/.local/bin/<binary> file whose full
+    text exactly names the literal dirname(sys.executable)/<binary> target,
+    with that target present and executable. The target is never resolved.
+    This confers doctor health only; install, setup, provision, and uninstall
+    continue to treat the file as AliasState.FOREIGN.
+    """
+    _validate_binary(binary)
+    if alias.is_symlink():
+        return False
+    if not alias.is_file():
+        return False
+    try:
+        content = alias.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    expected = Path(sys.executable).parent / binary
+    if content != render_app_owned_child_launcher(str(expected), binary):
+        return False
+    return expected.exists() and os.access(expected, os.X_OK)
 
 
 def parse_wrapper(content: str) -> ParsedWrapper | None:

@@ -811,6 +811,48 @@ class TestStaleAliasSymlink:
         return path
 
     @staticmethod
+    def write_executable_script(path: Path, content: str = "#!/bin/sh\n") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def patch_runtime_bin(self, monkeypatch, tmp_path: Path) -> Path:
+        bin_dir = tmp_path / "runtime" / "bin"
+        for binary in ("python", "sol", "journal"):
+            self.write_executable_script(bin_dir / binary)
+        monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
+        return bin_dir
+
+    @staticmethod
+    def write_regular_alias(home_root: Path, binary: str, content: str) -> Path:
+        alias = home_root / ".local" / "bin" / binary
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text(content, encoding="utf-8")
+        alias.chmod(0o755)
+        return alias
+
+    @staticmethod
+    def assert_foreign_alias_warning(result, binary: str) -> None:
+        assert result.status == "warn"
+        assert result.detail == f"~/.local/bin/{binary} exists but is not a symlink"
+
+    def run_app_owned_check(
+        self,
+        doctor,
+        monkeypatch,
+        home_root: Path,
+        tmp_path: Path,
+        binary: str,
+        content: str,
+    ):
+        self.setup_import(doctor, monkeypatch)
+        repo = make_repo(tmp_path)
+        self.write_regular_alias(home_root, binary, content)
+        monkeypatch.setattr(doctor, "ROOT", repo)
+        return doctor.stale_alias_symlink_check(args(doctor), binary=binary)
+
+    @staticmethod
     def legacy_target(
         home_root: Path, legacy_parts: tuple[str, ...], binary: str
     ) -> Path:
@@ -833,6 +875,139 @@ class TestStaleAliasSymlink:
         assert os.readlink(alias) == original_target
         assert list(self.backup_dir.glob("*.old-symlink-*")) == []
         assert not (home_root / ".local" / "bin" / other_binary).exists()
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_ok(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        expected = bin_dir / binary
+        foreign = self.write_executable_script(
+            tmp_path / "foreign-runtime" / "bin" / binary
+        )
+        assert expected != foreign
+        assert os.access(expected, os.X_OK)
+        assert os.access(foreign, os.X_OK)
+        content = install_guard.render_app_owned_child_launcher(str(expected), binary)
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        assert result.status == "ok"
+        assert "is not a symlink" not in result.detail
+        assert result.fix is None
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_marker_only_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        self.patch_runtime_bin(monkeypatch, tmp_path)
+        content = "#!/bin/sh\n# managed-version: app-owned-child\n"
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_malformed_body_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        self.patch_runtime_bin(monkeypatch, tmp_path)
+        content = (
+            '#!/bin/sh\n# managed-version: app-owned-child\nexec /not-quoted "$@"\n'
+        )
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_other_binary_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        other_binary = "journal" if binary == "sol" else "sol"
+        content = install_guard.render_app_owned_child_launcher(
+            str(bin_dir / other_binary),
+            other_binary,
+        )
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_missing_target_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        expected = bin_dir / binary
+        content = install_guard.render_app_owned_child_launcher(str(expected), binary)
+        expected.unlink()
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_non_executable_target_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        expected = bin_dir / binary
+        content = install_guard.render_app_owned_child_launcher(str(expected), binary)
+        expected.chmod(0o644)
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_outside_executable_target_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        expected = bin_dir / binary
+        foreign = self.write_executable_script(
+            tmp_path / "foreign-runtime" / "bin" / binary
+        )
+        assert expected != foreign
+        content = install_guard.render_app_owned_child_launcher(str(foreign), binary)
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
+
+    @pytest.mark.parametrize("binary", ("sol", "journal"))
+    def test_app_owned_child_launcher_outside_symlink_to_expected_target_warns(
+        self, doctor, monkeypatch, home_root, tmp_path, binary
+    ):
+        bin_dir = self.patch_runtime_bin(monkeypatch, tmp_path)
+        expected = bin_dir / binary
+        outside = tmp_path / "foreign-runtime" / "bin" / binary
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.symlink_to(expected)
+        assert outside.resolve() == expected
+        content = install_guard.render_app_owned_child_launcher(str(outside), binary)
+
+        result = self.run_app_owned_check(
+            doctor, monkeypatch, home_root, tmp_path, binary, content
+        )
+
+        self.assert_foreign_alias_warning(result, binary)
 
     def test_absent_ok(self, doctor, monkeypatch, home_root, tmp_path):
         self.setup_import(doctor, monkeypatch)
