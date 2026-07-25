@@ -58,7 +58,10 @@ def _pair_response(
         instance_id=instance_id,
         home_label="solstone",
         home_attestation="header.payload.signature",
-        local_endpoints=[{"host": "127.0.0.1", "port": 7657}],
+        local_endpoints=[
+            {"host": "127.0.0.1", "port": 7657},
+            {"host": "8.8.8.8", "port": 7657},
+        ],
     )
 
 
@@ -264,6 +267,7 @@ def test_join_via_relay_enrolls_then_writes_observer_bundle(
     assert peer["fingerprint"] == join_cli._ca_fingerprint(
         join_cli._join_chain(response.ca_chain)
     )
+    assert peer["local_endpoints"] == response.local_endpoints
     assert peer["role"] == ""
 
 

@@ -974,7 +974,7 @@ def test_malformed_home_diagnostic_omits_constructed_request_url(
 
 def test_parse_pair_link_extracts_embedded_ca_pin() -> None:
     # The pair-link's last 16 bytes (the CA-fp prefix) must be parsed onto the
-    # PairRequest, not discarded. This is the wiring the CSO review flagged.
+    # DirectPairRequest, not discarded. This is the wiring the CSO review flagged.
     ca_fp = "ab" * 32  # 64 hex chars; only the first 16 bytes are embedded
     link = _build_pair_link("127.0.0.1", 7657, "f" * 32, ca_fp)
 

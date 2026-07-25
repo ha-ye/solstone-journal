@@ -61,6 +61,24 @@ def test_atomic_publish_rename_failure_leaves_no_final_or_staging(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_atomic_publish_non_oserror_failure_leaves_no_final_or_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final = tmp_path / "bundle"
+
+    def fail_write(_path: Path, _content: bytes) -> None:
+        raise RuntimeError("unexpected write failure")
+
+    monkeypatch.setattr(join_cli, "_write_bundle_file", fail_write)
+
+    with pytest.raises(RuntimeError, match="unexpected write failure"):
+        join_cli._publish_bundle_atomic(final, _files())
+
+    assert not os.path.lexists(final)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_atomic_publish_success_sets_directory_and_file_modes(tmp_path: Path) -> None:
     final = tmp_path / "bundle"
 

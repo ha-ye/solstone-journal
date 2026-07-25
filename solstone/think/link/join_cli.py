@@ -949,7 +949,7 @@ def _publish_bundle_atomic(
         # intended guard for ordinary reruns.
         os.rename(staging, bundle_dir)
         _fsync_directory(parent)
-    except OSError:
+    except BaseException:
         if os.path.lexists(staging):
             shutil.rmtree(staging, ignore_errors=True)
         raise
