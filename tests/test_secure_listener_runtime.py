@@ -16,10 +16,12 @@ import pytest
 
 from solstone.convey.secure_listener import runtime as rt
 from solstone.convey.secure_listener.accept import (
+    CERTLESS_PAIR_FAILURE_CAP,
     CERTLESS_TUNNEL_CAP,
     SecureListener,
     certless_admission_mode,
 )
+from solstone.convey.secure_listener.wsgi import DispatchResult
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
 from solstone.think.link.paths import ca_dir, nonces_path, state_path
@@ -280,7 +282,7 @@ async def test_certless_reap_tears_down_on_passive_expiry(
 
 
 @pytest.mark.asyncio
-async def test_certless_reap_tears_down_after_nonce_consume(
+async def test_certless_reap_tears_down_idle_after_nonce_consume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -290,7 +292,32 @@ async def test_certless_reap_tears_down_after_nonce_consume(
     store.consume("live", now=1001)
     listener = _listener()
     handle, writer, mux, _task = _register_fake_certless(listener)
+    assert handle.pair_in_flight.active is False
 
+    await listener._reap_certless_if_window_closed(now=1002)
+
+    assert handle.connection_id not in listener._certless_connections
+    assert writer.closed is True
+    assert mux.closed is True
+
+
+@pytest.mark.asyncio
+async def test_certless_reap_skips_inflight_pair_response_this_tick_then_reaps_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _journal(tmp_path, monkeypatch, link={"posture": "spl"})
+    listener = _listener()
+    handle, writer, mux, _task = _register_fake_certless(listener)
+    handle.pair_in_flight.active = True
+
+    await listener._reap_certless_if_window_closed(now=1002)
+
+    assert handle.connection_id in listener._certless_connections
+    assert writer.closed is False
+    assert mux.closed is False
+
+    handle.pair_in_flight.active = False
     await listener._reap_certless_if_window_closed(now=1002)
 
     assert handle.connection_id not in listener._certless_connections
@@ -316,6 +343,78 @@ async def test_certless_not_reaped_while_nonce_live(
         assert mux.closed is False
     finally:
         await listener._close_certless_connection(handle)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consume", ["older", "newer"])
+async def test_certless_reap_two_live_nonces_consuming_one_keeps_idle_connection_until_correct_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    consume: str,
+) -> None:
+    _journal(tmp_path, monkeypatch, link={"posture": "spl"})
+    older_issued = 1000
+    newer_issued = 1010
+    older_expires = older_issued + NONCE_TTL_SECONDS
+    newer_expires = newer_issued + NONCE_TTL_SECONDS
+    store = NonceStore(nonces_path())
+    store.add("older", "phone-a", now=older_issued)
+    store.add("newer", "phone-b", now=newer_issued)
+    store.consume(consume, now=1020)
+    listener = _listener()
+    handle, writer, mux, _task = _register_fake_certless(listener)
+
+    try:
+        await listener._reap_certless_if_window_closed(now=older_expires - 1)
+
+        assert handle.connection_id in listener._certless_connections
+        assert writer.closed is False
+        assert mux.closed is False
+
+        await listener._reap_certless_if_window_closed(now=older_expires + 1)
+
+        if consume == "newer":
+            assert handle.connection_id not in listener._certless_connections
+            assert writer.closed is True
+            assert mux.closed is True
+            return
+
+        assert handle.connection_id in listener._certless_connections
+        assert writer.closed is False
+        assert mux.closed is False
+
+        await listener._reap_certless_if_window_closed(now=newer_expires + 1)
+
+        assert handle.connection_id not in listener._certless_connections
+        assert writer.closed is True
+        assert mux.closed is True
+    finally:
+        if handle.connection_id in listener._certless_connections:
+            await listener._close_certless_connection(handle)
+
+
+@pytest.mark.asyncio
+async def test_certless_pair_failure_cap_tears_down_after_third_pair_failure() -> None:
+    listener = _listener()
+    handle, writer, mux, task = _register_fake_certless(listener)
+    result = DispatchResult(endpoint="app:network.pair", status=403)
+
+    try:
+        for _index in range(CERTLESS_PAIR_FAILURE_CAP - 1):
+            assert await listener._record_certless_dispatch(handle, result) is False
+            assert handle.connection_id in listener._certless_connections
+
+        assert await listener._record_certless_dispatch(handle, result) is True
+        await listener._close_certless_connection(handle)
+
+        assert handle.connection_id not in listener._certless_connections
+        assert writer.closed is True
+        assert mux.closed is True
+    finally:
+        if handle.connection_id in listener._certless_connections:
+            await listener._close_certless_connection(handle)
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio
