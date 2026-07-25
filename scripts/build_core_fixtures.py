@@ -7,15 +7,110 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
+import importlib.metadata
 import json
 import logging
+import math
+import platform
 import sqlite3
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from solstone.apps.speakers.encoder_config import (
+    ACOUSTIC_HIGH,
+    ACOUSTIC_MARGIN_MIN,
+    ACOUSTIC_MEDIUM,
+    CC_CONFIDENCE_GATE,
+    CC_COVERAGE_GATE,
+    CONFIRM_MIN_DURATION_S,
+    CONFIRM_MIN_INTERVALS,
+    CONFIRM_MIN_SEGMENTS,
+    CONSOLIDATE_MERGE_THRESHOLD,
+    CONSOLIDATE_MIN_INTERVALS,
+    CONSOLIDATE_SUGGEST_MIN,
+    DIARIZE_MIN_OVERLAP,
+    ENCODER_ID,
+    MERGE_THRESHOLD,
+    NOISY_FLYWHEEL_OVERLAP_MAX,
+    OVERLAP_DETECTOR_ID,
+    OVERLAP_DETECTOR_SHA256,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG,
+    OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG,
+    OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S,
+    OWNER_BOOTSTRAP_MIN_STMTS,
+    OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS,
+    OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS,
+    OWNER_MARGIN_MIN,
+    OWNER_REBUILD_MAX_COHESION_DROP,
+    OWNER_REBUILD_MIN_CENTROID_AGREEMENT,
+    OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO,
+    OWNER_REBUILD_SUPERSEDED_SCAN_DAYS,
+    OWNER_THRESHOLD,
+    SLOT_ACTIVE_MIN_SHARE,
+    SOLO_CLUSTER_MIN_COSINE,
+    SPEAKER_EVIDENCE_MULTI_MIN,
+    SPEAKER_EVIDENCE_SINGLE_MAX,
+    SPEAKER_EVIDENCE_VERSION,
+    SPLIT_THRESHOLD,
+    STABILITY_THRESHOLD,
+    VP_DECAY_LAMBDA,
+    VP_OUTLIER_MIN_SAMPLES,
+    VP_OUTLIER_MIN_SIMILARITY,
+)
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY
+from solstone.observe.transcribe.diarize import (
+    AHC_LINKAGE,
+    AHC_METRIC,
+    FRAMES_PER_WINDOW,
+    MAX_K,
+    MIN_FRAME_CONFIDENCE,
+    MIN_INTERVAL_S,
+    SILHOUETTE_IMPROVEMENT,
+    SINGLE_SPEAKER_CLASSES,
+    _ahc,
+    _assign_sentences,
+    _find_intervals,
+    _normalize_rows,
+    _pick_k_silhouette,
+    _silhouette,
+    _wespeaker_features,
+)
+from solstone.observe.transcribe.diarize import (
+    SAMPLE_RATE as DIARIZE_SAMPLE_RATE,
+)
+from solstone.observe.transcribe.diarize import (
+    STRIDE_S as DIARIZE_STRIDE_S,
+)
+from solstone.observe.transcribe.diarize import (
+    WINDOW_S as DIARIZE_WINDOW_S,
+)
+from solstone.observe.transcribe.main import _compute_wespeaker_features
+from solstone.observe.transcribe.overlap import (
+    _DIARIZE_STRIDE_S as OVERLAP_DIARIZE_STRIDE_S,
+)
+from solstone.observe.transcribe.overlap import (
+    FRAMES_PER_WINDOW as OVERLAP_FRAMES_PER_WINDOW,
+)
+from solstone.observe.transcribe.overlap import (
+    OVERLAP_CLASSES,
+    _speaker_window_stats,
+    decide_speaker_evidence,
+)
+from solstone.observe.transcribe.overlap import (
+    STRIDE_S as OVERLAP_STRIDE_S,
+)
+from solstone.observe.transcribe.overlap import (
+    WINDOW_S as OVERLAP_WINDOW_S,
+)
 from solstone.think import markdown as markdown_formatter
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
@@ -33,8 +128,58 @@ CALLOSUM_ARTIFACT_PATH = FIXTURE_DIR / "callosum_registry.json"
 COGITATE_ARTIFACT_PATH = FIXTURE_DIR / "cogitate_contract.json"
 EDGE_SCHEMA_ARTIFACT_PATH = FIXTURE_DIR / "edge_schema.json"
 MARKDOWN_CHUNKS_ARTIFACT_PATH = FIXTURE_DIR / "markdown_chunks.json"
+SPEAKER_FILTERBANK_ARTIFACT_PATH = FIXTURE_DIR / "speaker_filterbank.json"
+SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH = FIXTURE_DIR / "speaker_stage_boundaries.json"
 OVERSIZED_SIZE_NORMALIZATION = "oversized_size"
 OVERSIZED_SIZE_TOKEN = "normalizedsize"
+# Filterbank rows are a scale/regime oracle for the production fbank stage. 1e-2
+# leaves 3x headroom under SILHOUETTE_IMPROVEMENT=0.03 and 5x under the 0.05
+# speaker-evidence thresholds while allowing native-library/architecture float
+# noise.
+FILTERBANK_VALUE_ABS_TOLERANCE = 1e-2
+# Silhouette scores are compared with enough room for plausible float32
+# matmul/BLAS reduction noise across architectures, but far below the
+# SILHOUETTE_IMPROVEMENT=0.03 decision margin. Selected k values and cluster
+# labels are compared exactly, so score tolerance cannot hide a branch flip. If
+# the arm64 leg proves 1e-6 too tight, that drift is a finding to report.
+CLUSTER_SCORE_ABS_TOLERANCE = 1e-6
+# generation_platform is diagnostic provenance. It is ignored so an arm64 check
+# passes iff kaldi/source identity and floats agree.
+SPEAKER_FIXTURE_IGNORED_JSON_POINTERS = ("/identity/generation_platform",)
+FLOAT_ROW_DECIMALS = 3
+SPEAKER_FILTERBANK_WAVEFORM_SEED = 20_260_724
+SPEAKER_FILTERBANK_DURATION_S = 2.0
+SPEAKER_FILTERBANK_NEAR_S = 0.60
+SPEAKER_FILTERBANK_FADE_S = 0.20
+SPEAKER_FILTERBANK_NEAR_AMPLITUDE = 1e-5
+SPEAKER_FILTERBANK_BROADBAND_AMPLITUDE = 3e-2
+SPEAKER_FILTERBANK_NEAR_ROWS = (5, 55)
+SPEAKER_FILTERBANK_BROADBAND_ROWS = (100, 190)
+K_DIVERGENCE_N = 32
+K_DIVERGENCE_SEED = 0
+# Found in prep by bounded seeded search over default_rng(seed).standard_normal.
+CLUSTER_PERTURB_N = 12
+CLUSTER_PERTURB_SEED = 15
+CLUSTER_PERTURB_ROW = 6
+CLUSTER_PERTURB_COL = 40
+CLUSTER_PERTURB_EPSILON = 0.03
+
+
+@dataclass(frozen=True)
+class ArtifactDescriptor:
+    path: Path
+    build: Callable[[], dict[str, Any]]
+    comparison: str = "exact"
+
+    def render(self) -> str:
+        return render_json(self.build())
+
+
+def _package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not-installed"
 
 
 def build_callosum_registry_fixture() -> dict[str, Any]:
@@ -406,35 +551,685 @@ def build_markdown_chunks_fixture() -> dict[str, Any]:
     }
 
 
+def _diarize_constants() -> dict[str, Any]:
+    return {
+        "SAMPLE_RATE": DIARIZE_SAMPLE_RATE,
+        "WINDOW_S": DIARIZE_WINDOW_S,
+        "STRIDE_S": DIARIZE_STRIDE_S,
+        "FRAMES_PER_WINDOW": FRAMES_PER_WINDOW,
+        "SINGLE_SPEAKER_CLASSES": sorted(SINGLE_SPEAKER_CLASSES),
+        "MIN_INTERVAL_S": MIN_INTERVAL_S,
+        "MIN_FRAME_CONFIDENCE": MIN_FRAME_CONFIDENCE,
+        "AHC_LINKAGE": AHC_LINKAGE,
+        "AHC_METRIC": AHC_METRIC,
+        "MAX_K": MAX_K,
+        "SILHOUETTE_IMPROVEMENT": SILHOUETTE_IMPROVEMENT,
+    }
+
+
+def _encoder_config_constants() -> dict[str, Any]:
+    return {
+        "ENCODER_ID": ENCODER_ID,
+        "OWNER_THRESHOLD": OWNER_THRESHOLD,
+        "OWNER_MARGIN_MIN": OWNER_MARGIN_MIN,
+        "ACOUSTIC_HIGH": ACOUSTIC_HIGH,
+        "ACOUSTIC_MEDIUM": ACOUSTIC_MEDIUM,
+        "ACOUSTIC_MARGIN_MIN": ACOUSTIC_MARGIN_MIN,
+        "SOLO_CLUSTER_MIN_COSINE": SOLO_CLUSTER_MIN_COSINE,
+        "VP_DECAY_LAMBDA": VP_DECAY_LAMBDA,
+        "VP_OUTLIER_MIN_SIMILARITY": VP_OUTLIER_MIN_SIMILARITY,
+        "VP_OUTLIER_MIN_SAMPLES": VP_OUTLIER_MIN_SAMPLES,
+        "CC_COVERAGE_GATE": CC_COVERAGE_GATE,
+        "CC_CONFIDENCE_GATE": CC_CONFIDENCE_GATE,
+        "OWNER_BOOTSTRAP_MIN_STMTS": OWNER_BOOTSTRAP_MIN_STMTS,
+        "OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S": OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S,
+        "OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25": OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+        "OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS": OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS,
+        "OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG": OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG,
+        "OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD": OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+        "OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG": OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG,
+        "OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS": OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS,
+        "OWNER_REBUILD_MIN_CENTROID_AGREEMENT": OWNER_REBUILD_MIN_CENTROID_AGREEMENT,
+        "OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO": OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO,
+        "OWNER_REBUILD_MAX_COHESION_DROP": OWNER_REBUILD_MAX_COHESION_DROP,
+        "OWNER_REBUILD_SUPERSEDED_SCAN_DAYS": OWNER_REBUILD_SUPERSEDED_SCAN_DAYS,
+        "NOISY_FLYWHEEL_OVERLAP_MAX": NOISY_FLYWHEEL_OVERLAP_MAX,
+        "SLOT_ACTIVE_MIN_SHARE": SLOT_ACTIVE_MIN_SHARE,
+        "SPEAKER_EVIDENCE_MULTI_MIN": SPEAKER_EVIDENCE_MULTI_MIN,
+        "SPEAKER_EVIDENCE_SINGLE_MAX": SPEAKER_EVIDENCE_SINGLE_MAX,
+        "DIARIZE_MIN_OVERLAP": DIARIZE_MIN_OVERLAP,
+        "SPEAKER_EVIDENCE_VERSION": SPEAKER_EVIDENCE_VERSION,
+        "OVERLAP_DETECTOR_ID": OVERLAP_DETECTOR_ID,
+        "OVERLAP_DETECTOR_SHA256": OVERLAP_DETECTOR_SHA256,
+        "MERGE_THRESHOLD": MERGE_THRESHOLD,
+        "SPLIT_THRESHOLD": SPLIT_THRESHOLD,
+        "STABILITY_THRESHOLD": STABILITY_THRESHOLD,
+        "CONSOLIDATE_MIN_INTERVALS": CONSOLIDATE_MIN_INTERVALS,
+        "CONSOLIDATE_MERGE_THRESHOLD": CONSOLIDATE_MERGE_THRESHOLD,
+        "CONSOLIDATE_SUGGEST_MIN": CONSOLIDATE_SUGGEST_MIN,
+        "CONFIRM_MIN_SEGMENTS": CONFIRM_MIN_SEGMENTS,
+        "CONFIRM_MIN_INTERVALS": CONFIRM_MIN_INTERVALS,
+        "CONFIRM_MIN_DURATION_S": CONFIRM_MIN_DURATION_S,
+    }
+
+
+def _speaker_fixture_identity(fixture: str) -> dict[str, Any]:
+    return {
+        "fixture": fixture,
+        "fixture_version": 1,
+        "generated_by": "make core-fixtures",
+        "kaldi_native_fbank_version": _package_version("kaldi-native-fbank"),
+        "source_constants": {
+            "diarize": _diarize_constants(),
+            "encoder_config": _encoder_config_constants(),
+            "overlap": {
+                "WINDOW_S": OVERLAP_WINDOW_S,
+                "STRIDE_S": OVERLAP_STRIDE_S,
+                "_DIARIZE_STRIDE_S": OVERLAP_DIARIZE_STRIDE_S,
+                "FRAMES_PER_WINDOW": OVERLAP_FRAMES_PER_WINDOW,
+                "OVERLAP_CLASSES": list(OVERLAP_CLASSES),
+            },
+        },
+        "generation_platform": {
+            "system": platform.system(),
+            "machine": platform.machine(),
+        },
+    }
+
+
+def _speaker_filterbank_waveform() -> np.ndarray:
+    total_samples = int(DIARIZE_SAMPLE_RATE * SPEAKER_FILTERBANK_DURATION_S)
+    near_samples = int(DIARIZE_SAMPLE_RATE * SPEAKER_FILTERBANK_NEAR_S)
+    fade_samples = int(DIARIZE_SAMPLE_RATE * SPEAKER_FILTERBANK_FADE_S)
+    rng = np.random.default_rng(SPEAKER_FILTERBANK_WAVEFORM_SEED)
+    near = (
+        rng.standard_normal(total_samples).astype(np.float32)
+        * SPEAKER_FILTERBANK_NEAR_AMPLITUDE
+    )
+    broadband = (
+        rng.standard_normal(total_samples).astype(np.float32)
+        * SPEAKER_FILTERBANK_BROADBAND_AMPLITUDE
+    )
+    envelope = np.zeros(total_samples, dtype=np.float32)
+    fade_start = near_samples
+    fade_end = near_samples + fade_samples
+    fade = 0.5 - 0.5 * np.cos(np.linspace(0.0, math.pi, fade_samples, dtype=np.float32))
+    envelope[fade_start:fade_end] = fade
+    envelope[fade_end:] = 1.0
+    return (near + broadband * envelope).astype(np.float32)
+
+
+def _decimal_rows(matrix: np.ndarray) -> list[str]:
+    return [
+        " ".join(f"{float(value):.{FLOAT_ROW_DECIMALS}f}" for value in row)
+        for row in matrix
+    ]
+
+
+def build_speaker_filterbank_fixture() -> dict[str, Any]:
+    audio = _speaker_filterbank_waveform()
+    diarize_features = _wespeaker_features(audio)
+    main_features = _compute_wespeaker_features(audio, DIARIZE_SAMPLE_RATE)
+    if not np.array_equal(diarize_features, main_features):
+        raise RuntimeError("WeSpeaker filterbank call sites diverged")
+    normalized = _normalize_rows(diarize_features)
+    return {
+        "identity": _speaker_fixture_identity("solstone-speaker-filterbank"),
+        "comparison": {
+            "mode": "float_rows",
+            "filterbank_abs_tolerance": FILTERBANK_VALUE_ABS_TOLERANCE,
+        },
+        "waveform": {
+            "seed": SPEAKER_FILTERBANK_WAVEFORM_SEED,
+            "sample_rate": DIARIZE_SAMPLE_RATE,
+            "duration_s": SPEAKER_FILTERBANK_DURATION_S,
+            "near_silent_s": SPEAKER_FILTERBANK_NEAR_S,
+            "fade_s": SPEAKER_FILTERBANK_FADE_S,
+            "near_silent_amplitude": SPEAKER_FILTERBANK_NEAR_AMPLITUDE,
+            "broadband_amplitude": SPEAKER_FILTERBANK_BROADBAND_AMPLITUDE,
+            "near_silent_rows": list(SPEAKER_FILTERBANK_NEAR_ROWS),
+            "broadband_rows": list(SPEAKER_FILTERBANK_BROADBAND_ROWS),
+        },
+        "call_site_agreement": {
+            "array_equal": True,
+            "shape": list(diarize_features.shape),
+        },
+        "matrices": {
+            "filterbank_cmn": {
+                "shape": list(diarize_features.shape),
+                "encoding": f"space-separated fixed decimal rows, {FLOAT_ROW_DECIMALS} places",
+                "rows": _decimal_rows(diarize_features),
+            },
+            "row_l2_normalized": {
+                "shape": list(normalized.shape),
+                "encoding": f"space-separated fixed decimal rows, {FLOAT_ROW_DECIMALS} places",
+                "rows": _decimal_rows(normalized),
+            },
+        },
+    }
+
+
+def _pyannote_class_count() -> int:
+    return max(max(SINGLE_SPEAKER_CLASSES), max(OVERLAP_CLASSES)) + 1
+
+
+def _dominant_log_probs(classes: np.ndarray, *, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    log_probs = rng.normal(
+        loc=-3.0, scale=0.05, size=(len(classes), _pyannote_class_count())
+    ).astype(np.float32)
+    log_probs[np.arange(len(classes)), classes] = rng.normal(
+        loc=2.0, scale=0.03, size=len(classes)
+    ).astype(np.float32)
+    return log_probs
+
+
+def _interval_boundary_case(run_frames: int, *, seed: int) -> dict[str, Any]:
+    speech_class = min(SINGLE_SPEAKER_CLASSES)
+    classes = np.zeros(FRAMES_PER_WINDOW, dtype=np.int64)
+    classes[:run_frames] = speech_class
+    avg_log_probs = _dominant_log_probs(classes, seed=seed)
+    intervals = _find_intervals(
+        avg_log_probs,
+        audio_len_samples=DIARIZE_WINDOW_S * DIARIZE_SAMPLE_RATE,
+    )
+    return {
+        "run_frames": run_frames,
+        "run_duration_s": run_frames * DIARIZE_WINDOW_S / FRAMES_PER_WINDOW,
+        "intervals": [
+            {"start_s": start, "end_s": end, "local_class": local_class}
+            for start, end, local_class in intervals
+        ],
+    }
+
+
+def _speaker_evidence_cases() -> dict[str, Any]:
+    single_class = min(SINGLE_SPEAKER_CLASSES)
+    second_class = sorted(SINGLE_SPEAKER_CLASSES)[1]
+    overlap_class = min(OVERLAP_CLASSES)
+    speech_frames = OVERLAP_FRAMES_PER_WINDOW
+    else_overlap_frames = math.ceil(DIARIZE_MIN_OVERLAP * speech_frames)
+    cases = {
+        "none": {
+            "overlap_fraction": 0.0,
+            "class_windows": [np.zeros(OVERLAP_FRAMES_PER_WINDOW, dtype=np.int64)],
+        },
+        "single": {
+            "overlap_fraction": 0.0,
+            "class_windows": [
+                np.full(OVERLAP_FRAMES_PER_WINDOW, single_class, dtype=np.int64)
+            ],
+        },
+        "multi_by_active_slots": {
+            "overlap_fraction": 0.0,
+            "class_windows": [
+                np.concatenate(
+                    [
+                        np.full(
+                            OVERLAP_FRAMES_PER_WINDOW // 2,
+                            single_class,
+                            dtype=np.int64,
+                        ),
+                        np.full(
+                            OVERLAP_FRAMES_PER_WINDOW - OVERLAP_FRAMES_PER_WINDOW // 2,
+                            second_class,
+                            dtype=np.int64,
+                        ),
+                    ]
+                )
+            ],
+        },
+        "else_branch_overlap_ambiguity": {
+            "overlap_fraction": max(
+                0.0, DIARIZE_MIN_OVERLAP - min(DIARIZE_MIN_OVERLAP / 2, 0.001)
+            ),
+            "class_windows": [
+                np.concatenate(
+                    [
+                        np.full(
+                            speech_frames - else_overlap_frames,
+                            single_class,
+                            dtype=np.int64,
+                        ),
+                        np.full(
+                            else_overlap_frames,
+                            overlap_class,
+                            dtype=np.int64,
+                        ),
+                    ]
+                )
+            ],
+        },
+    }
+    results = {}
+    for name, case in cases.items():
+        window_stats = []
+        payload_windows = []
+        for idx, classes in enumerate(case["class_windows"]):
+            stats = _speaker_window_stats(
+                _dominant_log_probs(classes, seed=300 + idx + len(results) * 10)
+            )
+            window_stats.append(stats)
+            payload_windows.append(
+                {
+                    "speech_frames": stats.speech_frames,
+                    "active_slot_count": stats.active_slot_count,
+                    "overlap_frames": stats.overlap_frames,
+                }
+            )
+        decision = decide_speaker_evidence(case["overlap_fraction"], window_stats)
+        results[name] = {
+            "overlap_fraction": case["overlap_fraction"],
+            "windows": payload_windows,
+            "decision": {
+                "speaker_evidence": decision.speaker_evidence,
+                "multi_window_fraction": decision.multi_window_fraction,
+                "mean_window_overlap_share": decision.mean_window_overlap_share,
+            },
+        }
+    return results
+
+
+def _cluster_case(rows: np.ndarray) -> dict[str, Any]:
+    normalized = _normalize_rows(rows.astype(np.float32))
+    curve = []
+    for k in range(2, min(MAX_K, len(rows) - 1) + 1):
+        labels = _ahc(normalized, k).astype(np.int32)
+        curve.append(
+            {
+                "k": k,
+                "silhouette": _silhouette(normalized, labels),
+                "labels": labels.tolist(),
+            }
+        )
+    selected_k = _pick_k_silhouette(normalized, MAX_K)
+    plain_argmax_k = max(curve, key=lambda row: row["silhouette"])["k"]
+    return {
+        "selected_k": selected_k,
+        "plain_argmax_k": plain_argmax_k,
+        "curve": curve,
+    }
+
+
+def _seeded_rows(seed: int, n: int) -> np.ndarray:
+    return np.random.default_rng(seed).standard_normal((n, 64)).astype(np.float32)
+
+
+def build_speaker_stage_boundaries_fixture() -> dict[str, Any]:
+    kept = _interval_boundary_case(30, seed=201)
+    dropped = _interval_boundary_case(29, seed=202)
+    assigned = _assign_sentences(
+        [
+            {"start": 0.1, "end": 0.3, "text": "inside"},
+            {"start": 0.7, "end": 0.8, "text": "outside"},
+        ],
+        [
+            (
+                kept["intervals"][0]["start_s"],
+                kept["intervals"][0]["end_s"],
+                kept["intervals"][0]["local_class"],
+            )
+        ],
+        np.array([0], dtype=np.int32),
+    )
+
+    divergence_rows = _seeded_rows(K_DIVERGENCE_SEED, K_DIVERGENCE_N)
+    divergence = _cluster_case(divergence_rows)
+    perturb_base_rows = _seeded_rows(CLUSTER_PERTURB_SEED, CLUSTER_PERTURB_N)
+    perturb_changed_rows = perturb_base_rows.copy()
+    perturb_changed_rows[CLUSTER_PERTURB_ROW, CLUSTER_PERTURB_COL] += (
+        CLUSTER_PERTURB_EPSILON
+    )
+    perturb_base = _cluster_case(perturb_base_rows)
+    perturb_changed = _cluster_case(perturb_changed_rows)
+    if perturb_base["selected_k"] == perturb_changed["selected_k"]:
+        raise RuntimeError("pinned clustering perturbation no longer flips selected k")
+
+    return {
+        "identity": _speaker_fixture_identity("solstone-speaker-stage-boundaries"),
+        "comparison": {
+            "mode": "mixed_exact_and_float",
+            "cluster_score_abs_tolerance": CLUSTER_SCORE_ABS_TOLERANCE,
+        },
+        "interval_boundary": {
+            "kept_at_30_frames": kept,
+            "dropped_at_29_frames": dropped,
+            "min_interval_s": MIN_INTERVAL_S,
+            "assigned_sentences": assigned,
+        },
+        "speaker_evidence": _speaker_evidence_cases(),
+        "k_selection_divergence": {
+            "seed": K_DIVERGENCE_SEED,
+            "n": K_DIVERGENCE_N,
+            "case": divergence,
+        },
+        "clustering_input_perturbation": {
+            "seed": CLUSTER_PERTURB_SEED,
+            "n": CLUSTER_PERTURB_N,
+            "row": CLUSTER_PERTURB_ROW,
+            "col": CLUSTER_PERTURB_COL,
+            "epsilon": CLUSTER_PERTURB_EPSILON,
+            "base": perturb_base,
+            "perturbed": perturb_changed,
+        },
+    }
+
+
 def render_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def expected_outputs() -> dict[Path, str]:
+def _relative_artifact_path(path: Path) -> str:
+    return str(path.relative_to(ROOT))
+
+
+def _json_pointer(parts: tuple[str, ...]) -> str:
+    return "/" + "/".join(parts)
+
+
+def _get_json_path(payload: Any, pointer: str) -> Any:
+    current = payload
+    for part in pointer.strip("/").split("/"):
+        if isinstance(current, list):
+            current = current[int(part)]
+        else:
+            current = current[part]
+    return current
+
+
+def _remove_json_path(payload: Any, pointer: str) -> None:
+    parts = pointer.strip("/").split("/")
+    current = payload
+    for part in parts[:-1]:
+        if isinstance(current, list):
+            current = current[int(part)]
+        else:
+            current = current[part]
+    leaf = parts[-1]
+    if isinstance(current, list):
+        del current[int(leaf)]
+    else:
+        current.pop(leaf, None)
+
+
+def _compare_exact_artifact(path: Path, current: str, expected: str) -> list[str]:
+    if current == expected:
+        return []
+    return [_relative_artifact_path(path)]
+
+
+def _json_load_for_compare(
+    path: Path, label: str, content: str
+) -> tuple[Any, list[str]]:
+    try:
+        return json.loads(content), []
+    except json.JSONDecodeError as exc:
+        return None, [
+            f"{_relative_artifact_path(path)}: {label} JSON parse failed: {exc}"
+        ]
+
+
+def _format_float_drift(
+    path: Path,
+    location: str,
+    expected: float,
+    actual: float,
+    tolerance: float,
+) -> str:
+    diff = abs(actual - expected)
+    return (
+        f"{_relative_artifact_path(path)}: {location} drifted; "
+        f"expected={expected:.9g} actual={actual:.9g} "
+        f"abs_diff={diff:.9g} tolerance={tolerance:.9g}"
+    )
+
+
+def _compare_decimal_row_matrix(
+    path: Path,
+    current: Any,
+    expected: Any,
+    pointer: str,
+    tolerance: float,
+) -> list[str]:
+    current_rows = _get_json_path(current, pointer)
+    expected_rows = _get_json_path(expected, pointer)
+    if not isinstance(current_rows, list) or not isinstance(expected_rows, list):
+        return [f"{_relative_artifact_path(path)}: {pointer} is not a row list"]
+    if len(current_rows) != len(expected_rows):
+        return [
+            f"{_relative_artifact_path(path)}: {pointer} row count drifted; "
+            f"expected={len(expected_rows)} actual={len(current_rows)}"
+        ]
+    failures: list[str] = []
+    for row_idx, (current_row, expected_row) in enumerate(
+        zip(current_rows, expected_rows, strict=True)
+    ):
+        current_values = str(current_row).split()
+        expected_values = str(expected_row).split()
+        if len(current_values) != len(expected_values):
+            failures.append(
+                f"{_relative_artifact_path(path)}: {pointer}[{row_idx}] column count drifted; "
+                f"expected={len(expected_values)} actual={len(current_values)}"
+            )
+            continue
+        for col_idx, (current_text, expected_text) in enumerate(
+            zip(current_values, expected_values, strict=True)
+        ):
+            actual = float(current_text)
+            expected_value = float(expected_text)
+            if abs(actual - expected_value) > tolerance:
+                failures.append(
+                    _format_float_drift(
+                        path,
+                        f"{pointer}[{row_idx}][{col_idx}]",
+                        expected_value,
+                        actual,
+                        tolerance,
+                    )
+                )
+    return failures
+
+
+def _compare_speaker_filterbank(path: Path, current: str, expected: str) -> list[str]:
+    current_obj, errors = _json_load_for_compare(path, "current", current)
+    expected_obj, expected_errors = _json_load_for_compare(path, "expected", expected)
+    if errors or expected_errors:
+        return errors + expected_errors
+
+    matrix_pointers = (
+        "/matrices/filterbank_cmn/rows",
+        "/matrices/row_l2_normalized/rows",
+    )
+    current_exact = copy.deepcopy(current_obj)
+    expected_exact = copy.deepcopy(expected_obj)
+    for pointer in SPEAKER_FIXTURE_IGNORED_JSON_POINTERS + matrix_pointers:
+        _remove_json_path(current_exact, pointer)
+        _remove_json_path(expected_exact, pointer)
+
+    failures: list[str] = []
+    if current_exact != expected_exact:
+        failures.append(
+            f"{_relative_artifact_path(path)}: non-float content drifted outside tolerance-managed paths"
+        )
+    for pointer in matrix_pointers:
+        failures.extend(
+            _compare_decimal_row_matrix(
+                path,
+                current_obj,
+                expected_obj,
+                pointer,
+                FILTERBANK_VALUE_ABS_TOLERANCE,
+            )
+        )
+    return failures
+
+
+def _compare_stage_value(
+    path: Path,
+    current: Any,
+    expected: Any,
+    ignored_json_pointers: frozenset[str],
+    parts: tuple[str, ...] = (),
+) -> list[str]:
+    pointer = _json_pointer(parts) if parts else "/"
+    if pointer in ignored_json_pointers:
+        return []
+    if parts and parts[-1] == "silhouette":
+        try:
+            actual_float = float(current)
+            expected_float = float(expected)
+        except (TypeError, ValueError):
+            return [
+                f"{_relative_artifact_path(path)}: {pointer} is not numeric; "
+                f"expected={expected!r} actual={current!r}"
+            ]
+        if abs(actual_float - expected_float) > CLUSTER_SCORE_ABS_TOLERANCE:
+            return [
+                _format_float_drift(
+                    path,
+                    pointer,
+                    expected_float,
+                    actual_float,
+                    CLUSTER_SCORE_ABS_TOLERANCE,
+                )
+            ]
+        return []
+    if isinstance(expected, dict):
+        if not isinstance(current, dict):
+            return [
+                f"{_relative_artifact_path(path)}: {pointer} type drifted; expected=dict actual={type(current).__name__}"
+            ]
+        if set(current) != set(expected):
+            return [
+                f"{_relative_artifact_path(path)}: {pointer} keys drifted; "
+                f"expected={sorted(expected)} actual={sorted(current)}"
+            ]
+        failures: list[str] = []
+        for key in sorted(expected):
+            failures.extend(
+                _compare_stage_value(
+                    path,
+                    current[key],
+                    expected[key],
+                    ignored_json_pointers,
+                    parts + (key,),
+                )
+            )
+        return failures
+    if isinstance(expected, list):
+        if not isinstance(current, list):
+            return [
+                f"{_relative_artifact_path(path)}: {pointer} type drifted; expected=list actual={type(current).__name__}"
+            ]
+        if len(current) != len(expected):
+            return [
+                f"{_relative_artifact_path(path)}: {pointer} length drifted; "
+                f"expected={len(expected)} actual={len(current)}"
+            ]
+        failures = []
+        for idx, (current_item, expected_item) in enumerate(
+            zip(current, expected, strict=True)
+        ):
+            failures.extend(
+                _compare_stage_value(
+                    path,
+                    current_item,
+                    expected_item,
+                    ignored_json_pointers,
+                    parts + (str(idx),),
+                )
+            )
+        return failures
+    if current != expected:
+        return [
+            f"{_relative_artifact_path(path)}: {pointer} drifted; "
+            f"expected={expected!r} actual={current!r}"
+        ]
+    return []
+
+
+def _compare_speaker_stage_boundaries(
+    path: Path, current: str, expected: str
+) -> list[str]:
+    current_obj, errors = _json_load_for_compare(path, "current", current)
+    expected_obj, expected_errors = _json_load_for_compare(path, "expected", expected)
+    if errors or expected_errors:
+        return errors + expected_errors
+    return _compare_stage_value(
+        path,
+        current_obj,
+        expected_obj,
+        frozenset(SPEAKER_FIXTURE_IGNORED_JSON_POINTERS),
+    )
+
+
+def compare_artifact(
+    path: Path, descriptor: ArtifactDescriptor, current: str, expected: str
+) -> list[str]:
+    if descriptor.comparison == "exact":
+        return _compare_exact_artifact(path, current, expected)
+    if descriptor.comparison == "speaker_filterbank":
+        return _compare_speaker_filterbank(path, current, expected)
+    if descriptor.comparison == "speaker_stage_boundaries":
+        return _compare_speaker_stage_boundaries(path, current, expected)
+    raise ValueError(f"unknown comparison mode: {descriptor.comparison}")
+
+
+def expected_outputs() -> dict[Path, ArtifactDescriptor]:
     return {
-        CALLOSUM_ARTIFACT_PATH: render_json(build_callosum_registry_fixture()),
-        COGITATE_ARTIFACT_PATH: render_json(build_cogitate_contract_fixture()),
-        EDGE_SCHEMA_ARTIFACT_PATH: render_json(build_edge_schema_fixture()),
-        MARKDOWN_CHUNKS_ARTIFACT_PATH: render_json(build_markdown_chunks_fixture()),
+        CALLOSUM_ARTIFACT_PATH: ArtifactDescriptor(
+            CALLOSUM_ARTIFACT_PATH,
+            build_callosum_registry_fixture,
+        ),
+        COGITATE_ARTIFACT_PATH: ArtifactDescriptor(
+            COGITATE_ARTIFACT_PATH,
+            build_cogitate_contract_fixture,
+        ),
+        EDGE_SCHEMA_ARTIFACT_PATH: ArtifactDescriptor(
+            EDGE_SCHEMA_ARTIFACT_PATH,
+            build_edge_schema_fixture,
+        ),
+        MARKDOWN_CHUNKS_ARTIFACT_PATH: ArtifactDescriptor(
+            MARKDOWN_CHUNKS_ARTIFACT_PATH,
+            build_markdown_chunks_fixture,
+        ),
+        SPEAKER_FILTERBANK_ARTIFACT_PATH: ArtifactDescriptor(
+            SPEAKER_FILTERBANK_ARTIFACT_PATH,
+            build_speaker_filterbank_fixture,
+            comparison="speaker_filterbank",
+        ),
+        SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH: ArtifactDescriptor(
+            SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH,
+            build_speaker_stage_boundaries_fixture,
+            comparison="speaker_stage_boundaries",
+        ),
     }
 
 
 def write_outputs() -> None:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
-    for path, content in expected_outputs().items():
+    for path, descriptor in expected_outputs().items():
+        content = descriptor.render()
         path.write_text(content, encoding="utf-8")
         print(f"wrote {path.relative_to(ROOT)}")
 
 
 def check_outputs() -> int:
     stale: list[str] = []
-    for path, expected in expected_outputs().items():
+    drift: list[str] = []
+    for path, descriptor in expected_outputs().items():
+        expected = descriptor.render()
         try:
             current = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             current = ""
-        if current != expected:
-            stale.append(str(path.relative_to(ROOT)))
+        errors = compare_artifact(path, descriptor, current, expected)
+        if not errors:
+            continue
+        if descriptor.comparison == "exact":
+            stale.extend(errors)
+        else:
+            drift.extend(errors)
 
     if stale:
         paths = ", ".join(stale)
@@ -442,6 +1237,11 @@ def check_outputs() -> int:
             f"Core generated fixtures are stale: {paths}. Run: make core-fixtures",
             file=sys.stderr,
         )
+    if drift:
+        print("Core generated float fixtures drifted:", file=sys.stderr)
+        for error in drift:
+            print(f"  {error}", file=sys.stderr)
+    if stale or drift:
         return 1
     return 0
 

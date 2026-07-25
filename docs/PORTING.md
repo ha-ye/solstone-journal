@@ -140,6 +140,17 @@ guaranteed to be UTF-8, so ports must not use `.to_str().unwrap()`.
 `core/fixtures/markdown_chunks.json` pins Python markdown chunking/token output
 for the Rust markdown indexer port.
 
+`core/fixtures/speaker_filterbank.json` pins the production speaker-filterbank
+stage: both Python call sites must be bit-identical, feature rows are compared
+with `FILTERBANK_VALUE_ABS_TOLERANCE`, and platform provenance is diagnostic
+only so cross-architecture checks pass iff the fbank values agree within
+tolerance.
+
+`core/fixtures/speaker_stage_boundaries.json` pins speaker-pipeline branch
+boundaries for interval selection, speaker-evidence gating, sentence assignment,
+and k-selection. Silhouette scores are compared with
+`CLUSTER_SCORE_ABS_TOLERANCE`; selected k values and cluster labels remain exact.
+
 `tests/verify_indexer_differential.py` runs the indexer differential harness and
 writes its report under the harness work directory unless `--report` is supplied.
 

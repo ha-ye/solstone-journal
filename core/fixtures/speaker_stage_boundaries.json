@@ -1,0 +1,721 @@
+{
+  "clustering_input_perturbation": {
+    "base": {
+      "curve": [
+        {
+          "k": 2,
+          "labels": [
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          "silhouette": 0.09227550774812698
+        },
+        {
+          "k": 3,
+          "labels": [
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            2,
+            1,
+            0,
+            0,
+            2,
+            0
+          ],
+          "silhouette": 0.12242612987756729
+        },
+        {
+          "k": 4,
+          "labels": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            1,
+            2,
+            0,
+            3,
+            3,
+            2,
+            1
+          ],
+          "silhouette": 0.1324329972267151
+        },
+        {
+          "k": 5,
+          "labels": [
+            1,
+            0,
+            4,
+            0,
+            4,
+            0,
+            2,
+            1,
+            3,
+            3,
+            2,
+            0
+          ],
+          "silhouette": 0.13437311351299286
+        },
+        {
+          "k": 6,
+          "labels": [
+            0,
+            4,
+            1,
+            4,
+            1,
+            4,
+            2,
+            0,
+            3,
+            3,
+            2,
+            5
+          ],
+          "silhouette": 0.11925166845321655
+        },
+        {
+          "k": 7,
+          "labels": [
+            6,
+            4,
+            0,
+            4,
+            0,
+            4,
+            2,
+            3,
+            1,
+            1,
+            2,
+            5
+          ],
+          "silhouette": 0.0997687503695488
+        },
+        {
+          "k": 8,
+          "labels": [
+            6,
+            1,
+            7,
+            1,
+            4,
+            1,
+            2,
+            3,
+            0,
+            0,
+            2,
+            5
+          ],
+          "silhouette": 0.0865800604224205
+        }
+      ],
+      "plain_argmax_k": 5,
+      "selected_k": 3
+    },
+    "col": 40,
+    "epsilon": 0.03,
+    "n": 12,
+    "perturbed": {
+      "curve": [
+        {
+          "k": 2,
+          "labels": [
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          "silhouette": 0.09237923473119736
+        },
+        {
+          "k": 3,
+          "labels": [
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            2,
+            1,
+            0,
+            0,
+            2,
+            0
+          ],
+          "silhouette": 0.122328020632267
+        },
+        {
+          "k": 4,
+          "labels": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            1,
+            2,
+            0,
+            3,
+            3,
+            2,
+            1
+          ],
+          "silhouette": 0.13241595029830933
+        },
+        {
+          "k": 5,
+          "labels": [
+            1,
+            0,
+            4,
+            0,
+            4,
+            0,
+            2,
+            1,
+            3,
+            3,
+            2,
+            0
+          ],
+          "silhouette": 0.13438419997692108
+        },
+        {
+          "k": 6,
+          "labels": [
+            0,
+            4,
+            1,
+            4,
+            1,
+            4,
+            2,
+            0,
+            3,
+            3,
+            2,
+            5
+          ],
+          "silhouette": 0.11918517202138901
+        },
+        {
+          "k": 7,
+          "labels": [
+            6,
+            4,
+            0,
+            4,
+            0,
+            4,
+            2,
+            3,
+            1,
+            1,
+            2,
+            5
+          ],
+          "silhouette": 0.09978983551263809
+        },
+        {
+          "k": 8,
+          "labels": [
+            6,
+            1,
+            7,
+            1,
+            4,
+            1,
+            2,
+            3,
+            0,
+            0,
+            2,
+            5
+          ],
+          "silhouette": 0.0866011381149292
+        }
+      ],
+      "plain_argmax_k": 5,
+      "selected_k": 4
+    },
+    "row": 6,
+    "seed": 15
+  },
+  "comparison": {
+    "cluster_score_abs_tolerance": 1e-06,
+    "mode": "mixed_exact_and_float"
+  },
+  "identity": {
+    "fixture": "solstone-speaker-stage-boundaries",
+    "fixture_version": 1,
+    "generated_by": "make core-fixtures",
+    "generation_platform": {
+      "machine": "x86_64",
+      "system": "Linux"
+    },
+    "kaldi_native_fbank_version": "1.22.3",
+    "source_constants": {
+      "diarize": {
+        "AHC_LINKAGE": "average",
+        "AHC_METRIC": "cosine",
+        "FRAMES_PER_WINDOW": 589,
+        "MAX_K": 8,
+        "MIN_FRAME_CONFIDENCE": 0.5,
+        "MIN_INTERVAL_S": 0.5,
+        "SAMPLE_RATE": 16000,
+        "SILHOUETTE_IMPROVEMENT": 0.03,
+        "SINGLE_SPEAKER_CLASSES": [
+          1,
+          2,
+          3
+        ],
+        "STRIDE_S": 2,
+        "WINDOW_S": 10
+      },
+      "encoder_config": {
+        "ACOUSTIC_HIGH": 0.36,
+        "ACOUSTIC_MARGIN_MIN": 0.05,
+        "ACOUSTIC_MEDIUM": 0.22,
+        "CC_CONFIDENCE_GATE": 0.28,
+        "CC_COVERAGE_GATE": 0.45,
+        "CONFIRM_MIN_DURATION_S": 25.0,
+        "CONFIRM_MIN_INTERVALS": 5,
+        "CONFIRM_MIN_SEGMENTS": 2,
+        "CONSOLIDATE_MERGE_THRESHOLD": 0.65,
+        "CONSOLIDATE_MIN_INTERVALS": 30,
+        "CONSOLIDATE_SUGGEST_MIN": 0.45,
+        "DIARIZE_MIN_OVERLAP": 0.05,
+        "ENCODER_ID": "wespeaker-resnet34-256",
+        "MERGE_THRESHOLD": 0.72,
+        "NOISY_FLYWHEEL_OVERLAP_MAX": 0.1,
+        "OVERLAP_DETECTOR_ID": "pyannote-segmentation-3.0-onnx",
+        "OVERLAP_DETECTOR_SHA256": "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25",
+        "OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD": "standard",
+        "OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG": "strong",
+        "OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25": 0.3,
+        "OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG": 0.15,
+        "OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S": 1.5,
+        "OWNER_BOOTSTRAP_MIN_STMTS": 30,
+        "OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS": 5,
+        "OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS": 100,
+        "OWNER_MARGIN_MIN": 0.05,
+        "OWNER_REBUILD_MAX_COHESION_DROP": 0.05,
+        "OWNER_REBUILD_MIN_CENTROID_AGREEMENT": 0.8,
+        "OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO": 0.8,
+        "OWNER_REBUILD_SUPERSEDED_SCAN_DAYS": 30,
+        "OWNER_THRESHOLD": 0.43,
+        "SLOT_ACTIVE_MIN_SHARE": 0.1,
+        "SOLO_CLUSTER_MIN_COSINE": 0.43,
+        "SPEAKER_EVIDENCE_MULTI_MIN": 0.05,
+        "SPEAKER_EVIDENCE_SINGLE_MAX": 0.05,
+        "SPEAKER_EVIDENCE_VERSION": "windowed-slots-v1",
+        "SPLIT_THRESHOLD": 0.55,
+        "STABILITY_THRESHOLD": 0.25,
+        "VP_DECAY_LAMBDA": 0.0057762265046662105,
+        "VP_OUTLIER_MIN_SAMPLES": 5,
+        "VP_OUTLIER_MIN_SIMILARITY": 0.18
+      },
+      "overlap": {
+        "FRAMES_PER_WINDOW": 589,
+        "OVERLAP_CLASSES": [
+          4,
+          5,
+          6
+        ],
+        "STRIDE_S": 5,
+        "WINDOW_S": 10,
+        "_DIARIZE_STRIDE_S": 2
+      }
+    }
+  },
+  "interval_boundary": {
+    "assigned_sentences": [
+      1,
+      null
+    ],
+    "dropped_at_29_frames": {
+      "intervals": [],
+      "run_duration_s": 0.4923599320882852,
+      "run_frames": 29
+    },
+    "kept_at_30_frames": {
+      "intervals": [
+        {
+          "end_s": 0.5093378607809846,
+          "local_class": 1,
+          "start_s": 0.0
+        }
+      ],
+      "run_duration_s": 0.5093378607809848,
+      "run_frames": 30
+    },
+    "min_interval_s": 0.5
+  },
+  "k_selection_divergence": {
+    "case": {
+      "curve": [
+        {
+          "k": 2,
+          "labels": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0
+          ],
+          "silhouette": 0.05537480115890503
+        },
+        {
+          "k": 3,
+          "labels": [
+            2,
+            0,
+            1,
+            0,
+            2,
+            0,
+            0,
+            2,
+            1,
+            2,
+            0,
+            0,
+            2,
+            0,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            2,
+            1,
+            2
+          ],
+          "silhouette": 0.055368516594171524
+        },
+        {
+          "k": 4,
+          "labels": [
+            0,
+            2,
+            1,
+            3,
+            0,
+            2,
+            3,
+            0,
+            1,
+            0,
+            2,
+            3,
+            0,
+            2,
+            3,
+            1,
+            3,
+            1,
+            2,
+            3,
+            2,
+            0,
+            2,
+            3,
+            3,
+            3,
+            1,
+            2,
+            2,
+            0,
+            1,
+            0
+          ],
+          "silhouette": 0.07276603579521179
+        },
+        {
+          "k": 5,
+          "labels": [
+            3,
+            2,
+            0,
+            1,
+            3,
+            2,
+            1,
+            3,
+            0,
+            3,
+            2,
+            1,
+            3,
+            2,
+            1,
+            0,
+            1,
+            0,
+            2,
+            1,
+            2,
+            4,
+            2,
+            1,
+            1,
+            1,
+            0,
+            2,
+            2,
+            3,
+            0,
+            3
+          ],
+          "silhouette": 0.051997892558574677
+        },
+        {
+          "k": 6,
+          "labels": [
+            3,
+            0,
+            2,
+            1,
+            3,
+            0,
+            1,
+            3,
+            2,
+            3,
+            0,
+            1,
+            3,
+            0,
+            1,
+            5,
+            1,
+            2,
+            0,
+            1,
+            0,
+            4,
+            0,
+            1,
+            1,
+            1,
+            5,
+            0,
+            0,
+            3,
+            2,
+            3
+          ],
+          "silhouette": 0.055134695023298264
+        },
+        {
+          "k": 7,
+          "labels": [
+            1,
+            3,
+            2,
+            0,
+            1,
+            6,
+            0,
+            1,
+            2,
+            1,
+            3,
+            0,
+            1,
+            3,
+            0,
+            5,
+            0,
+            2,
+            3,
+            0,
+            6,
+            4,
+            3,
+            0,
+            0,
+            0,
+            5,
+            3,
+            6,
+            1,
+            2,
+            1
+          ],
+          "silhouette": 0.06746318936347961
+        },
+        {
+          "k": 8,
+          "labels": [
+            1,
+            3,
+            0,
+            7,
+            1,
+            6,
+            2,
+            1,
+            0,
+            1,
+            3,
+            2,
+            1,
+            3,
+            2,
+            5,
+            2,
+            0,
+            3,
+            7,
+            6,
+            4,
+            3,
+            7,
+            2,
+            2,
+            5,
+            3,
+            6,
+            1,
+            0,
+            1
+          ],
+          "silhouette": 0.08003084361553192
+        }
+      ],
+      "plain_argmax_k": 8,
+      "selected_k": 2
+    },
+    "n": 32,
+    "seed": 0
+  },
+  "speaker_evidence": {
+    "else_branch_overlap_ambiguity": {
+      "decision": {
+        "mean_window_overlap_share": 0.050933786078098474,
+        "multi_window_fraction": 0.0,
+        "speaker_evidence": "multi"
+      },
+      "overlap_fraction": 0.049,
+      "windows": [
+        {
+          "active_slot_count": 1,
+          "overlap_frames": 30,
+          "speech_frames": 589
+        }
+      ]
+    },
+    "multi_by_active_slots": {
+      "decision": {
+        "mean_window_overlap_share": 0.0,
+        "multi_window_fraction": 1.0,
+        "speaker_evidence": "multi"
+      },
+      "overlap_fraction": 0.0,
+      "windows": [
+        {
+          "active_slot_count": 2,
+          "overlap_frames": 0,
+          "speech_frames": 589
+        }
+      ]
+    },
+    "none": {
+      "decision": {
+        "mean_window_overlap_share": 0.0,
+        "multi_window_fraction": 0.0,
+        "speaker_evidence": "none"
+      },
+      "overlap_fraction": 0.0,
+      "windows": [
+        {
+          "active_slot_count": 0,
+          "overlap_frames": 0,
+          "speech_frames": 0
+        }
+      ]
+    },
+    "single": {
+      "decision": {
+        "mean_window_overlap_share": 0.0,
+        "multi_window_fraction": 0.0,
+        "speaker_evidence": "single"
+      },
+      "overlap_fraction": 0.0,
+      "windows": [
+        {
+          "active_slot_count": 1,
+          "overlap_frames": 0,
+          "speech_frames": 589
+        }
+      ]
+    }
+  }
+}
