@@ -26,9 +26,11 @@ from solstone.observe.vad import AudioReduction, SpeechSegment
 from tests import verify_speaker_differential as harness
 from tests._speaker_differential_fixtures import (
     COMPARATOR_THRESHOLDS,
+    EMBEDDER_NAME,
     EMBEDDING_MAX_ABS_TOLERANCE,
     LOGPROB_MAX_ABS_TOLERANCE,
     SAMPLE_RATE,
+    STATEMENT_DURATION_ABS_TOLERANCE,
     ModelFreeSpeakerCase,
     model_free_case,
     real_model_waveform,
@@ -67,7 +69,7 @@ def _install_model_free_patches(
             "embeddings": case.statement_embeddings.copy(),
             "statement_ids": case.statement_ids.copy(),
             "durations_s": case.statement_durations_s.copy(),
-            "encoder": np.array("wespeaker-resnet34-256"),
+            "encoder": np.array(EMBEDDER_NAME),
         }
 
     def fake_embed_interval(
@@ -202,6 +204,22 @@ def _mutate_statement_embedding_above_tolerance(bundle: harness.Bundle) -> None:
     harness.replace_array(bundle, harness.STATEMENT_EMBEDDINGS, embeddings)
 
 
+def _mutate_statement_duration(bundle: harness.Bundle) -> None:
+    durations = harness._array(bundle, harness.STATEMENT_DURATIONS).copy()
+    durations[0] += STATEMENT_DURATION_ABS_TOLERANCE * 10
+    harness.replace_array(bundle, harness.STATEMENT_DURATIONS, durations)
+
+
+def _mutate_statement_encoder(bundle: harness.Bundle) -> None:
+    harness.replace_array(bundle, harness.STATEMENT_ENCODER, np.array("other-encoder"))
+
+
+def _mutate_valid_interval(bundle: harness.Bundle) -> None:
+    intervals = harness._array(bundle, harness.DIARIZATION_VALID_INTERVALS).copy()
+    intervals[0, 1] += 0.01
+    harness.replace_array(bundle, harness.DIARIZATION_VALID_INTERVALS, intervals)
+
+
 def _mutate_silhouette_k(bundle: harness.Bundle) -> None:
     current = harness._scalar(bundle, harness.DIARIZATION_SILHOUETTE_K)
     harness.set_scalar_value(
@@ -326,6 +344,7 @@ def test_report_names_thresholds_for_tolerance_judged_components(
             "max_abs_component_diff": "EMBEDDING_MAX_ABS_TOLERANCE",
             "min_cosine_similarity": "EMBEDDING_MIN_COSINE_SIMILARITY",
             "median_cosine_similarity": "EMBEDDING_MEDIAN_COSINE_SIMILARITY",
+            "duration_max_abs_diff": "STATEMENT_DURATION_ABS_TOLERANCE",
         },
         "interval_embeddings": {
             "max_abs_component_diff": "EMBEDDING_MAX_ABS_TOLERANCE",
@@ -339,6 +358,16 @@ def test_report_names_thresholds_for_tolerance_judged_components(
             assert reported[metric]["constant"] == constant_name
             assert reported[metric]["value"] == COMPARATOR_THRESHOLDS[constant_name]
 
+    assert (
+        components["statement_embeddings"]["thresholds"][harness.STATEMENT_ENCODER]
+        == "exact"
+    )
+    assert (
+        components["interval_embeddings"]["thresholds"][
+            harness.DIARIZATION_VALID_INTERVALS
+        ]
+        == "exact"
+    )
     assert components["evidence"]["thresholds"][harness.EVIDENCE_SPEAKER] == "exact"
     assert (
         components["evidence"]["thresholds"][harness.PYANNOTE_WINDOW_STATS] == "exact"
@@ -385,6 +414,42 @@ def test_bundle_round_trip_is_exact_and_manifest_validated(
     harness.write_bundle(bad, bad_path)
     with pytest.raises(harness.HarnessError, match="shape mismatch"):
         harness.load_bundle(bad_path)
+
+
+def test_duplicate_statement_ids_are_harness_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _case, bundle, _reset = _emit_model_free_bundle(monkeypatch)
+
+    duplicate_embedding_ids = harness.copy_bundle(bundle)
+    embedding_ids = harness._array(
+        duplicate_embedding_ids, harness.STATEMENT_EMBEDDING_IDS
+    ).copy()
+    embedding_ids[1] = embedding_ids[0]
+    harness.replace_array(
+        duplicate_embedding_ids, harness.STATEMENT_EMBEDDING_IDS, embedding_ids
+    )
+    embedding_report = harness.compare_bundles(bundle, duplicate_embedding_ids)
+    assert embedding_report["classification"] == harness.NOT_EVALUATED
+    assert embedding_report["failure"]["class"] == harness.HARNESS_ERROR
+    assert "duplicate statement ids" in embedding_report["failure"]["message"]
+
+    duplicate_label_left = harness.copy_bundle(bundle)
+    duplicate_label_right = harness.copy_bundle(bundle)
+    label_ids = harness._array(
+        duplicate_label_left, harness.INPUT_DIARIZATION_IDS
+    ).copy()
+    label_ids[1] = label_ids[0]
+    harness.replace_array(
+        duplicate_label_left, harness.INPUT_DIARIZATION_IDS, label_ids
+    )
+    harness.replace_array(
+        duplicate_label_right, harness.INPUT_DIARIZATION_IDS, label_ids
+    )
+    label_report = harness.compare_bundles(duplicate_label_left, duplicate_label_right)
+    assert label_report["classification"] == harness.NOT_EVALUATED
+    assert label_report["failure"]["class"] == harness.HARNESS_ERROR
+    assert "duplicate statement ids" in label_report["failure"]["message"]
 
 
 def test_buffer_divergence_is_recorded_for_reduced_audio(
@@ -491,6 +556,13 @@ def test_buffer_divergence_is_recorded_for_reduced_audio(
             "statement_embeddings",
             harness.UNEXPECTED_DIFFERS,
         ),
+        (
+            _mutate_statement_duration,
+            "statement_embeddings",
+            harness.UNEXPECTED_DIFFERS,
+        ),
+        (_mutate_statement_encoder, "statement_embeddings", harness.UNEXPECTED_DIFFERS),
+        (_mutate_valid_interval, "interval_embeddings", harness.UNEXPECTED_DIFFERS),
         (_mutate_silhouette_k, "clustering", harness.UNEXPECTED_DIFFERS),
         (_mutate_effective_k, "clustering", harness.UNEXPECTED_DIFFERS),
         (_mutate_statement_label, "statement_labels", harness.UNEXPECTED_DIFFERS),

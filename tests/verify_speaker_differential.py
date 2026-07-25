@@ -40,6 +40,7 @@ from tests._speaker_differential_fixtures import (
     LOGPROB_MAX_ABS_TOLERANCE,
     LOGPROB_MEDIAN_ABS_TOLERANCE,
     SAMPLE_RATE,
+    STATEMENT_DURATION_ABS_TOLERANCE,
 )
 
 transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
@@ -61,7 +62,6 @@ FIELD_STATES = frozenset({PRESENT, ABSENT_NONE, NOT_EVALUATED})
 EQUAL = "equal"
 FUNCTIONALLY_EQUAL = "functionally-equal"
 UNEXPECTED_DIFFERS = "unexpected-differs"
-CLASSIFICATIONS = frozenset({EQUAL, FUNCTIONALLY_EQUAL, UNEXPECTED_DIFFERS})
 HARNESS_ERROR = "harness_error"
 
 COMPARE = "compare"
@@ -169,10 +169,19 @@ EVIDENCE_THRESHOLD_IDS = {
     PYANNOTE_WINDOW_STATS: "exact",
 }
 
-EMBEDDING_THRESHOLD_IDS = {
+STATEMENT_EMBEDDING_THRESHOLD_IDS = {
     "max_abs_component_diff": "EMBEDDING_MAX_ABS_TOLERANCE",
     "min_cosine_similarity": "EMBEDDING_MIN_COSINE_SIMILARITY",
     "median_cosine_similarity": "EMBEDDING_MEDIAN_COSINE_SIMILARITY",
+    "duration_max_abs_diff": "STATEMENT_DURATION_ABS_TOLERANCE",
+    STATEMENT_ENCODER: "exact",
+}
+
+INTERVAL_EMBEDDING_THRESHOLD_IDS = {
+    "max_abs_component_diff": "EMBEDDING_MAX_ABS_TOLERANCE",
+    "min_cosine_similarity": "EMBEDDING_MIN_COSINE_SIMILARITY",
+    "median_cosine_similarity": "EMBEDDING_MEDIAN_COSINE_SIMILARITY",
+    DIARIZATION_VALID_INTERVALS: "exact",
 }
 
 
@@ -1079,6 +1088,26 @@ def _interval_set(array: np.ndarray) -> set[tuple[float, float, int]]:
     }
 
 
+def _assert_unique_statement_ids(ids: np.ndarray, field: str) -> None:
+    values = [int(value) for value in ids.tolist()]
+    if len(values) != len(set(values)):
+        raise HarnessError(f"duplicate statement ids in {field}: {values}")
+
+
+def _assert_parallel_length(ids: np.ndarray, values: np.ndarray, field: str) -> None:
+    if len(values) != len(ids):
+        raise HarnessError(
+            f"{field} length {len(values)} does not match statement id count {len(ids)}"
+        )
+
+
+def _scalar_string_array(bundle: Bundle, key: str) -> str:
+    value = _array(bundle, key)
+    if value.shape != ():
+        raise HarnessError(f"{key} must be a 0-d string array")
+    return str(value.item())
+
+
 def _compare_intervals(left: Bundle, right: Bundle) -> dict[str, Any]:
     state_verdict = _component_state_verdict(left, right, COMPONENT_FIELDS["intervals"])
     if state_verdict != COMPARE:
@@ -1148,7 +1177,7 @@ def _embedding_classification(
 
 
 def _compare_statement_embeddings(left: Bundle, right: Bundle) -> dict[str, Any]:
-    thresholds = _threshold_block(EMBEDDING_THRESHOLD_IDS)
+    thresholds = _threshold_block(STATEMENT_EMBEDDING_THRESHOLD_IDS)
     state_verdict = _component_state_verdict(
         left, right, COMPONENT_FIELDS["statement_embeddings"]
     )
@@ -1156,6 +1185,8 @@ def _compare_statement_embeddings(left: Bundle, right: Bundle) -> dict[str, Any]
         return _component_report(state_verdict, thresholds=thresholds)
     left_ids = _array(left, STATEMENT_EMBEDDING_IDS)
     right_ids = _array(right, STATEMENT_EMBEDDING_IDS)
+    _assert_unique_statement_ids(left_ids, STATEMENT_EMBEDDING_IDS)
+    _assert_unique_statement_ids(right_ids, STATEMENT_EMBEDDING_IDS)
     if set(left_ids.tolist()) != set(right_ids.tolist()):
         return _component_report(
             UNEXPECTED_DIFFERS,
@@ -1167,6 +1198,12 @@ def _compare_statement_embeddings(left: Bundle, right: Bundle) -> dict[str, Any]
         )
     left_embs = _array(left, STATEMENT_EMBEDDINGS)
     right_embs = _array(right, STATEMENT_EMBEDDINGS)
+    left_durations = _array(left, STATEMENT_DURATIONS)
+    right_durations = _array(right, STATEMENT_DURATIONS)
+    _assert_parallel_length(left_ids, left_embs, STATEMENT_EMBEDDINGS)
+    _assert_parallel_length(right_ids, right_embs, STATEMENT_EMBEDDINGS)
+    _assert_parallel_length(left_ids, left_durations, STATEMENT_DURATIONS)
+    _assert_parallel_length(right_ids, right_durations, STATEMENT_DURATIONS)
     if len(left_ids) == 0 and len(right_ids) == 0:
         return _component_report(
             NOT_EVALUATED, thresholds=thresholds, metrics={"statement_count": 0}
@@ -1186,21 +1223,95 @@ def _compare_statement_embeddings(left: Bundle, right: Bundle) -> dict[str, Any]
     right_ordered = np.stack(
         [right_embs[right_index[statement_id]] for statement_id in ordered_ids]
     )
+    duration_diffs = np.asarray(
+        [
+            abs(
+                float(left_durations[left_index[statement_id]])
+                - float(right_durations[right_index[statement_id]])
+            )
+            for statement_id in ordered_ids
+        ],
+        dtype=np.float64,
+    )
+    left_encoder = _scalar_string_array(left, STATEMENT_ENCODER)
+    right_encoder = _scalar_string_array(right, STATEMENT_ENCODER)
     metrics = _cosine_metrics(left_ordered, right_ordered)
     metrics["statement_count"] = len(ordered_ids)
-    classification = _embedding_classification(left_ordered, right_ordered, metrics)
+    metrics["duration_max_abs_diff"] = (
+        float(duration_diffs.max()) if duration_diffs.size else 0.0
+    )
+    vector_classification = _embedding_classification(
+        left_ordered, right_ordered, metrics
+    )
+    differences: list[dict[str, Any]] = []
+    if left_encoder != right_encoder:
+        differences.append(
+            {
+                "field": STATEMENT_ENCODER,
+                "left": left_encoder,
+                "right": right_encoder,
+            }
+        )
+    if metrics["duration_max_abs_diff"] > STATEMENT_DURATION_ABS_TOLERANCE:
+        differences.append(
+            {
+                "field": STATEMENT_DURATIONS,
+                "max_abs_diff": metrics["duration_max_abs_diff"],
+            }
+        )
+    if vector_classification == UNEXPECTED_DIFFERS or differences:
+        return _component_report(
+            UNEXPECTED_DIFFERS,
+            thresholds=thresholds,
+            metrics=metrics,
+            differences=differences,
+        )
+    classification = (
+        FUNCTIONALLY_EQUAL
+        if vector_classification == FUNCTIONALLY_EQUAL
+        or metrics["duration_max_abs_diff"] > 0.0
+        else EQUAL
+    )
     return _component_report(classification, thresholds=thresholds, metrics=metrics)
 
 
 def _compare_interval_embeddings(left: Bundle, right: Bundle) -> dict[str, Any]:
-    thresholds = _threshold_block(EMBEDDING_THRESHOLD_IDS)
+    thresholds = _threshold_block(INTERVAL_EMBEDDING_THRESHOLD_IDS)
     state_verdict = _component_state_verdict(
         left, right, COMPONENT_FIELDS["interval_embeddings"]
     )
     if state_verdict != COMPARE:
         return _component_report(state_verdict, thresholds=thresholds)
+    left_valid = _array(left, DIARIZATION_VALID_INTERVALS)
+    right_valid = _array(right, DIARIZATION_VALID_INTERVALS)
     left_embs = _array(left, DIARIZATION_INTERVAL_EMBEDDINGS)
     right_embs = _array(right, DIARIZATION_INTERVAL_EMBEDDINGS)
+    if left_valid.shape != right_valid.shape:
+        return _component_report(
+            UNEXPECTED_DIFFERS,
+            thresholds=thresholds,
+            metrics={
+                "valid_interval_shape_mismatch": [
+                    list(left_valid.shape),
+                    list(right_valid.shape),
+                ]
+            },
+        )
+    left_valid_set = _interval_set(left_valid)
+    right_valid_set = _interval_set(right_valid)
+    if left_valid_set != right_valid_set:
+        return _component_report(
+            UNEXPECTED_DIFFERS,
+            thresholds=thresholds,
+            metrics={
+                "left_valid_interval_count": len(left_valid_set),
+                "right_valid_interval_count": len(right_valid_set),
+            },
+            differences={
+                "added_valid_intervals": sorted(right_valid_set - left_valid_set),
+                "removed_valid_intervals": sorted(left_valid_set - right_valid_set),
+            },
+        )
     if left_embs.shape != right_embs.shape:
         return _component_report(
             UNEXPECTED_DIFFERS,
@@ -1282,6 +1393,10 @@ def _compare_statement_labels(left: Bundle, right: Bundle) -> dict[str, Any]:
     right_ids = _array(right, INPUT_DIARIZATION_IDS)
     left_labels = _array(left, DIARIZATION_STATEMENT_LABELS)
     right_labels = _array(right, DIARIZATION_STATEMENT_LABELS)
+    _assert_unique_statement_ids(left_ids, INPUT_DIARIZATION_IDS)
+    _assert_unique_statement_ids(right_ids, INPUT_DIARIZATION_IDS)
+    _assert_parallel_length(left_ids, left_labels, DIARIZATION_STATEMENT_LABELS)
+    _assert_parallel_length(right_ids, right_labels, DIARIZATION_STATEMENT_LABELS)
     if set(left_ids.tolist()) != set(right_ids.tolist()):
         return _component_report(
             UNEXPECTED_DIFFERS,

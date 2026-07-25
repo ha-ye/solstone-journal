@@ -20,15 +20,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from solstone.apps.speakers import encoder_config
 from solstone.observe.transcribe.diarize import (
     FRAMES_PER_WINDOW,
-    MAX_K,
     MIN_INTERVAL_S,
     SAMPLE_RATE,
-    SILHOUETTE_IMPROVEMENT,
     SINGLE_SPEAKER_CLASSES,
-    STRIDE_S,
     WINDOW_S,
 )
 from solstone.observe.transcribe.main import EMBEDDER_NAME, MIN_STATEMENT_DURATION
@@ -44,6 +40,9 @@ EMBEDDING_MAX_ABS_TOLERANCE = 1e-4
 EMBEDDING_MIN_COSINE_SIMILARITY = 0.9999
 EMBEDDING_MEDIAN_COSINE_SIMILARITY = 0.99999
 
+# Durations are seconds derived from sample counts; this is below one 16 kHz sample.
+STATEMENT_DURATION_ABS_TOLERANCE = 1e-6
+
 # Degenerate-norm floor for cosine math, not a comparison tolerance to tune.
 COSINE_NORM_FLOOR = 1e-12
 
@@ -55,6 +54,7 @@ COMPARATOR_THRESHOLDS = {
     "EMBEDDING_MAX_ABS_TOLERANCE": EMBEDDING_MAX_ABS_TOLERANCE,
     "EMBEDDING_MIN_COSINE_SIMILARITY": EMBEDDING_MIN_COSINE_SIMILARITY,
     "EMBEDDING_MEDIAN_COSINE_SIMILARITY": EMBEDDING_MEDIAN_COSINE_SIMILARITY,
+    "STATEMENT_DURATION_ABS_TOLERANCE": STATEMENT_DURATION_ABS_TOLERANCE,
 }
 
 
@@ -123,6 +123,7 @@ def model_free_case() -> ModelFreeSpeakerCase:
     audio = np.zeros(int(duration_s * SAMPLE_RATE), dtype=np.float32)
 
     frame_s = WINDOW_S / FRAMES_PER_WINDOW
+    assert 42 * frame_s >= MIN_INTERVAL_S
     statements = [
         {"id": 1, "start": 2 * frame_s, "end": 34 * frame_s, "text": "redacted"},
         {"id": 2, "start": 58 * frame_s, "end": 88 * frame_s, "text": "redacted"},
@@ -134,6 +135,7 @@ def model_free_case() -> ModelFreeSpeakerCase:
         [float(stmt["end"]) - float(stmt["start"]) for stmt in statements],
         dtype=np.float32,
     )
+    assert np.all(durations >= MIN_STATEMENT_DURATION)
     return ModelFreeSpeakerCase(
         audio=audio,
         statements=statements,
@@ -171,15 +173,12 @@ __all__ = [
     "LOGPROB_ARGMAX_AGREEMENT_MIN",
     "LOGPROB_MAX_ABS_TOLERANCE",
     "LOGPROB_MEDIAN_ABS_TOLERANCE",
-    "MAX_K",
     "MIN_INTERVAL_S",
     "MIN_STATEMENT_DURATION",
     "ModelFreeSpeakerCase",
     "SAMPLE_RATE",
-    "SILHOUETTE_IMPROVEMENT",
-    "STRIDE_S",
+    "STATEMENT_DURATION_ABS_TOLERANCE",
     "WINDOW_S",
-    "encoder_config",
     "EMBEDDER_NAME",
     "model_free_case",
     "real_model_waveform",
