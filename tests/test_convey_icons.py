@@ -37,6 +37,15 @@ CONVERTED_FILES = (
 
 CALL_RE = re.compile(r"window\.ConveyIcons\.svg\(\s*'([a-z0-9-]+)'\s*\)")
 SVG_RE = re.compile(r"<svg\b[\s\S]*?</svg>")
+ICON_SLOT_OPEN_RE = re.compile(
+    r"<(?P<tag>[A-Za-z][A-Za-z0-9:-]*)\b"
+    r"(?=[^>]*\bclass=(?P<quote>['\"])[^'\"]*"
+    r"(?<![A-Za-z0-9_-])(?:surface-state-icon|empty-icon)(?![A-Za-z0-9_-])"
+    r"[^'\"]*(?P=quote))"
+    r"[^>]*>",
+    re.IGNORECASE,
+)
+EMPTY_ICONS_MAP_RE = re.compile(r"const\s+emptyIcons\s*=\s*\{[\s\S]*?\n\s*\};")
 
 CONVERTED_GLYPH_RESIDUE = {
     "solstone/apps/search/workspace.html": (
@@ -126,25 +135,19 @@ def _assert_icon_maps_match(actual: dict[str, str], expected: dict[str, str]) ->
 def _icon_slot_svgs(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     slots: list[str] = []
-    empty_icons_start = text.find("const emptyIcons = {")
-    empty_icons_end = text.find("\n  };", empty_icons_start)
-    for match in SVG_RE.finditer(text):
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end())
-        if line_end == -1:
-            line_end = len(text)
-        line = text[line_start:line_end]
-        in_empty_icons = (
-            empty_icons_start != -1
-            and empty_icons_start <= match.start() <= empty_icons_end
+    for match in ICON_SLOT_OPEN_RE.finditer(text):
+        tag = match.group("tag")
+        close = re.search(
+            rf"</{re.escape(tag)}\s*>", text[match.end() :], re.IGNORECASE
         )
-        if (
-            "surface-state-icon" in line
-            or 'class="empty-icon"' in line
-            or 'class=\\"empty-icon\\"' in line
-            or in_empty_icons
-        ):
-            slots.append(match.group(0))
+        if close is None:
+            continue
+        slot_body = text[match.end() : match.end() + close.start()]
+        slots.extend(svg.group(0) for svg in SVG_RE.finditer(slot_body))
+
+    # Regression tripwire: the removed emptyIcons maps are icon sources too.
+    for match in EMPTY_ICONS_MAP_RE.finditer(text):
+        slots.extend(svg.group(0) for svg in SVG_RE.finditer(match.group(0)))
     return slots
 
 
@@ -195,6 +198,24 @@ def test_convey_icon_comparator_rejects_mismatched_svg():
         _assert_icon_maps_match(actual, expected)
 
 
+def test_icon_slot_detector_finds_multiline_slot_svg(tmp_path: Path):
+    fixture = tmp_path / "workspace.html"
+    fixture.write_text(
+        textwrap.dedent(
+            """
+            <div class="surface-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"></path></svg>
+            </div>
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    assert _icon_slot_svgs(fixture) == [
+        '<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"></path></svg>'
+    ]
+
+
 def test_convey_icon_call_sites_are_allow_listed_and_complete():
     requested = set(CALL_RE.findall(_converted_source()))
     allow_list = set(CONVEY_ICON_NAMES)
@@ -235,11 +256,23 @@ def test_surface_state_error_actions_are_wired_after_conversion():
         encoding="utf-8"
     )
 
-    assert ".surface-state-retry" in support_js
-    assert "loadTickets(deps)" in support_js
-    assert ".surface-state-retry" in sol
-    assert "loadTalents" in sol
-    assert ".surface-state-secondary" in support
-    assert "detail.classList.remove('active');" in support
-    assert "detail.innerHTML = '';" in support
-    assert "list.style.display = '';" in support
+    assert re.search(
+        r"const retryBtn = list\.querySelector\('\.surface-state-retry'\);\s*"
+        r"if \(retryBtn\) retryBtn\.addEventListener\('click', \(\) => "
+        r"loadTickets\(deps\)\);",
+        support_js,
+    )
+    assert re.search(
+        r"loadingView\.querySelector\('\.surface-state-retry'\)\.onclick = "
+        r"\(\) => loadTalents\(\);",
+        sol,
+    )
+    assert re.search(
+        r"const errorBackBtn = detail\.querySelector\('\.surface-state-secondary'\);\s*"
+        r"if \(errorBackBtn\) errorBackBtn\.addEventListener\('click', \(\) => \{\s*"
+        r"detail\.classList\.remove\('active'\);\s*"
+        r"detail\.innerHTML = '';\s*"
+        r"list\.style\.display = '';\s*"
+        r"\}\);",
+        support,
+    )
