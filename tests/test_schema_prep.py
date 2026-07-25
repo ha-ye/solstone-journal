@@ -68,11 +68,10 @@ def test_local_receives_canonical_copy(bounded_schema: dict[str, Any]) -> None:
     assert prepared is not bounded_schema
 
 
-@pytest.mark.parametrize("provider", ["openai", "google"])
-def test_openai_and_google_keep_array_bounds_and_strip_length_bounds(
-    bounded_schema: dict[str, Any], provider: str
+def test_openai_keeps_array_bounds_and_strips_length_bounds(
+    bounded_schema: dict[str, Any],
 ) -> None:
-    prepared = prepare_provider_schema(bounded_schema, provider)
+    prepared = prepare_provider_schema(bounded_schema, "openai")
 
     labels = prepared["properties"]["labels"]  # type: ignore[index]
     item = labels["items"]
@@ -80,6 +79,55 @@ def test_openai_and_google_keep_array_bounds_and_strip_length_bounds(
     assert "maxLength" not in item
     assert item["pattern"] == "^[a-z]+$"
     assert item["enum"] == ["alpha", "beta"]
+
+
+def test_google_strips_maxitems_and_length_bounds_but_keeps_supported_constraints() -> (
+    None
+):
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$comment": "provider prep strips unsupported annotations",
+        "type": "object",
+        "properties": {
+            "labels": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 2,
+                "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 12,
+                    "pattern": "^[a-z]+$",
+                    "enum": ["alpha", "beta"],
+                    SCHEMA_TRUNCATE_KEY: True,
+                },
+            },
+            "score": {"type": "number", "minimum": 0, "maximum": 10},
+        },
+        "required": ["labels", "score"],
+        "additionalProperties": False,
+    }
+
+    prepared = prepare_provider_schema(schema, "google")
+
+    assert "$schema" not in prepared
+    assert "$comment" not in prepared
+    labels = prepared["properties"]["labels"]  # type: ignore[index]
+    item = labels["items"]
+    assert "maxItems" not in labels
+    assert labels["minItems"] == 1
+    assert "minLength" not in item
+    assert "maxLength" not in item
+    assert SCHEMA_TRUNCATE_KEY not in item
+    assert item["pattern"] == "^[a-z]+$"
+    assert item["enum"] == ["alpha", "beta"]
+    assert prepared["properties"]["score"] == {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10,
+    }
+    assert prepared["required"] == ["labels", "score"]
+    assert prepared["additionalProperties"] is False
 
 
 def test_anthropic_strips_array_and_length_bounds(
@@ -293,6 +341,19 @@ BOUNDED_SCHEMAS = (
     "solstone/apps/entities/talent/entity_observer.schema.json",
 )
 
+# Shipped schemas that currently carry canonical maxItems. This is provider-prep
+# coverage, not the schema-bounds ratchet tuple above.
+SHIPPED_SCHEMAS_WITH_MAX_ITEMS = (
+    "solstone/talent/sense.schema.json",
+    "solstone/talent/screen.schema.json",
+    "solstone/talent/documents.schema.json",
+    "solstone/talent/story.schema.json",
+    "solstone/apps/entities/talent/entity_observer.schema.json",
+    "solstone/observe/categories/calendar.schema.json",
+    "solstone/observe/categories/messaging.schema.json",
+    "solstone/talent/morning_briefing.schema.json",
+)
+
 
 def _load_shipped_schema(relative_path: str) -> dict[str, Any]:
     return json.loads((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
@@ -329,15 +390,22 @@ def test_bounded_schemas_reach_local_provider_with_bounds_intact(
     assert prepare_provider_schema(schema, "local") == schema
 
 
-@pytest.mark.parametrize("provider", ["openai", "google"])
 @pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
-def test_bounded_schemas_lose_only_maxlength_for_openai_and_google(
-    relative_path: str, provider: str
+def test_bounded_schemas_lose_only_maxlength_for_openai(
+    relative_path: str,
 ) -> None:
-    prepared = prepare_provider_schema(_load_shipped_schema(relative_path), provider)
+    prepared = prepare_provider_schema(_load_shipped_schema(relative_path), "openai")
 
     assert _keyword_paths(prepared, "maxLength") == []
     assert _keyword_paths(prepared, "maxItems")
+
+
+@pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
+def test_bounded_schemas_lose_size_bounds_for_google(relative_path: str) -> None:
+    prepared = prepare_provider_schema(_load_shipped_schema(relative_path), "google")
+
+    assert _keyword_paths(prepared, "maxLength") == []
+    assert _keyword_paths(prepared, "maxItems") == []
 
 
 @pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
@@ -348,6 +416,22 @@ def test_bounded_schemas_lose_every_size_bound_for_anthropic(
 
     assert _keyword_paths(prepared, "maxLength") == []
     assert _keyword_paths(prepared, "maxItems") == []
+
+
+@pytest.mark.parametrize("relative_path", SHIPPED_SCHEMAS_WITH_MAX_ITEMS)
+def test_google_strips_maxitems_from_every_shipped_schema_that_has_them(
+    relative_path: str,
+) -> None:
+    """The maxLength check is conditional because sense carries no maxLength."""
+    canonical = _load_shipped_schema(relative_path)
+    canonical_max_length_paths = _keyword_paths(canonical, "maxLength")
+    assert _keyword_paths(canonical, "maxItems")
+
+    prepared = prepare_provider_schema(canonical, "google")
+
+    assert _keyword_paths(prepared, "maxItems") == []
+    if canonical_max_length_paths:
+        assert _keyword_paths(prepared, "maxLength") == []
 
 
 def _patched_generate(
@@ -385,6 +469,17 @@ def test_generate_sends_reduced_schema_to_anthropic(
     assert bounded_schema["properties"]["labels"]["maxItems"] == 2
 
 
+def test_generate_sends_reduced_schema_to_google(
+    bounded_schema: dict[str, Any],
+) -> None:
+    run_generate = _patched_generate("google", bounded_schema, '{"labels": []}')
+
+    sent = run_generate.call_args.kwargs["json_schema"]
+    assert sent == prepare_provider_schema(bounded_schema, "google")
+    assert "maxItems" not in sent["properties"]["labels"]
+    assert bounded_schema["properties"]["labels"]["maxItems"] == 2
+
+
 def test_generate_sends_canonical_schema_to_local(
     bounded_schema: dict[str, Any],
 ) -> None:
@@ -402,3 +497,12 @@ def test_generate_validates_response_against_canonical_schema(
 
     with pytest.raises(SchemaValidationError):
         _patched_generate("anthropic", bounded_schema, overrun)
+
+
+def test_generate_validates_google_response_against_canonical_schema(
+    bounded_schema: dict[str, Any],
+) -> None:
+    overrun = '{"labels": ["alpha", "beta", "alpha"]}'
+
+    with pytest.raises(SchemaValidationError):
+        _patched_generate("google", bounded_schema, overrun)

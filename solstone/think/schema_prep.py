@@ -25,13 +25,29 @@ SCHEMA_TRUNCATE_KEY = "x-truncate"
 #   strip minItems wholesale here for deterministic simplicity. Pattern is
 #   documented as supported.
 # - Google: https://ai.google.dev/gemini-api/docs/structured-output
-#   supports string format, number minimum/maximum, and array minItems/maxItems.
+#   lists minItems/maxItems as supported, and the API does *accept* both -- but
+#   responseJsonSchema compiles maxItems into a bounded decoding grammar whose
+#   expansion has an undocumented WHOLE-SCHEMA budget. Over budget the API
+#   returns a bare 400 INVALID_ARGUMENT naming no keyword, path, or limit. The
+#   cost is additive across every bounded array and scales with N x item
+#   complexity. Measured 2026-07-25 on gemini-3.5-flash (also 3.5-pro and
+#   2.5-flash): sense.schema.json's entities array alone passes at maxItems<=27
+#   and fails at 28; entities=27 plus speakers=16 fails though each passes
+#   alone; 7 of the 8 shipped schemas carrying maxItems are rejected outright
+#   and all 8 pass with it stripped. minItems is free. So strip maxItems.
 STRICT_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
     "openai": frozenset(
         {"$schema", "$comment", "minLength", "maxLength", SCHEMA_TRUNCATE_KEY}
     ),
     "google": frozenset(
-        {"$schema", "$comment", "minLength", "maxLength", SCHEMA_TRUNCATE_KEY}
+        {
+            "$schema",
+            "$comment",
+            "minLength",
+            "maxLength",
+            "maxItems",
+            SCHEMA_TRUNCATE_KEY,
+        }
     ),
     "anthropic": frozenset(
         {
@@ -49,11 +65,13 @@ STRICT_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 }
 
 # Hazard: cloud-provider reductions are request-only. Canonical response
-# validation in models.py still enforces stripped bounds and annotations, so an
-# Anthropic response that overruns future canonical maxItems/maxLength bounds
+# validation in models.py still enforces stripped bounds and annotations, so a
+# Google or Anthropic response that overruns canonical maxItems/maxLength bounds
 # raises on generate/agenerate or records invalid canonical validation on
 # advisory result paths unless an honored annotation truncates that specific
-# instance path first.
+# instance path first. Google is the live case after the deliberate request
+# strip: the segment chain runs on Gemini with shipped sense.schema.json
+# maxItems bounds such as entities:96.
 
 
 def unsupported_keyword_hits(schema: dict[str, Any] | None, provider: str) -> list[str]:
