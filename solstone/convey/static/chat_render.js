@@ -12,6 +12,17 @@
     dedupeLabel: "dedupe",
     sinceTsLabel: "since"
   });
+  const ORIGIN_SINCE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZoneName: 'short'
+  });
 
   function renderEventItem(event, ctx) {
     if (![
@@ -279,7 +290,7 @@
     provenance.hidden = true;
     appendOriginProvenanceValue(provenance, ORIGIN_COPY.triggerTalentLabel, meta.trigger_talent || '');
     appendOriginProvenanceValue(provenance, ORIGIN_COPY.dedupeLabel, meta.dedupe || '');
-    appendOriginProvenanceValue(provenance, ORIGIN_COPY.sinceTsLabel, meta.since_ts || '');
+    appendOriginProvenanceValue(provenance, ORIGIN_COPY.sinceTsLabel, formatOriginSinceTs(meta.since_ts));
     tag.appendChild(provenance);
 
     return tag;
@@ -298,7 +309,14 @@
     return label;
   }
 
+  function formatOriginSinceTs(rawTs) {
+    const numericTs = Number(rawTs);
+    if (!Number.isFinite(numericTs) || numericTs <= 0) return '';
+    return ORIGIN_SINCE_FORMATTER.format(new Date(numericTs));
+  }
+
   function appendOriginProvenanceValue(provenance, labelText, value) {
+    if (!value) return;
     const span = document.createElement('span');
     const label = document.createElement('strong');
     label.textContent = labelText;

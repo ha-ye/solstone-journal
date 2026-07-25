@@ -55,8 +55,8 @@
     }
 
     function runTests() {
-      assert('exec running label', window.solChatCopy.talentLabel('exec', 'running') === 'Making that change…');
-      assert('support errored label', window.solChatCopy.talentLabel('support', 'errored') === "Couldn't reach solstone support");
+      assert('exec running label', window.solChatCopy.talentLabel('exec', 'running') === 'making that change…');
+      assert('support errored label', window.solChatCopy.talentLabel('support', 'errored') === "couldn't reach solstone support");
       assert('liveness thinking copy', window.solChatCopy.CHAT_LIVENESS_THINKING === 'sol is thinking…');
       assert('offer yes label', window.solChatCopy.CHAT_OFFER_SUPPORT_YES === 'yes, get support');
       assert('offer no label', window.solChatCopy.CHAT_OFFER_SUPPORT_NO === 'not now');
@@ -85,7 +85,7 @@
       const phaseTwo = window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT
         .replace('{label}', window.solChatCopy.talentLabel('exec', 'running'))
         .replace('{task}', 'Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
-      assert('liveness phase two composition', phaseTwo === 'Making that change… Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
+      assert('liveness phase two composition', phaseTwo === 'making that change… Retrieve the history for Adrian Kunzle and Bill Putsis from this week');
 
       setJobsIndicator(0);
       assert('zero jobs hides queue', queueStatus.hidden && queueStatus.textContent === '');

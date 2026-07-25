@@ -5,18 +5,18 @@
   const TALENT_LABELS = {
     "read": {
       "running": "reading your journal…",
-      "finished": "Read your journal",
-      "errored": "Couldn't finish reading your journal"
+      "finished": "read your journal",
+      "errored": "couldn't finish reading your journal"
     },
     "exec": {
-      "running": "Making that change…",
-      "finished": "Made the change",
-      "errored": "Couldn't finish the change"
+      "running": "making that change…",
+      "finished": "made the change",
+      "errored": "couldn't finish the change"
     },
     "support": {
-      "running": "Reaching solstone support…",
-      "finished": "Reached solstone support",
-      "errored": "Couldn't reach solstone support"
+      "running": "reaching solstone support…",
+      "finished": "reached solstone support",
+      "errored": "couldn't reach solstone support"
     }
   };
 
@@ -33,7 +33,7 @@
     CHAT_JOBS_INDICATOR_SINGULAR: "sol is running 1 job",
     CHAT_JOBS_INDICATOR_PLURAL_FORMAT: "sol is running {count} jobs",
     CHAT_QUEUE_DEPTH_CAP_MESSAGE: "Give sol a moment to catch up — you have 10 messages waiting.",
-    CHAT_TALENT_QUEUED_LABEL: "Waiting to start…",
+    CHAT_TALENT_QUEUED_LABEL: "waiting to start…",
     CHAT_DISPATCH_ORIGIN_PREFIX: "in reply to:",
     CHAT_LIVENESS_THINKING: "sol is thinking…",
     CHAT_LIVENESS_TASK_FORMAT: "{label} {task}",

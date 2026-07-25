@@ -564,7 +564,7 @@ def test_empty_dispatch_ack_uses_nonraising_liveness_backstop(chat_client, monke
         for event in read_chat_events(date.today().strftime("%Y%m%d"))
         if event["kind"] == "sol_message"
     )
-    assert sol_message["text"] == "Making that change… research"
+    assert sol_message["text"] == "making that change… research"
     assert chat._dispatch_ack_text("unknown", None, "") == "unknown"
 
 

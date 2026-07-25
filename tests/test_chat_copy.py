@@ -74,11 +74,33 @@ def test_liveness_and_error_detail_copy_bytes():
 
 
 def test_jobs_and_dispatch_origin_copy_bytes():
-    assert chat_copy.CHAT_TALENT_QUEUED_LABEL == "Waiting to start…"
+    assert chat_copy.CHAT_TALENT_QUEUED_LABEL == "waiting to start…"
     assert "…" in chat_copy.CHAT_TALENT_QUEUED_LABEL
     assert chat_copy.CHAT_DISPATCH_ORIGIN_PREFIX == "in reply to:"
     assert chat_copy.CHAT_JOBS_INDICATOR_SINGULAR == "sol is running 1 job"
     assert chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT == "sol is running {count} jobs"
+
+
+def _chat_status_copy_values() -> tuple[str, ...]:
+    return (
+        chat_copy.TALENT_LABEL_READ_RUNNING,
+        chat_copy.TALENT_LABEL_READ_FINISHED,
+        chat_copy.TALENT_LABEL_READ_ERRORED,
+        chat_copy.TALENT_LABEL_EXEC_RUNNING,
+        chat_copy.TALENT_LABEL_EXEC_FINISHED,
+        chat_copy.TALENT_LABEL_EXEC_ERRORED,
+        chat_copy.TALENT_LABEL_SUPPORT_RUNNING,
+        chat_copy.TALENT_LABEL_SUPPORT_FINISHED,
+        chat_copy.TALENT_LABEL_SUPPORT_ERRORED,
+        chat_copy.CHAT_TALENT_QUEUED_LABEL,
+    )
+
+
+def test_chat_status_copy_is_lowercase():
+    # test_js_parity covers every JS talent label plus the queued label, so the
+    # Python lowercase guard transitively covers the JS twin without duplicating it.
+    for value in _chat_status_copy_values():
+        assert value == value.lower()
 
 
 def _thinking_option_values() -> tuple[str, str, str]:
@@ -197,6 +219,32 @@ def test_thinking_copy_old_titlecase_literal_removed():
         text = path.read_text(encoding="utf-8")
         for value in _thinking_option_values():
             assert value.capitalize() not in text
+
+
+def test_chat_status_copy_old_titlecase_literals_removed():
+    paths = (
+        Path("solstone/apps/chat/copy.py"),
+        Path("solstone/convey/static/chat_copy.js"),
+        Path("tests/test_chat_copy.py"),
+        Path("tests/test_convey_chat.py"),
+        Path("solstone/convey/static/tests/chat-bar-copy.html"),
+    )
+    old_literals = (
+        "Read " + "your journal",
+        "Could" + "n't finish reading your journal",
+        "Making " + "that change…",
+        "Made " + "the change",
+        "Could" + "n't finish the change",
+        "Reaching " + "solstone support…",
+        "Reached " + "solstone support",
+        "Could" + "n't reach solstone support",
+        "Waiting " + "to start…",
+    )
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for literal in old_literals:
+            assert literal not in text
 
 
 def test_closer_constants_byte_parity():

@@ -55,3 +55,32 @@ def test_live_append_origin_tag_script_handles_sol_initiated_events(chat_client)
 
     assert "renderOriginTag" in renderer
     assert "item.dataset.requestId = event.origin.request_id;" in renderer
+
+
+def test_workspace_scopes_talent_events_column_rule(chat_client):
+    response = chat_client.get("/app/chat/workspace")
+
+    assert response.status_code == 200
+    fragment = response.get_data(as_text=True)
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+    rule = """  .chat-transcript .chat-event--talent {
+    align-items: flex-start;
+    flex-direction: column;
+  }"""
+
+    assert rule in fragment
+    assert ".chat-transcript .chat-event--talent" not in css
+
+
+def test_workspace_scopes_hidden_origin_provenance_rule(chat_client):
+    response = chat_client.get("/app/chat/workspace")
+
+    assert response.status_code == 200
+    fragment = response.get_data(as_text=True)
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+    rule = """  .chat-transcript .chat-origin-provenance[hidden] {
+    display: none;
+  }"""
+
+    assert rule in fragment
+    assert ".chat-transcript .chat-origin-provenance[hidden]" not in css

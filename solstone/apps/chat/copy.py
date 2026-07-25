@@ -6,20 +6,20 @@
 # fmt: off
 # T1.3 — owner-language talent labels (CMO subagent voice pass, 2026-05-26)
 TALENT_LABEL_READ_RUNNING = "reading your journal…"
-TALENT_LABEL_READ_FINISHED = "Read your journal"
-TALENT_LABEL_READ_ERRORED = "Couldn't finish reading your journal"
-TALENT_LABEL_EXEC_RUNNING = "Making that change…"
-TALENT_LABEL_EXEC_FINISHED = "Made the change"
-TALENT_LABEL_EXEC_ERRORED = "Couldn't finish the change"
-TALENT_LABEL_SUPPORT_RUNNING = "Reaching solstone support…"
-TALENT_LABEL_SUPPORT_FINISHED = "Reached solstone support"
-TALENT_LABEL_SUPPORT_ERRORED = "Couldn't reach solstone support"
+TALENT_LABEL_READ_FINISHED = "read your journal"
+TALENT_LABEL_READ_ERRORED = "couldn't finish reading your journal"
+TALENT_LABEL_EXEC_RUNNING = "making that change…"
+TALENT_LABEL_EXEC_FINISHED = "made the change"
+TALENT_LABEL_EXEC_ERRORED = "couldn't finish the change"
+TALENT_LABEL_SUPPORT_RUNNING = "reaching solstone support…"
+TALENT_LABEL_SUPPORT_FINISHED = "reached solstone support"
+TALENT_LABEL_SUPPORT_ERRORED = "couldn't reach solstone support"
 
 # T1.4 — active/queued job indicators (lowercase "sol" per system-anatomy canon)
 CHAT_JOBS_INDICATOR_SINGULAR = "sol is running 1 job"
 CHAT_JOBS_INDICATOR_PLURAL_FORMAT = "sol is running {count} jobs"
 CHAT_QUEUE_DEPTH_CAP_MESSAGE = "Give sol a moment to catch up — you have 10 messages waiting."
-CHAT_TALENT_QUEUED_LABEL = "Waiting to start…"
+CHAT_TALENT_QUEUED_LABEL = "waiting to start…"
 CHAT_DISPATCH_ORIGIN_PREFIX = "in reply to:"
 
 # T1.1 — liveness placeholder bubble

@@ -35,10 +35,19 @@ def test_chat_render_sol_bubble_uses_markdown_renderer(tmp_path: Path) -> None:
                 this.className = '';
                 this.id = '';
                 this.title = '';
-                this.textContent = '';
+                this._textContent = '';
                 this.innerHTML = '';
                 this.parentNode = null;
                 this.isFragment = false;
+              }
+
+              get textContent() {
+                if (!this.children.length) return this._textContent;
+                return this.children.map((child) => child.textContent || '').join('');
+              }
+
+              set textContent(value) {
+                this._textContent = String(value ?? '');
               }
 
               appendChild(child) {
@@ -76,6 +85,9 @@ def test_chat_render_sol_bubble_uses_markdown_renderer(tmp_path: Path) -> None:
                 const fragment = new Element('#fragment');
                 fragment.isFragment = true;
                 return fragment;
+              },
+              createTextNode(value) {
+                return { textContent: String(value ?? ''), parentNode: null };
               },
             };
             const window = {
@@ -115,7 +127,12 @@ def test_chat_render_sol_bubble_uses_markdown_renderer(tmp_path: Path) -> None:
               '```',
             ].join('\\n');
             const ownerSource = '**hello**';
-            const ctx = { ownerName: 'Owner', agentName: 'Sol', id: '' };
+            const ctx = {
+              ownerName: 'Owner',
+              agentName: 'Sol',
+              id: '',
+              timeFormatter: { format() { return '9:00 AM'; } },
+            };
 
             const solItem = renderer.renderEventItem(
               { kind: 'sol_message', ts: 1, text: solSource, use_id: 'use-markdown' },
@@ -147,7 +164,47 @@ def test_chat_render_sol_bubble_uses_markdown_renderer(tmp_path: Path) -> None:
             assert.strictEqual(solBubble.attrs['aria-label'], 'Sol: ' + solSource);
             assert(solBubble.attrs['aria-label'].includes('**hello**'));
             assert.strictEqual(ownerBubble.attrs['aria-label'], 'Owner: ' + ownerSource);
-            assert.deepStrictEqual(markdownCalls, [solSource]);
+
+            function provenanceTextFor(origin) {
+              const item = renderer.renderEventItem(
+                { kind: 'sol_message', ts: 3, text: 'origin', use_id: 'use-origin', origin },
+                { ...ctx, id: 'event-origin' },
+              );
+              const provenance = find(item, (node) => hasClass(node, 'chat-origin-provenance'));
+              assert(provenance, 'origin provenance was not rendered');
+              return provenance.textContent;
+            }
+
+            assert.strictEqual(
+              provenanceTextFor({
+                request_id: 'r1',
+                trigger_talent: 'read',
+                dedupe: 'morning-plan',
+                since_ts: 1781803200000,
+                ts: 1,
+              }),
+              'trigger talent readdedupe morning-plansince Jun 18, 2026, 17:20:00 UTC',
+            );
+            assert.strictEqual(
+              provenanceTextFor({
+                request_id: 'r2',
+                trigger_talent: 'read',
+                dedupe: '',
+                since_ts: 0,
+                ts: 1,
+              }),
+              'trigger talent read',
+            );
+            assert.strictEqual(
+              provenanceTextFor({
+                request_id: 'r3',
+                trigger_talent: 'read',
+                since_ts: 'not-a-number',
+                ts: 1,
+              }),
+              'trigger talent read',
+            );
+            assert.deepStrictEqual(markdownCalls, [solSource, 'origin', 'origin', 'origin']);
             """
         ),
         encoding="utf-8",
