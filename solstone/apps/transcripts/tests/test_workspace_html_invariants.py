@@ -15,6 +15,9 @@ def _apple_health_card_stream() -> str:
     return health_schema.health_card_stream(health_schema.SOURCE_APPLE_HEALTH)
 
 
+_MEDIA_OPEN = re.compile(r"@media\s*(?P<condition>[^{}]+)\{")
+
+
 def _slice_between(text: str, start: str, end: str) -> str:
     """Return the text between two anchors, failing if either is missing."""
     assert text.count(start) == 1, f"expected exactly one start anchor: {start}"
@@ -41,6 +44,33 @@ def _js_const_expr(text: str, name: str) -> str:
     ]
     assert len(lines) == 1, f"expected exactly one const declaration for {name}"
     return lines[0].split(prefix, 1)[1].split(";", 1)[0].strip()
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _media_conditions(text: str) -> list[str]:
+    return [match.group("condition").strip() for match in _MEDIA_OPEN.finditer(text)]
+
+
+def _mobile_media_block(text: str) -> tuple[int, str]:
+    mobile_blocks: list[tuple[int, str]] = []
+    for match in _MEDIA_OPEN.finditer(text):
+        depth = 1
+        index = match.end()
+        while index < len(text) and depth > 0:
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            index += 1
+        assert depth == 0, "unterminated @media block in workspace.html"
+        if _norm(match.group("condition")) == "(max-width: 768px)":
+            mobile_blocks.append((match.start(), text[match.end() : index - 1]))
+    assert len(mobile_blocks) == 1, "expected exactly one mobile media block"
+    return mobile_blocks[0]
 
 
 def test_workspace_html_single_purge_notice_emission():
@@ -697,6 +727,113 @@ def test_workspace_html_card_grid_and_panel_overflow_contract():
     panel_css = _css_rule(text, ".tr-panel")
     assert "overflow-x: auto;" in panel_css
     assert "overflow-x: hidden;" not in panel_css
+
+
+def test_workspace_html_mobile_media_condition_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    width_conditions = [
+        _norm(condition)
+        for condition in _media_conditions(text)
+        if re.search(r"\b(?:min|max)-width\s*:", condition)
+    ]
+    assert width_conditions == ["(max-width: 768px)"]
+
+
+def test_workspace_html_mobile_card_content_grid_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+    _media_start, media_css = _mobile_media_block(text)
+    normalized_media_css = _norm(media_css)
+
+    assert (
+        _norm(
+            """
+            .tr-card,
+            body.has-app-bar .tr-card {
+              grid-template-columns: var(--tr-day-col) minmax(0, 1fr);
+              grid-template-rows: auto auto;
+              min-height: 0;
+            }
+            """
+        )
+        in normalized_media_css
+    )
+    assert (
+        _norm(
+            """
+            .tr-content {
+              grid-column: 1 / -1;
+              grid-row: 2;
+            }
+            """
+        )
+        in normalized_media_css
+    )
+    assert re.search(r"--tr-day-col\s*:", media_css) is None
+
+
+def test_workspace_html_mobile_timeline_zoom_position_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+    _media_start, media_css = _mobile_media_block(text)
+    normalized_media_css = _norm(media_css)
+
+    assert (
+        _norm(
+            """
+            .tr-timeline,
+            body.has-app-bar .tr-timeline {
+              grid-column: 1;
+              grid-row: 1;
+              position: relative;
+              top: auto;
+            """
+        )
+        in normalized_media_css
+    )
+    assert (
+        _norm(
+            """
+            .tr-zoom,
+            body.has-app-bar .tr-zoom {
+              grid-column: 2;
+              grid-row: 1;
+              position: relative;
+              top: auto;
+            """
+        )
+        in normalized_media_css
+    )
+    assert "position: static" not in text
+
+
+def test_workspace_html_mobile_app_bar_selector_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+    _media_start, media_css = _mobile_media_block(text)
+    normalized_media_css = _norm(media_css)
+
+    assert _norm(".tr-card, body.has-app-bar .tr-card {") in normalized_media_css
+    assert (
+        _norm(".tr-timeline, body.has-app-bar .tr-timeline {") in normalized_media_css
+    )
+    assert _norm(".tr-zoom, body.has-app-bar .tr-zoom {") in normalized_media_css
+
+
+def test_workspace_html_mobile_media_order_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+    media_start, _media_css = _mobile_media_block(text)
+
+    assert media_start > text.index("body.has-app-bar .tr-timeline,")
+    assert media_start > text.index("body.presentation-mode .tr-card")
 
 
 def test_workspace_html_tab_pill_spacing_contract():
