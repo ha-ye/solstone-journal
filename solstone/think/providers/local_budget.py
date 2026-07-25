@@ -31,7 +31,6 @@ TRUNCATION_MARKER = "[earlier input truncated to fit the on-device model's conte
 class ContextWindowResolution:
     window_tokens: int
     slots: int
-    source: str
 
 
 def resolve_context_window() -> ContextWindowResolution:
@@ -50,18 +49,17 @@ def resolve_context_window() -> ContextWindowResolution:
                 if props.total_slots is not None
                 else local_server._CAPABLE_TIER.parallel_slots
             )
-            return ContextWindowResolution(props.n_ctx // slots, slots, "props")
+            return ContextWindowResolution(props.n_ctx // slots, slots)
     sidecar = local_server.read_local_context_window()
     if sidecar is not None and sidecar > 0:
         slots = (
             local_server._slots_from_launched_tier(sidecar)
             or local_server._UNKNOWN_SLOTS
         )
-        return ContextWindowResolution(sidecar, slots, "local_ctx")
+        return ContextWindowResolution(sidecar, slots)
     return ContextWindowResolution(
         local_server.LOCAL_MIN_CONTEXT_TOKENS,
         local_server._UNKNOWN_SLOTS,
-        "default",
     )
 
 

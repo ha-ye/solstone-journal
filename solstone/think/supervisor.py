@@ -2219,7 +2219,10 @@ def _log_context_assertion(
             "llama-server context assertion skipped: n_ctx unavailable from /props"
         )
     else:
-        if n_ctx == expected_n_ctx and total_slots == plan.parallel_slots:
+        context_matches = n_ctx == expected_n_ctx and (
+            total_slots is None or total_slots == plan.parallel_slots
+        )
+        if context_matches:
             logging.info(
                 "llama-server context OK: intended -c=%d parallel=%d actual n_ctx=%d",
                 expected_n_ctx,

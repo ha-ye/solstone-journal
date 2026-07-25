@@ -22,9 +22,10 @@ Ground truth from llama.cpp `b9291`:
 - Post-admission unified-KV exhaustion is HTTP 500 with
   `error.type == "server_error"` and message
   `Context size has been exceeded.`, with no numeric context fields.
-- `local_budget.fit_contents()` makes admitted bundled requests fit the
-  advertised window before send, so a generic context-shaped error is capacity
-  pressure unless the server gives structured proof of prompt overflow.
+- Bundled request prep fits text against the per-request window after image
+  reserve, then clamps completion to the remaining room before send. A generic
+  context-shaped error is capacity pressure unless the server gives structured
+  proof of prompt overflow.
 
 ## Decisions
 
@@ -221,9 +222,9 @@ emit fallback events. Cloud fallback behavior stays in the non-local branch.
 - Add telemetry assertion for bundled generate failure: captured
   `record_local_inference` row has `reason_code == "local_capacity_exhausted"`.
   Failed on the pre-fix tree with `context_budget_exceeded`.
-- Keep the no-POST fitter rejection test as-is: `local_budget.fit_contents()`
-  still raises `ContextBudgetExceeded` before any HTTP request when preserved
-  content cannot fit.
+- Keep no-POST budget rejection coverage: bundled preparation raises
+  `ContextBudgetExceeded` before HTTP when preserved content, image reserve, or
+  the minimum completion floor cannot fit.
 
 ### `tests/test_local_admission.py`
 

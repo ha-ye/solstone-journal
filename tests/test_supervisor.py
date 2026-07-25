@@ -3459,6 +3459,7 @@ def test_log_context_assertion(caplog):
 
     floor = plan_for(local_server._FLOOR_TIER)
     capable = plan_for(local_server._CAPABLE_TIER)
+    capable_n_ctx = capable.context_tokens * capable.parallel_slots
 
     with caplog.at_level(logging.INFO):
         mod._log_context_assertion(floor, 16384, 1)
@@ -3466,14 +3467,21 @@ def test_log_context_assertion(caplog):
 
     caplog.clear()
     with caplog.at_level(logging.INFO):
-        mod._log_context_assertion(capable, 65536, 2)
+        mod._log_context_assertion(capable, capable_n_ctx, 2)
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):
-        mod._log_context_assertion(capable, 65536, 1)
+        mod._log_context_assertion(capable, capable_n_ctx, 1)
     assert any("context MISMATCH" in record.message for record in caplog.records)
     assert any("slots MISMATCH" in record.message for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        mod._log_context_assertion(capable, capable_n_ctx, None)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+    assert any("context OK" in record.message for record in caplog.records)
+    assert any("slot count not reported" in record.message for record in caplog.records)
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):

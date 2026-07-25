@@ -3901,17 +3901,19 @@ def test_context_window_tokens_darwin_no_props_no_sidecar_uses_floor(monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("props_total_slots", "capacity_slots"),
-    [(1, 1), (None, 2)],
+    ("props_total_slots", "capacity_slots", "expect_strict"),
+    [(1, 1, False), (None, 2, False), (None, 1, True)],
 )
 def test_context_window_resolution_divisor_not_less_than_capacity(
     monkeypatch,
     props_total_slots,
     capacity_slots,
+    expect_strict,
 ):
     from solstone.think import utils
     from solstone.think.providers import local_budget, local_server
 
+    local_server.reset_parallel_slots_cache()
     monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
     monkeypatch.setattr(
         local_server,
@@ -3928,7 +3930,10 @@ def test_context_window_resolution_divisor_not_less_than_capacity(
     )
 
     resolution = local_budget.resolve_context_window()
-    assert resolution.slots >= local_server.read_server_capacity().parallel_slots
+    reported_slots = local_server.read_server_capacity().parallel_slots
+    assert resolution.slots >= reported_slots
+    if expect_strict:
+        assert resolution.slots > reported_slots
 
 
 def _select_local_provider(monkeypatch) -> None:
