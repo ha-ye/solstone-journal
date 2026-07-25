@@ -236,14 +236,17 @@ def _tool_env_bin(tool_bin: Path, name: str = "sol") -> Path:
 
 
 def _install_python_spy(env_bin: Path, log: Path) -> None:
-    python3 = env_bin / "python3"
-    real = env_bin / "python3.real"
-    python3.rename(real)
-    wrapper = (
-        f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {str(log)!r}\nexec {str(real)!r} "$@"\n'
-    )
-    python3.write_text(wrapper, encoding="utf-8")
-    python3.chmod(0o755)
+    for name in ("python3", "python"):
+        interpreter = env_bin / name
+        real = env_bin / f"{name}.real"
+        interpreter.rename(real)
+        wrapper = (
+            "#!/bin/sh\n"
+            f"printf '%s %s\\n' {name!r} \"$*\" >> {str(log)!r}\n"
+            f'exec {str(real)!r} "$@"\n'
+        )
+        interpreter.write_text(wrapper, encoding="utf-8")
+        interpreter.chmod(0o755)
 
 
 def _script_owners(python: Path, names: tuple[str, ...]) -> dict[str, list[str]]:
@@ -380,6 +383,13 @@ def test_cold_uv_tool_install_exports_root_launchers_only(
     native = _run([tool_bin / "sol", "--version"], cwd=unrelated, env=env)
     assert native.returncode == 0, native.stderr
     assert native.stdout == f"sol (solstone) {built_wheels.version}\n"
+    native_solstone = _run(
+        [tool_bin / "solstone", "--version"],
+        cwd=unrelated,
+        env=env,
+    )
+    assert native_solstone.returncode == 0, native_solstone.stderr
+    assert native_solstone.stdout == f"sol (solstone) {built_wheels.version}\n"
     assert not log.exists()
 
     journal = tmp_path / "journal"

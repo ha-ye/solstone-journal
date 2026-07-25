@@ -542,7 +542,6 @@ def _root_launcher_members_from_wheel(
                     info
                     for info in wheel.infolist()
                     if ".data/scripts/" in info.filename
-                    and Path(info.filename).name in ROOT_LAUNCHER_NAMES
                 ),
                 key=lambda info: info.filename,
             )

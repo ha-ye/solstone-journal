@@ -5,7 +5,7 @@
 
 The native `sol` binary owns migrated `sol call <app> <verb>` commands. The
 remaining Python Typer surface is exactly `sol call journal ...`, mounted here
-for the private native compatibility helper.
+for the private native compatibility module bridge.
 """
 
 import typer

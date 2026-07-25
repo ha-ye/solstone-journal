@@ -1716,8 +1716,8 @@ def _validate_proof_binding(
         if expected is None:
             failures.append(
                 _failure(
-                    "install proof installed member is not retained in ledger",
-                    expected=f"{target} retained native member",
+                    "install proof installed member is not retained in payloads",
+                    expected=f"{target} retained executable member",
                     actual=name,
                     repair="bash scripts/release.sh --recover",
                 )
