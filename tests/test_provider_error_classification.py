@@ -7,7 +7,16 @@ import pytest
 
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import ProviderKeyMissingError, QuotaExhaustedError
-from solstone.think.providers.shared import classify_provider_error
+from solstone.think.providers.shared import (
+    _CONTEXT_WINDOW_PATTERNS,
+    classify_provider_error,
+)
+
+_OPENHANDS_BAD_REQUEST_GOOGLE_OUTAGE = (
+    "litellm.BadRequestError: GeminiException BadRequestError - "
+    '{"error": {"code": 400, "message": "Request contains an invalid argument.", '
+    '"status": "INVALID_ARGUMENT"}}'
+)
 
 
 def _require_attrs(module, *names: str):
@@ -88,6 +97,68 @@ def test_classifies_litellm_bad_request_google_request_rejected():
 
     assert exc.status_code == 400
     assert classify_provider_error(exc, "google") == "provider_request_rejected"
+
+
+def test_classifies_openhands_bad_request_google_request_rejected():
+    from openhands.sdk.llm.exceptions.types import LLMBadRequestError
+
+    exc = LLMBadRequestError(_OPENHANDS_BAD_REQUEST_GOOGLE_OUTAGE)
+
+    assert classify_provider_error(exc, "google") == "provider_request_rejected"
+
+
+@pytest.mark.parametrize("message", _CONTEXT_WINDOW_PATTERNS)
+def test_classifies_openhands_bad_request_context_window_messages_before_rejection(
+    message,
+):
+    from openhands.sdk.llm.exceptions.types import LLMBadRequestError
+
+    exc = LLMBadRequestError(message)
+
+    assert classify_provider_error(exc, "google") == "context_window_exceeded"
+
+
+def test_preserves_existing_openhands_llm_exception_classifications():
+    from openhands.sdk.llm.exceptions.types import (
+        LLMAuthenticationError,
+        LLMContextWindowExceedError,
+        LLMContextWindowTooSmallError,
+        LLMNoResponseError,
+        LLMRateLimitError,
+        LLMResponseError,
+        LLMServiceUnavailableError,
+        LLMTimeoutError,
+    )
+
+    cases = [
+        (LLMAuthenticationError("auth failed"), "provider_key_invalid"),
+        (LLMContextWindowExceedError("context window"), "context_window_exceeded"),
+        (LLMContextWindowTooSmallError(8192), "context_window_exceeded"),
+        (LLMRateLimitError("rate limit"), "provider_quota_exceeded"),
+        (LLMServiceUnavailableError("unavailable"), "provider_unavailable"),
+        (LLMTimeoutError("timeout"), "chat_timeout"),
+        (LLMNoResponseError("no response"), "provider_response_invalid"),
+        (LLMResponseError("bad response"), "provider_response_invalid"),
+    ]
+
+    for exc, expected in cases:
+        assert classify_provider_error(exc, "google") == expected
+
+
+def test_openhands_bad_request_local_not_request_rejected():
+    from openhands.sdk.llm.exceptions.types import LLMBadRequestError
+
+    exc = LLMBadRequestError(_OPENHANDS_BAD_REQUEST_GOOGLE_OUTAGE)
+
+    assert classify_provider_error(exc, "local") != "provider_request_rejected"
+
+
+def test_bare_openhands_llm_error_not_request_rejected():
+    from openhands.sdk.llm.exceptions.types import LLMError
+
+    assert classify_provider_error(LLMError("boom"), "google") != (
+        "provider_request_rejected"
+    )
 
 
 def test_preserves_existing_litellm_cloud_exception_classifications():
