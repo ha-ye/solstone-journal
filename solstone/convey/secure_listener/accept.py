@@ -53,6 +53,17 @@ def certless_admission_mode(
     return peer_mode if window_is_open else None
 
 
+@dataclass
+class CertlessPairInFlight:
+    """True from cert-less pair dispatch until send_queue.join() completes.
+
+    The window reaper skips the connection while active; join returning means
+    response frames finished the local tcp_writer.write()/drain() path.
+    """
+
+    active: bool = False
+
+
 @dataclass(frozen=True)
 class CertlessConnection:
     connection_id: str
@@ -60,6 +71,9 @@ class CertlessConnection:
     reader_task: asyncio.Task[None]
     mux: Multiplexer
     pair_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pair_in_flight: CertlessPairInFlight = field(
+        default_factory=CertlessPairInFlight,
+    )
 
 
 class SecureListener:
@@ -118,16 +132,22 @@ class SecureListener:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._poll_task
             self._poll_task = None
-        if self._server is not None:
+        server = self._server
+        if server is not None:
             try:
-                self._server.close()
-                await self._server.wait_closed()
+                server.close()
             except (OSError, ValueError) as exc:
                 self._log.debug("secure listener server close skipped: %s", exc)
             finally:
                 self._server = None
+        # wait_closed() waits for live connection handlers, so close cert-less tunnels first.
         for handle in list(self._certless_connections.values()):
             await self._close_certless_connection(handle)
+        if server is not None:
+            try:
+                await server.wait_closed()
+            except (OSError, ValueError) as exc:
+                self._log.debug("secure listener server wait skipped: %s", exc)
         if not self._tasks:
             return
         done, pending = await asyncio.wait(self._tasks, timeout=2.0)
@@ -136,7 +156,8 @@ class SecureListener:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         for task in done:
-            with contextlib.suppress(Exception):
+            # Since Python 3.8, asyncio.CancelledError derives from BaseException.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 task.result()
         self._tasks.clear()
 
@@ -242,19 +263,24 @@ class SecureListener:
             try:
                 if identity.fingerprint is None and certless_handle is not None:
                     close_after_failure = False
-                    async with certless_handle.pair_lock:
-                        result = await dispatch_stream(
-                            self._app,
-                            identity,
-                            reader,
-                            writer,
-                            asyncio.get_running_loop(),
-                            self._executor,
-                        )
-                        close_after_failure = await self._record_certless_dispatch(
-                            certless_handle,
-                            result,
-                        )
+                    certless_handle.pair_in_flight.active = True
+                    try:
+                        async with certless_handle.pair_lock:
+                            result = await dispatch_stream(
+                                self._app,
+                                identity,
+                                reader,
+                                writer,
+                                asyncio.get_running_loop(),
+                                self._executor,
+                            )
+                            close_after_failure = await self._record_certless_dispatch(
+                                certless_handle,
+                                result,
+                            )
+                        await send_queue.join()
+                    finally:
+                        certless_handle.pair_in_flight.active = False
                     if close_after_failure:
                         asyncio.create_task(
                             self._close_certless_connection(certless_handle),
@@ -364,8 +390,11 @@ class SecureListener:
         async def app_writer_loop() -> None:
             while True:
                 data = await send_queue.get()
-                outbound = _encrypt(tls, data)
-                await write_ciphertext(outbound)
+                try:
+                    outbound = _encrypt(tls, data)
+                    await write_ciphertext(outbound)
+                finally:
+                    send_queue.task_done()
 
         reader_task = asyncio.create_task(
             tcp_reader_loop(),
@@ -450,6 +479,8 @@ class SecureListener:
         if window_open(now):
             return
         for handle in list(self._certless_connections.values()):
+            if handle.pair_in_flight.active:
+                continue
             await self._close_certless_connection(handle)
 
     async def _close_certless_connection(self, handle: CertlessConnection) -> None:
@@ -470,17 +501,18 @@ async def _drain_send_queue(
     write_ciphertext: Callable[[bytes], asyncio.Future[Any] | Any],
     queue: asyncio.Queue[bytes],
 ) -> None:
-    drained: list[bytes] = []
-    while not queue.empty():
+    while True:
         try:
-            drained.append(queue.get_nowait())
+            chunk = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
-    for chunk in drained:
-        outbound = _encrypt(tls, chunk)
-        result = write_ciphertext(outbound)
-        if asyncio.iscoroutine(result):
-            await result
+        try:
+            outbound = _encrypt(tls, chunk)
+            result = write_ciphertext(outbound)
+            if asyncio.iscoroutine(result):
+                await result
+        finally:
+            queue.task_done()
 
 
 def _mode_from_peername(peername: object) -> PeerMode:

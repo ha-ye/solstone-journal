@@ -300,7 +300,11 @@ async def dispatch_stream(
     path_info = urllib.parse.unquote(request.path)
     endpoint: str | None = None
     if identity.fingerprint is None:
-        # Request-level confinement: a cert-less request after the window closes is refused immediately (property 3), not served by a /pair that would 410. The 5s poll only reaps the idle socket.
+        # Request-level confinement: after the pairing window closes, new
+        # cert-less requests are refused here before app dispatch. The poll
+        # reaper is connection cleanup, not the gate; it skips a connection
+        # while a cert-less pair response has not completed the local
+        # tcp_writer.write()/drain() path.
         if not window_open():
             await _finish_early(
                 stream_writer,
