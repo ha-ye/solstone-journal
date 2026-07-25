@@ -652,6 +652,49 @@ def _tree_snapshot(path: Path) -> dict[str, bytes]:
     }
 
 
+def _skip_if_root_chmod_is_ignored() -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses chmod permission checks")
+
+
+def _reserved_candidate_path(root: Path) -> Path:
+    return root / "dist" / driver.RESERVED_CANDIDATE_DIRNAME
+
+
+def _write_expected_local_dist(root: Path, *, include_models: bool) -> None:
+    dist = root / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    for name in driver._expected_local_dist_names(include_models=include_models):
+        (dist / name).write_bytes(f"fixture package {name}\n".encode("utf-8"))
+
+
+def _existing_expected_artifact_facts(
+    root: Path, *, include_models: bool
+) -> dict[str, tuple[str, int]]:
+    dist = root / "dist"
+    facts: dict[str, tuple[str, int]] = {}
+    for name in driver._expected_local_dist_names(include_models=include_models):
+        path = dist / name
+        if not path.exists() or path.is_symlink():
+            continue
+        data = path.read_bytes()
+        facts[name] = (hashlib.sha256(data).hexdigest(), path.stat().st_size)
+    return facts
+
+
+def _assert_reserved_parent_failure(
+    exc: pytest.ExceptionInfo[driver.DriverError], *, actual: str
+) -> None:
+    assert exc.value.failures[0].error == (
+        "dist/release-candidate reserved parent is unsafe"
+    )
+    assert exc.value.failures[0].expected == (
+        "dist/release-candidate absent or an owned non-symlink readable directory"
+    )
+    assert exc.value.failures[0].actual == actual
+    assert exc.value.failures[0].repair == "bash scripts/release.sh --candidate"
+
+
 def test_fake_all_host_candidate_and_recovery_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -1812,6 +1855,303 @@ def test_default_build_local_dist_honors_include_models_build_selection(
     assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
         driver._expected_local_dist_names(include_models=True)
     )
+
+
+@pytest.mark.parametrize("include_models", [False, True])
+def test_local_dist_inventory_accepts_owned_reserved_candidate_parent_for_both_model_decisions(
+    tmp_path: Path,
+    include_models: bool,
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=include_models)
+    reserved = _reserved_candidate_path(root)
+    (reserved / "retained" / "marker.txt").parent.mkdir(parents=True)
+    (reserved / "retained" / "marker.txt").write_text("keep", encoding="utf-8")
+    before = _tree_snapshot(reserved)
+
+    driver._validate_local_dist_inventory(root / "dist", include_models=include_models)
+
+    assert _tree_snapshot(reserved) == before
+
+
+def test_local_dist_inventory_does_not_enumerate_reserved_candidate_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+    dist = root / "dist"
+    reserved = _reserved_candidate_path(root)
+    (reserved / "retained" / "marker.txt").parent.mkdir(parents=True)
+    (reserved / "retained" / "marker.txt").write_text("keep", encoding="utf-8")
+    original_listdir = os.listdir
+    original_scandir = os.scandir
+    recorded: list[Path] = []
+
+    def record(path: object) -> None:
+        if isinstance(path, int):
+            return
+        try:
+            recorded.append(Path(path))
+        except TypeError:
+            return
+
+    def listdir(path: object = ".") -> list[str]:
+        record(path)
+        return original_listdir(path)
+
+    def scandir(path: object = ".") -> object:
+        record(path)
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    driver._validate_local_dist_inventory(dist, include_models=False)
+
+    assert dist in recorded
+    assert all(
+        path != reserved and not path.is_relative_to(reserved) for path in recorded
+    )
+
+
+def test_local_dist_inventory_accepts_first_release_without_reserved_candidate_parent(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+
+    driver._validate_local_dist_inventory(root / "dist", include_models=False)
+
+
+def test_fresh_cleanup_preserves_retained_candidates_and_removes_only_current_candidate_transients(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    reserved = _reserved_candidate_path(root)
+    prior_names = (
+        f"prior-{version}",
+        f"{version}0",
+        f"{version}0.payload-staging",
+    )
+    for name in prior_names:
+        marker = reserved / name / "nested" / "marker.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(f"keep {name}", encoding="utf-8")
+    retained_before = {name: _tree_snapshot(reserved / name) for name in prior_names}
+    lock = reserved / ".rust-release-candidate.lock"
+    lock.write_text("lock", encoding="utf-8")
+    lock_before = lock.read_bytes()
+    current_paths = (
+        reserved / version,
+        reserved / f"{version}.payload-staging",
+        reserved / f"{version}.payload-staging.staging",
+        reserved / f"{version}.payload-staging.quarantine",
+    )
+    for path in current_paths:
+        (path / "marker.txt").parent.mkdir(parents=True)
+        (path / "marker.txt").write_text("stale", encoding="utf-8")
+    _write_expected_local_dist(root, include_models=False)
+    raw_artifacts = tuple(
+        root / "dist" / name
+        for name in driver._expected_local_dist_names(include_models=False)
+    )
+
+    driver._default_clean_outputs(root, version)
+
+    assert {name: _tree_snapshot(reserved / name) for name in prior_names} == (
+        retained_before
+    )
+    assert lock.read_bytes() == lock_before
+    assert all(not path.exists() for path in current_paths)
+    assert all(not path.exists() for path in raw_artifacts)
+
+    _write_expected_local_dist(root, include_models=False)
+    driver._validate_local_dist_inventory(root / "dist", include_models=False)
+
+
+@pytest.mark.parametrize(
+    ("reserved_kind", "actual"),
+    [
+        ("symlink", "symlink"),
+        ("regular", "regular file"),
+        ("fifo", "special file"),
+        ("unusable-directory", "directory without read/search access"),
+    ],
+)
+def test_fresh_cleanup_rejects_unsafe_reserved_candidate_parent_before_any_mutation(
+    tmp_path: Path,
+    reserved_kind: str,
+    actual: str,
+) -> None:
+    if reserved_kind == "unusable-directory":
+        _skip_if_root_chmod_is_ignored()
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    build_keep = root / "build" / "keep"
+    build_keep.parent.mkdir()
+    build_keep.write_text("keep", encoding="utf-8")
+    reserved = _reserved_candidate_path(root)
+    reserved.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside_before: dict[str, bytes] | None = None
+    if reserved_kind == "symlink":
+        marker = outside / version / "nested" / "keep.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("keep", encoding="utf-8")
+        outside_before = _tree_snapshot(outside)
+        reserved.symlink_to(outside, target_is_directory=True)
+    elif reserved_kind == "regular":
+        reserved.write_text("unsafe", encoding="utf-8")
+    elif reserved_kind == "fifo":
+        os.mkfifo(reserved)
+    elif reserved_kind == "unusable-directory":
+        reserved.mkdir()
+        reserved.chmod(0)
+
+    try:
+        with pytest.raises(driver.DriverError) as exc:
+            driver._default_clean_outputs(root, version)
+    finally:
+        if reserved_kind == "unusable-directory" and reserved.exists():
+            reserved.chmod(0o700)
+
+    _assert_reserved_parent_failure(exc, actual=actual)
+    assert build_keep.read_text(encoding="utf-8") == "keep"
+    if reserved_kind == "symlink":
+        assert reserved.is_symlink()
+        assert outside_before is not None
+        assert _tree_snapshot(outside) == outside_before
+
+
+def test_fresh_cleanup_does_not_reach_candidate_transients_through_a_symlinked_dist(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    outside = tmp_path / "outside"
+    transient_parent = outside / driver.RESERVED_CANDIDATE_DIRNAME
+    # These mirror _payload_transient_paths; without the verdict gate, cleanup
+    # would reach them through the symlinked dist and rmtree the external dirs.
+    transient_names = (
+        version,
+        f"{version}.payload-staging",
+        f"{version}.payload-staging.staging",
+        f"{version}.payload-staging.quarantine",
+    )
+    for name in transient_names:
+        marker = transient_parent / name / "nested" / "marker.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(f"keep {name}", encoding="utf-8")
+    before = _tree_snapshot(outside)
+    dist = root / "dist"
+    dist.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._default_clean_outputs(root, version)
+
+    assert any("symlink residue" in failure.error for failure in exc.value.failures)
+    assert dist.is_symlink()
+    assert _tree_snapshot(outside) == before
+
+
+@pytest.mark.parametrize(
+    ("reserved_kind", "actual"),
+    [
+        ("symlink", "symlink"),
+        ("regular", "regular file"),
+        ("fifo", "special file"),
+        ("unusable-directory", "directory without read/search access"),
+    ],
+)
+def test_local_dist_inventory_rejects_unsafe_reserved_candidate_parent_without_mutating_artifacts(
+    tmp_path: Path,
+    reserved_kind: str,
+    actual: str,
+) -> None:
+    if reserved_kind == "unusable-directory":
+        _skip_if_root_chmod_is_ignored()
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+    facts_before = _existing_expected_artifact_facts(root, include_models=False)
+    reserved = _reserved_candidate_path(root)
+    outside = tmp_path / "outside"
+    outside_before: dict[str, bytes] | None = None
+    if reserved_kind == "symlink":
+        marker = outside / "nested" / "keep.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("keep", encoding="utf-8")
+        outside_before = _tree_snapshot(outside)
+        reserved.symlink_to(outside, target_is_directory=True)
+    elif reserved_kind == "regular":
+        reserved.write_text("unsafe", encoding="utf-8")
+    elif reserved_kind == "fifo":
+        os.mkfifo(reserved)
+    elif reserved_kind == "unusable-directory":
+        reserved.mkdir()
+        reserved.chmod(0)
+
+    try:
+        with pytest.raises(driver.DriverError) as exc:
+            driver._validate_local_dist_inventory(root / "dist", include_models=False)
+    finally:
+        if reserved_kind == "unusable-directory" and reserved.exists():
+            reserved.chmod(0o700)
+
+    _assert_reserved_parent_failure(exc, actual=actual)
+    assert _existing_expected_artifact_facts(root, include_models=False) == facts_before
+    if reserved_kind == "symlink":
+        assert reserved.is_symlink()
+        assert outside_before is not None
+        assert _tree_snapshot(outside) == outside_before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "foreign-directory",
+        "foreign-symlink",
+        "foreign-special",
+        "extra-regular-file",
+        "missing-expected-file",
+        "wrong-model-package-set",
+    ],
+)
+def test_local_dist_inventory_rejects_foreign_entries_with_reserved_candidate_parent_present(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _repo(tmp_path)
+    _write_expected_local_dist(root, include_models=False)
+    reserved = _reserved_candidate_path(root)
+    reserved.mkdir(parents=True)
+    expected = driver._expected_local_dist_names(include_models=False)
+    if mutation == "foreign-directory":
+        (root / "dist" / "foreign-dir").mkdir()
+    elif mutation == "foreign-symlink":
+        (root / "dist" / "foreign-link").symlink_to(next(iter(sorted(expected))))
+    elif mutation == "foreign-special":
+        os.mkfifo(root / "dist" / "foreign-pipe")
+    elif mutation == "extra-regular-file":
+        (root / "dist" / "extra.whl").write_bytes(b"extra")
+    elif mutation == "missing-expected-file":
+        missing = next(
+            name
+            for name in sorted(expected)
+            if name.startswith("solstone-") and name.endswith(".tar.gz")
+        )
+        (root / "dist" / missing).unlink()
+    elif mutation == "wrong-model-package-set":
+        extra_models = driver._expected_local_dist_names(include_models=True) - expected
+        for name in extra_models:
+            (root / "dist" / name).write_bytes(b"model")
+    facts_before = _existing_expected_artifact_facts(root, include_models=False)
+
+    with pytest.raises(driver.DriverError):
+        driver._validate_local_dist_inventory(root / "dist", include_models=False)
+
+    assert _existing_expected_artifact_facts(root, include_models=False) == facts_before
 
 
 def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(

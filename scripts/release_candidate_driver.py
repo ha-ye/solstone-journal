@@ -105,6 +105,10 @@ CORE_AARCH64_MATURIN_ARGS = (
 ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
+RESERVED_CANDIDATE_DIRNAME = "release-candidate"
+RESERVED_CANDIDATE_EXPECTED = (
+    "dist/release-candidate absent or an owned non-symlink readable directory"
+)
 
 
 @dataclass(frozen=True)
@@ -320,7 +324,51 @@ def _owned_glob(
     return list(parent.glob(pattern)), []
 
 
-def _clean_raw_dist_outputs(root: Path) -> list[Failure]:
+def _reserved_candidate_directory_state(dist_dir: Path) -> tuple[bool, list[Failure]]:
+    """Report whether dist/release-candidate is a present, owned, usable directory."""
+    try:
+        dist_entry = dist_dir.lstat()
+    except FileNotFoundError:
+        return False, []
+    if stat.S_ISLNK(dist_entry.st_mode) or not stat.S_ISDIR(dist_entry.st_mode):
+        return False, []
+    path = dist_dir / RESERVED_CANDIDATE_DIRNAME
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return False, []
+    except OSError as exc:
+        return False, [
+            _failure(
+                "dist/release-candidate reserved parent could not be checked",
+                expected=RESERVED_CANDIDATE_EXPECTED,
+                actual=type(exc).__name__,
+                repair="bash scripts/release.sh --candidate",
+            )
+        ]
+    if stat.S_ISLNK(entry.st_mode):
+        actual = "symlink"
+    elif stat.S_ISREG(entry.st_mode):
+        actual = "regular file"
+    elif stat.S_ISDIR(entry.st_mode):
+        if os.access(path, os.R_OK | os.X_OK):
+            return True, []
+        actual = "directory without read/search access"
+    else:
+        actual = "special file"
+    return False, [
+        _failure(
+            "dist/release-candidate reserved parent is unsafe",
+            expected=RESERVED_CANDIDATE_EXPECTED,
+            actual=actual,
+            repair="bash scripts/release.sh --candidate",
+        )
+    ]
+
+
+def _clean_raw_dist_outputs(
+    root: Path, *, reserved_candidate_directory: bool
+) -> list[Failure]:
     dist = root / "dist"
     try:
         entry = dist.lstat()
@@ -341,14 +389,14 @@ def _clean_raw_dist_outputs(root: Path) -> list[Failure]:
             )
         ]
     for child in children:
-        if child.name == "release-candidate":
+        if reserved_candidate_directory and child.name == RESERVED_CANDIDATE_DIRNAME:
             continue
         failures.extend(_remove_owned_path(child, label=f"dist/{child.name}"))
     return failures
 
 
 def _payload_transient_paths(root: Path, version: str) -> tuple[Path, ...]:
-    ready_path = root / "dist" / "release-candidate" / version
+    ready_path = root / "dist" / RESERVED_CANDIDATE_DIRNAME / version
     payload_staging = ready_path.parent / f"{version}.payload-staging"
     return (
         ready_path,
@@ -367,9 +415,18 @@ def _source_bundle_staging_path(root: Path, version: str) -> Path:
 
 
 def _default_clean_outputs(root: Path, version: str) -> None:
+    reserved_candidate_directory, reserved_failures = (
+        _reserved_candidate_directory_state(root / "dist")
+    )
+    if reserved_failures:
+        raise DriverError(reserved_failures)
     failures: list[Failure] = []
     failures.extend(_remove_owned_path(root / "build", label="build"))
-    failures.extend(_clean_raw_dist_outputs(root))
+    failures.extend(
+        _clean_raw_dist_outputs(
+            root, reserved_candidate_directory=reserved_candidate_directory
+        )
+    )
     root_egg_infos, root_glob_failures = _owned_glob(
         root, "*.egg-info", label="repository root"
     )
@@ -396,8 +453,9 @@ def _default_clean_outputs(root: Path, version: str) -> None:
         _zig_cache_root(root).relative_to(root),
     ):
         failures.extend(_remove_owned_relative(root, relative))
-    for path in _payload_transient_paths(root, version):
-        failures.extend(_remove_owned_path(path, label=path.name))
+    if reserved_candidate_directory:
+        for path in _payload_transient_paths(root, version):
+            failures.extend(_remove_owned_path(path, label=path.name))
     transfer_parent = root / "target" / "release-transfer"
     request_siblings, request_failures = _owned_glob(
         transfer_parent,
@@ -896,8 +954,15 @@ def _validate_local_dist_inventory(dist_dir: Path, *, include_models: bool) -> N
                 )
             ]
         )
+    reserved_candidate_directory, reserved_failures = (
+        _reserved_candidate_directory_state(dist_dir)
+    )
+    if reserved_failures:
+        raise DriverError(reserved_failures)
     names: set[str] = set()
     for path in dist_dir.iterdir():
+        if reserved_candidate_directory and path.name == RESERVED_CANDIDATE_DIRNAME:
+            continue
         child = path.lstat()
         if stat.S_ISREG(child.st_mode):
             names.add(path.name)
@@ -2928,7 +2993,7 @@ def run_candidate(
         expected_lock_sha256=expected_lock,
         services=svc,
     )
-    ready_path = root / "dist" / "release-candidate" / version
+    ready_path = root / "dist" / RESERVED_CANDIDATE_DIRNAME / version
     ready_path.parent.mkdir(parents=True, exist_ok=True)
     payload_staging = ready_path.parent / f"{version}.payload-staging"
     evidence_root = root / "target" / "release-evidence"
@@ -3076,7 +3141,7 @@ def run_recover(
                 )
             ]
         )
-    release_dir = root / "dist" / "release-candidate" / version
+    release_dir = root / "dist" / RESERVED_CANDIDATE_DIRNAME / version
     evidence_dir = root / "target" / "release-evidence" / version
     try:
         ledger = read_retained_ledger(evidence_dir / "ledger.json")
