@@ -181,6 +181,7 @@ def test_speaker_stage_boundary_cases_pin_near_decisions() -> None:
     interval = fixture["interval_boundary"]
     perturb = fixture["clustering_input_perturbation"]
     evidence = fixture["speaker_evidence"]["else_branch_overlap_ambiguity"]
+    branch_band = evidence["else_branch_band"]
 
     assert len(interval["kept_at_30_frames"]["intervals"]) == 1
     assert interval["kept_at_30_frames"]["run_duration_s"] > interval["min_interval_s"]
@@ -197,11 +198,29 @@ def test_speaker_stage_boundary_cases_pin_near_decisions() -> None:
     assert perturb["col"] == 40
 
     assert evidence["decision"]["speaker_evidence"] == "multi"
-    assert evidence["overlap_fraction"] < build_core_fixtures.DIARIZE_MIN_OVERLAP
     assert (
-        evidence["decision"]["mean_window_overlap_share"]
+        branch_band["multi_window_fraction"]
+        == evidence["decision"]["multi_window_fraction"]
+    )
+    assert branch_band["overlap_fraction"] == evidence["overlap_fraction"]
+    assert (
+        branch_band["mean_window_overlap_share"]
+        == evidence["decision"]["mean_window_overlap_share"]
+    )
+    assert (
+        branch_band["multi_window_fraction"]
+        < build_core_fixtures.SPEAKER_EVIDENCE_MULTI_MIN
+    )
+    assert (
+        branch_band["multi_window_fraction"]
+        < build_core_fixtures.SPEAKER_EVIDENCE_SINGLE_MAX
+    )
+    assert branch_band["overlap_fraction"] < build_core_fixtures.DIARIZE_MIN_OVERLAP
+    assert (
+        branch_band["mean_window_overlap_share"]
         >= build_core_fixtures.DIARIZE_MIN_OVERLAP
     )
+    assert all(branch_band["preconditions"].values())
 
 
 def test_speaker_stage_k_divergence_pins_cumulative_rule() -> None:
@@ -277,6 +296,17 @@ def test_float_fixture_tolerance_reports_red_and_green(
     captured = capsys.readouterr()
     assert "/matrices/filterbank_cmn/rows[0][0]" in captured.err
     assert "abs_diff=" in captured.err
+    assert "tolerance=" in captured.err
+
+    row[0] = "nan"
+    payload["matrices"]["filterbank_cmn"]["rows"][0] = " ".join(row)
+    speaker_filterbank_path.write_text(
+        build_core_fixtures.render_json(payload), encoding="utf-8"
+    )
+    assert build_core_fixtures.check_outputs() == 1
+    captured = capsys.readouterr()
+    assert "/matrices/filterbank_cmn/rows[0][0]" in captured.err
+    assert "abs_diff=non-finite" in captured.err
     assert "tolerance=" in captured.err
 
 

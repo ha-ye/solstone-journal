@@ -663,6 +663,20 @@
         "multi_window_fraction": 0.0,
         "speaker_evidence": "multi"
       },
+      "else_branch_band": {
+        "diarize_min_overlap": 0.05,
+        "mean_window_overlap_share": 0.050933786078098474,
+        "multi_window_fraction": 0.0,
+        "overlap_fraction": 0.049,
+        "preconditions": {
+          "mean_window_overlap_share_at_or_above_diarize_min_overlap": true,
+          "multi_window_fraction_below_multi_min": true,
+          "multi_window_fraction_below_single_max": true,
+          "overlap_fraction_below_diarize_min_overlap": true
+        },
+        "speaker_evidence_multi_min": 0.05,
+        "speaker_evidence_single_max": 0.05
+      },
       "overlap_fraction": 0.049,
       "windows": [
         {

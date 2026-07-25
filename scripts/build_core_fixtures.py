@@ -132,14 +132,13 @@ SPEAKER_FILTERBANK_ARTIFACT_PATH = FIXTURE_DIR / "speaker_filterbank.json"
 SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH = FIXTURE_DIR / "speaker_stage_boundaries.json"
 OVERSIZED_SIZE_NORMALIZATION = "oversized_size"
 OVERSIZED_SIZE_TOKEN = "normalizedsize"
-# Filterbank rows are a scale/regime oracle for the production fbank stage. 1e-2
-# leaves 3x headroom under SILHOUETTE_IMPROVEMENT=0.03 and 5x under the 0.05
-# speaker-evidence thresholds while allowing native-library/architecture float
-# noise.
+# Filterbank rows are a scale/regime oracle for the production fbank stage. The
+# tolerance leaves headroom under SILHOUETTE_IMPROVEMENT and the
+# speaker-evidence thresholds while allowing native-library/architecture float noise.
 FILTERBANK_VALUE_ABS_TOLERANCE = 1e-2
 # Silhouette scores are compared with enough room for plausible float32
 # matmul/BLAS reduction noise across architectures, but far below the
-# SILHOUETTE_IMPROVEMENT=0.03 decision margin. Selected k values and cluster
+# SILHOUETTE_IMPROVEMENT decision margin. Selected k values and cluster
 # labels are compared exactly, so score tolerance cannot hide a branch flip. If
 # the arm64 leg proves 1e-6 too tight, that drift is a finding to report.
 CLUSTER_SCORE_ABS_TOLERANCE = 1e-6
@@ -167,7 +166,6 @@ CLUSTER_PERTURB_EPSILON = 0.03
 
 @dataclass(frozen=True)
 class ArtifactDescriptor:
-    path: Path
     build: Callable[[], dict[str, Any]]
     comparison: str = "exact"
 
@@ -743,6 +741,34 @@ def _interval_boundary_case(run_frames: int, *, seed: int) -> dict[str, Any]:
     }
 
 
+def _speaker_evidence_else_branch_band(
+    overlap_fraction: float, decision: Any
+) -> dict[str, Any]:
+    preconditions = {
+        "multi_window_fraction_below_multi_min": (
+            decision.multi_window_fraction < SPEAKER_EVIDENCE_MULTI_MIN
+        ),
+        "multi_window_fraction_below_single_max": (
+            decision.multi_window_fraction < SPEAKER_EVIDENCE_SINGLE_MAX
+        ),
+        "overlap_fraction_below_diarize_min_overlap": (
+            overlap_fraction < DIARIZE_MIN_OVERLAP
+        ),
+        "mean_window_overlap_share_at_or_above_diarize_min_overlap": (
+            decision.mean_window_overlap_share >= DIARIZE_MIN_OVERLAP
+        ),
+    }
+    return {
+        "multi_window_fraction": decision.multi_window_fraction,
+        "speaker_evidence_multi_min": SPEAKER_EVIDENCE_MULTI_MIN,
+        "speaker_evidence_single_max": SPEAKER_EVIDENCE_SINGLE_MAX,
+        "overlap_fraction": overlap_fraction,
+        "diarize_min_overlap": DIARIZE_MIN_OVERLAP,
+        "mean_window_overlap_share": decision.mean_window_overlap_share,
+        "preconditions": preconditions,
+    }
+
+
 def _speaker_evidence_cases() -> dict[str, Any]:
     single_class = min(SINGLE_SPEAKER_CLASSES)
     second_class = sorted(SINGLE_SPEAKER_CLASSES)[1]
@@ -818,7 +844,7 @@ def _speaker_evidence_cases() -> dict[str, Any]:
                 }
             )
         decision = decide_speaker_evidence(case["overlap_fraction"], window_stats)
-        results[name] = {
+        result = {
             "overlap_fraction": case["overlap_fraction"],
             "windows": payload_windows,
             "decision": {
@@ -827,6 +853,16 @@ def _speaker_evidence_cases() -> dict[str, Any]:
                 "mean_window_overlap_share": decision.mean_window_overlap_share,
             },
         }
+        if name == "else_branch_overlap_ambiguity":
+            branch_band = _speaker_evidence_else_branch_band(
+                case["overlap_fraction"], decision
+            )
+            if not all(branch_band["preconditions"].values()):
+                raise RuntimeError(
+                    "speaker evidence ambiguity case no longer lands in the else branch"
+                )
+            result["else_branch_band"] = branch_band
+        results[name] = result
     return results
 
 
@@ -984,6 +1020,48 @@ def _format_float_drift(
     )
 
 
+def _format_float_value_failure(
+    path: Path,
+    location: str,
+    expected: Any,
+    actual: Any,
+    tolerance: float,
+    reason: str,
+) -> str:
+    return (
+        f"{_relative_artifact_path(path)}: {location} drifted; "
+        f"expected={expected!r} actual={actual!r} "
+        f"abs_diff={reason} tolerance={tolerance:.9g}"
+    )
+
+
+def _compare_float_value(
+    path: Path,
+    location: str,
+    current: Any,
+    expected: Any,
+    tolerance: float,
+) -> list[str]:
+    try:
+        expected_value = float(expected)
+        actual = float(current)
+    except (TypeError, ValueError):
+        return [
+            _format_float_value_failure(
+                path, location, expected, current, tolerance, "unparseable"
+            )
+        ]
+    if not math.isfinite(expected_value) or not math.isfinite(actual):
+        return [
+            _format_float_value_failure(
+                path, location, expected, current, tolerance, "non-finite"
+            )
+        ]
+    if abs(actual - expected_value) > tolerance:
+        return [_format_float_drift(path, location, expected_value, actual, tolerance)]
+    return []
+
+
 def _compare_decimal_row_matrix(
     path: Path,
     current: Any,
@@ -1015,18 +1093,15 @@ def _compare_decimal_row_matrix(
         for col_idx, (current_text, expected_text) in enumerate(
             zip(current_values, expected_values, strict=True)
         ):
-            actual = float(current_text)
-            expected_value = float(expected_text)
-            if abs(actual - expected_value) > tolerance:
-                failures.append(
-                    _format_float_drift(
-                        path,
-                        f"{pointer}[{row_idx}][{col_idx}]",
-                        expected_value,
-                        actual,
-                        tolerance,
-                    )
+            failures.extend(
+                _compare_float_value(
+                    path,
+                    f"{pointer}[{row_idx}][{col_idx}]",
+                    current_text,
+                    expected_text,
+                    tolerance,
                 )
+            )
     return failures
 
 
@@ -1075,25 +1150,13 @@ def _compare_stage_value(
     if pointer in ignored_json_pointers:
         return []
     if parts and parts[-1] == "silhouette":
-        try:
-            actual_float = float(current)
-            expected_float = float(expected)
-        except (TypeError, ValueError):
-            return [
-                f"{_relative_artifact_path(path)}: {pointer} is not numeric; "
-                f"expected={expected!r} actual={current!r}"
-            ]
-        if abs(actual_float - expected_float) > CLUSTER_SCORE_ABS_TOLERANCE:
-            return [
-                _format_float_drift(
-                    path,
-                    pointer,
-                    expected_float,
-                    actual_float,
-                    CLUSTER_SCORE_ABS_TOLERANCE,
-                )
-            ]
-        return []
+        return _compare_float_value(
+            path,
+            pointer,
+            current,
+            expected,
+            CLUSTER_SCORE_ABS_TOLERANCE,
+        )
     if isinstance(expected, dict):
         if not isinstance(current, dict):
             return [
@@ -1178,28 +1241,22 @@ def compare_artifact(
 def expected_outputs() -> dict[Path, ArtifactDescriptor]:
     return {
         CALLOSUM_ARTIFACT_PATH: ArtifactDescriptor(
-            CALLOSUM_ARTIFACT_PATH,
             build_callosum_registry_fixture,
         ),
         COGITATE_ARTIFACT_PATH: ArtifactDescriptor(
-            COGITATE_ARTIFACT_PATH,
             build_cogitate_contract_fixture,
         ),
         EDGE_SCHEMA_ARTIFACT_PATH: ArtifactDescriptor(
-            EDGE_SCHEMA_ARTIFACT_PATH,
             build_edge_schema_fixture,
         ),
         MARKDOWN_CHUNKS_ARTIFACT_PATH: ArtifactDescriptor(
-            MARKDOWN_CHUNKS_ARTIFACT_PATH,
             build_markdown_chunks_fixture,
         ),
         SPEAKER_FILTERBANK_ARTIFACT_PATH: ArtifactDescriptor(
-            SPEAKER_FILTERBANK_ARTIFACT_PATH,
             build_speaker_filterbank_fixture,
             comparison="speaker_filterbank",
         ),
         SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH: ArtifactDescriptor(
-            SPEAKER_STAGE_BOUNDARIES_ARTIFACT_PATH,
             build_speaker_stage_boundaries_fixture,
             comparison="speaker_stage_boundaries",
         ),
