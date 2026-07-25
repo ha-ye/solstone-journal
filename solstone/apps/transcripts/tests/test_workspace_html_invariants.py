@@ -689,6 +689,17 @@ def test_workspace_html_timeline_legend_band_contract():
     assert "height: 12px;" not in legend_css
     assert "align-items: center;" not in legend_css
     assert not any(line.strip().startswith("gap:") for line in legend_css.splitlines())
+    legend_z_index_lines = [
+        line.strip()
+        for line in legend_css.splitlines()
+        if line.strip().startswith("z-index:")
+    ]
+    assert legend_z_index_lines == ["z-index: 3;"]
+
+    label_css = _css_rule(text, ".tr-labels")
+    assert not any(
+        line.strip().startswith("z-index:") for line in label_css.splitlines()
+    )
 
     dot_css = _css_rule(text, ".tr-legend-dot")
     assert "vertical-align: baseline;" in dot_css
@@ -708,6 +719,82 @@ def test_workspace_html_timeline_legend_band_contract():
         if line.strip().startswith("z-index:")
     ]
     assert z_index_lines == ["z-index: 4;"]
+
+
+def test_workspace_html_last_timeline_label_clearance_is_one_property():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    label_last_css = _css_rule(text, ".tr-labels .tr-label:last-child")
+    declarations = [
+        line.strip() for line in label_last_css.splitlines() if line.strip()
+    ]
+    assert declarations == ["transform: translateY(-100%);"], (
+        "last timeline label clearance must stay a one-property transform-only fix"
+    )
+
+
+def test_workspace_html_base_timeline_label_transform_stays_centered():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    label_css = _css_rule(text, ".tr-label")
+    transform_lines = [
+        line.strip()
+        for line in label_css.splitlines()
+        if line.strip().startswith("transform:")
+    ]
+    assert transform_lines == ["transform: translateY(-50%);"]
+
+
+def test_workspace_html_bottom_label_last_child_population_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    failure_message = (
+        "buildGrid() must remain the sole #trLabels populator that appends in "
+        "ascending hour order; if anything is ever appended after it, the "
+        ":last-child rule silently retargets and an arbitrary mid-axis label "
+        "gets offset from its neighbors - this is the change's only "
+        "silent-failure surface"
+    )
+    assert text.count("labels.appendChild(") == 1, failure_message
+    assert text.count("labels.innerHTML = '';") == 1, failure_message
+
+
+def test_workspace_html_last_label_clearance_depends_on_hour_snapping():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    timeline_bounds = _slice_between(
+        text, "function computeTimelineBounds", "function markdownOnlySegments"
+    )
+    assert "Math.floor((minTime - BUFFER) / 60) * 60" in timeline_bounds
+    assert "Math.ceil((maxTime + BUFFER) / 60) * 60" in timeline_bounds
+
+
+def test_workspace_html_presentation_label_block_keeps_transform_offset():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    presentation_label_block = _slice_between(
+        text, "\nbody.presentation-mode .tr-label,", "}"
+    )
+    assert "transform:" not in presentation_label_block
+
+
+def test_workspace_html_zoom_label_has_no_last_child_clearance_variant():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert ":last-child" not in _css_rule(text, ".tr-zoom-label")
+    assert ".tr-zoom-label:last-child" not in text
 
 
 def test_workspace_html_card_grid_and_panel_overflow_contract():
