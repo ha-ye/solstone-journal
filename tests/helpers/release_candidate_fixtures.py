@@ -48,13 +48,13 @@ from tests.helpers.release_wheel_fixtures import (
 )
 
 SOURCE_COMMIT = "a" * 40
-CORE_LOCK_CONTENT = "fixture lock\n"
-LOCK_SHA = hashlib.sha256(CORE_LOCK_CONTENT.encode("utf-8")).hexdigest()
-LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
-LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
+_CORE_LOCK_CONTENT = "fixture lock\n"
+LOCK_SHA = hashlib.sha256(_CORE_LOCK_CONTENT.encode("utf-8")).hexdigest()
+_LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
+_LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
 MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
 MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
-ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
+_ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
 
 TombstoneMutation = Literal[
     "extra-key",
@@ -66,7 +66,7 @@ TombstoneMutation = Literal[
 ]
 
 
-class GuardedEnv(dict):
+class _GuardedEnv(dict):
     def get(self, key: str, default: Any = None) -> Any:
         if key == "SOURCE_COMMIT":
             raise AssertionError("driver must not read SOURCE_COMMIT")
@@ -82,7 +82,7 @@ def repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     (root / "core").mkdir(parents=True)
     (root / "packages" / "solstone-journal-models").mkdir(parents=True)
-    (root / "core" / "Cargo.lock").write_text(CORE_LOCK_CONTENT, encoding="utf-8")
+    (root / "core" / "Cargo.lock").write_text(_CORE_LOCK_CONTENT, encoding="utf-8")
     (root / "pyproject.toml").write_text(
         f'[project]\nversion = "{checker._current_version()}"\n',
         encoding="utf-8",
@@ -94,8 +94,8 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def env() -> GuardedEnv:
-    return GuardedEnv(
+def env() -> _GuardedEnv:
+    return _GuardedEnv(
         {
             "EXPECTED_RELEASE_COMMIT": SOURCE_COMMIT,
             "SOURCE_COMMIT": "b" * 40,
@@ -107,7 +107,7 @@ def env() -> GuardedEnv:
     )
 
 
-def policy() -> PolicyRun:
+def _policy() -> PolicyRun:
     return PolicyRun(
         advisory_source_id="fixture",
         db_snapshot_basename="advisory-db-fixture00000000",
@@ -134,7 +134,7 @@ def _wheel_metadata(name: str) -> tuple[str, str]:
 def _write_metadata_wheel(path: Path) -> None:
     metadata_name, metadata = _wheel_metadata(path.name)
     with zipfile.ZipFile(path, "w") as wheel:
-        info = zipfile.ZipInfo(metadata_name, ZIP_DATE_TIME)
+        info = zipfile.ZipInfo(metadata_name, _ZIP_DATE_TIME)
         info.create_system = 3
         info.external_attr = 0o644 << 16
         wheel.writestr(info, metadata)
@@ -142,8 +142,8 @@ def _write_metadata_wheel(path: Path) -> None:
 
 def _write_linux_core_wheels(dist_dir: Path) -> None:
     content_by_lane = {
-        "linux-x86_64-musl": LINUX_X86_CORE,
-        "linux-aarch64-musl": LINUX_AARCH64_CORE,
+        "linux-x86_64-musl": _LINUX_X86_CORE,
+        "linux-aarch64-musl": _LINUX_AARCH64_CORE,
     }
     for artifact, (lane, _target) in checker.rust_artifact_targets().items():
         if lane not in content_by_lane:
@@ -181,13 +181,13 @@ def _write_models_wheel(path: Path) -> None:
     )
     with zipfile.ZipFile(path, "w") as wheel:
         metadata_name, metadata = _wheel_metadata(path.name)
-        metadata_info = zipfile.ZipInfo(metadata_name, ZIP_DATE_TIME)
+        metadata_info = zipfile.ZipInfo(metadata_name, _ZIP_DATE_TIME)
         metadata_info.create_system = 3
         metadata_info.external_attr = 0o644 << 16
         wheel.writestr(metadata_info, metadata)
         for basename in sorted(EXPECTED_MODEL_SHA256):
             asset_info = zipfile.ZipInfo(
-                f"solstone_journal_models/assets/{basename}", ZIP_DATE_TIME
+                f"solstone_journal_models/assets/{basename}", _ZIP_DATE_TIME
             )
             asset_info.create_system = 3
             asset_info.external_attr = 0o644 << 16
@@ -314,8 +314,8 @@ def _proof_observation(
     for name in CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
     core_sha = {
-        "linux-x86_64-musl": hashlib.sha256(LINUX_X86_CORE).hexdigest(),
-        "linux-aarch64-musl": hashlib.sha256(LINUX_AARCH64_CORE).hexdigest(),
+        "linux-x86_64-musl": hashlib.sha256(_LINUX_X86_CORE).hexdigest(),
+        "linux-aarch64-musl": hashlib.sha256(_LINUX_AARCH64_CORE).hexdigest(),
         "macos-arm64": hashlib.sha256(MACOS_CORE).hexdigest(),
     }[target]
     members = [
@@ -468,7 +468,7 @@ def services(
         core_lock_sha256=lambda _repo: LOCK_SHA,
         clean_outputs=clean_outputs,
         build_local_dist=build_local_dist,
-        prepare_policy=lambda _repo, _env: policy(),
+        prepare_policy=lambda _repo, _env: _policy(),
         coordinator_tool_evidence=lambda: {
             lane: pins.fixture_lane_tool_evidence(lane)
             for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")

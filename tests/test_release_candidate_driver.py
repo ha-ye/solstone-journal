@@ -529,6 +529,7 @@ def test_recovery_ignores_current_release_metadata_drift(
     monkeypatch.setattr(driver, "expected_package_names", fail_if_used)
     monkeypatch.setattr(driver, "rust_artifact_targets", fail_if_used)
     monkeypatch.setattr(driver, "validate_release_dir", fail_if_used)
+    # Guard checker globals reached via the recovery tombstone validator.
     monkeypatch.setattr(checker, "_current_version", fail_if_used)
     monkeypatch.setattr(checker, "expected_package_names", fail_if_used)
     monkeypatch.setattr(ledger, "rust_artifact_targets", fail_if_used)
