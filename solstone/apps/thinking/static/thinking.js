@@ -28,6 +28,8 @@
   const confidentialTerminalPhases = new Set(['not_verified', 'repair_needed', 'early_access']);
   const installInFlightStates = new Set(['resolving', 'downloading', 'verifying', 'installing']);
   const installTerminalStates = new Set(['idle', 'installed', 'failed']);
+  const localSetupMissingReasons = new Set(['local_model_missing', 'model_missing', 'binary_missing', 'runtime_missing']);
+  const localServerUnhealthyReasons = new Set(['local_server_unhealthy', 'server_unhealthy']);
   const pollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
   const confidentialPollMaxMs = 15 * 60 * 1000;
@@ -208,6 +210,9 @@
       return view('cleanup_failed', {tone: 'bad'});
     }
     if (runtime.phase === 'artifact-not-ready') return null;
+    // Disposition: a stopped runtime carries no diagnosis of its own; defer to the
+    // readiness chain, which knows whether local is blocked and why.
+    if (runtime.phase === 'stopped') return null;
     return view('checking');
   }
 
@@ -1788,6 +1793,7 @@
     if (runtimeOverride) return runtimeOverride;
     const local = localReadiness();
     const reason = local.reason;
+    // Disposition: ready is the only readiness branch that may offer activation.
     if (local.status === 'ready' || reason === 'ready') {
       return {
         pill: 'off',
@@ -1800,6 +1806,8 @@
         tone: '',
       };
     }
+    // Disposition: gpu_unavailable is honest unavailability — do not offer setup
+    // when the required hardware is absent.
     if (reason === 'gpu_unavailable') {
       return {
         pill: 'unavailable',
@@ -1812,6 +1820,8 @@
         tone: 'bad',
       };
     }
+    // Disposition: gpu_probe_failed is retained for readiness outcomes even though
+    // provider issues do not emit it.
     if (reason === 'gpu_probe_failed') {
       return {
         pill: 'unavailable',
@@ -1824,6 +1834,8 @@
         tone: 'bad',
       };
     }
+    // Disposition: local_model_installing has no producer in this repository —
+    // consumer-only vocabulary, kept inert.
     if (reason === 'local_model_installing') {
       return {
         pill: copy.local_install?.pill_inflight || '',
@@ -1836,6 +1848,8 @@
         tone: '',
       };
     }
+    // Disposition: local_model_loading has no producer in this repository —
+    // consumer-only vocabulary, kept inert.
     if (reason === 'local_model_loading') {
       return {
         pill: 'starting',
@@ -1848,19 +1862,23 @@
         tone: '',
       };
     }
-    if (reason === 'local_model_missing') {
+    // Disposition: bundled setup gaps share one install action across local_model_missing,
+    // model_missing, binary_missing, and runtime_missing.
+    if (localSetupMissingReasons.has(reason)) {
       return {
         pill: 'setup needed',
         title: 'local',
-        sub: 'local model files are not installed yet',
+        sub: 'local setup is not finished yet',
         message: local.detail || local.summary || '',
-        notice: 'install the selected model before turning on local thinking.',
+        notice: 'finish local setup before turning on local thinking.',
         activate: false,
         bootstrap: true,
         bootstrapLabel: copy.local_install?.install || '',
         tone: '',
       };
     }
+    // Disposition: local_endpoint_unreachable cannot arrive here; the endpoint
+    // override returns before readiness is consulted.
     if (reason === 'local_endpoint_unreachable') {
       return {
         pill: 'not ready',
@@ -1873,7 +1891,9 @@
         tone: 'bad',
       };
     }
-    if (reason === 'local_server_unhealthy') {
+    // Disposition: local_server_unhealthy and server_unhealthy share the same
+    // unhealthy local-service view.
+    if (localServerUnhealthyReasons.has(reason)) {
       return {
         pill: 'not ready',
         title: 'local',
@@ -1885,6 +1905,8 @@
         tone: 'bad',
       };
     }
+    // Disposition: ram_insufficient is retained for readiness outcomes; provider
+    // issues do not emit it.
     if (reason === 'ram_insufficient') {
       return {
         pill: 'unavailable',
@@ -1892,6 +1914,20 @@
         sub: 'this computer needs more memory for local thinking',
         message: '',
         notice: `sol can still think with ${activeLaneLabel('byo')}.`,
+        activate: false,
+        bootstrap: false,
+        tone: 'bad',
+      };
+    }
+    // Disposition: unknown blocked readiness stays bad and visible; missing
+    // readiness data stays neutral.
+    if (local.status === 'blocked') {
+      return {
+        pill: 'not ready',
+        title: 'local',
+        sub: "sol couldn't get local thinking ready",
+        message: local.detail || local.summary || '',
+        notice: `try again, or use ${activeLaneLabel('byo')}.`,
         activate: false,
         bootstrap: false,
         tone: 'bad',
