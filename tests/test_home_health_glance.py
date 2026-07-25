@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from solstone.apps.home import health_glance as health_glance_module
 from solstone.apps.home.health_glance import build_health_glance
+from solstone.convey.backlog_source import BacklogSource, load_backlog_source
 from solstone.think.brain_health import HEADLINES
+from tests.helpers.health_glance import healthy_backlog_source
 
 BANNED_RE = re.compile(
     r"\b(watch|capture|record|monitor|track|collect|observer|observation)\b",
@@ -23,6 +27,7 @@ EXTENDED_BANNED_RE = re.compile(
     re.IGNORECASE,
 )
 HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
+BACKLOG_NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _brain(
@@ -114,6 +119,55 @@ def _no_observers_capture() -> dict:
     return {"status": "no_observers", "observers": []}
 
 
+def _backlog_source(
+    backlog: dict | None,
+    *,
+    validity: str = "valid",
+    generated_at: str | None = None,
+) -> BacklogSource:
+    return BacklogSource(
+        backlog=backlog,
+        validity=validity,
+        generated_at=generated_at
+        if generated_at is not None
+        else BACKLOG_NOW.isoformat(),
+    )
+
+
+def _clear_backlog() -> dict:
+    return {
+        "pending_days": 0,
+        "stuck_days": 0,
+        "days": [],
+        "errors": [],
+        "degraded": False,
+    }
+
+
+def _stuck_backlog(day: dict | None = None) -> dict:
+    return {
+        "pending_days": 0,
+        "stuck_days": 1,
+        "days": [
+            day
+            or {
+                "day": "20260720",
+                "state": "stuck",
+                "reason_code": "provider_request_rejected",
+                "provider": "google",
+                "segments": 1,
+            }
+        ],
+        "errors": [],
+        "degraded": False,
+    }
+
+
+@pytest.fixture
+def fixed_backlog_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(health_glance_module, "_now_utc", lambda: BACKLOG_NOW)
+
+
 def _assert_status_row(result: dict, *, verdict: str, headline: str) -> None:
     assert result["verdict"] == verdict
     assert result["severity"] == "amber"
@@ -154,8 +208,270 @@ def _assert_single_brain_issue(result: dict, *, text: str, href: str) -> None:
     assert result["issues"][0] == {"text": text, "severity": "amber", "href": href}
 
 
+def test_stuck_backlog_returns_red_attention_with_display_provider(
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        "5m ago",
+        backlog=_backlog_source(_stuck_backlog()),
+    )
+
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "red"
+    assert any(
+        "the AI provider refused a request sol sent" in issue["text"]
+        and "Gemini" in issue["text"]
+        and "google" not in issue["text"]
+        for issue in result["issues"]
+    )
+
+
+def test_pending_only_backlog_with_error_row_does_not_raise_backlog_issue(
+    fixed_backlog_now: None,
+) -> None:
+    backlog = {
+        "pending_days": 1,
+        "stuck_days": 0,
+        "days": [
+            {
+                "day": "20260720",
+                "state": "pending",
+                "error": {"reason_code": "provider_request_rejected"},
+                "reason_code": "provider_request_rejected",
+                "provider": "google",
+            }
+        ],
+        "errors": [],
+        "degraded": False,
+    }
+
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", backlog=_backlog_source(backlog)
+    )
+
+    assert result["verdict"] == "ok"
+    assert result["severity"] == "green"
+    assert result["issues"] == []
+
+
+def test_zero_backlog_active_observer_uses_existing_everything_working_green_return(
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", backlog=_backlog_source(_clear_backlog())
+    )
+
+    assert result["verdict"] == "ok"
+    assert result["severity"] == "green"
+    assert result["headline"] == "everything's working"
+    assert result["last_observation"] == "5m ago"
+    assert result["issues"] == []
+
+
+def test_stuck_backlog_with_absent_pipeline_status_still_returns_attention(
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(
+        _active_capture(), None, None, backlog=_backlog_source(_stuck_backlog())
+    )
+
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "red"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        BacklogSource(backlog=None, validity="missing", generated_at=None),
+        BacklogSource(backlog=None, validity="unparseable", generated_at=None),
+        BacklogSource(
+            backlog=None,
+            validity="no_backlog_key",
+            generated_at=BACKLOG_NOW.isoformat(),
+        ),
+        BacklogSource(
+            backlog=None,
+            validity="malformed",
+            generated_at=BACKLOG_NOW.isoformat(),
+        ),
+        _backlog_source({**_clear_backlog(), "degraded": True}),
+    ],
+)
+def test_unreadable_or_degraded_backlog_source_is_not_green(
+    source: BacklogSource,
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(_active_capture(), None, "5m ago", backlog=source)
+
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "amber"
+    assert any("i can't tell" in issue["text"] for issue in result["issues"])
+
+
+def test_backlog_loader_outcomes_feed_non_green_glance(
+    tmp_path,
+    fixed_backlog_now: None,
+) -> None:
+    cases = [
+        ("missing", None, "missing"),
+        ("unparseable", "{not-json", "unparseable"),
+        (
+            "no_backlog_key",
+            {"generated_at": BACKLOG_NOW.isoformat(), "schema_version": 1},
+            "no_backlog_key",
+        ),
+        (
+            "malformed",
+            {"generated_at": BACKLOG_NOW.isoformat(), "backlog": []},
+            "malformed",
+        ),
+        (
+            "degraded",
+            {
+                "generated_at": BACKLOG_NOW.isoformat(),
+                "backlog": {**_clear_backlog(), "degraded": True},
+            },
+            "valid",
+        ),
+    ]
+
+    for name, payload, expected_validity in cases:
+        journal = tmp_path / name
+        journal.mkdir()
+        if isinstance(payload, str):
+            (journal / "stats.json").write_text(payload, encoding="utf-8")
+        elif payload is not None:
+            (journal / "stats.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        source = load_backlog_source(str(journal))
+        result = build_health_glance(_active_capture(), None, "5m ago", backlog=source)
+
+        assert source.validity == expected_validity
+        assert result["verdict"] == "attention"
+        assert result["severity"] == "amber"
+        assert any("i can't tell" in issue["text"] for issue in result["issues"])
+
+
+def test_backlog_issue_builder_exceptions_are_not_safely_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    fixed_backlog_now: None,
+) -> None:
+    def raise_from_backlog(_backlog: dict) -> list[dict]:
+        raise RuntimeError("backlog boom")
+
+    monkeypatch.setattr(health_glance_module, "stuck_day_rows", raise_from_backlog)
+
+    with pytest.raises(RuntimeError, match="backlog boom"):
+        build_health_glance(
+            _active_capture(), None, "5m ago", backlog=_backlog_source(_stuck_backlog())
+        )
+
+
+def test_backlog_freshness_controls_green_vs_stale_issue(
+    fixed_backlog_now: None,
+) -> None:
+    fresh = build_health_glance(
+        _active_capture(),
+        None,
+        "5m ago",
+        backlog=_backlog_source(
+            _clear_backlog(),
+            generated_at=(BACKLOG_NOW - timedelta(hours=35)).isoformat(),
+        ),
+    )
+    stale = build_health_glance(
+        _active_capture(),
+        None,
+        "5m ago",
+        backlog=_backlog_source(
+            _clear_backlog(),
+            generated_at=(BACKLOG_NOW - timedelta(hours=37)).isoformat(),
+        ),
+    )
+
+    assert fresh["verdict"] == "ok"
+    assert stale["verdict"] == "attention"
+    assert stale["severity"] == "amber"
+    assert any(
+        "i can't tell" in issue["text"] and "37 hours ago" in issue["text"]
+        for issue in stale["issues"]
+    )
+
+
+@pytest.mark.parametrize("generated_at", [None, "not-a-timestamp"])
+def test_backlog_missing_or_unparseable_generated_at_is_not_fresh(
+    generated_at: str | None,
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        "5m ago",
+        backlog=BacklogSource(
+            backlog=_clear_backlog(),
+            validity="valid",
+            generated_at=generated_at,
+        ),
+    )
+
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "amber"
+    assert any(
+        "i can't tell" in issue["text"] and "age is unknown" in issue["text"]
+        for issue in result["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        {
+            "day": "20260720",
+            "state": "stuck",
+            "reason_code": "provider_request_rejected",
+        },
+        {
+            "day": "20260720",
+            "state": "stuck",
+            "reason_code": "provider_request_rejected",
+            "provider": "weirdslug",
+        },
+    ],
+)
+def test_stuck_backlog_without_display_provider_degrades_cleanly(
+    day: dict,
+    fixed_backlog_now: None,
+) -> None:
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", backlog=_backlog_source(_stuck_backlog(day))
+    )
+
+    assert result["verdict"] == "attention"
+    assert result["severity"] == "red"
+    text = result["issues"][0]["text"]
+    assert "None" not in text
+    assert "weirdslug" not in text
+
+
+def test_backlog_argument_is_required_and_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        build_health_glance(_active_capture(), None, "5m ago")
+
+    with pytest.raises(TypeError):
+        build_health_glance(
+            _active_capture(),
+            None,
+            "5m ago",
+            healthy_backlog_source(),
+        )
+
+
 def test_degraded_capture_returns_red_attention_issue():
-    result = build_health_glance(_degraded_capture("fedora"), None, None)
+    result = build_health_glance(
+        _degraded_capture("fedora"), None, None, backlog=healthy_backlog_source()
+    )
 
     assert result["verdict"] == "attention"
     assert result["severity"] == "red"
@@ -171,7 +487,10 @@ def test_degraded_capture_returns_red_attention_issue():
 
 def test_degraded_capture_collapses_multiple_observers_to_one_issue():
     result = build_health_glance(
-        _degraded_capture("fedora", "phone", "tablet"), None, None
+        _degraded_capture("fedora", "phone", "tablet"),
+        None,
+        None,
+        backlog=healthy_backlog_source(),
     )
 
     assert len(result["issues"]) == 1
@@ -186,6 +505,7 @@ def test_degraded_capture_and_pipeline_warning_returns_two_issues_red_verdict():
         _degraded_capture("fedora"),
         {"status": "warning", "headline": "processing needs attention"},
         None,
+        backlog=healthy_backlog_source(),
     )
 
     assert result["verdict"] == "attention"
@@ -199,6 +519,7 @@ def test_pipeline_warning_alone_returns_amber_attention_issue():
         _active_capture(),
         {"status": "warning", "headline": "processing needs attention"},
         None,
+        backlog=healthy_backlog_source(),
     )
 
     assert result["verdict"] == "attention"
@@ -213,6 +534,7 @@ def test_pipeline_warning_without_headline_uses_fallback_text():
         _active_capture(),
         {"status": "warning", "message": "some bullet"},
         None,
+        backlog=healthy_backlog_source(),
     )
 
     assert result["verdict"] != "ok"
@@ -234,7 +556,9 @@ def test_pipeline_warning_without_headline_uses_fallback_text():
     ],
 )
 def test_offline_and_stale_capture_do_not_return_ok(capture_health, issue_text):
-    result = build_health_glance(capture_health, None, None)
+    result = build_health_glance(
+        capture_health, None, None, backlog=healthy_backlog_source()
+    )
 
     assert result["verdict"] != "ok"
     assert result["headline"] != "everything's working"
@@ -242,7 +566,9 @@ def test_offline_and_stale_capture_do_not_return_ok(capture_health, issue_text):
 
 
 def test_active_capture_without_pipeline_returns_ok_with_last_observation():
-    result = build_health_glance(_active_capture(), None, "5m ago")
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", backlog=healthy_backlog_source()
+    )
 
     assert result["verdict"] == "ok"
     assert result["severity"] == "green"
@@ -253,7 +579,10 @@ def test_active_capture_without_pipeline_returns_ok_with_last_observation():
 
 def test_no_observers_returns_ok_with_setup_cta():
     result = build_health_glance(
-        {"status": "no_observers", "observers": []}, None, None
+        {"status": "no_observers", "observers": []},
+        None,
+        None,
+        backlog=healthy_backlog_source(),
     )
 
     assert result["verdict"] == "ok"
@@ -267,7 +596,12 @@ def test_no_observers_returns_ok_with_setup_cta():
 
 
 def test_unknown_observer_state_returns_unavailable():
-    result = build_health_glance({"status": "unknown", "observers": []}, None, None)
+    result = build_health_glance(
+        {"status": "unknown", "observers": []},
+        None,
+        None,
+        backlog=healthy_backlog_source(),
+    )
 
     assert result["verdict"] == "unavailable"
     assert result["severity"] == "amber"
@@ -285,6 +619,7 @@ def test_pipeline_open_support_action_routes_to_support():
             "suggested_action": "open_support",
         },
         None,
+        backlog=healthy_backlog_source(),
     )
 
     assert result["issues"][0]["href"] == "/app/support"
@@ -307,13 +642,21 @@ def test_pipeline_open_support_action_routes_to_support():
     ],
 )
 def test_pipeline_health_actions_route_to_recent_errors(pipeline_status):
-    result = build_health_glance(_active_capture(), pipeline_status, None)
+    result = build_health_glance(
+        _active_capture(), pipeline_status, None, backlog=healthy_backlog_source()
+    )
 
     assert result["issues"][0]["href"] == HEALTH_DETAIL_HREF
 
 
 def test_brain_blocked_alone_returns_amber_attention_issue():
-    result = build_health_glance(_active_capture(), None, None, brain=_blocked_brain())
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        None,
+        brain=_blocked_brain(),
+        backlog=healthy_backlog_source(),
+    )
 
     assert result["issues"] == [
         {
@@ -329,7 +672,11 @@ def test_brain_blocked_alone_returns_amber_attention_issue():
 
 def test_brain_blocked_combines_with_red_capture_issue():
     result = build_health_glance(
-        _degraded_capture("fedora"), None, None, brain=_blocked_brain()
+        _degraded_capture("fedora"),
+        None,
+        None,
+        brain=_blocked_brain(),
+        backlog=healthy_backlog_source(),
     )
 
     assert len(result["issues"]) == 2
@@ -346,7 +693,11 @@ def test_brain_blocked_combines_with_red_capture_issue():
 
 def test_brain_ready_keeps_ok_glance():
     result = build_health_glance(
-        _active_capture(), None, "5m ago", brain=_ready_brain()
+        _active_capture(),
+        None,
+        "5m ago",
+        brain=_ready_brain(),
+        backlog=healthy_backlog_source(),
     )
 
     assert result["verdict"] == "ok"
@@ -356,7 +707,11 @@ def test_brain_ready_keeps_ok_glance():
 
 def test_checking_brain_returns_status_only_amber_row():
     result = build_health_glance(
-        _active_capture(), None, "5m ago", brain=_checking_brain()
+        _active_capture(),
+        None,
+        "5m ago",
+        brain=_checking_brain(),
+        backlog=healthy_backlog_source(),
     )
 
     _assert_status_row(
@@ -372,6 +727,7 @@ def test_progressing_blocked_brain_returns_status_only_amber_row():
         None,
         "5m ago",
         brain=_bundled_runtime_brain(progressing=True),
+        backlog=healthy_backlog_source(),
     )
 
     _assert_status_row(
@@ -395,7 +751,13 @@ def test_progressing_blocked_brain_returns_status_only_amber_row():
 def test_no_observers_with_inflight_brain_returns_brain_status_row(
     brain, verdict, headline
 ):
-    result = build_health_glance(_no_observers_capture(), None, None, brain=brain)
+    result = build_health_glance(
+        _no_observers_capture(),
+        None,
+        None,
+        brain=brain,
+        backlog=healthy_backlog_source(),
+    )
 
     _assert_status_row(result, verdict=verdict, headline=headline)
     assert result["verdict"] != "ok"
@@ -404,7 +766,13 @@ def test_no_observers_with_inflight_brain_returns_brain_status_row(
 
 @pytest.mark.parametrize("brain", [_ready_brain(), None])
 def test_no_observers_ready_or_absent_brain_keeps_setup_cta(brain):
-    result = build_health_glance(_no_observers_capture(), None, None, brain=brain)
+    result = build_health_glance(
+        _no_observers_capture(),
+        None,
+        None,
+        brain=brain,
+        backlog=healthy_backlog_source(),
+    )
 
     _assert_no_observers_row(result)
 
@@ -423,7 +791,9 @@ def test_no_observers_ready_or_absent_brain_keeps_setup_cta(brain):
 def test_unavailable_capture_with_inflight_brain_returns_unavailable_row(
     capture_health, brain
 ):
-    result = build_health_glance(capture_health, None, None, brain=brain)
+    result = build_health_glance(
+        capture_health, None, None, brain=brain, backlog=healthy_backlog_source()
+    )
 
     _assert_unavailable_row(result)
 
@@ -434,6 +804,7 @@ def test_bundled_runtime_progressing_suppresses_brain_action():
         None,
         None,
         brain=_bundled_runtime_brain(progressing=True),
+        backlog=healthy_backlog_source(),
     )
 
     _assert_status_row(
@@ -449,6 +820,7 @@ def test_bundled_runtime_not_progressing_returns_local_setup_issue():
         None,
         None,
         brain=_bundled_runtime_brain(progressing=False),
+        backlog=healthy_backlog_source(),
     )
 
     _assert_single_brain_issue(
@@ -471,7 +843,9 @@ def test_bundled_runtime_not_progressing_returns_local_setup_issue():
     ],
 )
 def test_actionable_brain_states_return_single_amber_issue(brain, text, href):
-    result = build_health_glance(_active_capture(), None, None, brain=brain)
+    result = build_health_glance(
+        _active_capture(), None, None, brain=brain, backlog=healthy_backlog_source()
+    )
 
     _assert_single_brain_issue(result, text=text, href=href)
 
@@ -481,16 +855,26 @@ def test_actionable_brain_states_return_single_amber_issue(brain, text, href):
     [_checking_brain(), _bundled_runtime_brain(progressing=True)],
 )
 def test_capture_and_pipeline_attention_precede_inflight_brain_status(brain):
-    red_expected = build_health_glance(_degraded_capture("fedora"), None, None)
+    red_expected = build_health_glance(
+        _degraded_capture("fedora"), None, None, backlog=healthy_backlog_source()
+    )
     red_actual = build_health_glance(
-        _degraded_capture("fedora"), None, None, brain=brain
+        _degraded_capture("fedora"),
+        None,
+        None,
+        brain=brain,
+        backlog=healthy_backlog_source(),
     )
 
     assert red_actual == red_expected
 
     pipeline = {"status": "warning", "headline": "processing needs attention"}
-    amber_expected = build_health_glance(_active_capture(), pipeline, None)
-    amber_actual = build_health_glance(_active_capture(), pipeline, None, brain=brain)
+    amber_expected = build_health_glance(
+        _active_capture(), pipeline, None, backlog=healthy_backlog_source()
+    )
+    amber_actual = build_health_glance(
+        _active_capture(), pipeline, None, brain=brain, backlog=healthy_backlog_source()
+    )
 
     assert amber_actual == amber_expected
 
@@ -507,7 +891,9 @@ def test_capture_and_pipeline_attention_precede_inflight_brain_status(brain):
     ],
 )
 def test_canonical_non_ready_brain_states_do_not_return_ok_green(brain, may_be_green):
-    result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", brain=brain, backlog=healthy_backlog_source()
+    )
 
     if may_be_green:
         assert result["verdict"] == "ok"
@@ -523,7 +909,9 @@ def test_canonical_non_ready_brain_states_do_not_return_ok_green(brain, may_be_g
 
 @pytest.mark.parametrize("brain", [None, "checking"])
 def test_absent_or_non_dict_brain_keeps_active_capture_green(brain):
-    result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", brain=brain, backlog=healthy_backlog_source()
+    )
 
     assert result["verdict"] == "ok"
     assert result["severity"] == "green"
@@ -535,12 +923,20 @@ def test_absent_or_non_dict_brain_keeps_active_capture_green(brain):
 
 def test_all_issue_and_cta_hrefs_are_local_paths():
     states = [
-        build_health_glance(_degraded_capture("fedora"), None, None),
-        build_health_glance({"status": "offline", "observers": []}, None, None),
+        build_health_glance(
+            _degraded_capture("fedora"), None, None, backlog=healthy_backlog_source()
+        ),
+        build_health_glance(
+            {"status": "offline", "observers": []},
+            None,
+            None,
+            backlog=healthy_backlog_source(),
+        ),
         build_health_glance(
             {"status": "stale", "observers": [{"name": "fedora", "status": "stale"}]},
             None,
             None,
+            backlog=healthy_backlog_source(),
         ),
         build_health_glance(
             _active_capture(),
@@ -550,14 +946,21 @@ def test_all_issue_and_cta_hrefs_are_local_paths():
                 "suggested_action": "open_support",
             },
             None,
+            backlog=healthy_backlog_source(),
         ),
         build_health_glance(
             _active_capture(),
             None,
             None,
             brain=_bundled_runtime_brain(progressing=False),
+            backlog=healthy_backlog_source(),
         ),
-        build_health_glance({"status": "no_observers", "observers": []}, None, None),
+        build_health_glance(
+            {"status": "no_observers", "observers": []},
+            None,
+            None,
+            backlog=healthy_backlog_source(),
+        ),
     ]
 
     for state in states:
@@ -570,7 +973,9 @@ def test_all_issue_and_cta_hrefs_are_local_paths():
 
 
 def test_malformed_pipeline_drops_only_pipeline_issue():
-    result = build_health_glance(_degraded_capture("fedora"), "warning", None)
+    result = build_health_glance(
+        _degraded_capture("fedora"), "warning", None, backlog=healthy_backlog_source()
+    )
 
     assert result["verdict"] == "attention"
     assert result["severity"] == "red"
@@ -580,28 +985,62 @@ def test_malformed_pipeline_drops_only_pipeline_issue():
 
 def test_owner_facing_strings_use_allowed_terms():
     states = [
-        build_health_glance(_degraded_capture("fedora"), None, None),
-        build_health_glance({"status": "offline", "observers": []}, None, None),
+        build_health_glance(
+            _degraded_capture("fedora"), None, None, backlog=healthy_backlog_source()
+        ),
+        build_health_glance(
+            {"status": "offline", "observers": []},
+            None,
+            None,
+            backlog=healthy_backlog_source(),
+        ),
         build_health_glance(
             {"status": "stale", "observers": [{"name": "fedora", "status": "stale"}]},
             None,
             None,
+            backlog=healthy_backlog_source(),
         ),
-        build_health_glance(_active_capture(), None, "5m ago"),
-        build_health_glance(_active_capture(), None, None, brain=_blocked_brain()),
-        build_health_glance(_active_capture(), None, None, brain=_checking_brain()),
+        build_health_glance(
+            _active_capture(), None, "5m ago", backlog=healthy_backlog_source()
+        ),
+        build_health_glance(
+            _active_capture(),
+            None,
+            None,
+            brain=_blocked_brain(),
+            backlog=healthy_backlog_source(),
+        ),
+        build_health_glance(
+            _active_capture(),
+            None,
+            None,
+            brain=_checking_brain(),
+            backlog=healthy_backlog_source(),
+        ),
         build_health_glance(
             _active_capture(),
             None,
             None,
             brain=_bundled_runtime_brain(progressing=True),
+            backlog=healthy_backlog_source(),
         ),
-        build_health_glance({"status": "no_observers", "observers": []}, None, None),
-        build_health_glance({"status": "unknown", "observers": []}, None, None),
+        build_health_glance(
+            {"status": "no_observers", "observers": []},
+            None,
+            None,
+            backlog=healthy_backlog_source(),
+        ),
+        build_health_glance(
+            {"status": "unknown", "observers": []},
+            None,
+            None,
+            backlog=healthy_backlog_source(),
+        ),
         build_health_glance(
             _active_capture(),
             {"status": "warning", "headline": "processing needs attention"},
             None,
+            backlog=healthy_backlog_source(),
         ),
     ]
 
@@ -617,7 +1056,13 @@ def test_owner_facing_strings_use_allowed_terms():
 
 
 def test_brain_blocked_chip_uses_owner_copy() -> None:
-    result = build_health_glance(_active_capture(), None, None, brain=_blocked_brain())
+    result = build_health_glance(
+        _active_capture(),
+        None,
+        None,
+        brain=_blocked_brain(),
+        backlog=healthy_backlog_source(),
+    )
     chip = next(
         issue for issue in result["issues"] if issue["text"] == HEADLINES["blocked"]
     )

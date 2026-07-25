@@ -11,6 +11,7 @@ from typing import Any
 from solstone.convey import backlog_copy, provider_readiness
 
 __all__ = [
+    "stuck_day_rows",
     "stuck_rows",
     "verdict",
 ]
@@ -110,6 +111,19 @@ def _reason_copy(day: dict) -> str:
     return backlog_copy.BACKLOG_REASON_FAILING_STEP
 
 
+def _stuck_row(day: dict) -> dict:
+    depth = _count(day.get("segments")) + _count(day.get("units"))
+    row = {
+        "day": day.get("day"),
+        "reason": _reason_copy(day),
+        "depth": depth if depth > 0 else None,
+    }
+    for field in ("reason_code", "provider", "model"):
+        if day.get(field):
+            row[field] = day.get(field)
+    return row
+
+
 def stuck_rows(backlog: dict | None) -> list[dict]:
     if backlog is None or backlog.get("degraded") is True:
         return []
@@ -118,14 +132,17 @@ def stuck_rows(backlog: dict | None) -> list[dict]:
     for day in backlog.get("days") or []:
         if not _needs_hand(day, backlog):
             continue
-        depth = _count(day.get("segments")) + _count(day.get("units"))
-        row = {
-            "day": day.get("day"),
-            "reason": _reason_copy(day),
-            "depth": depth if depth > 0 else None,
-        }
-        for field in ("reason_code", "provider", "model"):
-            if day.get(field):
-                row[field] = day.get(field)
-        rows.append(row)
+        rows.append(_stuck_row(day))
+    return rows
+
+
+def stuck_day_rows(backlog: dict | None) -> list[dict]:
+    if backlog is None or backlog.get("degraded") is True:
+        return []
+
+    rows = []
+    for day in backlog.get("days") or []:
+        if day.get("state") != "stuck":
+            continue
+        rows.append(_stuck_row(day))
     return rows

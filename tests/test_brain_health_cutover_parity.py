@@ -9,6 +9,7 @@ from typing import Any
 from flask import Flask
 
 from solstone.think.brain_health import HEADLINES
+from tests.helpers.health_glance import healthy_backlog_source
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ def test_state_parity_matrix(monkeypatch):
             None,
             "5m ago",
             brain=home_brain,
+            backlog=healthy_backlog_source(),
         )
         home_issue = home["issues"][0] if home["issues"] else None
         assert home_brain["headline"] == HEADLINES[case.state]

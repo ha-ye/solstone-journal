@@ -4,22 +4,32 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from solstone.apps.home.needs_you import format_degraded_capture_line
+from solstone.convey.backlog_source import BacklogSource
+from solstone.convey.backlog_view import stuck_day_rows
+from solstone.convey.provider_readiness import DISPLAY_NAMES
 
 logger = logging.getLogger(__name__)
 
 _HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
+BACKLOG_FRESHNESS_MAX_AGE_HOURS = 36
+_BACKLOG_HREF = "/app/health"
 
 
 def build_health_glance(
     capture_health: Any,
     pipeline_status: Any,
     last_observe_relative: str | None,
+    *,
+    backlog: BacklogSource,
     brain: dict[str, Any] | None = None,
 ) -> dict:
     issues = []
+
+    issues.extend(_build_backlog_issues(backlog))
 
     capture_issue = _issue_safely(
         "capture health", capture_health, _build_capture_issue
@@ -104,6 +114,123 @@ def _issue_safely(label: str, value: Any, builder: Any) -> dict | None:
     except Exception:
         logger.warning("omitting malformed %s signal", label, exc_info=True)
         return None
+
+
+def _build_backlog_issues(source: BacklogSource) -> list[dict]:
+    issues: list[dict] = []
+    if source.validity != "valid":
+        issues.append(_backlog_unknown_issue())
+        return issues
+
+    backlog = source.backlog
+    if not isinstance(backlog, dict):
+        issues.append(_backlog_unknown_issue())
+        return issues
+
+    if backlog.get("degraded") is True:
+        issues.append(_backlog_unknown_issue())
+
+    freshness_issue = _build_backlog_freshness_issue(source.generated_at)
+    if freshness_issue is not None:
+        issues.append(freshness_issue)
+
+    if _backlog_count(backlog.get("stuck_days")) > 0:
+        issues.append(_build_backlog_stuck_issue(backlog))
+
+    return issues
+
+
+def _backlog_unknown_issue() -> dict:
+    return {
+        "text": "i can't tell if your journal is caught up right now.",
+        "severity": "amber",
+        "href": _BACKLOG_HREF,
+    }
+
+
+def _build_backlog_freshness_issue(generated_at: str | None) -> dict | None:
+    generated_at_dt = _parse_generated_at(generated_at)
+    if generated_at_dt is None:
+        return {
+            "text": (
+                "i can't tell if your journal is caught up; "
+                "the last update age is unknown."
+            ),
+            "severity": "amber",
+            "href": _BACKLOG_HREF,
+        }
+
+    age = _now_utc() - generated_at_dt
+    if age.total_seconds() <= BACKLOG_FRESHNESS_MAX_AGE_HOURS * 3600:
+        return None
+    return {
+        "text": (
+            "i can't tell if your journal is caught up; "
+            f"the last update was {_format_age(age)} ago."
+        ),
+        "severity": "amber",
+        "href": _BACKLOG_HREF,
+    }
+
+
+def _build_backlog_stuck_issue(backlog: dict) -> dict:
+    rows = stuck_day_rows(backlog)
+    if rows:
+        text = _backlog_stuck_issue_text(rows[0])
+    else:
+        text = "a journal day needs a hand."
+    return {"text": text, "severity": "red", "href": _BACKLOG_HREF}
+
+
+def _backlog_stuck_issue_text(row: dict) -> str:
+    reason = row.get("reason")
+    text = reason.strip() if isinstance(reason, str) and reason.strip() else ""
+    if not text:
+        text = "a journal day needs a hand."
+
+    provider = row.get("provider")
+    display_name = DISPLAY_NAMES.get(provider) if isinstance(provider, str) else None
+    if display_name:
+        return f"{display_name}: {text}"
+    return text
+
+
+def _backlog_count(value: Any) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, count)
+
+
+def _parse_generated_at(value: str | None) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_age(delta: Any) -> str:
+    seconds = max(0, int(delta.total_seconds()))
+    hours = seconds // 3600
+    if hours >= 1:
+        unit = "hour" if hours == 1 else "hours"
+        return f"{hours} {unit}"
+    minutes = max(1, seconds // 60)
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"{minutes} {unit}"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _build_capture_issue(capture_health: Any) -> dict | None:

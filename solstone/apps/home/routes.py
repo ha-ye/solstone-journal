@@ -20,6 +20,8 @@ from solstone.apps.home.connections import build_connections_card
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you, needs_dedup_key
 from solstone.apps.home.owner_voice import build_owner_voice_needs
+from solstone.convey import state
+from solstone.convey.backlog_source import load_backlog_source
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.shell_data import _resolve_attention
 from solstone.convey.utils import DATE_RE, format_date, relative_time
@@ -921,10 +923,12 @@ def _build_pulse_context() -> dict[str, Any]:
         if summary:
             pipeline_status = {**pipeline_status, **summary}
     brain = build_brain_snapshot(datetime.now(timezone.utc), surface="home")
+    backlog_source = load_backlog_source(state.journal_root)
     health_glance = build_health_glance(
         capture_health,
         pipeline_status,
         last_observe_relative,
+        backlog=backlog_source,
         brain=brain,
     )
 

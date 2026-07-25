@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from solstone.convey import backlog_copy
-from solstone.convey.backlog_view import stuck_rows, verdict
+from solstone.convey.backlog_view import stuck_day_rows, stuck_rows, verdict
 
 
 def _assert_single_stuck_reason(reason_code: str, expected: str) -> None:
@@ -166,6 +166,54 @@ def test_stuck_rows_maps_readiness_reasons_and_carries_operator_fields():
             "reason": backlog_copy.BACKLOG_REASON_CORRUPT_RAW,
             "depth": 1,
         },
+    ]
+
+
+def test_stuck_day_rows_excludes_pending_error_rows_without_changing_row_shape():
+    backlog = {
+        "days": [
+            {
+                "day": "20260601",
+                "state": "pending",
+                "error": {"reason_code": "provider_request_rejected"},
+                "reason_code": "provider_request_rejected",
+                "provider": "google",
+            },
+            {
+                "day": "20260602",
+                "state": "stuck",
+                "segments": 1,
+                "reason_code": "provider_request_rejected",
+                "provider": "google",
+            },
+        ],
+        "errors": [],
+    }
+
+    assert stuck_rows(backlog) == [
+        {
+            "day": "20260601",
+            "reason": backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED,
+            "depth": None,
+            "reason_code": "provider_request_rejected",
+            "provider": "google",
+        },
+        {
+            "day": "20260602",
+            "reason": backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED,
+            "depth": 1,
+            "reason_code": "provider_request_rejected",
+            "provider": "google",
+        },
+    ]
+    assert stuck_day_rows(backlog) == [
+        {
+            "day": "20260602",
+            "reason": backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED,
+            "depth": 1,
+            "reason_code": "provider_request_rejected",
+            "provider": "google",
+        }
     ]
 
 

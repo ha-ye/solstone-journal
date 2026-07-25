@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solstone.convey import create_app
+from solstone.convey.backlog_source import BacklogSource
 from solstone.think.day_accumulator import append_record
+from tests.helpers.health_glance import healthy_backlog_source
 
 
 def _patch_minimal_pulse_context(
@@ -66,6 +68,11 @@ def _patch_minimal_pulse_context(
     monkeypatch.setattr(home_routes, "_load_latest_weekly_reflection", lambda: None)
     monkeypatch.setattr(home_routes, "read_steward_health", lambda: None)
     monkeypatch.setattr(home_routes, "read_steward_summary", lambda *a, **k: None)
+    monkeypatch.setattr(
+        home_routes,
+        "load_backlog_source",
+        lambda _journal_root: healthy_backlog_source(),
+    )
     monkeypatch.setattr(
         home_routes,
         "build_brain_snapshot",
@@ -238,6 +245,47 @@ def test_pulse_and_briefing_needs_dedup_by_shared_source(monkeypatch):
     assert len(ctx["needs_you_items"]) == 1
     assert ctx["briefing_needs_shared_count"] == 1
     assert ctx["briefing_needs_deduped"] == []
+
+
+def test_build_pulse_context_routes_loaded_backlog_signal_to_glance(monkeypatch):
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=[],
+        briefing_needs=[],
+    )
+    source = BacklogSource(
+        backlog={
+            "pending_days": 0,
+            "stuck_days": 1,
+            "days": [
+                {
+                    "day": "20260720",
+                    "state": "stuck",
+                    "reason_code": "provider_request_rejected",
+                    "provider": "google",
+                }
+            ],
+            "errors": [],
+            "degraded": False,
+        },
+        validity="valid",
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    )
+    monkeypatch.setattr(
+        home_routes,
+        "load_backlog_source",
+        lambda _journal_root: source,
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert ctx["health_glance"]["verdict"] == "attention"
+    assert ctx["health_glance"]["severity"] == "red"
+    assert any(
+        "the AI provider refused a request sol sent" in issue["text"]
+        and "Gemini" in issue["text"]
+        for issue in ctx["health_glance"]["issues"]
+    )
 
 
 def test_owner_voice_needs_exception_omits_owner_pair_only(monkeypatch):

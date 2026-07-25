@@ -16,6 +16,7 @@ from solstone.apps.home.connections import _kind_words, build_connections_card
 from solstone.think.indexer import edges as edge_index
 from solstone.think.indexer.edges import insert_edges
 from solstone.think.indexer.journal import get_journal_index
+from tests.helpers.health_glance import healthy_backlog_source
 
 EDGE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "edges_journal"
 CONTRACT_KIND_WORDS = {
@@ -264,6 +265,11 @@ def test_build_pulse_context_survives_missing_connections_index(
     monkeypatch.setattr(home_routes, "read_steward_health", lambda: None)
     monkeypatch.setattr(
         home_routes, "read_steward_summary", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        home_routes,
+        "load_backlog_source",
+        lambda _journal_root: healthy_backlog_source(),
     )
     monkeypatch.setattr(
         home_routes,

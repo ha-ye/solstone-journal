@@ -30,6 +30,7 @@ from solstone.apps.home.routes import (
     _summarize_yesterday_processing,
 )
 from solstone.think.brain_health import HEADLINES
+from tests.helpers.health_glance import healthy_backlog_source
 
 FIXTURES = Path(__file__).parent / "fixtures" / "journal"
 
@@ -228,6 +229,10 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
     monkeypatch.setattr(
         "solstone.apps.home.routes.read_steward_summary",
         lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.load_backlog_source",
+        lambda _journal_root: healthy_backlog_source(),
     )
     monkeypatch.setattr(
         "solstone.apps.home.routes.build_brain_snapshot",
@@ -845,6 +850,10 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
         "solstone.apps.home.routes._collect_activities", lambda today: []
     )
     monkeypatch.setattr("solstone.apps.home.routes.read_steward_health", lambda: None)
+    monkeypatch.setattr(
+        "solstone.apps.home.routes.load_backlog_source",
+        lambda _journal_root: healthy_backlog_source(),
+    )
     monkeypatch.setattr(
         "solstone.apps.home.routes.build_brain_snapshot",
         lambda *_a, **_k: _brain_snapshot(),

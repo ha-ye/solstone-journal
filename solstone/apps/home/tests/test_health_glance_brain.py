@@ -21,6 +21,7 @@ from solstone.think.providers.brain_state import (
     finish_brain_refresh,
 )
 from solstone.think.providers.runtime_health import runtime_health_path
+from tests.helpers.health_glance import healthy_backlog_source
 
 NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
 BUNDLED_RUNTIME_FINGERPRINT = "b" * 64
@@ -174,7 +175,13 @@ def test_held_permit_checking_projects_home_status_row(tmp_path: Path) -> None:
     assert permit is not None
     try:
         brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
-        result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+        result = build_health_glance(
+            _active_capture(),
+            None,
+            "5m ago",
+            brain=brain,
+            backlog=healthy_backlog_source(),
+        )
 
         assert brain["state"] == "checking"
         assert brain["headline"] == HEADLINES["checking"]
@@ -196,7 +203,11 @@ def test_checking_freshness_boundary_uses_explicit_now_seam(
             fresh_now, surface="home", journal_path=journal
         )
         fresh_result = build_health_glance(
-            _active_capture(), None, "5m ago", brain=fresh_brain
+            _active_capture(),
+            None,
+            "5m ago",
+            brain=fresh_brain,
+            backlog=healthy_backlog_source(),
         )
         assert fresh_brain["state"] == "checking"
         _assert_checking_row(fresh_result)
@@ -209,7 +220,11 @@ def test_checking_freshness_boundary_uses_explicit_now_seam(
                 expired_now, surface="home", journal_path=journal
             )
             expired_result = build_health_glance(
-                _active_capture(), None, "5m ago", brain=expired_brain
+                _active_capture(),
+                None,
+                "5m ago",
+                brain=expired_brain,
+                backlog=healthy_backlog_source(),
             )
 
             assert expired_brain["state"] == "unknown"
@@ -232,7 +247,9 @@ def test_released_permit_projects_interrupted_unknown_issue(
     permit.release()
 
     brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
-    result = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+    result = build_health_glance(
+        _active_capture(), None, "5m ago", brain=brain, backlog=healthy_backlog_source()
+    )
 
     assert brain["state"] == "unknown"
     assert brain["reason_code"] == "brain_check_interrupted"
@@ -254,7 +271,11 @@ def test_bundled_runtime_transition_projects_home_rows(
     _write_runtime_health_record(journal, phase="starting")
     progressing_brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
     progressing_result = build_health_glance(
-        _active_capture(), None, "5m ago", brain=progressing_brain
+        _active_capture(),
+        None,
+        "5m ago",
+        brain=progressing_brain,
+        backlog=healthy_backlog_source(),
     )
 
     assert progressing_brain["state"] == "blocked"
@@ -266,7 +287,11 @@ def test_bundled_runtime_transition_projects_home_rows(
     _write_runtime_health_record(journal, phase="backoff")
     blocked_brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
     blocked_result = build_health_glance(
-        _active_capture(), None, "5m ago", brain=blocked_brain
+        _active_capture(),
+        None,
+        "5m ago",
+        brain=blocked_brain,
+        backlog=healthy_backlog_source(),
     )
 
     assert blocked_brain["state"] == "blocked"
@@ -287,12 +312,26 @@ def test_capture_variants_against_real_checking_projection(tmp_path: Path) -> No
     try:
         brain = build_brain_snapshot(NOW, surface="home", journal_path=journal)
 
-        active = build_health_glance(_active_capture(), None, "5m ago", brain=brain)
+        active = build_health_glance(
+            _active_capture(),
+            None,
+            "5m ago",
+            brain=brain,
+            backlog=healthy_backlog_source(),
+        )
         no_observers = build_health_glance(
-            _no_observers_capture(), None, None, brain=brain
+            _no_observers_capture(),
+            None,
+            None,
+            brain=brain,
+            backlog=healthy_backlog_source(),
         )
         unavailable = build_health_glance(
-            _unavailable_capture(), None, None, brain=brain
+            _unavailable_capture(),
+            None,
+            None,
+            brain=brain,
+            backlog=healthy_backlog_source(),
         )
 
         assert brain["state"] == "checking"

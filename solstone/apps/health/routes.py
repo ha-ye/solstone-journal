@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import json
 import logging
-import os
 import re
 import socket
 from datetime import datetime, timezone
@@ -12,6 +10,7 @@ from pathlib import Path
 from flask import Blueprint, Response, current_app, jsonify, request
 
 from solstone.convey import backlog_copy, state
+from solstone.convey.backlog_source import load_backlog_source
 from solstone.convey.backlog_view import stuck_rows, verdict
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
@@ -59,17 +58,7 @@ OBSERVER_RESTART_SERVICES = {"sense"}
 
 
 def _load_backlog() -> dict | None:
-    stats_path = os.path.join(state.journal_root, "stats.json")
-    if not os.path.isfile(stats_path):
-        return None
-    try:
-        with open(stats_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        logger.exception("Failed to read backlog from stats.json")
-        return None
-    backlog = data.get("backlog")
-    return backlog if isinstance(backlog, dict) else None
+    return load_backlog_source(state.journal_root).backlog
 
 
 def _safe_brain_snapshot() -> dict:
