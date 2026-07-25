@@ -232,14 +232,6 @@ exclude = [".venv", "scratch", "logs", "build", "dist"]
 select = ["F", "E", "W", "I"]
 ignore = ["E501", "E203", "E402"]
 
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-exclude = ["tests", ".venv", "scratch", "logs", "build", "dist"]
-ignore_missing_imports = true
-ignore_errors = true
-
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
@@ -265,7 +257,6 @@ filterwarnings = [
 [dependency-groups]
 dev = [
     "freezegun",
-    "mypy",
     "onnx",
     "pytest",
     "pytest-asyncio",

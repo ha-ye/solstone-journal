@@ -377,7 +377,6 @@ TEST_ENV = SOLSTONE_JOURNAL=tests/fixtures/journal
 # Venv tool shortcuts
 PYTEST := $(VENV_BIN)/pytest
 RUFF := $(VENV_BIN)/ruff
-MYPY := $(VENV_BIN)/mypy
 
 # Keep the default full-suite fan-out LOW: this box runs many concurrent
 # sessions/lodes each invoking `make test`, and their worker pools multiply —
@@ -440,10 +439,7 @@ format: .installed
 	@$(RUFF) check --fix .
 	@echo ""
 	@echo "Checking for remaining issues..."
-	@RUFF_OK=true; MYPY_OK=true; \
-	$(RUFF) check . || RUFF_OK=false; \
-	$(MYPY) . || MYPY_OK=false; \
-	if $$RUFF_OK && $$MYPY_OK; then \
+	@if $(RUFF) check .; then \
 		echo ""; \
 		echo "All clean!"; \
 	else \
@@ -455,7 +451,7 @@ format: .installed
 clean:
 	@echo "Cleaning build artifacts and cache files..."
 	rm -rf build/ dist/ *.egg-info/
-	rm -rf .pytest_cache/ .coverage .mypy_cache/
+	rm -rf .pytest_cache/ .coverage
 	rm -rf journal/.agents/ journal/.claude/
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
@@ -619,9 +615,6 @@ install-checks: .installed
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
-	@echo "=== Running mypy ==="
-	@$(MYPY) . || true
-	@echo ""
 
 ci: install-checks
 	@echo "=== Running tests ==="
@@ -668,7 +661,7 @@ versions: .installed
 	$(PYTHON) --version
 	@echo ""
 	@echo "=== Key package versions ==="
-	@$(UV) pip list | grep -E "^(pytest|ruff|mypy|Flask|numpy|Pillow|openai|anthropic)" || true
+	@$(UV) pip list | grep -E "^(pytest|ruff|Flask|numpy|Pillow|openai|anthropic)" || true
 
 # Install pre-commit hooks (if using pre-commit)
 pre-commit: .installed

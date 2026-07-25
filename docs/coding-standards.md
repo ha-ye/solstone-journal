@@ -3,7 +3,6 @@
 ## Language & Tools
 
 - **Ruff** (`make format`) - Formatting, linting, and import sorting
-- **mypy** (`make check`) - Type checking
 - Configuration in `pyproject.toml`
 
 ## Naming Conventions

@@ -398,7 +398,7 @@ Generic software principles (DRY, KISS, YAGNI, single responsibility, small focu
 - **SPDX header** as above — mandatory on source code files.
 - **Naming:** modules / functions / variables `snake_case`; classes `PascalCase`; constants `UPPER_SNAKE_CASE`; private members `_leading_underscore`. Full table in `docs/coding-standards.md`.
 - **Imports:** prefer absolute (`from solstone.think.utils import get_journal`), grouped stdlib → third-party → local, one per line.
-- **Type hints** on function signatures; `mypy` via `make check`.
+- **Type hints** on function signatures.
 - **Dependencies:** managed by [uv](https://docs.astral.sh/uv/). `pyproject.toml` is authoritative; `uv.lock` is committed; `make install` syncs; `make update` refreshes.
 - **Python 3.12+.**
 
@@ -429,7 +429,7 @@ Bare links don't motivate clicking. Each entry below says when you actually need
 | `docs/testing.md` | Test structure, fixtures, debugging test isolation |
 | `docs/environment.md` | Journal path resolution, managed-wrapper behavior, service install details, and `SOLSTONE_JOURNAL` rules |
 | `docs/CHANNEL_ADAPTERS.md` | Release channel adapter config, scrub-gate expectations, and operator-safe placeholders |
-| `docs/coding-standards.md` | Full naming conventions, ruff / mypy config, dep-management details — reference for everything not promoted into this file |
+| `docs/coding-standards.md` | Full naming conventions, ruff config, dep-management details — reference for everything not promoted into this file |
 | `docs/project-structure.md` | Canonical directory layout; resolving "where does this file go" debates |
 | `docs/DOCTOR.md` | Diagnostics and debugging a running system |
 | `docs/SCREEN_CATEGORIES.md` | Screen-understanding classifier taxonomy (observe side) |
