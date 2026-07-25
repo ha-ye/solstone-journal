@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-STATUS_PANE_JS = Path(__file__).resolve().parents[1] / "static" / "status_pane.js"
+STATUS_PANE_JS = (
+    Path(__file__).resolve().parents[1]
+    / "solstone"
+    / "convey"
+    / "static"
+    / "status_pane.js"
+)
 
 
 def test_render_capture_section_device_copy(tmp_path):

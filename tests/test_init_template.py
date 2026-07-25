@@ -9,7 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
+INIT_HTML = (
+    Path(__file__).resolve().parents[1]
+    / "solstone"
+    / "convey"
+    / "templates"
+    / "init.html"
+)
 BRAND_CANON_RE = re.compile(
     r"\b("
     r"sign\s+in|signed\s+in|signing\s+in|log\s+in|logged\s+in|"
@@ -184,3 +190,22 @@ def test_finalize_preserves_existing_provider_and_scout_config(
     saved = _read_config(env.journal)
     assert json.dumps(saved["env"], sort_keys=True) == before_env
     assert json.dumps(saved["services"]["scout"], sort_keys=True) == before_scout
+
+
+# Folded in from the retired solstone/convey/tests/test_init_html.py (2026-07-24).
+# Its provider-key / scout-deep-link assertions duplicated
+# test_init_provider_section_is_basics_only above; only these two were unique.
+
+
+def test_result_display_ms_constant_present():
+    text = INIT_HTML.read_text(encoding="utf-8")
+
+    assert text.count("RESULT_DISPLAY_MS = 1200") == 1
+
+
+def test_wizard_self_contained():
+    text = INIT_HTML.read_text(encoding="utf-8")
+
+    assert text.count('<link rel="stylesheet"') == 1
+    assert '<link rel="stylesheet" href="/static/tokens.css">' in text
+    assert text.count("<script src=") == 2

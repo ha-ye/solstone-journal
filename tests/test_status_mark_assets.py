@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 DEGRADED_SVG = ROOT / "solstone" / "convey" / "static" / "sol-status" / "degraded.svg"
 WEBSOCKET_JS = ROOT / "solstone" / "convey" / "static" / "websocket.js"
 

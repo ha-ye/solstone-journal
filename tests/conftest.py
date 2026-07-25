@@ -464,3 +464,77 @@ def mock_callosum(monkeypatch):
     monkeypatch.setattr(
         "solstone.think.supervisor.CallosumConnection", MockCallosumConnection
     )
+
+
+# Convey fixtures, folded in from the retired solstone/convey/tests/conftest.py
+# (2026-07-24) when convey's dark test modules moved into this directory.
+@pytest.fixture
+def convey_env(tmp_path, monkeypatch):
+    def _create():
+        journal = tmp_path / "journal"
+        journal.mkdir()
+
+        config_dir = journal / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / "journal.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "setup": {"completed_at": 1700000000000},
+                },
+                indent=2,
+            )
+        )
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+        from solstone.convey import create_app
+
+        app = create_app(journal=str(journal))
+        client = app.test_client()
+
+        class Env:
+            def __init__(self):
+                self.journal = journal
+                self.client = client
+                self.app = app
+
+        return Env()
+
+    return _create
+
+
+@pytest.fixture
+def convey_env_setup_pending(tmp_path, monkeypatch):
+    def _create():
+        journal = tmp_path / "journal"
+        journal.mkdir()
+
+        config_dir = journal / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / "journal.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "setup": {},
+                },
+                indent=2,
+            )
+        )
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+        from solstone.convey import create_app
+
+        app = create_app(journal=str(journal))
+        client = app.test_client()
+
+        class Env:
+            def __init__(self):
+                self.journal = journal
+                self.client = client
+                self.app = app
+
+        return Env()
+
+    return _create

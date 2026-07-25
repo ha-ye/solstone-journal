@@ -199,29 +199,10 @@ def test_callosum_sse_multi_client_fanout(convey_env):
         first.close()
 
 
-def test_slow_sse_subscriber_is_dropped_without_blocking_healthy_subscriber():
-    slow = convey_bridge.register_sse_subscriber("convey-ui")
-    healthy = convey_bridge.register_sse_subscriber("convey-ui")
-    received: list[dict] = []
-
-    start = time.perf_counter()
-    for i in range(convey_bridge._SSE_QUEUE_MAXSIZE + 1):
-        convey_bridge._broadcast_callosum_event(
-            {"tract": "test", "event": "ping", "ts": i}
-        )
-        received.append(json.loads(healthy.queue.get_nowait()))
-    elapsed = time.perf_counter() - start
-
-    assert slow.dropped.is_set()
-    assert slow.drop_reason == "overflow"
-    assert slow not in convey_bridge._SSE_SUBSCRIBERS_BY_KEY["convey-ui"]
-    assert len(received) == convey_bridge._SSE_QUEUE_MAXSIZE + 1
-    assert [message["ts"] for message in received] == list(
-        range(convey_bridge._SSE_QUEUE_MAXSIZE + 1)
-    )
-    assert elapsed < 0.5
-
-    convey_bridge.unregister_sse_subscriber(healthy)
+# test_slow_sse_subscriber_is_dropped_without_blocking_healthy_subscriber was
+# dropped here 2026-07-24: duplicated verbatim by
+# solstone/apps/observer/tests/test_callosum_sse.py, which CI already collects,
+# and it carried this module's only wall-clock assertion (elapsed < 0.5).
 
 
 def test_callosum_sse_dropped_subscriber_breaks_stream(convey_env):
