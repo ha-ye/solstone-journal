@@ -84,7 +84,7 @@ _ENDPOINT_CONTEXT_WINDOW_MESSAGE = (
     "The configured endpoint rejected the request: prompt and completion exceed "
     "the served context window."
 )
-_ENDPOINT_MIN_COMPLETION_TOKENS = 256
+_MIN_COMPLETION_TOKENS = 256
 _ENDPOINT_RECLAMP_SLACK_TOKENS = 16
 _ENDPOINT_COMPLETION_ANCHOR = "tokens for the completion"
 _ENDPOINT_LIMIT_RE = re.compile(r"maximum context length of\s+(?P<limit>\d+)\s+tokens")
@@ -551,7 +551,7 @@ def _endpoint_overflow_decision(
         if limit is not None and input_match is not None:
             reported_input = int(input_match.group("input"))
             new_max = limit - reported_input - _ENDPOINT_RECLAMP_SLACK_TOKENS
-            if attempt == 0 and new_max >= _ENDPOINT_MIN_COMPLETION_TOKENS:
+            if attempt == 0 and new_max >= _MIN_COMPLETION_TOKENS:
                 return _EndpointOverflowDecision("retry", new_max)
             if attempt == 0:
                 return _EndpointOverflowDecision("budget")
@@ -571,30 +571,73 @@ def _prepare_bundled_request(
     max_output_tokens: int,
     json_output: bool,
     json_schema: dict | None,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, int]]:
     from solstone.think.providers import local_budget
 
     def counter(text: str) -> int:
         return local_budget.count_tokens(text, server.base_url)
+
+    resolution = local_budget.resolve_context_window()
+    window = resolution.window_tokens
+    image_tokens = local_budget._ESTIMATED_IMAGE_TOKENS * _count_image_parts(contents)
+    effective_window = window - image_tokens
+    if effective_window < local_budget._SAFETY_MARGIN_TOKENS + _MIN_COMPLETION_TOKENS:
+        raise ContextBudgetExceeded(
+            "Local request image content exceeds the local model context window."
+        )
 
     fitted_contents, input_budget = local_budget.fit_contents(
         contents,
         system_instruction,
         max_output_tokens,
         count=counter,
+        window=effective_window,
     )
     messages = _build_messages(fitted_contents, system_instruction)
+    estimated_prompt_tokens = counter(_serialized_message_text(messages))
+    room = (
+        window
+        - estimated_prompt_tokens
+        - image_tokens
+        - local_budget._SAFETY_MARGIN_TOKENS
+    )
+    if room < _MIN_COMPLETION_TOKENS:
+        raise ContextBudgetExceeded(
+            "Local request prompt and image content exceed the local model "
+            "context window."
+        )
+    clamped_max_tokens = min(max_output_tokens, room)
+    request_budget = {
+        "window": window,
+        "slots": resolution.slots,
+        "estimated_prompt_tokens": estimated_prompt_tokens,
+        "image_tokens": image_tokens,
+        "clamped_max_tokens": clamped_max_tokens,
+        "requested_max_output_tokens": max_output_tokens,
+    }
+    if clamped_max_tokens < max_output_tokens:
+        LOG.info(
+            "local bundled max_tokens clamped requested=%d clamped=%d "
+            "window=%d slots=%d estimated_prompt_tokens=%d image_tokens=%d",
+            max_output_tokens,
+            clamped_max_tokens,
+            window,
+            resolution.slots,
+            estimated_prompt_tokens,
+            image_tokens,
+        )
     return (
         _build_request_body(
             server.served_model_id,
             messages,
             temperature,
-            max_output_tokens,
+            clamped_max_tokens,
             json_output,
             json_schema,
             True,
         ),
         input_budget,
+        request_budget,
     )
 
 
@@ -626,8 +669,10 @@ def _prepare_endpoint_request(
             ),
             None,
             {
-                "served_window": None,
+                "window": None,
+                "slots": endpoint.parallel_slots,
                 "estimated_prompt_tokens": None,
+                "image_tokens": None,
                 "clamped_max_tokens": max_output_tokens,
                 "requested_max_output_tokens": max_output_tokens,
             },
@@ -643,9 +688,17 @@ def _prepare_endpoint_request(
     messages = _build_messages(fitted_contents, system_instruction)
     estimated_prompt_tokens = local_budget.estimate_tokens(
         _serialized_message_text(messages)
-    ) + local_budget._ESTIMATED_IMAGE_TOKENS * _count_image_parts(fitted_contents)
-    room = served_window - estimated_prompt_tokens - local_budget._SAFETY_MARGIN_TOKENS
-    if room < _ENDPOINT_MIN_COMPLETION_TOKENS:
+    )
+    image_tokens = local_budget._ESTIMATED_IMAGE_TOKENS * _count_image_parts(
+        fitted_contents
+    )
+    room = (
+        served_window
+        - estimated_prompt_tokens
+        - image_tokens
+        - local_budget._SAFETY_MARGIN_TOKENS
+    )
+    if room < _MIN_COMPLETION_TOKENS:
         raise ContextBudgetExceeded(
             "Local endpoint request prompt content exceeds the served context window."
         )
@@ -663,8 +716,10 @@ def _prepare_endpoint_request(
         ),
         input_budget,
         {
-            "served_window": served_window,
+            "window": served_window,
+            "slots": endpoint.parallel_slots,
             "estimated_prompt_tokens": estimated_prompt_tokens,
+            "image_tokens": image_tokens,
             "clamped_max_tokens": clamped_max_tokens,
             "requested_max_output_tokens": max_output_tokens,
         },
@@ -758,7 +813,7 @@ def run_generate(
         timeout = timeout_s or _DEFAULT_TIMEOUT
         server = local_server.connect()
         capacity = local_server.read_server_capacity()
-        body, input_budget = _prepare_bundled_request(
+        body, input_budget, request_budget = _prepare_bundled_request(
             server=server,
             contents=contents,
             system_instruction=system_instruction,
@@ -805,6 +860,7 @@ def run_generate(
             result["inference"] = telemetry
             if input_budget is not None:
                 result["input_budget"] = input_budget
+            result["request_budget"] = request_budget
             return result
         except BaseException as exc:
             if isinstance(exc, KeyboardInterrupt | SystemExit):
@@ -841,7 +897,7 @@ def run_generate(
             )
             raise
 
-    body, input_budget, endpoint_budget = _prepare_endpoint_request_with_resolution(
+    body, input_budget, request_budget = _prepare_endpoint_request_with_resolution(
         endpoint=endpoint,
         contents=contents,
         system_instruction=system_instruction,
@@ -901,7 +957,7 @@ def run_generate(
                         raise
                     decision = _endpoint_overflow_decision(
                         response.text,
-                        endpoint_budget.get("served_window"),
+                        request_budget.get("window"),
                         attempt,
                     )
                     if decision.kind == "retry" and decision.max_tokens is not None:
@@ -909,8 +965,8 @@ def run_generate(
                             **post_kwargs["json"],
                             "max_tokens": decision.max_tokens,
                         }
-                        endpoint_budget = {
-                            **endpoint_budget,
+                        request_budget = {
+                            **request_budget,
                             "clamped_max_tokens": decision.max_tokens,
                         }
                         attempt += 1
@@ -926,8 +982,8 @@ def run_generate(
             result = _parse_response(response.json())
             if input_budget is not None:
                 result["input_budget"] = input_budget
-            if endpoint_budget.get("served_window") is not None:
-                result["endpoint_budget"] = endpoint_budget
+            if request_budget.get("window") is not None:
+                result["request_budget"] = request_budget
             return result
     except LocalAdmissionTimeout:
         raise
@@ -969,7 +1025,7 @@ async def run_agenerate(
             confidential_egress_base_url,
         )
 
-        body, input_budget, endpoint_budget = await asyncio.to_thread(
+        body, input_budget, request_budget = await asyncio.to_thread(
             _prepare_endpoint_request_with_resolution,
             endpoint=endpoint,
             contents=contents,
@@ -1022,7 +1078,7 @@ async def run_agenerate(
                                 raise
                             decision = _endpoint_overflow_decision(
                                 response.text,
-                                endpoint_budget.get("served_window"),
+                                request_budget.get("window"),
                                 attempt,
                             )
                             if (
@@ -1033,8 +1089,8 @@ async def run_agenerate(
                                     **post_kwargs["json"],
                                     "max_tokens": decision.max_tokens,
                                 }
-                                endpoint_budget = {
-                                    **endpoint_budget,
+                                request_budget = {
+                                    **request_budget,
                                     "clamped_max_tokens": decision.max_tokens,
                                 }
                                 attempt += 1
@@ -1050,8 +1106,8 @@ async def run_agenerate(
                 result = _parse_response(response.json())
                 if input_budget is not None:
                     result["input_budget"] = input_budget
-                if endpoint_budget.get("served_window") is not None:
-                    result["endpoint_budget"] = endpoint_budget
+                if request_budget.get("window") is not None:
+                    result["request_budget"] = request_budget
                 return result
         except asyncio.CancelledError:
             raise
@@ -1074,7 +1130,7 @@ async def run_agenerate(
     timeout = timeout_s or _DEFAULT_TIMEOUT
     server = local_server.connect()
     capacity = local_server.read_server_capacity()
-    body, input_budget = await asyncio.to_thread(
+    body, input_budget, request_budget = await asyncio.to_thread(
         _prepare_bundled_request,
         server=server,
         contents=contents,
@@ -1120,6 +1176,7 @@ async def run_agenerate(
         result["inference"] = telemetry
         if input_budget is not None:
             result["input_budget"] = input_budget
+        result["request_budget"] = request_budget
         return result
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt | SystemExit):

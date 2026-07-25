@@ -1086,21 +1086,498 @@ def _bundled_endpoint():
     return LocalEndpoint("", "", None, is_bundled=True)
 
 
-def _patch_bundled_server(monkeypatch):
+def _patch_bundled_server(
+    monkeypatch,
+    *,
+    window: int | None = None,
+    slots: int | None = None,
+    profile: str | None = None,
+    served_model_id: str = LOCAL_MODEL,
+):
+    from solstone.think import utils
     from solstone.think.providers import local_server
+
+    window = local_server.LOCAL_MIN_CONTEXT_TOKENS if window is None else window
+    if slots is None:
+        slots = local_server._slots_from_launched_tier(window) or 1
+    if profile is None:
+        profile = "capable" if slots == 2 else "floor"
+    local_server.reset_parallel_slots_cache()
 
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
         lambda: SimpleNamespace(
             port=4321,
             base_url="http://127.0.0.1:4321",
-            served_model_id=LOCAL_MODEL,
+            served_model_id=served_model_id,
         ),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.read_server_capacity",
-        lambda: local_server.ServerCapacity(1, "test", "floor"),
+        lambda: local_server.ServerCapacity(slots, "test", profile),
     )
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 4321)
+    monkeypatch.setattr(
+        local_server,
+        "read_server_context_props",
+        lambda port: local_server.ServerContextProps(
+            n_ctx=window * slots,
+            total_slots=slots,
+        ),
+    )
+
+
+def _launched_context_tokens(plan) -> int:
+    from solstone.think import supervisor
+
+    cmd = supervisor._build_local_llama_cmd(plan, 4321)
+    return int(cmd[cmd.index("-c") + 1])
+
+
+def _budget_count_tokens(text: str, _base_url: str | None = None) -> int:
+    if text.startswith("b'budget-image"):
+        return 0
+    return len(text)
+
+
+def _block_that_trims_to_budget(budget_tokens: int) -> str:
+    from solstone.think.providers import local_budget
+
+    marker_tokens = len(local_budget.TRUNCATION_MARKER + "\n\n")
+    keep_prefix = "## keep\n"
+    keep_tokens = budget_tokens - marker_tokens
+    assert keep_tokens > len(keep_prefix)
+    dropped = "## drop\n" + ("o" * budget_tokens) + "\n"
+    kept = keep_prefix + ("k" * (keep_tokens - len(keep_prefix)))
+    return dropped + kept
+
+
+def _run_bundled_generate_capture(
+    monkeypatch,
+    *,
+    contents,
+    window: int,
+    slots: int,
+    max_output_tokens: int,
+    profile: str | None = None,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(
+        monkeypatch,
+        window=window,
+        slots=slots,
+        profile=profile,
+    )
+
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", _budget_count_tokens)
+    monkeypatch.setattr(
+        provider,
+        "encode_image_part",
+        lambda _part: ("image/png", "encoded"),
+    )
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        del timeout
+        if str(url).endswith("/v1/chat/completions"):
+            captured["body"] = json
+            return _ChatResponse("ok")
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate(
+        contents,
+        model=LOCAL_MODEL,
+        max_output_tokens=max_output_tokens,
+    )
+    return result, captured, provider
+
+
+def test_run_generate_bundled_above_quarter_bounds_footprint(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    window = 32768
+    _patch_bundled_server(monkeypatch, window=window, slots=2, profile="capable")
+
+    from solstone.think.providers import local_budget
+
+    max_output_tokens = 16384
+    input_budget = local_budget.compute_input_budget(max_output_tokens, window)
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        del timeout
+        if str(url).endswith("/v1/chat/completions"):
+            captured["body"] = json
+            return _ChatResponse("ok")
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate(
+        "x" * input_budget,
+        model=LOCAL_MODEL,
+        max_output_tokens=max_output_tokens,
+    )
+    request_budget = result["request_budget"]
+    completion = request_budget["clamped_max_tokens"]
+
+    assert captured["body"]["max_tokens"] == completion
+    assert input_budget + completion + local_budget._SAFETY_MARGIN_TOKENS <= window
+
+
+def test_run_generate_bundled_ac3_capable_49152_bounds_launched_pool(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+
+    from solstone.think import supervisor
+    from solstone.think.providers import local_budget, local_server
+
+    tier = local_server._CAPABLE_TIER
+    _patch_bundled_server(
+        monkeypatch,
+        window=tier.context_tokens,
+        slots=tier.parallel_slots,
+        profile=tier.name,
+    )
+    plan = supervisor.LocalServerLaunchPlan(
+        backend="vulkan",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        binary_path=Path("/tmp/llama-server"),
+        model_path=Path("/tmp/model.gguf"),
+        context_tokens=tier.context_tokens,
+        parallel_slots=tier.parallel_slots,
+        prompt_cache_mib=tier.prompt_cache_mib,
+    )
+    launched_c = _launched_context_tokens(plan)
+    max_output_tokens = 49152
+    input_budget = local_budget.compute_input_budget(
+        max_output_tokens,
+        tier.context_tokens,
+    )
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        del timeout
+        if str(url).endswith("/v1/chat/completions"):
+            captured["body"] = json
+            return _ChatResponse("ok")
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate(
+        "x" * input_budget,
+        model=LOCAL_MODEL,
+        max_output_tokens=max_output_tokens,
+    )
+    request_budget = result["request_budget"]
+    completion = request_budget["clamped_max_tokens"]
+
+    assert captured["body"]["max_tokens"] == completion
+    assert (
+        request_budget["estimated_prompt_tokens"]
+        + request_budget["image_tokens"]
+        + completion
+    ) * request_budget["slots"] <= launched_c
+
+
+@pytest.mark.parametrize(
+    ("max_output_tokens", "expected_completion"),
+    [(16384, 8192), (4096, 4096)],
+)
+def test_run_generate_bundled_bounds_above_and_below_quarter(
+    monkeypatch,
+    max_output_tokens,
+    expected_completion,
+):
+    from solstone.think.providers import local_budget, local_server
+
+    window = local_server._CAPABLE_TIER.context_tokens
+    prompt_tokens = local_budget.compute_input_budget(max_output_tokens, window)
+
+    result, captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents="x" * prompt_tokens,
+        window=window,
+        slots=local_server._CAPABLE_TIER.parallel_slots,
+        max_output_tokens=max_output_tokens,
+        profile=local_server._CAPABLE_TIER.name,
+    )
+
+    request_budget = result["request_budget"]
+    true_room = (
+        window
+        - request_budget["estimated_prompt_tokens"]
+        - request_budget["image_tokens"]
+        - local_budget._SAFETY_MARGIN_TOKENS
+    )
+    assert request_budget["clamped_max_tokens"] == expected_completion
+    assert request_budget["clamped_max_tokens"] == true_room
+    assert captured["body"]["max_tokens"] == expected_completion
+
+
+def test_run_generate_bundled_clamp_is_prompt_derived_and_ample_room_unclamped(
+    monkeypatch,
+):
+    from solstone.think.providers import local_budget, local_server
+
+    tier = local_server._CAPABLE_TIER
+    requested = 16384
+    small, _small_captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents="short",
+        window=tier.context_tokens,
+        slots=tier.parallel_slots,
+        max_output_tokens=requested,
+        profile=tier.name,
+    )
+    large_prompt = "x" * local_budget.compute_input_budget(
+        requested, tier.context_tokens
+    )
+    large, _large_captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents=large_prompt,
+        window=tier.context_tokens,
+        slots=tier.parallel_slots,
+        max_output_tokens=requested,
+        profile=tier.name,
+    )
+
+    assert small["request_budget"]["clamped_max_tokens"] == requested
+    assert large["request_budget"]["clamped_max_tokens"] != requested
+    assert (
+        small["request_budget"]["clamped_max_tokens"]
+        != large["request_budget"]["clamped_max_tokens"]
+    )
+
+
+def test_run_generate_bundled_role_dict_chat_payload_is_bounded_not_trimmed(
+    monkeypatch,
+):
+    from solstone.think.providers import local_budget, local_server
+
+    window = local_server._CAPABLE_TIER.context_tokens
+    prompt = "x" * 30000
+    result, captured, provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents=[{"role": "user", "content": prompt}],
+        window=window,
+        slots=local_server._CAPABLE_TIER.parallel_slots,
+        max_output_tokens=16384,
+        profile=local_server._CAPABLE_TIER.name,
+    )
+
+    serialized = provider_mod._serialized_message_text(captured["body"]["messages"])
+    assert serialized == prompt
+    assert local_budget.TRUNCATION_MARKER not in serialized
+    assert "input_budget" not in result
+    assert (
+        captured["body"]["max_tokens"]
+        + len(serialized)
+        + local_budget._SAFETY_MARGIN_TOKENS
+        <= window
+    )
+
+
+def test_run_generate_bundled_role_dict_impossible_raises_context_budget(
+    monkeypatch,
+):
+    from solstone.think.providers import local_server
+
+    with pytest.raises(Exception) as exc:
+        _run_bundled_generate_capture(
+            monkeypatch,
+            contents=[{"role": "user", "content": "x" * 32600}],
+            window=local_server._CAPABLE_TIER.context_tokens,
+            slots=local_server._CAPABLE_TIER.parallel_slots,
+            max_output_tokens=4096,
+            profile=local_server._CAPABLE_TIER.name,
+        )
+
+    assert getattr(exc.value, "reason_code", None) == "context_budget_exceeded"
+
+
+@pytest.mark.parametrize(("image_count", "expected_image_tokens"), [(0, 0), (1, 2500)])
+def test_run_generate_bundled_accounts_image_tokens(
+    monkeypatch,
+    image_count,
+    expected_image_tokens,
+):
+    from solstone.think.providers import local_budget, local_server
+
+    images = [f"budget-image-{idx}".encode("ascii") for idx in range(image_count)]
+    contents = "hello" if image_count == 0 else ["hello", *images]
+
+    result, captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents=contents,
+        window=local_server._CAPABLE_TIER.context_tokens,
+        slots=local_server._CAPABLE_TIER.parallel_slots,
+        max_output_tokens=49152,
+        profile=local_server._CAPABLE_TIER.name,
+    )
+
+    request_budget = result["request_budget"]
+    true_room = (
+        request_budget["window"]
+        - request_budget["estimated_prompt_tokens"]
+        - expected_image_tokens
+        - local_budget._SAFETY_MARGIN_TOKENS
+    )
+    assert request_budget["image_tokens"] == expected_image_tokens
+    assert request_budget["clamped_max_tokens"] == min(49152, true_room)
+    assert captured["body"]["max_tokens"] == request_budget["clamped_max_tokens"]
+
+
+def test_run_generate_bundled_floor_two_images_trims_and_sends(monkeypatch):
+    from solstone.think.providers import local_budget, local_server
+
+    tier = local_server._FLOOR_TIER
+    requested = 49152
+    image_tokens = local_budget._ESTIMATED_IMAGE_TOKENS * 2
+    effective_window = tier.context_tokens - image_tokens
+    input_budget = local_budget.compute_input_budget(requested, effective_window)
+    images = [b"budget-image-0", b"budget-image-1"]
+
+    result, captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents=[_block_that_trims_to_budget(input_budget), *images],
+        window=tier.context_tokens,
+        slots=tier.parallel_slots,
+        max_output_tokens=requested,
+        profile=tier.name,
+    )
+
+    request_budget = result["request_budget"]
+    text_part = captured["body"]["messages"][0]["content"][0]["text"]
+    assert local_budget.TRUNCATION_MARKER in text_part
+    assert result["input_budget"]["budget_tokens"] == 8282
+    assert request_budget["estimated_prompt_tokens"] == 8282
+    assert request_budget["image_tokens"] == 5000
+    assert request_budget["clamped_max_tokens"] == 2846
+    assert captured["body"]["max_tokens"] == 2846
+
+
+def test_run_generate_bundled_request_budget_and_clamp_log(caplog, monkeypatch):
+    from solstone.think.providers import local_budget, local_server
+
+    tier = local_server._CAPABLE_TIER
+    requested = 49152
+    input_budget = local_budget.compute_input_budget(requested, tier.context_tokens)
+
+    with caplog.at_level(logging.INFO):
+        result, _captured, _provider_mod = _run_bundled_generate_capture(
+            monkeypatch,
+            contents="x" * input_budget,
+            window=tier.context_tokens,
+            slots=tier.parallel_slots,
+            max_output_tokens=requested,
+            profile=tier.name,
+        )
+
+    request_budget = result["request_budget"]
+    assert request_budget == {
+        "window": tier.context_tokens,
+        "slots": tier.parallel_slots,
+        "estimated_prompt_tokens": input_budget,
+        "image_tokens": 0,
+        "clamped_max_tokens": 8192,
+        "requested_max_output_tokens": requested,
+    }
+    assert any(
+        "local bundled max_tokens clamped" in record.message
+        for record in caplog.records
+    )
+
+
+def test_run_generate_bundled_image_content_impossible_raises_before_fit(
+    monkeypatch,
+):
+    from solstone.think.providers import local_server
+
+    images = [f"budget-image-{idx}".encode("ascii") for idx in range(7)]
+    with pytest.raises(Exception) as exc:
+        _run_bundled_generate_capture(
+            monkeypatch,
+            contents=["prompt", *images],
+            window=local_server._FLOOR_TIER.context_tokens,
+            slots=local_server._FLOOR_TIER.parallel_slots,
+            max_output_tokens=49152,
+            profile=local_server._FLOOR_TIER.name,
+        )
+
+    assert getattr(exc.value, "reason_code", None) == "context_budget_exceeded"
+    assert "image content" in str(exc.value)
+    assert "context window" in str(exc.value)
+
+
+@pytest.mark.parametrize("image_count", [0, 1])
+@pytest.mark.parametrize("tier_name", ["floor", "capable"])
+def test_run_generate_bundled_ac3_fitted_prompt_bounds_launched_pool(
+    monkeypatch,
+    tier_name,
+    image_count,
+):
+    from solstone.think import supervisor
+    from solstone.think.providers import local_budget, local_server
+
+    tier = (
+        local_server._FLOOR_TIER if tier_name == "floor" else local_server._CAPABLE_TIER
+    )
+    requested = 49152
+    images = [f"budget-image-{idx}".encode("ascii") for idx in range(image_count)]
+    image_tokens = local_budget._ESTIMATED_IMAGE_TOKENS * image_count
+    input_budget = local_budget.compute_input_budget(
+        requested,
+        tier.context_tokens - image_tokens,
+    )
+    block = _block_that_trims_to_budget(input_budget)
+    contents = block if image_count == 0 else [block, *images]
+    plan = supervisor.LocalServerLaunchPlan(
+        backend="vulkan",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        binary_path=Path("/tmp/llama-server"),
+        model_path=Path("/tmp/model.gguf"),
+        context_tokens=tier.context_tokens,
+        parallel_slots=tier.parallel_slots,
+        prompt_cache_mib=tier.prompt_cache_mib,
+    )
+    launched_c = _launched_context_tokens(plan)
+
+    result, _captured, _provider_mod = _run_bundled_generate_capture(
+        monkeypatch,
+        contents=contents,
+        window=tier.context_tokens,
+        slots=tier.parallel_slots,
+        max_output_tokens=requested,
+        profile=tier.name,
+    )
+
+    resolved = local_budget.resolve_context_window()
+    request_budget = result["request_budget"]
+    assert resolved.window_tokens == tier.context_tokens
+    assert request_budget["window"] == resolved.window_tokens
+    assert request_budget["estimated_prompt_tokens"] == input_budget
+    assert (
+        request_budget["estimated_prompt_tokens"]
+        + request_budget["image_tokens"]
+        + request_budget["clamped_max_tokens"]
+    ) * request_budget["slots"] <= launched_c
 
 
 def test_run_generate_endpoint_clamps_large_default_budget_against_served_window(
@@ -1197,8 +1674,30 @@ def test_run_generate_endpoint_known_window_truncates_fittable_input(monkeypatch
     assert local_budget.TRUNCATION_MARKER in posted_content
     assert result["input_budget"]["clipped"] is True
     assert result["input_budget"]["dropped_entries"] > 0
-    assert result["endpoint_budget"]["served_window"] == _FAKE_REJECT_WINDOW
-    assert result["endpoint_budget"]["clamped_max_tokens"] == 1024
+    assert result["request_budget"]["window"] == _FAKE_REJECT_WINDOW
+    assert result["request_budget"]["clamped_max_tokens"] == 1024
+
+
+def test_prepare_endpoint_request_explicit_window_is_not_divided_by_slots():
+    provider = _provider()
+    endpoint = _byo_endpoint(parallel_slots=2)
+    served_window = 25000
+
+    body, _input_budget, request_budget = provider._prepare_endpoint_request(
+        endpoint=endpoint,
+        served_window=served_window,
+        contents="x" * 30000,
+        system_instruction=None,
+        temperature=0.3,
+        max_output_tokens=12000,
+        json_output=False,
+        json_schema=None,
+    )
+
+    assert request_budget["window"] == served_window
+    assert request_budget["slots"] == 2
+    assert request_budget["estimated_prompt_tokens"] == 10000
+    assert body["max_tokens"] == 12000
 
 
 def test_endpoint_generate_branches_route_shared_prep(monkeypatch):

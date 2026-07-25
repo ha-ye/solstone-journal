@@ -1761,6 +1761,8 @@ async def _execute_generate(
         finish_event["schema_validation"] = gen_result["schema_validation"]
     if "input_budget" in gen_result:
         finish_event["input_budget"] = gen_result["input_budget"]
+    if "request_budget" in gen_result:
+        finish_event["request_budget"] = gen_result["request_budget"]
     if degraded:
         finish_event["degraded"] = degraded
     if retries:

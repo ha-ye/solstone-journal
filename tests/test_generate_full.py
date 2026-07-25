@@ -1133,6 +1133,58 @@ def test_finish_event_includes_input_budget(tmp_path, monkeypatch):
     assert finish_events[0]["input_budget"] == input_budget
 
 
+def test_finish_event_includes_request_budget(tmp_path, monkeypatch):
+    """Test that finish events surface local request_budget when returned."""
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+
+    from solstone.think import models, talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "request_budget_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "md",
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+    request_budget = {
+        "window": 32768,
+        "slots": 2,
+        "estimated_prompt_tokens": 100,
+        "image_tokens": 0,
+        "clamped_max_tokens": 512,
+        "requested_max_output_tokens": 4096,
+    }
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        MagicMock(return_value={**MOCK_RESULT, "request_budget": request_budget}),
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "request_budget_gen",
+            "day": "20240101",
+            "output": "md",
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
+        monkeypatch,
+    )
+
+    finish_events = [e for e in events if e["event"] == "finish"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["request_budget"] == request_budget
+
+
 def test_finish_event_omits_input_budget_when_absent(tmp_path, monkeypatch):
     """Test that finish events omit input_budget when the provider did not return it."""
     mod = importlib.import_module("solstone.think.talents")

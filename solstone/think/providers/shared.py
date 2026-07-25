@@ -419,7 +419,7 @@ class GenerateResult(TypedDict, total=False):
     input_budget: Optional[
         dict
     ]  # Out-of-band truncation metadata when the bundled-local input was clipped
-    endpoint_budget: Optional[dict]  # Endpoint served-window clamp facts when known
+    request_budget: Optional[dict]  # Per-request context/completion clamp facts
     inference: Optional[dict]  # Content-free local inference timing/admission record
 
 
