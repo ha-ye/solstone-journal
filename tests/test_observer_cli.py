@@ -375,8 +375,36 @@ def _table_row(output: str, name: str) -> str:
     return next(line for line in output.splitlines() if line.startswith(f"{name:<20}"))
 
 
-def _last_segment_cell(row: str) -> str:
-    return row[74:86].strip()
+def _table_header(output: str) -> str:
+    return next(
+        line
+        for line in output.splitlines()
+        if line.startswith("Name") and "Last Segment" in line
+    )
+
+
+def _table_cell(output: str, row: str, column: str) -> str:
+    header = _table_header(output)
+    starts = sorted(
+        header.index(name)
+        for name in (
+            "Name",
+            "Prefix",
+            "Status",
+            "Last Seen",
+            "Last Segment",
+            "Segments",
+            "Bytes",
+        )
+        if name in header
+    )
+    start = header.index(column)
+    end = next((pos for pos in starts if pos > start), len(row))
+    return row[start:end].strip()
+
+
+def _last_segment_cell(output: str, row: str) -> str:
+    return _table_cell(output, row, "Last Segment")
 
 
 def test_create_observer_record_reuses_existing_without_create_side_effects(
@@ -809,7 +837,7 @@ def test_cmd_list_shows_last_segment_column_and_json(
     assert rc == 0
     assert "Last Seen          Last Segment" in captured.out
     assert "-" * 107 in captured.out
-    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "2m"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "desktop")) == "2m"
 
     rc = observer_cli.cmd_list(argparse.Namespace(json_output=True))
 
@@ -929,7 +957,7 @@ def test_cmd_status_all_shows_last_segment_column_and_json(
     assert rc == 0
     assert "Last Seen          Last Segment" in captured.out
     assert "-" * 87 in captured.out
-    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "2m"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "desktop")) == "2m"
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=True))
 
@@ -967,6 +995,41 @@ def test_last_segment_freshness_does_not_change_connection_status(
     assert rc == 0
     assert "  Status:       connected\n" in captured.out
     assert "  Last segment: 41d (20260613)\n" in captured.out
+
+
+def test_fleet_views_show_fresh_last_seen_with_unknown_last_segment(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="abcdefgh12345678",
+            last_seen=now - 30_000,
+            include_last_segment_freshness=False,
+        )
+    )
+
+    def assert_divergent_row(output: str) -> None:
+        row = _table_row(output, "desktop")
+        assert _table_cell(output, row, "Status") == "connected"
+        assert _table_cell(output, row, "Last Seen") != "never"
+        assert _last_segment_cell(output, row) == "—"
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert_divergent_row(captured.out)
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert_divergent_row(captured.out)
 
 
 def test_observer_cli_last_segment_rendering_has_no_classification() -> None:
@@ -1030,19 +1093,23 @@ def test_fleet_last_segment_bad_rows_are_isolated(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert _last_segment_cell(_table_row(captured.out, "good")) == "2m"
-    assert _last_segment_cell(_table_row(captured.out, "malformed")) == "—"
-    assert _last_segment_cell(_table_row(captured.out, "negative")) == "—"
-    assert _last_segment_cell(_table_row(captured.out, "future")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "good")) == "2m"
+    assert (
+        _last_segment_cell(captured.out, _table_row(captured.out, "malformed")) == "—"
+    )
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "negative")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "future")) == "—"
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert _last_segment_cell(_table_row(captured.out, "good")) == "2m"
-    assert _last_segment_cell(_table_row(captured.out, "malformed")) == "—"
-    assert _last_segment_cell(_table_row(captured.out, "negative")) == "—"
-    assert _last_segment_cell(_table_row(captured.out, "future")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "good")) == "2m"
+    assert (
+        _last_segment_cell(captured.out, _table_row(captured.out, "malformed")) == "—"
+    )
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "negative")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "future")) == "—"
 
 
 def test_prechange_record_uses_status_single_history_fallback_only(
@@ -1081,13 +1148,13 @@ def test_prechange_record_uses_status_single_history_fallback_only(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "desktop")) == "—"
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "—"
+    assert _last_segment_cell(captured.out, _table_row(captured.out, "desktop")) == "—"
 
     rc = observer_cli.cmd_status(
         argparse.Namespace(identifier="desktop", json_output=False)

@@ -151,35 +151,144 @@ def _string_constant(node: ast.AST) -> str | None:
     return None
 
 
-def _is_exact_key_subscript(node: ast.AST, key: str) -> bool:
-    return isinstance(node, ast.Subscript) and _string_constant(node.slice) == key
+def _dict_literal_keys(node: ast.Dict) -> set[str]:
+    return {
+        value
+        for key_node in node.keys
+        if (value := _string_constant(key_node)) is not None
+    }
+
+
+def _expression_identity(node: ast.AST) -> str:
+    return ast.dump(node, include_attributes=False)
+
+
+def _expression_label(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return _expression_identity(node)
+
+
+def _body_nodes(body: list[ast.stmt]) -> list[ast.AST]:
+    nodes: list[ast.AST] = []
+    for stmt in body:
+        if isinstance(stmt, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)):
+            continue
+        nodes.extend(ast.walk(stmt))
+    return nodes
+
+
+def _record_write(
+    writes: dict[str, dict[str, list[tuple[int, str]]]],
+    *,
+    key: str,
+    object_node: ast.AST,
+    lineno: int,
+) -> None:
+    writes.setdefault(key, {}).setdefault(_expression_identity(object_node), []).append(
+        (lineno, _expression_label(object_node))
+    )
+
+
+def _collect_last_segment_writes(
+    function: ast.AsyncFunctionDef | ast.FunctionDef,
+) -> dict[str, dict[str, list[tuple[int, str]]]]:
+    writes: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for node in _body_nodes(function.body):
+        targets: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+
+        for target in targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            key = _string_constant(target.slice)
+            if key in {"last_segment", "last_segment_received_at"}:
+                _record_write(
+                    writes,
+                    key=key,
+                    object_node=target.value,
+                    lineno=target.lineno,
+                )
+
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+        ):
+            continue
+        for arg in node.args:
+            if not isinstance(arg, ast.Dict):
+                continue
+            keys = _dict_literal_keys(arg)
+            for key in ("last_segment", "last_segment_received_at"):
+                if key in keys:
+                    _record_write(
+                        writes,
+                        key=key,
+                        object_node=node.func.value,
+                        lineno=node.lineno,
+                    )
+    return writes
+
+
+def _assert_observer_data_creation_sites_are_coupled(
+    function: ast.AsyncFunctionDef | ast.FunctionDef,
+    *,
+    source_name: str,
+) -> None:
+    for node in _body_nodes(function.body):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "observer_data"
+            for target in node.targets
+        ):
+            continue
+        keys = _dict_literal_keys(node.value)
+        if "last_segment" in keys:
+            assert "last_segment_received_at" in keys, (
+                f"{source_name}:{node.lineno}: observer_data last_segment creation "
+                "must include last_segment_received_at"
+            )
+
+
+def _assert_last_segment_source_writes_are_coupled(
+    source: str,
+    *,
+    source_name: str,
+) -> None:
+    tree = ast.parse(source, filename=source_name)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    ]
+    for function in functions:
+        _assert_observer_data_creation_sites_are_coupled(
+            function,
+            source_name=source_name,
+        )
+        writes = _collect_last_segment_writes(function)
+        received_at_writes = set(writes.get("last_segment_received_at", {}))
+        for object_id, locations in writes.get("last_segment", {}).items():
+            if object_id in received_at_writes:
+                continue
+            lineno, label = locations[0]
+            raise AssertionError(
+                f"{source_name}:{lineno}: {label} last_segment write must also "
+                "write last_segment_received_at in the same function"
+            )
 
 
 def _assert_last_segment_writes_are_coupled(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    tree = ast.parse(text)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-            if any(
-                _is_exact_key_subscript(target, "last_segment") for target in targets
-            ):
-                window = "\n".join(lines[node.lineno - 1 : node.lineno + 8])
-                assert '["last_segment_received_at"]' in window
-            if not any(
-                isinstance(target, ast.Name) and target.id == "observer_data"
-                for target in targets
-            ):
-                continue
-            if isinstance(node.value, ast.Dict):
-                keys = {
-                    value
-                    for key_node in node.value.keys
-                    if (value := _string_constant(key_node)) is not None
-                }
-                if "last_segment" in keys:
-                    assert "last_segment_received_at" in keys
+    _assert_last_segment_source_writes_are_coupled(
+        path.read_text(encoding="utf-8"),
+        source_name=str(path),
+    )
 
 
 def _post_invalid_contract_audio(env, key: str):
@@ -1351,6 +1460,32 @@ def test_ingest_persists_last_segment_receipt_freshness(
 def test_last_segment_assignments_are_coupled_to_received_at() -> None:
     _assert_last_segment_writes_are_coupled(Path(routes_module.__file__))
     _assert_last_segment_writes_are_coupled(Path(observer_cli_module.__file__))
+
+
+def test_last_segment_coupling_guard_rejects_uncoupled_subscript_write() -> None:
+    source = """
+def write_segment(observer, segment):
+    observer["last_segment"] = segment
+"""
+
+    with pytest.raises(AssertionError, match="last_segment write"):
+        _assert_last_segment_source_writes_are_coupled(
+            source,
+            source_name="synthetic_subscript.py",
+        )
+
+
+def test_last_segment_coupling_guard_rejects_uncoupled_update_write() -> None:
+    source = """
+def write_segment(observer, segment):
+    observer.update({"last_segment": segment})
+"""
+
+    with pytest.raises(AssertionError, match="last_segment write"):
+        _assert_last_segment_source_writes_are_coupled(
+            source,
+            source_name="synthetic_update.py",
+        )
 
 
 def test_status_event_refreshes_last_seen_without_segment_receipt(
