@@ -2207,37 +2207,41 @@ def _format_vulkan_devices(devices: list[Any], local_vulkan: Any) -> str:
 
 
 def _log_context_assertion(
-    tier: Any, n_ctx: int | None, total_slots: int | None
+    plan: LocalServerLaunchPlan, n_ctx: int | None, total_slots: int | None
 ) -> None:
+    if plan.context_tokens is None or plan.parallel_slots is None:
+        logging.info("llama-server context assertion skipped: launch plan incomplete")
+        return
+    expected_n_ctx = plan.context_tokens * plan.parallel_slots
+
     if n_ctx is None:
         logging.info(
             "llama-server context assertion skipped: n_ctx unavailable from /props"
         )
     else:
-        expected = {tier.context_tokens, tier.context_tokens * tier.parallel_slots}
-        if n_ctx in expected:
+        if n_ctx == expected_n_ctx and total_slots == plan.parallel_slots:
             logging.info(
                 "llama-server context OK: intended -c=%d parallel=%d actual n_ctx=%d",
-                tier.context_tokens,
-                tier.parallel_slots,
+                expected_n_ctx,
+                plan.parallel_slots,
                 n_ctx,
             )
         else:
             logging.warning(
                 "llama-server context MISMATCH: intended -c=%d parallel=%d "
                 "actual n_ctx=%d",
-                tier.context_tokens,
-                tier.parallel_slots,
+                expected_n_ctx,
+                plan.parallel_slots,
                 n_ctx,
             )
 
     if isinstance(total_slots, int):
-        if total_slots == tier.parallel_slots:
+        if total_slots == plan.parallel_slots:
             logging.info("llama-server slots OK: %d", total_slots)
         else:
             logging.warning(
                 "llama-server slots MISMATCH: intended=%d actual=%d",
-                tier.parallel_slots,
+                plan.parallel_slots,
                 total_slots,
             )
     else:
@@ -3244,6 +3248,7 @@ def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
     context_tokens = _required_plan_int(plan.context_tokens, "context_tokens")
     parallel_slots = _required_plan_int(plan.parallel_slots, "parallel_slots")
     prompt_cache_mib = _required_plan_int(plan.prompt_cache_mib, "prompt_cache_mib")
+    launched_context_tokens = context_tokens * parallel_slots
     device_flag = "CUDA0" if plan.backend == "cuda" else "Vulkan0"
     cmd = [
         str(binary_path),
@@ -3259,7 +3264,7 @@ def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
         "--n-gpu-layers",
         "999",
         "-c",
-        str(context_tokens),
+        str(launched_context_tokens),
         "--parallel",
         str(parallel_slots),
         "--kv-unified",
@@ -3382,7 +3387,9 @@ def _start_llama_local_server(
                     )
             props = local_server.fetch_props(port)
             n_ctx = local_server._extract_n_ctx(props) if props is not None else None
-            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            total_slots = (
+                local_server._extract_total_slots(props) if props is not None else None
+            )
             _log_context_assertion(plan, n_ctx, total_slots)
             logging.info("llama-server ready on port %s", port)
             return _outcome(

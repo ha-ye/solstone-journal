@@ -3359,6 +3359,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
         if expected_context_tokens is None
         else expected_context_tokens
     )
+    expected_launched_context_tokens = expected_context_tokens * int(expected_parallel)
     mod._SERVICE_STATE.clear()
     binary = tmp_path / "llama-server"
     # ensure_artifacts_installed always resolves artifacts under the selected
@@ -3424,7 +3425,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            str(expected_context_tokens),
+            str(expected_launched_context_tokens),
             "--parallel",
             expected_parallel,
             "--kv-unified",
@@ -3447,20 +3448,17 @@ def test_log_context_assertion(caplog):
     mod = importlib.import_module("solstone.think.supervisor")
     from solstone.think.providers import local_server
 
-    floor = local_server.ServerTier(
-        name="floor",
-        context_tokens=16384,
-        parallel_slots=1,
-        prompt_cache_mib=0,
-        resident_mib=4147,
-    )
-    capable = local_server.ServerTier(
-        name="capable",
-        context_tokens=32768,
-        parallel_slots=2,
-        prompt_cache_mib=2048,
-        resident_mib=None,
-    )
+    def plan_for(tier):
+        return mod.LocalServerLaunchPlan(
+            backend="vulkan",
+            desired_fingerprint_json='{"provider":"local"}',
+            desired_fingerprint_sha256="fp-local",
+            context_tokens=tier.context_tokens,
+            parallel_slots=tier.parallel_slots,
+        )
+
+    floor = plan_for(local_server._FLOOR_TIER)
+    capable = plan_for(local_server._CAPABLE_TIER)
 
     with caplog.at_level(logging.INFO):
         mod._log_context_assertion(floor, 16384, 1)
@@ -3470,6 +3468,12 @@ def test_log_context_assertion(caplog):
     with caplog.at_level(logging.INFO):
         mod._log_context_assertion(capable, 65536, 2)
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        mod._log_context_assertion(capable, 65536, 1)
+    assert any("context MISMATCH" in record.message for record in caplog.records)
+    assert any("slots MISMATCH" in record.message for record in caplog.records)
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):
@@ -3750,7 +3754,7 @@ def test_start_local_server_cuda_launches_llama_server_cmd_and_env(
     assert len(spawned) == 1
     cmd = spawned[0]
     assert cmd[cmd.index("--device") + 1] == "CUDA0"
-    assert cmd[cmd.index("-c") + 1] == "32768"
+    assert cmd[cmd.index("-c") + 1] == str(plan.context_tokens * plan.parallel_slots)
     assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
     assert cmd[cmd.index("--n-gpu-layers") + 1] == "999"
     assert "--mmproj" in cmd
@@ -3829,7 +3833,9 @@ def test_start_local_server_cuda_unified_memory_uses_capable_tier(
     assert result.status == "ready"
     assert result.managed is managed
     assert written_context_windows == []
-    assert spawned[0][spawned[0].index("-c") + 1] == "32768"
+    assert spawned[0][spawned[0].index("-c") + 1] == str(
+        plan.context_tokens * plan.parallel_slots
+    )
     assert any(
         "local server backend=cuda" in record.message for record in caplog.records
     )
