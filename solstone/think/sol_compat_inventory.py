@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Closed inventory for the native sol Python compatibility helper."""
+"""Closed inventory for the native sol Python compatibility dispatcher."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
-HELPER_NAME = "solstone-python-compat"
+COMPAT_MODULE = "solstone.think.sol_compat_cli"
 SENTINEL = "SOLSTONE_NATIVE_COMPAT_ACTIVE"
 SENTINEL_ARMED = "armed"
 SENTINEL_ACTIVE = "active"

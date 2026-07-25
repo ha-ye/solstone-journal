@@ -47,7 +47,8 @@ MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
 PARAKEET_HELPER_MEMBER = (
     "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
 )
-CORE_SCRIPT_NAMES = ("sol", "solstone", "solstone-core")
+ROOT_LAUNCHER_NAMES = ("sol", "solstone")
+CORE_SCRIPT_NAMES = ("solstone-core",)
 ELF_MAGIC = b"\x7fELF"
 ELF_CLASS_64 = 2
 ELF_DATA_LITTLE_ENDIAN = 1
@@ -73,8 +74,6 @@ CORE_REQUIRED_SDIST_MEMBERS = {
     "core/Cargo.lock",
     "core/Cargo.toml",
     "core/crates/solstone-core/Cargo.toml",
-    "core/crates/solstone-core/src/bin/sol.rs",
-    "core/crates/solstone-core/src/bin/solstone.rs",
     "core/crates/solstone-core/src/main.rs",
     "core/crates/solstone-core-cli/Cargo.toml",
     "core/crates/solstone-core-cli/src/lib.rs",
@@ -249,6 +248,8 @@ def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
         for member in wheel.namelist():
             if "tests" in member.split("/"):
                 errors.append(f"{path.name}: base wheel ships test path {member}")
+        errors.extend(_check_base_root_launchers(path, wheel))
+        errors.extend(_check_record(path, wheel))
         if platform_wheel:
             errors.extend(_check_base_platform_helper(path, wheel))
     return errors
@@ -668,6 +669,74 @@ def _check_base_platform_helper(
     errors.extend(
         _check_record_member(path, wheel, PARAKEET_HELPER_MEMBER, repair=repair)
     )
+    return errors
+
+
+def _check_base_root_launchers(
+    path: Path,
+    wheel: zipfile.ZipFile,
+) -> list[str]:
+    repair = "uv build --wheel"
+    scripts = sorted(
+        (info for info in wheel.infolist() if ".data/scripts/" in info.filename),
+        key=lambda info: info.filename,
+    )
+    names = {Path(info.filename).name for info in scripts}
+    errors: list[str] = []
+    if len(scripts) != len(ROOT_LAUNCHER_NAMES) or names != set(ROOT_LAUNCHER_NAMES):
+        errors.append(
+            _failure(
+                path.name,
+                "wrong root launcher script member set",
+                expected=", ".join(
+                    f".data/scripts/{name}" for name in ROOT_LAUNCHER_NAMES
+                ),
+                actual=", ".join(info.filename for info in scripts) or "<empty>",
+                repair=repair,
+            )
+        )
+        return errors
+    for script in scripts:
+        script_label = Path(script.filename).name
+        mode = (script.external_attr >> 16) & 0o777
+        if mode != 0o755:
+            errors.append(
+                _failure(
+                    path.name,
+                    f"{script_label} launcher mode is wrong",
+                    expected="0o755",
+                    actual=oct(mode),
+                    repair=repair,
+                )
+            )
+        content = wheel.read(script)
+        first_line = content.splitlines()[0] if content.splitlines() else b""
+        if first_line != b"#!/bin/sh":
+            errors.append(
+                _failure(
+                    path.name,
+                    f"{script_label} launcher first line is wrong",
+                    expected="#!/bin/sh",
+                    actual=first_line.decode("utf-8", errors="replace"),
+                    repair=repair,
+                )
+            )
+        errors.extend(_check_record_member(path, wheel, script.filename, repair=repair))
+
+    for member in wheel.namelist():
+        if not member.endswith(".dist-info/entry_points.txt"):
+            continue
+        entry_points = wheel.read(member).decode("utf-8", errors="replace")
+        if "solstone-python-compat" in entry_points:
+            errors.append(
+                _failure(
+                    path.name,
+                    "base wheel still exposes compatibility entry point",
+                    expected="no solstone-python-compat entry point",
+                    actual=member,
+                    repair=repair,
+                )
+            )
     return errors
 
 

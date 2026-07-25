@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import shutil
 import subprocess
@@ -55,11 +57,22 @@ def test_locally_built_linux_core_wheel_installs_and_runs(
     wheels = sorted(dist_dir.glob("solstone_core-*.whl"))
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as wheel:
-        script_members = {
-            Path(name).name for name in wheel.namelist() if ".data/scripts/" in name
+        script_infos = [
+            info for info in wheel.infolist() if ".data/scripts/" in info.filename
+        ]
+        script_members = {Path(info.filename).name for info in script_infos}
+        record_name = next(
+            name for name in wheel.namelist() if name.endswith(".dist-info/RECORD")
+        )
+        record_rows = {
+            row[0]: row
+            for row in csv.reader(io.StringIO(wheel.read(record_name).decode("utf-8")))
         }
     assert script_members == set(checker.CORE_SCRIPT_NAMES)
-    assert checker.check_core_wheel(wheels[0], checker.MAX_CORE_WHEEL_BYTES) == []
+    assert len(script_infos) == len(checker.CORE_SCRIPT_NAMES)
+    for info in script_infos:
+        assert ((info.external_attr >> 16) & 0o777) == 0o755
+        assert info.filename in record_rows
 
     venv = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)

@@ -3,12 +3,11 @@
 # Copyright (c) 2026 sol pbc
 """Lint: the thin-base / journal leaf package menu stays internally consistent.
 
-After the package split, solstone-core owns the public native `sol` /
-`solstone` scripts. The root distribution keeps the Python access dependency
-partition plus the private compatibility helper. `solstone-journal` and
-`solstone-journal-cuda` are leaf packages that own the host-only `journal` and
-`mlx-vlm-server` console scripts and compose the root `[journal-host]` building
-block with exactly one ONNX runtime.
+After the package split, the root solstone distribution owns the public POSIX
+`sol` / `solstone` launchers and solstone-core owns their native sibling binary.
+`solstone-journal` and `solstone-journal-cuda` are leaf packages that own the
+host-only `journal` and `mlx-vlm-server` console scripts and compose the root
+`[journal-host]` building block with exactly one ONNX runtime.
 
 The invariants are:
 
@@ -29,7 +28,8 @@ The invariants are:
      `onnxruntime`.
   7. The two leaves never depend on each other.
   8. Both leaves own exactly the host-only console scripts.
-  9. Root scripts stay exactly the private compatibility helper script.
+  9. Root `[project.scripts]` stays absent and root script-files stay exactly the
+     public POSIX launchers.
  10. Each leaf has metadata-only setuptools config, a workspace source for
      `solstone`, the expected package name, and the root version.
  11. uv workspace members/sources are exactly the two journal leaves plus
@@ -42,6 +42,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+try:
+    from scripts.check_wheel_contents import ROOT_LAUNCHER_NAMES
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from check_wheel_contents import ROOT_LAUNCHER_NAMES  # type: ignore[no-redef]
 from solstone.think.features import FEATURES
 from solstone.think.probe import (
     solstone_core_marker_pins,
@@ -62,9 +66,9 @@ THIN_BASE = {
     "psutil",
     "userpath>=1.9.2,<2",
 }
-ROOT_SCRIPTS = {
-    "solstone-python-compat": "solstone.think.sol_compat_cli:main",
-}
+ROOT_SCRIPT_FILES = tuple(
+    f"scripts/root-launchers/{name}" for name in ROOT_LAUNCHER_NAMES
+)
 HOST_SCRIPTS = {
     "journal": "solstone.think.sol_cli:journal_main",
     "mlx-vlm-server": "solstone.think.providers.mlx_server:main",
@@ -396,10 +400,17 @@ def main(root: Path | None = None) -> int:
                 f"found {litellm_requirements}"
             )
 
-    root_scripts = project.get("scripts", {})
-    if root_scripts != ROOT_SCRIPTS:
+    if "scripts" in project:
         errors.append(
-            f"root [project.scripts] must be exactly {ROOT_SCRIPTS}; found {root_scripts}"
+            f"root [project.scripts] must be absent; found {project['scripts']}"
+        )
+    root_script_files = tuple(
+        data.get("tool", {}).get("setuptools", {}).get("script-files", ())
+    )
+    if root_script_files != ROOT_SCRIPT_FILES:
+        errors.append(
+            "root [tool.setuptools] script-files must be exactly "
+            f"{ROOT_SCRIPT_FILES}; found {root_script_files}"
         )
 
     cpu_deps = _leaf_dependencies(

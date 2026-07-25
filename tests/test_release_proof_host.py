@@ -20,6 +20,7 @@ import scripts.release_install_smoke as smoke
 import scripts.release_proof_host as proof_host
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_digest import candidate_digest
+from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -40,7 +41,26 @@ def _wheel_metadata(name: str) -> tuple[str, str]:
 def _write_metadata_wheel(path: Path) -> None:
     metadata_name, metadata = _wheel_metadata(path.name)
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr(metadata_name, metadata)
+        members = {metadata_name: metadata.encode("utf-8")}
+        if path.name.startswith("solstone-"):
+            version = path.name.removesuffix(".whl").split("-")[1]
+            members[f"solstone-{version}.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
+            for name, content in ROOT_LAUNCHER_BYTES.items():
+                members[f"solstone-{version}.data/scripts/{name}"] = content
+            record_name = f"solstone-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        for name, content in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (
+                0o755 << 16
+                if Path(name).name in smoke.ROOT_LAUNCHER_NAMES
+                else 0o644 << 16
+            )
+            wheel.writestr(info, content)
 
 
 def _candidate(tmp_path: Path) -> Path:
@@ -110,6 +130,8 @@ def _observation(
     env_root = candidate.parent / f"env-{target}"
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     (env_root / "bin" / "python").write_bytes(b"python")
+    for name, content in ROOT_LAUNCHER_BYTES.items():
+        (env_root / "bin" / name).write_bytes(content)
     for name in smoke.CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
     install_paths = smoke.target_install_paths_from_ledger(
@@ -117,25 +139,24 @@ def _observation(
         target=target,
         candidate_dir=candidate,
     )
+    expected_members, expected_failures = smoke._expected_install_members(
+        ledger,
+        target,
+        candidate_dir=candidate,
+        install_paths=install_paths,
+    )
+    assert expected_failures == []
     members = [
         {
             "name": name,
             "path": env_root / "bin" / name,
-            "sha256": ledger["native_members"][target][name]["sha256"],
+            "sha256": expected["sha256"],
             "symlink": False,
         }
-        for name in smoke.CORE_SCRIPT_NAMES
+        for name, expected in sorted(expected_members.items())
     ]
     if target == "macos-arm64":
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
-        members.append(
-            {
-                "name": "parakeet-helper",
-                "path": env_root / "bin" / "parakeet-helper",
-                "sha256": ledger["native_members"][target]["parakeet-helper"]["sha256"],
-                "symlink": False,
-            }
-        )
     payload: dict[str, Any] = {
         "install": smoke.CommandResult(
             argv=(
@@ -160,7 +181,7 @@ def _observation(
                 stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} {version}",
                 env=smoke.SCRUBBED_COMMAND_ENV,
             )
-            for name in smoke.CORE_SCRIPT_NAMES
+            for name in smoke.INSTALL_SCRIPT_NAMES
         },
     }
     if mutate is not None:

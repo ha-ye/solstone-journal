@@ -26,6 +26,7 @@ from scripts.release_tool_pins import (
     MACOS_SWIFT_FLATTENED_BANNER,
     UV_MACOS_FIXTURE_BANNER,
 )
+from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
 
 
 def _completed(
@@ -76,7 +77,25 @@ def _write_metadata_wheel(path: Path) -> None:
     metadata_name = f"{distribution}-{version}.dist-info/METADATA"
     metadata = f"Name: {distribution.replace('_', '-')}\nVersion: {version}\n"
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr(metadata_name, metadata)
+        members = {metadata_name: metadata.encode("utf-8")}
+        if path.name.startswith("solstone-"):
+            members[f"solstone-{version}.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
+            for name, content in ROOT_LAUNCHER_BYTES.items():
+                members[f"solstone-{version}.data/scripts/{name}"] = content
+            record_name = f"solstone-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        for name, content in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (
+                0o755 << 16
+                if Path(name).name in smoke.ROOT_LAUNCHER_NAMES
+                else 0o644 << 16
+            )
+            wheel.writestr(info, content)
 
 
 def _file_entry(path: Path) -> dict[str, Any]:
@@ -214,14 +233,25 @@ def _write_valid_install_proof(
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     python_path = env_root / "bin" / "python"
     python_path.write_bytes(b"python")
-    core_paths = {name: env_root / "bin" / name for name in smoke.CORE_SCRIPT_NAMES}
-    for name, path in core_paths.items():
-        path.write_text(name, encoding="utf-8")
+    executable_paths = {
+        name: env_root / "bin" / name for name in smoke.INSTALL_SCRIPT_NAMES
+    }
+    for name in smoke.ROOT_LAUNCHER_NAMES:
+        executable_paths[name].write_bytes(ROOT_LAUNCHER_BYTES[name])
+    for name in smoke.CORE_SCRIPT_NAMES:
+        executable_paths[name].write_text(name, encoding="utf-8")
     install_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=request_payload["target"],
         candidate_dir=candidate_dir,
     )
+    expected_members, expected_failures = smoke._expected_install_members(
+        ledger,
+        request_payload["target"],
+        candidate_dir=candidate_dir,
+        install_paths=install_paths,
+    )
+    assert expected_failures == []
     proof = smoke.build_install_proof(
         target=request_payload["target"],
         version=request_payload["version"],
@@ -254,12 +284,10 @@ def _write_valid_install_proof(
                 {
                     "name": name,
                     "path": path,
-                    "sha256": ledger["native_members"][request_payload["target"]][name][
-                        "sha256"
-                    ],
+                    "sha256": expected_members[name]["sha256"],
                     "symlink": False,
                 }
-                for name, path in sorted(core_paths.items())
+                for name, path in sorted(executable_paths.items())
             ),
             smoke={
                 name: smoke.CommandResult(
@@ -270,7 +298,7 @@ def _write_valid_install_proof(
                     ),
                     env=smoke.SCRUBBED_COMMAND_ENV,
                 )
-                for name, path in sorted(core_paths.items())
+                for name, path in sorted(executable_paths.items())
             },
         ),
         recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),

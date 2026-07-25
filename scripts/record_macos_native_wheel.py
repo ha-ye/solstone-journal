@@ -267,7 +267,7 @@ def _facts_by_member(
         return {}, [
             _failure(
                 "macOS core signing facts are missing members",
-                expected="members object keyed by sol, solstone, solstone-core",
+                expected="members object keyed by solstone-core",
                 actual=type(members).__name__,
                 repair="python3 scripts/check_rust_release_manifest.py",
             )

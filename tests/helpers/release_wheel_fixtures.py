@@ -16,6 +16,10 @@ import scripts.check_wheel_contents as checker
 
 ELF_HEADER_SIZE = 64
 ELF_PROGRAM_HEADER_SIZE = 56
+ROOT_LAUNCHER_BYTES = {
+    name: f"#!/bin/sh\necho fixture {name}\n".encode("utf-8")
+    for name in checker.ROOT_LAUNCHER_NAMES
+}
 
 
 def record_hash(content: bytes) -> str:
@@ -146,6 +150,8 @@ def write_platform_base_wheel(
         ),
         f"solstone-{version}.dist-info/WHEEL": b"Wheel-Version: 1.0\n",
     }
+    for launcher_name, content in ROOT_LAUNCHER_BYTES.items():
+        members[f"solstone-{version}.data/scripts/{launcher_name}"] = content
     if helper_name is not None:
         members[helper_name] = helper_binary
     if extra_payload_size:
@@ -159,7 +165,10 @@ def write_platform_base_wheel(
     rows.append(f"solstone-{version}.dist-info/RECORD,,")
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         for name, content in members.items():
-            mode = helper_mode if name == helper_name else 0o644
+            if Path(name).name in checker.ROOT_LAUNCHER_NAMES:
+                mode = 0o755
+            else:
+                mode = helper_mode if name == helper_name else 0o644
             _write_member(wheel, name, content, mode=mode)
         _write_member(
             wheel,

@@ -17,6 +17,7 @@ import scripts.check_rust_release_manifest as checker
 import scripts.release_install_smoke as smoke
 from scripts.release_digest import candidate_digest, file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
+from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -47,7 +48,26 @@ def _wheel_metadata(name: str) -> tuple[str, str]:
 def _write_metadata_wheel(path: Path) -> None:
     metadata_name, metadata = _wheel_metadata(path.name)
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr(metadata_name, metadata)
+        members = {metadata_name: metadata.encode("utf-8")}
+        if path.name.startswith("solstone-"):
+            version = path.name.removesuffix(".whl").split("-")[1]
+            members[f"solstone-{version}.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
+            for name, content in ROOT_LAUNCHER_BYTES.items():
+                members[f"solstone-{version}.data/scripts/{name}"] = content
+            record_name = f"solstone-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        for name, content in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (
+                0o755 << 16
+                if Path(name).name in checker.ROOT_LAUNCHER_NAMES
+                else 0o644 << 16
+            )
+            wheel.writestr(info, content)
 
 
 def _candidate(tmp_path: Path) -> tuple[Path, list[Path]]:
@@ -116,12 +136,23 @@ def _observation(
     member_hash: str = "d" * 64,
 ) -> smoke.InstallObservation:
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
+    for name, content in ROOT_LAUNCHER_BYTES.items():
+        (env_root / "bin" / name).write_bytes(content)
     for name in checker.CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
     (env_root / "bin" / "python").write_bytes(b"python")
     if macos:
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
     members = [
+        {
+            "name": name,
+            "path": env_root / "bin" / name,
+            "sha256": file_sha256_size(env_root / "bin" / name)[0],
+            "symlink": False,
+        }
+        for name in checker.ROOT_LAUNCHER_NAMES
+    ]
+    members += [
         {
             "name": name,
             "path": env_root / "bin" / name,
@@ -165,7 +196,7 @@ def _observation(
                 stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} 1.0.0",
                 env=smoke.SCRUBBED_COMMAND_ENV,
             )
-            for name in checker.CORE_SCRIPT_NAMES
+            for name in smoke.INSTALL_SCRIPT_NAMES
         },
     )
 
@@ -599,7 +630,7 @@ def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
             recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
         )
     assert any(
-        failure.error == "installed member hash does not match ledger"
+        failure.error == "installed member hash does not match expected payload"
         for failure in exc.value.failures
     )
 
@@ -644,7 +675,7 @@ def test_observed_expected_hash_has_no_authority(tmp_path: Path) -> None:
 
     errors = {failure.error for failure in exc.value.failures}
     assert "install proof observation supplies forbidden expected hash" in errors
-    assert "installed member hash does not match ledger" in errors
+    assert "installed member hash does not match expected payload" in errors
 
 
 def test_observed_wheel_member_path_has_no_authority(tmp_path: Path) -> None:
@@ -711,7 +742,8 @@ def test_install_proof_rejects_empty_or_extra_member_sets(tmp_path: Path) -> Non
         )
 
     assert any(
-        failure.error == "install proof retained native members are missing"
+        failure.error
+        == "install proof member set does not match expected executable payload"
         for failure in exc.value.failures
     )
 
@@ -760,7 +792,8 @@ def test_install_proof_rejects_empty_or_extra_member_sets(tmp_path: Path) -> Non
         )
 
     assert any(
-        failure.error == "install proof member set does not match retained ledger"
+        failure.error
+        == "install proof member set does not match expected executable payload"
         for failure in exc.value.failures
     )
 

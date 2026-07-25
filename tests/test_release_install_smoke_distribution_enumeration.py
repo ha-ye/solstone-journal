@@ -335,7 +335,7 @@ def test_solstone_distributions_preserves_distinct_duplicate_dist_infos(
     ("linux-x86_64-musl", "linux-aarch64-musl", "macos-arm64"),
 )
 @pytest.mark.parametrize("reverse_order", (False, True))
-def test_core_script_ownership_is_order_independent_and_reinstall_stable(
+def test_script_ownership_is_order_independent_and_reinstall_stable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target: str,
@@ -347,13 +347,13 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
         pytest.skip("could not create scratch venv")
     wheel_dir = tmp_path / "wheels"
     version = "1.2.3"
-    core_scripts = {
-        "sol": f"#!/bin/sh\necho 'sol (solstone) {version}'\n".encode(),
-        "solstone": f"#!/bin/sh\necho 'sol (solstone) {version}'\n".encode(),
-        "solstone-core": f"#!/bin/sh\necho solstone-core {version}\n".encode(),
+    root_scripts = {
+        name: f"#!/bin/sh\necho 'sol (solstone) {version}'\n".encode()
+        for name in wheel_checker.ROOT_LAUNCHER_NAMES
     }
-    compat_scripts = {
-        "solstone-python-compat": b"#!/bin/sh\necho compat\n",
+    core_scripts = {
+        name: f"#!/bin/sh\necho solstone-core {version}\n".encode()
+        for name in wheel_checker.CORE_SCRIPT_NAMES
     }
     core_wheel = _write_py3_wheel(
         wheel_dir,
@@ -365,7 +365,7 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
         wheel_dir,
         "solstone",
         version,
-        scripts=compat_scripts,
+        scripts=root_scripts,
     )
 
     overlap = _record_script_paths(core_wheel) & _record_script_paths(base_wheel)
@@ -382,14 +382,19 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
+    root_names = wheel_checker.ROOT_LAUNCHER_NAMES
     core_names = wheel_checker.CORE_SCRIPT_NAMES
-    expected_owners = {name: "solstone-core" for name in core_names}
+    script_names = root_names + core_names
+    expected_owners = {
+        **{name: "solstone" for name in root_names},
+        **{name: "solstone-core" for name in core_names},
+    }
     assert (
-        _installed_script_owners(env_python, core_names, cwd=tmp_path)
+        _installed_script_owners(env_python, script_names, cwd=tmp_path)
         == expected_owners
     )
-    before = _script_bytes(env_root, core_names)
-    for name in core_names:
+    before_core = _script_bytes(env_root, core_names)
+    for name in script_names:
         output = _run((_env_bin(env_root, name), "--version"), cwd=tmp_path)
         assert output.returncode == 0
         assert output.stdout.strip().endswith(version)
@@ -409,9 +414,9 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
         env=dict(smoke.SCRUBBED_COMMAND_ENV),
     )
     assert reinstall.returncode == 0, reinstall.stderr or reinstall.stdout
-    assert _script_bytes(env_root, core_names) == before
+    assert _script_bytes(env_root, core_names) == before_core
     assert (
-        _installed_script_owners(env_python, core_names, cwd=tmp_path)
+        _installed_script_owners(env_python, script_names, cwd=tmp_path)
         == expected_owners
     )
 
@@ -423,6 +428,7 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
     assert uninstall_base.returncode == 0, (
         uninstall_base.stderr or uninstall_base.stdout
     )
+    assert not any(_env_bin(env_root, name).exists() for name in root_names)
     assert all(_env_bin(env_root, name).exists() for name in core_names)
 
     reinstall_base = _run(
@@ -442,4 +448,4 @@ def test_core_script_ownership_is_order_independent_and_reinstall_stable(
         uninstall_core.stderr or uninstall_core.stdout
     )
     assert not any(_env_bin(env_root, name).exists() for name in core_names)
-    assert _env_bin(env_root, "solstone-python-compat").exists()
+    assert all(_env_bin(env_root, name).exists() for name in root_names)

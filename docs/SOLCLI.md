@@ -19,23 +19,22 @@ The CLI has two tiers with distinct purposes:
 
 **Interactive entry points** (`sol chat`, `sol help`, `journal engage`) are top-level for discoverability even though they're user-facing. Agents don't invoke these.
 
-Console scripts are split across distributions. The `solstone-core` package
-ships the public native `sol`, `solstone`, and `solstone-core` executables. The
-base `solstone` package ships only the private `solstone-python-compat` helper
-used by the native `sol` finite compatibility set. The `solstone-journal` /
-`solstone-journal-cuda` distributions ship the host-only `journal` and
-`mlx-vlm-server` console scripts. The dispatcher, including `journal_main()`,
-still lives in base `solstone.think.sol_cli`; only the public access
-console-script owner moved. A thin/bare install therefore has no `journal`
-executable on PATH.
+Console scripts are split across distributions. The base `solstone` package
+ships the public POSIX `sol` and `solstone` launchers. The `solstone-core`
+package ships the native `solstone-core` executable those launchers run. The
+`solstone-journal` / `solstone-journal-cuda` distributions ship the host-only
+`journal` and `mlx-vlm-server` console scripts. The dispatcher, including
+`journal_main()`, still lives in base `solstone.think.sol_cli`, but a thin/bare
+install has no `journal` executable on PATH.
 
 ## Top-Level Commands (`sol <cmd>`)
 
 ### How they work
 
-The public `sol` / `solstone` binaries are native Rust entry points owned by
-`solstone-core`. Their top-level native commands are declared beside their Rust
-handlers under `solstone/think/native/<command>/authority.toml`.
+The public `sol` / `solstone` commands are root-owned launchers that exec the
+sibling native `solstone-core` binary. Their top-level native commands are
+declared beside their Rust handlers under
+`solstone/think/native/<command>/authority.toml`.
 
 `solstone/think/sol_cli.py` now contains only the `journal` host dispatcher. It
 has a static `COMMANDS` dict mapping host command names to module paths:

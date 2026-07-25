@@ -73,10 +73,10 @@ dependencies = [
 # ONNX runtime or the NVIDIA CUDA runtime; [pdf] is a convenience composite of
 # [pdf-import] and [pdf-export], while the split extras back focused feature hints.
 #
-# Base solstone keeps only the private compatibility helper script. The public
-# `sol`/`solstone` scripts are native binaries owned by solstone-core. Install
-# exactly one journal leaf; the CPU and GPU ONNX wheels own the same
-# `onnxruntime/` import dir and clobber each other.
+# Base solstone owns the public POSIX launchers. The platform-native
+# `solstone-core` executable is installed as the launcher sibling. Install exactly
+# one journal leaf; the CPU and GPU ONNX wheels own the same `onnxruntime/`
+# import dir and clobber each other.
 # ---------------------------------------------------------------------------
 pdf-import = [
     "pypdfium2>=5.11,<6",
@@ -171,12 +171,6 @@ journal = ["solstone-journal-host==0.7.0"]
 # Install `solstone-journal-cuda` for the NVIDIA CUDA runtime.
 journal-cuda = ["solstone-journal-host==0.7.0"]
 
-[project.scripts]
-# The public `sol`/`solstone` scripts are native binaries owned by
-# solstone-core. The base distribution owns only this private helper for the
-# native binary's finite Python compatibility set.
-solstone-python-compat = "solstone.think.sol_compat_cli:main"
-
 [project.urls]
 Homepage = "https://github.com/solpbc/solstone-journal"
 Repository = "https://github.com/solpbc/solstone-journal"
@@ -184,6 +178,14 @@ Documentation = "https://github.com/solpbc/solstone-journal/blob/main/README.md"
 "Bug Tracker" = "https://github.com/solpbc/solstone-journal/issues"
 
 [tool.setuptools]
+# Raw root launchers are script-file payloads, not console entry points, so
+# uv-tool exports the root-owned public commands while dependency-owned core
+# scripts stay inside the tool environment.
+script-files = [
+    "scripts/root-launchers/sol",
+    "scripts/root-launchers/solstone",
+]
+
 # Package data is included wholesale via MANIFEST.in (`graft solstone`) plus the
 # include-package-data flag below. We deliberately do NOT hand-maintain per-subdir
 # package-data globs: that curated list repeatedly dropped data files added in new

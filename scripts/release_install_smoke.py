@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -27,7 +28,7 @@ from scripts.check_rust_release_manifest import (
     Failure,
     canonical_json_bytes,
 )
-from scripts.check_wheel_contents import CORE_SCRIPT_NAMES
+from scripts.check_wheel_contents import CORE_SCRIPT_NAMES, ROOT_LAUNCHER_NAMES
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
 
@@ -60,6 +61,8 @@ CORE_SMOKE_STDOUT = {
     "solstone": "sol (solstone)",
     "solstone-core": "solstone-core",
 }
+# Version smoke spans root launchers plus the core member.
+INSTALL_SCRIPT_NAMES = ROOT_LAUNCHER_NAMES + CORE_SCRIPT_NAMES
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
 RETAINED_PROOF_REPAIR = (
@@ -383,20 +386,20 @@ def _default_observe_install(
     )
     after = _solstone_distributions(env_python)
     installed_members: list[Mapping[str, Any]] = []
-    core_paths = {name: _env_bin(env_root, name) for name in CORE_SCRIPT_NAMES}
-    for name, core_path in core_paths.items():
-        if core_path.is_file() or core_path.is_symlink():
-            installed_members.append(_installed_member(core_path, name))
+    executable_paths = {name: _env_bin(env_root, name) for name in INSTALL_SCRIPT_NAMES}
+    for name, executable_path in executable_paths.items():
+        if executable_path.is_file() or executable_path.is_symlink():
+            installed_members.append(_installed_member(executable_path, name))
     helper_path = _find_single(env_root, "parakeet-helper")
     if target == "macos-arm64" and helper_path is not None:
         installed_members.append(_installed_member(helper_path, "parakeet-helper"))
     smoke: dict[str, CommandResult] = {}
-    for name, core_path in core_paths.items():
-        if core_path.exists() or core_path.is_symlink():
-            smoke[name] = _run_command((str(core_path), "--version"))
+    for name, executable_path in executable_paths.items():
+        if executable_path.exists() or executable_path.is_symlink():
+            smoke[name] = _run_command((str(executable_path), "--version"))
         else:
             smoke[name] = CommandResult(
-                argv=(str(core_path), "--version"),
+                argv=(str(executable_path), "--version"),
                 exit_code=127,
                 stdout="",
                 stderr="missing executable",
@@ -517,6 +520,109 @@ def _expected_native_members(
         for name, member in members.items()
         if isinstance(member, Mapping)
     }
+
+
+def _root_wheel_paths(install_paths: Sequence[Path]) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in install_paths
+        if path.name.startswith("solstone-")
+        and path.name.endswith(".whl")
+        and not path.name.startswith("solstone_core-")
+    )
+
+
+def _root_launcher_members_from_wheel(
+    wheel_path: Path,
+) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
+    try:
+        with zipfile.ZipFile(wheel_path) as wheel:
+            scripts = sorted(
+                (
+                    info
+                    for info in wheel.infolist()
+                    if ".data/scripts/" in info.filename
+                    and Path(info.filename).name in ROOT_LAUNCHER_NAMES
+                ),
+                key=lambda info: info.filename,
+            )
+            names = {Path(info.filename).name for info in scripts}
+            if len(scripts) != len(ROOT_LAUNCHER_NAMES) or names != set(
+                ROOT_LAUNCHER_NAMES
+            ):
+                return {}, [
+                    _failure(
+                        "install proof root launcher member set is invalid",
+                        expected=", ".join(ROOT_LAUNCHER_NAMES),
+                        actual=", ".join(Path(info.filename).name for info in scripts)
+                        or "<empty>",
+                        repair="python3 scripts/check_wheel_contents.py",
+                    )
+                ]
+            members: dict[str, Mapping[str, Any]] = {}
+            for script in scripts:
+                content = wheel.read(script)
+                members[Path(script.filename).name] = {
+                    "path": script.filename,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "bytes": len(content),
+                }
+            return members, []
+    except (OSError, zipfile.BadZipFile):
+        return {}, [
+            _failure(
+                "install proof root wheel is unreadable",
+                expected="readable root wheel",
+                actual=wheel_path.name,
+                repair="python3 scripts/check_wheel_contents.py",
+            )
+        ]
+
+
+def _expected_install_members(
+    ledger_payload: Mapping[str, Any],
+    target: str,
+    *,
+    candidate_dir: Path,
+    install_paths: Sequence[Path] | None = None,
+) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
+    members = dict(_expected_native_members(ledger_payload, target))
+    failures: list[Failure] = []
+    if install_paths is None:
+        try:
+            install_paths = target_install_paths_from_ledger(
+                ledger_payload,
+                target=target,
+                candidate_dir=candidate_dir,
+            )
+        except InstallProofError as exc:
+            return members, list(exc.failures)
+    root_wheels = _root_wheel_paths(install_paths)
+    if len(root_wheels) != 1:
+        failures.append(
+            _failure(
+                "install proof root wheel selection is invalid",
+                expected="exactly one solstone root wheel",
+                actual=", ".join(path.name for path in root_wheels) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+        return members, failures
+    root_members, root_failures = _root_launcher_members_from_wheel(root_wheels[0])
+    failures.extend(root_failures)
+    for name, member in root_members.items():
+        if name in members:
+            failures.append(
+                _failure(
+                    "install proof executable ownership is duplicated",
+                    expected="distinct root launcher and native member names",
+                    actual=name,
+                    repair="python3 scripts/check_wheel_contents.py",
+                )
+            )
+            continue
+        members[name] = member
+    return members, failures
 
 
 def _command_payload(
@@ -755,12 +861,18 @@ def _validate_observation(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_members = _expected_native_members(ledger_payload, target)
+    expected_members, member_failures = _expected_install_members(
+        ledger_payload,
+        target,
+        candidate_dir=candidate_dir,
+        install_paths=install_paths,
+    )
+    failures.extend(member_failures)
     if not expected_members:
         failures.append(
             _failure(
-                "install proof retained native members are missing",
-                expected=f"{target} retained native member map",
+                "install proof expected executable members are missing",
+                expected=f"{target} retained executable member map",
                 actual="<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -772,7 +884,7 @@ def _validate_observation(
             failures.append(
                 _failure(
                     "install proof observation supplies forbidden expected hash",
-                    expected="expected native member hashes from retained ledger",
+                    expected="expected executable member hashes from retained payloads",
                     actual=name or "<unnamed>",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -781,7 +893,7 @@ def _validate_observation(
             failures.append(
                 _failure(
                     "install proof observation supplies forbidden wheel member path",
-                    expected="wheel member path from retained ledger",
+                    expected="wheel member path from retained payloads",
                     actual=name or "<unnamed>",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -816,8 +928,8 @@ def _validate_observation(
         if expected is None:
             failures.append(
                 _failure(
-                    "install proof member is not retained in ledger",
-                    expected=f"{target} retained native member",
+                    "install proof member is not expected",
+                    expected=f"{target} retained executable member",
                     actual=name or "<unnamed>",
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -827,7 +939,7 @@ def _validate_observation(
         if isinstance(expected_sha256, str) and member.get("sha256") != expected_sha256:
             failures.append(
                 _failure(
-                    "installed member hash does not match ledger",
+                    "installed member hash does not match expected payload",
                     expected=expected_sha256,
                     actual=str(member.get("sha256")),
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -836,7 +948,7 @@ def _validate_observation(
         elif not isinstance(expected_sha256, str):
             failures.append(
                 _failure(
-                    "retained ledger native member hash is invalid",
+                    "expected executable member hash is invalid",
                     expected="lowercase SHA-256",
                     actual=repr(expected_sha256),
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -846,13 +958,13 @@ def _validate_observation(
     if seen_members != expected_names:
         failures.append(
             _failure(
-                "install proof member set does not match retained ledger",
+                "install proof member set does not match expected executable payload",
                 expected=", ".join(sorted(expected_names)) or "<empty>",
                 actual=", ".join(sorted(seen_members)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_smoke_names = set(CORE_SCRIPT_NAMES)
+    expected_smoke_names = set(INSTALL_SCRIPT_NAMES)
     if set(observation.smoke) != expected_smoke_names:
         failures.append(
             _failure(
@@ -976,10 +1088,18 @@ def build_install_proof(
         raise InstallProofError(failures)
 
     env_root = observation.env_root
+    expected_install_members, expected_install_failures = _expected_install_members(
+        ledger_payload,
+        target,
+        candidate_dir=candidate_dir,
+        install_paths=install_paths,
+    )
+    if expected_install_failures:
+        raise InstallProofError(expected_install_failures)
     installed_members = []
     for member in observation.installed_members:
         name = str(member["name"])
-        expected_member = _expected_native_members(ledger_payload, target)[name]
+        expected_member = expected_install_members[name]
         installed_members.append(
             {
                 **{
@@ -1291,7 +1411,13 @@ def _validate_proof_semantics(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_members = _expected_native_members(ledger_payload, target)
+    expected_members, member_failures = _expected_install_members(
+        ledger_payload,
+        target,
+        candidate_dir=candidate_dir,
+        install_paths=install_paths,
+    )
+    failures.extend(member_failures)
     proof_members = proof.get("installed_members", [])
     seen: dict[str, Mapping[str, Any]] = {}
     if isinstance(proof_members, list):
@@ -1303,7 +1429,7 @@ def _validate_proof_semantics(
     if set(seen) != set(expected_members):
         failures.append(
             _failure(
-                "install proof installed member set does not match ledger",
+                "install proof installed member set does not match expected payloads",
                 expected=", ".join(sorted(expected_members)) or "<empty>",
                 actual=", ".join(sorted(seen)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
@@ -1346,7 +1472,7 @@ def _validate_proof_semantics(
         if member.get("sha256") != expected.get("sha256"):
             failures.append(
                 _failure(
-                    "install proof installed member hash does not match ledger",
+                    "install proof installed member hash does not match expected payload",
                     expected=str(expected.get("sha256")),
                     actual=str(member.get("sha256")),
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -1354,16 +1480,16 @@ def _validate_proof_semantics(
             )
     smoke = proof.get("smoke")
     smoke_items = smoke if isinstance(smoke, Mapping) else {}
-    if set(smoke_items) != set(CORE_SCRIPT_NAMES):
+    if set(smoke_items) != set(INSTALL_SCRIPT_NAMES):
         failures.append(
             _failure(
                 "install proof smoke command set does not match release executables",
-                expected=", ".join(CORE_SCRIPT_NAMES),
+                expected=", ".join(INSTALL_SCRIPT_NAMES),
                 actual=", ".join(sorted(str(key) for key in smoke_items)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    for name in CORE_SCRIPT_NAMES:
+    for name in INSTALL_SCRIPT_NAMES:
         smoke_entry = smoke_items.get(name) if isinstance(smoke_items, Mapping) else {}
         if not isinstance(smoke_entry, Mapping):
             failures.append(
@@ -1635,7 +1761,7 @@ def validate_install_proof(
         failures.append(
             _failure(
                 "install proof installed_members is invalid",
-                expected="list of installed native members",
+                expected="list of installed executable members",
                 actual=type(installed_members).__name__,
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -1663,7 +1789,7 @@ def validate_install_proof(
             failures.append(
                 _failure(
                     "install proof installed member is duplicated",
-                    expected="unique installed native members",
+                    expected="unique installed executable members",
                     actual=name,
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -1778,11 +1904,11 @@ def validate_install_proof(
                     )
                 )
     smoke = proof.get("smoke")
-    if not isinstance(smoke, Mapping) or set(smoke) != set(CORE_SCRIPT_NAMES):
+    if not isinstance(smoke, Mapping) or set(smoke) != set(INSTALL_SCRIPT_NAMES):
         failures.append(
             _failure(
                 "install proof smoke section is invalid",
-                expected=", ".join(CORE_SCRIPT_NAMES) + " smoke results",
+                expected=", ".join(INSTALL_SCRIPT_NAMES) + " smoke results",
                 actual=repr(smoke),
                 repair="python3 scripts/check_rust_release_manifest.py",
             )

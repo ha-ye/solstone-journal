@@ -20,6 +20,8 @@ const EXIT_USAGE: u8 = 64;
 const EXIT_UNAVAILABLE: u8 = 69;
 const EXIT_TEMPFAIL: u8 = 75;
 const ZERO_EDGE_HINT: &str = "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase remains modification-time incremental — run journal indexer --rebuild-edges to force full edge re-extraction.";
+const SOL_IDENTITY_TOKEN: &str = "__solstone_identity=sol";
+const SOLSTONE_IDENTITY_TOKEN: &str = "__solstone_identity=solstone";
 
 struct JournalPathLine {
     label: &'static str,
@@ -33,7 +35,11 @@ enum JournalPathError {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    let mut args: Vec<_> = env::args_os().skip(1).collect();
+    if let Some(identity) = sol_identity_from_first_arg(&args) {
+        args.remove(0);
+        return solstone_core_sol::run(identity, args);
+    }
     match evaluate_args(&args) {
         Ok(Command::Version) => {
             print!("{}", version_line(env!("CARGO_PKG_VERSION")));
@@ -54,6 +60,14 @@ fn main() -> ExitCode {
             eprint!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
         }
+    }
+}
+
+fn sol_identity_from_first_arg(args: &[std::ffi::OsString]) -> Option<&'static str> {
+    match args.first().and_then(|arg| arg.to_str()) {
+        Some(SOL_IDENTITY_TOKEN) => Some("sol"),
+        Some(SOLSTONE_IDENTITY_TOKEN) => Some("solstone"),
+        _ => None,
     }
 }
 

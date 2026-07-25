@@ -350,13 +350,13 @@ wheel-macos: parakeet-helper
 	CORE_TMP=$$(mktemp -d); \
 	trap 'rm -rf "$$CORE_TMP" "$$CORE_FACTS"' EXIT; \
 	python3 -m zipfile -e "$$CORE_MAC_WHEEL" "$$CORE_TMP"; \
-	for name in sol solstone solstone-core; do \
+	for name in solstone-core; do \
 		CORE_BINARY=$$(find "$$CORE_TMP" -path "*.data/scripts/$$name" -type f -print -quit); \
 		test -n "$$CORE_BINARY" || { echo "missing $$name binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
 		echo "==> signing and notarizing $$name"; \
 		./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY" > "$$CORE_TMP/$$name.signing-facts.json"; \
 	done; \
-	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("sol", "solstone", "solstone-core"); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$CORE_TMP" "$$CORE_FACTS"; \
+	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core",); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$CORE_TMP" "$$CORE_FACTS"; \
 	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"; \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \

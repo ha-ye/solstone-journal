@@ -41,7 +41,7 @@ const EXIT_TEMPFAIL: u8 = 75;
 const USAGE: &str = "Usage: sol <command> [args...]\n";
 const SERVICE_MOVED_EXIT: i32 = 2;
 const SOL_SERVICE_CMD_REMOVED_ERROR_TAIL: &str = "('sol' is the journal-access surface; 'journal' surfaces journal-service commands; see 'journal --help'.)";
-const COMPAT_HELPER_NAME: &str = "solstone-python-compat";
+const COMPAT_MODULE: &str = "solstone.think.sol_compat_cli";
 const COMPAT_SENTINEL: &str = "SOLSTONE_NATIVE_COMPAT_ACTIVE";
 const COMPAT_SENTINEL_ARMED: &str = "armed";
 const COMPAT_ARGV0_MARKER_PREFIX: &str = "__solstone_native_argv0=";
@@ -50,12 +50,15 @@ const COMPAT_RECURSION_ERROR: &str =
 const TOP_LEVEL_COMPAT_COMMANDS: &[&str] =
     &["notify", "doctor", "check", "contract", "skills", "link"];
 
-pub fn run() -> ExitCode {
-    let args = env::args_os().skip(1).collect::<Vec<_>>();
-    run_with_stdin_provider(args, &RealStdinProvider)
+pub fn run(public_argv0: &str, args: Vec<OsString>) -> ExitCode {
+    run_with_stdin_provider(public_argv0, args, &RealStdinProvider)
 }
 
-fn run_with_stdin_provider(args: Vec<OsString>, stdin_provider: &dyn StdinProvider) -> ExitCode {
+fn run_with_stdin_provider(
+    public_argv0: &str,
+    args: Vec<OsString>,
+    stdin_provider: &dyn StdinProvider,
+) -> ExitCode {
     let mut args = args;
     if args.first().is_some_and(|arg| is_verbose_flag(arg)) {
         args.remove(0);
@@ -77,13 +80,13 @@ fn run_with_stdin_provider(args: Vec<OsString>, stdin_provider: &dyn StdinProvid
         [command] if command == OsStr::new("path") => run_path(),
         [command] if command == OsStr::new("status") => run_status(),
         [command, rest @ ..] if command == OsStr::new("call") => {
-            run_call(&args, rest, stdin_provider)
+            run_call(public_argv0, &args, rest, stdin_provider)
         }
         [command, rest @ ..] if command == OsStr::new("chat") => {
-            run_top_level_native(&args, "chat", rest, stdin_provider)
+            run_top_level_native(public_argv0, &args, "chat", rest, stdin_provider)
         }
         [command, rest @ ..] if command == OsStr::new("import") => {
-            run_top_level_native(&args, "import", rest, stdin_provider)
+            run_top_level_native(public_argv0, &args, "import", rest, stdin_provider)
         }
         [flag, ..] if flag.to_string_lossy().starts_with('-') => {
             render_output(usage_error_output())
@@ -91,7 +94,9 @@ fn run_with_stdin_provider(args: Vec<OsString>, stdin_provider: &dyn StdinProvid
         [command, ..] if is_journal_host_command(command) => {
             render_output(service_moved_output(command))
         }
-        [command, ..] if is_top_level_compat_command(command) => delegate_to_compat(&args),
+        [command, ..] if is_top_level_compat_command(command) => {
+            delegate_to_compat(public_argv0, &args)
+        }
         _ => render_output(unsupported_output()),
     }
 }
@@ -294,6 +299,7 @@ fn run_path() -> ExitCode {
 }
 
 fn run_call(
+    public_argv0: &str,
     all_args: &[OsString],
     command_args: &[OsString],
     stdin_provider: &dyn StdinProvider,
@@ -304,10 +310,11 @@ fn run_call(
     if let Some(output) = help::render_sol_call_help(&args) {
         return render_output(output);
     }
-    run_dispatched(all_args, command_args, stdin_provider)
+    run_dispatched(public_argv0, all_args, command_args, stdin_provider)
 }
 
 fn run_top_level_native(
+    public_argv0: &str,
     all_args: &[OsString],
     command: &str,
     command_args: &[OsString],
@@ -319,7 +326,7 @@ fn run_top_level_native(
     if let Some(output) = help::render_top_level_help(command, &args) {
         return render_output(output);
     }
-    run_dispatched(all_args, command_args, stdin_provider)
+    run_dispatched(public_argv0, all_args, command_args, stdin_provider)
 }
 
 fn plain_path_output(line: &JournalPathLine) -> CommandOutput {
@@ -430,13 +437,14 @@ fn is_day_dir_name(value: &str) -> bool {
 }
 
 fn run_dispatched(
+    public_argv0: &str,
     all_args: &[OsString],
     command_args: &[OsString],
     stdin_provider: &dyn StdinProvider,
 ) -> ExitCode {
     let outcome = evaluate_args(all_args);
     if should_delegate_to_compat_after_native_miss(all_args, &outcome) {
-        return delegate_to_compat(all_args);
+        return delegate_to_compat(public_argv0, all_args);
     }
     if matches!(outcome, Outcome::Unsupported { .. }) {
         return render_output(unsupported_output());
@@ -521,37 +529,72 @@ fn run_dispatched(
     render_output(output)
 }
 
-fn delegate_to_compat(all_args: &[OsString]) -> ExitCode {
+fn delegate_to_compat(public_argv0: &str, all_args: &[OsString]) -> ExitCode {
     let existing_sentinel = env::var_os(COMPAT_SENTINEL);
     if let Err(output) = compat_env_preflight(existing_sentinel.as_deref()) {
         return render_output(output);
     }
-    let executable = env::current_exe().unwrap_or_else(|_| PathBuf::from("sol"));
-    let helper = helper_path_for_executable(&executable);
-    if !is_executable(&helper) {
-        return render_output(missing_helper_output(&helper));
+    let executable = env::current_exe().unwrap_or_else(|_| PathBuf::from("solstone-core"));
+    let python = match sibling_python_for_executable(&executable) {
+        Ok(path) => path,
+        Err(error) => return render_output(compat_python_error_output(error)),
+    };
+    let args = compat_exec_args(public_argv0, all_args);
+    exec_compat(&python, &args)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompatPythonError {
+    Missing { dir: PathBuf },
+    NonExecutable { path: PathBuf },
+}
+
+fn executable_dir(executable: &Path) -> PathBuf {
+    executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn sibling_python_for_executable(executable: &Path) -> Result<PathBuf, CompatPythonError> {
+    let dir = executable_dir(executable);
+    for name in ["python3", "python"] {
+        let candidate = dir.join(name);
+        match fs::metadata(&candidate) {
+            Ok(_) if is_executable(&candidate) => return Ok(candidate),
+            Ok(_) => return Err(CompatPythonError::NonExecutable { path: candidate }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(CompatPythonError::NonExecutable { path: candidate }),
+        }
     }
-    let public_argv0 = public_argv0_for_executable(&executable);
-    let args = compat_exec_args(&public_argv0, all_args);
-    exec_compat(&helper, &args)
+    Err(CompatPythonError::Missing { dir })
 }
 
-fn helper_path_for_executable(executable: &Path) -> PathBuf {
-    executable.with_file_name(COMPAT_HELPER_NAME)
-}
-
-fn missing_helper_message(path: &Path) -> String {
+fn missing_python_message(dir: &Path) -> String {
     format!(
-        "sol: native compatibility helper is missing or not executable: {}. Reinstall solstone and solstone-core.",
+        "sol: native compatibility Python is missing beside {}. Reinstall solstone and solstone-core.",
+        dir.display()
+    )
+}
+
+fn non_executable_python_message(path: &Path) -> String {
+    format!(
+        "sol: native compatibility Python is not executable: {}. Reinstall solstone and solstone-core.",
         path.display()
     )
 }
 
-fn missing_helper_output(path: &Path) -> CommandOutput {
-    CommandOutput::failure(
-        format!("{}\n", missing_helper_message(path)),
-        i32::from(EXIT_CONFIG),
-    )
+fn compat_python_error_output(error: CompatPythonError) -> CommandOutput {
+    match error {
+        CompatPythonError::Missing { dir } => CommandOutput::failure(
+            format!("{}\n", missing_python_message(&dir)),
+            i32::from(EXIT_CONFIG),
+        ),
+        CompatPythonError::NonExecutable { path } => CommandOutput::failure(
+            format!("{}\n", non_executable_python_message(&path)),
+            i32::from(EXIT_CONFIG),
+        ),
+    }
 }
 
 fn compat_recursion_output() -> CommandOutput {
@@ -566,13 +609,6 @@ fn compat_env_preflight(existing_sentinel: Option<&OsStr>) -> Result<(), Command
         Err(compat_recursion_output())
     } else {
         Ok(())
-    }
-}
-
-fn public_argv0_for_executable(executable: &Path) -> String {
-    match executable.file_name().and_then(OsStr::to_str) {
-        Some("solstone") => "solstone".to_string(),
-        _ => "sol".to_string(),
     }
 }
 
@@ -603,25 +639,26 @@ fn is_executable(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn exec_compat(helper: &Path, args: &[OsString]) -> ExitCode {
+fn exec_compat(python: &Path, args: &[OsString]) -> ExitCode {
     use std::os::unix::process::CommandExt;
 
-    let error = Command::new(helper)
+    let error = Command::new(python)
+        .args(["-P", "-m", COMPAT_MODULE])
         .args(args)
         .env(COMPAT_SENTINEL, COMPAT_SENTINEL_ARMED)
         .exec();
     eprintln!(
-        "sol: native compatibility helper failed to execute: {}: {error}. Reinstall solstone and solstone-core.",
-        helper.display()
+        "sol: native compatibility Python failed to execute: {}: {error}. Reinstall solstone and solstone-core.",
+        python.display()
     );
     ExitCode::from(EXIT_CONFIG)
 }
 
 #[cfg(not(unix))]
-fn exec_compat(helper: &Path, _args: &[OsString]) -> ExitCode {
+fn exec_compat(python: &Path, _args: &[OsString]) -> ExitCode {
     eprintln!(
-        "sol: native compatibility helper failed to execute: {}: exec is unavailable. Reinstall solstone and solstone-core.",
-        helper.display()
+        "sol: native compatibility Python failed to execute: {}: exec is unavailable. Reinstall solstone and solstone-core.",
+        python.display()
     );
     ExitCode::from(EXIT_CONFIG)
 }
@@ -928,6 +965,16 @@ mod tests {
         env::temp_dir().join(format!("solstone-core-sol-{name}-{stamp}"))
     }
 
+    fn write_executable(path: &Path, content: &str) {
+        fs::write(path, content).expect("write executable fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+                .expect("chmod executable fixture");
+        }
+    }
+
     #[test]
     fn canonical_site_packages_empty_candidates_return_none() {
         assert_eq!(resolve_canonical_site_packages(&[]), None);
@@ -1187,7 +1234,7 @@ mod tests {
             os_args(&["chat", "--help"]),
             os_args(&["import", "--help"]),
         ] {
-            let _ = run_with_stdin_provider(args, &provider);
+            let _ = run_with_stdin_provider("sol", args, &provider);
         }
     }
 
@@ -1224,27 +1271,45 @@ mod tests {
     }
 
     #[test]
-    fn helper_path_replaces_executable_filename() {
+    fn sibling_python_prefers_python3_then_python() {
+        let root = temp_path("python-lookup");
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("create bin");
+        let python3 = bin.join("python3");
+        let python = bin.join("python");
+        write_executable(&python3, "#!/bin/sh\n");
+        write_executable(&python, "#!/bin/sh\n");
+
+        let executable = bin.join("solstone-core");
         assert_eq!(
-            helper_path_for_executable(Path::new("/opt/bin/sol")),
-            PathBuf::from("/opt/bin/solstone-python-compat")
+            sibling_python_for_executable(&executable),
+            Ok(python3.clone())
         );
+        fs::remove_file(&python3).expect("remove python3");
+        assert_eq!(sibling_python_for_executable(&executable), Ok(python));
+        fs::remove_dir_all(root).expect("cleanup python lookup");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn public_argv0_preserves_solstone_and_defaults_to_sol() {
+    fn sibling_python_reports_first_non_executable_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_path("python-nonexec");
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("create bin");
+        let python3 = bin.join("python3");
+        let python = bin.join("python");
+        fs::write(&python3, "#!/bin/sh\n").expect("write non-executable python3");
+        fs::set_permissions(&python3, fs::Permissions::from_mode(0o644))
+            .expect("chmod non-executable python3");
+        write_executable(&python, "#!/bin/sh\n");
+
         assert_eq!(
-            public_argv0_for_executable(Path::new("/opt/bin/solstone")),
-            "solstone"
+            sibling_python_for_executable(&bin.join("solstone-core")),
+            Err(CompatPythonError::NonExecutable { path: python3 })
         );
-        assert_eq!(
-            public_argv0_for_executable(Path::new("/opt/bin/sol")),
-            "sol"
-        );
-        assert_eq!(
-            public_argv0_for_executable(Path::new("/opt/bin/solstone-core-sol")),
-            "sol"
-        );
+        fs::remove_dir_all(root).expect("cleanup python nonexec");
     }
 
     #[test]
@@ -1269,12 +1334,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_helper_message_is_actionable() {
-        let path = PathBuf::from("/opt/bin/solstone-python-compat");
-        let message = "sol: native compatibility helper is missing or not executable: /opt/bin/solstone-python-compat. Reinstall solstone and solstone-core.";
-        assert_eq!(missing_helper_message(&path), message);
+    fn missing_python_message_is_actionable() {
+        let dir = PathBuf::from("/opt/bin");
+        let message = "sol: native compatibility Python is missing beside /opt/bin. Reinstall solstone and solstone-core.";
+        assert_eq!(missing_python_message(&dir), message);
         assert_eq!(
-            missing_helper_output(&path),
+            compat_python_error_output(CompatPythonError::Missing { dir }),
+            CommandOutput::failure(format!("{message}\n"), i32::from(EXIT_CONFIG))
+        );
+    }
+
+    #[test]
+    fn non_executable_python_message_is_actionable() {
+        let path = PathBuf::from("/opt/bin/python3");
+        let message = "sol: native compatibility Python is not executable: /opt/bin/python3. Reinstall solstone and solstone-core.";
+        assert_eq!(non_executable_python_message(&path), message);
+        assert_eq!(
+            compat_python_error_output(CompatPythonError::NonExecutable { path }),
             CommandOutput::failure(format!("{message}\n"), i32::from(EXIT_CONFIG))
         );
     }
@@ -1294,28 +1370,28 @@ mod tests {
     }
 
     #[test]
-    fn missing_helper_is_not_executable() {
-        let path = env::temp_dir().join("solstone-core-sol-missing-helper");
+    fn missing_python_is_not_executable() {
+        let path = env::temp_dir().join("solstone-core-sol-missing-python");
         let _ = fs::remove_file(&path);
         assert!(!is_executable(&path));
     }
 
     #[cfg(unix)]
     #[test]
-    fn non_executable_helper_is_incoherent() {
+    fn non_executable_python_is_incoherent() {
         use std::os::unix::fs::PermissionsExt;
 
         let path = env::temp_dir().join(format!(
-            "solstone-core-sol-nonexec-helper-{}",
+            "solstone-core-sol-nonexec-python-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
         ));
-        fs::write(&path, "#!/bin/sh\n").expect("write helper");
+        fs::write(&path, "#!/bin/sh\n").expect("write python");
         let mut permissions = fs::metadata(&path).expect("metadata").permissions();
         permissions.set_mode(0o644);
-        fs::set_permissions(&path, permissions).expect("chmod helper");
+        fs::set_permissions(&path, permissions).expect("chmod python");
         assert!(!is_executable(&path));
         let _ = fs::remove_file(path);
     }

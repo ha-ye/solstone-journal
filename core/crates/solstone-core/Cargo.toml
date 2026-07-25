@@ -15,11 +15,3 @@ solstone-core-cli.workspace = true
 solstone-core-indexer-store.workspace = true
 solstone-core-journal.workspace = true
 solstone-core-sol.workspace = true
-
-[[bin]]
-name = "sol"
-path = "src/bin/sol.rs"
-
-[[bin]]
-name = "solstone"
-path = "src/bin/solstone.rs"

@@ -13,9 +13,11 @@ from pathlib import Path
 
 import scripts.check_wheel_contents as checker
 from tests.helpers.release_wheel_fixtures import (
+    ROOT_LAUNCHER_BYTES,
     minimal_elf,
     minimal_fat_macho,
     minimal_macho,
+    record_hash,
     write_core_wheel,
     write_platform_base_wheel,
 )
@@ -281,11 +283,24 @@ def _write_core_sdist(path: Path, *, missing: str | None = None) -> Path:
 def _write_minimal_wheel(path: Path, name: str) -> Path:
     wheel_path = path / f"{name}-1.2.3-py3-none-any.whl"
     with zipfile.ZipFile(wheel_path, "w") as wheel:
-        _write_member(
-            wheel,
-            f"{name}-1.2.3.dist-info/METADATA",
-            f"Name: {name}\nVersion: 1.2.3\n".encode(),
-        )
+        members = {
+            f"{name}-1.2.3.dist-info/METADATA": (
+                f"Name: {name}\nVersion: 1.2.3\n".encode()
+            )
+        }
+        if name.startswith("solstone") and not name.startswith("solstone_journal"):
+            members[f"{name}-1.2.3.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
+            for launcher, content in ROOT_LAUNCHER_BYTES.items():
+                members[f"{name}-1.2.3.data/scripts/{launcher}"] = content
+            record_name = f"{name}-1.2.3.dist-info/RECORD"
+            record = "\n".join(
+                f"{member},{record_hash(content)},{len(content)}"
+                for member, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        for member, content in members.items():
+            mode = 0o755 if Path(member).name in checker.ROOT_LAUNCHER_NAMES else 0o644
+            _write_member(wheel, member, content, mode=mode)
     return wheel_path
 
 

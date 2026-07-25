@@ -29,9 +29,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
         discover,
     )
 
-from solstone.think.sol_compat_inventory import HELPER_NAME
+from solstone.think.sol_compat_inventory import COMPAT_MODULE
 from solstone.think.tools.call import app as journal_app
 
+COMPAT_EXEC_OWNER = REPO_ROOT / "core/crates/solstone-core-sol/src/lib.rs"
 CLIENT_CRATES = (
     REPO_ROOT / "core/crates/solstone-core-sol-client",
     REPO_ROOT / "core/crates/solstone-core-sol-client-cli",
@@ -93,14 +94,22 @@ def check_journal_subtree() -> list[str]:
     return errors
 
 
-def check_helper_name_boundary() -> list[str]:
+def check_compat_module_boundary() -> list[str]:
     errors: list[str] = []
+    owner_text = COMPAT_EXEC_OWNER.read_text(encoding="utf-8")
+    if COMPAT_MODULE not in owner_text:
+        errors.append(
+            f"{rel(COMPAT_EXEC_OWNER)} does not invoke {COMPAT_MODULE}; "
+            "compatibility exec belongs in solstone-core-sol"
+        )
     for path in native_boundary_files():
+        if path == COMPAT_EXEC_OWNER:
+            continue
         text = path.read_text(encoding="utf-8")
-        if HELPER_NAME in text:
+        if COMPAT_MODULE in text:
             errors.append(
-                f"{rel(path)} mentions {HELPER_NAME}; "
-                "compatibility exec belongs only in solstone-core-sol"
+                f"{rel(path)} mentions {COMPAT_MODULE}; "
+                "compatibility module exec belongs only in solstone-core-sol"
             )
     return errors
 
@@ -122,7 +131,7 @@ def format_paths(paths: list[tuple[str, ...]]) -> list[list[str]]:
 
 def main() -> int:
     errors = check_journal_subtree()
-    errors.extend(check_helper_name_boundary())
+    errors.extend(check_compat_module_boundary())
     if errors:
         print("native sol compatibility violations:")
         for error in errors:

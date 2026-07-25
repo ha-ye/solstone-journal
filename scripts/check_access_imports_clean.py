@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Smoke guard for the native `sol` access surface and private compat helper."""
+"""Smoke guard for the native `sol` access surface and compatibility module."""
 
 from __future__ import annotations
 
@@ -38,12 +38,17 @@ try:
         extract as extract_journal_host_commands,
     )
     from scripts.check_native_sol_compat import frozen_journal_remainder_paths
+    from scripts.check_wheel_contents import CORE_SCRIPT_NAMES, ROOT_LAUNCHER_NAMES
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
     from build_native_sol_journal_host_commands import (  # type: ignore[no-redef]
         extract as extract_journal_host_commands,
     )
     from check_native_sol_compat import (
         frozen_journal_remainder_paths,  # type: ignore[no-redef]
+    )
+    from check_wheel_contents import (  # type: ignore[no-redef]
+        CORE_SCRIPT_NAMES,
+        ROOT_LAUNCHER_NAMES,
     )
 
 from solstone.think.generated.access_rejections import JOURNAL_ACCESS_ONLY_COMMANDS
@@ -144,10 +149,8 @@ ROUTING_CASES: tuple[tuple[str, list[str], str], ...] = (
     ),
 ) + SERVICE_MOVED_ROUTING_CASES
 EXPECTED_SCRIPT_OWNERS = {
-    "sol": ["solstone-core"],
-    "solstone": ["solstone-core"],
-    "solstone-core": ["solstone-core"],
-    "solstone-python-compat": ["solstone"],
+    **{name: ["solstone"] for name in ROOT_LAUNCHER_NAMES},
+    **{name: ["solstone-core"] for name in CORE_SCRIPT_NAMES},
 }
 _SOURCE_NATIVE_BIN_DIR: Path | None = None
 
@@ -205,9 +208,7 @@ def _source_native_bin_dir() -> Path:
             "-p",
             "solstone-core",
             "--bin",
-            "sol",
-            "--bin",
-            "solstone",
+            "solstone-core",
             "--locked",
         ],
         cwd=ROOT,
@@ -215,6 +216,11 @@ def _source_native_bin_dir() -> Path:
         timeout=900,
     )
     _SOURCE_NATIVE_BIN_DIR = ROOT / "core" / "target" / "debug"
+    for name in ROOT_LAUNCHER_NAMES:
+        launcher = ROOT / "scripts" / "root-launchers" / name
+        target = _SOURCE_NATIVE_BIN_DIR / name
+        shutil.copy2(launcher, target)
+        target.chmod(0o755)
     return _SOURCE_NATIVE_BIN_DIR
 
 

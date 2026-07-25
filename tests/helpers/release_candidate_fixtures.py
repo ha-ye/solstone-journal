@@ -32,6 +32,7 @@ from scripts.release_advisory_policy import PolicyRun
 from scripts.release_build_host import BuildHostResult, SourceBundle
 from scripts.release_install_smoke import (
     CORE_SMOKE_STDOUT,
+    INSTALL_SCRIPT_NAMES,
     SCRUBBED_COMMAND_ENV,
     CommandResult,
     InstallObservation,
@@ -41,8 +42,10 @@ from scripts.release_install_smoke import (
     write_install_proof,
 )
 from tests.helpers.release_wheel_fixtures import (
+    ROOT_LAUNCHER_BYTES,
     minimal_elf,
     minimal_macho,
+    record_hash,
     write_core_wheel,
     write_platform_base_wheel,
 )
@@ -133,11 +136,28 @@ def _wheel_metadata(name: str) -> tuple[str, str]:
 
 def _write_metadata_wheel(path: Path) -> None:
     metadata_name, metadata = _wheel_metadata(path.name)
+    version = path.name.removesuffix(".whl").split("-")[1]
     with zipfile.ZipFile(path, "w") as wheel:
-        info = zipfile.ZipInfo(metadata_name, _ZIP_DATE_TIME)
-        info.create_system = 3
-        info.external_attr = 0o644 << 16
-        wheel.writestr(info, metadata)
+        members = {metadata_name: metadata.encode("utf-8")}
+        if path.name.startswith("solstone-"):
+            members[f"solstone-{version}.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
+            for name, content in ROOT_LAUNCHER_BYTES.items():
+                members[f"solstone-{version}.data/scripts/{name}"] = content
+            record_name = f"solstone-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        for name, content in members.items():
+            info = zipfile.ZipInfo(name, _ZIP_DATE_TIME)
+            info.create_system = 3
+            info.external_attr = (
+                0o755 << 16
+                if Path(name).name in checker.ROOT_LAUNCHER_NAMES
+                else 0o644 << 16
+            )
+            wheel.writestr(info, content)
 
 
 def _write_linux_core_wheels(dist_dir: Path) -> None:
@@ -311,6 +331,8 @@ def _proof_observation(
 ) -> InstallObservation:
     (env_root / "bin").mkdir(parents=True, exist_ok=True)
     (env_root / "bin" / "python").write_bytes(b"python")
+    for name, content in ROOT_LAUNCHER_BYTES.items():
+        (env_root / "bin" / name).write_bytes(content)
     for name in CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
     core_sha = {
@@ -319,6 +341,15 @@ def _proof_observation(
         "macos-arm64": hashlib.sha256(MACOS_CORE).hexdigest(),
     }[target]
     members = [
+        {
+            "name": name,
+            "path": env_root / "bin" / name,
+            "sha256": hashlib.sha256(ROOT_LAUNCHER_BYTES[name]).hexdigest(),
+            "symlink": False,
+        }
+        for name in checker.ROOT_LAUNCHER_NAMES
+    ]
+    members += [
         {
             "name": name,
             "path": env_root / "bin" / name,
@@ -363,7 +394,7 @@ def _proof_observation(
                 stdout=f"{CORE_SMOKE_STDOUT[name]} {version}",
                 env=SCRUBBED_COMMAND_ENV,
             )
-            for name in CORE_SCRIPT_NAMES
+            for name in INSTALL_SCRIPT_NAMES
         },
     )
 

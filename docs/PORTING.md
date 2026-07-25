@@ -265,7 +265,7 @@ checked by `scripts/check_native_sol_compat.py`. The inventory is the only
 authority for that command set; do not copy the list into docs or gates. The
 removal criterion is zero Python delegation from supported-platform native
 `sol`: every remaining compatibility path has a native authority and production
-aggregate handler, then the compatibility inventory, helper, and exec bridge are
+aggregate handler, then the compatibility inventory and module exec bridge are
 deleted together.
 
 ## Version Lockstep

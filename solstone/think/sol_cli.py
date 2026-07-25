@@ -3,9 +3,9 @@
 
 """Journal host CLI dispatcher.
 
-The public `sol` and `solstone` access commands are native binaries owned by
-`solstone-core`. This module survives only as the `journal` console script
-entry point for service and universal commands.
+The public `sol` and `solstone` access commands are root-owned launchers for the
+sibling `solstone-core` binary. This module survives only as the `journal`
+console script entry point for service and universal commands.
 """
 
 from __future__ import annotations

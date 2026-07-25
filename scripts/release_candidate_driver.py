@@ -71,6 +71,7 @@ from scripts.release_install_smoke import (
     PROOF_TARGETS,
     RETAINED_PROOF_REPAIR,
     InstallProofError,
+    _expected_install_members,
     candidate_file_entries,
     target_install_paths_from_ledger,
     validate_install_proof_bytes,
@@ -1570,7 +1571,7 @@ def _copy_macos_wheels(host_result: BuildHostResult, dist_dir: Path) -> None:
 
 
 def _expected_members(
-    ledger: Mapping[str, Any], target: str
+    ledger: Mapping[str, Any], target: str, *, release_dir: Path
 ) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
     native = ledger.get("native_members", {})
     if not isinstance(native, Mapping):
@@ -1606,7 +1607,12 @@ def _expected_members(
             )
             continue
         members[str(member_name)] = member
-    return members, failures
+    expected, expected_failures = _expected_install_members(
+        ledger,
+        target,
+        candidate_dir=release_dir,
+    )
+    return expected or members, [*failures, *expected_failures]
 
 
 def _validate_proof_binding(
@@ -1684,7 +1690,9 @@ def _validate_proof_binding(
                 repair="bash scripts/release.sh --recover",
             )
         )
-    expected_members, expected_member_failures = _expected_members(ledger, target)
+    expected_members, expected_member_failures = _expected_members(
+        ledger, target, release_dir=release_dir
+    )
     failures.extend(expected_member_failures)
     installed_members = proof.get("installed_members", [])
     if not isinstance(installed_members, list):

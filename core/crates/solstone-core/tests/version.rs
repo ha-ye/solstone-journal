@@ -11,14 +11,6 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-core")
 }
 
-fn sol_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_sol")
-}
-
-fn solstone_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_solstone")
-}
-
 fn temp_path(name: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -27,7 +19,12 @@ fn temp_path(name: &str) -> PathBuf {
     env::temp_dir().join(format!("solstone-core-{name}-{stamp}"))
 }
 
-/// Run `sol root` from a binary this test just copied into place.
+fn identity_arg(public_argv0: &str) -> String {
+    format!("__solstone_identity={public_argv0}")
+}
+
+/// Run `sol root` through a `solstone-core` binary this test just copied into
+/// place.
 ///
 /// `fs::copy` closes its own descriptors, but the test harness is
 /// multi-threaded: any thread that forks while the copy's write descriptor is
@@ -35,17 +32,25 @@ fn temp_path(name: &str) -> PathBuf {
 /// to exec the file with `ETXTBSY` until that child execs or exits. The window
 /// is short and the condition always clears, so retry past it rather than
 /// failing a test that is not about process spawning.
-fn sol_root_output(program: &Path, cwd: &Path) -> Output {
+fn sol_root_output(program: &Path, cwd: &Path, public_argv0: &str) -> Output {
     for _ in 0..100 {
-        match Command::new(program).arg("root").current_dir(cwd).output() {
+        match Command::new(program)
+            .arg(identity_arg(public_argv0))
+            .arg("root")
+            .current_dir(cwd)
+            .output()
+        {
             Ok(output) => return output,
             Err(error) if error.kind() == ErrorKind::ExecutableFileBusy => {
                 sleep(Duration::from_millis(20));
             }
-            Err(error) => panic!("fake sol should execute: {error:?}"),
+            Err(error) => panic!("fake solstone-core should execute: {error:?}"),
         }
     }
-    panic!("fake sol stayed busy after retries: {}", program.display())
+    panic!(
+        "fake solstone-core stayed busy after retries: {}",
+        program.display()
+    )
 }
 
 #[test]
@@ -197,15 +202,17 @@ fn journal_path_config_tilde_is_literal() {
 }
 
 #[test]
-fn sol_and_solstone_bins_report_the_same_native_version() {
-    let sol = Command::new(sol_bin())
+fn sol_and_solstone_identities_report_the_same_native_version() {
+    let sol = Command::new(bin())
+        .arg(identity_arg("sol"))
         .arg("--version")
         .output()
-        .expect("sol should execute");
-    let solstone = Command::new(solstone_bin())
+        .expect("sol identity should execute");
+    let solstone = Command::new(bin())
+        .arg(identity_arg("solstone"))
         .arg("--version")
         .output()
-        .expect("solstone should execute");
+        .expect("solstone identity should execute");
 
     assert_eq!(sol.status.code(), Some(0));
     assert_eq!(solstone.status.code(), Some(0));
@@ -222,6 +229,30 @@ fn sol_and_solstone_bins_report_the_same_native_version() {
 }
 
 #[test]
+fn sol_identity_marker_must_be_exact_first_arg() {
+    for args in [
+        vec!["__solstone_identity="],
+        vec!["__solstone_identity=bogus"],
+        vec!["journal-path", "__solstone_identity=sol"],
+    ] {
+        let output = Command::new(bin())
+            .args(args)
+            .output()
+            .expect("solstone-core should execute");
+
+        assert_eq!(output.status.code(), Some(64));
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("stdout should be utf-8"),
+            ""
+        );
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("stderr should be utf-8"),
+            solstone_core_cli::USAGE
+        );
+    }
+}
+
+#[test]
 fn sol_root_installed_layout_is_independent_of_cwd() {
     let env_root = temp_path("sol-root-installed-layout");
     let bin_dir = env_root.join("bin");
@@ -232,16 +263,18 @@ fn sol_root_installed_layout_is_independent_of_cwd() {
     fs::create_dir_all(&bin_dir).expect("create fake bin dir");
     fs::create_dir_all(site_packages.join("solstone")).expect("create fake package dir");
     fs::write(site_packages.join("solstone").join("__init__.py"), "").expect("write init");
-    let fake_sol = bin_dir.join("sol");
-    fs::copy(sol_bin(), &fake_sol).expect("copy sol binary into fake install layout");
+    let fake_solstone_core = bin_dir.join("solstone-core");
+    fs::copy(bin(), &fake_solstone_core)
+        .expect("copy solstone-core binary into fake install layout");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(&fake_sol)
-            .expect("fake sol metadata")
+        let mut permissions = fs::metadata(&fake_solstone_core)
+            .expect("fake solstone-core metadata")
             .permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&fake_sol, permissions).expect("make fake sol executable");
+        fs::set_permissions(&fake_solstone_core, permissions)
+            .expect("make fake solstone-core executable");
     }
 
     let unrelated = env_root.join("unrelated");
@@ -254,7 +287,7 @@ fn sol_root_installed_layout_is_independent_of_cwd() {
         .expect("workspace checkout root");
 
     for cwd in [&unrelated, source_checkout] {
-        let output = sol_root_output(&fake_sol, cwd);
+        let output = sol_root_output(&fake_solstone_core, cwd, "sol");
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
@@ -285,13 +318,15 @@ fn sol_root_installed_layout_canonicalizes_lib64_alias_independent_of_cwd() {
     symlink("lib", env_root.join("lib64")).expect("create lib64 symlink");
     let canonical_site_packages =
         fs::canonicalize(&site_packages).expect("canonical fake site-packages");
-    let fake_sol = bin_dir.join("sol");
-    fs::copy(sol_bin(), &fake_sol).expect("copy sol binary into fake install layout");
-    let mut permissions = fs::metadata(&fake_sol)
-        .expect("fake sol metadata")
+    let fake_solstone_core = bin_dir.join("solstone-core");
+    fs::copy(bin(), &fake_solstone_core)
+        .expect("copy solstone-core binary into fake install layout");
+    let mut permissions = fs::metadata(&fake_solstone_core)
+        .expect("fake solstone-core metadata")
         .permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&fake_sol, permissions).expect("make fake sol executable");
+    fs::set_permissions(&fake_solstone_core, permissions)
+        .expect("make fake solstone-core executable");
 
     let unrelated = env_root.join("unrelated");
     fs::create_dir_all(&unrelated).expect("create unrelated cwd");
@@ -303,7 +338,7 @@ fn sol_root_installed_layout_canonicalizes_lib64_alias_independent_of_cwd() {
         .expect("workspace checkout root");
 
     for cwd in [&unrelated, source_checkout] {
-        let output = sol_root_output(&fake_sol, cwd);
+        let output = sol_root_output(&fake_solstone_core, cwd, "sol");
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
@@ -319,44 +354,48 @@ fn sol_root_installed_layout_canonicalizes_lib64_alias_independent_of_cwd() {
 
 #[cfg(unix)]
 #[test]
-fn sol_and_solstone_bins_forward_compat_with_public_argv0_identity() {
+fn sol_and_solstone_identities_forward_compat_with_public_argv0_identity() {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Stdio;
 
-    let helper = PathBuf::from(sol_bin()).with_file_name("solstone-python-compat");
-    let previous = fs::read(&helper).ok();
-    let previous_mode = fs::metadata(&helper)
-        .ok()
-        .map(|metadata| metadata.permissions().mode());
+    let env_root = temp_path("compat-sibling-python");
+    let bin_dir = env_root.join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    let fake_solstone_core = bin_dir.join("solstone-core");
+    fs::copy(bin(), &fake_solstone_core)
+        .expect("copy solstone-core binary into fake install layout");
+    fs::set_permissions(&fake_solstone_core, fs::Permissions::from_mode(0o755))
+        .expect("make fake solstone-core executable");
+
+    let python = bin_dir.join("python3");
     fs::write(
-        &helper,
+        &python,
         "#!/bin/sh\n".to_string()
             + "printf 'sentinel=%s\\n' \"$SOLSTONE_NATIVE_COMPAT_ACTIVE\"\n"
-            + "printf 'marker=%s\\n' \"$1\"\n"
-            + "shift\n"
-            + "printf 'args='\n"
+            + "printf 'python_argv='\n"
             + "for arg in \"$@\"; do printf '<%s>' \"$arg\"; done\n"
             + "printf '\\nstdin='\n"
             + "cat\n"
             + "printf 'compat stderr\\n' >&2\n"
             + "exit 23\n",
     )
-    .expect("write fake compatibility helper");
-    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755))
-        .expect("make fake compatibility helper executable");
+    .expect("write fake sibling python");
+    fs::set_permissions(&python, fs::Permissions::from_mode(0o755))
+        .expect("make fake sibling python executable");
 
-    for (bin_path, expected_marker) in [
-        (sol_bin(), "__solstone_native_argv0=sol"),
-        (solstone_bin(), "__solstone_native_argv0=solstone"),
+    for (public_argv0, expected_marker) in [
+        ("sol", "__solstone_native_argv0=sol"),
+        ("solstone", "__solstone_native_argv0=solstone"),
     ] {
-        let mut child = Command::new(bin_path)
+        let mut child = Command::new(&fake_solstone_core)
+            .arg(identity_arg(public_argv0))
             .args(["notify", "message"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("native bin should spawn");
+            .expect("solstone-core should spawn");
         child
             .stdin
             .as_mut()
@@ -369,7 +408,7 @@ fn sol_and_solstone_bins_forward_compat_with_public_argv0_identity() {
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
             format!(
-                "sentinel=armed\nmarker={expected_marker}\nargs=<notify><message>\nstdin=payload"
+                "sentinel=armed\npython_argv=<-P><-m><solstone.think.sol_compat_cli><{expected_marker}><notify><message>\nstdin=payload"
             )
         );
         assert_eq!(
@@ -378,13 +417,5 @@ fn sol_and_solstone_bins_forward_compat_with_public_argv0_identity() {
         );
     }
 
-    if let Some(content) = previous {
-        fs::write(&helper, content).expect("restore previous helper");
-        if let Some(mode) = previous_mode {
-            fs::set_permissions(&helper, fs::Permissions::from_mode(mode))
-                .expect("restore previous helper mode");
-        }
-    } else {
-        fs::remove_file(&helper).expect("remove fake compatibility helper");
-    }
+    fs::remove_dir_all(env_root).expect("cleanup compat sibling python");
 }

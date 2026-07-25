@@ -113,3 +113,7 @@ def _patched_argv(argv: list[str]):
         yield
     finally:
         sys.argv = previous
+
+
+if __name__ == "__main__":
+    sys.exit(main())

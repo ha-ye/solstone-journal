@@ -5,6 +5,13 @@ preconditions passed and the cutover version is the next root package version.
 
 ## 1. Script Ownership Model
 
+Superseded for 1.0.15: the root `solstone` wheel owns the public POSIX
+`sol`/`solstone` launchers as raw script-file payloads, and the
+`solstone-core` wheel owns only the sibling compiled `solstone-core` executable
+they exec. The private `solstone-python-compat` console script was removed; the
+native compatibility bridge now invokes `python -P -m
+solstone.think.sol_compat_cli` from beside `solstone-core`.
+
 Decision: the `solstone-core` wheel owns both public access scripts, `sol` and
 `solstone`, as native `*.data/scripts/` members. The root `solstone` package no
 longer owns either public script.

@@ -129,7 +129,6 @@ def _write_workspace(
         (
             '[package]\nname = "solstone-core"\nversion = "1.2.3"\n'
             "\n[dependencies]\nsolstone-core-helper.workspace = true\n"
-            '\n[[bin]]\nname = "sol"\npath = "src/main.rs"\n'
         ),
     )
     _write(root / "core/crates/solstone-core/src/main.rs", "fn main() {}\n")

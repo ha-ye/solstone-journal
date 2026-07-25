@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import ipaddress
@@ -30,7 +31,11 @@ for _path in (str(ROOT), str(_SCRIPTS_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from check_wheel_contents import CORE_SCRIPT_NAMES, release_artifacts  # noqa: E402
+from check_wheel_contents import (  # noqa: E402
+    CORE_SCRIPT_NAMES,
+    ROOT_LAUNCHER_NAMES,
+    release_artifacts,
+)
 
 from scripts.release_tool_pins import (  # noqa: E402
     CARGO_DENY_PIN,
@@ -2002,17 +2007,45 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
         version = name.removesuffix(".whl").split("-")[1]
         return f"solstone_core-{version}.data/scripts"
 
+    def root_data_prefix(name: str) -> str:
+        version = name.removesuffix(".whl").split("-")[1]
+        return f"solstone-{version}.data/scripts"
+
+    def record_hash(content: bytes) -> str:
+        digest = hashlib.sha256(content).digest()
+        encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        return f"sha256={encoded}"
+
+    def write_record(
+        wheel: zipfile.ZipFile, dist_info: str, members: Mapping[str, bytes]
+    ) -> None:
+        record_name = f"{dist_info}/RECORD"
+        rows = [
+            f"{member},{record_hash(content)},{len(content)}"
+            for member, content in members.items()
+        ]
+        rows.append(f"{record_name},,")
+        wheel.writestr(record_name, "\n".join(rows).encode("utf-8"))
+
     for name in expected_package_names(include_models=include_models):
         path = dist_dir / name
         if name in core_wheel_names:
             with zipfile.ZipFile(path, "w") as wheel:
                 meta_name, metadata = metadata_member(name)
+                members = {meta_name: metadata.encode("utf-8")}
                 wheel.writestr(meta_name, metadata)
                 for script_name in CORE_SCRIPT_NAMES:
                     info = zipfile.ZipInfo(f"{core_data_prefix(name)}/{script_name}")
                     info.create_system = 3
                     info.external_attr = 0o755 << 16
-                    wheel.writestr(info, f"inert {script_name} for {name}\n")
+                    content = f"inert {script_name} for {name}\n".encode("utf-8")
+                    wheel.writestr(info, content)
+                    members[info.filename] = content
+                write_record(
+                    wheel,
+                    f"solstone_core-{name.removesuffix('.whl').split('-')[1]}.dist-info",
+                    members,
+                )
             continue
         if (
             name.startswith("solstone-")
@@ -2026,8 +2059,47 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
             info.external_attr = 0o755 << 16
             with zipfile.ZipFile(path, "w") as wheel:
                 meta_name, metadata = metadata_member(name)
+                members = {meta_name: metadata.encode("utf-8")}
                 wheel.writestr(meta_name, metadata)
-                wheel.writestr(info, f"inert parakeet-helper for {name}\n")
+                for launcher in ROOT_LAUNCHER_NAMES:
+                    launcher_info = zipfile.ZipInfo(
+                        f"{root_data_prefix(name)}/{launcher}"
+                    )
+                    launcher_info.create_system = 3
+                    launcher_info.external_attr = 0o755 << 16
+                    content = f"#!/bin/sh\necho inert {launcher} for {name}\n".encode(
+                        "utf-8"
+                    )
+                    wheel.writestr(launcher_info, content)
+                    members[launcher_info.filename] = content
+                helper_content = f"inert parakeet-helper for {name}\n".encode("utf-8")
+                wheel.writestr(info, helper_content)
+                members[info.filename] = helper_content
+                write_record(
+                    wheel,
+                    f"solstone-{name.removesuffix('.whl').split('-')[1]}.dist-info",
+                    members,
+                )
+            continue
+        if name.startswith("solstone-") and name.endswith(".whl"):
+            with zipfile.ZipFile(path, "w") as wheel:
+                meta_name, metadata = metadata_member(name)
+                members = {meta_name: metadata.encode("utf-8")}
+                wheel.writestr(meta_name, metadata)
+                for launcher in ROOT_LAUNCHER_NAMES:
+                    info = zipfile.ZipInfo(f"{root_data_prefix(name)}/{launcher}")
+                    info.create_system = 3
+                    info.external_attr = 0o755 << 16
+                    content = f"#!/bin/sh\necho inert {launcher} for {name}\n".encode(
+                        "utf-8"
+                    )
+                    wheel.writestr(info, content)
+                    members[info.filename] = content
+                write_record(
+                    wheel,
+                    f"solstone-{name.removesuffix('.whl').split('-')[1]}.dist-info",
+                    members,
+                )
             continue
         if name.endswith(".whl"):
             with zipfile.ZipFile(path, "w") as wheel:
@@ -2255,10 +2327,12 @@ def run_fixtures_mode() -> list[Failure]:
             from scripts.release_digest import candidate_digest, file_sha256_size
             from scripts.release_install_smoke import (
                 CORE_SMOKE_STDOUT,
+                INSTALL_SCRIPT_NAMES,
                 PROOF_TARGETS,
                 SCRUBBED_COMMAND_ENV,
                 CommandResult,
                 InstallObservation,
+                _expected_install_members,
                 build_install_proof,
                 expected_distribution_entries,
                 proof_targets_match_lanes,
@@ -2395,8 +2469,6 @@ def run_fixtures_mode() -> list[Failure]:
             candidate_paths = sorted(path for path in ready.iterdir() if path.is_file())
             env_root = root / "fixture-env"
             (env_root / "bin").mkdir(parents=True, exist_ok=True)
-            for name in CORE_SCRIPT_NAMES:
-                (env_root / "bin" / name).write_bytes(b"fixture-core")
             (env_root / "bin" / "parakeet-helper").write_bytes(b"fixture-helper")
             proofs_dir = evidence_root / _current_version() / "proofs"
             for target in PROOF_TARGETS:
@@ -2405,25 +2477,25 @@ def run_fixtures_mode() -> list[Failure]:
                     target=target,
                     candidate_dir=ready,
                 )
-                retained_members = ledger_payload["native_members"][target]
+                expected_members, expected_member_failures = _expected_install_members(
+                    ledger_payload,
+                    target,
+                    candidate_dir=ready,
+                    install_paths=install_paths,
+                )
+                if expected_member_failures:
+                    return expected_member_failures
+                for name in expected_members:
+                    (env_root / "bin" / name).write_bytes(b"fixture-executable")
                 installed_members = [
                     {
                         "name": name,
                         "path": env_root / "bin" / name,
-                        "sha256": retained_members[name]["sha256"],
+                        "sha256": expected["sha256"],
                         "symlink": False,
                     }
-                    for name in CORE_SCRIPT_NAMES
+                    for name, expected in sorted(expected_members.items())
                 ]
-                if target == "macos-arm64":
-                    installed_members.append(
-                        {
-                            "name": "parakeet-helper",
-                            "path": env_root / "bin" / "parakeet-helper",
-                            "sha256": retained_members["parakeet-helper"]["sha256"],
-                            "symlink": False,
-                        }
-                    )
                 proof = build_install_proof(
                     target=target,
                     version=_current_version(),
@@ -2462,7 +2534,7 @@ def run_fixtures_mode() -> list[Failure]:
                                 stdout=f"{CORE_SMOKE_STDOUT[name]} {_current_version()}",
                                 env=SCRUBBED_COMMAND_ENV,
                             )
-                            for name in CORE_SCRIPT_NAMES
+                            for name in INSTALL_SCRIPT_NAMES
                         },
                     ),
                     recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
