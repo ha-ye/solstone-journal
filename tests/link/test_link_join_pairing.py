@@ -131,6 +131,17 @@ def _pair_payload_from_ca(
     }
 
 
+def _pair_response_with_client_cert(client_cert: str) -> join_cli.PairResponse:
+    return join_cli.PairResponse(
+        client_cert=client_cert,
+        ca_chain=["unused-in-focused-validation"],
+        instance_id="inst-1",
+        home_label="solstone",
+        home_attestation="header.payload.signature",
+        local_endpoints=[],
+    )
+
+
 def _http_response(
     body: bytes,
     *,
@@ -307,6 +318,58 @@ def test_post_pair_framed_checks_ca_pin_after_exchange(
             join_cli._post_pair_framed(request, body, private_key)
 
     assert "CA fingerprint mismatch" in str(exc_info.value)
+
+
+def test_returned_client_certificate_must_be_parseable(tmp_path: Path) -> None:
+    pinned_ca = generate_ca(tmp_path / "malformed-client-cert-ca")
+    private_key, _body = _csr_material("malformed-client-cert")
+
+    with pytest.raises(ValueError, match="client certificate is invalid"):
+        join_cli._validate_returned_client_cert(
+            _pair_response_with_client_cert("not a certificate"),
+            private_key,
+            pinned_ca.cert,
+        )
+
+
+def test_returned_client_certificate_must_be_signed_by_pinned_ca(
+    tmp_path: Path,
+) -> None:
+    pinned_ca = generate_ca(tmp_path / "pinned-returned-ca")
+    wrong_ca = generate_ca(tmp_path / "wrong-returned-ca")
+    private_key, body = _csr_material("wrong-ca-client-cert")
+    client_cert, _fingerprint = sign_csr(
+        wrong_ca,
+        body["csr"],
+        body["device_label"],
+    )
+
+    with pytest.raises(ValueError, match="not signed by the pinned CA"):
+        join_cli._validate_returned_client_cert(
+            _pair_response_with_client_cert(client_cert),
+            private_key,
+            pinned_ca.cert,
+        )
+
+
+def test_returned_client_certificate_must_match_generated_key(
+    tmp_path: Path,
+) -> None:
+    pinned_ca = generate_ca(tmp_path / "different-key-returned-ca")
+    expected_private_key, _expected_body = _csr_material("expected-key")
+    _different_private_key, different_body = _csr_material("different-key")
+    client_cert, _fingerprint = sign_csr(
+        pinned_ca,
+        different_body["csr"],
+        different_body["device_label"],
+    )
+
+    with pytest.raises(ValueError, match="does not match the generated key"):
+        join_cli._validate_returned_client_cert(
+            _pair_response_with_client_cert(client_cert),
+            expected_private_key,
+            pinned_ca.cert,
+        )
 
 
 def test_returned_ca_pin_binds_first_persisted_chain_cert(
