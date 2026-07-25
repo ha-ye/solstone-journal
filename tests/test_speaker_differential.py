@@ -12,10 +12,17 @@ bundles and prove each compared component can fail independently.
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+import shutil
 import socket
+import sys
+import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 import numpy as np
@@ -24,6 +31,7 @@ import pytest
 from solstone.observe.transcribe import diarize, overlap
 from solstone.observe.vad import AudioReduction, SpeechSegment
 from tests import verify_speaker_differential as harness
+from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
 from tests._speaker_differential_fixtures import (
     COMPARATOR_THRESHOLDS,
     EMBEDDER_NAME,
@@ -35,6 +43,9 @@ from tests._speaker_differential_fixtures import (
     model_free_case,
     real_model_waveform,
 )
+
+CACHE_MUTATION_TIMEOUT_S = 2.0
+CACHE_MUTATION_JOIN_TIMEOUT_S = 1.0
 
 
 def _install_model_free_patches(
@@ -138,13 +149,47 @@ def _component_classification(
     return str(report["components"][component]["classification"])
 
 
-def _tree_inventory(root: Path) -> dict[str, tuple[int, int]]:
-    return {
-        path.relative_to(root).as_posix(): (stat.st_size, stat.st_mtime_ns)
-        for path in sorted(root.rglob("*"))
-        if ".git" not in path.relative_to(root).parts
-        for stat in [path.lstat()]
-    }
+def _cache_mutation_worker(
+    cache_dir: str,
+    pyc_path: str,
+    barrier: Any,
+    messages: Any,
+) -> None:
+    messages.put({"event": "ready", "pid": os.getpid()})
+    barrier.wait(timeout=CACHE_MUTATION_TIMEOUT_S)
+    Path(cache_dir).mkdir()
+    Path(pyc_path).write_bytes(f"cache mutation from {os.getpid()}\n".encode())
+    messages.put({"event": "mutated", "pid": os.getpid(), "path": pyc_path})
+
+
+def _cache_mutation_message(
+    messages: Any,
+    process: multiprocessing.Process,
+    expected_event: str,
+) -> dict[str, Any]:
+    try:
+        message = messages.get(timeout=CACHE_MUTATION_TIMEOUT_S)
+    except Empty as exc:
+        process.join(timeout=0)
+        if process.exitcode is not None:
+            raise AssertionError(
+                "sibling cache mutation process exited before "
+                f"{expected_event!r}: exitcode={process.exitcode}"
+            ) from exc
+        raise AssertionError(
+            f"sibling cache mutation did not report {expected_event!r}"
+        ) from exc
+    assert message["event"] == expected_event, message
+    return dict(message)
+
+
+def _release_cache_mutation(barrier: Any) -> None:
+    try:
+        barrier.wait(timeout=CACHE_MUTATION_TIMEOUT_S)
+    except threading.BrokenBarrierError as exc:
+        raise AssertionError(
+            "sibling cache mutation did not reach the barrier"
+        ) from exc
 
 
 def _mutate_logprob_below_tolerance(bundle: harness.Bundle) -> None:
@@ -716,20 +761,66 @@ def test_harness_does_not_use_network_or_write_outside_output_dir(
         raise AssertionError("network call attempted")
 
     monkeypatch.setattr(socket.socket, "connect", fail_connect)
-    before_inventory = _tree_inventory(harness.ROOT)
-    _case, bundle, _reset = _emit_model_free_bundle(monkeypatch)
-    output_dir = tmp_path / "speaker-differential"
-    left = output_dir / "left.npz"
-    right = output_dir / "right.npz"
-    report = output_dir / "report.json"
+    tmp_root = harness.ROOT / "tmp"
+    created_tmp_root = not tmp_root.exists()
+    run_root = (
+        tmp_root / f"speaker-differential-cache-race-{os.getpid()}-{uuid.uuid4().hex}"
+    )
+    cache_dir = run_root / "__pycache__"
+    cache_tag = sys.implementation.cache_tag or "cpython"
+    pyc_path = cache_dir / f"l3rr7_{os.getpid()}_{uuid.uuid4().hex}.{cache_tag}.pyc"
+    run_root.mkdir(parents=True)
+    assert not cache_dir.exists()
 
-    harness.write_bundle(bundle, left)
-    harness.write_bundle(harness.copy_bundle(bundle), right)
-    code = harness.main([str(left), str(right), "--report", str(report)])
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    messages = ctx.Queue()
+    process = ctx.Process(
+        target=_cache_mutation_worker,
+        args=(str(cache_dir), str(pyc_path), barrier, messages),
+    )
+    process_alive_after_join = False
+    process_started = False
+    try:
+        process.start()
+        process_started = True
+        ready = _cache_mutation_message(messages, process, "ready")
+        assert ready["pid"] != os.getpid(), ready
+        before_inventory = repository_inventory(harness.ROOT)
+        _release_cache_mutation(barrier)
+        mutated = _cache_mutation_message(messages, process, "mutated")
+        assert mutated["pid"] == ready["pid"], mutated
+        assert mutated["pid"] != os.getpid(), mutated
+        assert Path(str(mutated["path"])) == pyc_path
+        assert pyc_path.exists()
 
-    after_inventory = _tree_inventory(harness.ROOT)
+        _case, bundle, _reset = _emit_model_free_bundle(monkeypatch)
+        output_dir = tmp_path / "speaker-differential"
+        left = output_dir / "left.npz"
+        right = output_dir / "right.npz"
+        report = output_dir / "report.json"
+
+        harness.write_bundle(bundle, left)
+        harness.write_bundle(harness.copy_bundle(bundle), right)
+        code = harness.main([str(left), str(right), "--report", str(report)])
+
+        after_inventory = repository_inventory(harness.ROOT)
+    finally:
+        if process_started:
+            process.join(timeout=CACHE_MUTATION_JOIN_TIMEOUT_S)
+            if process.is_alive():
+                process_alive_after_join = True
+                process.terminate()
+                process.join(timeout=CACHE_MUTATION_JOIN_TIMEOUT_S)
+        if run_root.exists():
+            shutil.rmtree(run_root)
+        if created_tmp_root and tmp_root.exists() and not any(tmp_root.iterdir()):
+            tmp_root.rmdir()
+
+    assert not process_alive_after_join
+    assert process.exitcode == 0
     assert code == 0
     assert json.loads(report.read_text())["classification"] == harness.EQUAL
     assert connect_calls == []
-    assert after_inventory == before_inventory
+    assert_inventory_unchanged(before_inventory, after_inventory)
     capsys.readouterr()
