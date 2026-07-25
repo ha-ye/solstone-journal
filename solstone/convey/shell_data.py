@@ -104,7 +104,23 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
     """Check attention sources P0-P3, return highest priority or None."""
     try:
         scan = read_unresolved_agent_failures()
-        if scan.ok and scan.failures:
+        if scan.ok is False:
+            return AttentionItem(
+                placeholder_text=(
+                    "couldn't check talent errors today. ask what needs attention"
+                ),
+                context_lines=[
+                    (
+                        "System health: talent error accounting is incomplete because "
+                        "one or more talent day indexes could not be read."
+                    ),
+                    (
+                        "Do not report a zero error count; tell the owner the talent "
+                        "error check is incomplete if they ask what needs attention."
+                    ),
+                ],
+            )
+        if scan.failures:
             latest_by_name: dict[str, AgentFailure] = {}
             for failure in scan.failures:
                 current = latest_by_name.get(failure.name)

@@ -6,7 +6,7 @@
 import json
 import os
 import time
-from datetime import date
+from datetime import date, timedelta
 
 from solstone.apps.health import routes as health_routes
 from solstone.convey import backlog_copy
@@ -256,6 +256,52 @@ class TestInfoRoute:
             "action_redo_scratch": backlog_copy.BACKLOG_ACTION_REDO_SCRATCH,
             "confirm_redo_scratch": backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH,
             "queued_feedback": backlog_copy.BACKLOG_QUEUED_FEEDBACK,
+        }
+
+    def test_state_returns_today_execution_from_old_journal_day(self, health_env):
+        env = health_env()
+        old_day = (date.today() - timedelta(days=10)).strftime("%Y%m%d")
+        now_ms = int(time.time() * 1000)
+        talents = env.journal / "talents"
+        talents.mkdir()
+        (talents / f"{old_day}.jsonl").write_text(
+            json.dumps(
+                {
+                    "use_id": "agent-old-day",
+                    "name": "flow",
+                    "day": old_day,
+                    "ts": now_ms,
+                    "status": "error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        response = env.client.get("/app/health/api/state")
+
+        assert response.status_code == 200
+        agent_errors = response.get_json()["agent_errors"]
+        assert agent_errors == {
+            "items": [
+                {
+                    "type": "agent",
+                    "id": "agent-old-day",
+                    "name": "flow",
+                    "ts": now_ms,
+                    "service": "cortex",
+                    "error": "talent error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
+                }
+            ],
+            "ok": True,
+            "count": 1,
+            "label": "error today",
         }
 
     def test_state_agent_error_scan_degraded(self, health_env, monkeypatch):

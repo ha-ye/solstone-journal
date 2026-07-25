@@ -3,6 +3,8 @@
 
 """Tests for convey app placeholder and attention behavior."""
 
+import time
+
 import pytest
 from flask import Flask
 
@@ -62,6 +64,10 @@ def _append_request(request_id: str = "req", *, ts: int | None = None) -> None:
     if ts is not None:
         fields["ts"] = ts
     append_chat_event(KIND_SOL_CHAT_REQUEST, **fields)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def test_parse_date_nav_normalizes_content_configs():
@@ -437,6 +443,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -446,7 +453,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                 }
             )
@@ -456,7 +463,7 @@ class TestAttentionResolution:
                     "use_id": "2",
                     "name": "meetings",
                     "day": today,
-                    "ts": 1001,
+                    "ts": now_ms + 1,
                     "status": "completed",
                 }
             )
@@ -470,6 +477,97 @@ class TestAttentionResolution:
         assert "1" in result.placeholder_text
         assert len(result.placeholder_text) <= 90
 
+    def test_p0_cortex_error_executed_today_from_old_index(
+        self, tmp_path, monkeypatch
+    ):
+        """A run executed today surfaces even if recorded under an older journal day."""
+        import json
+        from datetime import datetime, timedelta
+
+        from solstone.convey.shell_data import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        old_day = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        (agents_dir / f"{old_day}.jsonl").write_text(
+            json.dumps(
+                {
+                    "use_id": "old-index-error",
+                    "name": "flow",
+                    "day": old_day,
+                    "ts": _now_ms(),
+                    "status": "error",
+                }
+            )
+            + "\n"
+        )
+
+        result = _resolve_attention({})
+
+        assert result is not None
+        assert result.placeholder_text == "1 agent error today — ask what happened"
+        assert len(result.placeholder_text) <= 90
+
+    def test_degraded_scan_preempts_recent_import_attention(
+        self, tmp_path, monkeypatch
+    ):
+        """A degraded talent-error scan outranks lower-priority import attention."""
+        import json
+        from datetime import datetime
+        from pathlib import Path
+
+        from solstone.convey.shell_data import _resolve_attention
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        today = datetime.now().strftime("%Y%m%d")
+        agents_dir = tmp_path / "talents"
+        agents_dir.mkdir()
+        unreadable = agents_dir / f"{today}.jsonl"
+        unreadable.write_text(
+            json.dumps(
+                {
+                    "use_id": "unreadable",
+                    "name": "flow",
+                    "day": today,
+                    "ts": _now_ms(),
+                    "status": "error",
+                }
+            )
+            + "\n"
+        )
+        original_read_text = Path.read_text
+
+        def fake_read_text(self: Path, *args, **kwargs) -> str:
+            if self == unreadable:
+                raise OSError("cannot read")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        current = {
+            "imports": {
+                "has_imported": True,
+                "last_completed": datetime.now().isoformat(),
+                "last_result_summary": "10 items",
+            }
+        }
+        result = _resolve_attention(current)
+
+        assert result is not None
+        assert result.placeholder_text == (
+            "couldn't check talent errors today. ask what needs attention"
+        )
+        assert len(result.placeholder_text) <= 90
+        assert "import" not in result.placeholder_text
+        assert any("incomplete" in line for line in result.context_lines)
+        assert any(
+            "Do not report a zero error count" in line
+            for line in result.context_lines
+        )
+
     def test_p0_readiness_error_prefers_setup_guidance(self, tmp_path, monkeypatch):
         """Readiness blockers get setup guidance instead of generic error copy."""
         import json
@@ -480,6 +578,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -489,7 +588,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                     "reason_code": "provider_key_missing",
                     "provider": "anthropic",
@@ -522,6 +621,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -531,7 +631,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                     "reason_code": "provider_key_missing",
                     "provider": "anthropic",
@@ -544,7 +644,7 @@ class TestAttentionResolution:
                     "use_id": "3",
                     "name": "flow",
                     "day": today,
-                    "ts": 2000,
+                    "ts": now_ms + 1,
                     "status": "completed",
                 }
             )
@@ -566,6 +666,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -575,7 +676,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                 }
             )
@@ -585,7 +686,7 @@ class TestAttentionResolution:
                     "use_id": "2",
                     "name": "flow",
                     "day": today,
-                    "ts": 2000,
+                    "ts": now_ms + 1,
                     "status": "error",
                 }
             )
@@ -612,6 +713,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -621,7 +723,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                 }
             )
@@ -631,7 +733,7 @@ class TestAttentionResolution:
                     "use_id": "2",
                     "name": "flow",
                     "day": today,
-                    "ts": 2000,
+                    "ts": now_ms + 1,
                     "status": "completed",
                 }
             )
@@ -641,7 +743,7 @@ class TestAttentionResolution:
                     "use_id": "3",
                     "name": "flow",
                     "day": today,
-                    "ts": 3000,
+                    "ts": now_ms + 2,
                     "status": "error",
                 }
             )
@@ -726,6 +828,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -735,7 +838,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                     "reason_code": "provider_key_missing",
                     "provider": "anthropic",
@@ -747,7 +850,7 @@ class TestAttentionResolution:
                     "use_id": "2",
                     "name": "flow",
                     "day": today,
-                    "ts": 2000,
+                    "ts": now_ms + 1,
                     "status": "error",
                     "reason_code": "no_output",
                 }
@@ -769,6 +872,7 @@ class TestAttentionResolution:
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
         today = datetime.now().strftime("%Y%m%d")
+        now_ms = _now_ms()
         agents_dir = tmp_path / "talents"
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
@@ -778,7 +882,7 @@ class TestAttentionResolution:
                     "use_id": "1",
                     "name": "flow",
                     "day": today,
-                    "ts": 1000,
+                    "ts": now_ms,
                     "status": "error",
                 }
             )
@@ -818,7 +922,9 @@ class TestAttentionResolution:
         agents_dir.mkdir()
         day_index = agents_dir / f"{today}.jsonl"
         day_index.write_text(
-            json.dumps({"use_id": "1", "name": "flow", "ts": 1000, "status": "error"})
+            json.dumps(
+                {"use_id": "1", "name": "flow", "ts": _now_ms(), "status": "error"}
+            )
             + "\n"
         )
         result = _resolve_attention({})
