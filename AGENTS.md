@@ -197,7 +197,9 @@ credentials, minisign key paths, and archive channel come from
 `https://transparency.solstone.app`.
 `RELEASE_DIR` must resolve to `dist/release-candidate/<version>/`; the
 corresponding rail evidence is derived from `target/release-evidence/<version>/`,
-which holds `ledger.json` plus the three proof receipts under `proofs/`.
+which holds `ledger.json`, the three proof receipts under `proofs/`, and, after
+the prerequisite is published, the single post-finalization tombstone verification
+record.
 
 The public layout is fixed:
 `releases/<product>/v/<version>/ledger-entry.json`,
