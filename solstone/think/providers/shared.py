@@ -363,11 +363,13 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
         if "internalservererror" in exc_name_lower or "servererror" in exc_name_lower:
             return "provider_unavailable"
 
-        if (
-            is_cloud_provider(provider)
-            and _module_matches(exc_module, "litellm.exceptions")
-            and exc_name == "BadRequestError"
-            and status_code == 400
+        if is_cloud_provider(provider) and (
+            exc_name == "LLMBadRequestError"
+            or (
+                _module_matches(exc_module, "litellm.exceptions")
+                and exc_name == "BadRequestError"
+                and status_code == 400
+            )
         ):
             return "provider_request_rejected"
 
