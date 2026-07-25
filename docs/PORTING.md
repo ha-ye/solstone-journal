@@ -154,6 +154,9 @@ and k-selection. Silhouette scores are compared with
 
 `tests/verify_indexer_differential.py` runs the indexer differential harness and
 writes its report under the harness work directory unless `--report` is supplied.
+`tests/verify_speaker_differential.py` runs the local speaker-pipeline
+differential harness and writes/compares versioned `.npz` result bundles for
+Python-to-port parity checks.
 
 ## JSON And Hashing
 
