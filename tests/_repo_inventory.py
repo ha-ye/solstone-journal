@@ -67,6 +67,8 @@ def repository_inventory(root: Path) -> RepoInventory:
                 if (
                     entry.name in EXCLUDED_RUNTIME_DIR_NAMES
                     and is_dir
+                    # Intentionally redundant: spell out the prune rule as
+                    # real, non-symlink directories only.
                     and not is_symlink
                 ):
                     continue

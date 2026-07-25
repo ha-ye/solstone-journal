@@ -781,6 +781,7 @@ def test_harness_does_not_use_network_or_write_outside_output_dir(
     )
     process_alive_after_join = False
     process_started = False
+    cleanup_errors: list[str] = []
     try:
         process.start()
         process_started = True
@@ -813,9 +814,18 @@ def test_harness_does_not_use_network_or_write_outside_output_dir(
                 process.terminate()
                 process.join(timeout=CACHE_MUTATION_JOIN_TIMEOUT_S)
         if run_root.exists():
-            shutil.rmtree(run_root)
+            # Cleanup errors are captured per destructive call so they cannot
+            # hide the primary no-write assertion. The repository traversal
+            # itself remains tolerance-free.
+            try:
+                shutil.rmtree(run_root)
+            except OSError as exc:
+                cleanup_errors.append(f"failed to rmtree {run_root}: {exc}")
         if created_tmp_root and tmp_root.exists() and not any(tmp_root.iterdir()):
-            tmp_root.rmdir()
+            try:
+                tmp_root.rmdir()
+            except OSError as exc:
+                cleanup_errors.append(f"failed to rmdir {tmp_root}: {exc}")
 
     assert not process_alive_after_join
     assert process.exitcode == 0
@@ -823,4 +833,5 @@ def test_harness_does_not_use_network_or_write_outside_output_dir(
     assert json.loads(report.read_text())["classification"] == harness.EQUAL
     assert connect_calls == []
     assert_inventory_unchanged(before_inventory, after_inventory)
+    assert cleanup_errors == [], "\n".join(cleanup_errors)
     capsys.readouterr()
