@@ -9,6 +9,7 @@ import logging
 import math
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.providers.local import ContextBudgetExceeded
@@ -26,19 +27,46 @@ _ENTRY_HEADER_RE = re.compile(r"^#{2,3}\s")
 TRUNCATION_MARKER = "[earlier input truncated to fit the on-device model's context]"
 
 
-def context_window_tokens() -> int:
+@dataclass(frozen=True)
+class ContextWindowResolution:
+    window_tokens: int
+    slots: int
+    source: str
+
+
+def resolve_context_window() -> ContextWindowResolution:
     from solstone.think.providers import local_server
     from solstone.think.utils import read_service_port
 
     port = read_service_port("local")
     if port is not None:
-        n_ctx = local_server.read_server_context_window(port)
-        if n_ctx is not None and n_ctx > 0:
-            return n_ctx
+        props = local_server.read_server_context_props(port)
+        if props is not None:
+            # The divide applies to the /props pool value only, never the
+            # sidecar: local.ctx already stores the per-slot window
+            # (supervisor.py:4084).
+            slots = (
+                props.total_slots
+                if props.total_slots is not None
+                else local_server._CAPABLE_TIER.parallel_slots
+            )
+            return ContextWindowResolution(props.n_ctx // slots, slots, "props")
     sidecar = local_server.read_local_context_window()
     if sidecar is not None and sidecar > 0:
-        return sidecar
-    return local_server.LOCAL_MIN_CONTEXT_TOKENS
+        slots = (
+            local_server._slots_from_launched_tier(sidecar)
+            or local_server._UNKNOWN_SLOTS
+        )
+        return ContextWindowResolution(sidecar, slots, "local_ctx")
+    return ContextWindowResolution(
+        local_server.LOCAL_MIN_CONTEXT_TOKENS,
+        local_server._UNKNOWN_SLOTS,
+        "default",
+    )
+
+
+def context_window_tokens() -> int:
+    return resolve_context_window().window_tokens
 
 
 def estimate_tokens(text: str) -> int:
@@ -162,10 +190,12 @@ def fit_contents(
 
 __all__ = [
     "TRUNCATION_MARKER",
+    "ContextWindowResolution",
     "compute_input_budget",
     "context_window_tokens",
     "count_tokens",
     "estimate_tokens",
     "fit_contents",
+    "resolve_context_window",
     "split_entries",
 ]

@@ -3257,7 +3257,7 @@ def test_extract_n_ctx_props_shapes(props, expected):
     assert local_server._extract_n_ctx(props) == expected
 
 
-def test_read_server_context_window_fetch_props(monkeypatch):
+def test_read_server_context_props_fetch_props(monkeypatch):
     import httpx
 
     from solstone.think.providers import local_server
@@ -3279,41 +3279,157 @@ def test_read_server_context_window_fetch_props(monkeypatch):
         "get",
         lambda url, timeout: FakeResponse({"n_ctx": 32768, "total_slots": 2}),
     )
-    assert local_server.read_server_context_window(2468) == 32768
+    assert local_server.read_server_context_props(
+        2468
+    ) == local_server.ServerContextProps(
+        n_ctx=32768,
+        total_slots=2,
+    )
 
     monkeypatch.setattr(
         httpx,
         "get",
         lambda url, timeout: FakeResponse(error=ValueError("bad json")),
     )
-    assert local_server.read_server_context_window(2468) is None
+    assert local_server.read_server_context_props(2468) is None
 
     monkeypatch.setattr(httpx, "get", lambda url, timeout: FakeResponse(["n_ctx"]))
-    assert local_server.read_server_context_window(2468) is None
+    assert local_server.read_server_context_props(2468) is None
 
     def raise_get(url, timeout):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(httpx, "get", raise_get)
-    assert local_server.read_server_context_window(2468) is None
+    assert local_server.read_server_context_props(2468) is None
 
 
 def test_context_window_tokens_fallback(monkeypatch):
     from solstone.think import utils
     from solstone.think.providers import local_budget, local_server
 
+    local_server.reset_parallel_slots_cache()
     monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
-    monkeypatch.setattr(local_server, "read_server_context_window", lambda port: 32768)
+    monkeypatch.setattr(
+        local_server,
+        "read_server_context_props",
+        lambda port: local_server.ServerContextProps(n_ctx=65536, total_slots=2),
+    )
     monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
     assert local_budget.context_window_tokens() == 32768
+    assert local_budget.resolve_context_window().slots == 2
 
-    monkeypatch.setattr(local_server, "read_server_context_window", lambda port: None)
+    monkeypatch.setattr(local_server, "read_server_context_props", lambda port: None)
     monkeypatch.setattr(local_server, "read_local_context_window", lambda: 32768)
     assert local_budget.context_window_tokens() == 32768
 
     monkeypatch.setattr(utils, "read_service_port", lambda service: None)
     monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
     assert local_budget.context_window_tokens() == local_server.LOCAL_MIN_CONTEXT_TOKENS
+
+
+@pytest.mark.parametrize(
+    ("n_ctx", "total_slots", "expected_window"),
+    [(65536, 2, 32768), (16384, 1, 16384)],
+)
+def test_context_window_tokens_divides_props_pool_by_total_slots(
+    monkeypatch,
+    n_ctx,
+    total_slots,
+    expected_window,
+):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    local_server.reset_parallel_slots_cache()
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "read_server_context_props",
+        lambda port: local_server.ServerContextProps(
+            n_ctx=n_ctx,
+            total_slots=total_slots,
+        ),
+    )
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
+
+    resolution = local_budget.resolve_context_window()
+    assert resolution.window_tokens == expected_window
+    assert resolution.slots == total_slots
+
+
+def test_context_window_tokens_props_without_total_slots_fails_closed_to_two(
+    monkeypatch,
+):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "read_server_context_props",
+        lambda port: local_server.ServerContextProps(n_ctx=65536, total_slots=None),
+    )
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
+
+    resolution = local_budget.resolve_context_window()
+    assert resolution.window_tokens == 32768
+    assert resolution.slots == local_server._CAPABLE_TIER.parallel_slots
+
+
+def test_context_window_tokens_props_absent_sidecar_is_not_halved(monkeypatch):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(local_server, "read_server_context_props", lambda port: None)
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: 32768)
+
+    resolution = local_budget.resolve_context_window()
+    assert resolution.window_tokens == 32768
+    assert resolution.slots == local_server._CAPABLE_TIER.parallel_slots
+
+
+def test_context_window_tokens_darwin_no_props_no_sidecar_uses_floor(monkeypatch):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    monkeypatch.setattr(local_server.sys, "platform", "darwin")
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(local_server, "read_server_context_props", lambda port: None)
+    monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
+
+    assert local_budget.context_window_tokens() == local_server.LOCAL_MIN_CONTEXT_TOKENS
+
+
+@pytest.mark.parametrize(
+    ("props_total_slots", "capacity_slots"),
+    [(1, 1), (None, 2)],
+)
+def test_context_window_resolution_divisor_not_less_than_capacity(
+    monkeypatch,
+    props_total_slots,
+    capacity_slots,
+):
+    from solstone.think import utils
+    from solstone.think.providers import local_budget, local_server
+
+    monkeypatch.setattr(utils, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "read_server_context_props",
+        lambda port: local_server.ServerContextProps(
+            n_ctx=65536,
+            total_slots=props_total_slots,
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "read_server_capacity",
+        lambda: local_server.ServerCapacity(capacity_slots, "test", "capable"),
+    )
+
+    resolution = local_budget.resolve_context_window()
+    assert resolution.slots >= local_server.read_server_capacity().parallel_slots
 
 
 def _select_local_provider(monkeypatch) -> None:

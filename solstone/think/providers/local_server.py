@@ -87,6 +87,12 @@ class ServerCapacity:
     profile: str
 
 
+@dataclass(frozen=True)
+class ServerContextProps:
+    n_ctx: int
+    total_slots: int | None
+
+
 def _base_url(port: int) -> str:
     return f"http://{_HOST}:{port}"
 
@@ -160,11 +166,14 @@ def _extract_n_ctx(props: dict[str, Any]) -> int | None:
         return None
 
 
-def read_server_context_window(port: int) -> int | None:
+def read_server_context_props(port: int) -> ServerContextProps | None:
     props = fetch_props(port)
     if props is None:
         return None
-    return _extract_n_ctx(props)
+    n_ctx = _extract_n_ctx(props)
+    if n_ctx is None or n_ctx <= 0:
+        return None
+    return ServerContextProps(n_ctx=n_ctx, total_slots=_extract_total_slots(props))
 
 
 def write_local_context_window(tokens: int) -> None:
@@ -319,6 +328,7 @@ __all__ = [
     "LOCAL_MIN_CONTEXT_TOKENS",
     "LOCAL_MODEL_NOT_READY_COPY",
     "LocalServerInfo",
+    "ServerContextProps",
     "ServerCapacity",
     "ServerTier",
     "STATE_IDLE",
@@ -333,7 +343,7 @@ __all__ = [
     "is_healthy",
     "probe_state",
     "read_local_context_window",
-    "read_server_context_window",
+    "read_server_context_props",
     "read_server_capacity",
     "read_server_parallel_slots",
     "reset_parallel_slots_cache",
