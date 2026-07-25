@@ -16,11 +16,11 @@ from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import openhands
 from solstone.think.providers.cli import ProviderKeyMissingError, QuotaExhaustedError
 from solstone.think.providers.local_endpoint import (
-    ENDPOINT_ERROR_BODY_CAP_CHARS,
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
     LocalEndpoint,
 )
+from solstone.think.providers.shared import PROVIDER_ERROR_TEXT_CAP_CHARS
 from solstone.think.talents import TalentHookError
 from tests.openhands_fakes import install_fake_openhands
 
@@ -132,6 +132,27 @@ def test_run_cogitate_generic_error_emits_event_and_marks_evented(
     assert "RuntimeError: boom" in events[0]["trace"]
     assert events[0]["usage"]["total_tokens"] > 0
     assert events[0]["ts"] == 123456
+
+
+def test_run_cogitate_cloud_error_event_caps_error_text(
+    fake_openhands,
+    run_env,
+):
+    generic_exc = RuntimeError("x" * (PROVIDER_ERROR_TEXT_CAP_CHARS + 1))
+
+    async def fail(_conversation):
+        raise generic_exc
+
+    fake_openhands.Conversation.arun_impl = fail
+    events: list[dict] = []
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(openhands.run_cogitate(run_env, events.append))
+
+    assert raised.value is generic_exc
+    assert len(events) == 1
+    assert len(events[0]["error"]) <= PROVIDER_ERROR_TEXT_CAP_CHARS
+    assert events[0]["error"] == str(generic_exc)[:PROVIDER_ERROR_TEXT_CAP_CHARS]
 
 
 def test_run_cogitate_talent_hook_error_propagates_without_provider_event(
@@ -290,7 +311,7 @@ def test_run_cogitate_local_byo_context_body_event_redacts(
 
     assert len(events) == 1
     assert events[0]["reason_code"] == "context_window_exceeded"
-    assert len(events[0]["error"]) <= ENDPOINT_ERROR_BODY_CAP_CHARS
+    assert len(events[0]["error"]) <= PROVIDER_ERROR_TEXT_CAP_CHARS
     assert token not in json.dumps(events)
     assert token not in str(raised.value)
 

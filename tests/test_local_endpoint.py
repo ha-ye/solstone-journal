@@ -11,6 +11,7 @@ from aiohttp import ClientConnectorError
 from aiohttp.client_reqrep import ConnectionKey
 
 from solstone.think.providers import local_endpoint
+from solstone.think.providers.shared import PROVIDER_ERROR_TEXT_CAP_CHARS
 
 
 def _config(payload: dict) -> dict:
@@ -335,7 +336,7 @@ def test_classify_byo_cogitate_error_contract_by_status_or_name():
 def test_byo_exception_matches_context_window_caps_body_excerpt():
     exc = BadRequestError("bad request")
     exc.body = (
-        "x" * (local_endpoint.ENDPOINT_ERROR_BODY_CAP_CHARS + 1)
+        "x" * (PROVIDER_ERROR_TEXT_CAP_CHARS + 1)
         + "longer than the model's context length"
     )
     assert local_endpoint.byo_exception_matches_context_window(exc) is False

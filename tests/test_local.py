@@ -3335,7 +3335,7 @@ def test_run_cogitate_byo_classified_error_uses_fixed_copy_and_redacts(
 
 
 def test_run_cogitate_byo_context_error_event_caps_error_field(monkeypatch):
-    from solstone.think.providers.local_endpoint import ENDPOINT_ERROR_BODY_CAP_CHARS
+    from solstone.think.providers.shared import PROVIDER_ERROR_TEXT_CAP_CHARS
 
     provider = _provider()
     token = "SENTINEL-BYO-CONTEXT-CRED-219a"
@@ -3371,7 +3371,7 @@ def test_run_cogitate_byo_context_error_event_caps_error_field(monkeypatch):
         )
 
     assert events[0]["reason_code"] == "context_window_exceeded"
-    assert len(events[0]["error"]) <= ENDPOINT_ERROR_BODY_CAP_CHARS
+    assert len(events[0]["error"]) <= PROVIDER_ERROR_TEXT_CAP_CHARS
     assert token not in events[0]["error"]
     assert token not in events[0]["trace"]
 

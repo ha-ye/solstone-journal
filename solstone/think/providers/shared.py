@@ -19,6 +19,7 @@ from typing import Any, Callable, Literal, Mapping, Optional, Union
 
 from typing_extensions import Required, TypedDict
 
+from solstone.think.providers import is_cloud_provider
 from solstone.think.utils import now_ms
 
 # ---------------------------------------------------------------------------
@@ -204,6 +205,7 @@ RUNTIME_REASON_CODES = frozenset(
         "local_queue_timeout",
         "max_turns_exhausted",
         "network_unreachable",
+        "provider_request_rejected",
         "provider_unavailable",
         "provider_response_invalid",
         "incomplete_json_length",
@@ -211,6 +213,9 @@ RUNTIME_REASON_CODES = frozenset(
         "unknown",
     }
 )
+
+
+PROVIDER_ERROR_TEXT_CAP_CHARS = 4096
 
 
 def classify_provider_error(exc: BaseException, provider: str) -> str:
@@ -357,6 +362,14 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             return "provider_response_invalid"
         if "internalservererror" in exc_name_lower or "servererror" in exc_name_lower:
             return "provider_unavailable"
+
+        if (
+            is_cloud_provider(provider)
+            and _module_matches(exc_module, "litellm.exceptions")
+            and exc_name == "BadRequestError"
+            and status_code == 400
+        ):
+            return "provider_request_rejected"
 
         return "unknown"
     except Exception:
@@ -639,6 +652,7 @@ __all__ = [
     "Event",
     "GenerateResult",
     "JSONEventCallback",
+    "PROVIDER_ERROR_TEXT_CAP_CHARS",
     "RUNTIME_REASON_CODES",
     "ThinkingEvent",
     "USAGE_KEYS",

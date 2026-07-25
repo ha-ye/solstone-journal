@@ -92,6 +92,7 @@ _BRAIN_INGRESS_REASONS: frozenset[str] = frozenset(
         "provider_key_invalid",
         "model_not_found",
         "provider_quota_exceeded",
+        "provider_request_rejected",
         "provider_unavailable",
         "network_unreachable",
         "endpoint_unreachable",

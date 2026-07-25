@@ -63,6 +63,7 @@ from solstone.think.providers.shared import (
     CANNED_GENERATE_PROMPT,
     CANNED_GENERATE_THINKING_BUDGET,
     CANNED_GENERATE_TIMEOUT_S,
+    PROVIDER_ERROR_TEXT_CAP_CHARS,
     USAGE_KEYS,
     GenerateResult,
     JSONEventCallback,
@@ -1928,7 +1929,6 @@ async def run_cogitate(
         local_endpoint = None
         if provider == "local":
             from solstone.think.providers.local_endpoint import (
-                ENDPOINT_ERROR_BODY_CAP_CHARS,
                 classify_byo_cogitate_error,
                 local_endpoint_reason_copy,
                 redact_exception_credential,
@@ -1942,14 +1942,12 @@ async def run_cogitate(
                     setattr(exc, "reason_code", reason_code)
                     setattr(provider_exc, "reason_code", reason_code)
         reason_code = reason_code or classify_provider_error(provider_exc, provider)
-        error_text = str(exc)
+        error_text = str(exc)[:PROVIDER_ERROR_TEXT_CAP_CHARS]
         trace_text = traceback.format_exc()
         if local_endpoint is not None:
             fixed_copy = local_endpoint_reason_copy(reason_code)
             if fixed_copy:
                 error_text = fixed_copy
-            else:
-                error_text = error_text[:ENDPOINT_ERROR_BODY_CAP_CHARS]
         if reason_code == "provider_quota_exceeded":
             raise QuotaExhaustedError(
                 str(provider_exc), _retry_delay_ms(provider_exc)

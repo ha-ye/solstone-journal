@@ -267,6 +267,7 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
         "provider_key_invalid",
         "model_not_found",
         "provider_quota_exceeded",
+        "provider_request_rejected",
         "provider_unavailable",
         "network_unreachable",
         "endpoint_unreachable",
@@ -316,7 +317,7 @@ def test_vocabularies_and_reason_mapping_are_closed() -> None:
     assert set(BRAIN_REASON_TO_AGGREGATE) == BRAIN_REASON_CODES
     assert set(BRAIN_REASON_TO_AGGREGATE.values()) <= BRAIN_AGGREGATE_STATES
     evidence_reasons = frozenset().union(*BRAIN_EVIDENCE_REASON_CODES.values())
-    assert len(evidence_reasons) == 31
+    assert len(evidence_reasons) == 32
     assert len(BRAIN_PROJECTION_ONLY_REASON_CODES) == 10
     assert evidence_reasons | BRAIN_PROJECTION_ONLY_REASON_CODES == BRAIN_REASON_CODES
     assert not (evidence_reasons & BRAIN_PROJECTION_ONLY_REASON_CODES)
@@ -1543,6 +1544,38 @@ def test_runtime_failure_preserves_other_same_fingerprint_evidence(
     assert cogitate_record["evidence"]["generate"]["status"] == "ok"
     assert cogitate_record["evidence"]["cogitate"] is not None
     assert cogitate_record["evidence"]["cogitate"]["status"] == "failed"
+
+
+def test_runtime_failure_provider_request_rejected_transitions_ready_to_unhealthy(
+    tmp_path: Path,
+) -> None:
+    config = _cloud_config()
+    _write_ready_record(tmp_path, config)
+    assert (
+        inspect_brain_state(NOW, journal_path=tmp_path)["projection"]["aggregate_state"]
+        == "ready"
+    )
+    expected = _current_fingerprint(tmp_path, config)
+
+    result = record_brain_runtime_failure(
+        "provider_request_rejected",
+        NOW,
+        expected_fingerprint_sha256=expected,
+        component="generate",
+        journal_path=tmp_path,
+    )
+
+    assert result["accepted"] is True
+    record = result["record"]
+    assert record is not None
+    assert record["aggregate_state"] == "unhealthy"
+    assert record["evidence"]["generate"] is not None
+    assert record["evidence"]["generate"]["status"] == "failed"
+    assert record["evidence"]["generate"]["reason_code"] == "provider_request_rejected"
+    assert (
+        inspect_brain_state(NOW, journal_path=tmp_path)["projection"]["aggregate_state"]
+        == "unhealthy"
+    )
 
 
 def test_runtime_failure_drops_evidence_from_prior_fingerprint(tmp_path: Path) -> None:

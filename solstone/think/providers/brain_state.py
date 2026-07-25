@@ -112,6 +112,7 @@ BrainReasonCode = Literal[
     "provider_key_invalid",
     "model_not_found",
     "provider_quota_exceeded",
+    "provider_request_rejected",
     "provider_unavailable",
     "network_unreachable",
     "endpoint_unreachable",
@@ -163,6 +164,7 @@ BRAIN_REASON_TO_AGGREGATE: dict[str, BrainAggregateState] = {
     "provider_key_invalid": "unhealthy",
     "model_not_found": "unhealthy",
     "provider_quota_exceeded": "unhealthy",
+    "provider_request_rejected": "unhealthy",
     "provider_unavailable": "unhealthy",
     "network_unreachable": "unhealthy",
     "endpoint_unreachable": "unhealthy",
@@ -229,6 +231,7 @@ BRAIN_EVIDENCE_REASON_CODES: dict[str, frozenset[str]] = {
             "provider_key_invalid",
             "model_not_found",
             "provider_quota_exceeded",
+            "provider_request_rejected",
             "provider_unavailable",
             "network_unreachable",
             "endpoint_unreachable",
@@ -245,6 +248,7 @@ BRAIN_EVIDENCE_REASON_CODES: dict[str, frozenset[str]] = {
             "provider_key_invalid",
             "model_not_found",
             "provider_quota_exceeded",
+            "provider_request_rejected",
             "provider_unavailable",
             "network_unreachable",
             "endpoint_unreachable",
@@ -281,8 +285,8 @@ if set(BRAIN_REASON_TO_AGGREGATE) != BRAIN_REASON_CODES:
 _EVIDENCE_ALLOWED_REASON_CODES = frozenset().union(
     *BRAIN_EVIDENCE_REASON_CODES.values()
 )
-if len(_EVIDENCE_ALLOWED_REASON_CODES) != 31:
-    raise RuntimeError("brain evidence reason partition must contain 31 reasons")
+if len(_EVIDENCE_ALLOWED_REASON_CODES) != 32:
+    raise RuntimeError("brain evidence reason partition must contain 32 reasons")
 if len(BRAIN_PROJECTION_ONLY_REASON_CODES) != 10:
     raise RuntimeError("brain projection-only reason partition must contain 10 reasons")
 if _EVIDENCE_ALLOWED_REASON_CODES & BRAIN_PROJECTION_ONLY_REASON_CODES:

@@ -106,6 +106,10 @@
       "template": "your {provider} quota is spent",
       "action": null
     },
+    "provider_request_rejected": {
+      "template": "the provider refused a request sol sent; this is a defect in sol",
+      "action": null
+    },
     "network_unreachable": {
       "template": "I couldn't reach the network",
       "action": null

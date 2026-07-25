@@ -24,7 +24,6 @@ from typing import Any, Literal
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers._image import encode_image_part, is_image_part
 from solstone.think.providers.local_endpoint import (
-    ENDPOINT_ERROR_BODY_CAP_CHARS,
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
     classify_byo_cogitate_error,
@@ -37,6 +36,7 @@ from solstone.think.providers.local_endpoint import (
 )
 from solstone.think.providers.shared import (
     _CONTEXT_WINDOW_PATTERNS,
+    PROVIDER_ERROR_TEXT_CAP_CHARS,
     GenerateResult,
     _contains_any,
     classify_provider_error,
@@ -505,7 +505,7 @@ def _classify_byo_generate_error(
     body_text = getattr(response, "text", None)
     if isinstance(body_text, str) and body_text:
         excerpt = redact_local_endpoint_credential(
-            body_text[:ENDPOINT_ERROR_BODY_CAP_CHARS],
+            body_text[:PROVIDER_ERROR_TEXT_CAP_CHARS],
             endpoint,
         )
         if _contains_any(excerpt.lower(), _CONTEXT_WINDOW_PATTERNS):
@@ -1299,7 +1299,7 @@ async def run_cogitate(
                 error_text = redact_local_endpoint_credential(error_text, endpoint)
                 trace_text = redact_local_endpoint_credential(trace_text, endpoint)
                 if not fixed_copy:
-                    error_text = error_text[:ENDPOINT_ERROR_BODY_CAP_CHARS]
+                    error_text = error_text[:PROVIDER_ERROR_TEXT_CAP_CHARS]
             on_event(
                 {
                     "event": "error",

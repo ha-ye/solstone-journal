@@ -50,6 +50,10 @@ def test_failure_capped_default_deterministic_cap_is_two():
     assert cogitate_policy.failure_capped("context_window_exceeded", 2) is True
 
 
+def test_failure_capped_provider_request_rejected_is_one():
+    assert cogitate_policy.failure_capped("provider_request_rejected", 1) is True
+
+
 def test_deterministic_failure_caps_cover_reason_codes_exactly():
     assert (
         set(cogitate_policy.DETERMINISTIC_FAILURE_CAPS)

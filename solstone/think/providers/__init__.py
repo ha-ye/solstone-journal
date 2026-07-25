@@ -83,6 +83,13 @@ def managed_provider_env_keys() -> set[str]:
     return {m["env_key"] for m in PROVIDER_METADATA.values() if m.get("env_key")}
 
 
+def is_cloud_provider(provider: str) -> bool:
+    """Return True when a registered provider uses a managed cloud API key."""
+
+    meta = PROVIDER_METADATA.get(provider)
+    return bool(meta and meta.get("env_key"))
+
+
 def get_provider_module(provider: str) -> ModuleType:
     """Get the provider module for the given provider name.
 
@@ -247,5 +254,6 @@ __all__ = [
     "build_provider_status",
     "validate_key",
     "validate_model",
+    "is_cloud_provider",
     "managed_provider_env_keys",
 ]

@@ -2198,6 +2198,53 @@ def test_read_backlog_view_provider_model_failure_remains_failing_step(
     assert not any("supervisor" in module for module in imported_modules)
 
 
+def test_read_backlog_view_serializes_classified_provider_request_rejected(
+    pipeline_journal,
+):
+    from litellm.exceptions import BadRequestError
+
+    from solstone.think.journal_stats import _serialize_backlog_view
+    from solstone.think.providers.shared import classify_provider_error
+
+    exc = BadRequestError(
+        "Invalid value for parameter 'temperature'",
+        model="gemini-test",
+        llm_provider="google",
+    )
+    reason_code = classify_provider_error(exc, "google")
+    assert reason_code == "provider_request_rejected"
+
+    day = "20990414"
+    segment = "131000_300"
+    _seed_screen_segment(pipeline_journal, day, segment)
+    _write_jsonl(
+        pipeline_journal / "chronicle" / day / "health" / "001_segment.jsonl",
+        [
+            _sense_complete(segment, "active", 1, stream="default"),
+            _dispatch(segment, "documents", 2, stream="default"),
+            _complete(segment, "documents", 3, stream="default"),
+            _dispatch(segment, "entities", 4, stream="default"),
+            _fail(segment, "entities", 1000, stream="default"),
+            _fail(segment, "entities", 2000, stream="default"),
+            _fail(
+                segment,
+                "entities",
+                3000,
+                stream="default",
+                reason_code=reason_code,
+                provider="google",
+                model="gemini-test",
+            ),
+        ],
+    )
+    _touch_marker(pipeline_journal, day, "stream.updated", mtime_ms=3000)
+
+    serialized = _serialize_backlog_view(read_backlog_view(window=1))
+
+    assert serialized["days"][0]["state"] == "stuck"
+    assert serialized["days"][0]["reason_code"] == reason_code
+
+
 def test_read_backlog_view_corrupt_raw_reason_wins_over_failing_step(
     pipeline_journal,
 ):

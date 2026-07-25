@@ -625,6 +625,9 @@ def test_brain_runtime_failure_helper_records_only_allowed_ingress(
     )
 
     talents_module._record_brain_runtime_failure("network_unreachable", "cogitate")
+    talents_module._record_brain_runtime_failure(
+        "provider_request_rejected", "generate"
+    )
     talents_module._record_brain_runtime_failure("context_window_exceeded", "generate")
     talents_module._record_brain_runtime_failure("cogitate_terminal_error", "generate")
 
@@ -634,8 +637,47 @@ def test_brain_runtime_failure_helper_records_only_allowed_ingress(
             "expected_fingerprint_sha256": "fingerprint",
             "component": "cogitate",
             "diagnostic": {},
-        }
+        },
+        {
+            "reason_code": "provider_request_rejected",
+            "expected_fingerprint_sha256": "fingerprint",
+            "component": "generate",
+            "diagnostic": {},
+        },
     ]
+
+
+def test_bad_request_local_and_no_brain_do_not_record_brain_runtime_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litellm.exceptions import BadRequestError
+
+    from solstone.think.providers.shared import classify_provider_error
+
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        talents_module,
+        "_read_runtime_fingerprint",
+        lambda: "fingerprint",
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.brain_state.record_brain_runtime_failure",
+        lambda reason_code, *_args, **kwargs: (
+            recorded.append({"reason_code": reason_code, **kwargs})
+            or {"accepted": True}
+        ),
+    )
+
+    for provider in ("local", "none"):
+        exc = BadRequestError(
+            "Invalid value for parameter 'temperature'",
+            model="local-model",
+            llm_provider=provider,
+        )
+        reason_code = classify_provider_error(exc, provider)
+        talents_module._record_brain_runtime_failure(reason_code, "generate")
+
+    assert recorded == []
 
 
 @pytest.mark.parametrize(

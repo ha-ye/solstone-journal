@@ -35,6 +35,7 @@ BACKLOG_COPY_KEYS = [
     "BACKLOG_REASON_FAILING_STEP",
     "BACKLOG_REASON_MISSING_CONFIG",
     "BACKLOG_REASON_PROVIDER_DOWN",
+    "BACKLOG_REASON_PROVIDER_REFUSED",
     "BACKLOG_QUEUED_FEEDBACK",
     "BACKLOG_WHY_NEVER_ATTEMPTED",
     "BACKLOG_WHY_FAILED",
@@ -81,6 +82,10 @@ BACKLOG_COPY_LITERALS = {
     "BACKLOG_REASON_FAILING_STEP": "a processing step keeps failing — try again",
     "BACKLOG_REASON_MISSING_CONFIG": "a setting's missing — check your journal's setup",
     "BACKLOG_REASON_PROVIDER_DOWN": "the AI provider was unreachable. try again",
+    "BACKLOG_REASON_PROVIDER_REFUSED": (
+        "the AI provider refused a request sol sent — retrying won't help; "
+        "this is a defect in sol"
+    ),
     "BACKLOG_QUEUED_FEEDBACK": "queued, working on it now",
     "BACKLOG_WHY_NEVER_ATTEMPTED": "not looked at yet",
     "BACKLOG_WHY_FAILED": "couldn't finish — will retry",

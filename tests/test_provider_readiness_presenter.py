@@ -169,6 +169,7 @@ def test_blocking_reason_classification():
     for code in (
         "chat_timeout",
         "network_unreachable",
+        "provider_request_rejected",
         "provider_response_invalid",
         "incomplete_text_length",
         "no_output",

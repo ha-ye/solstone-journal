@@ -77,6 +77,77 @@ def test_classifies_litellm_bad_request_unrelated_unknown():
     assert classify_provider_error(exc, "local") != "context_window_exceeded"
 
 
+def test_classifies_litellm_bad_request_google_request_rejected():
+    from litellm.exceptions import BadRequestError
+
+    exc = BadRequestError(
+        "Invalid value for parameter 'temperature'",
+        model="gemini-test",
+        llm_provider="google",
+    )
+
+    assert exc.status_code == 400
+    assert classify_provider_error(exc, "google") == "provider_request_rejected"
+
+
+def test_preserves_existing_litellm_cloud_exception_classifications():
+    from litellm.exceptions import (
+        ContextWindowExceededError,
+        InternalServerError,
+        RateLimitError,
+        ServiceUnavailableError,
+        Timeout,
+    )
+
+    cases = [
+        (
+            Timeout("timeout", model="gemini-test", llm_provider="google"),
+            408,
+            "chat_timeout",
+        ),
+        (
+            InternalServerError(
+                "internal server error",
+                model="gemini-test",
+                llm_provider="google",
+            ),
+            500,
+            "provider_unavailable",
+        ),
+        (
+            RateLimitError(
+                "rate limit",
+                model="gemini-test",
+                llm_provider="google",
+            ),
+            429,
+            "provider_quota_exceeded",
+        ),
+        (
+            ContextWindowExceededError(
+                "context window exceeded",
+                model="gemini-test",
+                llm_provider="google",
+            ),
+            400,
+            "context_window_exceeded",
+        ),
+        (
+            ServiceUnavailableError(
+                "unavailable",
+                model="gemini-test",
+                llm_provider="google",
+            ),
+            503,
+            "unknown",
+        ),
+    ]
+
+    for exc, status_code, expected in cases:
+        assert exc.status_code == status_code
+        assert classify_provider_error(exc, "google") == expected
+
+
 def test_context_reason_codes_are_registered_with_existing_owner_copy():
     from solstone.convey import provider_readiness
     from solstone.think.providers.shared import RUNTIME_REASON_CODES
@@ -86,7 +157,11 @@ def test_context_reason_codes_are_registered_with_existing_owner_copy():
         encoding="utf-8"
     )
 
-    for reason_code in ("context_window_exceeded", "context_budget_exceeded"):
+    for reason_code in (
+        "context_window_exceeded",
+        "context_budget_exceeded",
+        "provider_request_rejected",
+    ):
         assert reason_code in RUNTIME_REASON_CODES
         assert reason_code in provider_readiness.mapped_reason_codes()
         assert reason_code in projection

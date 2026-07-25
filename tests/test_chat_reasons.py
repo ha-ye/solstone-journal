@@ -35,6 +35,7 @@ EXPECTED_CODES = {
     "cuda_runtime_incomplete",
     "provider_key_invalid",
     "provider_quota_exceeded",
+    "provider_request_rejected",
     "network_unreachable",
     "provider_response_invalid",
     "provider_unavailable",

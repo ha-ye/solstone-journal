@@ -105,6 +105,8 @@ def _reason_copy(day: dict) -> str:
         # Follow-up: a future copy pass could add a "still starting up - try
         # again shortly" sentence and split startup off from provider here.
         return backlog_copy.BACKLOG_REASON_PROVIDER_DOWN
+    if category == "request":
+        return backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED
     return backlog_copy.BACKLOG_REASON_FAILING_STEP
 
 

@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.journal_config import read_journal_config
-from solstone.think.providers.shared import _CONTEXT_WINDOW_PATTERNS, _contains_any
+from solstone.think.providers.shared import (
+    _CONTEXT_WINDOW_PATTERNS,
+    PROVIDER_ERROR_TEXT_CAP_CHARS,
+    _contains_any,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -35,7 +39,6 @@ ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY = "served_context_window"
 ENDPOINT_SERVED_CONTEXT_WINDOW_MIN_TOKENS = 2048
 ENDPOINT_SERVED_WINDOW_CACHE_TTL_S = 300.0
 ENDPOINT_MODELS_TIMEOUT_S = 2.5
-ENDPOINT_ERROR_BODY_CAP_CHARS = 4096
 
 _SERVED_WINDOW_CACHE: dict[tuple[str, str], tuple[float, int | None]] = {}
 
@@ -345,7 +348,7 @@ def _payload_text(payload: Any, credential: str | None) -> str | None:
         text = str(redacted)
     if not text:
         return None
-    return text[:ENDPOINT_ERROR_BODY_CAP_CHARS]
+    return text[:PROVIDER_ERROR_TEXT_CAP_CHARS]
 
 
 def _candidate_exception_texts(
@@ -521,7 +524,6 @@ def wrap_on_event_redacting(
 
 
 __all__ = [
-    "ENDPOINT_ERROR_BODY_CAP_CHARS",
     "ENDPOINT_MODELS_TIMEOUT_S",
     "ENDPOINT_SERVED_CONTEXT_WINDOW_CONFIG_KEY",
     "ENDPOINT_SERVED_CONTEXT_WINDOW_MIN_TOKENS",

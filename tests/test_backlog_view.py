@@ -44,6 +44,7 @@ def _assert_single_stuck_reason(reason_code: str, expected: str) -> None:
         ("local_endpoint_unreachable", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
         ("provider_quota_exceeded", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
         ("provider_key_invalid", backlog_copy.BACKLOG_REASON_PROVIDER_DOWN),
+        ("provider_request_rejected", backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED),
         ("catchup_backoff", backlog_copy.BACKLOG_REASON_FAILING_STEP),
         ("totally_made_up_code", backlog_copy.BACKLOG_REASON_FAILING_STEP),
     ],
@@ -52,6 +53,23 @@ def test_stuck_rows_maps_reason_categories_to_backlog_copy(
     reason_code: str, expected: str
 ):
     _assert_single_stuck_reason(reason_code, expected)
+
+
+def test_stuck_rows_provider_request_rejected_copy_is_distinct_and_actionable():
+    _assert_single_stuck_reason(
+        "provider_request_rejected",
+        backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED,
+    )
+
+    reason = backlog_copy.BACKLOG_REASON_PROVIDER_REFUSED
+    assert "try again" not in reason
+    assert "unreachable" not in reason
+    assert reason not in {
+        backlog_copy.BACKLOG_REASON_CORRUPT_RAW,
+        backlog_copy.BACKLOG_REASON_FAILING_STEP,
+        backlog_copy.BACKLOG_REASON_MISSING_CONFIG,
+        backlog_copy.BACKLOG_REASON_PROVIDER_DOWN,
+    }
 
 
 def test_stuck_rows_maps_readiness_reasons_and_carries_operator_fields():

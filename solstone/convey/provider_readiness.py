@@ -56,6 +56,7 @@ PROVIDER_LEVEL_CODES = frozenset(
         "provider_key_missing",
         "provider_key_invalid",
         "provider_quota_exceeded",
+        "provider_request_rejected",
         "provider_unavailable",
         "network_unreachable",
         "local_endpoint_unreachable",
@@ -242,6 +243,15 @@ _ENTRIES: dict[str, _Entry] = {
         klass="provider",
         summary="your {provider} quota is spent",
         detail="Wait for provider quota to reset or choose another provider.",
+        recovery_action=None,
+    ),
+    "provider_request_rejected": _Entry(
+        klass="request",
+        summary="the provider refused a request sol sent; this is a defect in sol",
+        detail=(
+            "The provider rejected the request before it could run. Retrying the "
+            "same work will not help because the request shape needs a code change."
+        ),
         recovery_action=None,
     ),
     "network_unreachable": _Entry(
