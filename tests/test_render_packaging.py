@@ -7,6 +7,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from textwrap import dedent
 
@@ -42,6 +43,57 @@ def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "packaging metadata is up to date" in result.stdout
+
+
+def test_live_lock_authorities_match_root_project_version() -> None:
+    root = SCRIPT.parents[1]
+    root_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
+
+    cargo_workspace = tomllib.loads(
+        (root / "core" / "Cargo.toml").read_text(encoding="utf-8")
+    )
+    assert cargo_workspace["workspace"]["package"]["version"] == root_version
+    cargo_member_names = {
+        tomllib.loads(
+            (root / "core" / member / "Cargo.toml").read_text(encoding="utf-8")
+        )["package"]["name"]
+        for member in cargo_workspace["workspace"]["members"]
+    }
+    cargo_lock = tomllib.loads(
+        (root / "core" / "Cargo.lock").read_text(encoding="utf-8")
+    )
+    cargo_lock_versions = {
+        package["name"]: package["version"]
+        for package in cargo_lock["package"]
+        if package["name"] in cargo_member_names
+    }
+    assert cargo_lock_versions == {
+        name: root_version for name in sorted(cargo_member_names)
+    }
+
+    uv_lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    uv_workspace_names = {
+        "solstone",
+        "solstone-core",
+        "solstone-journal",
+        "solstone-journal-cuda",
+    }
+    uv_lock_versions = {
+        package["name"]: package["version"]
+        for package in uv_lock["package"]
+        if package["name"] in uv_workspace_names
+    }
+    assert uv_lock_versions == {
+        name: root_version for name in sorted(uv_workspace_names)
+    }
+    overrides = {
+        override["name"]: override["specifier"]
+        for override in uv_lock["manifest"]["overrides"]
+    }
+    assert overrides["solstone-core-unsupported-platform"] == f"=={root_version}"
+    assert overrides["solstone-journal-host"] == "==0.7.0"
 
 
 def _write(path: Path, text: str) -> None:

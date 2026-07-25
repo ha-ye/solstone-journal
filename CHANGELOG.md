@@ -4,6 +4,16 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.15] - 2026-07-24
+
+### Fixed
+
+- installing with `uv tool install solstone` now puts the `sol` and `solstone` commands on your path. the 1.0.14 install could finish without them.
+
+### Changed
+
+- the main package now owns the public `sol` and `solstone` commands, and the native package owns the compiled program they run.
+
 ## [1.0.14] - 2026-07-24
 
 ### Added
