@@ -4,6 +4,7 @@
 """Tests for observe.sense module."""
 
 import json
+import logging
 import signal
 import subprocess
 import sys
@@ -109,6 +110,28 @@ class TimeoutProcess(FakeProcess):
         if timeout is None:
             raise AssertionError("watchdog must never call unbounded wait()")
         raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+
+
+class BlockingSignalProcess(FakeProcess):
+    """wait() blocks until terminate() supplies a signal return code."""
+
+    def __init__(self, exit_code=-signal.SIGTERM):
+        super().__init__(exit_code)
+        self.wait_entered = threading.Event()
+        self.released = threading.Event()
+
+    def wait(self, timeout=None):
+        self.wait_entered.set()
+        if not self.released.wait(timeout=2):
+            raise AssertionError("test process was not released")
+        if self.returncode is None:
+            self.returncode = self.exit_code
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -signal.SIGTERM
+        self.released.set()
 
 
 class FakeManaged:
@@ -1417,6 +1440,126 @@ def test_file_sensor_provider_blocked_suppresses_describe_error(tmp_path, monkey
     assert "error" not in observed_calls[0].kwargs
     assert not test_file.with_suffix(".jsonl").exists()
     assert sensor.running_handlers["describe"] == []
+
+
+def _callosum_emit_calls(sensor: FileSensor, tract: str, event: str):
+    return [
+        call
+        for call in sensor.callosum.emit.call_args_list
+        if call.args[:2] == (tract, event)
+    ]
+
+
+def test_handler_shutdown_signal_exit_suppresses_failure_reporting(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    sensor.recent_error_count = 4
+    sensor.last_error_reason = "prior failure"
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    process = BlockingSignalProcess()
+    managed = FakeManaged(
+        process,
+        log_path=tmp_path / "chronicle" / "20250101" / "health" / "describe.log",
+    )
+    remove_calls = []
+    original_remove = sensor._remove_running_handler
+
+    def record_remove(handler_name, handler_proc):
+        remove_calls.append((handler_name, id(handler_proc)))
+        return original_remove(handler_name, handler_proc)
+
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args, **_kwargs: managed,
+    )
+    monkeypatch.setattr(sensor, "_remove_running_handler", record_remove)
+    caplog.set_level(logging.DEBUG, logger="solstone.observe.sense")
+
+    sensor._handle_file(test_file)
+    # Do not pre-set _stopping: that hits the pre-spawn/terminate_due_to_stop
+    # returns and never proves the post-wait shutdown classification.
+    assert process.wait_entered.wait(timeout=2)
+
+    sensor.stop()
+
+    assert process.terminated is True
+    assert _callosum_emit_calls(sensor, "notification", "show") == []
+    observed_calls = _callosum_emit_calls(sensor, "observe", "observed")
+    assert len(observed_calls) == 1
+    assert observed_calls[0].kwargs["error"] is True
+    assert observed_calls[0].kwargs["errors"] == ["describe exit -15"]
+    assert sensor.recent_error_count == 4
+    assert sensor.last_error_reason == "prior failure"
+    assert [
+        record
+        for record in caplog.records
+        if record.name == "solstone.observe.sense" and record.levelno >= logging.ERROR
+    ] == []
+    assert "Segment observed with errors: 20250101/143022_300" in caplog.text
+    assert "['describe exit -15']" in caplog.text
+    assert sensor.running_handlers["describe"] == []
+    assert managed.cleanup.call_count == 2
+    assert len(remove_calls) == 2
+
+
+def test_handler_shutdown_nonzero_exit_outside_stop_reports_failure(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    log_path = tmp_path / "chronicle" / "20250101" / "health" / "describe.log"
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args, **_kwargs: FakeManaged(FakeProcess(2), log_path=log_path),
+    )
+    caplog.set_level(logging.ERROR, logger="solstone.observe.sense")
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    assert "describe failed with exit 2" in caplog.text
+    assert len(_callosum_emit_calls(sensor, "notification", "show")) == 1
+    assert sensor.recent_error_count == 1
+    assert sensor.last_error_reason == "describe exit 2"
+
+
+def test_handler_shutdown_signal_exit_outside_stop_reports_failure(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.callosum = MagicMock()
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    log_path = tmp_path / "chronicle" / "20250101" / "health" / "describe.log"
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args, **_kwargs: FakeManaged(FakeProcess(-9), log_path=log_path),
+    )
+    caplog.set_level(logging.ERROR, logger="solstone.observe.sense")
+
+    sensor._handle_file(test_file)
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    # This excludes implementations keyed on exit-code sign: they pass the
+    # shutdown case while swallowing every kernel-killed handler.
+    assert "describe failed with exit -9" in caplog.text
+    assert len(_callosum_emit_calls(sensor, "notification", "show")) == 1
+    assert sensor.recent_error_count == 1
+    assert sensor.last_error_reason == "describe exit -9"
 
 
 def test_handler_watchdog_timeout_terminates_and_surfaces(

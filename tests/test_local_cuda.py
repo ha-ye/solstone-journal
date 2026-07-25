@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -49,6 +50,7 @@ def _patch_nvidia_smi(
             return _completed(version_stdout, version_returncode)
         raise AssertionError(f"unexpected command: {cmd}")
 
+    monkeypatch.setattr(local_cuda.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
     monkeypatch.setattr(local_cuda.subprocess, "run", fake_run)
     return calls
 
@@ -219,10 +221,16 @@ def test_parse_memavailable_mib() -> None:
     assert local_cuda._parse_memavailable_mib("MemTotal: 1234 kB\n") is None
 
 
-def test_probe_nvidia_gpu_missing_binary_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
+def test_probe_nvidia_gpu_absent_binary_spawns_nothing_and_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    calls = _patch_nvidia_smi(monkeypatch, gpu_exc=FileNotFoundError("missing"))
+    monkeypatch.setattr(local_cuda.shutil, "which", lambda _name: None)
+
+    def fail_run(*_args, **_kwargs) -> SimpleNamespace:
+        raise AssertionError("nvidia-smi should not be spawned when absent")
+
+    monkeypatch.setattr(local_cuda.subprocess, "run", fail_run)
+    caplog.set_level(logging.DEBUG, logger=local_cuda.LOG.name)
 
     probe = local_cuda.probe_nvidia_gpu()
 
@@ -235,7 +243,41 @@ def test_probe_nvidia_gpu_missing_binary_fails_closed(
         memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
         detected=False,
     )
+    # Forbidding only WARNING would permit an INFO demotion, leaving each line in
+    # INFO-inclusive service logs; absent binaries should say nothing at any level.
+    assert caplog.records == []
+
+
+def test_probe_nvidia_gpu_permission_error_keeps_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls = _patch_nvidia_smi(monkeypatch, gpu_exc=PermissionError("denied"))
+    caplog.set_level(logging.DEBUG, logger=local_cuda.LOG.name)
+
+    probe = local_cuda.probe_nvidia_gpu()
+
+    assert probe.detected is False
     assert len(calls) == 1
+    assert "NVIDIA GPU probe could not start: denied" in caplog.text
+
+
+def test_probe_nvidia_gpu_timeout_keeps_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls = _patch_nvidia_smi(
+        monkeypatch,
+        gpu_exc=local_cuda.subprocess.TimeoutExpired(
+            cmd="nvidia-smi",
+            timeout=local_cuda._PROBE_TIMEOUT_S,
+        ),
+    )
+    caplog.set_level(logging.DEBUG, logger=local_cuda.LOG.name)
+
+    probe = local_cuda.probe_nvidia_gpu()
+
+    assert probe.detected is False
+    assert len(calls) == 1
+    assert "NVIDIA GPU probe timed out after" in caplog.text
 
 
 def test_probe_nvidia_gpu_garbled_output_fails_closed(

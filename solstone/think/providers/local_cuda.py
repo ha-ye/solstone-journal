@@ -213,6 +213,9 @@ def detect_nvidia_unified_memory() -> bool:
 
 
 def probe_nvidia_gpu() -> NvidiaProbe:
+    if shutil.which("nvidia-smi") is None:
+        return _undetected()
+
     try:
         completed = subprocess.run(
             [

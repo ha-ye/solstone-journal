@@ -569,6 +569,19 @@ class FileSensor:
                 self._remove_running_handler(handler_name, handler_proc)
                 return
 
+            if self._stopping.is_set():
+                logger.info(
+                    f"{handler_name} cancelled by shutdown for {file_path.name} "
+                    f"({elapsed:.1f}s, exit {exit_code})"
+                )
+                self._check_segment_observed(
+                    file_path,
+                    error=f"{handler_name} exit {exit_code}",
+                )
+                handler_proc.cleanup()
+                self._remove_running_handler(handler_name, handler_proc)
+                return
+
             try:
                 log_rel = handler_proc.managed.log_writer.path.relative_to(
                     self.journal_dir
