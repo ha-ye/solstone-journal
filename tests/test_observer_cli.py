@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,16 +54,29 @@ def observer_cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return SimpleNamespace(home=home, journal=journal)
 
 
-def _observer(name: str = "archon", key: str = "existing-key-abcdef") -> dict:
-    return {
+def _observer(
+    name: str = "archon",
+    key: str = "existing-key-abcdef",
+    *,
+    last_seen: int | None = None,
+    last_segment: str | None = None,
+    last_segment_received_at: object = None,
+    last_segment_day: object = None,
+    include_last_segment_freshness: bool = True,
+) -> dict:
+    record = {
         "key": key,
         "name": name,
         "created_at": 1,
-        "last_seen": None,
-        "last_segment": None,
+        "last_seen": last_seen,
+        "last_segment": last_segment,
         "enabled": True,
         "stats": {"segments_received": 0, "bytes_received": 0},
     }
+    if include_last_segment_freshness:
+        record["last_segment_received_at"] = last_segment_received_at
+        record["last_segment_day"] = last_segment_day
+    return record
 
 
 PRUNE_DAY = "20250103"
@@ -336,8 +351,17 @@ def _observer_with_stats(
     segments_received: int,
     bytes_received: int,
     duplicates_rejected: int = 0,
+    last_segment_received_at: object = None,
+    last_segment_day: object = None,
+    include_last_segment_freshness: bool = True,
 ) -> dict:
-    record = _observer(name=name, key=key)
+    record = _observer(
+        name=name,
+        key=key,
+        last_segment_received_at=last_segment_received_at,
+        last_segment_day=last_segment_day,
+        include_last_segment_freshness=include_last_segment_freshness,
+    )
     record["created_at"] = created_at
     record["stats"] = {
         "segments_received": segments_received,
@@ -345,6 +369,14 @@ def _observer_with_stats(
         "duplicates_rejected": duplicates_rejected,
     }
     return record
+
+
+def _table_row(output: str, name: str) -> str:
+    return next(line for line in output.splitlines() if line.startswith(f"{name:<20}"))
+
+
+def _last_segment_cell(row: str) -> str:
+    return row[74:86].strip()
 
 
 def test_create_observer_record_reuses_existing_without_create_side_effects(
@@ -733,6 +765,61 @@ def test_cmd_list_json_includes_prefix_and_status(
     assert "mode" not in rows["desktop"]
 
 
+def test_fmt_compact_age_units_and_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: 0)
+    assert observer_cli._fmt_compact_age(0) == "0s"
+
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert observer_cli._fmt_compact_age(None) == "—"
+    assert observer_cli._fmt_compact_age("bad") == "—"
+    assert observer_cli._fmt_compact_age(True) == "—"
+    assert observer_cli._fmt_compact_age(-1) == "—"
+    assert observer_cli._fmt_compact_age(now + 1) == "—"
+    assert observer_cli._fmt_compact_age(now) == "0s"
+    assert observer_cli._fmt_compact_age(now - 30_000) == "30s"
+    assert observer_cli._fmt_compact_age(now - ((59 * 60 + 59) * 1000)) == "59m"
+    assert observer_cli._fmt_compact_age(now - (60 * 60 * 1000)) == "1h"
+    assert observer_cli._fmt_compact_age(now - ((23 * 60 + 59) * 60 * 1000)) == "23h"
+    assert observer_cli._fmt_compact_age(now - (24 * 60 * 60 * 1000)) == "1d"
+    assert observer_cli._fmt_compact_age(now - int(19.5 * 60 * 60 * 1000)) == "19h"
+
+
+def test_cmd_list_shows_last_segment_column_and_json(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="abcdefgh12345678",
+            last_segment_received_at=now - 2 * 60 * 1000,
+            last_segment_day="20260724",
+        )
+    )
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Last Seen          Last Segment" in captured.out
+    assert "-" * 107 in captured.out
+    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "2m"
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=True))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    rows = {row["name"]: row for row in json.loads(captured.out)}
+    assert rows["desktop"]["last_segment_received_at"] == now - 2 * 60 * 1000
+    assert rows["desktop"]["last_segment_day"] == "20260724"
+
+
 def test_cmd_list_human_shows_prefix_column(
     observer_cli_env,
     capsys: pytest.CaptureFixture[str],
@@ -767,6 +854,44 @@ def test_cmd_status_single_reports_prefix(
     assert "mode" not in payload
 
 
+def test_cmd_status_single_last_segment_age_uses_receipt_time_with_day_context(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    received_at = now - 2 * 60 * 1000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="cdefghij12345678",
+            last_seen=now - 1_000,
+            last_segment="120000_300",
+            last_segment_received_at=received_at,
+            last_segment_day="20260722",
+        )
+    )
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="desktop", json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "  Last segment: 2m (20260722)\n" in captured.out
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="desktop", json_output=True)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    assert payload["last_segment_received_at"] == received_at
+    assert payload["last_segment_day"] == "20260722"
+
+
 def test_cmd_status_all_table_shows_prefix(
     observer_cli_env,
     capsys: pytest.CaptureFixture[str],
@@ -780,6 +905,207 @@ def test_cmd_status_all_table_shows_prefix(
     assert "Name                 Prefix" in captured.out
     assert "Mode" not in captured.out
     assert "desktop              abcdefgh" in captured.out
+
+
+def test_cmd_status_all_shows_last_segment_column_and_json(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="abcdefgh12345678",
+            last_segment_received_at=now - 2 * 60 * 1000,
+            last_segment_day="20260724",
+        )
+    )
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Last Seen          Last Segment" in captured.out
+    assert "-" * 87 in captured.out
+    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "2m"
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=True))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    row = payload["observers"][0]
+    assert row["last_segment_received_at"] == now - 2 * 60 * 1000
+    assert row["last_segment_day"] == "20260724"
+
+
+def test_last_segment_freshness_does_not_change_connection_status(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert observer_cli.CONNECTED_THRESHOLD_MS == 2 * 60 * 1000
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="abcdefgh12345678",
+            last_seen=now - 1_000,
+            last_segment_received_at=now - 41 * 24 * 60 * 60 * 1000,
+            last_segment_day="20260613",
+        )
+    )
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="desktop", json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "  Status:       connected\n" in captured.out
+    assert "  Last segment: 41d (20260613)\n" in captured.out
+
+
+def test_observer_cli_last_segment_rendering_has_no_classification() -> None:
+    source = Path(observer_cli.__file__).read_text(encoding="utf-8")
+    thresholds = re.findall(
+        r"^([A-Z][A-Z0-9_]*THRESHOLD[A-Z0-9_]*)\s*=", source, flags=re.MULTILINE
+    )
+    assert thresholds == ["CONNECTED_THRESHOLD_MS"]
+
+    render_source = "\n".join(
+        inspect.getsource(obj)
+        for obj in (
+            observer_cli.cmd_list,
+            observer_cli._status_single,
+            observer_cli._status_all,
+            observer_cli._fmt_compact_age,
+        )
+    )
+    assert "\\x1b" not in render_source
+    assert "\\033" not in render_source
+    assert "color" not in render_source.lower()
+    assert "colour" not in render_source.lower()
+    assert "stale" not in render_source.lower()
+    for glyph in ("▲", "▼", "●", "○", "✕", "✓"):
+        assert glyph not in render_source
+
+
+def test_fleet_last_segment_bad_rows_are_isolated(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    records = [
+        _observer(
+            name="good",
+            key="good000012345678",
+            last_segment_received_at=now - 2 * 60 * 1000,
+        ),
+        _observer(
+            name="malformed",
+            key="malform12345678",
+            last_segment_received_at="bad",
+        ),
+        _observer(
+            name="negative",
+            key="negative12345678",
+            last_segment_received_at=-1,
+        ),
+        _observer(
+            name="future",
+            key="future0012345678",
+            last_segment_received_at=now + 1,
+        ),
+    ]
+    for record in records:
+        assert save_observer(record)
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _last_segment_cell(_table_row(captured.out, "good")) == "2m"
+    assert _last_segment_cell(_table_row(captured.out, "malformed")) == "—"
+    assert _last_segment_cell(_table_row(captured.out, "negative")) == "—"
+    assert _last_segment_cell(_table_row(captured.out, "future")) == "—"
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _last_segment_cell(_table_row(captured.out, "good")) == "2m"
+    assert _last_segment_cell(_table_row(captured.out, "malformed")) == "—"
+    assert _last_segment_cell(_table_row(captured.out, "negative")) == "—"
+    assert _last_segment_cell(_table_row(captured.out, "future")) == "—"
+
+
+def test_prechange_record_uses_status_single_history_fallback_only(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    today = observer_cli.datetime.date.today().strftime("%Y%m%d")
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="desktop",
+            key="abcdefgh12345678",
+            last_segment="120000_300",
+            include_last_segment_freshness=False,
+        )
+    )
+    append_history_record(
+        "abcdefgh",
+        today,
+        {
+            "ts": now - 2 * 60 * 1000,
+            "segment": "120000_300",
+            "stream": "desktop",
+            "files": [],
+        },
+    )
+    append_history_record(
+        "abcdefgh",
+        today,
+        {"type": "observed", "ts": now - 10_000, "segment": "ignored"},
+    )
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "—"
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _last_segment_cell(_table_row(captured.out, "desktop")) == "—"
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="desktop", json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert f"  Last segment: 2m ({today})\n" in captured.out
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="desktop", json_output=True)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    assert payload["last_segment_received_at"] is None
+    assert payload["last_segment_day"] is None
 
 
 def test_revoke_dl_observer_leaves_authorized_clients_untouched(

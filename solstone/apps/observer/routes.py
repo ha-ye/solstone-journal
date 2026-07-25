@@ -432,6 +432,8 @@ def api_create() -> Any:
         "created_at": now_ms(),
         "last_seen": None,
         "last_segment": None,
+        "last_segment_received_at": None,
+        "last_segment_day": None,
         "enabled": True,
         "stats": {
             "segments_received": 0,
@@ -565,6 +567,8 @@ def register() -> Any:
         "created_at": now_ms(),
         "last_seen": None,
         "last_segment": None,
+        "last_segment_received_at": None,
+        "last_segment_day": None,
         "enabled": True,
         "stats": {
             "segments_received": 0,
@@ -1005,8 +1009,17 @@ def _process_ingest_files(
             ),
         )
 
-    observer["last_seen"] = now_ms()
+    receipt_now = now_ms()
+    # Delivery freshness is server receipt time in int ms, using the same
+    # now_ms() clock as last_seen; last_segment_day is the validated
+    # client-declared day. Keep these distinct from think/surfaces
+    # last_segment_at (max segment end/synthesis progress), stream
+    # last_day/last_segment records, and ActivityStateMachine last_segment_day
+    # in awareness/activity_state.json; those are different stores/owners.
+    observer["last_seen"] = receipt_now
     observer["last_segment"] = plan.segment
+    observer["last_segment_received_at"] = receipt_now
+    observer["last_segment_day"] = day
     observer["stats"]["segments_received"] = (
         observer["stats"].get("segments_received", 0) + 1
     )

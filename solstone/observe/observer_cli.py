@@ -90,6 +90,31 @@ def _fmt_time(ms: int | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+def _fmt_compact_age(value: object) -> str:
+    """Format a millisecond timestamp as a compact elapsed age."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "—"
+    if value < 0:
+        return "—"
+
+    delta_ms = now_ms() - value
+    if delta_ms < 0:
+        return "—"
+
+    seconds = delta_ms // 1000
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    return f"{hours // 24}d"
+
+
 def _aggregate_stats(records: list[dict]) -> dict:
     """Sum every numeric stat counter present across a group of records."""
     totals: dict[str, int | float] = {}
@@ -128,6 +153,8 @@ def create_observer_record(
         "created_at": now_ms(),
         "last_seen": None,
         "last_segment": None,
+        "last_segment_received_at": None,
+        "last_segment_day": None,
         "enabled": True,
         "stats": {
             "segments_received": 0,
@@ -231,6 +258,8 @@ def cmd_list(args: argparse.Namespace) -> int:
                     "prefix": observer_filename_prefix(r),
                     "status": _status_label(r),
                     "last_seen": r.get("last_seen"),
+                    "last_segment_received_at": r.get("last_segment_received_at"),
+                    "last_segment_day": r.get("last_segment_day"),
                     "segments": stats.get("segments_received", 0),
                     "bytes": stats.get("bytes_received", 0),
                 }
@@ -244,21 +273,22 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     print(
         f"{'Name':<20} {'Prefix':<18} {'Status':<14} "
-        f"{'Last Seen':<18} {'Segments':>10} {'Bytes':>12}"
+        f"{'Last Seen':<18} {'Last Segment':<12} {'Segments':>10} {'Bytes':>12}"
     )
-    print("-" * 94)
+    print("-" * 107)
 
     for r in observers:
         name = r.get("name", "")
         prefix = observer_filename_prefix(r)
         status = _status_label(r)
         last_seen = _fmt_time(r.get("last_seen"))
+        last_segment = _fmt_compact_age(r.get("last_segment_received_at"))
         stats = r.get("stats", {})
         segments = stats.get("segments_received", 0)
         bytes_recv = _fmt_bytes(stats.get("bytes_received", 0))
         print(
             f"{name:<20} {prefix:<18} {status:<14} "
-            f"{last_seen:<18} {segments:>10} {bytes_recv:>12}"
+            f"{last_seen:<18} {last_segment:<12} {segments:>10} {bytes_recv:>12}"
         )
 
     return 0
@@ -420,6 +450,10 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
                     "status": _status_label(observer),
                     "created_at": observer.get("created_at"),
                     "last_seen": observer.get("last_seen"),
+                    "last_segment_received_at": observer.get(
+                        "last_segment_received_at"
+                    ),
+                    "last_segment_day": observer.get("last_segment_day"),
                     "revoked": observer.get("revoked", False),
                     "segments": stats.get("segments_received", 0),
                     "bytes": stats.get("bytes_received", 0),
@@ -428,26 +462,48 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
         )
         return 0
 
-    print(f"Observer: {name}")
-    print(f"  Prefix:     {key_prefix}")
-    print(f"  Status:     {_status_label(observer)}")
-    print(f"  Created:    {_fmt_time(observer.get('created_at'))}")
-    print(f"  Last seen:  {_fmt_time(observer.get('last_seen'))}")
-    if observer.get("revoked"):
-        print(f"  Revoked at: {_fmt_time(observer.get('revoked_at'))}")
-    print(f"  Segments:   {stats.get('segments_received', 0)}")
-    print(f"  Bytes:      {_fmt_bytes(stats.get('bytes_received', 0))}")
-    if stats.get("duplicates_rejected"):
-        print(f"  Duplicates: {stats['duplicates_rejected']} rejected")
-
-    # Today's sync history
     today = datetime.date.today().strftime("%Y%m%d")
     history = load_history(key_prefix, today)
+    pruned = pruned_segments(history)
+    uploads = [
+        r for r in history if not r.get("type") and r.get("segment") not in pruned
+    ]
+    last_segment_received_at = observer.get("last_segment_received_at")
+    last_segment_day = observer.get("last_segment_day")
+    if last_segment_received_at is None and uploads:
+        last_upload = uploads[-1]
+        ts = last_upload.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, int):
+            last_segment_received_at = None
+        else:
+            last_segment_received_at = ts
+            last_segment_day = today
+    last_segment_age = _fmt_compact_age(last_segment_received_at)
+    last_segment_context = (
+        f"{last_segment_age} ({last_segment_day})"
+        if isinstance(last_segment_day, str) and last_segment_day
+        else last_segment_age
+    )
+    label_width = len("Last segment:")
+
+    def print_field(label: str, value: str) -> None:
+        print(f"  {label:<{label_width}} {value}")
+
+    print(f"Observer: {name}")
+    print_field("Prefix:", key_prefix)
+    print_field("Status:", _status_label(observer))
+    print_field("Created:", _fmt_time(observer.get("created_at")))
+    print_field("Last seen:", _fmt_time(observer.get("last_seen")))
+    print_field("Last segment:", last_segment_context)
+    if observer.get("revoked"):
+        print_field("Revoked at:", _fmt_time(observer.get("revoked_at")))
+    print_field("Segments:", str(stats.get("segments_received", 0)))
+    print_field("Bytes:", _fmt_bytes(stats.get("bytes_received", 0)))
+    if stats.get("duplicates_rejected"):
+        print_field("Duplicates:", f"{stats['duplicates_rejected']} rejected")
+
+    # Today's sync history
     if history:
-        pruned = pruned_segments(history)
-        uploads = [
-            r for r in history if not r.get("type") and r.get("segment") not in pruned
-        ]
         print(f"\n  Today ({today}): {len(uploads)} segment(s) synced")
         for rec in uploads[-5:]:
             seg = rec.get("segment", "?")
@@ -508,6 +564,10 @@ def _status_all(json_output: bool = False) -> int:
                             "prefix": observer_filename_prefix(r),
                             "status": _status_label(r),
                             "last_seen": r.get("last_seen"),
+                            "last_segment_received_at": r.get(
+                                "last_segment_received_at"
+                            ),
+                            "last_segment_day": r.get("last_segment_day"),
                         }
                         for r in observers
                     ],
@@ -523,14 +583,20 @@ def _status_all(json_output: bool = False) -> int:
     print(f"  Total segments: {total_segments}")
     print(f"  Total bytes:    {_fmt_bytes(total_bytes)}")
 
-    print(f"\n{'Name':<20} {'Prefix':<18} {'Status':<14} {'Last Seen':<18}")
-    print("-" * 74)
+    print(
+        f"\n{'Name':<20} {'Prefix':<18} {'Status':<14} "
+        f"{'Last Seen':<18} {'Last Segment':<12}"
+    )
+    print("-" * 87)
     for r in observers:
         name = r.get("name", "")
         prefix = observer_filename_prefix(r)
         status = _status_label(r)
         last_seen = _fmt_time(r.get("last_seen"))
-        print(f"{name:<20} {prefix:<18} {status:<14} {last_seen:<18}")
+        last_segment = _fmt_compact_age(r.get("last_segment_received_at"))
+        print(
+            f"{name:<20} {prefix:<18} {status:<14} {last_seen:<18} {last_segment:<12}"
+        )
 
     return 0
 

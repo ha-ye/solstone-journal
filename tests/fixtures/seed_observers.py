@@ -67,6 +67,8 @@ def seed_observers() -> int:
             "created_at": existing_record.get("created_at", current_now),
             "last_seen": last_seen,
             "last_segment": None,
+            "last_segment_received_at": None,
+            "last_segment_day": None,
             "enabled": True,
             "revoked": False,
             "revoked_at": None,

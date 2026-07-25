@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ import pytest
 import solstone.apps.observer.routes as routes_module
 import solstone.apps.observer.utils as observer_utils
 import solstone.convey.bridge as convey_bridge
+import solstone.observe.observer_cli as observer_cli_module
 from solstone.apps.observer.routes import (
     ACTIVE_THRESHOLD_MS,
     FUTURE_CLOCK_DRIFT_TOLERANCE_MS,
@@ -141,6 +143,43 @@ def _observer_record() -> dict:
     observers = list_observers()
     assert len(observers) == 1
     return observers[0]
+
+
+def _string_constant(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_exact_key_subscript(node: ast.AST, key: str) -> bool:
+    return isinstance(node, ast.Subscript) and _string_constant(node.slice) == key
+
+
+def _assert_last_segment_writes_are_coupled(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            if any(
+                _is_exact_key_subscript(target, "last_segment") for target in targets
+            ):
+                window = "\n".join(lines[node.lineno - 1 : node.lineno + 8])
+                assert '["last_segment_received_at"]' in window
+            if not any(
+                isinstance(target, ast.Name) and target.id == "observer_data"
+                for target in targets
+            ):
+                continue
+            if isinstance(node.value, ast.Dict):
+                keys = {
+                    value
+                    for key_node in node.value.keys
+                    if (value := _string_constant(key_node)) is not None
+                }
+                if "last_segment" in keys:
+                    assert "last_segment_received_at" in keys
 
 
 def _post_invalid_contract_audio(env, key: str):
@@ -1280,6 +1319,91 @@ def test_ingest_updates_stats(observer_env):
     assert observers[0]["stats"]["bytes_received"] == len(test_data)
     assert observers[0]["last_segment"] == "120000_300"
     assert observers[0]["last_seen"] is not None
+
+
+def test_ingest_persists_last_segment_receipt_freshness(
+    observer_env,
+    monkeypatch,
+) -> None:
+    env = observer_env()
+    receipt_now = 1_800_000_000_000
+    monkeypatch.setattr(routes_module, "now_ms", lambda: receipt_now)
+    key = _create_observer(env, "freshness-test")
+
+    resp = _upload_audio(
+        env,
+        key,
+        b"test content",
+        day="20260724",
+        segment="120000_300",
+    )
+
+    assert resp.status_code == 200
+    record = _observer_record()
+    assert record["last_seen"] == receipt_now
+    assert record["last_segment"] == "120000_300"
+    assert record["last_segment_received_at"] == receipt_now
+    assert isinstance(record["last_segment_received_at"], int)
+    assert record["last_segment_day"] == "20260724"
+    assert isinstance(record["last_segment_day"], str)
+
+
+def test_last_segment_assignments_are_coupled_to_received_at() -> None:
+    _assert_last_segment_writes_are_coupled(Path(routes_module.__file__))
+    _assert_last_segment_writes_are_coupled(Path(observer_cli_module.__file__))
+
+
+def test_status_event_refreshes_last_seen_without_segment_receipt(
+    observer_env,
+    monkeypatch,
+) -> None:
+    env = observer_env()
+    key = _create_observer(env, "event-freshness-test")
+    event_now = 1_800_000_060_000
+    monkeypatch.setattr(observer_utils, "now_ms", lambda: event_now)
+
+    resp = env.client.post(
+        "/app/observer/ingest/event",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"tract": "observe", "event": "status"},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+    record = _observer_record()
+    assert record["last_seen"] == event_now
+    assert record["last_segment"] is None
+    assert record["last_segment_received_at"] is None
+    assert record["last_segment_day"] is None
+    freshness = _classify_observer_freshness(
+        record["last_seen"],
+        record.get("revoked", False),
+        event_now,
+    )
+    assert freshness["state"] == "connected"
+
+
+def test_successful_ingest_upload_saves_observer_once(
+    observer_env,
+    monkeypatch,
+) -> None:
+    env = observer_env()
+    key = _create_observer(env, "save-count-test")
+    calls = 0
+    original = routes_module.save_observer
+
+    def counting_save_observer(observer: dict) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(observer)
+
+    monkeypatch.setattr(routes_module, "save_observer", counting_save_observer)
+
+    resp = _upload_audio(env, key, b"test content")
+
+    assert resp.status_code == 200
+    assert calls == 1
 
 
 def test_ingest_event_relay(observer_env):
