@@ -4,7 +4,7 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [1.0.15] - 2026-07-24
+## [1.0.15] - 2026-07-25
 
 ### Fixed
 
