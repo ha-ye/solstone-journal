@@ -184,6 +184,35 @@ DOCUMENTED_IP_LITERAL_EXCLUSIONS = {
     ipaddress.IPv4Network("198.51.100.0/24"),
     # RFC 5737: documentation range.
     ipaddress.IPv4Network("203.0.113.0/24"),
+    # Direct-pair admission boundary fixtures from tests/link/test_direct_admission.py.
+    # Adjacent-refused boundary below RFC 1918 10/8.
+    ipaddress.IPv4Address("9.255.255.255"),
+    # Adjacent-refused boundary above RFC 1918 10/8.
+    ipaddress.IPv4Address("11.0.0.0"),
+    # Adjacent-refused boundary below RFC 1918 172.16/12.
+    ipaddress.IPv4Address("172.15.255.255"),
+    # Adjacent-refused boundary above RFC 1918 172.16/12.
+    ipaddress.IPv4Address("172.32.0.0"),
+    # Adjacent-refused boundary below RFC 1918 192.168/16.
+    ipaddress.IPv4Address("192.167.255.255"),
+    # Adjacent-refused boundary above RFC 1918 192.168/16.
+    ipaddress.IPv4Address("192.169.0.0"),
+    # Adjacent-refused boundary below RFC 3927 link-local 169.254/16.
+    ipaddress.IPv4Address("169.253.255.255"),
+    # Adjacent-refused boundary above RFC 3927 link-local 169.254/16.
+    ipaddress.IPv4Address("169.255.0.0"),
+    # Adjacent-refused boundary below RFC 6598 shared address space 100.64/10.
+    ipaddress.IPv4Address("100.63.255.255"),
+    # Adjacent-refused boundary above RFC 6598 shared address space 100.64/10.
+    ipaddress.IPv4Address("100.128.0.0"),
+    # Adjacent-refused boundary below RFC 6890 loopback 127/8.
+    ipaddress.IPv4Address("126.255.255.255"),
+    # Adjacent-refused boundary above RFC 6890 loopback 127/8.
+    ipaddress.IPv4Address("128.0.0.0"),
+    # RFC 2544 benchmark refusal fixture.
+    ipaddress.IPv4Address("198.18.0.1"),
+    # Representative public-address refusal fixture.
+    ipaddress.IPv4Address("1.1.1.1"),
 }
 
 DOCUMENTED_IP_VALUE_EXCLUSIONS = {
