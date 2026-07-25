@@ -696,9 +696,9 @@ def test_workspace_html_timeline_legend_band_contract():
     ]
     assert legend_z_index_lines == ["z-index: 3;"]
 
-    label_css = _css_rule(text, ".tr-labels")
+    labels_css = _css_rule(text, ".tr-labels")
     assert not any(
-        line.strip().startswith("z-index:") for line in label_css.splitlines()
+        line.strip().startswith("z-index:") for line in labels_css.splitlines()
     )
 
     dot_css = _css_rule(text, ".tr-legend-dot")
