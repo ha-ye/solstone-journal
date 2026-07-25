@@ -18,6 +18,7 @@ from solstone.observe.transcribe import diarize
 from tests import verify_speaker_differential as harness
 from tests import verify_speaker_verdict as verdict
 from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
+from tests._speaker_differential_fixtures import EMBEDDING_MAX_ABS_TOLERANCE
 from tests.test_speaker_differential import _emit_model_free_bundle
 
 
@@ -212,7 +213,7 @@ def test_silhouette_improvement_flip_and_no_flip(
             return diarize.SILHOUETTE_IMPROVEMENT + eps
         if k == 3:
             return diarize.SILHOUETTE_IMPROVEMENT - eps
-        return -1.0
+        raise AssertionError(f"unexpected silhouette k {k}")
 
     monkeypatch.setattr(diarize, "_ahc", fake_ahc)
     monkeypatch.setattr(diarize, "_silhouette", fake_silhouette)
@@ -320,6 +321,27 @@ def test_asymmetric_owner_evaluability_is_not_a_flip() -> None:
     assert report["asymmetric_evaluability"] == [1]
 
 
+def test_functionally_equal_rollup_keeps_zero_flip_answer_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _case, left, _reset = _emit_model_free_bundle(monkeypatch)
+    right = harness.copy_bundle(left)
+    embeddings = harness._array(right, harness.STATEMENT_EMBEDDINGS).copy()
+    embeddings[0, 0] += EMBEDDING_MAX_ABS_TOLERANCE / 2
+    harness.replace_array(right, harness.STATEMENT_EMBEDDINGS, embeddings)
+
+    report = verdict.compare_verdicts(left, right)
+
+    assert report["classification"] == harness.FUNCTIONALLY_EQUAL
+    assert (
+        report["components"]["bundle_comparator"]["components"]["statement_embeddings"][
+            "classification"
+        ]
+        == harness.FUNCTIONALLY_EQUAL
+    )
+    assert report["components"]["decision_flips"]["flip_count"] == 0
+
+
 def test_acoustic_medium_threshold_flip_and_no_flip() -> None:
     eps = _eps(encoder_config.ACOUSTIC_MEDIUM)
     refs = _refs(width=3, owner_index=1, entity_indices=[0])
@@ -335,11 +357,11 @@ def test_acoustic_medium_threshold_flip_and_no_flip() -> None:
 
     left_owner = verdict._family2_report(left, right, refs)
     flip_report = verdict._family3_report(
-        left, right, refs, *left_owner[1:], left_owner[0]
+        left, right, refs, left_owner[0], *left_owner[1:]
     )
     right_owner = verdict._family2_report(right, no_flip_right, refs)
     no_flip_report = verdict._family3_report(
-        right, no_flip_right, refs, *right_owner[1:], right_owner[0]
+        right, no_flip_right, refs, right_owner[0], *right_owner[1:]
     )
 
     assert flip_report["flip_count"] == 1
@@ -359,11 +381,11 @@ def test_acoustic_high_threshold_flip_and_no_flip() -> None:
 
     left_owner = verdict._family2_report(left, right, refs)
     flip_report = verdict._family3_report(
-        left, right, refs, *left_owner[1:], left_owner[0]
+        left, right, refs, left_owner[0], *left_owner[1:]
     )
     right_owner = verdict._family2_report(right, no_flip_right, refs)
     no_flip_report = verdict._family3_report(
-        right, no_flip_right, refs, *right_owner[1:], right_owner[0]
+        right, no_flip_right, refs, right_owner[0], *right_owner[1:]
     )
 
     assert flip_report["flip_count"] == 1
@@ -385,11 +407,11 @@ def test_acoustic_margin_flip_and_no_flip() -> None:
 
     left_owner = verdict._family2_report(left, right, refs)
     flip_report = verdict._family3_report(
-        left, right, refs, *left_owner[1:], left_owner[0]
+        left, right, refs, left_owner[0], *left_owner[1:]
     )
     right_owner = verdict._family2_report(right, no_flip_right, refs)
     no_flip_report = verdict._family3_report(
-        right, no_flip_right, refs, *right_owner[1:], right_owner[0]
+        right, no_flip_right, refs, right_owner[0], *right_owner[1:]
     )
 
     assert flip_report["flip_count"] == 1
@@ -414,7 +436,7 @@ def test_owner_margin_decline_demotes_acoustic_high() -> None:
 
     owner_report = verdict._family2_report(left, right, refs)
     acoustic_report = verdict._family3_report(
-        left, right, refs, *owner_report[1:], owner_report[0]
+        left, right, refs, owner_report[0], *owner_report[1:]
     )
 
     assert owner_report[0]["left_margin_declined_sids"] == [1]

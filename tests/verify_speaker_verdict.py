@@ -36,6 +36,7 @@ import json
 import logging
 import platform
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,7 +92,6 @@ class ReferenceTurns:
 
 @dataclass(frozen=True)
 class OwnerDecision:
-    statement_id: int
     outcome: str
     owner_score: float
     best_non_owner_score: float
@@ -101,7 +101,6 @@ class OwnerDecision:
 
 @dataclass(frozen=True)
 class AcousticDecision:
-    statement_id: int
     outcome: str
     entity_id: str | None
     tier: str
@@ -649,7 +648,6 @@ def _owner_decisions(
         if declined:
             margin_declined.add(statement_id)
         decisions[statement_id] = OwnerDecision(
-            statement_id=statement_id,
             outcome="owner" if owner_claimed else "non_owner",
             owner_score=owner_score,
             best_non_owner_score=best_non_owner,
@@ -780,6 +778,9 @@ def _acoustic_decisions(
         embedding = embeddings.get(statement_id)
         if embedding is None:
             continue
+        # Production starts at zero; -inf is equivalent here because non-positive
+        # scores cannot cross acoustic tiers, margin helpers clamp at zero, and
+        # tier "none" clears best_entity.
         best_score = float("-inf")
         best_entity: str | None = None
         runner_up_scores: list[float] = []
@@ -814,7 +815,6 @@ def _acoustic_decisions(
             best_entity = None
             outcome = "none"
         decisions[statement_id] = AcousticDecision(
-            statement_id=statement_id,
             outcome=outcome,
             entity_id=best_entity,
             tier=tier,
@@ -830,11 +830,11 @@ def _family3_report(
     left: differential.Bundle,
     right: differential.Bundle,
     refs: ReferenceCentroids | None,
+    owner_report: dict[str, Any],
     left_margin_declined: set[int],
     right_margin_declined: set[int],
     left_owner_decisions: dict[int, OwnerDecision],
     right_owner_decisions: dict[int, OwnerDecision],
-    owner_report: dict[str, Any],
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "classification": differential.NOT_EVALUATED,
@@ -1054,13 +1054,6 @@ def _der_breakdown(
     reference_turns: tuple[ReferenceTurn, ...],
     predicted_turns: tuple[ReferenceTurn, ...],
 ) -> DerBreakdown:
-    boundaries = sorted(
-        {
-            bound
-            for turn in reference_turns + predicted_turns
-            for bound in (turn.start_s, turn.end_s)
-        }
-    )
     ref_speakers = sorted({turn.speaker for turn in reference_turns})
     sys_speakers = sorted({turn.speaker for turn in predicted_turns})
     mapping = _speaker_mapping(
@@ -1070,12 +1063,10 @@ def _der_breakdown(
     false_alarm = 0.0
     confusion = 0.0
     denominator = 0.0
-    for start, end in zip(boundaries, boundaries[1:]):
-        duration = end - start
-        if duration <= 0:
-            continue
-        ref_active = _active_speakers(reference_turns, start, end)
-        sys_active = _active_speakers(predicted_turns, start, end)
+    for duration, ref_active, sys_active in _speaker_activity_intervals(
+        reference_turns,
+        predicted_turns,
+    ):
         n_ref = len(ref_active)
         n_sys = len(sys_active)
         n_correct = sum(
@@ -1101,6 +1092,21 @@ def _speaker_mapping(
     matrix = np.zeros((len(sys_speakers), len(ref_speakers)), dtype=np.float64)
     ref_index = {speaker: idx for idx, speaker in enumerate(ref_speakers)}
     sys_index = {speaker: idx for idx, speaker in enumerate(sys_speakers)}
+    for duration, ref_active, sys_active in _speaker_activity_intervals(
+        reference_turns,
+        predicted_turns,
+    ):
+        for sys_label in sys_active:
+            for ref_label in ref_active:
+                matrix[sys_index[sys_label], ref_index[ref_label]] += duration
+    rows, cols = linear_sum_assignment(-matrix)
+    return {sys_speakers[row]: ref_speakers[col] for row, col in zip(rows, cols)}
+
+
+def _speaker_activity_intervals(
+    reference_turns: tuple[ReferenceTurn, ...],
+    predicted_turns: tuple[ReferenceTurn, ...],
+) -> Iterator[tuple[float, set[str], set[str]]]:
     boundaries = sorted(
         {
             bound
@@ -1114,11 +1120,7 @@ def _speaker_mapping(
             continue
         ref_active = _active_speakers(reference_turns, start, end)
         sys_active = _active_speakers(predicted_turns, start, end)
-        for sys_label in sys_active:
-            for ref_label in ref_active:
-                matrix[sys_index[sys_label], ref_index[ref_label]] += duration
-    rows, cols = linear_sum_assignment(-matrix)
-    return {sys_speakers[row]: ref_speakers[col] for row, col in zip(rows, cols)}
+        yield duration, ref_active, sys_active
 
 
 def _active_speakers(
@@ -1205,11 +1207,11 @@ def _decision_report(
         left,
         right,
         refs,
+        family2,
         left_margin,
         right_margin,
         left_owner,
         right_owner,
-        family2,
     )
     families = {
         "cluster_count": family1,
