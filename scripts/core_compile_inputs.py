@@ -10,10 +10,14 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 ROOT_PACKAGE = "solstone-core"
 INCLUDE_MACROS = frozenset({"include_str", "include_bytes"})
+_INCLUDE_MACRO_ALTERNATION = "|".join(
+    re.escape(macro) for macro in sorted(INCLUDE_MACROS)
+)
+INCLUDE_MACRO_RE = re.compile(rf"\b(?P<macro>{_INCLUDE_MACRO_ALTERNATION})\s*!\s*\(")
 
 
 class CoreCompileInputError(RuntimeError):
@@ -23,7 +27,7 @@ class CoreCompileInputError(RuntimeError):
 @dataclass(frozen=True)
 class CoreCompileInputAsset:
     source_file: Path
-    macro: Literal["include_str", "include_bytes"]
+    macro: str
     line: int
     column: int
     raw_argument: str
@@ -34,7 +38,6 @@ class CoreCompileInputAsset:
 @dataclass(frozen=True)
 class _Package:
     name: str
-    member: str
     manifest: Path
     data: dict[str, Any]
 
@@ -95,7 +98,7 @@ def _workspace_packages(root: Path) -> dict[str, _Package]:
             )
         if name in packages:
             raise CoreCompileInputError(f"package-name-duplicate: {name}")
-        packages[name] = _Package(name, member, manifest, member_data)
+        packages[name] = _Package(name, manifest, member_data)
     if ROOT_PACKAGE not in packages:
         raise CoreCompileInputError(f"root-package-missing: {ROOT_PACKAGE}")
     return packages
@@ -298,8 +301,7 @@ def _include_records(
 ) -> tuple[CoreCompileInputAsset, ...]:
     masked = _masked_rust(source, text)
     records: list[CoreCompileInputAsset] = []
-    pattern = re.compile(r"\b(?P<macro>include_str|include_bytes)\s*!\s*\(")
-    for match in pattern.finditer(masked):
+    for match in INCLUDE_MACRO_RE.finditer(masked):
         macro = match.group("macro")
         close = _matching_delimiter(masked, match.end() - 1, "(", ")")
         raw_argument = text[match.end() : close].strip()
@@ -318,7 +320,7 @@ def _include_records(
         records.append(
             CoreCompileInputAsset(
                 source_file=source.resolve(),
-                macro=macro,  # type: ignore[arg-type]
+                macro=macro,
                 line=line,
                 column=column,
                 raw_argument=raw_argument,
