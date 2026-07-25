@@ -1521,11 +1521,6 @@
   window.whenShellReady(init);
 })();
 
-/**
- * Shared loading / empty / error surface-state renderer.
- * Examples: SurfaceState.loading({ text: 'Loading…' }), SurfaceState.empty({ icon: '🔍', heading: 'No results' }), SurfaceState.error({ heading: 'Request failed', retry: true }).
- * Load order: call only after DOMContentLoaded or from later event/callback code.
- */
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text);
@@ -1566,6 +1561,11 @@ function captureReportContext({ heading, apiError, customDetail }) {
   return key;
 }
 
+/**
+ * Shared loading / empty / error surface-state renderer.
+ * Examples: SurfaceState.loading({ text: 'Loading…' }), SurfaceState.empty({ icon: window.ConveyIcons.svg('search'), heading: 'No results' }), SurfaceState.error({ heading: 'Request failed', retry: true }).
+ * Load order: call only after DOMContentLoaded or from later event/callback code.
+ */
 window.SurfaceState = (() => {
   const HEADING_LEVELS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
   const ERROR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 21 19H3z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>';
