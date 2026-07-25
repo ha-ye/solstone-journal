@@ -40,6 +40,9 @@ def _source_workspace(root: Path) -> None:
             f'[package]\nname = "{Path(member).name}"\nversion = "1.2.3"\n',
             encoding="utf-8",
         )
+    main = root / "core" / "crates" / "solstone-core" / "src" / "main.rs"
+    main.parent.mkdir(parents=True)
+    main.write_text("fn main() {}\n", encoding="utf-8")
 
 
 def _archive(root: Path, *, pruned_source: bool = False) -> Path:
@@ -160,6 +163,32 @@ def test_normalizer_injects_native_sol_sources(tmp_path: Path) -> None:
     assert (
         after["solstone_core-1.2.3/solstone/apps/sample/native/authority.toml"]
         == b"# native authority\n"
+    )
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert normalize_core_sdist_workspace_lock(tmp_path, archive) == ()
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == digest
+
+
+def test_normalizer_injects_derived_compile_inputs(tmp_path: Path) -> None:
+    _source_workspace(tmp_path)
+    main = tmp_path / "core" / "crates" / "solstone-core" / "src" / "main.rs"
+    main.write_text(
+        'const CONTRACT: &str = include_str!("../../../fixtures/sample-contract.json");\n'
+        "fn main() {}\n",
+        encoding="utf-8",
+    )
+    asset = tmp_path / "core" / "fixtures" / "sample-contract.json"
+    asset.parent.mkdir(parents=True)
+    asset.write_text('{"ok":true}\n', encoding="utf-8")
+    archive = _archive(tmp_path)
+
+    normalize_core_sdist_workspace_lock(tmp_path, archive)
+
+    after = _members(archive)
+    assert (
+        after["solstone_core-1.2.3/core/fixtures/sample-contract.json"]
+        == b'{"ok":true}\n'
     )
 
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()

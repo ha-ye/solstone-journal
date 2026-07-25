@@ -17,6 +17,17 @@ import tempfile
 import tomllib
 from pathlib import Path, PurePosixPath
 
+try:
+    from scripts.core_compile_inputs import (
+        CoreCompileInputError,
+        core_compile_input_sdist_files,
+    )
+except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
+    from core_compile_inputs import (  # type: ignore[no-redef]
+        CoreCompileInputError,
+        core_compile_input_sdist_files,
+    )
+
 
 class SdistLockError(RuntimeError):
     """The built sdist cannot be normalized without weakening its lock."""
@@ -26,7 +37,7 @@ PACKAGE_BLOCK_RE = re.compile(r"(?ms)^\[\[package\]\]\n.*?(?=^\[\[package\]\]\n|
 DEPENDENCY_RE = re.compile(
     r"^(?P<name>\S+)(?: (?P<version>\S+)(?: \((?P<source>.+)\))?)?$"
 )
-NATIVE_SOL_SOURCE_GLOBS = (
+CORE_SDIST_GLOB_INJECTION_PATTERNS = (
     "solstone/apps/*/native/*",
     "solstone/think/native/**/*",
     "solstone/think/tools/native/**/*",
@@ -237,9 +248,9 @@ def _read_archive(
         raise SdistLockError(f"sdist archive is unreadable: {exc}") from None
 
 
-def _native_sol_sdist_files(root: Path) -> dict[str, bytes]:
+def _globbed_core_sdist_injected_files(root: Path) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
-    for pattern in NATIVE_SOL_SOURCE_GLOBS:
+    for pattern in CORE_SDIST_GLOB_INJECTION_PATTERNS:
         for path in sorted(root.glob(pattern)):
             if path.is_dir():
                 continue
@@ -255,6 +266,22 @@ def _native_sol_sdist_files(root: Path) -> dict[str, bytes]:
             if relative in files:
                 continue
             files[relative] = path.read_bytes()
+    return files
+
+
+def core_sdist_injected_files(root: Path) -> dict[str, bytes]:
+    files = _globbed_core_sdist_injected_files(root)
+    try:
+        compile_inputs = core_compile_input_sdist_files(root)
+    except CoreCompileInputError as exc:
+        raise SdistLockError(f"core compile input discovery failed: {exc}") from exc
+    for relative, content in compile_inputs.items():
+        existing = files.get(relative)
+        if existing is not None and existing != content:
+            raise SdistLockError(
+                f"core sdist injected member {relative} has conflicting byte sources"
+            )
+        files[relative] = content
     return files
 
 
@@ -365,23 +392,23 @@ def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str,
         raise SdistLockError("retained source workspace package names are not unique")
     if retained_names & pruned_names:
         raise SdistLockError("source workspace package names are not unique")
-    native_files = {
+    injected_files = {
         f"{archive_root}/{relative}": content
-        for relative, content in _native_sol_sdist_files(root).items()
+        for relative, content in core_sdist_injected_files(root).items()
     }
     if not pruned_names:
         if _archive_needs_update(
             entries=entries,
             lock_name=f"{archive_root}/core/Cargo.lock",
             lock_bytes=lock_bytes,
-            extra_files=native_files,
+            extra_files=injected_files,
         ):
             _replace_archive_files(
                 archive,
                 entries=entries,
                 lock_name=f"{archive_root}/core/Cargo.lock",
                 lock_bytes=lock_bytes,
-                extra_files=native_files,
+                extra_files=injected_files,
             )
         return ()
 
@@ -394,7 +421,7 @@ def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str,
         entries=entries,
         lock_name=f"{archive_root}/core/Cargo.lock",
         lock_bytes=rewritten,
-        extra_files=native_files,
+        extra_files=injected_files,
     ):
         return ()
     _replace_archive_files(
@@ -402,6 +429,6 @@ def normalize_core_sdist_workspace_lock(root: Path, archive: Path) -> tuple[str,
         entries=entries,
         lock_name=f"{archive_root}/core/Cargo.lock",
         lock_bytes=rewritten,
-        extra_files=native_files,
+        extra_files=injected_files,
     )
     return tuple(sorted(pruned_names))

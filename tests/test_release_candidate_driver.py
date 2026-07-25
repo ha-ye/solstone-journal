@@ -104,6 +104,14 @@ def _write_fake_core_sdist(root: Path, archive: Path) -> None:
     )
     (root / "core" / "crates" / "solstone-core").mkdir(parents=True, exist_ok=True)
     (root / "core" / "crates" / "solstone-core-sol").mkdir(parents=True, exist_ok=True)
+    (root / "core" / "crates" / "solstone-core" / "src").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    (root / "core" / "crates" / "solstone-core-sol" / "src").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     (root / "core" / "Cargo.toml").write_text(source_manifest, encoding="utf-8")
     (root / "core" / "crates" / "solstone-core" / "Cargo.toml").write_text(
         f'[package]\nname = "solstone-core"\nversion = "{version}"\n',
@@ -111,6 +119,14 @@ def _write_fake_core_sdist(root: Path, archive: Path) -> None:
     )
     (root / "core" / "crates" / "solstone-core-sol" / "Cargo.toml").write_text(
         f'[package]\nname = "solstone-core-sol"\nversion = "{version}"\n',
+        encoding="utf-8",
+    )
+    (root / "core" / "crates" / "solstone-core" / "src" / "main.rs").write_text(
+        "fn main() {}\n",
+        encoding="utf-8",
+    )
+    (root / "core" / "crates" / "solstone-core-sol" / "src" / "lib.rs").write_text(
+        "",
         encoding="utf-8",
     )
     sdist_manifest = (
