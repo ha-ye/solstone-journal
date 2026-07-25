@@ -13,7 +13,7 @@ from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
 
-PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
+PAIR_LINK = _build_pair_link("10.0.0.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args() -> argparse.Namespace:

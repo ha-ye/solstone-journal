@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import threading
 from collections.abc import Callable
@@ -32,9 +33,23 @@ class _PendingDrain:
     flushed: asyncio.Event | None = None
 
 
+def _pair_material(label: str) -> tuple[object, dict[str, str]]:
+    private_key, _private_key_pem, csr_pem = join_cli._build_csr(label)
+    return private_key, {"csr": csr_pem, "device_label": label}
+
+
 def _pair_body(label: str) -> dict[str, str]:
-    _private_key_pem, csr_pem = join_cli._build_csr(label)
-    return {"csr": csr_pem, "device_label": label}
+    _private_key, body = _pair_material(label)
+    return body
+
+
+def _direct_request_from_url(url: str, ca_fp: str) -> join_cli.DirectPairRequest:
+    host, port, path = join_cli._framed_target(url)
+    return join_cli.DirectPairRequest(
+        candidates=(join_cli.DirectPairCandidate(ipaddress.IPv4Address(host), port),),
+        path=path,
+        ca_fingerprint_pin=ca_fp,
+    )
 
 
 def _install_listener_drain_gate(
@@ -93,6 +108,8 @@ async def _post_pair_with_payload_capture(
     monkeypatch: pytest.MonkeyPatch,
     url: str,
     body: dict[str, str],
+    private_key: object,
+    ca_fp: str,
 ) -> tuple[join_cli.PairResponse, dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     real_parse = join_cli._parse_pair_response
@@ -103,7 +120,12 @@ async def _post_pair_with_payload_capture(
         return real_parse(payload)
 
     monkeypatch.setattr(join_cli, "_parse_pair_response", capture)
-    response = await asyncio.to_thread(join_cli._post_pair_framed, url, body)
+    response = await asyncio.to_thread(
+        join_cli._post_pair_framed,
+        _direct_request_from_url(url, ca_fp),
+        body,
+        private_key,
+    )
     assert payloads, "pair response payload was not parsed"
     return response, payloads[-1]
 
@@ -205,11 +227,14 @@ async def test_real_secure_listener_certless_pair_survives_forced_reap(
     )
     try:
         harness.seed_nonce(nonce, label)
+        private_key, body = _pair_material(label)
         client_task = asyncio.create_task(
             _post_pair_with_payload_capture(
                 monkeypatch,
                 harness.pair_url(nonce, path=path),
-                _pair_body(label),
+                body,
+                private_key,
+                harness.ca.fingerprint_sha256(),
             )
         )
 
@@ -239,11 +264,14 @@ async def test_reaper_skips_inflight_pair_after_pair_lock_released(
     )
     try:
         harness.seed_nonce(nonce, label)
+        private_key, body = _pair_material(label)
         client_task = asyncio.create_task(
             _post_pair_with_payload_capture(
                 monkeypatch,
                 harness.pair_url(nonce),
-                _pair_body(label),
+                body,
+                private_key,
+                harness.ca.fingerprint_sha256(),
             )
         )
 
@@ -333,11 +361,14 @@ async def test_stop_returns_promptly_with_pair_response_in_flight(
     )
     try:
         harness.seed_nonce(nonce, label)
+        private_key, body = _pair_material(label)
         client_task = asyncio.create_task(
             _post_pair_with_payload_capture(
                 monkeypatch,
                 harness.pair_url(nonce),
-                _pair_body(label),
+                body,
+                private_key,
+                harness.ca.fingerprint_sha256(),
             )
         )
 

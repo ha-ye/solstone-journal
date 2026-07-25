@@ -36,7 +36,7 @@ def _spki_der(ca: LoadedCa) -> bytes:
 def _signed_leaf(
     ca: LoadedCa, label: str = "relay-client"
 ) -> tuple[str, x509.Certificate]:
-    _private_key_pem, csr_pem = join_cli._build_csr(label)
+    _private_key, _private_key_pem, csr_pem = join_cli._build_csr(label)
     cert_pem, _fingerprint = sign_csr(ca, csr_pem, label)
     leaf = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
     return cert_pem, leaf
@@ -101,6 +101,22 @@ def test_parse_relay_pair_link_custom_origin() -> None:
     assert req.s == S
     assert req.rk == derive_rk(S)
     assert req.inner_path == f"/app/network/pair?token={S.hex()}"
+
+
+def test_relay_pair_link_dispatch_does_not_touch_direct_decoder_or_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = encode_pair_window_link(S, CA_FP_SPKI, relay_origin="https://relay.example")
+
+    def fail_direct(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("relay dispatch should not touch direct path")
+
+    monkeypatch.setattr(join_cli, "_decode_direct_pair_blob", fail_direct)
+    monkeypatch.setattr(join_cli, "is_direct_pair_candidate_allowed", fail_direct)
+
+    req = join_cli._parse_pair_request(link, None)
+
+    assert isinstance(req, join_cli.RelayPairRequest)
 
 
 def test_verify_relay_pair_accepts_matching_pin_leaf_and_jid(tmp_path: Path) -> None:

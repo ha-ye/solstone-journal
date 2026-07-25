@@ -9,13 +9,14 @@ import stat
 from pathlib import Path
 
 import pytest
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
-from solstone.think.link.ca import generate_ca
+from solstone.think.link.ca import generate_ca, sign_csr
 
-PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
+PAIR_LINK = _build_pair_link("10.0.0.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args() -> argparse.Namespace:
@@ -27,23 +28,42 @@ def _args() -> argparse.Namespace:
     )
 
 
-def _pair_response(tmp_path: Path) -> join_cli.PairResponse:
+def _pair_response(
+    tmp_path: Path,
+    *,
+    csr_pem: str,
+    device_label: str,
+    local_endpoints: list[dict[str, object]] | None = None,
+) -> join_cli.PairResponse:
     ca = generate_ca(tmp_path / "ca")
     ca_pem = ca.cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+    client_cert, _fingerprint = sign_csr(ca, csr_pem, device_label)
     return join_cli.PairResponse(
-        client_cert="-----BEGIN CERTIFICATE-----\nclient\n-----END CERTIFICATE-----\n",
+        client_cert=client_cert,
         ca_chain=[ca_pem],
         instance_id="inst-1",
         home_label="solstone",
         home_attestation="header.payload.signature",
-        local_endpoints=[{"host": "127.0.0.1", "port": 7657}],
+        local_endpoints=local_endpoints
+        if local_endpoints is not None
+        else [{"host": "127.0.0.1", "port": 7657}],
     )
 
 
-def _mock_post_pair(
-    monkeypatch: pytest.MonkeyPatch, response: join_cli.PairResponse
-) -> None:
-    monkeypatch.setattr(join_cli, "_post_pair", lambda *_args, **_kwargs: response)
+def _mock_post_pair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_post_pair(
+        _request: join_cli.DirectPairRequest,
+        body: dict[str, str],
+        _private_key: object,
+    ) -> join_cli.PairResponse:
+        return _pair_response(
+            tmp_path,
+            csr_pem=body["csr"],
+            device_label=body["device_label"],
+            local_endpoints=[{"host": "8.8.8.8", "port": 7657}],
+        )
+
+    monkeypatch.setattr(join_cli, "_post_pair", fake_post_pair)
 
 
 def test_pair_link_happy_path_writes_peer_bundle(
@@ -52,7 +72,7 @@ def test_pair_link_happy_path_writes_peer_bundle(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    _mock_post_pair(monkeypatch, _pair_response(tmp_path))
+    _mock_post_pair(monkeypatch, tmp_path)
 
     result = join_cli.main(_args())
 
@@ -75,4 +95,8 @@ def test_pair_link_happy_path_writes_peer_bundle(
     assert peer["role"] == "peer"
     assert peer["instance_id"] == "inst-1"
     assert peer["label"] == "my-peer"
+    assert peer["local_endpoints"] == [{"host": "8.8.8.8", "port": 7657}]
+    ca_cert = x509.load_pem_x509_certificate((bundle / "chain.pem").read_bytes())
+    client_cert = x509.load_pem_x509_certificate((bundle / "cert.pem").read_bytes())
+    join_cli._verify_leaf_signed_by_pinned_ca(client_cert, ca_cert)
     assert not (tmp_path / "xdg" / "solstone-observer" / "spl" / "my-peer").exists()

@@ -17,6 +17,7 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 | `auth.py` | `authorized_clients.json` reader/writer with mtime-reload and last-seen tracking. |
 | `nonces.py` | Pair-ceremony nonce store (shared between CLI and convey pair route). |
 | `paths.py` | Journal-path helpers + `SOL_LINK_RELAY_URL` resolution. |
+| `direct_admission.py` | Consumer-side admission predicate for direct pair-link IPv4 candidates. |
 
 TLS termination, multiplexing, and inline WSGI dispatch now live in
 `solstone/convey/secure_listener/`, because Convey owns both listening ports:
@@ -29,6 +30,17 @@ the DL web port and the PL secure-listener port 7657.
 - **spl** — the home-side relay daemon (`journal spl`) and protocol-level constructs such as wire-format frames, JWT claim schemas, and reset reason codes. These reference the external stable spl protocol and keep that name.
 
 The home-side daemon emits Callosum relay-status events on the internal `link` tract, and Convey caches the structured `link_health` snapshot for dashboard status.
+
+## direct join admission
+
+Direct 0x04 and 0x05 pair-links are structurally decoded before any key
+material is generated or any socket is opened. The embedded candidate set is
+admitted or refused as a whole by `direct_admission.py`; the README deliberately
+does not duplicate that allow-list. The intent is to dial only local,
+self-owned, or operator-controlled local-network addresses from a pasted direct
+pair-link. If `--home` is supplied, it is applied only after the embedded set
+passes that policy. The override is operator-supplied and may be a hostname,
+but it still must include an explicit port.
 
 ## privacy
 

@@ -32,7 +32,7 @@ async def test_certless_pair_request_executes_handler_and_authorizes_client(
     nonce = "0123456789abcdef"
     device_label = "pytest certless phone"
     NonceStore(nonces_path()).add(nonce, device_label)
-    _private_key_pem, csr_pem = _build_csr(device_label)
+    _private_key, _private_key_pem, csr_pem = _build_csr(device_label)
     body = json.dumps(
         {
             "nonce": nonce,

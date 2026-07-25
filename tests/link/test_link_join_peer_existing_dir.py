@@ -13,7 +13,7 @@ from solstone.apps.network.routes import _build_pair_link
 from solstone.think.link import join_cli
 from solstone.think.link.ca import generate_ca
 
-PAIR_LINK = _build_pair_link("192.0.2.42", 7657, "a" * 32, "b" * 64)
+PAIR_LINK = _build_pair_link("10.0.0.42", 7657, "a" * 32, "b" * 64)
 
 
 def _args() -> argparse.Namespace:
@@ -56,21 +56,23 @@ def test_existing_peer_dir_refuses(
     bundle.mkdir(parents=True)
     existing = bundle / "private.pem"
     existing.write_bytes(b"sentinel")
+    before_listing = sorted(path.name for path in bundle.parent.iterdir())
     _mock_post_pair(monkeypatch, _pair_response(tmp_path))
 
     result = join_cli.main(_args())
 
     assert result == 1
     err = capsys.readouterr().err
-    assert "Credentials directory already exists with content" in err
+    assert "Credentials path already exists" in err
     assert str(bundle) in err
     assert existing.read_bytes() == b"sentinel"
+    assert sorted(path.name for path in bundle.parent.iterdir()) == before_listing
     for name in join_cli.BUNDLE_FILES - {"private.pem"}:
         assert not (bundle / name).exists()
     assert not (tmp_path / "xdg" / "solstone-observer" / "spl" / "my-peer").exists()
 
 
-def test_existing_peer_dir_with_only_ds_store_proceeds(
+def test_existing_peer_dir_with_only_ds_store_refuses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -85,8 +87,42 @@ def test_existing_peer_dir_with_only_ds_store_proceeds(
 
     result = join_cli.main(_args())
 
-    assert result == 0
-    for name in join_cli.BUNDLE_FILES:
-        assert (bundle / name).exists()
+    assert result == 1
     assert ds_store.exists()
+    assert sorted(path.name for path in bundle.iterdir()) == [".DS_Store"]
     assert not (tmp_path / "xdg" / "solstone-observer" / "spl" / "my-peer").exists()
+
+
+def test_existing_empty_peer_dir_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    bundle = journal / "peers" / "inst-1"
+    bundle.mkdir(parents=True)
+    _mock_post_pair(monkeypatch, _pair_response(tmp_path))
+
+    result = join_cli.main(_args())
+
+    assert result == 1
+    assert list(bundle.iterdir()) == []
+
+
+def test_existing_peer_symlink_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    bundle = journal / "peers" / "inst-1"
+    bundle.parent.mkdir(parents=True)
+    bundle.symlink_to(tmp_path / "missing")
+    _mock_post_pair(monkeypatch, _pair_response(tmp_path))
+
+    result = join_cli.main(_args())
+
+    assert result == 1
+    assert bundle.is_symlink()

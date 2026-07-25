@@ -538,6 +538,14 @@ class TunnelSession:
             return None
         return cert.to_cryptography()
 
+    def peer_certificate_chain(self) -> tuple[x509.Certificate, ...]:
+        """The presented TLS certificate chain, post-handshake."""
+
+        chain = self._tls.conn.get_peer_cert_chain()
+        if chain is None:
+            return ()
+        return tuple(cert.to_cryptography() for cert in chain)
+
     async def request(
         self,
         method: str,
