@@ -28,6 +28,7 @@ from scripts.check_release_preflight import (
     finalize_macos_tool_evidence,
 )
 from scripts.check_rust_release_manifest import (
+    CORE_UNSUPPORTED_TOMBSTONE_RECORD,
     LANES,
     NATIVE_TOOL_KEYS,
     SOURCE_COMMIT_RE,
@@ -38,6 +39,7 @@ from scripts.check_rust_release_manifest import (
     canonical_json_bytes,
     expected_package_names,
     rust_artifact_targets,
+    validate_core_unsupported_tombstone_record,
     validate_release_dir,
 )
 from scripts.check_wheel_contents import (
@@ -2243,7 +2245,64 @@ def _validate_retained_manifest_files(
     return failures
 
 
-def _validate_evidence_inventory(evidence_dir: Path) -> list[Failure]:
+def _validate_publication_prerequisite_record(
+    path: Path,
+    *,
+    version: str,
+) -> list[Failure]:
+    entry = path.lstat()
+    repair = (
+        "publish and verify solstone-core-unsupported-platform before publishing "
+        "solstone"
+    )
+    if stat.S_ISLNK(entry.st_mode):
+        return [
+            _failure(
+                "core unsupported-platform tombstone prerequisite is a symlink",
+                expected="regular non-symlink publication prerequisite record",
+                actual="symlink",
+                repair=repair,
+            )
+        ]
+    if not stat.S_ISREG(entry.st_mode):
+        return [
+            _failure(
+                "core unsupported-platform tombstone prerequisite is not a regular file",
+                expected="regular publication prerequisite record",
+                actual="non-regular",
+                repair=repair,
+            )
+        ]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return [
+            _failure(
+                "core unsupported-platform tombstone prerequisite could not be read",
+                expected="readable UTF-8 publication verification JSON",
+                actual=type(exc).__name__,
+                repair=repair,
+            )
+        ]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return [
+            _failure(
+                "core unsupported-platform tombstone prerequisite is not valid JSON",
+                expected="publication verification JSON object",
+                actual=str(exc),
+                repair=repair,
+            )
+        ]
+    return validate_core_unsupported_tombstone_record(payload, version=version)
+
+
+def _validate_evidence_inventory(
+    evidence_dir: Path,
+    *,
+    publication_prerequisite_version: str | None = None,
+) -> list[Failure]:
     failures: list[Failure] = []
     try:
         evidence_entry = evidence_dir.lstat()
@@ -2266,11 +2325,20 @@ def _validate_evidence_inventory(evidence_dir: Path) -> list[Failure]:
             )
         ]
     entries = {path.name: path for path in evidence_dir.iterdir()}
-    if set(entries) != {"ledger.json", "proofs"}:
+    required_entries = {"ledger.json", "proofs"}
+    accepted_entries = set(required_entries)
+    expected_inventory = "ledger.json, proofs"
+    if publication_prerequisite_version is not None:
+        accepted_entries.add(CORE_UNSUPPORTED_TOMBSTONE_RECORD)
+        expected_inventory = (
+            f"{expected_inventory}, optional {CORE_UNSUPPORTED_TOMBSTONE_RECORD}"
+        )
+    actual_entries = set(entries)
+    if not required_entries <= actual_entries <= accepted_entries:
         failures.append(
             _failure(
                 "release evidence inventory is not exact",
-                expected="ledger.json, proofs",
+                expected=expected_inventory,
                 actual=", ".join(sorted(entries)) or "<empty>",
                 repair="bash scripts/release.sh --recover",
             )
@@ -2323,6 +2391,14 @@ def _validate_evidence_inventory(evidence_dir: Path) -> list[Failure]:
                     repair="bash scripts/release.sh --recover",
                 )
             )
+    prerequisite_path = entries.get(CORE_UNSUPPORTED_TOMBSTONE_RECORD)
+    if publication_prerequisite_version is not None and prerequisite_path is not None:
+        failures.extend(
+            _validate_publication_prerequisite_record(
+                prerequisite_path,
+                version=publication_prerequisite_version,
+            )
+        )
     return failures
 
 
@@ -2808,8 +2884,14 @@ def _report(
     policy_run: PolicyRun | None = None,
     check_local_models_version: bool = True,
     validate_current_release_metadata: bool = True,
+    allow_publication_prerequisite: bool = False,
 ) -> CandidateReport:
-    inventory_failures = _validate_evidence_inventory(evidence_dir)
+    inventory_failures = _validate_evidence_inventory(
+        evidence_dir,
+        publication_prerequisite_version=(
+            version if allow_publication_prerequisite else None
+        ),
+    )
     if inventory_failures:
         raise DriverError(inventory_failures)
     ledger_path = evidence_dir / "ledger.json"
@@ -2914,6 +2996,17 @@ def _proof_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
     }
 
 
+def _publication_prerequisite_report_inventory(
+    evidence_dir: Path,
+) -> list[dict[str, Any]]:
+    path = evidence_dir / CORE_UNSUPPORTED_TOMBSTONE_RECORD
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return []
+    return [_inventory_entry(path, name=path.name)]
+
+
 def format_report(report: CandidateReport) -> str:
     payload = {
         "schema_version": 1,
@@ -2934,6 +3027,9 @@ def format_report(report: CandidateReport) -> str:
             target: report.proof_sha256[target]
             for target in sorted(report.proof_sha256)
         },
+        "publication_prerequisite_inventory": (
+            _publication_prerequisite_report_inventory(report.evidence_dir)
+        ),
     }
     return canonical_json_bytes(payload).decode("utf-8")
 
@@ -3315,6 +3411,7 @@ def run_recover(
         evidence_dir=evidence_dir,
         check_local_models_version=False,
         validate_current_release_metadata=False,
+        allow_publication_prerequisite=True,
     )
 
 

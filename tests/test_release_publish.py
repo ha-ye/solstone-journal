@@ -16,8 +16,26 @@ import pytest
 
 import scripts.check_rust_release_manifest as manifest
 import scripts.release_publish as publisher
-from scripts.release_candidate_driver import CandidateReport, DriverError
+from scripts.release_candidate_driver import (
+    CandidateReport,
+    DriverError,
+)
+from scripts.release_candidate_driver import (
+    run_candidate as run_release_candidate,
+)
 from scripts.transparency_core import failure
+from tests.helpers.release_candidate_fixtures import (
+    env as real_candidate_env,
+)
+from tests.helpers.release_candidate_fixtures import (
+    repo as real_candidate_repo,
+)
+from tests.helpers.release_candidate_fixtures import (
+    services as real_candidate_services,
+)
+from tests.helpers.release_candidate_fixtures import (
+    write_core_unsupported_tombstone_record,
+)
 
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
@@ -51,24 +69,6 @@ def _manifest_names() -> list[str]:
         f"{artifact}.rust-release-manifest.json"
         for artifact in publisher.rust_artifact_targets()
     ]
-
-
-def _write_tombstone_prerequisite(evidence_dir: Path, version: str) -> None:
-    payload = {
-        "schema_version": 1,
-        "kind": manifest.CORE_UNSUPPORTED_TOMBSTONE_KIND,
-        "project": manifest.CORE_UNSUPPORTED_TOMBSTONE_PROJECT,
-        "version": version,
-        "status": manifest.CORE_UNSUPPORTED_TOMBSTONE_STATUS,
-        "supported_platform_triples": list(
-            manifest.CORE_UNSUPPORTED_TOMBSTONE_SUPPORTED_TRIPLES
-        ),
-        "resolver_checks": dict(manifest.CORE_UNSUPPORTED_TOMBSTONE_RESOLVER_CHECKS),
-    }
-    (evidence_dir / manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD).write_text(
-        json.dumps(payload, sort_keys=True),
-        encoding="utf-8",
-    )
 
 
 def _candidate(
@@ -121,7 +121,7 @@ def _candidate(
     (evidence_dir / "ledger.json").write_text(
         json.dumps(ledger, sort_keys=True), encoding="utf-8"
     )
-    _write_tombstone_prerequisite(evidence_dir, candidate_version)
+    write_core_unsupported_tombstone_record(evidence_dir, candidate_version)
 
     proof_hashes: dict[str, str] = {}
     for target in PROOF_TARGETS:
@@ -143,6 +143,16 @@ def _candidate(
         proof_sha256=proof_hashes,
         bundle_digest="c" * 64,
     )
+
+
+def _real_candidate(tmp_path: Path) -> tuple[Path, CandidateReport]:
+    root = real_candidate_repo(tmp_path)
+    report = run_release_candidate(
+        root,
+        real_candidate_env(),
+        real_candidate_services(root),
+    )
+    return root, report
 
 
 def _ledger(report: CandidateReport) -> dict[str, Any]:
@@ -301,6 +311,7 @@ class RecordingIndex:
 def _upload_runner(
     calls: list[str],
     *,
+    captured_argv: list[tuple[str, ...]] | None = None,
     fail: bool = False,
     token: str = TOKEN,
 ) -> publisher.ProcessRunner:
@@ -321,6 +332,8 @@ def _upload_runner(
         assert env["TWINE_USERNAME"] == "__token__"
         assert env["TWINE_PASSWORD"] == token
         assert token not in " ".join(argv)
+        if captured_argv is not None:
+            captured_argv.append(tuple(argv))
         if fail:
             return subprocess.CompletedProcess(
                 list(argv),
@@ -472,6 +485,35 @@ def _first_failure(error: DriverError) -> str:
     return error.failures[0].error
 
 
+def _queried_projects(index: RecordingIndex) -> set[tuple[str, str]]:
+    return {project for snapshot in index.projects for project in snapshot}
+
+
+def _assert_tombstone_not_classified_for_upload(
+    *,
+    index: RecordingIndex,
+    result: publisher.PublishResult,
+    upload_argv: Sequence[Sequence[str]],
+    version: str,
+) -> None:
+    assert manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD not in result.uploaded_files
+    assert not any(
+        name.startswith("solstone_core_unsupported_platform-")
+        for name in result.uploaded_files
+    )
+    assert (
+        manifest.CORE_UNSUPPORTED_TOMBSTONE_PROJECT,
+        version,
+    ) not in _queried_projects(index)
+    uploaded_args = [item for argv in upload_argv for item in argv[4:]]
+    assert not any(
+        manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD in item for item in uploaded_args
+    )
+    assert not any(
+        manifest.CORE_UNSUPPORTED_TOMBSTONE_PROJECT in item for item in uploaded_args
+    )
+
+
 def test_publish_config_repr_does_not_expose_secret(tmp_path: Path) -> None:
     report = _candidate(tmp_path)
     config = _config(tmp_path, report, token=TOKEN)
@@ -615,6 +657,174 @@ def test_production_accepts_published_tombstone_with_empty_base_index(
         for name in publisher.expected_package_names(include_models=False)
     )
     assert result.upload_state == "uploaded"
+
+
+def test_test_mode_real_recovery_without_prerequisite_reaches_index_and_upload(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    result = _run_publish(
+        _config(root, report, mode="test"),
+        calls=calls,
+        index=index,
+        upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+        git_runner=_forbidden_runner("git", calls),
+        gh_runner=_forbidden_runner("witness", calls),
+    )
+
+    assert calls == ["index", "upload", "index"]
+    _assert_tombstone_not_classified_for_upload(
+        index=index,
+        result=result,
+        upload_argv=upload_argv,
+        version=report.version,
+    )
+
+
+def test_test_mode_real_recovery_with_valid_prerequisite_reaches_index_and_upload(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    write_core_unsupported_tombstone_record(report.evidence_dir, report.version)
+    calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    result = _run_publish(
+        _config(root, report, mode="test"),
+        calls=calls,
+        index=index,
+        upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+        git_runner=_forbidden_runner("git", calls),
+        gh_runner=_forbidden_runner("witness", calls),
+    )
+
+    assert calls == ["index", "upload", "index"]
+    _assert_tombstone_not_classified_for_upload(
+        index=index,
+        result=result,
+        upload_argv=upload_argv,
+        version=report.version,
+    )
+
+
+def test_test_mode_real_recovery_rejects_invalid_prerequisite_before_seams(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    write_core_unsupported_tombstone_record(
+        report.evidence_dir,
+        report.version,
+        mutation="wrong-version",
+    )
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(root, report, mode="test"),
+            calls=calls,
+            index=index,
+            upload_runner=_upload_runner(calls),
+            git_runner=_forbidden_runner("git", calls),
+            gh_runner=_forbidden_runner("witness", calls),
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "core unsupported-platform tombstone prerequisite version is invalid"
+    )
+    assert calls == []
+
+
+def test_production_real_recovery_requires_prerequisite_before_transport(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(root, report, mode="production"),
+            calls=calls,
+            index=index,
+            git_runner=RecordingGit(calls),
+            gh_runner=_gh_runner(calls),
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "core unsupported-platform tombstone prerequisite is missing"
+    )
+    assert calls == ["source-check"]
+
+
+def test_production_real_recovery_rejects_invalid_prerequisite_before_source_check(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    write_core_unsupported_tombstone_record(
+        report.evidence_dir,
+        report.version,
+        mutation="wrong-version",
+    )
+    calls: list[str] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(root, report, mode="production"),
+            calls=calls,
+            index=index,
+            git_runner=RecordingGit(calls),
+            gh_runner=_gh_runner(calls),
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "core unsupported-platform tombstone prerequisite version is invalid"
+    )
+    assert calls == []
+
+
+def test_production_real_recovery_with_valid_prerequisite_never_uploads_it(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    write_core_unsupported_tombstone_record(report.evidence_dir, report.version)
+    calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
+
+    result = _run_publish(
+        _config(root, report, mode="production"),
+        calls=calls,
+        index=index,
+        upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+        git_runner=RecordingGit(calls),
+        gh_runner=_gh_runner(calls),
+    )
+
+    assert calls == [
+        "source-check",
+        "changelog",
+        "index",
+        "upload",
+        "index",
+        "tag-check",
+        "local-tag-check",
+        "tag",
+        "push",
+        "witness",
+    ]
+    _assert_tombstone_not_classified_for_upload(
+        index=index,
+        result=result,
+        upload_argv=upload_argv,
+        version=report.version,
+    )
 
 
 def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
