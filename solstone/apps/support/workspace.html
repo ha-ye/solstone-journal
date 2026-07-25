@@ -196,39 +196,6 @@
   .support-btn.support-btn-secondary:hover { background: rgba(0, 0, 0, 0.04); border-color: #bbb; filter: none; }
   .support-btn.support-btn-secondary:active { background: rgba(0, 0, 0, 0.08); filter: none; }
 
-  .support-empty {
-    text-align: center;
-    padding: 3rem 1rem;
-  }
-  .support-empty-icon {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-    opacity: 0.65;
-  }
-  .support-empty-heading {
-    font-size: 1.1rem;
-    font-weight: 500;
-    margin-bottom: 0.5rem;
-  }
-  .support-empty-hint {
-    font-size: 0.9rem;
-    color: #666;
-    margin-bottom: 1.5rem;
-  }
-  .support-empty-action {
-    background: color-mix(in srgb, var(--facet-color, var(--orange)) 14%, var(--paper));
-    color: var(--ink);
-    border: none;
-    box-shadow: inset 0 0 0 2px var(--facet-color, var(--orange));
-    padding: 0.5rem 1.25rem;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-  .support-empty-action:hover { background: color-mix(in srgb, var(--facet-color, var(--orange)) 22%, var(--paper)); }
-  .support-empty-action:active { background: color-mix(in srgb, var(--facet-color, var(--orange)) 30%, var(--paper)); transform: translateY(1px); }
-
   .support-tab-badge {
     position: absolute;
     top: 2px;
@@ -481,8 +448,7 @@
       align-items: flex-start;
       gap: 0.25rem;
     }
-    .support-btn,
-    .support-empty-action {
+    .support-btn {
       width: 100%;
     }
     .support-detail-back {
@@ -493,9 +459,6 @@
     }
     .support-diagnostics-section .support-diagnostics-body {
       padding: 0.5rem 0.5rem;
-    }
-    .support-empty {
-      padding: 2rem 0.75rem;
     }
     .support-drop-zone {
       padding: 1.5rem 1rem;
@@ -535,10 +498,9 @@
     <!-- Section: Active Tickets -->
     <div id="section-tickets" class="support-section active" role="tabpanel" aria-labelledby="tab-tickets">
       <div id="tickets-list">
-        <div class="support-empty">
-          <div class="support-empty-icon">⋯</div>
-          <div class="support-empty-heading">checking for tickets</div>
-          <div class="support-empty-hint">this usually takes a moment.</div>
+        <div class="surface-state surface-state--loading" role="status" aria-busy="true">
+          <div class="surface-state-spinner" aria-hidden="true"></div>
+          <span class="surface-state-text" data-role="loading-status">checking for tickets</span>
         </div>
       </div>
       <div id="ticket-detail" class="support-detail"></div>
@@ -897,18 +859,15 @@
         });
       }
     } catch (err) {
-      const serverMessage = err.serverMessage
-        ? '<div class="support-empty-hint">' + esc(err.serverMessage) + '</div>'
-        : '';
-      detail.innerHTML = '<div class="support-empty">' +
-        '<div class="support-empty-icon">⚠️</div>' +
-        '<div class="support-empty-heading">Couldn\'t load ticket.</div>' +
-        serverMessage +
-        '<div class="support-empty-hint">Go back and select it again.</div>' +
-        '<button class="support-empty-action" id="error-back-btn">back to tickets</button>' +
-      '</div>';
+      detail.innerHTML = window.SurfaceState.error({
+        heading: 'Couldn\'t load ticket.',
+        desc: 'Go back and select it again.',
+        serverMessage: err.serverMessage,
+        secondary: { label: 'back to tickets' },
+        detail: err
+      });
       window.logError(err, { context: 'support-open-ticket' });
-      const errorBackBtn = document.getElementById('error-back-btn');
+      const errorBackBtn = detail.querySelector('.surface-state-secondary');
       if (errorBackBtn) errorBackBtn.addEventListener('click', () => {
         detail.classList.remove('active');
         detail.innerHTML = '';

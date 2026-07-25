@@ -502,11 +502,6 @@
 .timestamp-link { color: var(--facet-color, #0f4c81); text-decoration: none; }
 .timestamp-link:hover { text-decoration: underline; }
 .no-imports { color: #666; padding: 2em; text-align: center; }
-.no-imports-icon { font-size: 2rem; margin-bottom: 0.5rem; }
-.no-imports-heading { font-weight: 600; font-size: 1.05rem; margin-bottom: 0.25rem; }
-.no-imports-body { margin-bottom: 0; }
-.no-imports-body.error { color: #b91c1c; }
-.no-imports-action { margin-top: 0.75rem; }
 .import-source-inline {
   display: flex;
   align-items: center;
@@ -1152,14 +1147,12 @@ async function loadImports() {
     clearImportListErrors();
 
     if (imports.length === 0) {
-      container.innerHTML = `
-        <div class="no-imports">
-          <div class="no-imports-icon">📥</div>
-          <div class="no-imports-heading">No imports yet</div>
-          <div class="no-imports-body">import your data from any supported source above.</div>
-          <div class="no-imports-action"><a href="#" onclick="scrollToGrid(); return false;" style="color: #0f4c81; font-weight: 600;">choose a source →</a></div>
-        </div>
-      `;
+      container.innerHTML = window.SurfaceState.empty({
+        icon: window.ConveyIcons.svg('inbox'),
+        heading: 'No imports yet',
+        desc: 'import your data from any supported source above.',
+        action: '<a href="#" onclick="scrollToGrid(); return false;" style="color: #0f4c81; font-weight: 600;">choose a source →</a>'
+      });
       return;
     }
 
@@ -1317,10 +1310,13 @@ function filterImportsByFacet(facetName) {
     let noMatchEl = container.querySelector('.no-imports-filtered');
     if (!noMatchEl) {
       noMatchEl = document.createElement('div');
-      noMatchEl.className = 'no-imports no-imports-filtered';
+      noMatchEl.className = 'no-imports-filtered';
       container.appendChild(noMatchEl);
     }
-    noMatchEl.innerHTML = '<div class="no-imports-icon">🔍</div><div class="no-imports-body">No imports match this filter.</div>';
+    noMatchEl.innerHTML = window.SurfaceState.empty({
+      icon: window.ConveyIcons.svg('search'),
+      heading: 'No imports match this filter.'
+    });
     noMatchEl.style.display = '';
   } else {
     const noMatchEl = container.querySelector('.no-imports-filtered');

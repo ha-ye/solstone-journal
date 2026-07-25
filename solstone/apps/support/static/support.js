@@ -153,11 +153,7 @@
 
   async function loadTickets(deps) {
     const list = document.getElementById('tickets-list');
-    list.innerHTML = '<div class="support-empty">' +
-      '<div class="support-empty-icon">⋯</div>' +
-      '<div class="support-empty-heading">checking for tickets</div>' +
-      '<div class="support-empty-hint">this usually takes a moment.</div>' +
-    '</div>';
+    list.innerHTML = window.SurfaceState.loading({ text: 'checking for tickets' });
     try {
       const resp = await fetchWithTimeout('/app/support/api/tickets');
       if (!resp.ok) {
@@ -171,12 +167,12 @@
       const tickets = await resp.json();
 
       if (!tickets.length) {
-        list.innerHTML = '<div class="support-empty">' +
-          '<div class="support-empty-icon">🛟</div>' +
-          '<div class="support-empty-heading">no tickets yet — that\'s a good thing</div>' +
-          '<div class="support-empty-hint">if something comes up, check the help tab for ways to get support</div>' +
-          '<button class="support-empty-action" id="empty-help-btn">browse help &amp; guidance</button>' +
-        '</div>';
+        list.innerHTML = window.SurfaceState.empty({
+          icon: window.ConveyIcons.svg('life-buoy'),
+          heading: 'no tickets yet — that\'s a good thing',
+          desc: 'if something comes up, check the help tab for ways to get support',
+          action: '<button type="button" class="surface-state-secondary" id="empty-help-btn">browse help &amp; guidance</button>'
+        });
         const helpBtn = document.getElementById('empty-help-btn');
         if (helpBtn) helpBtn.addEventListener('click', () => deps.activateTab('help'));
         deps.activateTab('help');
@@ -230,13 +226,14 @@
       badge.style.opacity = show ? '1' : '0';
       badge.style.pointerEvents = show ? 'auto' : 'none';
     } catch (e) {
-      list.innerHTML = '<div class="support-empty">' +
-        '<div class="support-empty-icon">⚠️</div>' +
-        '<div class="support-empty-heading">unable to load tickets</div>' +
-        '<div class="support-empty-hint">check your connection and try refreshing</div>' +
-        '<button class="support-empty-action" id="retry-tickets-btn">try again</button>' +
-      '</div>';
-      const retryBtn = document.getElementById('retry-tickets-btn');
+      list.innerHTML = window.SurfaceState.error({
+        heading: 'unable to load tickets',
+        desc: 'check your connection and try refreshing',
+        retry: true,
+        retryLabel: 'try again',
+        detail: e
+      });
+      const retryBtn = list.querySelector('.surface-state-retry');
       if (retryBtn) retryBtn.addEventListener('click', () => loadTickets(deps));
     }
   }

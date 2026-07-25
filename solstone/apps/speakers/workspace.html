@@ -1266,7 +1266,7 @@
 
     <div class="spk-detail" id="spkDetail" aria-live="polite">
       <div class="surface-state surface-state--empty">
-        <div class="surface-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"></path></svg></div>
+        <div class="surface-state-icon" id="spkInitialEmptyIcon" aria-hidden="true"></div>
         <h2 class="surface-state-heading">ready to review</h2>
         <p class="surface-state-desc">select a segment from the list to review speaker assignments</p>
       </div>
@@ -1309,13 +1309,10 @@
 <script>
 (() => {
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
-  const emptyIcons = {
-    segment: '<svg viewBox="0 0 24 24"><rect x="4" y="8" width="2" height="8" rx="1"></rect><rect x="8" y="5" width="2" height="14" rx="1"></rect><rect x="12" y="3" width="2" height="18" rx="1"></rect><rect x="16" y="6" width="2" height="12" rx="1"></rect><rect x="20" y="9" width="2" height="6" rx="1"></rect></svg>',
-    cursor: '<svg viewBox="0 0 24 24"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"></path></svg>',
-    people: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>',
-    text: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
-    audio: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>'
-  };
+  const initialEmptyIcon = document.getElementById('spkInitialEmptyIcon');
+  if (initialEmptyIcon) {
+    initialEmptyIcon.innerHTML = window.ConveyIcons.svg('mouse-pointer-2');
+  }
 
   function attachAudioErrorListeners(container) {
     container.querySelectorAll('audio').forEach(audio => {
@@ -2541,7 +2538,7 @@
         ? ''
         : 'solstone hasn\'t found any speaker segments for this day yet';
       segmentList.innerHTML = '<li>' + window.SurfaceState.empty({
-        icon: emptyIcons.segment,
+        icon: window.ConveyIcons.svg('audio-lines'),
         heading: emptyHeading,
         desc: emptyDesc
       }) + '</li>';
@@ -2634,7 +2631,7 @@
   function renderDetail(seg) {
     if (!seg.sources.length) {
       detailPanel.innerHTML = window.SurfaceState.empty({
-        icon: emptyIcons.audio,
+        icon: window.ConveyIcons.svg('volume-2'),
         heading: 'no audio sources',
         desc: 'this segment doesn\'t have any observed audio media'
       });
@@ -2753,7 +2750,7 @@
 
     if (!hasMatched && !hasUnmatched) {
       container.innerHTML = window.SurfaceState.empty({
-        icon: emptyIcons.people,
+        icon: window.ConveyIcons.svg('users'),
         heading: 'no speakers found',
         desc: 'no speaker voices were detected in this segment'
       });
@@ -2882,7 +2879,7 @@
 
     if (total === 0) {
       container.innerHTML = window.SurfaceState.empty({
-        icon: emptyIcons.text,
+        icon: window.ConveyIcons.svg('file-text'),
         heading: 'no sentences to review',
         desc: 'this segment doesn\'t have any sentences to work with yet'
       });

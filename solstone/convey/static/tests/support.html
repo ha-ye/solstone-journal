@@ -11,6 +11,34 @@
 <div id="results"></div>
 <div id="fixture"></div>
 <script src="../relative-time.js"></script>
+<script>
+  window.ConveyIcons = {
+    svg: name => `<svg data-icon="${name}"></svg>`
+  };
+  window.SurfaceState = {
+    loading({ text = '' } = {}) {
+      return `<div class="surface-state surface-state--loading" role="status" aria-busy="true">`
+        + `<div class="surface-state-spinner" aria-hidden="true"></div>`
+        + `${text ? `<span class="surface-state-text" data-role="loading-status">${text}</span>` : ''}`
+        + `</div>`;
+    },
+    empty({ icon = '', heading = '', desc = '', action = '' } = {}) {
+      return `<div class="surface-state surface-state--empty">`
+        + `${icon ? `<div class="surface-state-icon" aria-hidden="true">${icon}</div>` : ''}`
+        + `${heading ? `<h2 class="surface-state-heading">${heading}</h2>` : ''}`
+        + `${desc ? `<p class="surface-state-desc">${desc}</p>` : ''}`
+        + `${action ? `<div class="surface-state-action">${action}</div>` : ''}`
+        + `</div>`;
+    },
+    error({ heading = '', desc = '', retry = false, retryLabel = 'try again' } = {}) {
+      return `<div class="surface-state surface-state--error" role="alert">`
+        + `${heading ? `<h2 class="surface-state-heading">${heading}</h2>` : ''}`
+        + `${desc ? `<p class="surface-state-desc">${desc}</p>` : ''}`
+        + `${retry ? `<button type="button" class="surface-state-retry">${retryLabel}</button>` : ''}`
+        + `</div>`;
+    }
+  };
+</script>
 <script src="/app/support/static/support.js"></script>
 <script>
   const results = document.getElementById('results');
@@ -225,7 +253,7 @@
       await window.SupportUI.loadTickets(deps());
       assert(
         'tickets empty',
-        text('#tickets-list .support-empty-heading') === 'no tickets yet — that\'s a good thing' &&
+        text('#tickets-list .surface-state-heading') === 'no tickets yet — that\'s a good thing' &&
           !document.getElementById('tab-tickets-badge') &&
           tabCalls.includes('help')
       );
@@ -246,21 +274,21 @@
       await window.SupportUI.loadTickets(deps());
       assert(
         'tickets non-OK HTTP 500',
-        !!document.getElementById('retry-tickets-btn') &&
-          text('#tickets-list .support-empty-heading') === 'unable to load tickets'
+        !!document.querySelector('#tickets-list .surface-state-retry') &&
+          text('#tickets-list .surface-state-heading') === 'unable to load tickets'
       );
     });
 
     resetFixture();
     await withFetch(async () => { throw new Error('network down'); }, async () => {
       await window.SupportUI.loadTickets(deps());
-      assert('tickets thrown fetch', !!document.getElementById('retry-tickets-btn'));
+      assert('tickets thrown fetch', !!document.querySelector('#tickets-list .surface-state-retry'));
     });
 
     resetFixture();
     await withFetch(async () => malformedResponse(), async () => {
       await window.SupportUI.loadTickets(deps());
-      assert('tickets malformed JSON', !!document.getElementById('retry-tickets-btn'));
+      assert('tickets malformed JSON', !!document.querySelector('#tickets-list .surface-state-retry'));
     });
 
     resetFixture();
@@ -270,7 +298,7 @@
         const pending = window.SupportUI.loadTickets(deps());
         capturedTimeoutFn();
         await pending;
-        assert('tickets timeout', !!document.getElementById('retry-tickets-btn'));
+        assert('tickets timeout', !!document.querySelector('#tickets-list .surface-state-retry'));
       });
     } finally {
       window.SupportUI.__setTimers();
@@ -283,10 +311,10 @@
     window.SupportUI.__setTimers(() => 1, () => {});
     try {
       await withFetch(() => neverSettles(), async () => {
-        document.getElementById('retry-tickets-btn').click();
+        document.querySelector('#tickets-list .surface-state-retry').click();
         assert(
           'tickets retry-re-enters-spinner',
-          text('#tickets-list .support-empty-heading') === 'checking for tickets'
+          text('#tickets-list .surface-state-text') === 'checking for tickets'
         );
       });
     } finally {
@@ -297,7 +325,7 @@
     document.getElementById('tickets-list').innerHTML = '<div>stale tickets</div>';
     let sawSpinner = false;
     await withFetch(async () => {
-      sawSpinner = text('#tickets-list .support-empty-heading') === 'checking for tickets';
+      sawSpinner = text('#tickets-list .surface-state-text') === 'checking for tickets';
       return response({ body: [] });
     }, async () => {
       await window.SupportUI.loadTickets(deps());

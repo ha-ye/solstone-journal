@@ -2328,7 +2328,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 	      </div>
       <div class="tr-panel" id="trPanel">
         <div class="surface-state surface-state--empty">
-          <div class="surface-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div>
+          <div class="surface-state-icon" id="trInitialEmptyIcon" aria-hidden="true"></div>
           <h2 class="surface-state-heading">your day at a glance</h2>
           <p class="surface-state-desc">select a segment from the timeline to view its transcript</p>
         </div>
@@ -2433,14 +2433,24 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   const deleteSegmentModal = document.getElementById('trDeleteSegmentModal');
   const deleteSegmentModalBody = document.getElementById('trDeleteSegmentModalBody');
   const deleteSegmentModalConfirm = document.getElementById('trDeleteSegmentModalConfirm');
-  const emptyIcons = {
-    day: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
-    nothing: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>',
-    transcript: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
-    audio: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>',
-    screen: '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>',
-    signals: '<svg viewBox="0 0 24 24"><path d="M4 12h4l2-7 4 14 2-7h4"></path></svg>'
-  };
+  const initialEmptyIcon = document.getElementById('trInitialEmptyIcon');
+  if (initialEmptyIcon) {
+    initialEmptyIcon.innerHTML = window.ConveyIcons.svg('clock');
+  }
+
+  function emptyIconForModality(modality) {
+    switch (modality) {
+      case 'audio':
+        return window.ConveyIcons.svg('volume-2');
+      case 'screen':
+        return window.ConveyIcons.svg('monitor');
+      case 'signals':
+        return window.ConveyIcons.svg('activity');
+      case 'transcript':
+      default:
+        return window.ConveyIcons.svg('file-text');
+    }
+  }
 
   const BTN_LABEL_PENDING = 'analyze now';
   const BTN_LABEL_FAILED = 'try again';
@@ -4044,7 +4054,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   function renderFailedDataState(modality) {
     return `<div class="surface-state surface-state--error" role="alert">`
-      + `<div class="surface-state-icon" aria-hidden="true">${emptyIcons[modality] || emptyIcons.transcript}</div>`
+      + `<div class="surface-state-icon" aria-hidden="true">${emptyIconForModality(modality)}</div>`
       + `<h2 class="surface-state-heading">${escapeHtml(dataStateCopy(modality, 'failed'))}</h2>`
       + `<p class="surface-state-desc">analysis errored for this segment</p>`
       + `<div class="surface-state-action">${renderAnalyzeButton(modality, BTN_LABEL_FAILED)}</div>`
@@ -4052,7 +4062,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   }
 
   function renderDataStateAffordance(modality, state, data) {
-    const icon = emptyIcons[modality] || emptyIcons.transcript;
+    const icon = emptyIconForModality(modality);
     if (state === 'pending') {
       const metadata = [];
       if (modality === 'audio') {
@@ -4285,7 +4295,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const counts = signals.counts || {};
     if (events.length === 0) {
       targetEl.innerHTML = window.SurfaceState.empty({
-        icon: emptyIcons.signals,
+        icon: window.ConveyIcons.svg('activity'),
         heading: 'no signal context',
         desc: 'this segment has no imported Mentra telemetry'
       });
@@ -5007,12 +5017,12 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       }
       const tabType = showBrowser && !showAudio && !showScreen ? 'browser' : !showScreen ? 'audio' : !showAudio ? 'screen' : 'transcript';
       const tabEmptyMap = {
-        transcript: { icon: emptyIcons.transcript, heading: 'no transcript entries', desc: 'this segment has no transcript content' },
-        audio: { icon: emptyIcons.audio, heading: 'no audio entries', desc: 'this segment has no audio content' },
-        screen: { icon: emptyIcons.screen, heading: 'no screen entries', desc: 'this segment has no screen observations' },
-        browser: { icon: emptyIcons.transcript, heading: 'no page entries', desc: 'this segment has no page content' }
+        transcript: { icon: window.ConveyIcons.svg('file-text'), heading: 'no transcript entries', desc: 'this segment has no transcript content' },
+        audio: { icon: window.ConveyIcons.svg('volume-2'), heading: 'no audio entries', desc: 'this segment has no audio content' },
+        screen: { icon: window.ConveyIcons.svg('monitor'), heading: 'no screen entries', desc: 'this segment has no screen observations' },
+        browser: { icon: window.ConveyIcons.svg('file-text'), heading: 'no page entries', desc: 'this segment has no page content' }
       };
-      const emptyInfo = tabEmptyMap[tabType] || tabEmptyMap.transcript;
+      const emptyInfo = tabEmptyMap[tabType];
       targetEl.innerHTML = window.SurfaceState.empty(emptyInfo);
       return;
     }
@@ -5715,7 +5725,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       updateZoom();
       if (allSegments.length === 0) {
         panel.innerHTML = window.SurfaceState.empty({
-          icon: emptyIcons.nothing,
+          icon: window.ConveyIcons.svg('calendar-days'),
           heading: 'nothing here',
           desc: 'no observations were found for this day'
         });
@@ -6133,9 +6143,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     rangeText.textContent = '';
     tabsContainer.innerHTML = '';
     tabsContainer.classList.remove('visible');
-	    warningNotice.classList.remove('visible');
+    warningNotice.classList.remove('visible');
     panel.innerHTML = window.SurfaceState.empty({
-      icon: emptyIcons.day,
+      icon: window.ConveyIcons.svg('clock'),
       heading: 'your day at a glance',
       desc: 'select a segment from the timeline to view its transcript'
     });

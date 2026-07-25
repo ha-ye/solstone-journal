@@ -68,25 +68,6 @@ h1 {
   max-width: 65ch;
 }
 
-.timeline-empty {
-  color: #888;
-  padding: 1.5em 2em 3em;
-  text-align: center;
-}
-.empty-icon {
-  margin-bottom: 0.25em;
-}
-.empty-heading {
-  font-size: 1.1em;
-  font-weight: 600;
-  margin-bottom: 0.25em;
-}
-.empty-desc {
-  font-size: 0.9em;
-  color: #aaa;
-  margin-top: 0.5em;
-}
-
 .occ-activity:hover {
   opacity: 0.55;
 }
@@ -690,7 +671,11 @@ button.activity-detail-back {
   function renderTimeline(list) {
     const div = document.getElementById('timelineView');
     if (!list.length) {
-      div.innerHTML = '<div class="timeline-empty"><div class="empty-icon"><svg width="32" height="32" viewBox="0 0 32 32" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="24" height="22" rx="3"/><line x1="10" y1="3" x2="10" y2="9"/><line x1="22" y1="3" x2="22" y2="9"/><line x1="4" y1="14" x2="28" y2="14"/><line x1="11" y1="19" x2="11" y2="19.01"/><line x1="16" y1="19" x2="16" y2="19.01"/><line x1="21" y1="19" x2="21" y2="19.01"/><line x1="11" y1="24" x2="11" y2="24.01"/><line x1="16" y1="24" x2="16" y2="24.01"/></svg></div><div class="empty-heading">no activity</div><div class="empty-desc">nothing observed for this day</div></div>';
+      div.innerHTML = window.SurfaceState.empty({
+        icon: window.ConveyIcons.svg('calendar-days'),
+        heading: 'no activity',
+        desc: 'nothing observed for this day'
+      });
       return;
     }
 

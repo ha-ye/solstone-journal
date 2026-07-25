@@ -25,6 +25,13 @@ const Dashboard = (function() {
     return elem;
   }
 
+  function renderEmptyChart(container, { icon, heading, desc }) {
+    container.innerHTML = '';
+    const wrapper = el('div', {className: 'empty-chart'});
+    wrapper.innerHTML = window.SurfaceState.empty({ icon, heading, desc });
+    container.appendChild(wrapper);
+  }
+
   // Format byte counts with GB/MB/KB suffixes
   function fmtBytes(num) {
     const value = Number(num);
@@ -97,13 +104,11 @@ const Dashboard = (function() {
     container.innerHTML = ''; // Clear existing content
     
     if (!tokenData || !model) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, ['📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['select a model…']),
-          el('div', {style: 'color: #999;'}, ['Choose a model above to view token usage'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: window.ConveyIcons.svg('chart-column'),
+        heading: 'select a model…',
+        desc: 'Choose a model above to view token usage'
+      });
       return;
     }
 
@@ -111,13 +116,11 @@ const Dashboard = (function() {
     const days = Object.keys(tokenData).sort().slice(-30);
     
     if (!days.length) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, ['📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No token data']),
-          el('div', {style: 'color: #999;'}, ['no token usage for this model'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: window.ConveyIcons.svg('chart-column'),
+        heading: 'No token data',
+        desc: 'no token usage for this model'
+      });
       return;
     }
 
@@ -148,13 +151,11 @@ const Dashboard = (function() {
     });
 
     if (maxTotal === 0) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, ['📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No recent token usage']),
-          el('div', {style: 'color: #999;'}, ['No tokens used for this model in the last 30 days'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: window.ConveyIcons.svg('chart-column'),
+        heading: 'No recent token usage',
+        desc: 'No tokens used for this model in the last 30 days'
+      });
       return;
     }
 
@@ -252,13 +253,11 @@ const Dashboard = (function() {
     container.innerHTML = ''; // Clear existing content
 
     if (!data || !data.length) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, ['🎙️']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['no observations yet']),
-          el('div', {style: 'color: #999;'}, ['no audio or screen observations yet'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: window.ConveyIcons.svg('mic-vocal'),
+        heading: 'no observations yet',
+        desc: 'no audio or screen observations yet'
+      });
       return;
     }
 
@@ -395,26 +394,22 @@ const Dashboard = (function() {
     container.innerHTML = '';
 
     if (!countsByDay || Object.keys(countsByDay).length === 0) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, [meta.emptyIcon || '📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No data available']),
-          el('div', {style: 'color: #999;'}, [meta.emptyText || 'No data available'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: meta.emptyIcon,
+        heading: 'No data available',
+        desc: meta.emptyText || 'No data available'
+      });
       return;
     }
 
     // Get last 30 days sorted
     const days = Object.keys(countsByDay).sort().slice(-30);
     if (!days.length) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, [meta.emptyIcon || '📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No data available']),
-          el('div', {style: 'color: #999;'}, [meta.emptyText || 'No data available'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: meta.emptyIcon,
+        heading: 'No data available',
+        desc: meta.emptyText || 'No data available'
+      });
       return;
     }
 
@@ -426,13 +421,11 @@ const Dashboard = (function() {
     const categories = Array.from(allCategories).sort();
 
     if (!categories.length) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, [meta.emptyIcon || '📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No data available']),
-          el('div', {style: 'color: #999;'}, [meta.emptyText || 'No data available'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: meta.emptyIcon,
+        heading: 'No data available',
+        desc: meta.emptyText || 'No data available'
+      });
       return;
     }
 
@@ -453,13 +446,11 @@ const Dashboard = (function() {
     });
 
     if (maxTotal === 0) {
-      container.appendChild(
-        el('div', {className: 'empty-chart'}, [
-          el('div', {style: 'font-size: 2em;'}, [meta.emptyIcon || '📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['No data available']),
-          el('div', {style: 'color: #999;'}, [meta.emptyText || 'No data available'])
-        ])
-      );
+      renderEmptyChart(container, {
+        icon: meta.emptyIcon,
+        heading: 'No data available',
+        desc: meta.emptyText || 'No data available'
+      });
       return;
     }
 
@@ -924,7 +915,7 @@ const Dashboard = (function() {
       document.getElementById('facetsChart'),
       stats.facets.counts_by_day || {},
       {
-        emptyIcon: '🏷️',
+        emptyIcon: window.ConveyIcons.svg('tag'),
         emptyText: 'no facet data yet',
         ariaLabel: 'facets bar chart showing facet distribution over the last 30 days'
       }
@@ -935,7 +926,7 @@ const Dashboard = (function() {
       document.getElementById('activitiesChart'),
       stats.talents.counts_by_day || {},
       {
-        emptyIcon: '⚡',
+        emptyIcon: window.ConveyIcons.svg('zap'),
         emptyText: 'no activity data yet',
         ariaLabel: 'activities bar chart showing activity counts over the last 30 days'
       }

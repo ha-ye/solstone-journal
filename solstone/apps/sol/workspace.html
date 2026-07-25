@@ -865,38 +865,6 @@
 }
 
 /* ============================================================================
-   Empty States
-   ============================================================================ */
-.empty-state {
-  text-align: center;
-  color: #666;
-  padding: calc(30vh - 2rem) 1rem 2rem;
-  min-height: calc(100vh - 300px);
-  box-sizing: border-box;
-}
-
-.empty-state-icon {
-  font-size: 2.5rem;
-  margin: 0 auto 0.75rem;
-  opacity: 0.5;
-  width: 72px;
-  height: 72px;
-  line-height: 72px;
-  background: rgba(0, 0, 0, 0.025);
-  border-radius: 50%;
-}
-
-.empty-state-text {
-  font-size: 1.1rem;
-  margin-bottom: 0.75rem;
-}
-
-.empty-state-hint {
-  font-size: 0.85rem;
-  color: #aaa;
-}
-
-/* ============================================================================
    Loading
    ============================================================================ */
 .loading {
@@ -1073,11 +1041,7 @@
     <div id="updated-banner" class="updated-banner" style="display: none;"></div>
     <div id="day-summary" class="day-summary" style="display: none;"></div>
     <div id="agent-groups"></div>
-    <div id="empty-state" class="empty-state" style="display: none;">
-      <div class="empty-state-icon">🤖</div>
-      <div class="empty-state-text">No talent runs on this day</div>
-      <div class="empty-state-hint">talent runs will appear here when they complete</div>
-    </div>
+    <div id="empty-state" style="display: none;"></div>
   </div>
 
   <!-- Run List View -->
@@ -1162,6 +1126,12 @@
   let facetsMeta = {};
   let previousPreviewFocus = null;
   let previewFocusTrapHandler = null;
+
+  document.getElementById('empty-state').innerHTML = window.SurfaceState.empty({
+    icon: window.ConveyIcons.svg('bot'),
+    heading: 'No talent runs on this day',
+    desc: 'talent runs will appear here when they complete'
+  });
 
   function getDayFromUrl() {
     return window.solPathContext().day;
@@ -1402,13 +1372,15 @@
       }
     } catch (error) {
       console.error('Error loading talents:', error);
-      document.getElementById('loading-view').innerHTML =
-        '<div class="empty-state" aria-live="polite">' +
-          '<div class="empty-state-icon">⚠️</div>' +
-          '<div class="empty-state-text">unable to load talents</div>' +
-          '<div class="empty-state-hint">the server may be temporarily unavailable. check your connection and try again.</div>' +
-          '<button class="back-btn" onclick="loadTalents()" style="margin-top: 1rem;">try again</button>' +
-        '</div>';
+      const loadingView = document.getElementById('loading-view');
+      loadingView.innerHTML = window.SurfaceState.error({
+        heading: 'unable to load talents',
+        desc: 'the server may be temporarily unavailable. check your connection and try again.',
+        retry: true,
+        retryLabel: 'try again',
+        detail: error
+      });
+      loadingView.querySelector('.surface-state-retry').onclick = () => loadTalents();
     }
   }
 

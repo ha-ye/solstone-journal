@@ -846,6 +846,9 @@ function makeWorkspaceContext(kind, options = {}) {
       owner_min_statements: 3,
     }),
     AppServices: { escapeHtml },
+    ConveyIcons: {
+      svg: (name) => `<svg data-icon="${escapeHtml(name)}"></svg>`,
+    },
     SurfaceState: {
       loading: ({ text }) => `<div>${escapeHtml(text)}</div>`,
       error: ({ heading }) => `<div class="surface-state-retry">${escapeHtml(heading)}</div>`,

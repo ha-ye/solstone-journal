@@ -563,7 +563,7 @@ button.day-header {
 
       <div id="results-container">
         <div class="surface-state surface-state--empty" id="search-empty">
-          <div class="surface-state-icon" aria-hidden="true">🔍</div>
+          <div class="surface-state-icon" aria-hidden="true"></div>
           <h2 class="surface-state-heading">search your journal</h2>
           <p class="surface-state-desc">find conversations, ideas, and moments — try one of these</p>
           <div class="surface-state-action">
@@ -620,6 +620,7 @@ button.day-header {
   const searchInput = document.getElementById('search-input');
   const searchInputForm = document.getElementById('search-input-form');
   const searchAnnouncer = document.getElementById('search-announcer');
+  searchEmpty.querySelector('.surface-state-icon').innerHTML = window.ConveyIcons.svg('search');
 
   function bootstrapSearch() {
     loadFromHash();
@@ -944,7 +945,7 @@ button.day-header {
         + '</div>';
 
       resultsContainer.innerHTML = window.SurfaceState.empty({
-        icon: '🔍',
+        icon: window.ConveyIcons.svg('search'),
         heading: `no results found for "${currentQuery}"`,
         action: suggestionsHtml
       });
