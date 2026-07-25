@@ -24,6 +24,7 @@ SKIP_DIRS = {
     "dist",
     "htmlcov",
     "node_modules",
+    "scratch",
     "target",
 }
 ALLOWED_PATHS = {
