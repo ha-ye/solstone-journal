@@ -573,6 +573,9 @@ fn readiness_summary(reason: &str) -> Option<&'static str> {
         }
         "provider_key_invalid" => Some("your {provider} key didn't validate"),
         "provider_quota_exceeded" => Some("your {provider} quota is spent"),
+        "provider_request_rejected" => {
+            Some("the provider refused a request sol sent; this is a defect in sol")
+        }
         "network_unreachable" => Some("I couldn't reach the network"),
         "provider_response_invalid" => Some(
             "{provider}'s response didn't match the expected shape — try rephrasing or asking something more specific.",
@@ -651,6 +654,10 @@ mod tests {
         assert_eq!(
             chat_view_message("provider_unavailable", "openai"),
             "OpenAI is having trouble right now"
+        );
+        assert_eq!(
+            chat_view_message("provider_request_rejected", "google"),
+            "the provider refused a request sol sent; this is a defect in sol"
         );
         assert_eq!(chat_view_message("new_reason", "openai"), "new_reason");
         assert_eq!(

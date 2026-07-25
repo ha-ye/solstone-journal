@@ -148,7 +148,7 @@ def test_preserves_existing_litellm_cloud_exception_classifications():
         assert classify_provider_error(exc, "google") == expected
 
 
-def test_context_reason_codes_are_registered_with_existing_owner_copy():
+def test_runtime_reason_codes_are_registered_with_owner_copy():
     from solstone.convey import provider_readiness
     from solstone.think.providers.shared import RUNTIME_REASON_CODES
 
