@@ -39,7 +39,7 @@ IMPORT_PROPER_NOUNS = (
     "PNG",
     "TIFF",
     "WebP",
-    # Lowercase canonical names catch future title-cased variants.
+    # Default lowercase validation catches title case; entries pin spelling and errors.
     "muesli",
     "sol",
 )
