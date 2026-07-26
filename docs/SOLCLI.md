@@ -63,6 +63,11 @@ Each module must export a `main()` function. The dispatcher does `importlib.impo
 
 4. **Update parity fixtures and native-sol gates** for the new command.
 
+Use this authority route for top-level commands that read or write journal data
+through the native HTTP boundary. For local commands that touch no journal data
+and have no `sol call` oracle path, use a direct match arm in
+`solstone_core_sol::run` alongside `root`, `path`, `status`, and `skills`.
+
 For host-only commands, use the `journal` dispatcher instead: create a Python
 module with `main()` and register it in `solstone/think/sol_cli.py` with the
 appropriate service or universal surface.
@@ -427,7 +432,7 @@ CLI commands, a native `native/authority.toml` plus `native/command.rs`.
 | `awareness` | `solstone/apps/awareness/native/authority.toml` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 
-`sol skills` manages coding-agent skill installation. `make skills` builds generated router references via `scripts/build_skill_references.py` before invoking `sol skills install`.
+`sol skills` manages coding-agent skill installation with `install`, `uninstall`, and `list`. The former `build` verb is gone; `make skills` runs `scripts/build_skill_references.py` directly before invoking `sol skills install`.
 
 ## Skill System
 

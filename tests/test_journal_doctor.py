@@ -172,7 +172,7 @@ def write_foreign_plist(
 
 
 def install_router_skill_links(doctor, journal: Path) -> None:
-    sources = doctor.skills_cli.discover_project_sources(doctor.ROOT)
+    sources = doctor._discover_project_sources(doctor.ROOT)
     for rel_dir in [Path(".claude/skills"), Path(".agents/skills")]:
         skills_dir = journal / rel_dir
         skills_dir.mkdir(parents=True)
@@ -1211,8 +1211,7 @@ def test_skill_state_warns_for_stale_and_missing_links_without_writing(
     skills_dir = journal / ".claude" / "skills"
     skills_dir.mkdir(parents=True)
     sources = {
-        source.name: source
-        for source in doctor.skills_cli.discover_project_sources(doctor.ROOT)
+        source.name: source for source in doctor._discover_project_sources(doctor.ROOT)
     }
     (skills_dir / "journal").symlink_to(os.path.relpath(sources["journal"], skills_dir))
     (skills_dir / "entities").symlink_to(

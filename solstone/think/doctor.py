@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import IO, Callable, Sequence
 
 from solstone.think import features as _features
-from solstone.think import maint, parakeet_readiness, skills_cli
+from solstone.think import maint, parakeet_readiness
 from solstone.think.health_cli import fetch_supervisor_status
 from solstone.think.media import PDF_EXTENSIONS
 from solstone.think.probe import (
@@ -110,6 +110,7 @@ JOURNAL_PACKAGE_VERSION_CHECK = Check(
     "journal_package_version", "blocker", ("linux", "darwin")
 )
 RETIRED_HOST_SHIM_CHECK = Check("retired_host_shim", "advisory", ("linux", "darwin"))
+_ROUTER_SKILL_NAMES = ("sol", "journal")
 _HOST_DEPENDENCY_MODULES = (
     ("frontmatter", "python-frontmatter"),
     ("flask", "Flask"),
@@ -779,6 +780,19 @@ def stale_alias_symlink_check(args: Args, binary: str) -> CheckResult:
     )
 
 
+def _discover_project_sources(repo_root: Path) -> list[Path]:
+    # Knowingly duplicated with core/crates/solstone-core-sol/src/skills.rs
+    # until doctor is ported out of Python.
+    sources = []
+    for name in _ROUTER_SKILL_NAMES:
+        source = repo_root / "solstone" / "talent" / name
+        skill_file = source / "SKILL.md"
+        if not skill_file.is_file():
+            raise FileNotFoundError(f"expected project skill at {skill_file}")
+        sources.append(source)
+    return sorted(sources)
+
+
 def _skill_state_problem_detail(
     skills_dir: Path, expected_sources: dict[str, Path]
 ) -> list[str]:
@@ -819,7 +833,7 @@ def skill_state_check(args: Args) -> CheckResult:
         return make_result(check, "skip", "no local journal")
 
     try:
-        sources = skills_cli.discover_project_sources(ROOT)
+        sources = _discover_project_sources(ROOT)
     except Exception as exc:
         return make_result(check, "skip", f"project skill sources unavailable: {exc}")
 
@@ -838,7 +852,7 @@ def skill_state_check(args: Args) -> CheckResult:
 
     if not problems:
         names = ", ".join(
-            name for name in skills_cli.ROUTER_SKILL_NAMES if name in expected_sources
+            name for name in _ROUTER_SKILL_NAMES if name in expected_sources
         )
         return make_result(
             check,

@@ -524,14 +524,12 @@ def _run_supervisor_main_for_shutdown_knobs(tmp_path, monkeypatch, *, argv):
 def test_app_supervised_main_uses_watcher_and_compressed_shutdown_knobs(
     tmp_path, monkeypatch
 ):
-    from solstone.think import install_guard, service, skills_cli
+    from solstone.think import install_guard, service
 
     reconcile = MagicMock()
     install_wrappers = MagicMock()
-    install_project = MagicMock()
     monkeypatch.setattr(service, "reconcile_installed_unit", reconcile)
     monkeypatch.setattr(install_guard, "install_wrappers", install_wrappers)
-    monkeypatch.setattr(skills_cli, "install_project", install_project)
 
     mod, captures, events, exit_now = _run_supervisor_main_for_shutdown_knobs(
         tmp_path,
@@ -555,7 +553,6 @@ def test_app_supervised_main_uses_watcher_and_compressed_shutdown_knobs(
     exit_now.assert_not_called()
     reconcile.assert_not_called()
     install_wrappers.assert_not_called()
-    install_project.assert_not_called()
 
 
 def test_default_main_uses_default_shutdown_knobs(tmp_path, monkeypatch):

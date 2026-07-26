@@ -269,9 +269,10 @@ finite private compatibility inventory in `solstone/think/sol_compat_inventory.p
 checked by `scripts/check_native_sol_compat.py`. The inventory is the only
 authority for that command set; do not copy the list into docs or gates. The
 removal criterion is zero Python delegation from supported-platform native
-`sol`: every remaining compatibility path has a native authority and production
-aggregate handler, then the compatibility inventory and module exec bridge are
-deleted together.
+`sol`: every remaining compatibility path has either a native authority with a
+production aggregate handler or an explicit direct native match-arm home for
+top-level local behavior, then the compatibility inventory and module exec
+bridge are deleted together.
 
 ## Version Lockstep
 

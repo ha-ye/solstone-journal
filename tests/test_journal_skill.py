@@ -9,8 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.skills_cli import install_project
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -66,12 +64,17 @@ def test_journal_template_symlinks_resolve_inside_repo():
 
 @pytest.mark.timeout(30)
 def test_make_skills_idempotent(tmp_path):
-    """The make skills wrapper delegates to the idempotent project installer."""
+    """The native project installer is idempotent for make skills' target shape."""
     repo_root = _repo_root()
     temp_root = tmp_path / "repo"
     temp_root.mkdir()
 
-    shutil.copy2(repo_root / "Makefile", temp_root / "Makefile")
+    (temp_root / ".git").mkdir()
+    shutil.copy2(repo_root / "pyproject.toml", temp_root / "pyproject.toml")
+    bin_dir = temp_root / "bin"
+    bin_dir.mkdir()
+    native = bin_dir / "solstone-core"
+    shutil.copy2(repo_root / ".venv" / "bin" / "solstone-core", native)
     (temp_root / "solstone").mkdir()
     shutil.copytree(
         repo_root / "solstone" / "talent",
@@ -94,13 +97,46 @@ def test_make_skills_idempotent(tmp_path):
             if path.is_symlink()
         }
 
-    first_report = install_project(temp_root, temp_root, ["all"])
-    assert first_report.error_count == 0
+    env = {"HOME": str(tmp_path / "home")}
+    first_run = subprocess.run(
+        [
+            str(native),
+            "__solstone_identity=sol",
+            "skills",
+            "install",
+            "--project",
+            str(temp_root),
+            "--agent",
+            "all",
+        ],
+        cwd=temp_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert first_run.stderr == ""
 
     first = link_state(temp_root)
 
-    second_report = install_project(temp_root, temp_root, ["all"])
-    assert second_report.error_count == 0
+    second_run = subprocess.run(
+        [
+            str(native),
+            "__solstone_identity=sol",
+            "skills",
+            "install",
+            "--project",
+            str(temp_root),
+            "--agent",
+            "all",
+        ],
+        cwd=temp_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert second_run.stderr == ""
 
     second = link_state(temp_root)
     assert first == second

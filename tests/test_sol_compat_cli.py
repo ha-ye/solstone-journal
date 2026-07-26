@@ -103,9 +103,9 @@ def test_allowed_top_level_commands_forward_exact_process_state(
 
 
 def test_rust_and_python_top_level_compat_collections_match() -> None:
-    source = (
-        REPO_ROOT / "core/crates/solstone-core-sol/src/lib.rs"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "core/crates/solstone-core-sol/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
     match = re.search(
         r"const\s+TOP_LEVEL_COMPAT_COMMANDS\s*:\s*&\[\s*&str\s*\]\s*=\s*&\[(?P<body>.*?)\];",
         source,
