@@ -21,10 +21,37 @@ def _owner_copy_text() -> str:
     return re.sub(r"<!--.*?-->|/\*.*?\*/", "", text, flags=re.DOTALL)
 
 
+def _empty_state_source() -> str:
+    text = _workspace_text()
+    match = re.search(r"function emptyStateHTML\(\) \{(.*?)\n\}", text, flags=re.DOTALL)
+    assert match, "emptyStateHTML() not found in workspace.html"
+    return match.group(1).replace("\\'", "'")
+
+
 def test_observer_app_label_uses_devices():
     payload = json.loads(APP_JSON.read_text(encoding="utf-8"))
 
     assert payload["label"] == "devices"
+
+
+def test_workspace_empty_state_uses_surface_state():
+    """Pin h3 because render() falls back to h2.
+
+    The page owns h2 section titles, while groupHeaderHTML() emits h3.
+    """
+    body = _empty_state_source()
+
+    assert "window.SurfaceState.empty({" in body
+    assert "heading: 'set up your first device'" in body
+    assert "headingLevel: 'h3'" in body
+    assert (
+        "desc: 'once you set one up, it'll show up here with what it's reported.'"
+        in body
+    )
+    assert "icon" not in body
+    assert "action" not in body
+    assert "<h3" not in body
+    assert "observer-empty-heading" not in _workspace_text()
 
 
 def test_workspace_owner_copy_replaces_retired_observer_phrases():
@@ -56,8 +83,11 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
         '<div class="credential-label">server URL</div>',
         '<div class="credential-label">key</div>',
         "set up your first device",
+        "once you set one up, it'll show up here with what it's reported.",
         "<dt>last reported</dt>",
         "<dt>last sol-ping</dt>",
+        "<dt>segments (5-min chunks)</dt>",
+        "<dt>data</dt>",
         "button.textContent = 'reconnecting…';",
         "i couldn't load your devices.",
         'Remove "${name}"? sol on that device won\'t be able to add to your journal.',
@@ -75,6 +105,8 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
     assert '<div class="credential-label">Server URL</div>' not in text
     assert "<dt>Last reported</dt>" not in text
     assert "<dt>Last sol-ping</dt>" not in text
+    assert "<dt>Segments (5-min chunks)</dt>" not in text
+    assert "<dt>Data</dt>" not in text
     assert "button.textContent = 'reconnecting...';" not in text
     assert '<div class="credential-label">address</div>' not in text
     assert "<dt>last asked sol</dt>" not in text
