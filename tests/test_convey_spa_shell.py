@@ -27,6 +27,7 @@ BOOT_PATH_FILES = [
     CONVEY_STATIC / "date_format.js",
     CONVEY_STATIC / "chat_chrome.js",
     CONVEY_STATIC / "status_pane.js",
+    CONVEY_STATIC / "modal_layer.js",
     CONVEY_STATIC / "presentation_mode.js",
     CONVEY_STATIC / "menu_state.js",
 ]

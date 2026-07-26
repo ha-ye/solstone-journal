@@ -12,6 +12,9 @@ LIVE_MOBILE_MENU_MEDIA_ANCHOR = (
 MOBILE_BARE_FACET_AFTER_ANCHOR = "\n  .facet-bar::after {\n"
 MOBILE_MENU_FULL_FACET_AFTER_ANCHOR = "\n  body.menu-full .facet-bar::after {\n"
 SURFACE_STATE_DESC_ANCHOR = "\n.surface-state-desc {\n"
+ACTIVE_DIALOG_MARKER_SELECTOR = (
+    "[data-convey-active-dialog],\n[data-convey-active-dialog-host]"
+)
 
 
 def _class_specificity(selector: str) -> int:
@@ -79,6 +82,37 @@ def test_surface_state_heading_keeps_existing_gray():
     _, rule = _rule_block(css, ".surface-state-heading")
 
     assert "color: #4b5563;" in rule
+
+
+def test_active_dialog_z_token_sits_above_shell_tags():
+    css = APP_CSS_PATH.read_text(encoding="utf-8")
+    _, root_rule = _rule_block(css, ":root")
+
+    assert "--z-tags: 400;" in root_rule
+    assert "--z-active-dialog: 10000;" in root_rule
+    assert ".skip-link (9999)" in root_rule
+    assert "presentation-mode body::after (9998)" in root_rule
+    assert "click-to-exit pseudo-element" in root_rule
+    assert root_rule.index("--z-tags: 400;") < root_rule.index(
+        "--z-active-dialog: 10000;"
+    )
+
+
+def test_workspace_view_transition_is_disabled_while_managed_dialog_is_open():
+    css = APP_CSS_PATH.read_text(encoding="utf-8")
+    _, workspace_rule = _rule_block(css, ".workspace")
+    _, active_rule = _rule_block(css, "body.has-managed-dialog .workspace")
+
+    assert "view-transition-name: workspace;" in workspace_rule
+    assert "view-transition-name: none;" in active_rule
+
+
+def test_active_dialog_marker_uses_active_dialog_z_token():
+    css = APP_CSS_PATH.read_text(encoding="utf-8")
+    _, marker_rule = _rule_block(css, ACTIVE_DIALOG_MARKER_SELECTOR)
+
+    assert "App workspace <style> blocks load after app.css" in marker_rule
+    assert "z-index: var(--z-active-dialog) !important;" in marker_rule
 
 
 def test_mobile_menu_full_facet_bar_separator_override_wins_by_source_order():
