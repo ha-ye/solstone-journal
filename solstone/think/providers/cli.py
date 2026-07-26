@@ -87,7 +87,7 @@ async def _drain_line(stream: asyncio.StreamReader) -> None:
 
 
 def cogitate_sol_tool_hint(tool_name: str) -> str:
-    """Return the shell-tool hint for non-write cogitate runs."""
+    """Return the model-visible command-routing hint for the provider tool."""
     return (
         "When the instructions tell you to run `sol ...` or approved "
         f"`journal ...` commands, invoke them through the `{tool_name}` tool. "
