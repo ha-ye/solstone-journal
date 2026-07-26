@@ -716,6 +716,27 @@ function testPositionedDialogDoesNotMarkPositionedAncestor() {
   assert(!positionedAncestor.hasAttribute('data-convey-active-dialog-host'));
 }
 
+function testDetachedInertedElementRestoresBeforeReattach() {
+  const context = makeContext();
+  const shape = makeWorkspaceShape(context, 'network-pair');
+  const parent = shape.dialog.parentElement;
+  const detachedSibling = el(context.document, 'section', { id: 'detached-sibling' });
+  parent.appendChild(detachedSibling);
+
+  shape.open();
+  assertActive(context, shape);
+  assert(detachedSibling.inert);
+  assert(detachedSibling.hasAttribute('inert'));
+
+  parent.removeChild(detachedSibling);
+  shape.close();
+  context.flushFrames();
+  parent.appendChild(detachedSibling);
+
+  assert(!detachedSibling.inert);
+  assert(!detachedSibling.hasAttribute('inert'));
+}
+
 const cases = {
   visibility_shapes: testVisibilityShapes,
   activation_deactivation: testActivationDeactivation,
@@ -728,6 +749,8 @@ const cases = {
   workspace_removal_restores_state: testWorkspaceRemovalRestoresState,
   positioned_dialog_does_not_mark_positioned_ancestor:
     testPositionedDialogDoesNotMarkPositionedAncestor,
+  detached_inerted_element_restores_before_reattach:
+    testDetachedInertedElementRestoresBeforeReattach,
 };
 
 if (!cases[caseName]) {

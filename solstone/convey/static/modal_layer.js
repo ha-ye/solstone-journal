@@ -180,9 +180,7 @@
 
     inertRecords.forEach((record, element) => {
       if (!element.isConnected || !desired.has(element)) {
-        if (element.isConnected) {
-          restoreInert(element, record);
-        }
+        restoreInert(element, record);
         inertRecords.delete(element);
       }
     });

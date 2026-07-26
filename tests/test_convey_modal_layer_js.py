@@ -27,6 +27,7 @@ HARNESS_JS = REPO_ROOT / "tests" / "js" / "modal_layer_harness.js"
         "repeated_workspace_mounted_idempotent",
         "workspace_removal_restores_state",
         "positioned_dialog_does_not_mark_positioned_ancestor",
+        "detached_inerted_element_restores_before_reattach",
     ],
 )
 def test_modal_layer_behavior(case_name: str) -> None:
