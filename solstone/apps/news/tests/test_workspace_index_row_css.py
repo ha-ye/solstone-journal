@@ -60,7 +60,7 @@ def _function_source(source: str, name: str) -> str:
     raise AssertionError(f"function {name} has no closing brace")
 
 
-def test_news_index_link_base_rule_uses_grid_tracks_without_flex_layout() -> None:
+def test_news_index_link_base_rule_uses_grid_tracks_without_flex_layout():
     css = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     _, rule = _rule_block(css, ".news-index-link")
@@ -80,7 +80,7 @@ def test_news_index_link_base_rule_uses_grid_tracks_without_flex_layout() -> Non
     assert "grid-template-rows" not in rule
 
 
-def test_news_index_link_hover_background_is_preserved() -> None:
+def test_news_index_link_hover_background_is_preserved():
     css = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     _, rule = _rule_block(css, ".news-index-link:hover")
@@ -88,7 +88,7 @@ def test_news_index_link_hover_background_is_preserved() -> None:
     assert "background: #dbeafe;" in rule
 
 
-def test_news_index_row_text_rules_prevent_wrapping_and_allow_facet_truncation() -> None:
+def test_news_index_row_text_rules_prevent_wrapping_and_allow_facet_truncation():
     css = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     _, facet_rule = _rule_block(css, ".news-index-facet")
@@ -100,7 +100,7 @@ def test_news_index_row_text_rules_prevent_wrapping_and_allow_facet_truncation()
     assert "white-space: nowrap;" in day_rule
 
 
-def test_news_index_mobile_layout_uses_two_columns_with_explicit_placements() -> None:
+def test_news_index_mobile_layout_uses_two_columns_with_explicit_placements():
     css = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     _, mobile_block = _media_block(css, "@media (max-width: 720px)")
@@ -116,7 +116,7 @@ def test_news_index_mobile_layout_uses_two_columns_with_explicit_placements() ->
     assert "grid-template-rows" not in mobile_block
 
 
-def test_news_index_span_classes_are_defined_and_rendered_in_index_rows() -> None:
+def test_news_index_span_classes_are_defined_and_rendered_in_index_rows():
     source = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     render_index = _function_source(source, "renderIndex")
@@ -129,7 +129,7 @@ def test_news_index_span_classes_are_defined_and_rendered_in_index_rows() -> Non
     assert 'class="news-index-token"' in render_index
 
 
-def test_news_actions_wrap_and_do_not_shrink() -> None:
+def test_news_actions_wrap_and_do_not_shrink():
     css = WORKSPACE_PATH.read_text(encoding="utf-8")
 
     _, rule = _rule_block(css, ".news-actions")
