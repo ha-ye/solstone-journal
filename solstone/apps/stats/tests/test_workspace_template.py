@@ -338,8 +338,15 @@ def test_stats_bar_tooltip_rest_state_uses_sanctioned_restore_mechanism():
         and hover_display_match.group(1).strip().lower() != "none"
     )
 
-    assert rest_nulls_content or rest_hides_display
-    assert hover_restores_content or hover_restores_display
+    content_mechanism = rest_nulls_content and hover_restores_content
+    display_mechanism = rest_hides_display and hover_restores_display
+    assert content_mechanism or display_mechanism, (
+        "bar tooltip must pair rest suppression with the matching hover restore: "
+        f"rest_nulls_content={bool(rest_nulls_content)}, "
+        f"hover_restores_content={bool(hover_restores_content)}, "
+        f"rest_hides_display={bool(rest_hides_display)}, "
+        f"hover_restores_display={bool(hover_restores_display)}"
+    )
 
 
 def test_stats_bar_after_rest_content_attr_guard_is_scoped_to_bar_tooltip():
