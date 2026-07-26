@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -21,13 +22,16 @@ def test_write_error_secret_absent_from_exception_argv_and_logs(
 ) -> None:
     secret = "recognizable-secret-probe-token"
 
-    def fail_open(_path):
+    def fail_write(_fd, _data):
         raise OSError(secret)
 
-    monkeypatch.setattr(probe_durability, "_open_append", fail_open)
+    monkeypatch.setattr(probe_durability, "_write_once", fail_write)
 
+    fd = os.open(os.devnull, os.O_WRONLY)
     with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-        probe_durability.append_jsonl_strict(tmp_path / "ledger.jsonl", start_record())
+        data = probe_durability.encode_jsonl_record(start_record())
+        probe_durability.append_jsonl_strict(fd, tmp_path, data)
+    os.close(fd)
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
     assert secret not in str(excinfo.value)
@@ -41,10 +45,10 @@ def test_lock_acquire_oserror_secret_absent_from_exception_repr_and_logs(
 ) -> None:
     secret = "recognizable-secret-lock-path"
 
-    def fail_lease(*_args, **_kwargs):
+    def fail_lock(_path):
         raise OSError(secret)
 
-    monkeypatch.setattr(probe_slot, "acquire_file_lease", fail_lease)
+    monkeypatch.setattr(probe_slot, "_open_lock_fd", fail_lock)
 
     with pytest.raises(probe_records.ProbeOperationError) as excinfo:
         probe_slot.acquire_probe_slot(tmp_path / secret, run_id=RUN_ID)

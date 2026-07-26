@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -12,7 +11,6 @@ from solstone.think.sandbox_profile import (
     probe_contract,
     probe_durability,
     probe_records,
-    probe_slot,
 )
 from solstone.think.sandbox_profile.probe_slot import acquire_probe_slot
 from solstone.think.sandbox_profile.probe_writer import begin_probe_attempt
@@ -26,45 +24,8 @@ from tests.sandbox_profile import (
 )
 
 
-class _DummyLease:
-    path = Path("lock")
-
-    @property
-    def owned(self) -> bool:
-        return True
-
-    def release(self) -> None:
-        return None
-
-
-def _slot(journal: Path) -> probe_slot.ProbeSlot:
-    return probe_slot.ProbeSlot(
-        journal_path=journal,
-        run_id=RUN_ID,
-        ledger_path=probe_contract.probe_ledger_path(journal),
-        lock_path=probe_contract.probe_lock_path(journal),
-        attempts_parent_path=probe_contract.probe_attempts_parent_path(journal),
-        _lease=_DummyLease(),
-    )
-
-
 def test_append_order_is_write_file_fsync_then_directory_fsync(monkeypatch, tmp_path):
     events: list[str] = []
-
-    def open_append(_path):
-        events.append("open")
-        return os.open(os.devnull, os.O_WRONLY)
-
-    monkeypatch.setattr(
-        probe_durability,
-        "_mkdir",
-        lambda *_args, **_kwargs: events.append("mkdir"),
-    )
-    monkeypatch.setattr(
-        probe_durability,
-        "_open_append",
-        open_append,
-    )
     monkeypatch.setattr(
         probe_durability,
         "_write_once",
@@ -81,16 +42,19 @@ def test_append_order_is_write_file_fsync_then_directory_fsync(monkeypatch, tmp_
         lambda _path: events.append("dir_fsync"),
     )
 
-    probe_durability.append_jsonl_strict(tmp_path / "ledger.jsonl", start_record())
+    fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        data = probe_durability.encode_jsonl_record(start_record())
+        probe_durability.append_jsonl_strict(fd, tmp_path, data)
+    finally:
+        os.close(fd)
 
-    assert events == ["mkdir", "open", "write", "file_fsync", "dir_fsync"]
+    assert events == ["write", "file_fsync", "dir_fsync"]
 
 
 @pytest.mark.parametrize(
     "seam",
     [
-        "_mkdir",
-        "_open_append",
         "_write_once",
         "_fsync_file",
         "_fsync_directory",
@@ -110,8 +74,13 @@ def test_append_faults_surface_record_write_failed(monkeypatch, tmp_path, seam) 
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("secret")),
         )
 
-    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-        probe_durability.append_jsonl_strict(tmp_path / "ledger.jsonl", start_record())
+    fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+            data = probe_durability.encode_jsonl_record(start_record())
+            probe_durability.append_jsonl_strict(fd, tmp_path, data)
+    finally:
+        os.close(fd)
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
     assert "secret" not in str(excinfo.value)
@@ -121,8 +90,13 @@ def test_append_faults_surface_record_write_failed(monkeypatch, tmp_path, seam) 
 def test_append_short_write_surfaces_record_write_failed(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(probe_durability, "_write_once", lambda _handle, _data: 0)
 
-    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-        probe_durability.append_jsonl_strict(tmp_path / "ledger.jsonl", start_record())
+    fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+            data = probe_durability.encode_jsonl_record(start_record())
+            probe_durability.append_jsonl_strict(fd, tmp_path, data)
+    finally:
+        os.close(fd)
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
 
@@ -135,19 +109,36 @@ def test_attempt_parent_fsync_failure_surfaces_record_write_failed(
 
     monkeypatch.setattr(probe_durability, "_fsync_directory", fail_directory_fsync)
 
-    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-        probe_slot.create_attempt_directory(_slot(tmp_path / "journal"), ATTEMPT_ID)
+    with acquire_probe_slot(tmp_path / "journal", run_id=RUN_ID) as slot:
+        proof = probe_contract.CAPABILITY_ORDER[0]
+        with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
     assert "secret" not in str(excinfo.value)
 
 
 def test_attempt_directory_collision_fails_closed_to_stale(tmp_path) -> None:
-    slot = _slot(tmp_path / "journal")
-    probe_slot.create_attempt_directory(slot, ATTEMPT_ID)
+    journal = tmp_path / "journal"
+    proof = probe_contract.CAPABILITY_ORDER[0]
 
-    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-        probe_slot.create_attempt_directory(slot, ATTEMPT_ID)
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        attempt_path = probe_contract.probe_attempts_parent_path(journal) / ATTEMPT_ID
+        attempt_path.mkdir(parents=True)
+        with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
 
@@ -157,15 +148,15 @@ def test_start_record_write_failure_poisons_slot_before_retry(
 ) -> None:
     journal = tmp_path / "journal"
     proof = probe_contract.CAPABILITY_ORDER[0]
-    append_calls = 0
+    write_calls = 0
 
-    def fail_append(_path, _record):
-        nonlocal append_calls
-        append_calls += 1
-        probe_records.raise_probe_error(probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
+    def fail_write(_fd, _data):
+        nonlocal write_calls
+        write_calls += 1
+        raise OSError("secret")
 
     with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
-        monkeypatch.setattr(probe_durability, "append_jsonl_strict", fail_append)
+        monkeypatch.setattr(probe_durability, "_write_once", fail_write)
         with pytest.raises(probe_records.ProbeOperationError) as first:
             begin_probe_attempt(
                 slot,
@@ -175,7 +166,7 @@ def test_start_record_write_failure_poisons_slot_before_retry(
                 started_at=FIXED_TS,
             )
         assert first.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
-        assert append_calls == 1
+        assert write_calls == 1
 
         before = repository_inventory(journal)
         with pytest.raises(probe_records.ProbeOperationError) as second:
@@ -188,8 +179,8 @@ def test_start_record_write_failure_poisons_slot_before_retry(
             )
         after = repository_inventory(journal)
 
-    assert second.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
-    assert append_calls == 1
+    assert second.value.code == probe_contract.STABLE_ERROR_INTERNAL_ERROR
+    assert write_calls == 1
     assert not (
         probe_contract.probe_attempts_parent_path(journal) / OTHER_ATTEMPT_ID
     ).exists()
@@ -201,7 +192,8 @@ def test_attempt_directory_collision_poisons_slot_before_retry(tmp_path) -> None
     proof = probe_contract.CAPABILITY_ORDER[0]
 
     with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
-        probe_slot.create_attempt_directory(slot, ATTEMPT_ID)
+        attempt_path = probe_contract.probe_attempts_parent_path(journal) / ATTEMPT_ID
+        attempt_path.mkdir(parents=True)
         with pytest.raises(probe_records.ProbeOperationError) as first:
             begin_probe_attempt(
                 slot,
@@ -221,7 +213,7 @@ def test_attempt_directory_collision_poisons_slot_before_retry(tmp_path) -> None
                 started_at=FIXED_TS,
             )
 
-    assert second.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
+    assert second.value.code == probe_contract.STABLE_ERROR_INTERNAL_ERROR
     assert not (
         probe_contract.probe_attempts_parent_path(journal) / OTHER_ATTEMPT_ID
     ).exists()
@@ -240,13 +232,12 @@ def test_writer_record_write_failure_poisons_later_contact(
             attempt_id=ATTEMPT_ID,
             started_at=FIXED_TS,
         )
+        writer.assert_contact_allowed(proof)
 
-        def fail_append(_path, _record):
-            probe_records.raise_probe_error(
-                probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
-            )
+        def fail_write(_fd, _data):
+            raise OSError("secret")
 
-        monkeypatch.setattr(probe_durability, "append_jsonl_strict", fail_append)
+        monkeypatch.setattr(probe_durability, "_write_once", fail_write)
         with pytest.raises(probe_records.ProbeOperationError) as excinfo:
             writer.write_proof_terminal(
                 proof=proof,

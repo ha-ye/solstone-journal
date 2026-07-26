@@ -184,7 +184,6 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/importers/sync.py",
         "solstone/think/importers/utils.py",
         "solstone/think/sandbox_profile/intent.py",
-        "solstone/think/sandbox_profile/probe_slot.py",
     }
 )
 
