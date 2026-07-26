@@ -1166,7 +1166,7 @@ async function loadImports() {
     if (imports.length === 0) {
       container.innerHTML = window.SurfaceState.empty({
         icon: window.ConveyIcons.svg('inbox'),
-        heading: 'No imports yet',
+        heading: 'no imports yet',
         desc: 'import your data from any supported source above.',
         action: '<a href="#" onclick="scrollToGrid(); return false;" style="color: #0f4c81; font-weight: 600;">choose a source →</a>'
       });
@@ -1222,7 +1222,7 @@ async function loadImports() {
     filterImportsByFacet(window.selectedFacet);
   } catch (err) {
     window.SurfaceState.replaceLoading('importListContent', window.SurfaceState.error({
-      heading: 'Couldn\'t load your import history',
+      heading: 'couldn\'t load your import history',
       desc: window.CONVEY_COPY.RELOAD_HINT,
       serverMessage: err?.serverMessage || err?.message || '',
       detail: err,
@@ -1332,7 +1332,7 @@ function filterImportsByFacet(facetName) {
     }
     noMatchEl.innerHTML = window.SurfaceState.empty({
       icon: window.ConveyIcons.svg('search'),
-      heading: 'No imports match this filter.'
+      heading: 'no imports match this filter'
     });
     noMatchEl.style.display = '';
   } else {
@@ -1474,7 +1474,7 @@ async function loadGuidedFlow(sourceName) {
     const response = await fetch(`/app/import/api/guide/${sourceName}`);
     if (response.ok) {
       const markdown = await response.text();
-      guideHtml = `<li><div class="import-step"><div class="import-step-number">Step 1</div><div class="import-guide-content">${window.AppServices.renderMarkdown(markdown)}</div></div></li>`;
+      guideHtml = `<li><div class="import-step"><div class="import-step-number">step 1</div><div class="import-guide-content">${window.AppServices.renderMarkdown(markdown)}</div></div></li>`;
     }
   }
 
@@ -1486,7 +1486,7 @@ async function loadGuidedFlow(sourceName) {
     <form id="guidedImportForm" onsubmit="return false;"><ol class="import-steps-list">
     ${guideHtml}
       <li><div class="import-step">
-        <div class="import-step-number">Step 2</div>
+        <div class="import-step-number">step 2</div>
         ${source.input_type === 'path_input' ? `
           <h4>${escapeHtml(source.upload_prompt || 'Paste the full path to your folder')}</h4>
           <input id="guidedPathInput" class="import-path-input" type="text"
@@ -1504,7 +1504,7 @@ async function loadGuidedFlow(sourceName) {
         <div id="guidedDedupNotice"></div>
       </div></li>
       <li><div class="import-step">
-        <div class="import-step-number">Step 3</div>
+        <div class="import-step-number">step 3</div>
         <h4>configure and start</h4>
         <div class="import-inline-fields">
           <div class="confirm-field">
@@ -1584,7 +1584,7 @@ function renderQuickImportFlow() {
     <form id="importForm">
       <ol class="import-steps-list">
         <li><div class="import-step">
-          <div class="import-step-number">Step 1</div>
+          <div class="import-step-number">step 1</div>
           <div class="import-upload-area" id="dropArea" role="button" tabindex="0" aria-label="choose file to upload">
             <p>Drag file here or click to select</p>
             <input id="fileInput" type="file" style="display:none" />
@@ -1592,7 +1592,7 @@ function renderQuickImportFlow() {
           </div>
         </div></li>
         <li><div class="import-step">
-          <div class="import-step-number">Step 2</div>
+          <div class="import-step-number">step 2</div>
           <textarea id="pasteText" class="import-paste-text" placeholder="paste text here..."></textarea>
           <div class="import-inline-fields">
             <div class="confirm-field">
@@ -1994,7 +1994,7 @@ function showProgressView(importId, eventData = null) {
 
   guideSteps.innerHTML = `
     <div class="import-progress-panel">
-      <div class="import-step-number">Progress</div>
+      <div class="import-step-number">progress</div>
       <h3 class="import-progress-title">${escapeHtml(displayName)}</h3>
       <p class="import-progress-message">${escapeHtml(stageLabel)}</p>
       ${currentEvent?.elapsed_ms ? `<div class="progress-detail">${escapeHtml(formatElapsed(currentEvent.elapsed_ms))} elapsed</div>` : ''}
@@ -2054,7 +2054,7 @@ startBtn.addEventListener('click', async () => {
       event: 'started',
       stage: 'initialization',
       source_type: 'quick',
-      source_display: 'Quick Import',
+      source_display: 'quick import',
     };
     trackPendingImport(ts);
     loadImports();

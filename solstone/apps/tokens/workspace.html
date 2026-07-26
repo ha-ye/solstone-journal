@@ -645,11 +645,11 @@
     TOKENS_TILE_RUN_RATE_VALUE: "~${rate:.2f}/day",
     TOKENS_TILE_TOP_DRIVER_LABEL: "today's biggest cost",
     TOKENS_TILE_TOP_DRIVER_VALUE: "{provider} · {model} ({pct}% of today)",
-    TOKENS_DISCLOSURE_PROVIDER: "by provider — {n} providers, top: {top_name} {pct}%",
-    TOKENS_DISCLOSURE_MODEL: "by model — {n} models, top: {top_name} {pct}%",
-    TOKENS_DISCLOSURE_TOKEN_TYPE: "by token type — input / output / cached / reasoning",
-    TOKENS_DISCLOSURE_CONTEXT: "by context — {n} contexts, top: {top_name} {pct}%",
-    TOKENS_DISCLOSURE_SEGMENT: "by segment — {n} segments"
+    TOKENS_DISCLOSURE_PROVIDER: "{n} provider{s}, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_MODEL: "{n} model{s}, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_TOKEN_TYPE: "input / output / cached / reasoning",
+    TOKENS_DISCLOSURE_CONTEXT: "{n} context{s}, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_SEGMENT: "{n} segment{s}"
   };
   window.TOKENS_COPY = TOKENS_COPY;
   document.querySelectorAll('[data-tokens-copy-key]').forEach((el) => {
@@ -919,6 +919,7 @@ function populateDisclosureSummaries(data) {
   const topProvider = providers[0];
   setText('summary-provider', formatCopy(copy.TOKENS_DISCLOSURE_PROVIDER, {
     n: providers.length,
+    s: providers.length === 1 ? '' : 's',
     top_name: topProvider?.provider || '—',
     pct: Number(topProvider?.percent || 0).toFixed(1),
   }));
@@ -927,6 +928,7 @@ function populateDisclosureSummaries(data) {
   const topModel = models[0];
   setText('summary-model', formatCopy(copy.TOKENS_DISCLOSURE_MODEL, {
     n: models.length,
+    s: models.length === 1 ? '' : 's',
     top_name: topModel?.model || '—',
     pct: Number(topModel?.percent || 0).toFixed(1),
   }));
@@ -938,6 +940,7 @@ function populateDisclosureSummaries(data) {
   const topContext = contexts[0];
   setText('summary-context', formatCopy(copy.TOKENS_DISCLOSURE_CONTEXT, {
     n: contexts.length,
+    s: contexts.length === 1 ? '' : 's',
     top_name: topContext?.context || '—',
     pct: Number(topContext?.percent || 0).toFixed(1),
   }));
@@ -945,6 +948,7 @@ function populateDisclosureSummaries(data) {
   const segments = data.by_segment || [];
   setText('summary-segment', formatCopy(copy.TOKENS_DISCLOSURE_SEGMENT, {
     n: segments.length,
+    s: segments.length === 1 ? '' : 's',
   }));
 }
 

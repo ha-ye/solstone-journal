@@ -23,7 +23,7 @@ def test_content_list_endpoint(content_client):
     data = response.get_json()
     assert data["total"] == 5
     assert data["source_type"] == "ics"
-    assert data["source_display"] == "Calendar"
+    assert data["source_display"] == "calendar"
     assert data["months"] == {"202601": 5}
 
 

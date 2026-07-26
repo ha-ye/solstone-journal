@@ -64,7 +64,7 @@ def test_import_sources_include_journal_archive(client):
     journal_source = next(
         item for item in data["items"] if item["name"] == "journal_archive"
     )
-    assert journal_source["display_name"] == "Journal"
+    assert journal_source["display_name"] == "journal"
     assert "emoji" not in journal_source
     assert journal_source["icon"] == "book"
     assert "<svg" in journal_source["icon_svg"]
