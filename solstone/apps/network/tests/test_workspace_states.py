@@ -120,7 +120,7 @@ def test_success_card_structure(link_env) -> None:
     assert payload["SUCCESS_DONE"] == copy.SUCCESS_DONE
 
     remove_start = body.index("pairRemove.addEventListener")
-    remove_end = body.index("pairModal.addEventListener", remove_start)
+    remove_end = body.index("window.NetworkRender.bindPairModalDismiss", remove_start)
     remove_body = body[remove_start:remove_end]
     assert "'/app/network/unpair'" in remove_body
     assert "lastPairedFingerprint" in remove_body

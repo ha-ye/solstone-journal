@@ -51,7 +51,29 @@
       : resolve(copy, 'EXPIRED_BUTTON');
   }
 
-  const NetworkRender = { applyCopy, applyPosture, resolve };
+  function bindPairModalDismiss(modal, closeModal) {
+    if (!modal || typeof modal.addEventListener !== 'function') {
+      throw new Error('pair modal dismiss requires a modal element');
+    }
+    if (typeof closeModal !== 'function') {
+      throw new Error('pair modal dismiss requires a close callback');
+    }
+
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        closeModal();
+      }
+    });
+    modal.addEventListener('keydown', (event) => {
+      if (modal.hidden) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeModal();
+      }
+    });
+  }
+
+  const NetworkRender = { applyCopy, applyPosture, bindPairModalDismiss, resolve };
   global.NetworkRender = NetworkRender;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = NetworkRender;

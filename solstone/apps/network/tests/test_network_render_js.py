@@ -77,3 +77,66 @@ def test_network_render_copy_and_posture_helpers() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_network_pair_modal_dismiss_helper() -> None:
+    script = textwrap.dedent(
+        """
+        const assert = require('assert');
+        const render = require(process.argv[1]);
+
+        const modal = {
+          hidden: false,
+          listeners: {},
+          addEventListener(type, fn) {
+            if (!this.listeners[type]) this.listeners[type] = [];
+            this.listeners[type].push(fn);
+          },
+        };
+        const box = { className: 'link-modal-box' };
+        const descendant = { className: 'link-pair-copy' };
+        let closed = 0;
+
+        render.bindPairModalDismiss(modal, () => { closed += 1; });
+
+        assert.strictEqual(modal.listeners.click.length, 1);
+        assert.strictEqual(modal.listeners.keydown.length, 1);
+
+        modal.listeners.click[0]({ target: box });
+        modal.listeners.click[0]({ target: descendant });
+        assert.strictEqual(closed, 0, 'box and descendants should not dismiss');
+
+        modal.listeners.click[0]({ target: modal });
+        assert.strictEqual(closed, 1, 'clicking the backdrop modal should dismiss');
+
+        const escape = {
+          key: 'Escape',
+          prevented: false,
+          preventDefault() { this.prevented = true; },
+        };
+        modal.listeners.keydown[0](escape);
+        assert.strictEqual(closed, 2, 'Escape should dismiss while open');
+        assert.strictEqual(escape.prevented, true, 'Escape should prevent default');
+
+        const hiddenEscape = {
+          key: 'Escape',
+          prevented: false,
+          preventDefault() { this.prevented = true; },
+        };
+        modal.hidden = true;
+        modal.listeners.keydown[0](hiddenEscape);
+        assert.strictEqual(closed, 2, 'hidden modal Escape should do nothing');
+        assert.strictEqual(hiddenEscape.prevented, false);
+
+        modal.hidden = false;
+        modal.listeners.keydown[0]({ key: 'Enter', preventDefault() { throw new Error('unexpected prevent'); } });
+        assert.strictEqual(closed, 2, 'non-Escape keys should do nothing');
+        """
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(NETWORK_RENDER_JS)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

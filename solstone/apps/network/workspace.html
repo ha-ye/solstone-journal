@@ -2003,13 +2003,7 @@
       window.logError?.(err, { context: 'link: success-card remove failed' });
     }
   });
-  pairModal.addEventListener('keydown', (event) => {
-    if (pairModal.hidden) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closePairModal();
-    }
-  });
+  window.NetworkRender.bindPairModalDismiss(pairModal, closePairModal);
   pairRegenerate.addEventListener('click', () => {
     autoRefreshFired = false;
     qrExpired.hidden = true;
