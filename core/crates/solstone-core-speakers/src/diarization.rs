@@ -16,7 +16,6 @@ pub const AHC_METRIC: &str = "cosine";
 pub const MAX_K: usize = 8;
 pub const SILHOUETTE_IMPROVEMENT: f64 = 0.03;
 pub const UNDEFINED_SILHOUETTE: f64 = -1.0;
-pub const CLUSTER_SCORE_ABS_TOLERANCE: f64 = 1e-6;
 
 const ROW_NORM_EPSILON: f64 = 1e-9;
 
@@ -38,10 +37,6 @@ pub enum DiarizationError {
     LabelLengthMismatch {
         intervals: usize,
         labels: usize,
-    },
-    DistanceShapeMismatch {
-        n: usize,
-        len: usize,
     },
 }
 
@@ -66,12 +61,6 @@ impl fmt::Display for DiarizationError {
                 formatter,
                 "sentence assignment label length mismatch: intervals={intervals} labels={labels}"
             ),
-            Self::DistanceShapeMismatch { n, len } => {
-                write!(
-                    formatter,
-                    "distance matrix length mismatch: n={n} len={len}"
-                )
-            }
         }
     }
 }
@@ -126,11 +115,11 @@ pub struct SentenceTiming {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Merge {
-    pub left: usize,
-    pub right: usize,
-    pub distance: f64,
-    pub size: usize,
+struct Merge {
+    left: usize,
+    right: usize,
+    distance: f64,
+    size: usize,
 }
 
 pub fn find_intervals(
@@ -203,14 +192,16 @@ pub fn assign_sentences(
 
     let mut result = Vec::with_capacity(sentences.len());
     for sentence in sentences {
+        // Missing timestamps, non-finite timestamps, and inverted end <= start
+        // boundaries all become unlabelled. Python would raise on a truly
+        // non-numeric timestamp; treating it as unlabelled is deliberate
+        // hardening, and the finite check is explicit because NaN comparisons
+        // being all-false would otherwise make a naive port look correct by
+        // accident.
         let (Some(start), Some(end)) = (sentence.start_s, sentence.end_s) else {
             result.push(None);
             continue;
         };
-        // Python would raise on a truly non-numeric timestamp. Treating invalid
-        // typed boundary data as unlabelled is deliberate hardening, and the
-        // NaN check is explicit because NaN comparisons being all-false would
-        // otherwise make a naive port look correct by accident.
         if !start.is_finite() || !end.is_finite() || end <= start {
             result.push(None);
             continue;
@@ -427,7 +418,7 @@ fn ahc_labels_from_normalized_rows(
         return Ok(vec![0; rows]);
     }
     let distances = unclipped_ahc_distances(normalized, rows, cols);
-    let merges = average_linkage_tree_from_distances(&distances, rows)?;
+    let merges = average_linkage_tree_from_distances(&distances, rows);
     Ok(cut_tree_canonical_labels(rows, &merges, k))
 }
 
@@ -459,21 +450,9 @@ fn clipped_silhouette_distances(normalized: &[f64], rows: usize, cols: usize) ->
     distances
 }
 
-fn average_linkage_tree_from_distances(
-    distances: &[f64],
-    n: usize,
-) -> Result<Vec<Merge>, DiarizationError> {
-    let expected = n
-        .checked_mul(n)
-        .ok_or(DiarizationError::ShapeOverflow { rows: n, cols: n })?;
-    if distances.len() != expected {
-        return Err(DiarizationError::DistanceShapeMismatch {
-            n,
-            len: distances.len(),
-        });
-    }
+fn average_linkage_tree_from_distances(distances: &[f64], n: usize) -> Vec<Merge> {
     if n <= 1 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     let max_nodes = 2 * n - 1;
@@ -521,7 +500,7 @@ fn average_linkage_tree_from_distances(
             size: new_size,
         });
     }
-    Ok(merges)
+    merges
 }
 
 fn lowest_active_pair(
@@ -707,6 +686,7 @@ mod tests {
     use serde_json::Value;
 
     const STAGE_FIXTURE: &str = include_str!("../../../fixtures/speaker_stage_boundaries.json");
+    const CLUSTER_SCORE_ABS_TOLERANCE: f64 = 1e-6;
 
     #[test]
     fn diarization_constants_match_stage_fixture_identity() {
@@ -839,6 +819,9 @@ mod tests {
 
     #[test]
     fn silhouette_tolerance_violation_reports_some_error() {
+        // This starts from a fixture score moved deliberately beyond tolerance,
+        // so it is a negative test of the comparison helper itself rather than
+        // a fixture-backed assertion.
         let fixture = fixture();
         let curve = curve_at(&fixture["clustering_input_perturbation"]["base"]);
         let expected = curve[0].1;
@@ -876,7 +859,7 @@ mod tests {
             [0.6, 1.0, 0.2, 0.0],
         ]);
 
-        let merges = average_linkage_tree_from_distances(&distances, 4).expect("merge tree");
+        let merges = average_linkage_tree_from_distances(&distances, 4);
 
         assert_merge(&merges[0], 0, 1, 0.1, 2);
         assert_merge(&merges[1], 2, 3, 0.2, 2);
@@ -895,7 +878,7 @@ mod tests {
             [1.0, 1.0, 1.0, 0.0],
         ]);
 
-        let merges = average_linkage_tree_from_distances(&distances, 4).expect("merge tree");
+        let merges = average_linkage_tree_from_distances(&distances, 4);
 
         assert_merge(&merges[0], 0, 1, 1.0, 2);
         assert_merge(&merges[1], 2, 3, 1.0, 2);
