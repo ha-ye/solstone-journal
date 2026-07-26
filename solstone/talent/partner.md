@@ -20,8 +20,8 @@ This is not a conversation. Gather data, observe patterns, update the profile, t
 
 ## Step 1: Read current state
 
-Read the current profile with `journal identity partner` — the settled
-`sol`-surface read form for `identity/partner.md`.
+Read the current profile with `journal identity partner` through the provided
+`sol` tool — it is the approved direct host read command for `identity/partner.md`.
 
 Note which sections have real observations vs `[observing]` placeholders.
 
@@ -40,8 +40,8 @@ and query each source. If a source returns empty or errors, skip it — gaps are
 
 For each of the five profile sections, analyze the gathered data and write
 observations if you have sufficient evidence. Use `journal identity partner --update-section`
-for each section you update — it is the owned write command for `partner.md`
-(there is no `sol call` verb for it yet).
+through the provided `sol` tool for each section you update — it is the approved
+direct host write command for `partner.md`.
 
 ### Section guidance
 

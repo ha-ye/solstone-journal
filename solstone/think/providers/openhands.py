@@ -32,6 +32,7 @@ from typing import Any
 from solstone.log_policy import apply_http_logging_policy, snapshot_root_logging
 from solstone.think.cogitate_contract import (
     capabilities_for_access_tier,
+    cogitate_journal_command_list,
     expects_emit_final,
 )
 from solstone.think.cogitate_policy import (
@@ -779,8 +780,12 @@ def _ensure_sol_types() -> dict[str, Any]:
     class SolAction(Action):
         command: str = Field(
             description=(
-                "Single `sol` or approved `journal` command-line invocation to "
-                "run directly, without a shell."
+                "Single command-line invocation to run directly, without a shell: "
+                "use `sol`/`sol call ...` for normal journal access; run approved "
+                "`journal` families ("
+                + cogitate_journal_command_list()
+                + ") directly as `journal <family> ...`, never prefixed with "
+                "`sol` or `sol call`."
             )
         )
 
@@ -937,8 +942,12 @@ def _build_sol_tools(
     )
     tool = sol_tool_cls(
         description=(
-            "Run one policy-approved `sol` or `journal` command-line invocation "
-            "directly, without a shell."
+            "Run one policy-approved command directly, without a shell: use "
+            "`sol`/`sol call ...` for normal journal access; run approved "
+            "`journal` families ("
+            + cogitate_journal_command_list()
+            + ") directly as `journal <family> ...`, never prefixed with "
+            "`sol` or `sol call`."
         ),
         action_type=sol_action,
         observation_type=sol_observation,

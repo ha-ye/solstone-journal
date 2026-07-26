@@ -448,6 +448,23 @@ def test_scan_command_examples_dedupes_and_caps():
     ]
 
 
+def test_real_partner_prompt_uses_direct_journal_identity_without_contradiction():
+    config = get_talent("partner")
+
+    prompt_body, system_instruction = assemble_prompt(config, sol_tool_name="sol")
+
+    assert system_instruction is not None
+    assert "approved host command families" in system_instruction
+    assert "journal <family> ..." in system_instruction
+    assert "never prefixed with `sol` or `sol call`" in system_instruction
+    assert "no bare `journal ...` commands" not in system_instruction
+    assert "no other bare `journal ...` family" in system_instruction
+    assert "`journal identity partner` through the provided" in prompt_body
+    assert "`journal identity partner --update-section`" in prompt_body
+    assert "`sol`-surface read form" not in prompt_body
+    assert "there is no `sol call` verb" not in prompt_body
+
+
 def test_inventory_degrades_bad_access_tier_in_rows_table_and_json(
     tmp_path,
     monkeypatch,

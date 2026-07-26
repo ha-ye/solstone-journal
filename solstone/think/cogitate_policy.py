@@ -12,6 +12,7 @@ from typing import Any
 
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
+    COGITATE_JOURNAL_COMMANDS,
     COGITATE_READ_TOOL_NAMES,
     capabilities_for_access_tier,
 )
@@ -77,7 +78,6 @@ def failure_capped(reason_code: str | None, count: int) -> bool:
     return cap is not None and count >= cap
 
 
-_JOURNAL_COMMANDS = {"identity", "health", "talent"}
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
 _WRITE_TOOLS = {"write_file", "replace"}
 _READ_TOOLS = frozenset(COGITATE_READ_TOOL_NAMES)
@@ -95,6 +95,17 @@ EMPTY_COMMAND_DENY = "policy_deny: empty command"
 RESTRICTED_COMMAND_DENY = (
     "policy_deny: run_shell_command restricted to sol or approved journal invocations"
 )
+HYBRID_JOURNAL_COMMAND_DENY = (
+    "policy_deny: `sol call journal {family}` is not a `sol call` verb; "
+    "`{family}` is an approved host command family — run it directly as `{repair}`"
+)
+BARE_JOURNAL_REPAIR_DENY = (
+    "policy_deny: `journal {family}` is not a host command; run `{repair}` instead"
+)
+_BARE_JOURNAL_REPAIR_PREFIXES = {
+    "search": ("sol", "call", "journal", "search"),
+    "facet": ("sol", "call", "journal", "facet"),
+}
 
 
 @dataclass(frozen=True)
@@ -134,6 +145,18 @@ def _shell_syntax_violation(command: str) -> bool:
                 return True
         index += 1
     return quote is not None
+
+
+def _hybrid_journal_deny(argv: list[str]) -> str:
+    family = argv[3]
+    repair = shlex.join(["journal", *argv[3:]])
+    return HYBRID_JOURNAL_COMMAND_DENY.format(family=family, repair=repair)
+
+
+def _bare_journal_repair_deny(argv: list[str]) -> str:
+    family = argv[1]
+    repair = shlex.join([*_BARE_JOURNAL_REPAIR_PREFIXES[family], *argv[2:]])
+    return BARE_JOURNAL_REPAIR_DENY.format(family=family, repair=repair)
 
 
 class MaxTurnsExhausted(RuntimeError):
@@ -182,10 +205,26 @@ class CogitatePolicy:
         if not argv:
             return CommandDecision(False, EMPTY_COMMAND_DENY, None)
 
+        if (
+            argv[0:3] == ["sol", "call", "journal"]
+            and len(argv) >= 4
+            and argv[3] in COGITATE_JOURNAL_COMMANDS
+        ):
+            return CommandDecision(False, _hybrid_journal_deny(argv), None)
+
+        if (
+            argv[0] == "journal"
+            and len(argv) >= 2
+            and argv[1] in _BARE_JOURNAL_REPAIR_PREFIXES
+        ):
+            return CommandDecision(False, _bare_journal_repair_deny(argv), None)
+
         if not (
             argv[0] == "sol"
             or (
-                argv[0] == "journal" and len(argv) >= 2 and argv[1] in _JOURNAL_COMMANDS
+                argv[0] == "journal"
+                and len(argv) >= 2
+                and argv[1] in COGITATE_JOURNAL_COMMANDS
             )
         ):
             return CommandDecision(False, RESTRICTED_COMMAND_DENY, None)

@@ -73,6 +73,7 @@ def test_policy_denies_write_tools(tmp_path):
 @pytest.mark.parametrize(
     "command",
     [
+        "journal identity partner",
         "journal health logs --since 1h",
         "journal talent logs --daily -c 10",
     ],
@@ -81,6 +82,84 @@ def test_policy_allows_approved_journal_invocations(tmp_path, command):
     policy = _policy(tmp_path)
 
     allowed, reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is True
+    assert reason == "ok"
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        (
+            "sol call journal identity partner",
+            "policy_deny: `sol call journal identity` is not a `sol call` verb; "
+            "`identity` is an approved host command family — run it directly as "
+            "`journal identity partner`",
+        ),
+        (
+            "sol call journal identity partner --update-section 'work patterns' --value x",
+            "policy_deny: `sol call journal identity` is not a `sol call` verb; "
+            "`identity` is an approved host command family — run it directly as "
+            "`journal identity partner --update-section 'work patterns' --value x`",
+        ),
+        (
+            "sol call journal health",
+            "policy_deny: `sol call journal health` is not a `sol call` verb; "
+            "`health` is an approved host command family — run it directly as "
+            "`journal health`",
+        ),
+        (
+            "sol call journal talent logs",
+            "policy_deny: `sol call journal talent` is not a `sol call` verb; "
+            "`talent` is an approved host command family — run it directly as "
+            "`journal talent logs`",
+        ),
+    ],
+)
+def test_policy_denies_hybrid_journal_invocations_with_repair(
+    tmp_path, command, reason
+):
+    policy = _policy(tmp_path)
+
+    allowed, actual_reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert actual_reason == reason
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        (
+            'journal search "partner"',
+            "policy_deny: `journal search` is not a host command; run "
+            "`sol call journal search partner` instead",
+        ),
+        (
+            "journal facet show work",
+            "policy_deny: `journal facet` is not a host command; run "
+            "`sol call journal facet show work` instead",
+        ),
+    ],
+)
+def test_policy_denies_bare_journal_search_and_facet_with_repair(
+    tmp_path, command, reason
+):
+    policy = _policy(tmp_path)
+
+    allowed, actual_reason = policy.check("run_shell_command", {"command": command})
+
+    assert allowed is False
+    assert actual_reason == reason
+
+
+def test_policy_allows_sol_call_journal_search_with_hybrid_text(tmp_path):
+    policy = _policy(tmp_path)
+
+    allowed, reason = policy.check(
+        "run_shell_command",
+        {"command": 'sol call journal search "sol call journal identity"'},
+    )
 
     assert allowed is True
     assert reason == "ok"

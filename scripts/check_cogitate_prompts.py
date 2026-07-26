@@ -37,12 +37,12 @@ from pathlib import Path
 import frontmatter
 
 import solstone.think.talent as talent
+from solstone.think.cogitate_contract import (
+    COGITATE_JOURNAL_COMMANDS,
+    cogitate_journal_command_list,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Must equal solstone/think/cogitate_policy.py:_JOURNAL_COMMANDS
-# (cogitate_policy.py:21). Duplicated here intentionally; no shared import.
-ALLOWED_JOURNAL_COMMANDS = frozenset({"identity", "health", "talent"})
 
 # Must equal solstone/think/cogitate_policy.py:_READ_TOOLS
 # (cogitate_policy.py:24). Duplicated here intentionally; no shared import.
@@ -87,7 +87,9 @@ UNSUPPORTED_FLAGS: list[tuple[tuple[str, ...], str, str]] = []
 ALLOWLIST: dict[tuple[str, str], int] = {}
 
 JOURNAL_ALTERNATIVE = (
-    "use `journal` with one of {identity, health, talent}, or use `sol`/`sol call`"
+    "use `journal` with one of {"
+    + cogitate_journal_command_list()
+    + "}, or use `sol`/`sol call`"
 )
 READ_ALTERNATIVE = (
     "use a bounded read tool: read_file, list_directory, glob, or grep_search"
@@ -246,7 +248,7 @@ def classify_span(command: str) -> list[tuple[str, str]]:
     if (
         tokens[0] == "journal"
         and len(tokens) >= 2
-        and tokens[1] not in ALLOWED_JOURNAL_COMMANDS
+        and tokens[1] not in COGITATE_JOURNAL_COMMANDS
     ):
         findings.append(
             (

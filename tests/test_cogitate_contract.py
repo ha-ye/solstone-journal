@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from solstone.think import cogitate_contract
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
     COGITATE_DIAGNOSTIC_PREAMBLE,
+    COGITATE_JOURNAL_COMMANDS,
     COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
     FUTURE_ACCESS_TIERS,
@@ -81,6 +83,10 @@ def test_cogitate_vocabulary_lock():
         "glob",
         "grep_search",
     )
+    assert COGITATE_JOURNAL_COMMANDS == ("identity", "health", "talent")
+    assert cogitate_contract.cogitate_journal_command_list() == (
+        "identity, health, talent"
+    )
     assert FUTURE_ACCESS_TIERS == ("code-agent",)
     assert TALENT_ACCESS_TIERS == (
         "normal",
@@ -146,6 +152,11 @@ def test_capabilities_for_access_tier_unknown_names_tier(tier):
 def test_cogitate_runtime_preamble_content_guard():
     assert "sol call ..." in COGITATE_RUNTIME_PREAMBLE
     assert "single parsed command-line invocation" in COGITATE_RUNTIME_PREAMBLE
+    assert "approved host command families" in COGITATE_RUNTIME_PREAMBLE
+    assert "journal <family> ..." in COGITATE_RUNTIME_PREAMBLE
+    assert "never prefixed with `sol` or `sol call`" in COGITATE_RUNTIME_PREAMBLE
+    assert "no bare `journal ...` commands" not in COGITATE_RUNTIME_PREAMBLE
+    assert "no other bare `journal ...` family" in COGITATE_RUNTIME_PREAMBLE
     assert "journal root" in COGITATE_RUNTIME_PREAMBLE
     assert "node_modules" in COGITATE_RUNTIME_PREAMBLE
     assert "emit_final" in COGITATE_RUNTIME_PREAMBLE
@@ -167,9 +178,11 @@ def test_diagnostic_preamble_omits_journal_tooling():
     assert "grep_search" not in system
     assert "through the `sol` tool" not in system
     assert "Limit filesystem reads" not in system
-    assert "through a `sol` domain command" in COGITATE_RUNTIME_PREAMBLE
+    assert "through an approved journal command" in COGITATE_RUNTIME_PREAMBLE
     assert "no MCP tools" in COGITATE_RUNTIME_PREAMBLE
-    assert "no bare `journal ...` commands" in COGITATE_RUNTIME_PREAMBLE
+    assert "approved host command families" in COGITATE_RUNTIME_PREAMBLE
+    assert "no bare `journal ...` commands" not in COGITATE_RUNTIME_PREAMBLE
+    assert "no other bare `journal ...` family" in COGITATE_RUNTIME_PREAMBLE
     assert "no shell composition" in COGITATE_RUNTIME_PREAMBLE
     assert "read_file" in COGITATE_RUNTIME_PREAMBLE
     assert "list_directory" in COGITATE_RUNTIME_PREAMBLE
@@ -192,3 +205,44 @@ def test_cogitate_doc_preamble_block_matches_source_constant():
     assert closing_fence
 
     assert block == COGITATE_RUNTIME_PREAMBLE.rstrip("\n")
+
+
+def test_cogitate_journal_command_vocabulary_not_retyped():
+    repo_root = Path(__file__).resolve().parents[1]
+    allowed = {
+        Path("solstone/think/cogitate_contract.py"),
+        Path("tests/test_cogitate_contract.py"),
+    }
+    roots = [repo_root / "solstone", repo_root / "scripts", repo_root / "tests"]
+    findings: list[str] = []
+    family_set = set(COGITATE_JOURNAL_COMMANDS)
+    list_markers = (
+        "identity, health, talent",
+        "{identity, health, talent}",
+        "identity|health|talent",
+    )
+
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            rel = path.relative_to(repo_root)
+            if rel in allowed:
+                continue
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text, filename=str(rel))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    if any(marker in node.value for marker in list_markers):
+                        findings.append(f"{rel}:{node.lineno}")
+                elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                    values = {
+                        elt.value
+                        for elt in node.elts
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                    }
+                    if family_set <= values:
+                        findings.append(f"{rel}:{node.lineno}")
+
+    assert findings == [], (
+        "render from `COGITATE_JOURNAL_COMMANDS` in "
+        "solstone/think/cogitate_contract.py: " + ", ".join(findings)
+    )

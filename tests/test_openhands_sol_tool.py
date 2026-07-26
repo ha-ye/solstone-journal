@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from solstone.think.cogitate_contract import cogitate_journal_command_list
 from solstone.think.cogitate_policy import CogitatePolicy
 from solstone.think.providers import local_admission, openhands
 from solstone.think.providers.local_admission import LocalSlotLease
@@ -54,6 +55,27 @@ def _isolated_lease(monkeypatch, tmp_path, *, timeout_s: float = 1.0):
         capacity=1,
         deadline=time.monotonic() + timeout_s,
         permit=permit,
+    )
+
+
+def test_sol_tool_descriptions_name_direct_journal_rule(
+    fake_openhands,
+    tmp_path,
+):
+    tool, _executor = _sol_tool_and_executor(tmp_path=tmp_path, events=[])
+    family_list = cogitate_journal_command_list()
+
+    assert tool.description == (
+        "Run one policy-approved command directly, without a shell: use "
+        "`sol`/`sol call ...` for normal journal access; run approved "
+        f"`journal` families ({family_list}) directly as "
+        "`journal <family> ...`, never prefixed with `sol` or `sol call`."
+    )
+    assert openhands.SolAction.command.description == (
+        "Single command-line invocation to run directly, without a shell: use "
+        "`sol`/`sol call ...` for normal journal access; run approved "
+        f"`journal` families ({family_list}) directly as "
+        "`journal <family> ...`, never prefixed with `sol` or `sol call`."
     )
 
 
@@ -113,6 +135,54 @@ def test_read_only_policy_deny_is_recoverable_observation(
 
     assert observation.is_error is True
     assert observation.text.startswith("policy_deny:")
+    assert executor.read_call_count == 0
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        (
+            "sol call journal identity partner",
+            "policy_deny: `sol call journal identity` is not a `sol call` verb; "
+            "`identity` is an approved host command family — run it directly as "
+            "`journal identity partner`",
+        ),
+        (
+            'journal search "partner"',
+            "policy_deny: `journal search` is not a host command; run "
+            "`sol call journal search partner` instead",
+        ),
+        (
+            "journal facet show work",
+            "policy_deny: `journal facet` is not a host command; run "
+            "`sol call journal facet show work` instead",
+        ),
+    ],
+)
+def test_policy_repair_denies_are_recoverable_without_running_command(
+    fake_openhands,
+    fixed_time,
+    tmp_path,
+    monkeypatch,
+    command,
+    reason,
+):
+    events: list[dict] = []
+    tool, executor = _sol_tool_and_executor(
+        tmp_path=tmp_path,
+        events=events,
+    )
+    monkeypatch.setattr(
+        openhands,
+        "_run_command",
+        lambda _argv: pytest.fail("denied commands must not run"),
+    )
+
+    observation = tool(tool.action_from_arguments({"command": command}))
+
+    assert observation.is_error is True
+    assert observation.text == reason
     assert executor.read_call_count == 0
     assert events == []
 

@@ -24,6 +24,7 @@ from solstone.think.cogitate_contract import (
     COGITATE_DIAGNOSTIC_PREAMBLE,
     COGITATE_READ_TOOL_NAMES,
     COGITATE_RUNTIME_PREAMBLE,
+    cogitate_journal_command_list,
 )
 from solstone.think.providers.shared import JSONEventCallback, safe_raw
 from solstone.think.utils import get_project_root, now_ms
@@ -88,10 +89,16 @@ async def _drain_line(stream: asyncio.StreamReader) -> None:
 def cogitate_sol_tool_hint(tool_name: str) -> str:
     """Return the shell-tool hint for non-write cogitate runs."""
     return (
-        "When the instructions tell you to run `sol ...` commands, invoke them "
-        f"through the `{tool_name}` tool. Example: "
-        f'`{tool_name}(command="sol call activities list")`. '
-        "Do not invent or call a tool literally named `sol`."
+        "When the instructions tell you to run `sol ...` or approved "
+        f"`journal ...` commands, invoke them through the `{tool_name}` tool. "
+        "Normal journal access uses `sol` / `sol call ...`; the approved "
+        "direct `journal` families are "
+        + cogitate_journal_command_list()
+        + " and must be run unprefixed as `journal <family> ...`. Examples: "
+        f'`{tool_name}(command="sol call activities list")`, '
+        f'`{tool_name}(command="journal identity partner")`. '
+        "Do not invent or call a tool literally named `sol`, and do not "
+        "rewrite approved `journal` commands as `sol call journal ...`."
     )
 
 

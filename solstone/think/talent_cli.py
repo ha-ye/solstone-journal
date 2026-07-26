@@ -40,6 +40,7 @@ import frontmatter
 
 from solstone.think.cogitate_contract import (
     COGITATE_ACCESS_TIERS,
+    COGITATE_JOURNAL_COMMANDS,
     COGITATE_READ_TOOL_NAMES,
     capabilities_for_access_tier,
     expects_emit_final,
@@ -471,9 +472,10 @@ def _discover_cogitate_keys() -> list[str]:
 
 def _scan_command_examples(body: str, *, cap: int = 6) -> list[str]:
     """Scan prompt body text for command examples."""
+    journal_alternation = "|".join(COGITATE_JOURNAL_COMMANDS)
     pattern = re.compile(
         r"`(?P<cmd>(?:sol\s+call\s+[^\n`]+|journal\s+"
-        r"(?:identity|health|talent)\b[^\n`]*))`"
+        rf"(?:{journal_alternation})\b[^\n`]*))`"
     )
     seen: set[str] = set()
     result: list[str] = []

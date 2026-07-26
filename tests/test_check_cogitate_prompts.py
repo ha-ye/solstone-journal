@@ -79,8 +79,7 @@ def test_bare_journal_flags_fenced_commands() -> None:
         (
             2,
             "bare-journal",
-            "forbidden `journal supervisor`; use `journal` with one of "
-            "{identity, health, talent}, or use `sol`/`sol call`",
+            f"forbidden `journal supervisor`; {ccp.JOURNAL_ALTERNATIVE}",
         )
     ]
 

@@ -75,8 +75,10 @@ class TestAssemblePrompt:
         for tool_name in ("Bash", "run_shell_command", "bash"):
             hint = cogitate_sol_tool_hint(tool_name)
             assert tool_name in hint
-            assert "Do not invent or call a tool literally named `sol`." in hint
+            assert "Do not invent or call a tool literally named `sol`" in hint
             assert 'command="sol call activities list"' in hint
+            assert 'command="journal identity partner"' in hint
+            assert "must be run unprefixed as `journal <family> ...`" in hint
 
     def test_assemble_prompt_appends_sol_tool_hint_when_provided(self):
         body, system = assemble_prompt(

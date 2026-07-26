@@ -61,18 +61,22 @@ The journal-root cwd matters operationally because the `sol` tool inherits it, b
 ## The `sol` CLI is the authoritative talent-to-journal contract
 
 A talent reaches journal functionality by emitting `sol` / `sol call ...`
-command lines. The runtime parses each tool call as one command-line invocation
-and executes that argv directly; it is not an arbitrary shell. The `sol` CLI
-handlers are the **single authoritative translation layer** between a talent and
-the journal: they turn CLI syntax into convey API calls. A talent therefore:
+command lines. The approved host command families `journal identity ...`,
+`journal health ...`, and `journal talent ...` also run directly and must not be
+prefixed with `sol` or `sol call`. The runtime parses each tool call as one
+command-line invocation and executes that argv directly; it is not an arbitrary
+shell. The CLI handlers are the **single authoritative translation layer**
+between a talent and the journal: they turn CLI syntax into journal operations.
+A talent therefore:
 
 - **never** talks to the convey HTTP API directly, and
 - **never** assumes a database, a socket, or any journal access other than the
-  `sol` CLI and the bounded raw-read tools below.
+  documented command forms and the bounded raw-read tools below.
 
-The tool call shape is `sol(command="sol call activities list")`. The command
-policy (below) constrains what may run and rejects shell composition such as
-pipes, redirects, chaining, and command substitution.
+The tool call shape is `sol(command="sol call activities list")`, or
+`sol(command="journal identity partner")` for an approved host command family.
+The command policy (below) constrains what may run and rejects shell composition
+such as pipes, redirects, chaining, and command substitution.
 
 ## Reads: domain reads vs raw evidence reads
 
@@ -103,16 +107,16 @@ default gate, and a talent never fails for reading an undeclared journal file.
 > access tier. Check the run's actual tool schema
 > (`journal talent show <name> --prompt`) for what a specific talent receives.
 
-## Writes: only through `sol` domain commands
+## Writes: only through approved journal commands
 
-A talent **writes journal state only through `sol` domain commands** (the
+A talent **writes journal state only through approved journal commands** (the
 `sol call ...` verbs for the domain it is updating, e.g.
-`sol call entities update ...`). There is **no general-purpose write tool** and no
-raw-write tier — write-class tools are denied by policy. The mechanic is
-centralized in the domain command (which routes through the convey API to the
-single write-owner for that data); a talent gets the *capability* to update a
-domain, never an arbitrary file-write path. Persistence that does not go through a
-`sol` domain command does not happen.
+`sol call entities update ...`, plus approved direct host commands when a prompt
+names one). There is **no general-purpose write tool** and no raw-write tier —
+write-class tools are denied by policy. The mechanic is centralized in the owning
+command; a talent gets the *capability* to update a domain, never an arbitrary
+file-write path. Persistence that does not go through an approved journal command
+does not happen.
 
 ## Access tiers
 
@@ -126,7 +130,7 @@ enforcement are layered on top of it.
 | `normal` | default cogitate talents | the `sol` tool (`sol` / `sol call`), the bounded raw-read tier, a finalization tool |
 | `system-read` | diagnostics boundary for scoped operational evidence | no cogitate talent claims it today (steward was demoted to a deterministic renderer + `lite` generate); the tier remains the declared diagnostics boundary and extension point, with scoped evidence arriving through a talent pre-hook rather than an extra model read tool |
 | `outbound` | comms-like talents that may submit something that leaves the machine (e.g. `support`) | the `sol` tool (`sol` / `sol call`) and a finalization tool, plus submit-capable support commands gated on per-send owner approval supplied only by a human-initiated chat launch; no raw-read tier — drafts and evidence go through `sol` domain commands |
-| `synthesis` | pure sol-surface synthesis talents (e.g. `weekly_reflection`, `partner`) whose source of record is `sol call journal` / `sol call activities`, not the raw journal tree | the `sol` tool (`sol` / `sol call`) and a finalization tool; **no raw-read tier and no submit** — same as `outbound` minus the outbound submit capability. Removing the raw-read tools keeps a synthesis talent from spelunking `chronicle/` / `talents/` / `facets/` and burning its budget instead of reaching the journal through `sol` |
+| `synthesis` | pure command-surface synthesis talents (e.g. `weekly_reflection`, `partner`) whose source of record is a documented command form, not the raw journal tree | the `sol` tool (`sol` / `sol call`, plus approved direct `journal` families when a prompt names one) and a finalization tool; **no raw-read tier and no submit** — same as `outbound` minus the outbound submit capability. Removing the raw-read tools keeps a synthesis talent from spelunking `chronicle/` / `talents/` / `facets/` and burning its budget instead of using documented commands |
 
 Policy denies support send verbs (`create`, `reply`, `attach`, `feedback`) for
 `normal` / `system-read` runs. `outbound` runs may use those verbs only when the
@@ -157,7 +161,7 @@ Every talent has exactly one finalization mode (`TALENT_FINALIZATION_MODES` in
 |---|---|---|
 | `emit_final` | scheduled / output talents (an `output_path` is set, or the schedule is `daily` / `weekly` / `activity`) | the run is accepted **only** from the `emit_final` tool; `FinishTool` is disabled; a finish with no emitted final is an error |
 | `FinishTool` | manual / no-output talents | the run signals completion through OpenHands' built-in finish tool |
-| `quiet` | side-effect-only talents | the talent has already persisted its work through `sol` domain commands and finishes with no output |
+| `quiet` | side-effect-only talents | the talent has already persisted its work through approved journal commands and finishes with no output |
 
 A manual talent's prompt should state which of these it expects so the behavior is
 explicit rather than inferred.
@@ -167,8 +171,9 @@ explicit rather than inferred.
 A talent prompt must not assume any of the following — they are named here so
 prompts can be checked against them:
 
-- **bare `journal ...` commands** (e.g. `journal identity`, `journal health`,
-  `journal navigate`) — reach the journal through `sol` / `sol call`;
+- **other bare `journal ...` families** (e.g. `journal search`, `journal facet`,
+  `journal navigate`) — reach the journal through the documented `sol` /
+  `sol call` form;
 - **raw `cat` / `ls` / arbitrary shell file reads** — use the raw-read tools when
   present, not shell file access;
 - **auto-loaded skills, `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`** — these are
@@ -191,10 +196,11 @@ verbatim text:
 You are a solstone cogitate talent running inside the live system. This runtime contract is authoritative; do not assume capabilities beyond it.
 
 - Reach the journal through the `sol` command line: emit `sol` / `sol call ...` command lines, e.g. sol(command="sol call activities list"). The runtime runs each call as a single parsed command-line invocation, not an arbitrary shell. The `sol` CLI is the one authoritative path between you and the journal; never assume direct database, socket, or HTTP access.
-- Write journal state only through `sol` domain commands (the `sol call ...` verbs for the data you own). There is no general-purpose write tool; persistence that does not go through a `sol` domain command will not happen.
+- The approved host command families are identity, health, talent; run them directly as `journal <family> ...` through the same tool, never prefixed with `sol` or `sol call`.
+- Write journal state only through approved journal commands (`sol call ...` verbs for the data you own, plus approved direct host commands when a prompt names one). There is no general-purpose write tool; persistence that does not go through an approved journal command will not happen.
 - Raw evidence reads use the provided read tools (`read_file`, `list_directory`, `glob`, `grep_search`), bounded to the journal root: a denylist (`.git`, caches, credentials, virtualenvs, `node_modules`) and per-call / per-run caps apply. Prefer `sol call` reads; use raw reads only for evidence that has no `sol` command.
 - Finalize as your run is configured: call `emit_final` when an `emit_final` tool is present; otherwise finish through the built-in finish tool; a side-effect-only talent that has already persisted its work finishes quietly with no output.
-- Do not assume tools or context you were not given: no bare `journal ...` commands, no raw `cat` / `ls` / shell file reads, no shell composition (pipes, redirects, chaining, or command substitution; one command per call), no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
+- Do not assume tools or context you were not given: no other bare `journal ...` family, no raw `cat` / `ls` / shell file reads, no shell composition (pipes, redirects, chaining, or command substitution; one command per call), no auto-loaded skills or AGENTS.md / CLAUDE.md, no browser or web access, no MCP tools, and no delegating to sub-agents. Any guidance file is a normal journal file with no special status; this contract is your source of truth.
 ```
 
 ## Where this is wired (for maintainers)
