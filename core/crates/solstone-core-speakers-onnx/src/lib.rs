@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+mod pyannote;
+mod session;
+mod wespeaker;
+
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
 
-use ort::ep::{CPU, CoreML, ExecutionProviderDispatch};
-use ort::session::Session;
-use ort::value::{Tensor, TensorElementType, ValueType};
-use solstone_core_speakers::{FeatureMatrix, WESPEAKER_EMBEDDING_SIZE, WESPEAKER_MEL_BINS};
+use solstone_core_speakers::{PYANNOTE_WINDOW_S, WESPEAKER_MEL_BINS};
 
-const INPUT_NAME: &str = "feats";
-const OUTPUT_NAME: &str = "embs";
+pub use pyannote::PyannoteSegmenter;
+pub use wespeaker::{SpeakerEmbedding, WespeakerEmbedder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformFamily {
@@ -42,32 +42,29 @@ pub enum SpeakerExecutionProvider {
     Cpu,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpeakerEmbedding {
-    values: [f32; WESPEAKER_EMBEDDING_SIZE],
-}
-
-impl SpeakerEmbedding {
-    pub fn values(&self) -> &[f32; WESPEAKER_EMBEDDING_SIZE] {
-        &self.values
-    }
-}
-
-#[derive(Debug)]
-pub struct WespeakerEmbedder {
-    session: Session,
-    input_name: String,
-    output_name: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpeakerOnnxError {
     EmptyProviderPlan,
-    ProviderUnavailable { provider: &'static str },
-    InvalidFeatureMatrix { frames: usize, bins: usize },
-    InvalidModelIo { detail: String },
-    MissingOutput { name: String },
-    Ort { message: String },
+    ProviderUnavailable {
+        provider: &'static str,
+    },
+    InvalidFeatureMatrix {
+        frames: usize,
+        bins: usize,
+    },
+    InvalidAudioWindow {
+        expected_samples: usize,
+        actual_samples: usize,
+    },
+    InvalidModelIo {
+        detail: String,
+    },
+    MissingOutput {
+        name: String,
+    },
+    Ort {
+        message: String,
+    },
 }
 
 impl fmt::Display for SpeakerOnnxError {
@@ -83,6 +80,13 @@ impl fmt::Display for SpeakerOnnxError {
             Self::InvalidFeatureMatrix { frames, bins } => write!(
                 formatter,
                 "speaker ONNX features must have at least one frame and {WESPEAKER_MEL_BINS} bins, got frames={frames} bins={bins}"
+            ),
+            Self::InvalidAudioWindow {
+                expected_samples,
+                actual_samples,
+            } => write!(
+                formatter,
+                "pyannote ONNX audio window must have {expected_samples} samples ({PYANNOTE_WINDOW_S}s at 16 kHz), got {actual_samples}"
             ),
             Self::InvalidModelIo { detail } => {
                 write!(formatter, "speaker ONNX model IO mismatch: {detail}")
@@ -117,171 +121,10 @@ pub fn default_speaker_execution_providers(
     }
 }
 
-impl WespeakerEmbedder {
-    pub fn open(
-        model_path: &Path,
-        providers: &[SpeakerExecutionProvider],
-    ) -> Result<Self, SpeakerOnnxError> {
-        if providers.is_empty() {
-            return Err(SpeakerOnnxError::EmptyProviderPlan);
-        }
-        let dispatches = provider_dispatches(providers)?;
-        let session = Session::builder()?
-            .with_execution_providers(dispatches)?
-            .commit_from_file(model_path)?;
-        validate_session_io(&session)?;
-        Ok(Self {
-            session,
-            input_name: INPUT_NAME.to_string(),
-            output_name: OUTPUT_NAME.to_string(),
-        })
-    }
-
-    pub fn embed(
-        &mut self,
-        features: &FeatureMatrix,
-    ) -> Result<SpeakerEmbedding, SpeakerOnnxError> {
-        if features.frames() == 0 || features.bins() != WESPEAKER_MEL_BINS {
-            return Err(SpeakerOnnxError::InvalidFeatureMatrix {
-                frames: features.frames(),
-                bins: features.bins(),
-            });
-        }
-        let input = Tensor::from_array((
-            [1_usize, features.frames(), WESPEAKER_MEL_BINS],
-            features.data().to_vec().into_boxed_slice(),
-        ))?;
-        let mut outputs = self
-            .session
-            .run(ort::inputs![self.input_name.as_str() => input])?;
-        let output =
-            outputs
-                .remove(&self.output_name)
-                .ok_or_else(|| SpeakerOnnxError::MissingOutput {
-                    name: self.output_name.clone(),
-                })?;
-        let (shape, values) = output.try_extract_tensor::<f32>()?;
-        if shape[..] != [1, WESPEAKER_EMBEDDING_SIZE as i64] {
-            return Err(SpeakerOnnxError::InvalidModelIo {
-                detail: format!("output shape {shape} is not [1, {WESPEAKER_EMBEDDING_SIZE}]"),
-            });
-        }
-        let mut embedding = [0.0; WESPEAKER_EMBEDDING_SIZE];
-        embedding.copy_from_slice(values);
-        Ok(SpeakerEmbedding { values: embedding })
-    }
-}
-
-fn provider_dispatches(
-    providers: &[SpeakerExecutionProvider],
-) -> Result<Vec<ExecutionProviderDispatch>, SpeakerOnnxError> {
-    let mut dispatches = Vec::with_capacity(providers.len());
-    for provider in providers {
-        match provider {
-            SpeakerExecutionProvider::CoreMl => {
-                if !cfg!(target_vendor = "apple") {
-                    return Err(SpeakerOnnxError::ProviderUnavailable { provider: "coreml" });
-                }
-                dispatches.push(CoreML::default().build());
-            }
-            SpeakerExecutionProvider::Cpu => {
-                dispatches.push(CPU::default().build());
-            }
-        }
-    }
-    Ok(dispatches)
-}
-
-fn validate_session_io(session: &Session) -> Result<(), SpeakerOnnxError> {
-    let inputs = session.inputs();
-    let outputs = session.outputs();
-    if inputs.len() != 1 {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("expected one input, got {}", inputs.len()),
-        });
-    }
-    if outputs.len() != 1 {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("expected one output, got {}", outputs.len()),
-        });
-    }
-    expect_tensor(
-        "input",
-        inputs[0].name(),
-        inputs[0].dtype(),
-        INPUT_NAME,
-        &[
-            ExpectedDim::Any,
-            ExpectedDim::Any,
-            ExpectedDim::Exact(WESPEAKER_MEL_BINS as i64),
-        ],
-    )?;
-    expect_tensor(
-        "output",
-        outputs[0].name(),
-        outputs[0].dtype(),
-        OUTPUT_NAME,
-        &[
-            ExpectedDim::Any,
-            ExpectedDim::Exact(WESPEAKER_EMBEDDING_SIZE as i64),
-        ],
-    )?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExpectedDim {
-    Any,
-    Exact(i64),
-}
-
-fn expect_tensor(
-    label: &str,
-    name: &str,
-    value_type: &ValueType,
-    expected_name: &str,
-    expected_shape: &[ExpectedDim],
-) -> Result<(), SpeakerOnnxError> {
-    if name != expected_name {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("{label} name {name:?} is not {expected_name:?}"),
-        });
-    }
-    let ValueType::Tensor { ty, shape, .. } = value_type else {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("{label} {name:?} is not a tensor"),
-        });
-    };
-    if *ty != TensorElementType::Float32 {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("{label} {name:?} is {ty}, not float32"),
-        });
-    }
-    if shape.len() != expected_shape.len() {
-        return Err(SpeakerOnnxError::InvalidModelIo {
-            detail: format!("{label} {name:?} shape {shape} has wrong rank"),
-        });
-    }
-    for (index, (actual, expected)) in shape.iter().zip(expected_shape).enumerate() {
-        match expected {
-            ExpectedDim::Any => {}
-            ExpectedDim::Exact(value) if actual == value => {}
-            ExpectedDim::Exact(value) => {
-                return Err(SpeakerOnnxError::InvalidModelIo {
-                    detail: format!("{label} {name:?} dim {index} is {actual}, not {value}"),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solstone_core_speakers::{WESPEAKER_SAMPLE_RATE_HZ, compute_wespeaker_filterbank_cmn};
-
-    const FIXTURE: &str = include_str!("../../../fixtures/speaker_filterbank.json");
+    use crate::test_support::source_tree_needle_count;
 
     #[test]
     fn provider_plan_selects_coreml_then_cpu_for_synthetic_apple() {
@@ -308,51 +151,34 @@ mod tests {
     }
 
     #[test]
-    fn coreml_provider_open_is_rejected_on_non_apple_builds() {
-        if cfg!(target_vendor = "apple") {
-            return;
-        }
-        let error = provider_dispatches(&[SpeakerExecutionProvider::CoreMl]).unwrap_err();
-        assert_eq!(
-            error,
-            SpeakerOnnxError::ProviderUnavailable { provider: "coreml" }
-        );
-    }
-
-    #[test]
-    fn committed_wespeaker_model_accepts_fixture_features_and_returns_256_floats() {
-        let fixture = fixture();
-        let audio = decode_waveform(&fixture);
-        let features =
-            compute_wespeaker_filterbank_cmn(&audio, WESPEAKER_SAMPLE_RATE_HZ).expect("features");
-        let model_path = repo_root().join(
-            "packages/solstone-journal-models/solstone_journal_models/assets/wespeaker-resnet34-256.onnx",
-        );
-        let mut embedder = WespeakerEmbedder::open(&model_path, &[SpeakerExecutionProvider::Cpu])
-            .expect("embedder");
-
-        let embedding = embedder.embed(&features).expect("embedding");
-
-        assert_eq!(embedding.values().len(), WESPEAKER_EMBEDDING_SIZE);
-        assert!(embedding.values().iter().all(|value| value.is_finite()));
-    }
-
-    #[test]
-    fn session_builder_has_single_production_site() {
-        let source = include_str!("lib.rs");
+    fn session_builder_has_single_production_site_scans_src_tree() {
         let needle = concat!("Session", "::builder()?");
-        assert_eq!(source.matches(needle).count(), 1);
-    }
+        let (visited_files, count) = source_tree_needle_count(needle);
 
-    fn repo_root() -> std::path::PathBuf {
+        assert!(
+            visited_files >= 4,
+            "source walk visited too few Rust files: {visited_files}"
+        );
+        assert_eq!(count, 1);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use serde_json::Value;
+    use std::path::{Path, PathBuf};
+
+    pub(crate) const FIXTURE: &str = include_str!("../../../fixtures/speaker_filterbank.json");
+
+    pub(crate) fn repo_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
     }
 
-    fn fixture() -> serde_json::Value {
+    pub(crate) fn fixture() -> Value {
         serde_json::from_str(FIXTURE).expect("fixture JSON")
     }
 
-    fn decode_waveform(fixture: &serde_json::Value) -> Vec<f32> {
+    pub(crate) fn decode_waveform(fixture: &Value) -> Vec<f32> {
         let encoded = fixture["waveform"]["samples_f32_le_base64"]
             .as_str()
             .expect("waveform base64");
@@ -363,7 +189,7 @@ mod tests {
             .collect()
     }
 
-    fn decode_base64(input: &str) -> Vec<u8> {
+    pub(crate) fn decode_base64(input: &str) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len() / 4 * 3);
         let mut quartet = [0_u8; 4];
         let mut len = 0;
@@ -391,5 +217,35 @@ mod tests {
         }
         assert_eq!(len, 0);
         out
+    }
+
+    pub(crate) fn source_tree_needle_count(needle: &str) -> (usize, usize) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rust_files(&src, &mut files);
+        let count = files
+            .iter()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+                    .matches(needle)
+                    .count()
+            })
+            .sum();
+        (files.len(), count)
+    }
+
+    fn collect_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+        {
+            let entry = entry.expect("directory entry");
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_files(&path, files);
+            } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
     }
 }
