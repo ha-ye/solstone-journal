@@ -130,7 +130,7 @@ global code that is not referenced by any operation is staleness only.
 Provider-readiness/runtime reason registries are separate string registries:
 `READINESS_REASON_CODES` and `REASON_CODES` live at
 `solstone/think/providers/state.py:33-47`, runtime codes live at
-`solstone/think/providers/shared.py:213-225`, and readiness presentation lives
+`solstone/think/providers/shared.py:250-269`, and readiness presentation lives
 at `solstone/convey/provider_readiness.py:83-299`. None of the 14 fragments
 should import those registries.
 

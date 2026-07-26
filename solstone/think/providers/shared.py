@@ -210,6 +210,8 @@ def _chain_has_status_code(exc: BaseException, code: int) -> bool:
 
 
 def mark_cloud_model_request(exc: BaseException) -> None:
+    # OpenHands may classify __cause__/__context__ via _unwrap_provider_exception,
+    # so marking only the caught wrapper would lose transport provenance.
     for item in exception_chain(exc):
         try:
             setattr(item, _CLOUD_MODEL_REQUEST_ATTR, True)
@@ -724,7 +726,6 @@ __all__ = [
     "classify_canned_generate",
     "classify_provider_error",
     "exception_chain",
-    "has_cloud_model_request_mark",
     "is_cloud_model_not_found",
     "mark_cloud_model_request",
     "safe_raw",
