@@ -94,7 +94,7 @@ def test_operation_error_carries_only_closed_fields() -> None:
     exc = probe_records.ProbeOperationError(
         probe_contract.STABLE_ERROR_STALE_ATTEMPT,
         attempt_id=ATTEMPT_ID,
-        record_kind=probe_contract.RECORD_KIND_PROOF_TERMINAL,
+        record_type=probe_contract.RECORD_TYPE_PROOF_TERMINAL,
         proof=probe_contract.CAPABILITY_ORDER[0],
     )
     assert str(exc) == probe_contract.STABLE_ERROR_STALE_ATTEMPT

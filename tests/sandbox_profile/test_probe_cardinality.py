@@ -105,7 +105,7 @@ def test_writer_enforces_contact_and_proof_order(tmp_path) -> None:
             writer.assert_contact_allowed(selected[1])
         assert excinfo.value.code == probe_contract.STABLE_ERROR_INTERNAL_ERROR
         with pytest.raises(probe_records.ProbeOperationError):
-            writer.write_attempt_terminal(duration_ms=1)
+            writer.write_attempt_terminal()
 
         with pytest.raises(probe_records.ProbeOperationError):
             writer.write_proof_terminal(

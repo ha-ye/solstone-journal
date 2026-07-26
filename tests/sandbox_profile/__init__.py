@@ -140,7 +140,6 @@ def terminal_record(
     run_id: str = RUN_ID,
     attempt_id: str = ATTEMPT_ID,
     proofs: list[dict[str, object]] | None = None,
-    duration_ms: int = 1,
 ) -> dict[str, object]:
     proof_records = [
         probe_records.validate_proof_terminal_payload(proof)
@@ -150,7 +149,6 @@ def terminal_record(
         run_id=run_id,
         attempt_id=attempt_id,
         proofs=proof_records,
-        duration_ms=duration_ms,
         finished_at=FIXED_TS,
     ).to_json_obj()
 

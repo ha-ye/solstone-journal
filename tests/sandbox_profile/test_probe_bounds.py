@@ -39,8 +39,8 @@ def test_malformed_framing_precedes_attempt_count_bound(tmp_path) -> None:
     path = probe_contract.probe_ledger_path(journal)
     path.parent.mkdir(parents=True)
     start = {
-        "record_kind": probe_contract.RECORD_KIND_ATTEMPT_STARTED,
         "attempt_id": _attempt_id(0),
+        "type": probe_contract.RECORD_TYPE_ATTEMPT_STARTED,
     }
     lines = [
         json.dumps({**start, "attempt_id": _attempt_id(index)})

@@ -28,21 +28,21 @@ class ProbeOperationError(RuntimeError):
         code: str,
         *,
         attempt_id: str | None = None,
-        record_kind: str | None = None,
+        record_type: str | None = None,
         proof: str | None = None,
     ) -> None:
         if code not in contract.STABLE_ERRORS:
             raise ValueError("invalid stable error code")
         if attempt_id is not None:
             validate_canonical_uuid(attempt_id)
-        if record_kind is not None and record_kind not in contract.RECORD_KINDS:
-            raise ValueError("invalid record kind")
+        if record_type is not None and record_type not in contract.RECORD_TYPES:
+            raise ValueError("invalid record type")
         if proof is not None and proof not in contract.CAPABILITY_ORDER:
             raise ValueError("invalid proof")
         super().__init__(code)
         self.code = code
         self.attempt_id = attempt_id
-        self.record_kind = record_kind
+        self.record_type = record_type
         self.proof = proof
 
 
@@ -50,13 +50,13 @@ def raise_probe_error(
     code: str,
     *,
     attempt_id: str | None = None,
-    record_kind: str | None = None,
+    record_type: str | None = None,
     proof: str | None = None,
 ) -> NoReturn:
     raise ProbeOperationError(
         code,
         attempt_id=attempt_id,
-        record_kind=record_kind,
+        record_type=record_type,
         proof=proof,
     ) from None
 
@@ -75,7 +75,7 @@ class AttemptStartedRecord:
             "attempt_id": self.attempt_id,
             "contract_version": self.contract_version,
             "execution_order": list(self.execution_order),
-            "record_kind": contract.RECORD_KIND_ATTEMPT_STARTED,
+            "type": contract.RECORD_TYPE_ATTEMPT_STARTED,
             "run_id": self.run_id,
             "selected": list(self.selected),
             "started_at": self.started_at,
@@ -105,7 +105,7 @@ class ProofTerminalRecord:
             "finished_at": self.finished_at,
             "proof": self.proof,
             "reason": self.reason,
-            "record_kind": contract.RECORD_KIND_PROOF_TERMINAL,
+            "type": contract.RECORD_TYPE_PROOF_TERMINAL,
             "run_id": self.run_id,
             "state": self.state,
         }
@@ -117,18 +117,16 @@ class AttemptTerminalRecord:
     run_id: str
     attempt_id: str
     state: str
-    reason: str | None
-    duration_ms: int
+    terminal_reason: str | None
     finished_at: str
 
     def to_json_obj(self) -> dict[str, object]:
         return {
             "attempt_id": self.attempt_id,
             "contract_version": self.contract_version,
-            "duration_ms": self.duration_ms,
             "finished_at": self.finished_at,
-            "reason": self.reason,
-            "record_kind": contract.RECORD_KIND_ATTEMPT_TERMINAL,
+            "terminal_reason": self.terminal_reason,
+            "type": contract.RECORD_TYPE_ATTEMPT_TERMINAL,
             "run_id": self.run_id,
             "state": self.state,
         }
@@ -275,17 +273,15 @@ def build_attempt_terminal_record(
     run_id: str,
     attempt_id: str,
     proofs: Sequence[ProofTerminalRecord],
-    duration_ms: int,
     finished_at: str | None = None,
 ) -> AttemptTerminalRecord:
-    state, reason = derive_attempt_terminal(proofs)
+    state, terminal_reason = derive_attempt_terminal(proofs)
     return AttemptTerminalRecord(
         contract_version=contract.CONTRACT_VERSION,
         run_id=validate_canonical_uuid(run_id),
         attempt_id=validate_canonical_uuid(attempt_id),
         state=state,
-        reason=reason,
-        duration_ms=validate_non_negative_int(duration_ms),
+        terminal_reason=terminal_reason,
         finished_at=validate_timestamp(finished_at or utc_timestamp_ms()),
     )
 
@@ -299,15 +295,15 @@ def validate_attempt_started_payload(
             "attempt_id",
             "contract_version",
             "execution_order",
-            "record_kind",
+            "type",
             "run_id",
             "selected",
             "started_at",
         },
     )
     _validate_contract_version(payload.get("contract_version"))
-    if payload.get("record_kind") != contract.RECORD_KIND_ATTEMPT_STARTED:
-        raise ProbeRecordValidationError("wrong record kind")
+    if payload.get("type") != contract.RECORD_TYPE_ATTEMPT_STARTED:
+        raise ProbeRecordValidationError("wrong record type")
     selected = validate_selected(payload.get("selected"))
     return AttemptStartedRecord(
         contract_version=contract.CONTRACT_VERSION,
@@ -335,14 +331,14 @@ def validate_proof_terminal_payload(
             "finished_at",
             "proof",
             "reason",
-            "record_kind",
+            "type",
             "run_id",
             "state",
         },
     )
     _validate_contract_version(payload.get("contract_version"))
-    if payload.get("record_kind") != contract.RECORD_KIND_PROOF_TERMINAL:
-        raise ProbeRecordValidationError("wrong record kind")
+    if payload.get("type") != contract.RECORD_TYPE_PROOF_TERMINAL:
+        raise ProbeRecordValidationError("wrong record type")
     record = ProofTerminalRecord(
         contract_version=contract.CONTRACT_VERSION,
         run_id=validate_canonical_uuid(payload.get("run_id")),
@@ -367,19 +363,21 @@ def validate_attempt_terminal_payload(
         {
             "attempt_id",
             "contract_version",
-            "duration_ms",
             "finished_at",
-            "reason",
-            "record_kind",
+            "terminal_reason",
+            "type",
             "run_id",
             "state",
         },
     )
     _validate_contract_version(payload.get("contract_version"))
-    if payload.get("record_kind") != contract.RECORD_KIND_ATTEMPT_TERMINAL:
-        raise ProbeRecordValidationError("wrong record kind")
-    reason = payload.get("reason")
-    if reason is not None and reason not in contract.ATTEMPT_TERMINAL_REASONS:
+    if payload.get("type") != contract.RECORD_TYPE_ATTEMPT_TERMINAL:
+        raise ProbeRecordValidationError("wrong record type")
+    terminal_reason = payload.get("terminal_reason")
+    if (
+        terminal_reason is not None
+        and terminal_reason not in contract.ATTEMPT_TERMINAL_REASONS
+    ):
         raise ProbeRecordValidationError("invalid attempt terminal reason")
     state = _validate_str(payload.get("state"), "state")
     if state not in contract.ATTEMPT_TERMINAL_STATES:
@@ -389,8 +387,7 @@ def validate_attempt_terminal_payload(
         run_id=validate_canonical_uuid(payload.get("run_id")),
         attempt_id=validate_canonical_uuid(payload.get("attempt_id")),
         state=state,
-        reason=reason,
-        duration_ms=validate_non_negative_int(payload.get("duration_ms")),
+        terminal_reason=terminal_reason,
         finished_at=validate_timestamp(payload.get("finished_at")),
     )
 
@@ -470,11 +467,11 @@ def attempt_terminal_retry_permitted(
     terminal: AttemptTerminalRecord,
     proofs: Sequence[ProofTerminalRecord],
 ) -> bool:
-    if terminal.state == contract.ATTEMPT_STATE_OK and terminal.reason is None:
+    if terminal.state == contract.ATTEMPT_STATE_OK and terminal.terminal_reason is None:
         return True
     if (
         terminal.state == contract.ATTEMPT_STATE_DEGRADED
-        and terminal.reason == contract.ATTEMPT_TERMINAL_REASON_PROOF_FAILED
+        and terminal.terminal_reason == contract.ATTEMPT_TERMINAL_REASON_PROOF_FAILED
     ):
         return all(
             proof.cleanup_state
@@ -492,7 +489,7 @@ def validate_attempt_terminal_matches(
     proofs: Sequence[ProofTerminalRecord],
 ) -> None:
     expected_state, expected_reason = derive_attempt_terminal(proofs)
-    if terminal.state != expected_state or terminal.reason != expected_reason:
+    if terminal.state != expected_state or terminal.terminal_reason != expected_reason:
         raise ProbeRecordValidationError("attempt terminal does not match proof rows")
 
 

@@ -73,7 +73,7 @@ class ProbeAttemptWriter:
                 contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
             )
         self._append_record(
-            record.to_json_obj(), record_kind=contract.RECORD_KIND_PROOF_TERMINAL
+            record.to_json_obj(), record_type=contract.RECORD_TYPE_PROOF_TERMINAL
         )
         self._proofs.append(record)
         self._next_proof_index += 1
@@ -82,7 +82,6 @@ class ProbeAttemptWriter:
     def write_attempt_terminal(
         self,
         *,
-        duration_ms: int,
         finished_at: str | None = None,
     ) -> None:
         self._raise_if_poisoned()
@@ -94,17 +93,16 @@ class ProbeAttemptWriter:
                 run_id=self.start.run_id,
                 attempt_id=self.start.attempt_id,
                 proofs=self._proofs,
-                duration_ms=duration_ms,
                 finished_at=finished_at,
             )
         except probe_records.ProbeRecordValidationError:
             probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
         self._append_record(
-            record.to_json_obj(), record_kind=contract.RECORD_KIND_ATTEMPT_TERMINAL
+            record.to_json_obj(), record_type=contract.RECORD_TYPE_ATTEMPT_TERMINAL
         )
         self._terminal_written = True
 
-    def _append_record(self, record: dict[str, object], *, record_kind: str) -> None:
+    def _append_record(self, record: dict[str, object], *, record_type: str) -> None:
         try:
             probe_durability.append_jsonl_strict(self.slot.ledger_path, record)
         except probe_records.ProbeOperationError as exc:
@@ -113,7 +111,7 @@ class ProbeAttemptWriter:
             probe_records.raise_probe_error(
                 exc.code,
                 attempt_id=self.start.attempt_id,
-                record_kind=record_kind,
+                record_type=record_type,
             )
 
     def _raise_if_poisoned(self) -> None:
@@ -174,6 +172,6 @@ def begin_probe_attempt(
         probe_records.raise_probe_error(
             exc.code,
             attempt_id=start.attempt_id,
-            record_kind=contract.RECORD_KIND_ATTEMPT_STARTED,
+            record_type=contract.RECORD_TYPE_ATTEMPT_STARTED,
         )
     return ProbeAttemptWriter(slot=slot, start=start, attempt_dir=attempt_dir)

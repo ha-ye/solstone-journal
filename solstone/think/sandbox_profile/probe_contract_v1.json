@@ -151,7 +151,7 @@
       ]
     }
   },
-  "record_kinds": [
+  "record_types": [
     "attempt_started",
     "proof_terminal",
     "attempt_terminal"

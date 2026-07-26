@@ -66,7 +66,7 @@ def test_operation_error_optional_fields_reject_free_text() -> None:
     with pytest.raises(ValueError):
         probe_records.ProbeOperationError(
             probe_contract.STABLE_ERROR_INTERNAL_ERROR,
-            record_kind="recognizable-secret-probe-token",
+            record_type="recognizable-secret-probe-token",
         )
     with pytest.raises(ValueError):
         probe_records.ProbeOperationError(

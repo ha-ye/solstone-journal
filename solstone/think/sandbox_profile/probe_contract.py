@@ -39,13 +39,13 @@ ATTEMPT_DIR_MODE = 0o700
 MAX_ATTEMPTS = 64
 MAX_LEDGER_BYTES = 1_048_576
 
-RECORD_KIND_ATTEMPT_STARTED = "attempt_started"
-RECORD_KIND_PROOF_TERMINAL = "proof_terminal"
-RECORD_KIND_ATTEMPT_TERMINAL = "attempt_terminal"
-RECORD_KINDS: tuple[str, ...] = (
-    RECORD_KIND_ATTEMPT_STARTED,
-    RECORD_KIND_PROOF_TERMINAL,
-    RECORD_KIND_ATTEMPT_TERMINAL,
+RECORD_TYPE_ATTEMPT_STARTED = "attempt_started"
+RECORD_TYPE_PROOF_TERMINAL = "proof_terminal"
+RECORD_TYPE_ATTEMPT_TERMINAL = "attempt_terminal"
+RECORD_TYPES: tuple[str, ...] = (
+    RECORD_TYPE_ATTEMPT_STARTED,
+    RECORD_TYPE_PROOF_TERMINAL,
+    RECORD_TYPE_ATTEMPT_TERMINAL,
 )
 
 PROOF_STATE_PASSED = "passed"
@@ -286,6 +286,6 @@ def contract_payload() -> dict[str, object]:
             }
             for proof in CAPABILITY_ORDER
         },
-        "record_kinds": list(RECORD_KINDS),
+        "record_types": list(RECORD_TYPES),
         "stable_errors": list(STABLE_ERRORS),
     }

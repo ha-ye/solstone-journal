@@ -85,6 +85,68 @@ def test_replay_rejects_unknown_fields(tmp_path) -> None:
     _assert_stale(journal)
 
 
+def test_replay_rejects_retired_discriminator_field(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    retired_key = "record_kind"
+    records[0][retired_key] = records[0].pop("type")
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_old_attempt_terminal_reason_field(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    records[-1]["reason"] = records[-1]["terminal_reason"]
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_old_attempt_terminal_duration_field(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    records[-1]["duration_ms"] = 1
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_missing_type(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    del records[0]["type"]
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_missing_terminal_reason(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    del records[-1]["terminal_reason"]
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_mixed_old_and_new_rows(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    write_attempt_dir(journal)
+    records = complete_attempt_records()
+    retired_key = "record_kind"
+    records[1][retired_key] = records[1].pop("type")
+    write_ledger(journal, records)
+
+    _assert_stale(journal)
+
+
 def test_replay_rejects_trailing_bytes_invalid_utf8_and_invalid_json(tmp_path) -> None:
     journal = tmp_path / "journal"
     write_attempt_dir(journal)
@@ -107,3 +169,4 @@ def test_replay_rejects_non_object_json(tmp_path) -> None:
     path.write_text("[]\n", encoding="utf-8")
 
     _assert_stale(journal)
+

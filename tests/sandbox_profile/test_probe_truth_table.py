@@ -101,7 +101,7 @@ def test_all_passed_maps_to_ok_null() -> None:
 
 
 def test_record_write_failed_is_not_a_record_reason_or_state() -> None:
-    flat_values = set(probe_contract.RECORD_KINDS)
+    flat_values = set(probe_contract.RECORD_TYPES)
     flat_values.update(probe_contract.PROOF_TERMINAL_STATES)
     flat_values.update(probe_contract.ATTEMPT_TERMINAL_STATES)
     flat_values.update(probe_contract.PROOF_REASON_POOL)
