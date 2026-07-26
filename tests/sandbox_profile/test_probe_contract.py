@@ -7,7 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from solstone.think.sandbox_profile import manifest, probe_contract
+from solstone.think.sandbox_profile import manifest, probe_contract, probe_records
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "build_sandbox_probe_contract.py"
@@ -132,6 +132,36 @@ def test_probe_contract_ignores_manifest_monkeypatch(monkeypatch) -> None:
     )
 
     assert probe_contract.contract_payload() == before
+
+
+def test_contract_payload_top_level_keys_are_pinned() -> None:
+    assert set(probe_contract.contract_payload()) == {
+        "attempt_terminal_reasons",
+        "attempt_terminal_states",
+        "cancellation",
+        "capability_order",
+        "cleanup_resolution",
+        "cleanup_states",
+        "common_reasons",
+        "contract_version",
+        "limits",
+        "not_run_reasons",
+        "predicate_keys",
+        "proof_reason_pool",
+        "proof_terminal_rules",
+        "proof_terminal_states",
+        "proofs",
+        "record_cardinality",
+        "record_fields",
+        "record_types",
+        "retry_eligible_terminals",
+        "stable_errors",
+        "terminal_derivation",
+    }
+
+
+def test_probe_predicate_registry_matches_contract() -> None:
+    assert tuple(probe_records.PREDICATE_REGISTRY) == probe_contract.PREDICATE_KEYS
 
 
 def test_contract_artifact_matches_constants() -> None:

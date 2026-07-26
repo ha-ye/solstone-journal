@@ -30,10 +30,9 @@ def replay_probe_ledger(journal_path: Path) -> probe_records.ProbeReplay:
     journal = Path(journal_path)
     ledger_path = contract.probe_ledger_path(journal)
     raw_payloads = _read_framed_payloads(ledger_path)
+    attempt_count_type = contract.RECORD_CARDINALITY["attempt_count_type"]
     attempt_count = sum(
-        1
-        for payload in raw_payloads
-        if payload.get("type") == contract.RECORD_TYPE_ATTEMPT_STARTED
+        1 for payload in raw_payloads if payload.get("type") == attempt_count_type
     )
     if attempt_count >= contract.MAX_ATTEMPTS:
         probe_records.raise_probe_error(contract.STABLE_ERROR_ATTEMPT_LIMIT_REACHED)

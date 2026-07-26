@@ -11,6 +11,18 @@
     "cancelled",
     "error"
   ],
+  "cancellation": {
+    "first_started_predicate": "cancellation.first_failed_cancelled_after_contact",
+    "first_unstarted_predicate": "cancellation.first_not_run_cancelled_without_contact",
+    "later_proof": {
+      "checks": [],
+      "cleanup_state": "verified",
+      "duration_ms": null,
+      "reason": "cancelled",
+      "state": "not_run"
+    },
+    "suffix_predicate": "cancellation.contiguous_not_run_cancelled_suffix"
+  },
   "capability_order": [
     "scout",
     "spl",
@@ -18,6 +30,21 @@
     "spp",
     "runtime"
   ],
+  "cleanup_resolution": {
+    "declared_defaults": {
+      "runtime": "retained_synthetic",
+      "scout": "verified",
+      "spb": "retained_synthetic",
+      "spl": "retained_synthetic",
+      "spp": "verified"
+    },
+    "reason_overrides": {
+      "cleanup_unverified": "unverified"
+    },
+    "state_overrides": {
+      "not_run": "verified"
+    }
+  },
   "cleanup_states": [
     "verified",
     "retained_synthetic",
@@ -38,6 +65,26 @@
     "dependency_failed",
     "cancelled"
   ],
+  "predicate_keys": [
+    "checks.complete",
+    "checks.ordered_prefix",
+    "checks.empty",
+    "reason.null",
+    "reason.failed_specific_or_common",
+    "reason.not_run",
+    "duration.non_negative_int",
+    "duration.null",
+    "cleanup.expected_for_proof_state_reason",
+    "terminal.any_cleanup_unverified",
+    "terminal.any_reason_cancelled",
+    "terminal.any_reason_internal_error",
+    "terminal.any_failed_proof",
+    "terminal.all_passed",
+    "retry.all_cleanup_closed",
+    "cancellation.first_failed_cancelled_after_contact",
+    "cancellation.first_not_run_cancelled_without_contact",
+    "cancellation.contiguous_not_run_cancelled_suffix"
+  ],
   "proof_reason_pool": [
     "capability_not_ready",
     "deadline_exceeded",
@@ -49,6 +96,31 @@
     "runtime_unavailable",
     "cadence_contract_mismatch"
   ],
+  "proof_terminal_rules": {
+    "failed": {
+      "checks": "checks.ordered_prefix",
+      "cleanup_state": "cleanup.expected_for_proof_state_reason",
+      "duration_ms": "duration.non_negative_int",
+      "failed_common_reasons": [
+        "cancelled",
+        "cleanup_unverified",
+        "internal_error"
+      ],
+      "reason": "reason.failed_specific_or_common"
+    },
+    "not_run": {
+      "checks": "checks.empty",
+      "cleanup_state": "cleanup.expected_for_proof_state_reason",
+      "duration_ms": "duration.null",
+      "reason": "reason.not_run"
+    },
+    "passed": {
+      "checks": "checks.complete",
+      "cleanup_state": "cleanup.expected_for_proof_state_reason",
+      "duration_ms": "duration.non_negative_int",
+      "reason": "reason.null"
+    }
+  },
   "proof_terminal_states": [
     "passed",
     "failed",
@@ -151,10 +223,75 @@
       ]
     }
   },
+  "record_cardinality": {
+    "attempt_count_type": "attempt_started",
+    "attempt_sequence": [
+      {
+        "count": 1,
+        "position": "first",
+        "type": "attempt_started"
+      },
+      {
+        "count": "len(execution_order)",
+        "order": "execution_order",
+        "type": "proof_terminal"
+      },
+      {
+        "count": 1,
+        "position": "last",
+        "type": "attempt_terminal"
+      }
+    ]
+  },
+  "record_fields": {
+    "attempt_started": [
+      "attempt_id",
+      "contract_version",
+      "execution_order",
+      "run_id",
+      "selected",
+      "started_at",
+      "type"
+    ],
+    "attempt_terminal": [
+      "attempt_id",
+      "contract_version",
+      "finished_at",
+      "run_id",
+      "state",
+      "terminal_reason",
+      "type"
+    ],
+    "proof_terminal": [
+      "attempt_id",
+      "checks",
+      "cleanup_state",
+      "contract_version",
+      "duration_ms",
+      "finished_at",
+      "proof",
+      "reason",
+      "run_id",
+      "state",
+      "type"
+    ]
+  },
   "record_types": [
     "attempt_started",
     "proof_terminal",
     "attempt_terminal"
+  ],
+  "retry_eligible_terminals": [
+    {
+      "proofs": null,
+      "state": "ok",
+      "terminal_reason": null
+    },
+    {
+      "proofs": "retry.all_cleanup_closed",
+      "state": "degraded",
+      "terminal_reason": "proof_failed"
+    }
   ],
   "stable_errors": [
     "probe_active",
@@ -162,5 +299,32 @@
     "stale_attempt",
     "record_write_failed",
     "internal_error"
+  ],
+  "terminal_derivation": [
+    {
+      "predicate": "terminal.any_cleanup_unverified",
+      "state": "degraded",
+      "terminal_reason": "cleanup_unverified"
+    },
+    {
+      "predicate": "terminal.any_reason_cancelled",
+      "state": "cancelled",
+      "terminal_reason": "cancelled"
+    },
+    {
+      "predicate": "terminal.any_reason_internal_error",
+      "state": "error",
+      "terminal_reason": "internal_error"
+    },
+    {
+      "predicate": "terminal.any_failed_proof",
+      "state": "degraded",
+      "terminal_reason": "proof_failed"
+    },
+    {
+      "predicate": "terminal.all_passed",
+      "state": "ok",
+      "terminal_reason": null
+    }
   ]
 }
