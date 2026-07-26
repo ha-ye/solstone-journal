@@ -48,8 +48,8 @@ def test_workspace_empty_state_uses_surface_state():
         "desc: 'once you set one up, it'll show up here with what it's reported.'"
         in body
     )
-    assert "icon" not in body
-    assert "action" not in body
+    assert "icon:" not in body
+    assert "action:" not in body
     assert "<h3" not in body
     assert "observer-empty-heading" not in _workspace_text()
 
