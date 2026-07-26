@@ -2442,7 +2442,7 @@ window.AppServices = {
         <div class="notification-body">
           <div class="notification-title">${window.AppServices.escapeHtml(n.title)}</div>
           ${n.message ? `<div class="notification-message">${window.AppServices.escapeHtml(n.message)}</div>` : ''}
-          ${n.badge ? `<span class="notification-badge">${n.badge}</span>` : ''}
+          ${n.badge ? `<span class="notification-badge">${window.AppServices.escapeHtml(n.badge)}</span>` : ''}
 	        </div>
 	        <div class="notification-footer">
 	          <span class="notification-time">${relativeTime}</span>

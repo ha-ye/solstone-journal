@@ -98,8 +98,9 @@ def _run_notifications_script(body: str) -> None:
         "const notifications = vm.runInContext('(' + notificationsSource + ')', context, { filename: 'notifications-object.js' });\n"
         "window.AppServices.notifications = notifications;\n"
         "function assertNoPayload(html) {\n"
-        "  assert(!String(html).includes('<img'), 'raw image tag should not render');\n"
-        "  assert(!String(html).includes('onerror'), 'raw event handler should not render');\n"
+        "  const text = String(html);\n"
+        "  assert(!text.includes('<img'), 'raw image tag should not render');\n"
+        "  assert(!/<[^>]*\\sonerror\\s*=/.test(text), 'raw event handler should not render');\n"
         "}\n"
         "function makeElement(tagName = 'div') {\n"
         "  const el = {\n"
@@ -196,6 +197,17 @@ def test_notification_icons_resolve_safely_and_browser_payload_has_no_icon():
         "assert(browserCalls[0].options.body === 'Browser body', 'browser body should be delivered');\n"
         "assert(browserCalls[0].options.tag === 'system-2', 'browser tag should be delivered');\n"
         "assert(!Object.prototype.hasOwnProperty.call(browserCalls[0].options, 'icon'), 'browser notification should not receive icon');\n"
+    )
+
+
+def test_notification_badge_escapes_initial_card_markup():
+    _run_notifications_script(
+        "context.document = { createElement: makeElement };\n"
+        "const payload = '<img src=x onerror=alert(1)>';\n"
+        "const card = notifications._createCard({id: 7, app: 'system', icon: 'mailbox', title: 'Badge', message: '', action: null, facet: null, dismissible: true, badge: payload, timestamp: Date.now(), lastSeen: Date.now(), autoDismiss: null, buttons: []});\n"
+        "assertNoPayload(card.innerHTML);\n"
+        "assert(!card.innerHTML.includes(payload), 'raw badge payload should not render');\n"
+        "assert(card.innerHTML.includes('&lt;img src=x onerror=alert(1)&gt;'), 'badge should render escaped payload');\n"
     )
 
 
