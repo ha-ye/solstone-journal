@@ -245,15 +245,11 @@ OUT_OF_SCOPE_GLYPHS = {
         'icon = "🎙️"',
         'icon = "👁️"',
     ),
-    "solstone/observe/describe.py": (
-        '"icon": "👁️",',
-    ),
+    "solstone/observe/describe.py": ('"icon": "👁️",',),
     "solstone/observe/categories/meeting.py": (
         'video = "📹" if p.get("video") else "🔇"',
     ),
-    "solstone/apps/__init__.py": (
-        'icon = metadata.get("icon", "📦")',
-    ),
+    "solstone/apps/__init__.py": ('icon = metadata.get("icon", "📦")',),
     "solstone/think/facets.py": (
         '"emoji": "📦",',
         'emoji: str = "📦",',
