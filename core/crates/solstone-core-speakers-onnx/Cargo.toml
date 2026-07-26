@@ -1,0 +1,20 @@
+[package]
+name = "solstone-core-speakers-onnx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ort = { workspace = true, features = ["api-24", "std"] }
+solstone-core-speakers.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+ort = { workspace = true, features = ["coreml"] }
+
+[dev-dependencies]
+serde_json.workspace = true

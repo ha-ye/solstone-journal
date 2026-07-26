@@ -167,21 +167,21 @@ check-rust-fmt:
 check-rust-msrv:
 	@$(REQUIRE_CARGO)
 	@python3 scripts/check_release_preflight.py msrv --toolchain 1.95.0
-	RUSTUP_TOOLCHAIN=1.95.0 cargo check --manifest-path $(RUST_MANIFEST) --workspace --locked
+	RUSTUP_TOOLCHAIN=1.95.0 python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo check --manifest-path $(RUST_MANIFEST) --workspace --locked
 
 check-rust-clippy:
 	@$(REQUIRE_CARGO)
-	cargo clippy --manifest-path $(RUST_MANIFEST) --workspace --all-targets --locked -- -D warnings
+	python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo clippy --manifest-path $(RUST_MANIFEST) --workspace --all-targets --locked -- -D warnings
 
 check-rust-test:
 	@$(REQUIRE_CARGO)
-	cargo test --manifest-path $(RUST_MANIFEST) --workspace --locked
+	python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo test --manifest-path $(RUST_MANIFEST) --workspace --locked
 
 check-rust-ios:
 	@$(REQUIRE_CARGO)
 	@$(REQUIRE_RUSTUP)
 	@rustup target list --installed 2>/dev/null | grep -qx "$(IOS_TARGET)" || { echo "Rust target $(IOS_TARGET) is required for the iOS gate; run rustup target add $(IOS_TARGET)" >&2; exit 1; }
-	cargo check --manifest-path $(RUST_MANIFEST) --workspace --exclude solstone-core --exclude solstone-core-indexer-store --lib --target $(IOS_TARGET) --locked
+	cargo check --manifest-path $(RUST_MANIFEST) --workspace --exclude solstone-core --exclude solstone-core-indexer-store --exclude solstone-core-speakers-onnx --lib --target $(IOS_TARGET) --locked
 
 check-rust-deny:
 	@$(REQUIRE_CARGO)

@@ -8,6 +8,8 @@ members = [
     "crates/solstone-core-sol",
     "crates/solstone-core-sol-client",
     "crates/solstone-core-sol-client-cli",
+    "crates/solstone-core-speakers",
+    "crates/solstone-core-speakers-onnx",
 ]
 resolver = "3"
 
@@ -26,12 +28,15 @@ solstone-core-indexer = { path = "crates/solstone-core-indexer" }
 solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
 solstone-core-sol = { path = "crates/solstone-core-sol" }
-solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
 solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
+solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
+solstone-core-speakers = { path = "crates/solstone-core-speakers" }
+solstone-core-speakers-onnx = { path = "crates/solstone-core-speakers-onnx" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
 glob = "0.3.3"
 md5 = "0.8.1"
+ort = { version = "=2.0.0-rc.12", default-features = false }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rapidfuzz = "0.5.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }

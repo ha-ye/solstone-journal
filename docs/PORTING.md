@@ -26,6 +26,10 @@ adapter, not for the indexer logic. The eventual iOS path is to link the system
 `libsqlite3` that iOS ships instead of bundling SQLite, then return the store
 crate to the iOS gate.
 
+`solstone-core-speakers` stays in the iOS canary because it is pure Rust DSP.
+`solstone-core-speakers-onnx` is excluded: ONNX Runtime is a host native-runtime
+adapter, not mobile-ready subsystem logic.
+
 ## Native Dependency Release Proof
 
 A Rust conversion that adds or bumps a dependency with C/C++ build steps or
@@ -36,6 +40,25 @@ required toolchain, target, and linker behavior in checked-in repository release
 paths, not in a local shell profile. If a dependency cannot satisfy a supported
 target, document the blocker and stop the conversion before merging it.
 
+The ONNX Runtime speaker wrapper is a deliberate exception because it is outside
+the `solstone-core` shipping closure. No shipping bin depends on
+`solstone-core-speakers-onnx`, and `scripts/core_compile_inputs.py` walks only the
+`solstone-core` closure. That unreachability is load-bearing, not a convenience:
+reachability from the shipping bin is an open architecture question, currently
+believed unsatisfiable as-is. The Linux release lanes are
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` via zig, i.e. static
+musl. The prebuilt ONNX Runtime wheels are glibc-only native libraries; the Linux
+1.25.0 wheel requires GLIBC symbols up to `GLIBC_2.27` and links `libstdc++` and
+`libgcc_s`. A static-musl binary cannot link or `dlopen` that glibc shared
+library, so the three-target native dependency proof would fail rather than
+merely remain pending.
+
+The shipping shape for ONNX-bearing subsystems is a separate founder-owned
+decision. The likely direction is a separate glibc-tagged helper artifact,
+matching how `parakeet-server` and `llama-server` already arrive as separate
+native binaries. Do not design toward linking `solstone-core-speakers-onnx` into
+the `solstone-core` bin.
+
 | Evidence | Repository command | Class | Notes |
 |----------|--------------------|-------|-------|
 | Rust formatting | `make check-rust-fmt` | GNU-host check | Host source-format evidence only. |
@@ -44,9 +67,32 @@ target, document the blocker and stop the conversion before merging it.
 | Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host. |
 | Rust dependency policy | `make check-rust-deny` | GNU-host check | Locked, offline bans/licenses/sources policy over the supported cargo-deny graph. |
 | Rust advisories | `make audit` | GNU-host check | Verifies a signed advisory mirror packet, materializes its bundle locally, then performs a locked offline advisory check without refreshing or mutating the operator inputs. |
-| iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate. |
+| iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate, and `solstone-core-speakers-onnx` because ONNX Runtime is host-only native linkage. |
 | Core sdist compile inputs | `make check-core-sdist-compile-inputs` | Packaging-source check | Verifies shipping Rust compile-time inputs are discovered and covered by the normalized `solstone-core` sdist injection set. |
 | Release candidate rail | `scripts/release.sh --candidate` / `scripts/release.sh --recover <version> <source-commit>` | Local readiness evidence | DESTRUCTIVE: `--candidate` is fresh construction; before policy or build work it deletes prior raw build/dist outputs and that version's stale payload/evidence. It binds candidate payload, ledger, and per-target install/smoke proofs, then reports canonical local readiness JSON. `--recover` is retained-byte-only, read-only validation; it preserves retained payload, ledger, and proofs and never rebuilds or refreshes. Proofs cover local candidate bytes and native smoke only; publication is temporarily locked out of this rail. |
+
+### Rust ONNX Runtime Provisioning
+
+`solstone-core-speakers-onnx` links dynamically to the ONNX Runtime C API from
+the journal Python environment. It does not download or vendor ONNX Runtime and
+does not read paths from inside the crate. Host Rust workspace compile checks
+that build the ONNX crate (`make check-rust-msrv`, `make check-rust-clippy`, and
+`make check-rust-test`) run Cargo through `scripts/resolve_onnxruntime_capi.py`,
+which imports the Python module `onnxruntime` using `.venv/bin/python`; this
+works whether the installed distribution is `onnxruntime` or `onnxruntime-gpu`.
+
+The resolver stages symlinks, never copies, under
+`core/target/onnxruntime-link/<platform>/lib/`. Linux stages
+`libonnxruntime.so`, `libonnxruntime.so.1`, and the full-version shared object.
+macOS stages `libonnxruntime.dylib` and the full-version dylib from the wheel.
+It then executes Cargo with `ORT_LIB_PATH=<staged lib dir>`,
+`ORT_PREFER_DYNAMIC_LINK=true`, and the matching runtime loader path
+(`LD_LIBRARY_PATH` on Linux, `DYLD_LIBRARY_PATH` on macOS) prepended.
+
+Direct `cargo test --manifest-path core/Cargo.toml --workspace` without the
+resolver is unsupported for the ONNX crate because Cargo dependency build
+scripts run before dependent crate build scripts. A crate `build.rs` cannot
+retroactively provide `ORT_LIB_PATH` to `ort-sys`.
 
 ### Signed Advisory Mirror Audit
 
