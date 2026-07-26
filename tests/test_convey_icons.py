@@ -27,6 +27,7 @@ CONVERTED_FILES = (
     ROOT / "solstone" / "apps" / "search" / "workspace.html",
     ROOT / "solstone" / "apps" / "sol" / "workspace.html",
     ROOT / "solstone" / "apps" / "import" / "workspace.html",
+    ROOT / "solstone" / "apps" / "settings" / "workspace.html",
     ROOT / "solstone" / "apps" / "support" / "workspace.html",
     ROOT / "solstone" / "apps" / "support" / "static" / "support.js",
     ROOT / "solstone" / "apps" / "stats" / "workspace.html",
@@ -58,6 +59,16 @@ L2_ICON_SLOT_CLASSES = (
     "col-activity",
     "activity-item",
     "summary-item",
+    "import-source-card-icon",
+    "import-source-inline-icon",
+    "import-content-summary-icon",
+    "filter-icon",
+    "result-agent-icon",
+    "occ-activity-icon",
+    "act-icon",
+    "activity-detail-icon",
+    "activity-icon",
+    "activity-chip-icon",
 )
 ICON_SLOT_CLASSES = (
     "surface-state-icon",
@@ -74,6 +85,10 @@ ICON_SLOT_OPEN_RE = re.compile(
     re.IGNORECASE,
 )
 EMPTY_ICONS_MAP_RE = re.compile(r"const\s+emptyIcons\s*=\s*\{[\s\S]*?\n\s*\};")
+UNICODE_ESCAPE_RE = re.compile(
+    r"\\U(?P<long>[0-9a-fA-F]{8})|\\u(?P<short>[0-9a-fA-F]{4})"
+)
+STYLE_BLOCK_RE = re.compile(r"<style[^>]*>(?P<body>[\s\S]*?)</style>", re.IGNORECASE)
 L2_ICON_SLOT_CSS_FILES = {
     "icon-slot": ROOT / "solstone" / "convey" / "static" / "app.css",
     "entity-delete-btn": ROOT / "solstone" / "apps" / "entities" / "workspace.html",
@@ -86,6 +101,28 @@ L2_ICON_SLOT_CSS_FILES = {
     "col-activity": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
     "activity-item": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
     "summary-item": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
+    "import-source-card-icon": ROOT / "solstone" / "apps" / "import" / "workspace.html",
+    "import-source-inline-icon": ROOT
+    / "solstone"
+    / "apps"
+    / "import"
+    / "workspace.html",
+    "import-content-summary-icon": ROOT
+    / "solstone"
+    / "apps"
+    / "import"
+    / "workspace.html",
+    "filter-icon": ROOT / "solstone" / "apps" / "search" / "workspace.html",
+    "result-agent-icon": ROOT / "solstone" / "apps" / "search" / "workspace.html",
+    "occ-activity-icon": ROOT / "solstone" / "apps" / "activities" / "workspace.html",
+    "act-icon": ROOT / "solstone" / "apps" / "activities" / "workspace.html",
+    "activity-detail-icon": ROOT
+    / "solstone"
+    / "apps"
+    / "activities"
+    / "workspace.html",
+    "activity-icon": ROOT / "solstone" / "apps" / "settings" / "workspace.html",
+    "activity-chip-icon": ROOT / "solstone" / "apps" / "settings" / "workspace.html",
 }
 
 CONVERTED_GLYPH_RESIDUE = {
@@ -107,6 +144,12 @@ CONVERTED_GLYPH_RESIDUE = {
     "solstone/apps/import/workspace.html": (
         '<div class="no-imports-icon">📥</div>',
         '<div class="no-imports-icon">🔍</div>',
+        "source.emoji",
+        "source_emoji",
+        "sourceEmojiByName",
+        "import-source-card-emoji",
+        "import-source-inline-emoji",
+        '<h3 class="import-guide-title">⚡ quick import</h3>',
     ),
     "solstone/apps/support/static/support.js": (
         '<div class="support-empty-icon">🛟</div>',
@@ -116,6 +159,13 @@ CONVERTED_GLYPH_RESIDUE = {
     "solstone/apps/support/workspace.html": (
         '<div class="support-empty-icon">⚠️</div>',
         '<div class="support-empty-icon">⋯</div>',
+        '<p class="support-section-intro">💬 Share your impressions, ideas, or anything on your mind. Your feedback shapes the product.</p>',
+        "<h3>🛟 getting help</h3>",
+        "<h3>🔍 search the knowledge base</h3>",
+        "<h3>🩺 run diagnostics</h3>",
+        "<h3>📢 announcements</h3>",
+        "<h3>🔒 privacy</h3>",
+        "const icons = {'known-issue': '⚠️', 'maintenance': '🔧', 'info': '📢'};",
     ),
     "solstone/apps/stats/static/dashboard.js": (
         "['📊']",
@@ -200,14 +250,6 @@ OUT_OF_SCOPE_GLYPHS = {
     "solstone/convey/static/shell.html": (
         '<button id="hamburger" aria-label="toggle navigation" aria-expanded="false">☰</button>',
     ),
-    "solstone/apps/support/workspace.html": (
-        "<h3>🛟 getting help</h3>",
-        "<h3>🔍 search the knowledge base</h3>",
-        "const icons = {'known-issue': '⚠️', 'maintenance': '🔧', 'info': '📢'};",
-    ),
-    "solstone/apps/import/workspace.html": (
-        '<h3 class="import-guide-title">⚡ quick import</h3>',
-    ),
 }
 
 
@@ -256,6 +298,37 @@ def _converted_source() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in CONVERTED_FILES)
 
 
+def _combine_surrogate_pairs(text: str) -> str:
+    chars: list[str] = []
+    index = 0
+    while index < len(text):
+        codepoint = ord(text[index])
+        if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(text):
+            next_codepoint = ord(text[index + 1])
+            if 0xDC00 <= next_codepoint <= 0xDFFF:
+                chars.append(
+                    chr(
+                        0x10000
+                        + ((codepoint - 0xD800) << 10)
+                        + (next_codepoint - 0xDC00)
+                    )
+                )
+                index += 2
+                continue
+        chars.append(text[index])
+        index += 1
+    return "".join(chars)
+
+
+def _glyph_scan_source(text: str) -> str:
+    def decode_match(match: re.Match[str]) -> str:
+        raw_codepoint = match.group("long") or match.group("short")
+        return chr(int(raw_codepoint, 16))
+
+    decoded = UNICODE_ESCAPE_RE.sub(decode_match, text)
+    return text + "\n" + _combine_surrogate_pairs(decoded)
+
+
 def requested_icon_names(source: str) -> set[str]:
     return {match.group("name") for match in CALL_RE.finditer(source)}
 
@@ -267,18 +340,24 @@ def _inline_slot_icon_names(path: Path, svg_to_name: Mapping[str, str]) -> set[s
 def _rule_bodies_for_svg_class(source: str, class_name: str) -> list[str]:
     class_ref = re.escape(class_name)
     bodies: list[str] = []
-    for match in re.finditer(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]+)\}", source):
-        selectors = [
-            selector.strip() for selector in match.group("selectors").split(",")
-        ]
-        if any(
-            re.search(
-                rf"(?<![A-Za-z0-9_-])\.{class_ref}(?![A-Za-z0-9_-])[^{{}}]*\bsvg\b",
-                selector,
-            )
-            for selector in selectors
+    style_blocks = [
+        match.group("body") for match in STYLE_BLOCK_RE.finditer(source)
+    ] or [source]
+    for style_source in style_blocks:
+        for match in re.finditer(
+            r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]+)\}", style_source
         ):
-            bodies.append(match.group("body"))
+            selectors = [
+                selector.strip() for selector in match.group("selectors").split(",")
+            ]
+            if any(
+                re.search(
+                    rf"(?<![A-Za-z0-9_-])\.{class_ref}(?![A-Za-z0-9_-])[^{{}}]*\bsvg\b",
+                    selector,
+                )
+                for selector in selectors
+            ):
+                bodies.append(match.group("body"))
     return bodies
 
 
@@ -408,7 +487,7 @@ def test_l2_icon_slot_css_declares_current_color_stroke_and_size():
 
 def test_converted_glyphs_are_gone_and_out_of_scope_glyphs_survive():
     for rel_path, snippets in CONVERTED_GLYPH_RESIDUE.items():
-        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        text = _glyph_scan_source((ROOT / rel_path).read_text(encoding="utf-8"))
         for snippet in snippets:
             assert snippet not in text, f"converted glyph residue remains: {rel_path}"
 

@@ -58,10 +58,45 @@ def test_resolve_icon_svg_precedence_and_fallback() -> None:
     assert resolve_icon_svg("brain", "📚") == lucide_svg("brain")
     assert resolve_icon_svg(None, "📚") == lucide_svg("library")
     assert resolve_icon_svg("", "📚") == lucide_svg("library")
-    assert resolve_icon_svg("definitely-not-an-icon", "📚") == lucide_svg(
-        "library"
-    )
+    assert resolve_icon_svg("definitely-not-an-icon", "📚") == lucide_svg("library")
     assert resolve_icon_svg("coins", "🪮") == lucide_svg("coins")
+
+
+def test_data_driven_l3_icon_names_resolve() -> None:
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    from solstone.apps.search.routes import AGENT_ICON_FALLBACK, AGENT_ICONS
+    from solstone.think.activities import DEFAULT_ACTIVITIES
+
+    import_icon_names = [source["icon"] for source in import_routes.SOURCE_METADATA]
+    search_icon_names = [*AGENT_ICONS.values(), AGENT_ICON_FALLBACK]
+    activity_icon_names = [activity["icon"] for activity in DEFAULT_ACTIVITIES]
+
+    for icon_name in import_icon_names:
+        assert lucide_svg(icon_name), f"import icon not found: {icon_name}"
+    for icon_name in search_icon_names:
+        assert lucide_svg(icon_name), f"search icon not found: {icon_name}"
+    for icon_name in activity_icon_names:
+        assert lucide_svg(icon_name), f"activity icon not found: {icon_name}"
+
+
+def test_activity_icon_overrides_use_explicit_lucide_names() -> None:
+    from solstone.think.activities import DEFAULT_ACTIVITIES
+
+    by_id = {activity["id"]: activity for activity in DEFAULT_ACTIVITIES}
+
+    appointment = by_id["appointment"]
+    assert resolve_icon_svg(appointment["icon"], appointment["emoji"]) == lucide_svg(
+        "pin"
+    )
+    assert resolve_icon_svg(appointment["icon"], appointment["emoji"]) != lucide_svg(
+        "map-pin"
+    )
+
+    event = by_id["event"]
+    assert resolve_icon_svg(event["icon"], event["emoji"]) == lucide_svg("ticket")
+    assert resolve_icon_svg(event["icon"], event["emoji"]) != lucide_svg("tags")
 
 
 def test_search_lucide_icons_lock_matches_name_or_tag() -> None:
