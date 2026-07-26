@@ -32,10 +32,20 @@ class ProbeSlot:
     lock_path: Path
     attempts_parent_path: Path
     _lease: _LeaseHandle | None
+    _poisoned_code: str | None = None
 
     @property
     def owned(self) -> bool:
         return self._lease is not None and self._lease.owned
+
+    def poison(self, code: str) -> None:
+        if code not in contract.STABLE_ERRORS:
+            probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+        self._poisoned_code = code
+
+    def raise_if_poisoned(self) -> None:
+        if self._poisoned_code is not None:
+            probe_records.raise_probe_error(self._poisoned_code)
 
     def release(self) -> None:
         if self._lease is None:
@@ -57,7 +67,10 @@ def acquire_probe_slot(journal_path: Path, *, run_id: str) -> ProbeSlot:
     except probe_records.ProbeRecordValidationError:
         probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
     lock_path = contract.probe_lock_path(journal)
-    lease = acquire_file_lease(lock_path, attempts=1, retry_max_seconds=0.0)
+    try:
+        lease = acquire_file_lease(lock_path, attempts=1, retry_max_seconds=0.0)
+    except OSError:
+        probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
     if lease is None:
         probe_records.raise_probe_error(contract.STABLE_ERROR_PROBE_ACTIVE)
 

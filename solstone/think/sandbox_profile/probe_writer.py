@@ -151,6 +151,7 @@ def begin_probe_attempt(
     attempt_id: str | None = None,
     started_at: str | None = None,
 ) -> ProbeAttemptWriter:
+    slot.raise_if_poisoned()
     probe_slot.assert_probe_slot_owned(slot)
     attempt_id = attempt_id or probe_records.new_attempt_id()
     try:
@@ -163,10 +164,20 @@ def begin_probe_attempt(
         )
     except probe_records.ProbeRecordValidationError:
         probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
-    attempt_dir = probe_slot.create_attempt_directory(slot, start.attempt_id)
+    try:
+        attempt_dir = probe_slot.create_attempt_directory(slot, start.attempt_id)
+    except probe_records.ProbeOperationError as exc:
+        if exc.code in {
+            contract.STABLE_ERROR_RECORD_WRITE_FAILED,
+            contract.STABLE_ERROR_STALE_ATTEMPT,
+        }:
+            slot.poison(exc.code)
+        probe_records.raise_probe_error(exc.code, attempt_id=start.attempt_id)
     try:
         probe_durability.append_jsonl_strict(slot.ledger_path, start.to_json_obj())
     except probe_records.ProbeOperationError as exc:
+        if exc.code == contract.STABLE_ERROR_RECORD_WRITE_FAILED:
+            slot.poison(exc.code)
         probe_records.raise_probe_error(
             exc.code,
             attempt_id=start.attempt_id,

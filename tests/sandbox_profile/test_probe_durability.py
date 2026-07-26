@@ -15,7 +15,14 @@ from solstone.think.sandbox_profile import (
 )
 from solstone.think.sandbox_profile.probe_slot import acquire_probe_slot
 from solstone.think.sandbox_profile.probe_writer import begin_probe_attempt
-from tests.sandbox_profile import ATTEMPT_ID, FIXED_TS, RUN_ID, start_record
+from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
+from tests.sandbox_profile import (
+    ATTEMPT_ID,
+    FIXED_TS,
+    OTHER_ATTEMPT_ID,
+    RUN_ID,
+    start_record,
+)
 
 
 class _DummyLease:
@@ -157,6 +164,81 @@ def test_attempt_directory_collision_fails_closed_to_stale(tmp_path) -> None:
         probe_slot.create_attempt_directory(slot, ATTEMPT_ID)
 
     assert excinfo.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
+
+
+def test_start_record_write_failure_poisons_slot_before_retry(
+    monkeypatch, tmp_path
+) -> None:
+    journal = tmp_path / "journal"
+    proof = probe_contract.CAPABILITY_ORDER[0]
+    append_calls = 0
+
+    def fail_append(_path, _record):
+        nonlocal append_calls
+        append_calls += 1
+        probe_records.raise_probe_error(probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
+
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        monkeypatch.setattr(probe_durability, "append_jsonl_strict", fail_append)
+        with pytest.raises(probe_records.ProbeOperationError) as first:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
+        assert first.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
+        assert append_calls == 1
+
+        before = repository_inventory(journal)
+        with pytest.raises(probe_records.ProbeOperationError) as second:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=OTHER_ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
+        after = repository_inventory(journal)
+
+    assert second.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
+    assert append_calls == 1
+    assert not (
+        probe_contract.probe_attempts_parent_path(journal) / OTHER_ATTEMPT_ID
+    ).exists()
+    assert_inventory_unchanged(before, after)
+
+
+def test_attempt_directory_collision_poisons_slot_before_retry(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    proof = probe_contract.CAPABILITY_ORDER[0]
+
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        probe_slot.create_attempt_directory(slot, ATTEMPT_ID)
+        with pytest.raises(probe_records.ProbeOperationError) as first:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
+        assert first.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
+
+        with pytest.raises(probe_records.ProbeOperationError) as second:
+            begin_probe_attempt(
+                slot,
+                selected=(proof,),
+                execution_order=(proof,),
+                attempt_id=OTHER_ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
+
+    assert second.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
+    assert not (
+        probe_contract.probe_attempts_parent_path(journal) / OTHER_ATTEMPT_ID
+    ).exists()
 
 
 def test_writer_record_write_failure_poisons_later_contact(

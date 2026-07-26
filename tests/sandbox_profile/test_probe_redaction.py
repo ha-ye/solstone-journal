@@ -11,8 +11,9 @@ from solstone.think.sandbox_profile import (
     probe_contract,
     probe_durability,
     probe_records,
+    probe_slot,
 )
-from tests.sandbox_profile import start_record
+from tests.sandbox_profile import RUN_ID, start_record
 
 
 def test_write_error_secret_absent_from_exception_argv_and_logs(
@@ -33,6 +34,27 @@ def test_write_error_secret_absent_from_exception_argv_and_logs(
     assert secret not in caplog.text
     assert secret not in " ".join(sys.argv)
     assert excinfo.value.__cause__ is None
+
+
+def test_lock_acquire_oserror_secret_absent_from_exception_repr_and_logs(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    secret = "recognizable-secret-lock-path"
+
+    def fail_lease(*_args, **_kwargs):
+        raise OSError(secret)
+
+    monkeypatch.setattr(probe_slot, "acquire_file_lease", fail_lease)
+
+    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+        probe_slot.acquire_probe_slot(tmp_path / secret, run_id=RUN_ID)
+
+    exc = excinfo.value
+    assert exc.code == probe_contract.STABLE_ERROR_INTERNAL_ERROR
+    assert secret not in str(exc)
+    assert secret not in repr(exc)
+    assert exc.__cause__ is None
+    assert secret not in caplog.text
 
 
 def test_operation_error_optional_fields_reject_free_text() -> None:
