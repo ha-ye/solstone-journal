@@ -18,6 +18,9 @@ from solstone.convey import create_app
 APP_ROOT = Path(__file__).resolve().parents[1]
 ROUTES_PATH = APP_ROOT / "routes.py"
 WORKSPACE_PATH = APP_ROOT / "workspace.html"
+APP_CSS_PATH = (
+    Path(__file__).resolve().parents[4] / "solstone" / "convey" / "static" / "app.css"
+)
 
 
 @pytest.fixture
@@ -83,6 +86,14 @@ def _function_source(source: str, name: str) -> str:
             if depth == 0:
                 return source[start : index + 1]
     raise AssertionError(f"function {name} is not closed")
+
+
+def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
+    index = css.find(f"{selector} {{", start)
+    assert index != -1, f"{selector} rule was not found"
+    close = css.find("}", index)
+    assert close != -1, f"{selector} rule is not closed"
+    return index, css[index : close + 1]
 
 
 def test_reflections_page_routes_serve_spa_shell(reflections_env):
@@ -188,6 +199,16 @@ def test_reflections_workspace_non_copy_errors_fall_through_to_retry_error_surfa
         r"\s*renderError\(err, load\);",
         load,
     )
+
+
+def test_reflections_inline_code_break_is_scoped_to_reflection_body():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    app_css = APP_CSS_PATH.read_text(encoding="utf-8")
+    _, code_rule = _rule_block(source, ".reflection-body code")
+
+    assert "overflow-wrap: anywhere;" in code_rule
+    assert ".reflection-body {\n  overflow-wrap: anywhere;" not in source
+    assert ".reflection-body code" not in app_css
 
 
 def test_reflections_index_payload_shape(reflections_env):
