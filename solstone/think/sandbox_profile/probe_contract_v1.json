@@ -1,0 +1,166 @@
+{
+  "attempt_terminal_reasons": [
+    "cleanup_unverified",
+    "cancelled",
+    "internal_error",
+    "proof_failed"
+  ],
+  "attempt_terminal_states": [
+    "ok",
+    "degraded",
+    "cancelled",
+    "error"
+  ],
+  "capability_order": [
+    "scout",
+    "spl",
+    "spb",
+    "spp",
+    "runtime"
+  ],
+  "cleanup_states": [
+    "verified",
+    "retained_synthetic",
+    "unverified"
+  ],
+  "common_reasons": [
+    "dependency_failed",
+    "cancelled",
+    "cleanup_unverified",
+    "internal_error"
+  ],
+  "contract_version": 1,
+  "limits": {
+    "max_attempts": 64,
+    "max_ledger_bytes": 1048576
+  },
+  "not_run_reasons": [
+    "dependency_failed",
+    "cancelled"
+  ],
+  "proof_reason_pool": [
+    "capability_not_ready",
+    "deadline_exceeded",
+    "remote_rejected",
+    "response_invalid",
+    "content_mismatch",
+    "usage_invalid",
+    "attestation_unverified",
+    "runtime_unavailable",
+    "cadence_contract_mismatch"
+  ],
+  "proof_terminal_states": [
+    "passed",
+    "failed",
+    "not_run"
+  ],
+  "proofs": {
+    "runtime": {
+      "checks": [
+        "runtime.supervisor",
+        "runtime.callosum",
+        "runtime.listener",
+        "runtime.sense",
+        "runtime.task_queue",
+        "runtime.cortex",
+        "runtime.talent_output",
+        "runtime.talent_usage",
+        "runtime.cadence_contract",
+        "runtime.cadence_dry_run"
+      ],
+      "cleanup_state": "retained_synthetic",
+      "proof_specific_reasons": [
+        "cadence_contract_mismatch",
+        "capability_not_ready",
+        "content_mismatch",
+        "deadline_exceeded",
+        "response_invalid",
+        "runtime_unavailable",
+        "usage_invalid"
+      ]
+    },
+    "scout": {
+      "checks": [
+        "scout.response_schema",
+        "scout.nonce_match",
+        "scout.finish",
+        "scout.usage"
+      ],
+      "cleanup_state": "verified",
+      "proof_specific_reasons": [
+        "capability_not_ready",
+        "content_mismatch",
+        "deadline_exceeded",
+        "remote_rejected",
+        "response_invalid",
+        "usage_invalid"
+      ]
+    },
+    "spb": {
+      "checks": [
+        "spb.repository_initialized",
+        "spb.snapshot_created",
+        "spb.snapshot_confirmed",
+        "spb.restore_match",
+        "spb.local_cleanup"
+      ],
+      "cleanup_state": "retained_synthetic",
+      "proof_specific_reasons": [
+        "capability_not_ready",
+        "content_mismatch",
+        "deadline_exceeded",
+        "remote_rejected",
+        "response_invalid"
+      ]
+    },
+    "spl": {
+      "checks": [
+        "spl.enrollment",
+        "spl.relay_dial",
+        "spl.inner_tls",
+        "spl.observer_registered",
+        "spl.segment_transferred",
+        "spl.segment_landed",
+        "spl.authorization_removed"
+      ],
+      "cleanup_state": "retained_synthetic",
+      "proof_specific_reasons": [
+        "capability_not_ready",
+        "content_mismatch",
+        "deadline_exceeded",
+        "remote_rejected",
+        "response_invalid"
+      ]
+    },
+    "spp": {
+      "checks": [
+        "spp.attestation_session",
+        "spp.text_nonce",
+        "spp.text_usage",
+        "spp.transcript_expected"
+      ],
+      "cleanup_state": "verified",
+      "proof_specific_reasons": [
+        "attestation_unverified",
+        "capability_not_ready",
+        "content_mismatch",
+        "deadline_exceeded",
+        "remote_rejected",
+        "response_invalid",
+        "usage_invalid"
+      ]
+    }
+  },
+  "record_kinds": [
+    "attempt_started",
+    "proof_terminal",
+    "attempt_terminal"
+  ],
+  "stable_errors": [
+    "probe_active",
+    "attempt_limit_reached",
+    "stale_attempt",
+    "record_write_failed",
+    "internal_error"
+  ]
+}
