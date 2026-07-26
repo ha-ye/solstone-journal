@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -36,17 +37,6 @@ class _DummyLease:
         return None
 
 
-class _FakeHandle:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return None
-
-    def fileno(self) -> int:
-        return 1
-
-
 def _slot(journal: Path) -> probe_slot.ProbeSlot:
     return probe_slot.ProbeSlot(
         journal_path=journal,
@@ -58,10 +48,12 @@ def _slot(journal: Path) -> probe_slot.ProbeSlot:
     )
 
 
-def test_append_order_is_write_flush_file_fsync_then_directory_fsync(
-    monkeypatch, tmp_path
-):
+def test_append_order_is_write_file_fsync_then_directory_fsync(monkeypatch, tmp_path):
     events: list[str] = []
+
+    def open_append(_path):
+        events.append("open")
+        return os.open(os.devnull, os.O_WRONLY)
 
     monkeypatch.setattr(
         probe_durability,
@@ -71,17 +63,12 @@ def test_append_order_is_write_flush_file_fsync_then_directory_fsync(
     monkeypatch.setattr(
         probe_durability,
         "_open_append",
-        lambda _path: events.append("open") or _FakeHandle(),
+        open_append,
     )
     monkeypatch.setattr(
         probe_durability,
         "_write_once",
         lambda _handle, data: events.append("write") or len(data),
-    )
-    monkeypatch.setattr(
-        probe_durability,
-        "_flush_file",
-        lambda _handle: events.append("flush"),
     )
     monkeypatch.setattr(
         probe_durability,
@@ -96,7 +83,7 @@ def test_append_order_is_write_flush_file_fsync_then_directory_fsync(
 
     probe_durability.append_jsonl_strict(tmp_path / "ledger.jsonl", start_record())
 
-    assert events == ["mkdir", "open", "write", "flush", "file_fsync", "dir_fsync"]
+    assert events == ["mkdir", "open", "write", "file_fsync", "dir_fsync"]
 
 
 @pytest.mark.parametrize(
@@ -105,7 +92,6 @@ def test_append_order_is_write_flush_file_fsync_then_directory_fsync(
         "_mkdir",
         "_open_append",
         "_write_once",
-        "_flush_file",
         "_fsync_file",
         "_fsync_directory",
     ],
