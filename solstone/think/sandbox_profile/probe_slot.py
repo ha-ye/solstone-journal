@@ -32,7 +32,6 @@ class ProbeSlot:
     ledger_path: Path
     lock_path: Path
     attempts_parent_path: Path
-    replay_run_id: str | None
     _lock_fd: int | None
     _lock_identity: tuple[int, int]
     _ledger_fd: int | None
@@ -234,7 +233,6 @@ def acquire_probe_slot(journal_path: Path, *, run_id: str) -> ProbeSlot:
             ledger_path=ledger_path,
             lock_path=lock_path,
             attempts_parent_path=contract.probe_attempts_parent_path(journal),
-            replay_run_id=replay.run_id,
             _lock_fd=lock_fd,
             _lock_identity=lock_identity,
             _ledger_fd=ledger_fd,
@@ -249,6 +247,10 @@ def acquire_probe_slot(journal_path: Path, *, run_id: str) -> ProbeSlot:
         _close_fd_quietly(ledger_fd)
         _close_fd_quietly(lock_fd)
         probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+    except BaseException:
+        _close_fd_quietly(ledger_fd)
+        _close_fd_quietly(lock_fd)
+        raise
 
 
 def create_attempt_directory_unlocked(slot: ProbeSlot, attempt_id: str) -> Path:

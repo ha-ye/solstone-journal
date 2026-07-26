@@ -140,7 +140,6 @@
         "runtime.cadence_contract",
         "runtime.cadence_dry_run"
       ],
-      "cleanup_state": "retained_synthetic",
       "proof_specific_reasons": [
         "cadence_contract_mismatch",
         "capability_not_ready",
@@ -158,7 +157,6 @@
         "scout.finish",
         "scout.usage"
       ],
-      "cleanup_state": "verified",
       "proof_specific_reasons": [
         "capability_not_ready",
         "content_mismatch",
@@ -176,7 +174,6 @@
         "spb.restore_match",
         "spb.local_cleanup"
       ],
-      "cleanup_state": "retained_synthetic",
       "proof_specific_reasons": [
         "capability_not_ready",
         "content_mismatch",
@@ -195,7 +192,6 @@
         "spl.segment_landed",
         "spl.authorization_removed"
       ],
-      "cleanup_state": "retained_synthetic",
       "proof_specific_reasons": [
         "capability_not_ready",
         "content_mismatch",
@@ -211,7 +207,6 @@
         "spp.text_usage",
         "spp.transcript_expected"
       ],
-      "cleanup_state": "verified",
       "proof_specific_reasons": [
         "attestation_unverified",
         "capability_not_ready",

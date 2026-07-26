@@ -59,6 +59,30 @@ def _assert_probe_error(excinfo, code: str) -> None:
     assert excinfo.value.__cause__ is None
 
 
+def test_acquire_releases_lock_when_replay_escapes_memory_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    sentinel = MemoryError("replay sentinel")
+    original_replay = probe_replay.replay_probe_ledger
+
+    def fail_replay(_journal: Path) -> probe_records.ProbeReplay:
+        raise sentinel
+
+    monkeypatch.setattr(probe_replay, "replay_probe_ledger", fail_replay)
+    with pytest.raises(MemoryError) as excinfo:
+        acquire_probe_slot(journal, run_id=RUN_ID)
+    assert excinfo.value is sentinel
+
+    monkeypatch.setattr(probe_replay, "replay_probe_ledger", original_replay)
+    slot = acquire_probe_slot(journal, run_id=RUN_ID)
+    try:
+        assert slot.owned is True
+    finally:
+        slot.release()
+
+
 def test_complete_terminal_survives_reported_fsync_error_but_slot_is_poisoned(
     monkeypatch,
     tmp_path,

@@ -481,7 +481,8 @@ def _json_cleanup_resolution() -> dict[str, object]:
 
 def _json_cancellation() -> dict[str, object]:
     later = CANCELLATION["later_proof"]
-    assert isinstance(later, dict)
+    if not isinstance(later, dict):
+        raise RuntimeError("invalid cancellation contract")
     return {
         "first_started_predicate": CANCELLATION["first_started_predicate"],
         "first_unstarted_predicate": CANCELLATION["first_unstarted_predicate"],
@@ -531,7 +532,6 @@ def contract_payload() -> dict[str, object]:
         "proofs": {
             proof: {
                 "checks": list(PROOF_CHECKS[proof]),
-                "cleanup_state": DECLARED_CLEANUP_STATES[proof],
                 "proof_specific_reasons": list(PROOF_SPECIFIC_REASONS[proof]),
             }
             for proof in CAPABILITY_ORDER
@@ -552,5 +552,6 @@ def contract_payload() -> dict[str, object]:
 
 def _record_cardinality_sequence() -> tuple[dict[str, object], ...]:
     sequence = RECORD_CARDINALITY["attempt_sequence"]
-    assert isinstance(sequence, tuple)
+    if not isinstance(sequence, tuple):
+        raise RuntimeError("invalid record cardinality contract")
     return sequence

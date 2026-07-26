@@ -416,7 +416,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
     with acquire_probe_slot(proof_journal, run_id=RUN_ID) as slot:
         writer = _begin(slot)
         writer.dispatch_contact(proof, lambda: None)
-        remaining = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size
+        remaining = probe_contract.MAX_LEDGER_BYTES - slot.ledger_size_bytes
         monkeypatch.setattr(
             probe_durability,
             "encode_jsonl_record",
@@ -430,7 +430,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
             duration_ms=1,
             finished_at=FIXED_TS,
         )
-        assert slot._ledger_tracked_size == probe_contract.MAX_LEDGER_BYTES
+        assert slot.ledger_size_bytes == probe_contract.MAX_LEDGER_BYTES
 
     monkeypatch.setattr(probe_durability, "encode_jsonl_record", original_encode)
     over_journal = tmp_path / "proof-over"
@@ -438,7 +438,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
         writer = _begin(slot)
         writer.dispatch_contact(proof, lambda: None)
         before = probe_contract.probe_ledger_path(over_journal).stat().st_size
-        too_large = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size + 1
+        too_large = probe_contract.MAX_LEDGER_BYTES - slot.ledger_size_bytes + 1
         monkeypatch.setattr(
             probe_durability,
             "encode_jsonl_record",
@@ -463,14 +463,14 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
     with acquire_probe_slot(terminal_journal, run_id=RUN_ID) as slot:
         writer = _begin(slot)
         _write_passed_proof(writer)
-        remaining = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size
+        remaining = probe_contract.MAX_LEDGER_BYTES - slot.ledger_size_bytes
         monkeypatch.setattr(
             probe_durability,
             "encode_jsonl_record",
             lambda _record: b"x" * remaining,
         )
         writer.write_attempt_terminal(finished_at=FIXED_TS)
-        assert slot._ledger_tracked_size == probe_contract.MAX_LEDGER_BYTES
+        assert slot.ledger_size_bytes == probe_contract.MAX_LEDGER_BYTES
 
     monkeypatch.setattr(probe_durability, "encode_jsonl_record", original_encode)
     terminal_over_journal = tmp_path / "terminal-over"
@@ -478,7 +478,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
         writer = _begin(slot)
         _write_passed_proof(writer)
         before = probe_contract.probe_ledger_path(terminal_over_journal).stat().st_size
-        too_large = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size + 1
+        too_large = probe_contract.MAX_LEDGER_BYTES - slot.ledger_size_bytes + 1
         monkeypatch.setattr(
             probe_durability,
             "encode_jsonl_record",
@@ -581,6 +581,47 @@ def test_cancelled_attempt_before_any_proof_writes_not_run_suffix_and_terminal(
     with pytest.raises(probe_records.ProbeOperationError) as reacquire:
         acquire_probe_slot(journal, run_id=RUN_ID)
     _assert_probe_error(reacquire, probe_contract.STABLE_ERROR_STALE_ATTEMPT)
+
+
+def test_cancelled_attempt_later_rows_follow_contract_shape(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    selected = probe_contract.CAPABILITY_ORDER[:2]
+    later_shape = dict(probe_contract.CANCELLATION["later_proof"])
+    later_shape[probe_contract.FIELD_REASON] = probe_contract.REASON_DEPENDENCY_FAILED
+    monkeypatch.setattr(
+        probe_contract,
+        "CANCELLATION",
+        {
+            **probe_contract.CANCELLATION,
+            "later_proof": later_shape,
+        },
+    )
+    journal = tmp_path / "journal"
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        writer = begin_probe_attempt(
+            slot,
+            selected=selected,
+            execution_order=selected,
+            attempt_id=ATTEMPT_ID,
+            started_at=FIXED_TS,
+        )
+        writer.write_cancelled_attempt(
+            proof=selected[0],
+            state=probe_contract.PROOF_STATE_NOT_RUN,
+            checks=(),
+            duration_ms=None,
+            finished_at=FIXED_TS,
+        )
+
+    rows = _ledger_rows(journal)
+    assert rows[2]["state"] == later_shape[probe_contract.FIELD_STATE]
+    assert rows[2]["checks"] == list(later_shape[probe_contract.FIELD_CHECKS])
+    assert rows[2]["reason"] == probe_contract.REASON_DEPENDENCY_FAILED
+    assert rows[2]["duration_ms"] == later_shape[probe_contract.FIELD_DURATION_MS]
+    assert rows[2]["cleanup_state"] == later_shape[probe_contract.FIELD_CLEANUP_STATE]
+    assert rows[-1]["terminal_reason"] == probe_contract.REASON_CANCELLED
 
 
 def test_cancelled_attempt_after_contact_in_flight_writes_failed_first_row(

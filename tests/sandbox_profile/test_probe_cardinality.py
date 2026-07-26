@@ -60,6 +60,25 @@ def test_wrong_proof_order_is_stale(tmp_path) -> None:
     _assert_stale(journal)
 
 
+def test_replay_uses_contract_attempt_sequence_order(monkeypatch, tmp_path) -> None:
+    journal = tmp_path / "journal"
+    selected = probe_contract.CAPABILITY_ORDER[:2]
+    write_attempt_dir(journal)
+    write_ledger(journal, complete_attempt_records(selected=selected))
+    sequence = tuple(probe_contract.RECORD_CARDINALITY["attempt_sequence"])
+    reordered = (sequence[0], sequence[2], sequence[1])
+    monkeypatch.setattr(
+        probe_contract,
+        "RECORD_CARDINALITY",
+        {
+            **probe_contract.RECORD_CARDINALITY,
+            "attempt_sequence": reordered,
+        },
+    )
+
+    _assert_stale(journal)
+
+
 def test_duplicate_attempt_id_is_stale(tmp_path) -> None:
     journal = tmp_path / "journal"
     first = complete_attempt_records()

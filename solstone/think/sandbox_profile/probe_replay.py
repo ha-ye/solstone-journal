@@ -16,12 +16,24 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from solstone.think.sandbox_profile import json_codec, probe_records, probe_slot
 from solstone.think.sandbox_profile import probe_contract as contract
+
+_ReplayRecord = (
+    probe_records.AttemptStartedRecord
+    | probe_records.ProofTerminalRecord
+    | probe_records.AttemptTerminalRecord
+)
+_RECORD_VALIDATORS: dict[str, Callable[[Mapping[str, Any]], _ReplayRecord]] = {
+    contract.RECORD_TYPE_ATTEMPT_STARTED: probe_records.validate_attempt_started_payload,
+    contract.RECORD_TYPE_PROOF_TERMINAL: probe_records.validate_proof_terminal_payload,
+    contract.RECORD_TYPE_ATTEMPT_TERMINAL: probe_records.validate_attempt_terminal_payload,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,46 +137,89 @@ def _fold_records(
     attempts: list[probe_records.ProbeAttemptReplay] = []
     index = 0
     prior_retry_permitted = True
+    attempt_sequence = _attempt_sequence()
     while index < len(payloads):
         if not prior_retry_permitted:
             probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        try:
-            start = probe_records.validate_attempt_started_payload(payloads[index])
-        except probe_records.ProbeRecordValidationError:
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        run_id = _merge_run_id(run_id, start.run_id)
-        if start.attempt_id in seen_attempt_ids:
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        seen_attempt_ids.add(start.attempt_id)
-        index += 1
-
+        start: probe_records.AttemptStartedRecord | None = None
         proofs: list[probe_records.ProofTerminalRecord] = []
-        for expected_proof in start.execution_order:
-            if index >= len(payloads):
-                probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-            try:
-                proof = probe_records.validate_proof_terminal_payload(payloads[index])
-            except probe_records.ProbeRecordValidationError:
-                probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-            run_id = _merge_run_id(run_id, proof.run_id)
-            if proof.attempt_id != start.attempt_id or proof.proof != expected_proof:
-                probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-            proofs.append(proof)
-            index += 1
-
-        if index >= len(payloads):
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        try:
-            terminal = probe_records.validate_attempt_terminal_payload(payloads[index])
-        except probe_records.ProbeRecordValidationError:
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        run_id = _merge_run_id(run_id, terminal.run_id)
-        if terminal.attempt_id != start.attempt_id:
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
-        try:
-            probe_records.validate_attempt_terminal_matches(terminal, proofs)
-        except probe_records.ProbeRecordValidationError:
-            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+        terminal: probe_records.AttemptTerminalRecord | None = None
+        for step in attempt_sequence:
+            record_type = _step_record_type(step)
+            if record_type == contract.RECORD_TYPE_ATTEMPT_STARTED:
+                _require_step_count(step, 1)
+                if index >= len(payloads):
+                    probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+                record = _validate_step_record(record_type, payloads[index])
+                if not isinstance(record, probe_records.AttemptStartedRecord):
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                start = record
+                run_id = _merge_run_id(run_id, start.run_id)
+                if start.attempt_id in seen_attempt_ids:
+                    probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+                seen_attempt_ids.add(start.attempt_id)
+                index += 1
+            elif record_type == contract.RECORD_TYPE_PROOF_TERMINAL:
+                if start is None:
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                if step.get("count") != "len(execution_order)":
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                if step.get("order") != "execution_order":
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                for expected_proof in start.execution_order:
+                    if index >= len(payloads):
+                        probe_records.raise_probe_error(
+                            contract.STABLE_ERROR_STALE_ATTEMPT
+                        )
+                    record = _validate_step_record(record_type, payloads[index])
+                    if not isinstance(record, probe_records.ProofTerminalRecord):
+                        probe_records.raise_probe_error(
+                            contract.STABLE_ERROR_INTERNAL_ERROR
+                        )
+                    run_id = _merge_run_id(run_id, record.run_id)
+                    if (
+                        record.attempt_id != start.attempt_id
+                        or record.proof != expected_proof
+                    ):
+                        probe_records.raise_probe_error(
+                            contract.STABLE_ERROR_STALE_ATTEMPT
+                        )
+                    proofs.append(record)
+                    index += 1
+            elif record_type == contract.RECORD_TYPE_ATTEMPT_TERMINAL:
+                _require_step_count(step, 1)
+                if start is None:
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                if index >= len(payloads):
+                    probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+                record = _validate_step_record(record_type, payloads[index])
+                if not isinstance(record, probe_records.AttemptTerminalRecord):
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR
+                    )
+                terminal = record
+                run_id = _merge_run_id(run_id, terminal.run_id)
+                if terminal.attempt_id != start.attempt_id:
+                    probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+                try:
+                    probe_records.validate_attempt_terminal_matches(terminal, proofs)
+                except probe_records.ProbeRecordValidationError:
+                    probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+                index += 1
+            else:
+                probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+        if start is None or terminal is None:
+            probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
         attempt = probe_records.ProbeAttemptReplay(
             start=start,
             proofs=tuple(proofs),
@@ -174,8 +229,41 @@ def _fold_records(
         prior_retry_permitted = probe_records.attempt_terminal_retry_permitted(
             terminal, proofs
         )
-        index += 1
     return tuple(attempts), run_id, seen_attempt_ids
+
+
+def _attempt_sequence() -> tuple[dict[str, object], ...]:
+    sequence = contract.RECORD_CARDINALITY.get("attempt_sequence")
+    if not isinstance(sequence, tuple) or not all(
+        isinstance(step, dict) for step in sequence
+    ):
+        probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+    return sequence
+
+
+def _step_record_type(step: dict[str, object]) -> str:
+    record_type = step.get("type")
+    if not isinstance(record_type, str) or record_type not in contract.RECORD_TYPES:
+        probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+    return record_type
+
+
+def _require_step_count(step: dict[str, object], expected: int) -> None:
+    if step.get("count") != expected:
+        probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+
+
+def _validate_step_record(
+    record_type: str,
+    payload: Mapping[str, Any],
+) -> _ReplayRecord:
+    validator = _RECORD_VALIDATORS.get(record_type)
+    if validator is None:
+        probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+    try:
+        return validator(payload)
+    except probe_records.ProbeRecordValidationError:
+        probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
 
 
 def _merge_run_id(existing: str | None, value: str) -> str:

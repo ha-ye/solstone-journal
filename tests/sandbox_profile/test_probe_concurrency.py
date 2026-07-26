@@ -220,6 +220,7 @@ def test_release_and_cancellation_wait_for_in_flight_contact(tmp_path) -> None:
     release_journal = tmp_path / "release"
     contact_entered = threading.Event()
     finish_contact = threading.Event()
+    release_started = threading.Event()
     release_finished = threading.Event()
     with acquire_probe_slot(release_journal, run_id=RUN_ID) as slot:
         writer = begin_probe_attempt(
@@ -237,15 +238,20 @@ def test_release_and_cancellation_wait_for_in_flight_contact(tmp_path) -> None:
         contact_thread = threading.Thread(
             target=lambda: writer.dispatch_contact(proof, contact_operation)
         )
-        release_thread = threading.Thread(
-            target=lambda: (slot.release(), release_finished.set())
-        )
+
+        def release_slot() -> None:
+            release_started.set()
+            slot.release()
+            release_finished.set()
+
+        release_thread = threading.Thread(target=release_slot)
         contact_thread.start()
         release_thread_started = False
         try:
             assert contact_entered.wait(timeout=2)
             release_thread.start()
             release_thread_started = True
+            assert release_started.wait(timeout=2)
             time.sleep(0.05)
             assert not release_finished.is_set()
         finally:
@@ -262,6 +268,7 @@ def test_release_and_cancellation_wait_for_in_flight_contact(tmp_path) -> None:
     selected = probe_contract.CAPABILITY_ORDER[:2]
     contact_entered.clear()
     finish_contact.clear()
+    cancel_started = threading.Event()
     cancel_finished = threading.Event()
     with acquire_probe_slot(cancel_journal, run_id=RUN_ID) as slot:
         writer = begin_probe_attempt(
@@ -276,6 +283,7 @@ def test_release_and_cancellation_wait_for_in_flight_contact(tmp_path) -> None:
         )
 
         def cancel_attempt() -> None:
+            cancel_started.set()
             writer.write_cancelled_attempt(
                 proof=selected[0],
                 state=probe_contract.PROOF_STATE_FAILED,
@@ -291,6 +299,7 @@ def test_release_and_cancellation_wait_for_in_flight_contact(tmp_path) -> None:
             try:
                 assert contact_entered.wait(timeout=2)
                 cancel_future = executor.submit(cancel_attempt)
+                assert cancel_started.wait(timeout=2)
                 time.sleep(0.05)
                 assert not cancel_finished.is_set()
             finally:

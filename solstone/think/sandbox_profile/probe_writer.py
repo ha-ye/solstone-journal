@@ -131,18 +131,27 @@ class ProbeAttemptWriter:
             self._next_proof_index += 1
             self._proof_terminal_count += 1
 
+            try:
+                later_shape = _cancellation_later_proof_shape()
+            except probe_records.ProbeRecordValidationError:
+                self.slot._poison_unlocked(contract.STABLE_ERROR_INTERNAL_ERROR)
+                probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
             for later_proof in self.start.execution_order[self._next_proof_index :]:
                 try:
                     record = probe_records.build_proof_terminal_record(
                         run_id=self.start.run_id,
                         attempt_id=self.start.attempt_id,
                         proof=later_proof,
-                        state=contract.PROOF_STATE_NOT_RUN,
-                        checks=(),
-                        reason=contract.REASON_CANCELLED,
-                        duration_ms=None,
+                        state=later_shape.state,
+                        checks=later_shape.checks,
+                        reason=later_shape.reason,
+                        duration_ms=later_shape.duration_ms,
                         finished_at=finished_at,
                     )
+                    if record.cleanup_state != later_shape.cleanup_state:
+                        raise probe_records.ProbeRecordValidationError(
+                            "invalid cancellation later proof shape"
+                        )
                 except probe_records.ProbeRecordValidationError:
                     self.slot._poison_unlocked(contract.STABLE_ERROR_INTERNAL_ERROR)
                     probe_records.raise_probe_error(
@@ -314,3 +323,52 @@ def begin_probe_attempt(
             capacity_checked=True,
         )
         return ProbeAttemptWriter(slot=slot, start=start, attempt_dir=attempt_dir)
+
+
+@dataclass(frozen=True, slots=True)
+class _CancellationLaterProofShape:
+    state: str
+    checks: tuple[str, ...]
+    reason: str | None
+    duration_ms: int | None
+    cleanup_state: str
+
+
+def _cancellation_later_proof_shape() -> _CancellationLaterProofShape:
+    try:
+        shape = contract.CANCELLATION["later_proof"]
+    except KeyError as exc:
+        raise probe_records.ProbeRecordValidationError(
+            "invalid cancellation rule"
+        ) from exc
+    if not isinstance(shape, dict):
+        raise probe_records.ProbeRecordValidationError("invalid cancellation rule")
+    try:
+        state = shape[contract.FIELD_STATE]
+        checks = shape[contract.FIELD_CHECKS]
+        reason = shape[contract.FIELD_REASON]
+        duration_ms = shape[contract.FIELD_DURATION_MS]
+        cleanup_state = shape[contract.FIELD_CLEANUP_STATE]
+    except KeyError as exc:
+        raise probe_records.ProbeRecordValidationError(
+            "invalid cancellation rule"
+        ) from exc
+    if not isinstance(state, str):
+        raise probe_records.ProbeRecordValidationError("invalid cancellation rule")
+    if not isinstance(checks, tuple) or not all(
+        isinstance(check, str) for check in checks
+    ):
+        raise probe_records.ProbeRecordValidationError("invalid cancellation rule")
+    if reason is not None and not isinstance(reason, str):
+        raise probe_records.ProbeRecordValidationError("invalid cancellation rule")
+    if duration_ms is not None:
+        probe_records.validate_non_negative_int(duration_ms)
+    if not isinstance(cleanup_state, str):
+        raise probe_records.ProbeRecordValidationError("invalid cancellation rule")
+    return _CancellationLaterProofShape(
+        state=state,
+        checks=checks,
+        reason=reason,
+        duration_ms=duration_ms,
+        cleanup_state=cleanup_state,
+    )
