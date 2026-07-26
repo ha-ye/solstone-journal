@@ -14,9 +14,11 @@ AppServices.register('support', {
       if (window.appEvents) {
         window.appEvents.listen('support', function(msg) {
           if (msg.event === 'proactive_suggestion') {
+            const service = msg.service || 'unknown';
             AppServices.notifications.show({
               app: 'support',
               icon: 'life-buoy',
+              key: `support:proactive_suggestion:${service}`,
               title: 'Support suggestion',
               message: msg.message || 'Something may need attention.',
               action: '/app/support',
