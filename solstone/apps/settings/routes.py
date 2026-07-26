@@ -26,7 +26,7 @@ from solstone.apps.settings import install_copy, transcribe_resource
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
-from solstone.convey.icons import resolve_facet_icon_svg
+from solstone.convey.icons import resolve_icon_svg
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
@@ -131,7 +131,7 @@ def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object
         "color": str(data.get("color") or ""),
         "emoji": str(data.get("emoji") or ""),
         "icon": str(data.get("icon") or ""),
-        "icon_svg": resolve_facet_icon_svg(
+        "icon_svg": resolve_icon_svg(
             data.get("icon"), str(data.get("emoji") or "")
         ),
         "muted": bool(data.get("muted", False)),

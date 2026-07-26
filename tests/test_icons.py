@@ -17,7 +17,7 @@ from solstone.convey.icons import (
     is_lucide_icon,
     lucide_svg,
     lucide_svg_for_emoji,
-    resolve_facet_icon_svg,
+    resolve_icon_svg,
     search_lucide_icons,
 )
 
@@ -54,14 +54,14 @@ def test_lucide_svg_for_emoji_hit_and_miss() -> None:
     assert lucide_svg_for_emoji("🪮") is None
 
 
-def test_resolve_facet_icon_svg_precedence_and_fallback() -> None:
-    assert resolve_facet_icon_svg("brain", "📚") == lucide_svg("brain")
-    assert resolve_facet_icon_svg(None, "📚") == lucide_svg("library")
-    assert resolve_facet_icon_svg("", "📚") == lucide_svg("library")
-    assert resolve_facet_icon_svg("definitely-not-an-icon", "📚") == lucide_svg(
+def test_resolve_icon_svg_precedence_and_fallback() -> None:
+    assert resolve_icon_svg("brain", "📚") == lucide_svg("brain")
+    assert resolve_icon_svg(None, "📚") == lucide_svg("library")
+    assert resolve_icon_svg("", "📚") == lucide_svg("library")
+    assert resolve_icon_svg("definitely-not-an-icon", "📚") == lucide_svg(
         "library"
     )
-    assert resolve_facet_icon_svg("coins", "🪮") == lucide_svg("coins")
+    assert resolve_icon_svg("coins", "🪮") == lucide_svg("coins")
 
 
 def test_search_lucide_icons_lock_matches_name_or_tag() -> None:

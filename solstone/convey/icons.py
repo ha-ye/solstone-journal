@@ -104,8 +104,8 @@ def lucide_svg_for_emoji(emoji: str) -> str | None:
     return lucide_svg(icon_name)
 
 
-def resolve_facet_icon_svg(icon: str | None, emoji: str) -> str | None:
-    """Resolve a facet icon override, falling back to the emoji mapping."""
+def resolve_icon_svg(icon: str | None, emoji: str) -> str | None:
+    """Resolve a Lucide icon override, falling back to the emoji mapping."""
     if icon:
         svg = lucide_svg(icon)
         if svg is not None:

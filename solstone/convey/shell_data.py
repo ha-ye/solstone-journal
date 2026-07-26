@@ -22,7 +22,7 @@ from solstone.convey.config import (
     reporting_enabled,
     set_selected_facet,
 )
-from solstone.convey.icons import APP_LUCIDE_MAP, lucide_svg, resolve_facet_icon_svg
+from solstone.convey.icons import APP_LUCIDE_MAP, lucide_svg, resolve_icon_svg
 from solstone.convey.provider_readiness import is_blocking_reason, present_for_reason
 from solstone.think.talent_runs import AgentFailure, read_unresolved_agent_failures
 
@@ -57,9 +57,7 @@ def _get_facets_data() -> list[dict]:
                 "color": data.get("color", ""),
                 "emoji": data.get("emoji", ""),
                 "icon": data.get("icon", ""),
-                "icon_svg": resolve_facet_icon_svg(
-                    data.get("icon"), data.get("emoji", "")
-                ),
+                "icon_svg": resolve_icon_svg(data.get("icon"), data.get("emoji", "")),
             }
         )
 
