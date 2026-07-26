@@ -13,10 +13,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from solstone.think.sandbox_profile import manifest
+CONTRACT_VERSION = 1
 
-CONTRACT_VERSION = manifest.CONTRACT_VERSION
-CAPABILITY_ORDER = manifest.CAPABILITY_ORDER
+CAPABILITY_SCOUT = "scout"
+CAPABILITY_SPL = "spl"
+CAPABILITY_SPB = "spb"
+CAPABILITY_SPP = "spp"
+CAPABILITY_RUNTIME = "runtime"
+
+CAPABILITY_ORDER: tuple[str, ...] = (
+    CAPABILITY_SCOUT,
+    CAPABILITY_SPL,
+    CAPABILITY_SPB,
+    CAPABILITY_SPP,
+    CAPABILITY_RUNTIME,
+)
 
 HEALTH_DIR_NAME = "health"
 SANDBOX_PROFILE_DIR_NAME = "sandbox-profile"
@@ -129,57 +140,57 @@ STABLE_ERRORS: tuple[str, ...] = (
 )
 
 PROOF_CHECKS: dict[str, tuple[str, ...]] = {
-    manifest.CAPABILITY_SCOUT: (
-        f"{manifest.CAPABILITY_SCOUT}.response_schema",
-        f"{manifest.CAPABILITY_SCOUT}.nonce_match",
-        f"{manifest.CAPABILITY_SCOUT}.finish",
-        f"{manifest.CAPABILITY_SCOUT}.usage",
+    CAPABILITY_SCOUT: (
+        f"{CAPABILITY_SCOUT}.response_schema",
+        f"{CAPABILITY_SCOUT}.nonce_match",
+        f"{CAPABILITY_SCOUT}.finish",
+        f"{CAPABILITY_SCOUT}.usage",
     ),
-    manifest.CAPABILITY_SPL: (
-        f"{manifest.CAPABILITY_SPL}.enrollment",
-        f"{manifest.CAPABILITY_SPL}.relay_dial",
-        f"{manifest.CAPABILITY_SPL}.inner_tls",
-        f"{manifest.CAPABILITY_SPL}.observer_registered",
-        f"{manifest.CAPABILITY_SPL}.segment_transferred",
-        f"{manifest.CAPABILITY_SPL}.segment_landed",
-        f"{manifest.CAPABILITY_SPL}.authorization_removed",
+    CAPABILITY_SPL: (
+        f"{CAPABILITY_SPL}.enrollment",
+        f"{CAPABILITY_SPL}.relay_dial",
+        f"{CAPABILITY_SPL}.inner_tls",
+        f"{CAPABILITY_SPL}.observer_registered",
+        f"{CAPABILITY_SPL}.segment_transferred",
+        f"{CAPABILITY_SPL}.segment_landed",
+        f"{CAPABILITY_SPL}.authorization_removed",
     ),
-    manifest.CAPABILITY_SPB: (
-        f"{manifest.CAPABILITY_SPB}.repository_initialized",
-        f"{manifest.CAPABILITY_SPB}.snapshot_created",
-        f"{manifest.CAPABILITY_SPB}.snapshot_confirmed",
-        f"{manifest.CAPABILITY_SPB}.restore_match",
-        f"{manifest.CAPABILITY_SPB}.local_cleanup",
+    CAPABILITY_SPB: (
+        f"{CAPABILITY_SPB}.repository_initialized",
+        f"{CAPABILITY_SPB}.snapshot_created",
+        f"{CAPABILITY_SPB}.snapshot_confirmed",
+        f"{CAPABILITY_SPB}.restore_match",
+        f"{CAPABILITY_SPB}.local_cleanup",
     ),
-    manifest.CAPABILITY_SPP: (
-        f"{manifest.CAPABILITY_SPP}.attestation_session",
-        f"{manifest.CAPABILITY_SPP}.text_nonce",
-        f"{manifest.CAPABILITY_SPP}.text_usage",
-        f"{manifest.CAPABILITY_SPP}.transcript_expected",
+    CAPABILITY_SPP: (
+        f"{CAPABILITY_SPP}.attestation_session",
+        f"{CAPABILITY_SPP}.text_nonce",
+        f"{CAPABILITY_SPP}.text_usage",
+        f"{CAPABILITY_SPP}.transcript_expected",
     ),
-    manifest.CAPABILITY_RUNTIME: (
-        f"{manifest.CAPABILITY_RUNTIME}.supervisor",
-        f"{manifest.CAPABILITY_RUNTIME}.callosum",
-        f"{manifest.CAPABILITY_RUNTIME}.listener",
-        f"{manifest.CAPABILITY_RUNTIME}.sense",
-        f"{manifest.CAPABILITY_RUNTIME}.task_queue",
-        f"{manifest.CAPABILITY_RUNTIME}.cortex",
-        f"{manifest.CAPABILITY_RUNTIME}.talent_output",
-        f"{manifest.CAPABILITY_RUNTIME}.talent_usage",
-        f"{manifest.CAPABILITY_RUNTIME}.cadence_contract",
-        f"{manifest.CAPABILITY_RUNTIME}.cadence_dry_run",
+    CAPABILITY_RUNTIME: (
+        f"{CAPABILITY_RUNTIME}.supervisor",
+        f"{CAPABILITY_RUNTIME}.callosum",
+        f"{CAPABILITY_RUNTIME}.listener",
+        f"{CAPABILITY_RUNTIME}.sense",
+        f"{CAPABILITY_RUNTIME}.task_queue",
+        f"{CAPABILITY_RUNTIME}.cortex",
+        f"{CAPABILITY_RUNTIME}.talent_output",
+        f"{CAPABILITY_RUNTIME}.talent_usage",
+        f"{CAPABILITY_RUNTIME}.cadence_contract",
+        f"{CAPABILITY_RUNTIME}.cadence_dry_run",
     ),
 }
 
 _PROOF_REASON_EXCLUSIONS: dict[str, frozenset[str]] = {
-    manifest.CAPABILITY_SCOUT: frozenset(
+    CAPABILITY_SCOUT: frozenset(
         {
             REASON_ATTESTATION_UNVERIFIED,
             REASON_RUNTIME_UNAVAILABLE,
             REASON_CADENCE_CONTRACT_MISMATCH,
         }
     ),
-    manifest.CAPABILITY_SPL: frozenset(
+    CAPABILITY_SPL: frozenset(
         {
             REASON_USAGE_INVALID,
             REASON_ATTESTATION_UNVERIFIED,
@@ -187,7 +198,7 @@ _PROOF_REASON_EXCLUSIONS: dict[str, frozenset[str]] = {
             REASON_CADENCE_CONTRACT_MISMATCH,
         }
     ),
-    manifest.CAPABILITY_SPB: frozenset(
+    CAPABILITY_SPB: frozenset(
         {
             REASON_USAGE_INVALID,
             REASON_ATTESTATION_UNVERIFIED,
@@ -195,13 +206,13 @@ _PROOF_REASON_EXCLUSIONS: dict[str, frozenset[str]] = {
             REASON_CADENCE_CONTRACT_MISMATCH,
         }
     ),
-    manifest.CAPABILITY_SPP: frozenset(
+    CAPABILITY_SPP: frozenset(
         {
             REASON_RUNTIME_UNAVAILABLE,
             REASON_CADENCE_CONTRACT_MISMATCH,
         }
     ),
-    manifest.CAPABILITY_RUNTIME: frozenset(
+    CAPABILITY_RUNTIME: frozenset(
         {
             REASON_REMOTE_REJECTED,
             REASON_ATTESTATION_UNVERIFIED,
@@ -224,15 +235,15 @@ PROOF_SPECIFIC_REASONS: dict[str, tuple[str, ...]] = {
 # has a terminal cleanup check.
 DECLARED_CLEANUP_STATES: dict[str, str] = {
     # Request/response probe; no durable remote or local artifact is created.
-    manifest.CAPABILITY_SCOUT: CLEANUP_STATE_VERIFIED,
+    CAPABILITY_SCOUT: CLEANUP_STATE_VERIFIED,
     # Local authorization is removed, but a synthetic segment remains landed.
-    manifest.CAPABILITY_SPL: CLEANUP_STATE_RETAINED_SYNTHETIC,
+    CAPABILITY_SPL: CLEANUP_STATE_RETAINED_SYNTHETIC,
     # Local cleanup precedes terminalization; retained state is the remote snapshot.
-    manifest.CAPABILITY_SPB: CLEANUP_STATE_RETAINED_SYNTHETIC,
+    CAPABILITY_SPB: CLEANUP_STATE_RETAINED_SYNTHETIC,
     # Attested text round trip; no durable artifact is retained.
-    manifest.CAPABILITY_SPP: CLEANUP_STATE_VERIFIED,
+    CAPABILITY_SPP: CLEANUP_STATE_VERIFIED,
     # Runtime is the sandbox substrate and cannot self-clean mid-probe.
-    manifest.CAPABILITY_RUNTIME: CLEANUP_STATE_RETAINED_SYNTHETIC,
+    CAPABILITY_RUNTIME: CLEANUP_STATE_RETAINED_SYNTHETIC,
 }
 
 

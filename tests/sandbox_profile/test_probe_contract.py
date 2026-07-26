@@ -7,7 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from solstone.think.sandbox_profile import probe_contract
+from solstone.think.sandbox_profile import manifest, probe_contract
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "build_sandbox_probe_contract.py"
@@ -108,6 +108,30 @@ def test_probe_v1_vocabulary_is_pinned() -> None:
             "usage_invalid",
         ),
     }
+
+
+def test_probe_contract_agrees_with_manifest_today() -> None:
+    assert probe_contract.CONTRACT_VERSION == manifest.CONTRACT_VERSION
+    assert probe_contract.CAPABILITY_SCOUT == manifest.CAPABILITY_SCOUT
+    assert probe_contract.CAPABILITY_SPL == manifest.CAPABILITY_SPL
+    assert probe_contract.CAPABILITY_SPB == manifest.CAPABILITY_SPB
+    assert probe_contract.CAPABILITY_SPP == manifest.CAPABILITY_SPP
+    assert probe_contract.CAPABILITY_RUNTIME == manifest.CAPABILITY_RUNTIME
+    assert probe_contract.CAPABILITY_ORDER == manifest.CAPABILITY_ORDER
+
+
+def test_probe_contract_ignores_manifest_monkeypatch(monkeypatch) -> None:
+    before = probe_contract.contract_payload()
+
+    monkeypatch.setattr(manifest, "CONTRACT_VERSION", 999)
+    monkeypatch.setattr(manifest, "CAPABILITY_SCOUT", "changed-scout")
+    monkeypatch.setattr(
+        manifest,
+        "CAPABILITY_ORDER",
+        ("changed-scout", "spl", "spb", "spp", "runtime"),
+    )
+
+    assert probe_contract.contract_payload() == before
 
 
 def test_contract_artifact_matches_constants() -> None:
