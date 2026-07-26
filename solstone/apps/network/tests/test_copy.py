@@ -27,6 +27,7 @@ def test_copy_constants_are_locked() -> None:
     )
     assert copy.DEVICE_LABEL_FIELD_LABEL == "name this device"
     assert copy.DEVICE_LABEL_PLACEHOLDER == "e.g. my iPhone"
+    assert copy.DEVICE_LABEL_PLACEHOLDER_COMPUTER == "e.g. my laptop"
     assert copy.DEVICE_LABEL_DEFAULT_FORMAT == "device — added {month} {day}"
     assert copy.EXPIRED_BUTTON == "this code expired — show a new one"
     assert copy.WINDOW_CLOSED_BUTTON == "pairing window closed — open a new one"

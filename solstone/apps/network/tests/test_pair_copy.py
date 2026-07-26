@@ -27,6 +27,7 @@ U4_COPY_NAMES = (
     "SUCCESS_VERIFY_NOTE",
     "SUCCESS_REMOVE_LABEL",
     "DEVICE_LABEL_PLACEHOLDER",
+    "DEVICE_LABEL_PLACEHOLDER_COMPUTER",
     "HERO_TITLE",
     "HERO_BODY",
     "HERO_HOW_REACH_LABEL",
@@ -93,6 +94,7 @@ def test_u4_copy_values_are_locked() -> None:
     )
     assert copy.SUCCESS_REMOVE_LABEL == "that wasn't me — remove"
     assert copy.DEVICE_LABEL_PLACEHOLDER == "e.g. my iPhone"
+    assert copy.DEVICE_LABEL_PLACEHOLDER_COMPUTER == "e.g. my laptop"
     assert copy.HERO_TITLE == "let's connect a device"
     assert copy.HERO_BODY == (
         "your journal lives here, on this device. to read it from your phone or "

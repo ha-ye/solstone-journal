@@ -27,6 +27,7 @@ CA_FP_NOTE = (
 )
 DEVICE_LABEL_FIELD_LABEL = "name this device"
 DEVICE_LABEL_PLACEHOLDER = "e.g. my iPhone"
+DEVICE_LABEL_PLACEHOLDER_COMPUTER = "e.g. my laptop"
 DEVICE_LABEL_DEFAULT_FORMAT = "device — added {month} {day}"
 PAIR_LINK_FIELD_LABEL = "pairing link"
 PAIR_LINK_COPY_LABEL = "copy link"

@@ -23,6 +23,12 @@ def _function_body(body: str, start_marker: str, end_marker: str) -> str:
     return body[start:end]
 
 
+def _rule_body(body: str, start_marker: str) -> str:
+    start = body.index(start_marker)
+    end = body.index("}", start)
+    return body[start:end]
+
+
 def _link_copy(env) -> dict[str, object]:
     response = env.client.get("/app/network/api/state")
     assert response.status_code == 200
@@ -98,8 +104,20 @@ def test_pair_presentation_css_modes_keep_phone_grid(link_env) -> None:
         ".link-pair-grid.is-glasses .link-pair-qr-cell { grid-row: auto; width: 100%; }"
         in body
     )
-    assert ".link-pair-grid.is-glasses .link-qr-container svg," in body
-    assert "max-width: 100%" in body
+    base_qr_rule = _rule_body(body, ".link-qr-container svg, .link-qr-container img")
+    assert "max-width: 260px;" in base_qr_rule
+    assert "height: auto;" in base_qr_rule
+
+    glasses_svg_selector = ".link-pair-grid.is-glasses .link-qr-container svg,"
+    glasses_img_selector = ".link-pair-grid.is-glasses .link-qr-container img"
+    assert body.count(glasses_svg_selector) == 1
+    assert body.count(glasses_img_selector) == 1
+    glasses_qr_rule = _rule_body(body, glasses_svg_selector)
+    assert glasses_img_selector in glasses_qr_rule
+    assert "width: 100%;" in glasses_qr_rule
+    assert "max-width: min(100%, 360px);" in glasses_qr_rule
+    assert "height: auto;" in glasses_qr_rule
+    assert "max-width: 100%;" not in glasses_qr_rule
     assert ".link-pair-grid.is-glasses .link-pair-label-edit" in body
     assert ".link-pair-grid.is-glasses .link-pair-details" in body
 
@@ -149,6 +167,22 @@ def test_pair_render_seam_uses_current_pair_without_label_clobber(link_env) -> N
     assert body.count("deviceLabelInput.value = data.device_label;") == 1
 
 
+def test_pair_copy_seam_sets_mode_aware_device_placeholder(link_env) -> None:
+    body = _body(link_env)
+
+    set_copy_body = _function_body(
+        body,
+        "function setPairCopy()",
+        "function relativeTime(iso)",
+    )
+    assert "const linkCopy = window.LinkCopy || {};" in set_copy_body
+    assert "presentationMode === 'computer'" in set_copy_body
+    assert "linkCopy.DEVICE_LABEL_PLACEHOLDER_COMPUTER" in set_copy_body
+    assert "linkCopy.DEVICE_LABEL_PLACEHOLDER" in set_copy_body
+    assert "deviceLabelInput.placeholder = placeholder;" in set_copy_body
+    assert "deviceLabelInput.value" not in set_copy_body
+
+
 def test_pair_mode_switch_does_not_request_new_pair_code(link_env) -> None:
     body = _body(link_env)
 
@@ -158,6 +192,7 @@ def test_pair_mode_switch_does_not_request_new_pair_code(link_env) -> None:
         "function selectedPresentationIndex",
     )
     assert "presentationMode = mode;" in set_mode_body
+    assert "setPairCopy();" in set_mode_body
     assert "renderPairPresentation();" in set_mode_body
     assert "requestPairCode" not in set_mode_body
 
