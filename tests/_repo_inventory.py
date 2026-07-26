@@ -34,8 +34,22 @@ from typing import TypeAlias
 #   tests/test_openapi_schemathesis.py has 6 unmarked default-selected tests
 #   that rewrite .hypothesis/unicode_data/15.1.0/codec-utf-8.json.gz on every
 #   run, which is otherwise a regular-file change at repo root.
+# - target / dist: build outputs, not repository source. cargo and uv rewrite
+#   them constantly, and on a working clone core/target alone carries ~23k files
+#   (~7 GB), which is enough to push a nine-case before/after inventory past
+#   pytest's 15s timeout. A clean checkout of the same commit walks ~73 MB and
+#   the same test finishes in under two seconds, so including them made the
+#   result depend on how much the clone had been built in, not on the product.
 EXCLUDED_RUNTIME_DIR_NAMES: frozenset[str] = frozenset(
-    {".git", ".venv", ".pytest_cache", "__pycache__", ".hypothesis"}
+    {
+        ".git",
+        ".venv",
+        ".pytest_cache",
+        "__pycache__",
+        ".hypothesis",
+        "target",
+        "dist",
+    }
 )
 
 
