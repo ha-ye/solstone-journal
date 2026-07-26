@@ -186,6 +186,7 @@ check-rust-ios:
 check-rust-deny:
 	@$(REQUIRE_CARGO)
 	@python3 scripts/check_release_preflight.py cargo-deny
+	cargo fetch --manifest-path $(RUST_MANIFEST) --locked
 	cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline check bans licenses sources
 
 audit:

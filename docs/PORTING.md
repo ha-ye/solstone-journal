@@ -80,6 +80,13 @@ that build the ONNX crate (`make check-rust-msrv`, `make check-rust-clippy`, and
 `make check-rust-test`) run Cargo through `scripts/resolve_onnxruntime_capi.py`,
 which imports the Python module `onnxruntime` using `.venv/bin/python`; this
 works whether the installed distribution is `onnxruntime` or `onnxruntime-gpu`.
+Using the resolver for MSRV and clippy is a deliberate consistency and
+early-failure choice, not a compile necessity: `cargo check` and clippy do not
+link, so they could otherwise pass through `ort-sys`' deferred `cfg(link_error)`
+path when no ONNX Runtime location is configured. The repository gates instead
+lint and check the real dynamic-link configuration, so provisioning problems fail
+uniformly before the `check-rust-test` link step. The consequence is that these
+workspace build and lint gates require the journal venv.
 
 The resolver stages symlinks, never copies, under
 `core/target/onnxruntime-link/<platform>/lib/`. Linux stages
