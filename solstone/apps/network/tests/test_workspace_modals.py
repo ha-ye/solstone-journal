@@ -33,6 +33,10 @@ def test_workspace_modals_are_hidden_by_attribute_and_css(link_env):
     padding_declaration = modal_rule[padding_start:padding_end]
     assert "--facet-bar-height" in padding_declaration
     assert "--app-bar-height" in padding_declaration
+    assert (
+        "padding: calc(var(--facet-bar-height) + 12px) 0 calc(var(--app-bar-height) + 80px);"
+        in body
+    )
 
     full_modal_box_rule = _rule_body(body, ".link-modal-box { background:")
     assert "max-height: 100%;" in full_modal_box_rule
