@@ -232,7 +232,7 @@ def test_writer_record_write_failure_poisons_later_contact(
             attempt_id=ATTEMPT_ID,
             started_at=FIXED_TS,
         )
-        writer.assert_contact_allowed(proof)
+        writer.dispatch_contact(proof, lambda: None)
 
         def fail_write(_fd, _data):
             raise OSError("secret")
@@ -250,5 +250,5 @@ def test_writer_record_write_failure_poisons_later_contact(
         assert excinfo.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED
 
         with pytest.raises(probe_records.ProbeOperationError) as blocked:
-            writer.assert_contact_allowed(proof)
+            writer.dispatch_contact(proof, lambda: None)
         assert blocked.value.code == probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED

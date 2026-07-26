@@ -100,9 +100,9 @@ def test_writer_enforces_contact_and_proof_order(tmp_path) -> None:
             attempt_id=THIRD_ATTEMPT_ID,
             started_at=FIXED_TS,
         )
-        writer.assert_contact_allowed(selected[0])
+        writer.dispatch_contact(selected[0], lambda: None)
         with pytest.raises(probe_records.ProbeOperationError) as excinfo:
-            writer.assert_contact_allowed(selected[1])
+            writer.dispatch_contact(selected[1], lambda: None)
         assert excinfo.value.code == probe_contract.STABLE_ERROR_INTERNAL_ERROR
         with pytest.raises(probe_records.ProbeOperationError):
             writer.write_attempt_terminal()

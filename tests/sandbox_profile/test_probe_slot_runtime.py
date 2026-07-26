@@ -59,7 +59,7 @@ def _begin(
 
 def _write_passed_proof(writer: ProbeAttemptWriter) -> None:
     proof = _proof()
-    writer.assert_contact_allowed(proof)
+    writer.dispatch_contact(proof, lambda: None)
     writer.write_proof_terminal(
         proof=proof,
         state=probe_contract.PROOF_STATE_PASSED,
@@ -134,7 +134,7 @@ def test_append_after_release_is_internal_without_mutation(tmp_path) -> None:
     proof = _proof()
     slot = acquire_probe_slot(journal, run_id=RUN_ID)
     writer = _begin(slot)
-    writer.assert_contact_allowed(proof)
+    writer.dispatch_contact(proof, lambda: None)
     slot.release()
     before = repository_inventory(journal)
 
@@ -415,7 +415,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
     proof_journal = tmp_path / "proof"
     with acquire_probe_slot(proof_journal, run_id=RUN_ID) as slot:
         writer = _begin(slot)
-        writer.assert_contact_allowed(proof)
+        writer.dispatch_contact(proof, lambda: None)
         remaining = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size
         monkeypatch.setattr(
             probe_durability,
@@ -436,7 +436,7 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
     over_journal = tmp_path / "proof-over"
     with acquire_probe_slot(over_journal, run_id=RUN_ID) as slot:
         writer = _begin(slot)
-        writer.assert_contact_allowed(proof)
+        writer.dispatch_contact(proof, lambda: None)
         before = probe_contract.probe_ledger_path(over_journal).stat().st_size
         too_large = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size + 1
         monkeypatch.setattr(
@@ -478,7 +478,7 @@ def test_writer_replacement_cannot_escape_poisoned_slot(monkeypatch, tmp_path) -
     proof = _proof()
     with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
         writer = _begin(slot)
-        writer.assert_contact_allowed(proof)
+        writer.dispatch_contact(proof, lambda: None)
 
         def fail_write(_fd, _data):
             raise OSError("secret")
@@ -512,3 +512,101 @@ def test_writer_replacement_cannot_escape_poisoned_slot(monkeypatch, tmp_path) -
     _assert_probe_error(second, probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
 
 
+def test_dispatch_contact_return_and_exception_consume_authorization(
+    tmp_path,
+) -> None:
+    proof = _proof()
+
+    return_journal = tmp_path / "return"
+    with acquire_probe_slot(return_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        result = object()
+
+        assert writer.dispatch_contact(proof, lambda: result) is result
+        with pytest.raises(probe_records.ProbeOperationError) as second_return:
+            writer.dispatch_contact(proof, lambda: object())
+
+    _assert_probe_error(second_return, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+    exception_journal = tmp_path / "exception"
+    expected = RuntimeError("caller failure")
+
+    def fail_contact() -> None:
+        raise expected
+
+    with acquire_probe_slot(exception_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        with pytest.raises(RuntimeError) as excinfo:
+            writer.dispatch_contact(proof, fail_contact)
+        with pytest.raises(probe_records.ProbeOperationError) as second_exception:
+            writer.dispatch_contact(proof, lambda: None)
+
+    assert excinfo.value is expected
+    _assert_probe_error(second_exception, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+
+def test_dispatch_contact_reentrant_callback_returns_internal_error(
+    tmp_path,
+) -> None:
+    proof = _proof()
+    with acquire_probe_slot(tmp_path / "journal", run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+
+        def reenter() -> None:
+            writer.dispatch_contact(proof, lambda: None)
+
+        with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+            writer.dispatch_contact(proof, reenter)
+        with pytest.raises(probe_records.ProbeOperationError) as second:
+            writer.dispatch_contact(proof, lambda: None)
+
+    _assert_probe_error(excinfo, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+    _assert_probe_error(second, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+
+def test_proof_terminal_requires_matching_contact_consumption(tmp_path) -> None:
+    proof = _proof()
+
+    passed_journal = tmp_path / "passed"
+    with acquire_probe_slot(passed_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        with pytest.raises(probe_records.ProbeOperationError) as missing_contact:
+            writer.write_proof_terminal(
+                proof=proof,
+                state=probe_contract.PROOF_STATE_PASSED,
+                checks=probe_contract.PROOF_CHECKS[proof],
+                reason=None,
+                duration_ms=1,
+                finished_at=FIXED_TS,
+            )
+
+    _assert_probe_error(missing_contact, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+    not_run_journal = tmp_path / "not-run"
+    with acquire_probe_slot(not_run_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        writer.dispatch_contact(proof, lambda: None)
+        with pytest.raises(probe_records.ProbeOperationError) as consumed_not_run:
+            writer.write_proof_terminal(
+                proof=proof,
+                state=probe_contract.PROOF_STATE_NOT_RUN,
+                checks=(),
+                reason=probe_contract.REASON_CANCELLED,
+                duration_ms=None,
+                finished_at=FIXED_TS,
+            )
+
+    _assert_probe_error(consumed_not_run, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+    clean_not_run_journal = tmp_path / "clean-not-run"
+    with acquire_probe_slot(clean_not_run_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        writer.write_proof_terminal(
+            proof=proof,
+            state=probe_contract.PROOF_STATE_NOT_RUN,
+            checks=(),
+            reason=probe_contract.REASON_CANCELLED,
+            duration_ms=None,
+            finished_at=FIXED_TS,
+        )
+        writer.write_attempt_terminal(finished_at=FIXED_TS)

@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from solstone.think.sandbox_profile import probe_contract as contract
 from solstone.think.sandbox_profile import probe_durability, probe_records, probe_slot
+
+T = TypeVar("T")
 
 
 @dataclass(slots=True)
@@ -22,8 +25,9 @@ class ProbeAttemptWriter:
     _next_proof_index: int = 0
     _proof_terminal_count: int = 0
     _terminal_written: bool = False
+    _contact_consumed: set[str] = field(default_factory=set)
 
-    def assert_contact_allowed(self, proof: str) -> None:
+    def dispatch_contact(self, proof: str, operation: Callable[[], T]) -> T:
         with self.slot.operation_guard():
             self._raise_if_not_active_unlocked()
             self._reject_after_terminal_unlocked()
@@ -37,6 +41,12 @@ class ProbeAttemptWriter:
                 probe_records.raise_probe_error(
                     contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
                 )
+            if proof in self._contact_consumed:
+                probe_records.raise_probe_error(
+                    contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
+                )
+            self._contact_consumed.add(proof)
+            return operation()
 
     def write_proof_terminal(
         self,
@@ -61,6 +71,7 @@ class ProbeAttemptWriter:
                 probe_records.raise_probe_error(
                     contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
                 )
+            self._validate_terminal_contact_unlocked(proof=proof, state=state)
             try:
                 record = probe_records.build_proof_terminal_record(
                     run_id=self.start.run_id,
@@ -136,6 +147,19 @@ class ProbeAttemptWriter:
                 contract.STABLE_ERROR_INTERNAL_ERROR, attempt_id=self.start.attempt_id
             )
         return self.start.execution_order[self._next_proof_index]
+
+    def _validate_terminal_contact_unlocked(self, *, proof: str, state: str) -> None:
+        consumed = proof in self._contact_consumed
+        if state in {contract.PROOF_STATE_PASSED, contract.PROOF_STATE_FAILED}:
+            if not consumed:
+                probe_records.raise_probe_error(
+                    contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
+                )
+            return
+        if state == contract.PROOF_STATE_NOT_RUN and consumed:
+            probe_records.raise_probe_error(
+                contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
+            )
 
 
 def begin_probe_attempt(
