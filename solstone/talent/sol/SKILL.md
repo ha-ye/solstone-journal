@@ -93,8 +93,8 @@ sol call support diagnose
 
 See [Commands](references/commands.md) for the generated inventory of every
 `sol call <app>` command contributed by app skill fragments, including triggers
-and read/write/other polarity. Regenerate it with `sol skills build` or
-`make skills`; do not inline those command tables here.
+and read/write/other polarity. Regenerate it with `make skills`
+(`scripts/build_skill_references.py`); do not inline those command tables here.
 
 ## Paths
 

@@ -167,7 +167,7 @@ After changing a router skill or an app command fragment, run:
 make skills
 ```
 
-That target first runs `sol skills build` to regenerate the checked-in references, then refreshes the `sol` + `journal` router skill symlinks inside the journal. `make install` also runs this target, and `make ci` / `make install-checks` runs `sol skills build --check` to catch stale generated references.
+That target first runs `scripts/build_skill_references.py` to regenerate the checked-in references, then refreshes the `sol` + `journal` router skill symlinks inside the journal. `make install` also runs this target, and `make ci` / `make install-checks` runs `scripts/build_skill_references.py --check` to catch stale generated references.
 
 ## Migrating from a source install to a packaged install
 

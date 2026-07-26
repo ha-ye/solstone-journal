@@ -43,5 +43,5 @@ The public `sol` / `solstone` launchers exec `solstone-core`, which routes throu
 - **Live Logs**: `journal/health/<service>.log`
 - **Agent Personas**: `solstone/talent/*.md` (apps can add their own talent files under `solstone/apps/*/talent/`, see [docs/APPS.md](docs/APPS.md))
 - **Generator Templates**: `solstone/talent/*.md` (apps can add their own talent files under `solstone/apps/*/talent/`, see [docs/APPS.md](docs/APPS.md))
-- **Agent Skills**: `solstone/talent/{sol,journal}/SKILL.md` - the two router skills installed into `journal/.agents/skills/` and `journal/.claude/skills/`; app `SKILL.md` fragments feed generated references via `sol skills build`
+- **Agent Skills**: `solstone/talent/{sol,journal}/SKILL.md` - the two router skills installed into `journal/.agents/skills/` and `journal/.claude/skills/`; app `SKILL.md` fragments feed generated references via `make skills` (`scripts/build_skill_references.py`)
 - **Scratch Space**: `scratch/` - git-ignored local workspace
