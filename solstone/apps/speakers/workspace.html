@@ -1706,9 +1706,9 @@
     ownerBanner.style.display = 'block';
     ownerBanner.innerHTML = `
       <div class="spk-owner-panel">
-        <div class="spk-owner-title">Is this your voice?</div>
+        <div class="spk-owner-title">is this your voice?</div>
         <div class="spk-owner-copy">
-          We found a likely owner voice pattern from ${escapeHtml(data.cluster_size || 0)} voice samples. Review a few examples before confirming.
+          we found a likely owner voice pattern from ${escapeHtml(data.cluster_size || 0)} voice samples. review a few examples before confirming.
         </div>
         <div class="spk-owner-samples">
           ${samples.map((sample, index) => `
@@ -3909,8 +3909,10 @@
     const speakers = data.speakers || [];
     if (speakers.length === 0) {
       knownContainer.innerHTML = `<div class="spk-overview-muted">${escapeHtml(COPY.SPK_OVERVIEW_KNOWN_VOICES_EMPTY)}</div>`;
+      sortSelect.hidden = true;
       return;
     }
+    sortSelect.hidden = false;
     knownContainer.innerHTML = `<div class="spk-known-grid">${speakers.map((speaker) => {
       const streams = speaker.streams || [];
       const href = `/app/speakers/${TODAY}?speaker=${encodeURIComponent(speaker.entity_id)}`;

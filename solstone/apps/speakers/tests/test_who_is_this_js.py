@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -13,6 +15,31 @@ WHO_IS_THIS_JS = (
     REPO_ROOT / "solstone" / "apps" / "speakers" / "static" / "who_is_this.js"
 )
 WORKSPACE_HTML = REPO_ROOT / "solstone" / "apps" / "speakers" / "workspace.html"
+APP_CSS = REPO_ROOT / "solstone" / "convey" / "static" / "app.css"
+REPO_WALK_PRUNE_DIRS = {
+    ".git",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "htmlcov",
+    "dist",
+    "build",
+    "target",
+    ".cache",
+    "logs",
+    "tmp",
+    "scratch",
+    "journal",
+}
+SPK_OVERVIEW_SELECT_CLASS = re.compile(r"\.spk-overview-select(?![A-Za-z0-9_-])")
+CSS_DISPLAY_DECLARATION = re.compile(r"(^|;)\s*display\s*:", re.IGNORECASE)
+CSS_DISPLAY_NONE_DECLARATION = re.compile(
+    r"(^|;)\s*display\s*:\s*none\b",
+    re.IGNORECASE,
+)
 
 
 def _node_or_skip() -> str:
@@ -696,6 +723,14 @@ function speakerCopy() {
     SPK_OVERVIEW_YOUR_VOICE_HEADER: 'your voice',
     SPK_OVERVIEW_CARD_LAST_HEARD_PREFIX: 'last',
     SPK_OVERVIEW_CARD_STREAMS_PREFIX: 'streams',
+    SPK_OVERVIEW_COHESION_LABELS: [
+      'learning',
+      'early',
+      'improving',
+      'good',
+      'strong',
+      'settled',
+    ],
     SPK_OVERVIEW_QUALITY_READY: 'quality ready',
     SPK_OVERVIEW_QUALITY_ERROR_HEADING: 'quality failed',
     SPK_OVERVIEW_QUALITY_TEACHING_ZERO: 'teaching zero',
@@ -945,6 +980,206 @@ def _run_workspace_node(body: str) -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _strip_css_comments(css: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+
+def _iter_css_rules(css: str):
+    source = _strip_css_comments(css)
+    index = 0
+    while index < len(source):
+        brace = source.find("{", index)
+        if brace == -1:
+            break
+        prelude = source[index:brace].strip()
+        prelude = prelude.rsplit(";", 1)[-1].strip()
+        depth = 1
+        cursor = brace + 1
+        in_string: str | None = None
+        escaped = False
+        while cursor < len(source) and depth:
+            char = source[cursor]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+            elif char in {"'", '"'}:
+                in_string = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            cursor += 1
+        if depth != 0:
+            raise AssertionError(f"unterminated CSS rule after {prelude!r}")
+        declarations = source[brace + 1 : cursor - 1]
+        if prelude:
+            if prelude.startswith("@"):
+                yield from _iter_css_rules(declarations)
+            else:
+                yield prelude, declarations
+        index = cursor
+
+
+def _split_selector_prelude(prelude: str) -> list[str]:
+    selectors: list[str] = []
+    start = 0
+    paren_depth = 0
+    bracket_depth = 0
+    in_string: str | None = None
+    escaped = False
+    for index, char in enumerate(prelude):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            continue
+        if char in {"'", '"'}:
+            in_string = char
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")" and paren_depth:
+            paren_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif char == "," and paren_depth == 0 and bracket_depth == 0:
+            selectors.append(prelude[start:index].strip())
+            start = index + 1
+    selectors.append(prelude[start:].strip())
+    return [selector for selector in selectors if selector]
+
+
+def _selector_applies_to_spk_overview_select(selector: str) -> bool:
+    return SPK_OVERVIEW_SELECT_CLASS.search(selector) is not None
+
+
+def _style_blocks(html: str) -> list[str]:
+    return [
+        match.group(1)
+        for match in re.finditer(r"<style[^>]*>(.*?)</style>", html, flags=re.DOTALL)
+    ]
+
+
+def _repo_text_files():
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [
+            dirname for dirname in dirnames if dirname not in REPO_WALK_PRUNE_DIRS
+        ]
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            try:
+                yield path, path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+
+
+def test_spk_overview_select_css_detector_handles_parser_edges() -> None:
+    css = """
+    @charset "utf-8";
+    @import "x.css";
+    .spk-overview-btn,
+    .spk-overview-link,
+    .spk-overview-select {
+      color: black;
+    }
+
+    .spk-overview-selection {
+      display: flex;
+    }
+
+    @media (min-width: 40rem) {
+      .spk-overview-select:hover {
+        color: blue;
+      }
+
+      .x .spk-overview-select {
+        color: red;
+      }
+    }
+    """
+    matched_selectors: list[str] = []
+    display_selectors: list[str] = []
+    for prelude, declarations in _iter_css_rules(css):
+        applying_selectors = [
+            selector
+            for selector in _split_selector_prelude(prelude)
+            if _selector_applies_to_spk_overview_select(selector)
+        ]
+        matched_selectors.extend(applying_selectors)
+        if CSS_DISPLAY_DECLARATION.search(declarations):
+            display_selectors.extend(applying_selectors)
+
+    assert ".spk-overview-select" in matched_selectors
+    assert ".spk-overview-select:hover" in matched_selectors
+    assert ".x .spk-overview-select" in matched_selectors
+    assert ".spk-overview-selection" not in matched_selectors
+    assert display_selectors == []
+
+
+def test_spk_overview_select_display_rules_have_hidden_override() -> None:
+    style_blocks = _style_blocks(WORKSPACE_HTML.read_text(encoding="utf-8"))
+    assert style_blocks, "no <style> blocks found in speakers workspace"
+    css_sources = [
+        (f"speakers workspace style block {index}", block)
+        for index, block in enumerate(style_blocks, start=1)
+    ]
+    css_sources.append(("convey app.css", APP_CSS.read_text(encoding="utf-8")))
+
+    failures: list[str] = []
+    for source_name, css in css_sources:
+        display_selectors: list[str] = []
+        has_hidden_display_none = False
+        for prelude, declarations in _iter_css_rules(css):
+            applying_selectors = [
+                selector
+                for selector in _split_selector_prelude(prelude)
+                if _selector_applies_to_spk_overview_select(selector)
+            ]
+            if not applying_selectors:
+                continue
+            declares_display = CSS_DISPLAY_DECLARATION.search(declarations) is not None
+            if (
+                declares_display
+                and CSS_DISPLAY_NONE_DECLARATION.search(declarations) is not None
+                and any("[hidden]" in selector for selector in applying_selectors)
+            ):
+                has_hidden_display_none = True
+            if declares_display:
+                display_selectors.extend(applying_selectors)
+        if display_selectors and not has_hidden_display_none:
+            failures.append(f"{source_name}: {', '.join(display_selectors)}")
+
+    assert not failures, (
+        ".spk-overview-select display rules need a co-located "
+        "[hidden] display:none override: " + "; ".join(failures)
+    )
+
+
+def test_owner_candidate_copy_uses_lowercase_literals_repo_wide() -> None:
+    old_title = "Is this " + "your voice?"
+    old_owner_prefix = "We found " + "a likely owner"
+    lowercase_title = "is this " + "your voice?"
+    offenders: list[str] = []
+    for path, text in _repo_text_files():
+        relative = path.relative_to(REPO_ROOT)
+        if old_title in text:
+            offenders.append(f"{relative}: uppercase owner title")
+        if old_owner_prefix in text:
+            offenders.append(f"{relative}: uppercase owner copy")
+
+    assert offenders == []
+    test_source = Path(__file__).read_text(encoding="utf-8")
+    assert test_source.count(lowercase_title) == 6
 
 
 def test_who_is_this_accessibility_contract() -> None:
@@ -1205,6 +1440,57 @@ def test_workspace_overview_full_undo_refreshes_known_quality_and_rediscovery() 
           assert(discoveryContainer.querySelector('[data-cluster-id="7"]'));
           assert(document.getElementById('spkDiscoveryClusters').innerHTML.includes('Restored Voice'));
           assert(!document.getElementById('spkKnownVoices').innerHTML.includes('Undone Person'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_known_sort_hidden_only_for_empty_results() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], { clusters: [] });
+          await flush();
+          await flush();
+
+          const sortSelect = document.getElementById('spkKnownSort');
+          const knownContainer = document.getElementById('spkKnownVoices');
+          assert.strictEqual(sortSelect.hidden, true);
+          assert(knownContainer.innerHTML.includes('known empty'));
+
+          sortSelect.dispatchEvent({ type: 'change', target: sortSelect });
+          await flush();
+          assert.strictEqual(queues.known.length, 2);
+          resolveFetch(queues.known[1], {
+            speakers: [
+              {
+                entity_id: 'known_person',
+                name: 'Known Person',
+                streams: ['daily'],
+                embedding_count: 2,
+                segment_count: 1,
+                last_seen_ts: '2026-07-26T10:00:00Z',
+                intra_cosine_p25: 0.8,
+              },
+            ],
+          });
+          await flush();
+          await flush();
+
+          assert.strictEqual(sortSelect.hidden, false);
+          assert(knownContainer.innerHTML.includes('spk-known-grid'));
+          assert(knownContainer.innerHTML.includes('Known Person'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1481,13 +1767,13 @@ def test_workspace_owner_status_latest_authoritative_deferred_settles_old_first(
           await flush();
           await flush();
           let target = assertOwnerBannerVisible(document, 'guidance');
-          assert(!target.textContent.includes('Is this your voice?'));
+          assert(!target.textContent.includes('is this your voice?'));
 
           resolveApi(queues.ownerStatus[1], { status: 'no_cluster' });
           await flush();
           await flush();
           target = assertOwnerBannerVisible(document, 'guidance');
-          assert(!target.textContent.includes('Is this your voice?'));
+          assert(!target.textContent.includes('is this your voice?'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1521,13 +1807,13 @@ def test_workspace_owner_status_latest_authoritative_deferred_settles_new_first(
           await flush();
           await flush();
           let target = assertOwnerBannerVisible(document, 'guidance');
-          assert(!target.textContent.includes('Is this your voice?'));
+          assert(!target.textContent.includes('is this your voice?'));
 
           resolveApi(queues.ownerStatus[0], { status: 'candidate', samples: [] });
           await flush();
           await flush();
           target = assertOwnerBannerVisible(document, 'guidance');
-          assert(!target.textContent.includes('Is this your voice?'));
+          assert(!target.textContent.includes('is this your voice?'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
@@ -1601,7 +1887,7 @@ def test_workspace_owner_teach_visible_outcome_replaces_guidance_without_refocus
           await flush();
           await flush();
 
-          const target = assertOwnerBannerVisible(document, 'Is this your voice?');
+          const target = assertOwnerBannerVisible(document, 'is this your voice?');
           assert(!target.textContent.includes('guidance'));
           assert.strictEqual(target.scrollIntoViewCalls.length, 1);
         })().catch((error) => { console.error(error); process.exit(1); });
@@ -1670,7 +1956,7 @@ def test_workspace_owner_teach_hash_away_invalidates_late_status_settle() -> Non
           await flush();
           assert.strictEqual(document.activeElement, nextFocus);
           assert.strictEqual(target.textContent, originalText);
-          assert(!target.textContent.includes('Is this your voice?'));
+          assert(!target.textContent.includes('is this your voice?'));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
