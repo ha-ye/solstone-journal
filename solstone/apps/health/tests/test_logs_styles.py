@@ -69,13 +69,19 @@ def _health_surface_source() -> str:
 
 
 def _css_rule(source: str, selector: str) -> str:
-    match = re.search(rf"{re.escape(selector)}\s*\{{(?P<body>[^}}]*)\}}", source)
-    assert match is not None, f"missing CSS rule for {selector}"
+    match = re.search(
+        rf"^{re.escape(selector)}\s*\{{(?P<body>[^}}]*)\}}",
+        source,
+        re.MULTILINE,
+    )
+    assert match is not None, f"no rule for {selector!r}"
     return match.group("body")
 
 
 def _hex_to_rgb(color: str) -> tuple[float, float, float]:
     value = color.removeprefix("#")
+    if len(value) == 3:
+        value = "".join(channel * 2 for channel in value)
     return tuple(int(value[index : index + 2], 16) / 255 for index in (0, 2, 4))
 
 
@@ -96,6 +102,64 @@ def _contrast_ratio(foreground: str, background: str) -> float:
     lighter = max(fg, bg)
     darker = min(fg, bg)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_logs_header_wraps_and_collapsed_override_intact():
+    source = _workspace_source()
+    header = _css_rule(source, ".logs-header")
+    collapsed = _css_rule(source, ".logs-card.logs-collapsed .logs-header")
+
+    assert re.search(r"display:\s*flex\s*;", header)
+    assert re.search(r"flex-wrap:\s*wrap\s*;", header)
+    assert re.search(r"row-gap:\s*0\.75em\s*;", header)
+    assert re.search(r"margin-bottom:\s*0\s*;", collapsed)
+
+
+def test_logs_controls_wrap_and_collapsed_override_intact():
+    source = _workspace_source()
+    controls = _css_rule(source, ".logs-controls")
+    collapsed = _css_rule(
+        source,
+        ".logs-card.logs-collapsed .logs-viewport,\n"
+        ".logs-card.logs-collapsed .logs-controls",
+    )
+
+    assert re.search(r"display:\s*flex\s*;", controls)
+    assert re.search(r"flex-wrap:\s*wrap\s*;", controls)
+    assert re.search(r"row-gap:\s*0\.75em\s*;", controls)
+    assert re.search(r"display:\s*none\s*;", collapsed)
+
+
+def test_severity_label_ink_matches_status_pill():
+    source = _workspace_source()
+    body = _css_rule(source, ".severity-label")
+
+    assert re.search(r"color:\s*#fff\s*;", body)
+    assert "#6b7280" not in body
+    for background in ("#16a34a", "#d97706", "#dc2626"):
+        assert _contrast_ratio("#fff", background) >= 3.0
+    for declaration in (
+        "font-size: 0.75em",
+        "text-transform: uppercase",
+        "letter-spacing: 0.05em",
+        "margin-left: 0.5em",
+    ):
+        assert re.search(rf"{re.escape(declaration)}\s*;", body)
+
+
+def test_h2_card_title_resets_user_agent_margin():
+    source = _workspace_source()
+    body = _css_rule(source, "h2.card-title")
+
+    assert re.search(r"margin:\s*0\s*;", body)
+
+
+def test_vitals_chip_constrains_width_and_breaks_long_identifiers():
+    source = _workspace_source()
+    body = _css_rule(source, ".vitals-chip")
+
+    assert re.search(r"max-width:\s*100%\s*;", body)
+    assert re.search(r"overflow-wrap:\s*anywhere\s*;", body)
 
 
 def test_level_colors_meet_wcag_contrast():

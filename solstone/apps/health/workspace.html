@@ -303,7 +303,7 @@
 
 .severity-label {
   font-size: 0.75em;
-  color: #6b7280;
+  color: #fff;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-left: 0.5em;
@@ -453,6 +453,10 @@
   display: flex;
   align-items: center;
   gap: 0.5em;
+}
+
+h2.card-title {
+  margin: 0;
 }
 
 .health-badge {
@@ -822,9 +826,11 @@
 
 .logs-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-start;
   align-items: center;
   gap: 0.75em;
+  row-gap: 0.75em;
   margin-bottom: 1em;
   cursor: pointer;
   user-select: none;
@@ -888,8 +894,10 @@
 
 .logs-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.75em;
+  row-gap: 0.75em;
 }
 
 .logs-controls label {
@@ -1157,6 +1165,7 @@
 
 .vitals-chip {
   display: inline-flex;
+  max-width: 100%;
   align-items: center;
   gap: 0.25em;
   background: #e5e7eb;
@@ -1164,6 +1173,7 @@
   padding: 0.15em 0.5em;
   border-radius: 10px;
   font-size: 0.8em;
+  overflow-wrap: anywhere;
 }
 
 .vitals-chip svg,
@@ -1406,7 +1416,7 @@
 
   <section class="dashboard-card brain-health-card" id="brain">
     <div class="section-header">
-      <h2>Brain Health</h2>
+      <h2 class="card-title">brain health</h2>
       <button id="brainCheckBtn" hidden>check again</button>
     </div>
     <div id="brainHealthStatus" role="status" aria-live="polite"></div>
@@ -1421,7 +1431,7 @@
   <div class="vitals-bar">
     <div class="vitals-header">
       <div class="vitals-title">
-        System vitals
+        system vitals
       </div>
       <div class="vitals-status" id="vitalsStatus" role="status" aria-live="polite">
         <span class="skeleton" style="width: 120px; height: 1em;">&nbsp;</span>
@@ -1509,17 +1519,17 @@
         <div class="observe-section-detail" id="audioDetail"></div>
       </div>
       <div class="observe-section">
-        <div class="observe-section-title">System Activity</div>
+        <div class="observe-section-title">system activity</div>
         <div class="observe-section-value" id="activityStatus">waiting...</div>
         <div class="observe-section-detail" id="activityDetail"></div>
       </div>
       <div class="observe-section">
-        <div class="observe-section-title">Scene Analysis</div>
+        <div class="observe-section-title">scene analysis</div>
         <div class="observe-section-value" id="describeStatus">idle</div>
         <div class="observe-section-detail" id="describeDetail"></div>
       </div>
       <div class="observe-section">
-        <div class="observe-section-title">Audio Transcription</div>
+        <div class="observe-section-title">audio transcription</div>
         <div class="observe-section-value" id="transcribeStatus">idle</div>
         <div class="observe-section-detail" id="transcribeDetail"></div>
       </div>
@@ -1615,7 +1625,7 @@
         </select>
         <label for="logStreamFilter" data-health-copy="LOGS_STREAM_FILTER_LABEL"></label>
         <select id="logStreamFilter">
-          <option value="all">All Streams</option>
+          <option value="all">all streams</option>
           <option value="stdout">stdout</option>
           <option value="stderr">stderr</option>
           <option value="log">log</option>

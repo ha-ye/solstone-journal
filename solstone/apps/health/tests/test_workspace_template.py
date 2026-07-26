@@ -144,6 +144,33 @@ def test_health_workspace_device_copy_replaces_observer_headings():
     assert '<div class="observe-section-title">screen</div>' in workspace
 
 
+def test_card_headings_use_lowercase_copy():
+    workspace = _workspace()
+
+    assert '<h2 class="card-title">brain health</h2>' in workspace
+    assert "Brain Health" not in workspace
+    assert "system vitals" in workspace
+    assert "System vitals" not in workspace
+
+
+def test_log_stream_filter_all_option_is_lowercase():
+    workspace = _workspace()
+
+    assert '<option value="all">all streams</option>' in workspace
+    assert "All Streams" not in workspace
+
+
+def test_observe_section_titles_use_lowercase_copy():
+    workspace = _workspace()
+
+    assert '<div class="observe-section-title">system activity</div>' in workspace
+    assert '<div class="observe-section-title">scene analysis</div>' in workspace
+    assert '<div class="observe-section-title">audio transcription</div>' in workspace
+    assert "System Activity" not in workspace
+    assert "Scene Analysis" not in workspace
+    assert "Audio Transcription" not in workspace
+
+
 def test_health_static_js_screen_copy_is_pinned_byte_for_byte():
     source = _health_js()
 
