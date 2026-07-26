@@ -120,7 +120,6 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         "solstone/apps/transcripts/routes.py",
         "solstone/think/data_state.py",
         "solstone/think/skills_cli.py",
-        "solstone/think/skills_build.py",
     }
 )
 

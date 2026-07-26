@@ -607,10 +607,13 @@ def main() -> int:
 
     try:
         if args.cmd == "build":
-            from solstone.think import skills_build
+            repo_root_text = str(repo_root)
+            if repo_root_text not in sys.path:
+                sys.path.insert(0, repo_root_text)
+            from scripts import build_skill_references as skill_references
 
             if args.check:
-                stale = skills_build.check()
+                stale = skill_references.check()
                 for path in stale:
                     print(
                         f"stale generated reference {path} (run `sol skills build`)",
@@ -621,7 +624,7 @@ def main() -> int:
                 print("generated skill references are current")
                 return 0
 
-            for path in skills_build.build():
+            for path in skill_references.build():
                 print(f"generated {path}")
             return 0
 

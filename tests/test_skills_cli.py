@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think import skills_build, skills_cli
+from scripts import build_skill_references
+from solstone.think import skills_cli
 from solstone.think.skills_cli import (
     install_project,
     install_user,
@@ -500,7 +501,7 @@ def test_user_skill_missing_file_fails_loudly(monkeypatch, tmp_path, capsys):
 def test_main_build_generates_references(monkeypatch, tmp_path, capsys):
     output = tmp_path / "commands.md"
     monkeypatch.setattr(skills_cli, "get_project_root", lambda: str(tmp_path))
-    monkeypatch.setattr(skills_build, "build", lambda: [output])
+    monkeypatch.setattr(build_skill_references, "build", lambda: [output])
     monkeypatch.setattr(sys, "argv", ["sol skills", "build"])
 
     exit_code = skills_cli.main()
@@ -512,7 +513,7 @@ def test_main_build_generates_references(monkeypatch, tmp_path, capsys):
 
 def test_main_build_check_green(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(skills_cli, "get_project_root", lambda: str(tmp_path))
-    monkeypatch.setattr(skills_build, "check", lambda: [])
+    monkeypatch.setattr(build_skill_references, "check", lambda: [])
     monkeypatch.setattr(sys, "argv", ["sol skills", "build", "--check"])
 
     exit_code = skills_cli.main()
@@ -525,7 +526,7 @@ def test_main_build_check_green(monkeypatch, tmp_path, capsys):
 def test_main_build_check_reports_stale_path(monkeypatch, tmp_path, capsys):
     stale = tmp_path / "commands.md"
     monkeypatch.setattr(skills_cli, "get_project_root", lambda: str(tmp_path))
-    monkeypatch.setattr(skills_build, "check", lambda: [stale])
+    monkeypatch.setattr(build_skill_references, "check", lambda: [stale])
     monkeypatch.setattr(sys, "argv", ["sol skills", "build", "--check"])
 
     exit_code = skills_cli.main()

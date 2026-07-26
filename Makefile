@@ -178,7 +178,7 @@ audit:
 
 # Setup skill symlinks
 skills:
-	@$(VENV_BIN)/sol skills build
+	@$(VENV_BIN)/python scripts/build_skill_references.py
 	@$(VENV_BIN)/sol skills install --project journal --agent all
 
 # Start local dev stack against fixture journal (no observers, no daily processing)
@@ -742,7 +742,7 @@ check-cogitate-prompts: .installed
 
 # Generated router skill references gate
 check-skill-references: .installed
-	$(VENV_BIN)/sol skills build --check
+	$(VENV_BIN)/python scripts/build_skill_references.py --check
 
 openapi:
 	$(VENV_BIN)/python scripts/build_openapi_contract.py

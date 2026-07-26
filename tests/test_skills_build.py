@@ -9,7 +9,7 @@ from pathlib import Path
 import frontmatter
 import pytest
 
-from solstone.think import skills_build
+from scripts import build_skill_references as skills_build
 from solstone.think.command_polarity import classify_verb
 
 REAL_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +47,13 @@ def _section(content: str, heading: str) -> str:
     if next_heading == -1:
         return content[start:]
     return content[start:next_heading]
+
+
+def test_default_root_points_to_repo_root():
+    """Guard parents[N] root arithmetic; _patch_root masks the default elsewhere."""
+    assert skills_build.ROOT == REAL_ROOT
+    assert (skills_build.ROOT / "pyproject.toml").is_file()
+    assert (skills_build.ROOT / "Makefile").is_file()
 
 
 def test_render_is_deterministic_and_build_check_is_current(monkeypatch, tmp_path):
