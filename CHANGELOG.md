@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.17] - 2026-07-26
+
+### Fixed
+
+- setting up your journal now finishes cleanly. two of its own steps were failing on every run, so setup reported a problem at the end even when your journal was fine, and on a Mac a brand new install could sit waiting at the last step and never finish.
+
 ## [1.0.16] - 2026-07-25
 
 ### Fixed
