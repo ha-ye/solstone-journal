@@ -411,6 +411,9 @@ def _scan_talent_day_indexes_for_24h_window(
     problems: dict[str, list[str]] = {}
     cutoff = generated_at - _DAY_MS
 
+    # Talent day indexes are keyed by content day (cortex's request["day"]), so
+    # a run executed in this window can live under an arbitrarily old filename.
+    # The row ts is the only reliable boundary for the 24h health counts.
     # Health intentionally ignores non-day-index root files; retention scans them
     # separately so it can explain why deletion was declined.
     for path in sorted(talents_dir.glob("*.jsonl")):

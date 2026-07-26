@@ -396,6 +396,14 @@ def test_ac8_ac9_talent_logs_indexes_and_malformed_names(journal):
     assert "malformed_date" in reasons
     assert "malformed_talent_index_row" in reasons
     assert "unreadable_talent_index" in reasons
+    error_paths = {error["path"] for error in result.errors}
+    malformed_paths = {
+        error["path"]
+        for error in result.errors
+        if error["reason"] == "malformed_talent_index_row"
+    }
+    assert old_malformed_index.relative_to(journal).as_posix() in malformed_paths
+    assert recent_index.relative_to(journal).as_posix() not in error_paths
 
 
 def test_ac10_ac11_symlink_unlinked_only_and_cache_mtime_day_logged(journal):
