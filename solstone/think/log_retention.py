@@ -431,7 +431,9 @@ def _scan_talent_day_index(
         _mark_skipped(result, "talent_day_index")
 
 
-def _inspect_old_talent_day_index(path: Path, cutoff: date) -> _TalentDayIndexInspection:
+def _inspect_old_talent_day_index(
+    path: Path, cutoff: date
+) -> _TalentDayIndexInspection:
     valid_row_days: list[date] = []
     try:
         with path.open(encoding="utf-8") as handle:

@@ -1043,7 +1043,9 @@ def test_corrupt_talent_day_index_rows_fail_closed_globally(
             "degraded": {"reason": "near_empty", "output_tokens": 12},
         },
     )
-    with (tmp_path / "talents" / "20260401.jsonl").open("a", encoding="utf-8") as handle:
+    with (tmp_path / "talents" / "20260401.jsonl").open(
+        "a", encoding="utf-8"
+    ) as handle:
         handle.write(raw_line)
 
     report = health_surface.summary("20260410")
