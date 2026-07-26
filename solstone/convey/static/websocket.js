@@ -347,7 +347,7 @@
         window.AppServices?.notifications?.dismiss(disconnectCardId);
         const reconnectedId = window.AppServices?.notifications?.show({
           app: 'system',
-          icon: '✓',
+          icon: 'check',
           title: 'reconnected',
           message: 'all features restored',
           dismissible: true
@@ -376,7 +376,7 @@
 	          disconnectTimerId = null;
 	          const id = window.AppServices?.notifications?.show({
             app: 'system',
-            icon: '⚠️',
+            icon: 'triangle-alert',
             title: 'connection lost',
             message: 'reconnecting. some features may be delayed',
             dismissible: false

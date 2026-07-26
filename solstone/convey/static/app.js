@@ -1568,7 +1568,7 @@ function captureReportContext({ heading, apiError, customDetail }) {
  */
 window.SurfaceState = (() => {
   const HEADING_LEVELS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
-  const ERROR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 21 19H3z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>';
+  const ERROR_ICON = window.ConveyIcons.svg('triangle-alert');
   const STRIP_LAST_KNOWN = /\s*[—-]\s*showing last known state\.?\s*$/i;
 
   function escapeHtml(value) {
@@ -2001,6 +2001,61 @@ window.AppServices = {
     _nextId: 1,
     _container: null,
     _dismissTimers: {},
+    _defaultIconName: 'mailbox',
+    _iconSvgByName: Object.freeze({
+      'trash-2': window.ConveyIcons.svg('trash-2'),
+      'undo-2': window.ConveyIcons.svg('undo-2'),
+      'timer': window.ConveyIcons.svg('timer'),
+      'triangle-alert': window.ConveyIcons.svg('triangle-alert'),
+      'mailbox': window.ConveyIcons.svg('mailbox'),
+      'life-buoy': window.ConveyIcons.svg('life-buoy'),
+      'bot': window.ConveyIcons.svg('bot'),
+      'circle-x': window.ConveyIcons.svg('circle-x'),
+      'circle-check': window.ConveyIcons.svg('circle-check'),
+      'refresh-cw': window.ConveyIcons.svg('refresh-cw'),
+      'check': window.ConveyIcons.svg('check'),
+      'mic-vocal': window.ConveyIcons.svg('mic-vocal'),
+      'eye': window.ConveyIcons.svg('eye')
+    }),
+    _legacyIconNameByGlyph: Object.freeze({
+      '🗑️': 'trash-2',
+      '↩️': 'undo-2',
+      '⏱️': 'timer',
+      '⚠️': 'triangle-alert',
+      '📬': 'mailbox',
+      '🛟': 'life-buoy',
+      '🤖': 'bot',
+      '❌': 'circle-x',
+      '✅': 'circle-check',
+      '🔄': 'refresh-cw',
+      '✓': 'check',
+      '🎙️': 'mic-vocal',
+      '👁️': 'eye'
+    }),
+
+    _iconNameFor(value) {
+      if (value === undefined || value === null || value === '') {
+        return this._defaultIconName;
+      }
+      const text = String(value);
+      if (Object.prototype.hasOwnProperty.call(this._iconSvgByName, text)) {
+        return text;
+      }
+      return this._legacyIconNameByGlyph[text] || null;
+    },
+
+    _normalizeIconName(value) {
+      const name = this._iconNameFor(value);
+      if (name) {
+        return name;
+      }
+      console.warn('[Notifications] unsupported icon value:', String(value));
+      return this._defaultIconName;
+    },
+
+    _resolveIcon(value) {
+      return this._iconSvgByName[this._iconNameFor(value) || this._defaultIconName];
+    },
 
     /**
      * Show a persistent notification card
@@ -2011,6 +2066,8 @@ window.AppServices = {
       const key = options.key ? String(options.key) : null;
       const workKey = options.work_key ? String(options.work_key) : null;
       const buttons = this._normalizeButtons(options.buttons);
+      const hasIcon = Object.prototype.hasOwnProperty.call(options, 'icon');
+      const normalizedIcon = hasIcon ? this._normalizeIconName(options.icon) : this._defaultIconName;
 
       if (key) {
         const existing = this._stack.find(n => n.key === key);
@@ -2020,7 +2077,7 @@ window.AppServices = {
           existing.count = existing._workKeys.size || 1;
           existing.lastSeen = Date.now();
           existing.app = options.app || existing.app;
-          existing.icon = options.icon || existing.icon;
+          if (hasIcon) existing.icon = normalizedIcon;
           existing.title = options.title || existing.title;
           existing.message = options.message || '';
           existing.action = options.action || null;
@@ -2038,7 +2095,7 @@ window.AppServices = {
       const notif = {
         id: this._nextId++,
         app: options.app || 'system',
-        icon: options.icon || '📬',
+        icon: normalizedIcon,
         title: options.title || 'Notification',
         message: options.message || '',
         action: options.action || null,
@@ -2066,7 +2123,6 @@ window.AppServices = {
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(notif.title, {
           body: notif.message,
-          icon: notif.icon,
           tag: `${notif.app}-${notif.id}`
         });
       }
@@ -2379,7 +2435,7 @@ window.AppServices = {
       const relativeTime = this._getRelativeTime(n.lastSeen || n.timestamp);
       card.innerHTML = `
         <div class="notification-header">
-          <span class="notification-app-icon">${window.AppServices.escapeHtml(n.icon)}</span>
+          <span class="notification-app-icon icon-slot" aria-hidden="true">${this._resolveIcon(n.icon)}</span>
           <span class="notification-app-name">${window.AppServices.escapeHtml(n.app)}</span>
           ${n.dismissible ? `<button class="notification-close" onclick="event.preventDefault(); event.stopPropagation(); window.AppServices.notifications.dismiss(${n.id});">×</button>` : ''}
         </div>
@@ -2423,6 +2479,11 @@ window.AppServices = {
      * @private
      */
     _updateCard(card, n) {
+      const iconEl = card.querySelector('.notification-app-icon');
+      if (iconEl) {
+        iconEl.innerHTML = this._resolveIcon(n.icon);
+      }
+
       // Update title
       const titleEl = card.querySelector('.notification-title');
       if (titleEl) {

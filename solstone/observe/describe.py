@@ -325,7 +325,7 @@ def _emit_blocked_notification(view) -> None:
         "work_key": view.work_key,
         "title": "Screen descriptions paused",
         "message": view.summary,
-        "icon": "👁️",
+        "icon": "eye",
         "app": "sense",
         "reason_code": view.reason_code,
         "provider": view.provider,

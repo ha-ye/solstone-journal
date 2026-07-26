@@ -3965,7 +3965,7 @@ function confirmDeleteJournalEntity() {
     let pendingNotificationId = null;
     pendingNotificationId = window.AppServices.notifications.show({
       app: 'entities',
-      icon: '🗑️',
+      icon: 'trash-2',
       title: 'Deleting entity…',
       message: 'Cancels in 10s',
       dismissible: true,
@@ -4000,7 +4000,7 @@ async function cancelJournalEntityDelete(pendingId, notificationId) {
       await loadEntities();
       window.AppServices.notifications.show({
         app: 'entities',
-        icon: '↩️',
+        icon: 'undo-2',
         title: 'Delete cancelled',
         autoDismiss: 3000
       });
@@ -4010,7 +4010,7 @@ async function cancelJournalEntityDelete(pendingId, notificationId) {
     if (response.status === 410) {
       window.AppServices.notifications.show({
         app: 'entities',
-        icon: '⏱️',
+        icon: 'timer',
         title: 'Too late — already deleted',
         autoDismiss: 3000
       });
@@ -4021,7 +4021,7 @@ async function cancelJournalEntityDelete(pendingId, notificationId) {
   } catch (error) {
     window.AppServices.notifications.show({
       app: 'entities',
-      icon: '⚠️',
+      icon: 'triangle-alert',
       title: 'Couldn\'t cancel delete',
       message: error.message || 'Please try again.',
       autoDismiss: 3000
@@ -4346,7 +4346,7 @@ function detachEntity(entity) {
         .replace('{name}', entityName);
       window.AppServices.notifications.show({
         app: 'entities',
-        icon: '↩️',
+        icon: 'undo-2',
         title: doneMessage,
         dismissible: true,
         autoDismiss: 8000,

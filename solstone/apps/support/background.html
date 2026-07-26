@@ -16,7 +16,7 @@ AppServices.register('support', {
           if (msg.event === 'proactive_suggestion') {
             AppServices.notifications.show({
               app: 'support',
-              icon: '🛟',
+              icon: 'life-buoy',
               title: 'Support suggestion',
               message: msg.message || 'Something may need attention.',
               action: '/app/support',

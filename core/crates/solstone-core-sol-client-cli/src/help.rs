@@ -6,7 +6,7 @@ use solstone_core_sol_client::aggregate::{self, InventoryEntry};
 use solstone_core_sol_client::command::CommandOutput;
 
 const ROOT_CONTRACT_JSON: &str = include_str!("../../../fixtures/native-sol/root-contract-v1.json");
-const NOTIFY_HELP: &str = "usage: sol notify [-h] [--title TITLE] [--icon ICON] [--event EVENT]\n                  [--action ACTION] [--facet FACET] [--app APP]\n                  [--badge BADGE] [--auto-dismiss AUTO_DISMISS] [--no-dismiss]\n                  [-v] [-d]\n                  message [message ...]\n\nSend a notification via callosum\n\npositional arguments:\n  message               notification message text\n\noptions:\n  -h, --help            show this help message and exit\n  --title TITLE         notification title\n  --icon ICON           emoji icon\n  --event EVENT         event name (default: show)\n  --action ACTION       URL path to open on click\n  --facet FACET         facet context\n  --app APP             source app name\n  --badge BADGE         badge text or number\n  --auto-dismiss AUTO_DISMISS\n                        auto-dismiss after N milliseconds\n  --no-dismiss          make notification non-dismissible\n  -v, --verbose         Enable verbose output\n  -d, --debug           Enable debug logging\n";
+const NOTIFY_HELP: &str = "usage: sol notify [-h] [--title TITLE] [--icon ICON] [--event EVENT]\n                  [--action ACTION] [--facet FACET] [--app APP]\n                  [--badge BADGE] [--auto-dismiss AUTO_DISMISS] [--no-dismiss]\n                  [-v] [-d]\n                  message [message ...]\n\nSend a notification via callosum\n\npositional arguments:\n  message               notification message text\n\noptions:\n  -h, --help            show this help message and exit\n  --title TITLE         notification title\n  --icon ICON           Lucide icon name (default: mailbox)\n  --event EVENT         event name (default: show)\n  --action ACTION       URL path to open on click\n  --facet FACET         facet context\n  --app APP             source app name\n  --badge BADGE         badge text or number\n  --auto-dismiss AUTO_DISMISS\n                        auto-dismiss after N milliseconds\n  --no-dismiss          make notification non-dismissible\n  -v, --verbose         Enable verbose output\n  -d, --debug           Enable debug logging\n";
 
 pub struct RootHelpStatus<'a> {
     pub journal_path: Option<&'a str>,
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(output.stdout, NOTIFY_HELP);
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit, 0);
-        assert_eq!(output.stdout.len(), 992);
+        assert_eq!(output.stdout.len(), 1017);
 
         let args = vec!["--help".to_string()];
         let env = BTreeMap::new();

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::command::{CommandContext, CommandOutput};
 
-const HELP: &str = "usage: sol notify [-h] [--title TITLE] [--icon ICON] [--event EVENT]\n                  [--action ACTION] [--facet FACET] [--app APP]\n                  [--badge BADGE] [--auto-dismiss AUTO_DISMISS] [--no-dismiss]\n                  [-v] [-d]\n                  message [message ...]\n\nSend a notification via callosum\n\npositional arguments:\n  message               notification message text\n\noptions:\n  -h, --help            show this help message and exit\n  --title TITLE         notification title\n  --icon ICON           emoji icon\n  --event EVENT         event name (default: show)\n  --action ACTION       URL path to open on click\n  --facet FACET         facet context\n  --app APP             source app name\n  --badge BADGE         badge text or number\n  --auto-dismiss AUTO_DISMISS\n                        auto-dismiss after N milliseconds\n  --no-dismiss          make notification non-dismissible\n  -v, --verbose         Enable verbose output\n  -d, --debug           Enable debug logging\n";
+const HELP: &str = "usage: sol notify [-h] [--title TITLE] [--icon ICON] [--event EVENT]\n                  [--action ACTION] [--facet FACET] [--app APP]\n                  [--badge BADGE] [--auto-dismiss AUTO_DISMISS] [--no-dismiss]\n                  [-v] [-d]\n                  message [message ...]\n\nSend a notification via callosum\n\npositional arguments:\n  message               notification message text\n\noptions:\n  -h, --help            show this help message and exit\n  --title TITLE         notification title\n  --icon ICON           Lucide icon name (default: mailbox)\n  --event EVENT         event name (default: show)\n  --action ACTION       URL path to open on click\n  --facet FACET         facet context\n  --app APP             source app name\n  --badge BADGE         badge text or number\n  --auto-dismiss AUTO_DISMISS\n                        auto-dismiss after N milliseconds\n  --no-dismiss          make notification non-dismissible\n  -v, --verbose         Enable verbose output\n  -d, --debug           Enable debug logging\n";
 const FAILURE: &str = "Failed to send notification (is callosum running?)\n";
 
 #[must_use]
@@ -281,7 +281,7 @@ mod tests {
         let output = run_notify_case(&["--help"], None);
 
         assert_eq!(output, CommandOutput::success(HELP));
-        assert_eq!(HELP.len(), 992);
+        assert_eq!(HELP.len(), 1017);
         assert!(HELP.ends_with('\n'));
     }
 
@@ -358,7 +358,7 @@ mod tests {
                 "--title",
                 "Test",
                 "--icon",
-                "\u{1f514}",
+                "triangle-alert",
                 "--event",
                 "custom",
                 "--action",
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(output.exit, 0);
         assert_eq!(
             sink.recorded(),
-            vec!["{\"tract\": \"notification\", \"event\": \"custom\", \"message\": \"hello world\", \"title\": \"Test\", \"icon\": \"\\ud83d\\udd14\", \"action\": \"/open\", \"facet\": \"work\", \"app\": \"alerts\", \"badge\": \"7\", \"autoDismiss\": 3000, \"dismissible\": false}\n".to_string()]
+            vec!["{\"tract\": \"notification\", \"event\": \"custom\", \"message\": \"hello world\", \"title\": \"Test\", \"icon\": \"triangle-alert\", \"action\": \"/open\", \"facet\": \"work\", \"app\": \"alerts\", \"badge\": \"7\", \"autoDismiss\": 3000, \"dismissible\": false}\n".to_string()]
         );
         let line = &sink.recorded()[0];
         assert!(line.contains("\"autoDismiss\": 3000"));
@@ -395,13 +395,28 @@ mod tests {
     #[test]
     fn non_ascii_matches_python_json_dumps_ensure_ascii() {
         let sink = RecordingNotificationSink::new();
-        let output = run_notify_case(&["--icon", "\u{1f514}", "h\u{e9}llo"], Some(&sink));
+        let output = run_notify_case(&["--icon", "triangle-alert", "h\u{e9}llo"], Some(&sink));
 
         assert_eq!(output.exit, 0);
         assert_eq!(
             sink.recorded(),
             vec![
-                "{\"tract\": \"notification\", \"event\": \"show\", \"message\": \"h\\u00e9llo\", \"icon\": \"\\ud83d\\udd14\"}\n"
+                "{\"tract\": \"notification\", \"event\": \"show\", \"message\": \"h\\u00e9llo\", \"icon\": \"triangle-alert\"}\n"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn icon_option_remains_transport_only() {
+        let sink = RecordingNotificationSink::new();
+        let output = run_notify_case(&["--icon", "not-a-lucide-name", "hello"], Some(&sink));
+
+        assert_eq!(output.exit, 0);
+        assert_eq!(
+            sink.recorded(),
+            vec![
+                "{\"tract\": \"notification\", \"event\": \"show\", \"message\": \"hello\", \"icon\": \"not-a-lucide-name\"}\n"
                     .to_string()
             ]
         );

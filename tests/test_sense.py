@@ -13,6 +13,7 @@ import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +36,7 @@ from solstone.observe.processing_record import (
     build_processing_record,
     read_processing_record_header,
 )
-from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
+from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem, _handler_icon
 from solstone.think import admission
 from solstone.think.processing import (
     DisplayPowersaveSettings,
@@ -221,6 +222,54 @@ BEACON_FIELDS = {
     "memory_floor_mib",
     "memory_available_mib",
 }
+
+
+def test_handler_icon_returns_notification_lucide_names():
+    assert _handler_icon("transcribe") == "mic-vocal"
+    assert _handler_icon("describe") == "eye"
+    assert _handler_icon("depict") == "bot"
+
+
+def test_describe_blocked_notification_uses_lucide_eye_icon(monkeypatch):
+    sent = []
+
+    def fake_callosum_send(tract, event, **fields):
+        sent.append((tract, event, fields))
+        return True
+
+    monkeypatch.setattr(describe_module, "callosum_send", fake_callosum_send)
+
+    describe_module._emit_blocked_notification(
+        SimpleNamespace(
+            semantic_key="provider_key_missing:vision",
+            work_key="20260726/default/seg",
+            summary="screen descriptions paused",
+            reason_code="missing_key",
+            provider="provider",
+            model="model",
+            context="describe",
+            recovery_action=None,
+        )
+    )
+
+    assert sent == [
+        (
+            "notification",
+            "show",
+            {
+                "key": "provider_key_missing:vision",
+                "work_key": "20260726/default/seg",
+                "title": "Screen descriptions paused",
+                "message": "screen descriptions paused",
+                "icon": "eye",
+                "app": "sense",
+                "reason_code": "missing_key",
+                "provider": "provider",
+                "model": "model",
+                "context": "describe",
+            },
+        )
+    ]
 
 
 def _status_emit_calls(sensor):

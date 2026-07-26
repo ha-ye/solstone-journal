@@ -215,7 +215,7 @@ Both badge types appear as red notification counts.
 ```javascript
 {
   app: 'my_app',          // App name (required)
-  icon: '📬',             // Emoji icon (optional)
+  icon: 'mailbox',        // Lucide icon name (optional, default: mailbox)
   title: 'New Message',   // Title (required)
   message: 'You have...', // Message body (optional)
   action: '/app/entities', // Click action URL (optional)
