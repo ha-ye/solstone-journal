@@ -472,6 +472,27 @@ def test_proof_and_terminal_prospective_boundaries(monkeypatch, tmp_path) -> Non
         writer.write_attempt_terminal(finished_at=FIXED_TS)
         assert slot._ledger_tracked_size == probe_contract.MAX_LEDGER_BYTES
 
+    monkeypatch.setattr(probe_durability, "encode_jsonl_record", original_encode)
+    terminal_over_journal = tmp_path / "terminal-over"
+    with acquire_probe_slot(terminal_over_journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        _write_passed_proof(writer)
+        before = probe_contract.probe_ledger_path(terminal_over_journal).stat().st_size
+        too_large = probe_contract.MAX_LEDGER_BYTES - slot._ledger_tracked_size + 1
+        monkeypatch.setattr(
+            probe_durability,
+            "encode_jsonl_record",
+            lambda _record: b"x" * too_large,
+        )
+        with pytest.raises(probe_records.ProbeOperationError) as terminal_over:
+            writer.write_attempt_terminal(finished_at=FIXED_TS)
+        after = probe_contract.probe_ledger_path(terminal_over_journal).stat().st_size
+
+    _assert_probe_error(
+        terminal_over, probe_contract.STABLE_ERROR_ATTEMPT_LIMIT_REACHED
+    )
+    assert after == before
+
 
 def test_writer_replacement_cannot_escape_poisoned_slot(monkeypatch, tmp_path) -> None:
     journal = tmp_path / "journal"
