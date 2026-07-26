@@ -67,6 +67,66 @@ def _function_sources(*names: str) -> str:
     return "\n".join(_function_source(source, name) for name in names)
 
 
+def _class_specificity(selector: str) -> int:
+    return selector.count(".")
+
+
+def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
+    index = css.find(f"{selector} {{", start)
+    assert index != -1, f"{selector} rule was not found"
+    close = css.find("}", index)
+    assert close != -1, f"{selector} rule is not closed"
+    return index, css[index : close + 1]
+
+
+_WORKSPACE_COPY_CASE_PAIRS = (
+    ("How did I sleep?", "how did I sleep?"),
+    ("What was glucose doing?", "what was glucose doing?"),
+    ("How active was I?", "how active was I?"),
+    ("Heart &amp; breathing", "heart &amp; breathing"),
+    ("How recovered am I?", "how recovered am I?"),
+    ("Mind & sound", "mind & sound"),
+    ("Walking metrics", "walking metrics"),
+    ("Body measurements", "body measurements"),
+    ("Other signals", "other signals"),
+    ("Sources this day", "sources this day"),
+    ("Body archive", "body archive"),
+    ("Recent body days", "recent body days"),
+    ("Explore all history", "explore all history"),
+    ("Coverage areas", "coverage areas"),
+    ("Sources represented", "sources represented"),
+    (
+        '<h2 id="body-sources-fresh-title" class="body-section-title">Sources</h2>',
+        '<h2 id="body-sources-fresh-title" class="body-section-title">sources</h2>',
+    ),
+    (
+        '<h2 class="body-highlight-title">Sleep</h2>',
+        '<h2 class="body-highlight-title">sleep</h2>',
+    ),
+    (
+        '<h2 class="body-highlight-title">Glucose</h2>',
+        '<h2 class="body-highlight-title">glucose</h2>',
+    ),
+    (
+        '<h2 class="body-highlight-title">Workouts</h2>',
+        '<h2 class="body-highlight-title">workouts</h2>',
+    ),
+    (
+        '<h2 class="body-highlight-title">Sources</h2>',
+        '<h2 class="body-highlight-title">sources</h2>',
+    ),
+    ("What your body added to the day", "what your body added to the day"),
+    ("Body overview", "body overview"),
+    ("Open day", "open day"),
+    ("Open latest day", "open latest day"),
+    (
+        '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>',
+        '<a class="body-btn body-btn--outline" href="/app/body/trends">trends</a>',
+    ),
+    ("Body · Trends", "body · trends"),
+)
+
+
 def _node_or_skip() -> str:
     node = shutil.which("node")
     if node is None:
@@ -817,7 +877,7 @@ def test_day_api_and_workspace_cover_summary_and_glucose_facts_only(body_env):
 
     source = _function_sources("renderDayAudit", "renderGlucoseCard")
     assert "Day summary" in source
-    assert "What was glucose doing?" in source
+    assert "what was glucose doing?" in source
     assert "mean_label" in source
     lowered = source.lower()
     assert "normal glucose" not in lowered
@@ -832,11 +892,11 @@ def test_day_api_lede_and_workspace_hero_render_once(body_env):
     lede = env.client.get("/app/body/api/day/20260703").get_json()["lede"]
     source = _function_source(_workspace_source(), "renderDayBrief")
 
-    # The lede lives in the "What your body added to the day" hero card
+    # The lede lives in the "what your body added to the day" hero card
     # only — the page header carries just the date context.
     assert lede
     assert source.count("bodyDay.lede") == 1
-    assert "What your body added to the day" in source
+    assert "what your body added to the day" in source
 
 
 def test_body_workspace_template_avoids_surveillance_verbs():
@@ -2058,6 +2118,51 @@ def test_overview_recent_days_workspace_renders_snap_carousel():
     assert "controls.hidden = true" in source
 
 
+def test_body_card_grid_children_reset_sibling_margins_after_root_rule():
+    source = _workspace_source()
+    comment = (
+        "/* Specificity 2 and late: also zeros .body-section's 22px on "
+        "matching children; none carry both today. */"
+    )
+    reset_start_marker = (
+        "\n.body-main-grid > .body-card,\n"
+        ".body-highlights > .body-card,\n"
+        ".body-lists > .body-card {"
+    )
+    root_selector = ".body-card + .body-card"
+    reset_selector = ".body-main-grid > .body-card"
+
+    assert comment in source
+    assert "," not in comment
+    reset_start = source.index(reset_start_marker)
+    reset_tail_index, reset_tail_rule = _rule_block(source, ".body-lists > .body-card")
+    reset_close = source.index("}", reset_tail_index)
+    reset_rule = source[reset_start : reset_close + 1]
+    reset_prelude = reset_rule[: reset_rule.index("{")]
+
+    assert ".body-main-grid > .body-card," in reset_prelude
+    assert ".body-highlights > .body-card," in reset_prelude
+    assert ".body-lists > .body-card" in reset_prelude
+    assert reset_prelude.count(",") == 2
+    assert "margin-top: 0;" in reset_tail_rule
+
+    root_index, root_rule = _rule_block(source, f"\n{root_selector}")
+    assert "margin-top: var(--space-3);" in root_rule
+    assert _class_specificity(reset_selector) == 2
+    assert _class_specificity(root_selector) == 2
+    assert root_index < reset_start, "reset wins over sibling margins by source order"
+
+    assert source.count(reset_selector) == 1
+    after_reset_selector = source[source.index(reset_selector) + len(reset_selector) :]
+    assert after_reset_selector.lstrip().startswith(",")
+
+    carousel_index, _ = _rule_block(
+        source, "\n.body-recent-carousel .body-card + .body-card"
+    )
+    assert root_index < carousel_index
+    assert ".body-recent-carousel" not in root_rule
+
+
 def _seed_july_days(journal: Path, last_day: int) -> None:
     """One glucose entry per day for 2026-07-01 … 2026-07-``last_day``."""
     rows = [
@@ -2264,16 +2369,25 @@ def test_status_api_and_workspace_cover_archive_sections(body_env):
     assert archive["day_grid"]
     assert archive["families"]
     assert archive["sources"]
-    assert "Body archive" in source
-    assert "Recent body days" in source
-    assert "Explore all history" in source
-    assert "Coverage areas" in source
-    assert "Sources represented" in source
+    assert "body archive" in source
+    assert "recent body days" in source
+    assert "explore all history" in source
+    assert "coverage areas" in source
+    assert "sources represented" in source
     assert "body-day-cell" in source
     assert "months held" in source
     # Month labels above the grid and the ramp legend under it.
     assert "body-days-months" in source
     assert "more body data" in source
+
+
+def test_body_workspace_copy_uses_lowercase_display_register():
+    source = _workspace_source()
+
+    assert len(_WORKSPACE_COPY_CASE_PAIRS) == 26
+    for old, new in _WORKSPACE_COPY_CASE_PAIRS:
+        assert new in source, f"lowercase workspace copy missing: {new!r}"
+        assert old not in source, f"uppercase workspace copy remains: {old!r}"
 
 
 def test_status_api_archive_latest_day_and_month_labels(body_env):
@@ -2337,7 +2451,7 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     assert archive["latest_day"] == "20260704"
     assert archive["coverage"]["start_month"] == "2026-07"
     assert archive["coverage"]["end_month"] == "2026-07"
-    assert "Open latest day" in source
+    assert "open latest day" in source
     assert "bodyDayHref(latestDay)" in source
     assert 'href="/app/body/trends"' in source
     assert "Jump to date" not in source
@@ -2356,6 +2470,24 @@ def test_overview_quick_entry_row_and_section_order(body_env):
         overview_source.index("renderOverviewAudit"),
     ]
     assert order == sorted(order)
+
+
+def test_overview_solid_quick_action_uses_dark_ink_and_darker_hover():
+    source = _workspace_source()
+    mix = "color-mix(in srgb, var(--orange) 80%, var(--ink))"
+
+    _, solid_rule = _rule_block(source, ".body-btn--solid")
+    _, hover_rule = _rule_block(source, ".body-btn--solid:hover")
+
+    assert "color: var(--ink);" in solid_rule
+    assert "color: var(--paper);" not in solid_rule
+    assert f"background: {mix};" in hover_rule
+    assert f"border-color: {mix};" in hover_rule
+    assert "var(--orange-ink)" not in solid_rule
+    assert "var(--orange-ink)" not in hover_rule
+    assert not any(
+        line.strip().startswith("color:") for line in hover_rule.splitlines()
+    )
 
 
 # --- Overview vs day-page navigation model --------------------------------------
@@ -2387,7 +2519,7 @@ def test_valid_day_page_serves_shell_and_workspace_has_overview_backlink(body_en
     assert "Day summary" not in html
     assert "Glucose 100–140 mg/dL." not in html
     source = _workspace_source()
-    assert "Body overview" in source
+    assert "body overview" in source
     assert 'renderHeader("", "", true, { showTitle: false })' in source
     assert "data-date-nav-heading" in source
 
@@ -3700,7 +3832,7 @@ def test_day_api_walking_metrics_summarize_values(body_env):
     assert walking["Walking asymmetry percentage"]["summary"] == "avg 3%"
 
     source = _function_sources("renderSecondaryLists", "renderSimpleFactSection")
-    assert "Walking metrics" in source
+    assert "walking metrics" in source
     assert "fact.summary" in source
     # Entry counts stay secondary next to the value.
     assert walking["Walking speed"]["count_label"] == "3"
@@ -3937,7 +4069,7 @@ def test_day_api_audio_levels_summarize_factual_range(body_env):
     assert facts["Environmental audio level"] == "2 entries · 61.7–84.6 dB"
 
     source = _function_sources("renderSecondaryLists", "renderSimpleFactSection")
-    assert "Mind & sound" in source
+    assert "mind & sound" in source
     assert "fact.value" in source
     # Factual range only inside the card — no exposure judgments.
     lowered = "\n".join(_collect_strings(payload["mind_sound"])).lower()
@@ -4008,8 +4140,8 @@ def test_day_api_body_measurements_and_other_signals_cards(body_env):
     assert other_facts["Number of times fallen"] == "1"
 
     source = _function_source(_workspace_source(), "renderSecondaryLists")
-    assert "Body measurements" in source
-    assert "Other signals" in source
+    assert "body measurements" in source
+    assert "other signals" in source
 
 
 def test_day_api_multi_row_body_measurements_show_latest_value(body_env):
@@ -4210,7 +4342,7 @@ def test_overview_titles_carry_sources_month_qualifier(body_env):
     assert status["sources_month_label"] == "July 2026"
 
     source = _function_sources("renderSourcesRepresented", "renderOverviewAudit")
-    assert "Sources represented" in source
+    assert "sources represented" in source
     assert "status.sources_month_label" in source
     assert "By source" in source
 
@@ -4880,11 +5012,11 @@ def test_trends_init_selects_trends_segment_only():
     trends_at = source.index("function initBodyTrends()")
     assert overview_at < day_at < trends_at
 
-    # Header: Trends title plus the overview backlink, day-page idiom.
+    # Header: trends title plus the overview backlink, day-page idiom.
     branch = _function_sources("renderHeader", "renderTrendsShell", "initBodyTrends")
-    assert "Body · Trends" in branch
+    assert "body · trends" in branch
     assert 'href="/app/body/"' in branch
-    assert "Body overview" in branch
+    assert "body overview" in branch
     assert 'if (segment !== "trends") return;' in branch
 
 
@@ -4975,11 +5107,11 @@ def test_trends_overview_button_sits_in_quick_entry_row():
     source = _function_source(_workspace_source(), "renderQuickActions")
 
     assert (
-        '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>'
+        '<a class="body-btn body-btn--outline" href="/app/body/trends">trends</a>'
         in source
     )
     # The link sits in the quick-entry row after the latest-day button.
-    latest_at = source.index("Open latest day")
+    latest_at = source.index("open latest day")
     trends_at = source.index('href="/app/body/trends"')
     assert latest_at < trends_at
 
@@ -6364,6 +6496,14 @@ def test_fact_typical_median_rides_muted_never_colorized(body_env):
     rule = source[rule_at : source.index("}", rule_at)]
     assert "var(--ink-faint-paper)" in rule
     assert "orange" not in rule
+
+
+def test_fact_typical_style_does_not_force_nowrap():
+    source = _trends_workspace_source()
+    rule_at = source.index(".body-fact-typical {")
+    rule = source[rule_at : source.index("}", rule_at)]
+
+    assert "white-space: nowrap" not in rule
 
 
 def test_fact_typical_absent_without_key(body_env):

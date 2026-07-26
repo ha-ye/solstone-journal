@@ -92,10 +92,6 @@
   gap: var(--space-3);
 }
 
-.body-main-grid > .body-card {
-  margin-top: 0;
-}
-
 .body-card {
   background: var(--paper);
   border: 1px solid var(--hairline);
@@ -113,6 +109,13 @@
 
 .body-card + .body-card {
   margin-top: var(--space-3);
+}
+
+/* Specificity 2 and late: also zeros .body-section's 22px on matching children; none carry both today. */
+.body-main-grid > .body-card,
+.body-highlights > .body-card,
+.body-lists > .body-card {
+  margin-top: 0;
 }
 
 .body-card-label {
@@ -230,12 +233,12 @@
 .body-btn--solid {
   background: var(--orange);
   border: 1px solid var(--orange);
-  color: var(--paper);
+  color: var(--ink);
 }
 
 .body-btn--solid:hover {
-  background: var(--orange-ink);
-  border-color: var(--orange-ink);
+  background: color-mix(in srgb, var(--orange) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--orange) 80%, var(--ink));
 }
 
 .body-btn--outline {
@@ -1098,7 +1101,7 @@ a.body-day-cell:focus-visible {
       '<header class="body-header">',
       showTitle ? `<h1 class="body-title">${escapeHtml(title)}</h1>` : "",
       subtitle ? `<p class="body-subtitle">${escapeHtml(subtitle)}</p>` : "",
-      backLink ? '<nav class="body-nav" aria-label="Body views"><a class="body-link" href="/app/body/">&larr; Body overview</a></nav>' : "",
+      backLink ? '<nav class="body-nav" aria-label="Body views"><a class="body-link" href="/app/body/">&larr; body overview</a></nav>' : "",
       '</header>',
     ]);
   }
@@ -1124,7 +1127,7 @@ a.body-day-cell:focus-visible {
       recent.workout_count ? `<li><span>Workouts</span><strong class="body-num">${escapeHtml(recent.workout_count)}</strong></li>` : "",
       `<li><span>Sources</span><strong class="body-num">${escapeHtml(recent.source_count ?? 0)}</strong></li>`,
       '</ul>',
-      `<p class="body-card-footer"><a class="body-link" href="${bodyDayHref(day)}">Open day</a></p>`,
+      `<p class="body-card-footer"><a class="body-link" href="${bodyDayHref(day)}">open day</a></p>`,
       '</div>',
       '</article>',
     ]);
@@ -1142,7 +1145,7 @@ a.body-day-cell:focus-visible {
       '<section class="body-card body-archive-hero" aria-labelledby="body-archive-title">',
       '<div class="body-hero-icon" aria-hidden="true">♡</div>',
       '<div>',
-      '<h2 id="body-archive-title" class="body-section-title">Body archive</h2>',
+      '<h2 id="body-archive-title" class="body-section-title">body archive</h2>',
       '<p class="body-hero-kicker">what your journal holds about your body over time.</p>',
       coverage ? html([
         '<p class="body-hero-coverage body-num">',
@@ -1164,8 +1167,8 @@ a.body-day-cell:focus-visible {
     const latestDay = safeDay(archive.latest_day);
     return html([
       '<div class="body-quick-row">',
-      `<a class="body-btn body-btn--solid" href="${bodyDayHref(latestDay)}">Open latest day</a>`,
-      '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>',
+      `<a class="body-btn body-btn--solid" href="${bodyDayHref(latestDay)}">open latest day</a>`,
+      '<a class="body-btn body-btn--outline" href="/app/body/trends">trends</a>',
       '</div>',
     ]);
   }
@@ -1176,7 +1179,7 @@ a.body-day-cell:focus-visible {
     return html([
       '<section class="body-section" aria-labelledby="body-recent-title">',
       '<div class="body-section-head">',
-      '<h2 id="body-recent-title" class="body-section-title">Recent body days</h2>',
+      '<h2 id="body-recent-title" class="body-section-title">recent body days</h2>',
       '<div class="body-recent-controls" id="body-recent-controls" hidden>',
       '<button type="button" class="body-recent-nav" id="body-recent-back" aria-label="Newer days">&lsaquo;</button>',
       '<button type="button" class="body-recent-nav" id="body-recent-fwd" aria-label="Earlier days">&rsaquo;</button>',
@@ -1280,7 +1283,7 @@ a.body-day-cell:focus-visible {
     if (!blocks.length) return "";
     return html([
       '<section class="body-card body-section" aria-labelledby="body-history-title">',
-      '<h2 id="body-history-title" class="body-section-title">Explore all history</h2>',
+      '<h2 id="body-history-title" class="body-section-title">explore all history</h2>',
       '<div class="body-days" role="group" aria-label="Entries per day across the archive">',
       blocks.map((block) => html([
         '<div class="body-days-year">',
@@ -1315,7 +1318,7 @@ a.body-day-cell:focus-visible {
     if (!families.length) return "";
     return html([
       '<section class="body-card" aria-labelledby="body-families-title">',
-      '<h2 id="body-families-title" class="body-section-title">Coverage areas</h2>',
+      '<h2 id="body-families-title" class="body-section-title">coverage areas</h2>',
       '<div class="body-chips">',
       families.map((family) => `<span class="body-chip" title="${escapeHtml(family.types_label)}"><span>${escapeHtml(family.name)}</span><span class="body-chip-range body-num">${escapeHtml(family.range_label)}</span></span>`).join(""),
       '</div></section>',
@@ -1327,7 +1330,7 @@ a.body-day-cell:focus-visible {
     if (!sources.length) return "";
     return html([
       '<section class="body-card" aria-labelledby="body-sources-rep-title">',
-      `<h2 id="body-sources-rep-title" class="body-section-title">Sources represented${status.sources_month_label ? ` &middot; ${escapeHtml(status.sources_month_label)}` : ""}</h2>`,
+      `<h2 id="body-sources-rep-title" class="body-section-title">sources represented${status.sources_month_label ? ` &middot; ${escapeHtml(status.sources_month_label)}` : ""}</h2>`,
       '<div class="body-chips">',
       sources.map((source) => `<span class="body-chip"><span>${escapeHtml(source.name)}</span>${source.stale ? `<span class="body-chip-range">last seen ${escapeHtml(source.last_seen_label)}</span>` : ""}</span>`).join(""),
       '</div></section>',
@@ -1339,7 +1342,7 @@ a.body-day-cell:focus-visible {
     if (!sources.length) return "";
     return html([
       '<section class="body-card" aria-labelledby="body-sources-fresh-title">',
-      '<h2 id="body-sources-fresh-title" class="body-section-title">Sources</h2>',
+      '<h2 id="body-sources-fresh-title" class="body-section-title">sources</h2>',
       '<ul class="body-list">',
       sources.map((source) => `<li><span>${escapeHtml(source.name)}</span><strong class="body-num">${escapeHtml(source.detail)}</strong></li>`).join(""),
       '</ul>',
@@ -1572,25 +1575,25 @@ a.body-day-cell:focus-visible {
   }
 
   function renderDayBrief(bodyDay) {
-    return `<section class="body-card body-day-brief" aria-labelledby="body-day-brief-title"><div class="body-hero-icon" aria-hidden="true">♡</div><div><h2 id="body-day-brief-title" class="body-day-brief-title">What your body added to the day</h2><p class="body-day-brief-copy">${escapeHtml(bodyDay.lede)}</p></div></section>`;
+    return `<section class="body-card body-day-brief" aria-labelledby="body-day-brief-title"><div class="body-hero-icon" aria-hidden="true">♡</div><div><h2 id="body-day-brief-title" class="body-day-brief-title">what your body added to the day</h2><p class="body-day-brief-copy">${escapeHtml(bodyDay.lede)}</p></div></section>`;
   }
 
   function renderDayHighlights(bodyDay) {
     const parts = [];
     if (bodyDay.sleep) {
-      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">Sleep</h2><p class="body-highlight-value">${escapeHtml(bodyDay.sleep.asleep_duration || bodyDay.sleep.duration)}</p><p class="body-highlight-detail body-num">${escapeHtml(bodyDay.sleep.window)}</p></article>`);
+      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">sleep</h2><p class="body-highlight-value">${escapeHtml(bodyDay.sleep.asleep_duration || bodyDay.sleep.duration)}</p><p class="body-highlight-detail body-num">${escapeHtml(bodyDay.sleep.window)}</p></article>`);
     }
     const firstGlucose = asArray(bodyDay.glucose_series)[0];
     if (firstGlucose) {
-      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">Glucose</h2><p class="body-highlight-value">${escapeHtml(firstGlucose.range_label)}</p><p class="body-highlight-detail">Avg <span class="body-num">${escapeHtml(firstGlucose.mean_label)}</span> &middot; <span class="body-num">${escapeHtml(firstGlucose.count_label)}</span> readings</p></article>`);
+      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">glucose</h2><p class="body-highlight-value">${escapeHtml(firstGlucose.range_label)}</p><p class="body-highlight-detail">Avg <span class="body-num">${escapeHtml(firstGlucose.mean_label)}</span> &middot; <span class="body-num">${escapeHtml(firstGlucose.count_label)}</span> readings</p></article>`);
     }
     const workouts = asArray(bodyDay.activity?.workouts);
     if (bodyDay.activity && workouts.length) {
-      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">Workouts</h2><p class="body-highlight-value">${escapeHtml(workouts.length)} workout${workouts.length === 1 ? "" : "s"}</p><p class="body-highlight-detail">${escapeHtml(bodyDay.activity.workout_summary)}</p></article>`);
+      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">workouts</h2><p class="body-highlight-value">${escapeHtml(workouts.length)} workout${workouts.length === 1 ? "" : "s"}</p><p class="body-highlight-detail">${escapeHtml(bodyDay.activity.workout_summary)}</p></article>`);
     }
     const sourceNames = asArray(bodyDay.sources?.names);
     if (bodyDay.sources) {
-      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">Sources</h2><p class="body-highlight-value">${escapeHtml(sourceNames.length)} source${sourceNames.length === 1 ? "" : "s"}</p><p class="body-highlight-detail">${escapeHtml(sourceNames.join(" · "))}</p></article>`);
+      parts.push(`<article class="body-card body-highlight body-card--soft"><h2 class="body-highlight-title">sources</h2><p class="body-highlight-value">${escapeHtml(sourceNames.length)} source${sourceNames.length === 1 ? "" : "s"}</p><p class="body-highlight-detail">${escapeHtml(sourceNames.join(" · "))}</p></article>`);
     }
     return `<section class="body-highlights" aria-label="Body day brief">${parts.join("")}</section>`;
   }
@@ -1609,7 +1612,7 @@ a.body-day-cell:focus-visible {
     const naps = asArray(sleep.naps);
     return html([
       '<section class="body-card body-card--accent" aria-labelledby="body-sleep-title">',
-      '<h2 id="body-sleep-title" class="body-question-title">How did I sleep?</h2>',
+      '<h2 id="body-sleep-title" class="body-question-title">how did I sleep?</h2>',
       primary.join(""),
       sleep.comparison_line ? `<p class="body-muted body-num body-device-compare">${escapeHtml(sleep.comparison_line)}</p>` : "",
       sleep.score_line ? `<p class="body-muted body-num">${escapeHtml(sleep.score_line)}${typicalSpan(sleep.score_typical_label)}</p>` : "",
@@ -1627,7 +1630,7 @@ a.body-day-cell:focus-visible {
     if (!list.length) return "";
     return html([
       '<section class="body-card body-card--accent" aria-labelledby="body-glucose-title">',
-      '<h2 id="body-glucose-title" class="body-question-title">What was glucose doing?</h2>',
+      '<h2 id="body-glucose-title" class="body-question-title">what was glucose doing?</h2>',
       list.map((series) => html([
         `<p class="body-primary-line"><span class="body-num">${escapeHtml(series.range_label)}</span> &middot; avg <span class="body-num">${escapeHtml(series.mean_label)}</span> &middot; <span class="body-num">${escapeHtml(series.count_label)}</span> readings</p>`,
         '<div class="body-curve-wrap">',
@@ -1649,7 +1652,7 @@ a.body-day-cell:focus-visible {
     const counters = asArray(activity.counters);
     return html([
       '<section class="body-card" aria-labelledby="body-activity-title">',
-      '<h2 id="body-activity-title" class="body-question-title">How active was I?</h2>',
+      '<h2 id="body-activity-title" class="body-question-title">how active was I?</h2>',
       workouts.length ? `<ul class="body-workouts">${workouts.map((workout) => `<li><span class="body-workout-name">${escapeHtml(workout.name)}</span><span class="body-num">${workout.start ? escapeHtml(workout.start) : ""}${workout.duration ? ` &middot; ${escapeHtml(workout.duration)}` : ""}${workout.metrics_label ? ` &middot; ${escapeHtml(workout.metrics_label)}` : ""}${workout.source ? ` &middot; ${escapeHtml(workout.source)}` : ""}</span></li>`).join("")}</ul>` : "",
       running.length ? `<h3 class="body-card-label">Running dynamics</h3><ul class="body-facts">${running.map((item) => `<li><span>${escapeHtml(item.label)}</span>${item.summary ? `<strong class="body-num">${escapeHtml(item.summary)}</strong>` : `<strong><span class="body-num">${escapeHtml(item.count_label)}</span> <span class="body-fact-kind">entries</span></strong>`}</li>`).join("")}</ul>` : "",
       activity.steps ? (activity.steps.mode === "total" ? `<p class="body-primary-line"><span class="body-num">${escapeHtml(activity.steps.total_label)}</span> steps &middot; ${escapeHtml(activity.steps.source)}${activity.steps.others_label ? ` &mdash; ${escapeHtml(activity.steps.others_label)}` : ""}</p>` : `<p class="body-primary-line">Step-count samples: <span class="body-num">${escapeHtml(activity.steps.samples_label)}</span></p>`) : "",
@@ -1666,7 +1669,7 @@ a.body-day-cell:focus-visible {
     const rhythmEvents = asArray(heart.rhythm?.events);
     return html([
       '<section class="body-card" aria-labelledby="body-heart-title">',
-      '<h2 id="body-heart-title" class="body-question-title">Heart &amp; breathing</h2>',
+      '<h2 id="body-heart-title" class="body-question-title">heart &amp; breathing</h2>',
       heart.heart_rate ? `<ul class="body-facts"><li><span>Heart rate</span><strong class="body-num">${escapeHtml(heart.heart_rate.summary)}</strong></li></ul>` : "",
       hr ? html([
         '<div class="body-curve-wrap">',
@@ -1694,7 +1697,7 @@ a.body-day-cell:focus-visible {
     if (!recovery) return "";
     return html([
       '<section class="body-card body-card--accent" aria-labelledby="body-recovery-title">',
-      '<h2 id="body-recovery-title" class="body-question-title">How recovered am I?</h2>',
+      '<h2 id="body-recovery-title" class="body-question-title">how recovered am I?</h2>',
       `<ul class="body-facts">${asArray(recovery.facts).map((fact) => `<li><span>${escapeHtml(fact.label)}</span><strong class="body-num">${escapeHtml(fact.detail)}${typicalSpan(fact.typical_label)}</strong></li>`).join("")}</ul>`,
       renderScoreAnatomy("body-recovery-anatomy", recovery.contributors),
       '<p class="body-card-footer">Oura\'s daily numbers &middot; brought in via the Oura API</p>',
@@ -1723,10 +1726,10 @@ a.body-day-cell:focus-visible {
     if (!(bodyDay.mind_sound || bodyDay.walking || bodyDay.body_measurements || bodyDay.other_signals)) return "";
     return html([
       '<div class="body-lists body-section">',
-      renderSimpleFactSection("body-mind-title", "Mind & sound", bodyDay.mind_sound?.facts),
-      renderSimpleFactSection("body-walking-title", "Walking metrics", bodyDay.walking?.facts, { walking: true }),
-      renderSimpleFactSection("body-measurements-title", "Body measurements", bodyDay.body_measurements?.facts),
-      renderSimpleFactSection("body-other-signals-title", "Other signals", bodyDay.other_signals?.facts),
+      renderSimpleFactSection("body-mind-title", "mind & sound", bodyDay.mind_sound?.facts),
+      renderSimpleFactSection("body-walking-title", "walking metrics", bodyDay.walking?.facts, { walking: true }),
+      renderSimpleFactSection("body-measurements-title", "body measurements", bodyDay.body_measurements?.facts),
+      renderSimpleFactSection("body-other-signals-title", "other signals", bodyDay.other_signals?.facts),
       '</div>',
     ]);
   }
@@ -1735,7 +1738,7 @@ a.body-day-cell:focus-visible {
     if (!sources) return "";
     return html([
       '<section class="body-card body-section" aria-labelledby="body-sources-title">',
-      '<h2 id="body-sources-title" class="body-question-title">Sources this day</h2>',
+      '<h2 id="body-sources-title" class="body-question-title">sources this day</h2>',
       '<div class="body-chips">',
       asArray(sources.chips).map((chip) => `<span class="body-chip"><span>${escapeHtml(chip.name)}</span><span class="body-chip-range body-num">&middot; ${escapeHtml(chip.entries_label)}</span></span>`).join(""),
       '</div>',
@@ -1834,7 +1837,7 @@ a.body-day-cell:focus-visible {
 
   function renderTrendsShell() {
     reveal(html([
-      renderHeader("Body · Trends", "", true),
+      renderHeader("body · trends", "", true),
       '<section class="body-card" id="body-trends-status" aria-live="polite"><p class="body-muted" id="body-trends-status-line">Loading trends&hellip;</p></section>',
       '<div class="body-trends-stack" id="body-trends-stack" hidden></div>',
     ]));
