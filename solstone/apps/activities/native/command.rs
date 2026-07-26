@@ -839,6 +839,7 @@ mod tests {
             files: None,
             build_identity: None,
             client_item_ids: None,
+            notification_sink: None,
         });
 
         assert_eq!(

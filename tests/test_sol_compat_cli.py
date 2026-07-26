@@ -180,7 +180,7 @@ def test_compat_refuses_missing_active_or_unknown_sentinel(
         monkeypatch.setenv(SENTINEL, state)
 
     code = sol_compat_cli.main(
-        [marker_for_public_argv0("sol"), "notify"],
+        [marker_for_public_argv0("sol"), "check"],
         runner=runner,
     )
     captured = capsys.readouterr()

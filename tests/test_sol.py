@@ -283,11 +283,11 @@ class TestRunCommand:
     def test_run_command_import_error_keeps_raw_error(self, capsys):
         missing = ModuleNotFoundError("No module named 'numpy'", name="numpy")
         with patch("importlib.import_module", side_effect=missing):
-            exit_code = sol.run_command("solstone.think.notify_cli")
+            exit_code = sol.run_command("solstone.think.check")
 
         captured = capsys.readouterr()
         assert exit_code == 1
-        assert "Could not import module 'solstone.think.notify_cli'" in captured.err
+        assert "Could not import module 'solstone.think.check'" in captured.err
         assert "solstone[journal]" not in captured.err
 
     def test_run_command_no_main_function(self):

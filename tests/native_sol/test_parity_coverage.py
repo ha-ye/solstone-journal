@@ -129,6 +129,8 @@ def vector_matches_entry(
     argv = list(vector.get("argv", []))
     if entry.surface == "sol-chat":
         return tuple(entry.path) == ("chat",)
+    if entry.surface == "sol-notify":
+        return tuple(entry.path) == ("notify",)
     if entry.surface == "sol-import":
         return tuple(argv[: len(entry.path)]) == entry.path
     return tuple(argv[: len(entry.path)]) == entry.path
@@ -139,7 +141,7 @@ def argv_tail(
     vector: dict[str, object],
 ) -> list[str]:
     argv = [str(arg) for arg in vector.get("argv", [])]
-    if entry.surface == "sol-chat":
+    if entry.surface in {"sol-chat", "sol-notify"}:
         return argv
     if entry.surface == "sol-import":
         return argv[1:]

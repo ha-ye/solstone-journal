@@ -253,8 +253,9 @@ Native sol client design records:
 `docs/design/native-sol-client/02-design.md`,
 `docs/design/native-sol-client/03-batch-prep.md`,
 `docs/design/native-sol-client/04-batch-design.md`,
-`docs/design/native-sol-client/05-raw-body-parity.md`, and
-`docs/design/native-sol-client/06-cutover-design.md`.
+`docs/design/native-sol-client/05-raw-body-parity.md`,
+`docs/design/native-sol-client/06-cutover-design.md`, and
+`docs/design/native-sol-client/07-notify-contract-design.md`.
 
 ## Dual Paths And Shims
 
