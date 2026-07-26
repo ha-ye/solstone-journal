@@ -1133,6 +1133,14 @@ body.menu-all .menu-bar {
     visibility: hidden;
   }
 
+  .facet-bar::after {
+    left: 0;
+  }
+
+  body.menu-full .facet-bar::after {
+    left: 0;
+  }
+
   body:not(.menu-full) .menu-bar .menu-items,
   body:not(.menu-full) .menu-bar .menu-expander {
     display: none;
@@ -2895,7 +2903,7 @@ a:focus-visible {
   box-sizing: border-box;
   padding: 24px;
   text-align: center;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .surface-state--loading {
@@ -2931,7 +2939,7 @@ a:focus-visible {
   max-width: 36ch;
   font-size: 14px;
   line-height: 1.5;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .surface-state-text {
