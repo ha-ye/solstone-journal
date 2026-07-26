@@ -853,6 +853,12 @@ def test_missing_talent_day_indexes_emit_info(tmp_path, monkeypatch):
         and "talent day-index logs missing" in note.message
         for note in report.notes
     )
+    assert not any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "talent day-index" in note.message
+        for note in report.notes
+    )
 
 
 def test_degraded_talent_outputs_count_and_warn_without_failure(tmp_path, monkeypatch):
@@ -902,6 +908,44 @@ def test_degraded_talent_outputs_count_and_warn_without_failure(tmp_path, monkey
     )
 
 
+def test_degraded_talent_outputs_follow_execution_timestamps_across_indexes(
+    tmp_path, monkeypatch
+):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    _write_talent_day(
+        tmp_path,
+        "20260401",
+        {
+            "use_id": "old-index-recent-degraded",
+            "name": "morning_briefing",
+            "day": "20260401",
+            "facet": None,
+            "ts": _utc_ms("20260410", 10),
+            "status": "completed",
+            "provider": "openai",
+            "model": "gpt-5",
+            "degraded": {"reason": "near_empty", "output_tokens": 12},
+        },
+    )
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_degraded_outputs_24h == 1
+    assert report.synthesis_health.talent_run_failures_24h == 0
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "morning_briefing" in note.message
+        and "openai/gpt-5" in note.message
+        and "20260401" in note.message
+        for note in report.notes
+    )
+
+
 def test_healthy_talent_outputs_do_not_emit_degraded_notes(tmp_path, monkeypatch):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
@@ -942,6 +986,268 @@ def test_healthy_talent_outputs_do_not_emit_degraded_notes(tmp_path, monkeypatch
         note.category == "synthesis"
         and note.severity == "warn"
         and "finished near-empty" in note.message
+        for note in report.notes
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_line", "problem_fragment"),
+    [
+        ("{not json\n", "malformed JSON"),
+        (json.dumps(["not", "an", "object"]) + "\n", "non-object row"),
+        (
+            json.dumps(
+                {
+                    "use_id": "missing-ts",
+                    "name": "flow",
+                    "status": "error",
+                }
+            )
+            + "\n",
+            "missing ts",
+        ),
+        (
+            json.dumps(
+                {
+                    "use_id": "bad-ts",
+                    "name": "flow",
+                    "ts": "1712757600000",
+                    "status": "error",
+                }
+            )
+            + "\n",
+            "non-integer ts",
+        ),
+    ],
+)
+def test_corrupt_talent_day_index_rows_fail_closed_globally(
+    tmp_path, monkeypatch, raw_line, problem_fragment
+):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    _write_talent_day(
+        tmp_path,
+        "20260401",
+        {
+            "use_id": "valid-sibling",
+            "name": "morning_briefing",
+            "day": "20260401",
+            "facet": None,
+            "ts": _utc_ms("20260410", 10),
+            "status": "completed",
+            "provider": "openai",
+            "model": "gpt-5",
+            "degraded": {"reason": "near_empty", "output_tokens": 12},
+        },
+    )
+    with (tmp_path / "talents" / "20260401.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(raw_line)
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "20260401.jsonl" in note.message
+        and problem_fragment in note.message
+        for note in report.notes
+    )
+    assert not any("finished near-empty" in note.message for note in report.notes)
+
+
+def test_invalid_utf8_talent_day_index_fails_closed(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    path = tmp_path / "talents" / "20260401.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff")
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "20260401.jsonl" in note.message
+        and "invalid UTF-8" in note.message
+        for note in report.notes
+    )
+
+
+def test_unreadable_talent_day_index_fails_closed(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    _write_talent_day(
+        tmp_path,
+        "20260401",
+        {
+            "use_id": "valid",
+            "name": "flow",
+            "ts": _utc_ms("20260410", 10),
+            "status": "error",
+        },
+    )
+    path = tmp_path / "talents" / "20260401.jsonl"
+    path.chmod(0)
+    try:
+        report = health_surface.summary("20260410")
+    finally:
+        path.chmod(0o600)
+
+    assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "20260401.jsonl" in note.message
+        and "unreadable" in note.message
+        for note in report.notes
+    )
+
+
+def test_vanished_talent_day_index_fails_closed(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    _write_talent_day(
+        tmp_path,
+        "20260401",
+        {
+            "use_id": "valid",
+            "name": "flow",
+            "ts": _utc_ms("20260410", 10),
+            "status": "error",
+        },
+    )
+    target = tmp_path / "talents" / "20260401.jsonl"
+    original_open = Path.open
+
+    def fake_open(self: Path, *args, **kwargs):
+        if self == target:
+            raise FileNotFoundError("vanished")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "20260401.jsonl" in note.message
+        and "vanished" in note.message
+        for note in report.notes
+    )
+
+
+def test_missing_guard_and_scan_problems_both_emit_notes(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    path = tmp_path / "talents" / "20260401.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json\n", encoding="utf-8")
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h is None
+    assert report.synthesis_health.talent_degraded_outputs_24h is None
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "info"
+        and "talent day-index logs missing" in note.message
+        for note in report.notes
+    )
+    assert any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "20260401.jsonl" in note.message
+        and "malformed JSON" in note.message
+        for note in report.notes
+    )
+
+
+@pytest.mark.parametrize(
+    ("offset_ms", "expected_failures"),
+    [
+        (-1, 0),
+        (0, 1),
+        (86_400_000, 1),
+        (86_400_001, 0),
+    ],
+)
+def test_talent_run_24h_boundary_is_inclusive(
+    tmp_path,
+    monkeypatch,
+    offset_ms,
+    expected_failures,
+):
+    _configure_env(tmp_path, monkeypatch)
+    generated_at = _utc_ms("20260410", 12)
+    _set_now(monkeypatch, _utc_dt("20260410", 12))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    _write_talent_day(
+        tmp_path,
+        "20260401",
+        {
+            "use_id": f"boundary-{offset_ms}",
+            "name": "flow",
+            "day": "20260401",
+            "facet": None,
+            "ts": generated_at - 86_400_000 + offset_ms,
+            "status": "error",
+            "error_message": "provider failed",
+            "reason_code": "provider_unavailable",
+        },
+    )
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h == expected_failures
+
+
+def test_non_day_index_files_are_ignored_by_talent_health_fold(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
+    talents = tmp_path / "talents"
+    (talents / "20260231.jsonl").write_text("{not json\n", encoding="utf-8")
+    (talents / "abcdefgh.jsonl").write_text("{not json\n", encoding="utf-8")
+    (talents / "default.log").write_text("{not json\n", encoding="utf-8")
+    (talents / "default").mkdir()
+    (talents / "default" / "1712757600000.jsonl").write_text(
+        "{not json\n",
+        encoding="utf-8",
+    )
+
+    report = health_surface.summary("20260410")
+
+    assert report.synthesis_health.talent_run_failures_24h == 0
+    assert report.synthesis_health.talent_degraded_outputs_24h == 0
+    assert not any(
+        note.category == "synthesis"
+        and note.severity == "warn"
+        and "talent day-index" in note.message
         for note in report.notes
     )
 
@@ -1232,51 +1538,54 @@ def test_activities_user_edited_counts_prefixed_actors(tmp_path, monkeypatch):
     assert report.synthesis_health.activities_user_edited == 3
 
 
-def test_talent_run_failures_24h_use_today_and_yesterday_day_indices(
+def test_talent_run_failures_24h_follow_execution_timestamps_across_indexes(
     tmp_path, monkeypatch
 ):
     _configure_env(tmp_path, monkeypatch)
     _set_now(monkeypatch, _utc_dt("20260410"))
     _minimal_facet_tree(tmp_path)
+    _write_talent_day(tmp_path, "20260410")
+    _write_talent_day(tmp_path, "20260409")
     _write_talent_day(
         tmp_path,
-        "20260410",
+        "20260401",
         {
             "use_id": "1",
             "name": "flow",
-            "day": "20260410",
+            "day": "20260401",
             "facet": None,
             "ts": _utc_ms("20260410", 9),
-            "status": "completed",
-            "error": "boom",
+            "status": "error",
+            "error_message": "provider failed",
+            "reason_code": "provider_unavailable",
         },
         {
             "use_id": "2",
             "name": "flow",
-            "day": "20260410",
+            "day": "20260401",
             "facet": None,
             "ts": _utc_ms("20260410", 8),
             "status": "completed",
         },
-    )
-    _write_talent_day(
-        tmp_path,
-        "20260409",
         {
             "use_id": "3",
             "name": "flow",
-            "day": "20260409",
+            "day": "20260401",
             "facet": None,
             "ts": _utc_ms("20260409", 15),
-            "status": "failed",
+            "status": "error",
+            "error_message": "provider failed",
+            "reason_code": "provider_unavailable",
         },
         {
             "use_id": "4",
             "name": "flow",
-            "day": "20260409",
+            "day": "20260401",
             "facet": None,
             "ts": _utc_ms("20260409", 11, 30),
-            "status": "failed",
+            "status": "error",
+            "error_message": "provider failed",
+            "reason_code": "provider_unavailable",
         },
     )
 

@@ -65,6 +65,7 @@ NO_ENGINE_ANALYSIS_TEXT = (
 USER_EDIT_ACTOR_PREFIXES = ("cli:", "owner", "user")
 # These prefixes identify operator- or user-authored corrections without trying to enumerate every internal automation actor string.
 DEGRADED_OUTPUT_NOTE_CAP = 10
+TALENT_INDEX_PROBLEM_NOTE_CAP = 10
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
 _SPEC_POINTER = "cpo/specs/in-flight/consumer-surface-health.md"
@@ -85,6 +86,20 @@ class _ScanAggregate:
     activities_with_story: int
     activities_user_edited: int
     activities_anticipated_unfilled: int
+
+
+@dataclass(frozen=True)
+class _TalentIndexProblem:
+    filename: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class _TalentHealthScan:
+    talent_run_failures_24h: int
+    talent_degraded_outputs_24h: int
+    degraded_rows: tuple[tuple[int, dict[str, Any]], ...]
+    problems: tuple[_TalentIndexProblem, ...]
 
 
 def _resolve_day(day: str) -> str:
@@ -354,6 +369,122 @@ def _build_capture_health(
     )
 
 
+def _is_talent_day_index_filename(path: Path) -> bool:
+    stem = path.stem
+    if path.suffix != ".jsonl" or len(stem) != 8 or not stem.isdigit():
+        return False
+    try:
+        datetime.strptime(stem, "%Y%m%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _record_talent_index_problem(
+    problems: dict[str, list[str]],
+    filename: str,
+    detail: str,
+) -> None:
+    problems.setdefault(filename, []).append(detail)
+
+
+def _summarize_talent_index_problems(
+    problems: dict[str, list[str]],
+) -> tuple[_TalentIndexProblem, ...]:
+    summaries: list[_TalentIndexProblem] = []
+    for filename, details in problems.items():
+        if len(details) == 1:
+            detail = details[0]
+        else:
+            detail = f"{len(details)} scan problems; first: {details[0]}"
+        summaries.append(_TalentIndexProblem(filename=filename, detail=detail))
+    return tuple(summaries)
+
+
+def _scan_talent_day_indexes_for_24h_window(
+    talents_dir: Path,
+    generated_at: int,
+) -> _TalentHealthScan:
+    talent_run_failures_24h = 0
+    talent_degraded_outputs_24h = 0
+    degraded_rows: list[tuple[int, dict[str, Any]]] = []
+    problems: dict[str, list[str]] = {}
+    cutoff = generated_at - _DAY_MS
+
+    # Health intentionally ignores non-day-index root files; retention scans them
+    # separately so it can explain why deletion was declined.
+    for path in sorted(talents_dir.glob("*.jsonl")):
+        if not _is_talent_day_index_filename(path):
+            continue
+        filename = path.name
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line_number, raw_line in enumerate(handle, start=1):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        _record_talent_index_problem(
+                            problems,
+                            filename,
+                            f"line {line_number}: malformed JSON",
+                        )
+                        continue
+                    if not isinstance(row, dict):
+                        _record_talent_index_problem(
+                            problems,
+                            filename,
+                            f"line {line_number}: non-object row",
+                        )
+                        continue
+                    if "ts" not in row:
+                        _record_talent_index_problem(
+                            problems,
+                            filename,
+                            f"line {line_number}: missing ts",
+                        )
+                        continue
+                    timestamp = row.get("ts")
+                    if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+                        _record_talent_index_problem(
+                            problems,
+                            filename,
+                            f"line {line_number}: non-integer ts",
+                        )
+                        continue
+                    if timestamp < cutoff or timestamp > generated_at:
+                        continue
+                    status = row.get("status")
+                    if status not in ("ok", "completed", None):
+                        talent_run_failures_24h += 1
+                    if row.get("degraded"):
+                        talent_degraded_outputs_24h += 1
+                        degraded_rows.append((timestamp, row))
+        except FileNotFoundError:
+            _record_talent_index_problem(
+                problems,
+                filename,
+                "file vanished during scan",
+            )
+        except UnicodeDecodeError:
+            _record_talent_index_problem(problems, filename, "invalid UTF-8")
+        except OSError as exc:
+            _record_talent_index_problem(
+                problems,
+                filename,
+                f"unreadable file: {exc}",
+            )
+
+    return _TalentHealthScan(
+        talent_run_failures_24h=talent_run_failures_24h,
+        talent_degraded_outputs_24h=talent_degraded_outputs_24h,
+        degraded_rows=tuple(degraded_rows),
+        problems=_summarize_talent_index_problems(problems),
+    )
+
+
 def _build_synthesis_health(
     aggregate: _ScanAggregate,
     generated_at: int,
@@ -369,35 +500,22 @@ def _build_synthesis_health(
     ]
 
     generated_at_dt = datetime.fromtimestamp(generated_at / 1000, tz=UTC)
-    talent_days = (
+    required_guard_days = (
         generated_at_dt.strftime("%Y%m%d"),
         (generated_at_dt - timedelta(days=1)).strftime("%Y%m%d"),
     )
     talents_dir = Path(get_journal()) / "talents"
-    talent_rows: list[dict[str, Any]] = []
     missing_talent_days: list[str] = []
-    for day in talent_days:
+    for day in required_guard_days:
         path = talents_dir / f"{day}.jsonl"
         if not path.exists():
             missing_talent_days.append(day)
-            continue
-        with path.open(encoding="utf-8") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(payload, dict):
-                    talent_rows.append(payload)
+
+    talent_scan = _scan_talent_day_indexes_for_24h_window(talents_dir, generated_at)
 
     talent_run_failures_24h: int | None
     talent_degraded_outputs_24h: int | None
     if missing_talent_days:
-        talent_run_failures_24h = None
-        talent_degraded_outputs_24h = None
         notes.append(
             HealthNote(
                 severity="info",
@@ -411,27 +529,29 @@ def _build_synthesis_health(
                 detail_pointer=None,
             )
         )
-    else:
-        talent_run_failures_24h = 0
-        talent_degraded_outputs_24h = 0
-        degraded_rows: list[tuple[int, dict[str, Any]]] = []
-        cutoff = generated_at - _DAY_MS
-        for row in talent_rows:
-            try:
-                timestamp = int(row.get("ts"))  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
-            if timestamp < cutoff or timestamp > generated_at:
-                continue
-            status = row.get("status")
-            if row.get("error") or status not in ("ok", "completed", None):
-                talent_run_failures_24h += 1
-            if row.get("degraded"):
-                talent_degraded_outputs_24h += 1
-                degraded_rows.append((timestamp, row))
 
+    for problem in talent_scan.problems[:TALENT_INDEX_PROBLEM_NOTE_CAP]:
+        notes.append(
+            HealthNote(
+                severity="warn",
+                category="synthesis",
+                message=(
+                    f"talent day-index {problem.filename} could not be fully read "
+                    f"({problem.detail}); last-24h talent counts unavailable."
+                ),
+                detected_at=generated_at,
+                detail_pointer=None,
+            )
+        )
+
+    if missing_talent_days or talent_scan.problems:
+        talent_run_failures_24h = None
+        talent_degraded_outputs_24h = None
+    else:
+        talent_run_failures_24h = talent_scan.talent_run_failures_24h
+        talent_degraded_outputs_24h = talent_scan.talent_degraded_outputs_24h
         for _timestamp, row in sorted(
-            degraded_rows,
+            talent_scan.degraded_rows,
             key=lambda item: item[0],
             reverse=True,
         )[:DEGRADED_OUTPUT_NOTE_CAP]:
