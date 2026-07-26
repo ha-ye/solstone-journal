@@ -1,0 +1,732 @@
+{
+  "placeholders": {
+    "cwd": "${CWD}",
+    "fake_root": "${FAKE_ROOT}",
+    "home": "${HOME}",
+    "project_root": "${PROJECT_ROOT}",
+    "temp_root": "${TEMP_ROOT}"
+  },
+  "schema": "native-sol-skills-parity-v1",
+  "vectors": [
+    {
+      "argv": [
+        "skills",
+        "install"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude sol -> ${HOME}/.claude/skills/sol\ninstalled codex sol -> ${HOME}/.codex/skills/sol\ninstalled gemini sol -> ${HOME}/.gemini/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_fresh",
+      "id": "fresh_user_install",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/u_idempotent",
+      "id": "idempotent_user_reinstall",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "copy_user_skill",
+          "path": "${TEMP_ROOT}/u_idempotent/.claude/skills/sol"
+        },
+        {
+          "op": "copy_user_skill",
+          "path": "${TEMP_ROOT}/u_idempotent/.codex/skills/sol"
+        },
+        {
+          "op": "copy_user_skill",
+          "path": "${TEMP_ROOT}/u_idempotent/.gemini/skills/sol"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "replaced claude sol -> ${HOME}/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_replace_change",
+      "id": "replace_on_change",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "copy_user_skill",
+          "path": "${TEMP_ROOT}/u_replace_change/.claude/skills/sol"
+        },
+        {
+          "content_b64": "Y2hhbmdlZAo=",
+          "op": "mutate_file",
+          "path": "${TEMP_ROOT}/u_replace_change/.claude/skills/sol/SKILL.md"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude sol -> ${HOME}/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_replace_change_initial",
+      "id": "replace_on_change_initial",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "replaced claude sol -> ${HOME}/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_replace_symlink",
+      "id": "replace_symlink_target",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "content_b64": "a2VlcAo=",
+          "op": "write_file",
+          "path": "${TEMP_ROOT}/external_populated/keep.txt"
+        },
+        {
+          "op": "symlink",
+          "path": "${TEMP_ROOT}/u_replace_symlink/.claude/skills/sol",
+          "target": "${TEMP_ROOT}/external_populated"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "replaced claude sol -> ${HOME}/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_replace_file",
+      "id": "replace_regular_file_target",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "content_b64": "bm90IGEgZGlyCg==",
+          "op": "write_file",
+          "path": "${TEMP_ROOT}/u_replace_file/.claude/skills/sol"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "skipped claude sol (nothing to remove)\n"
+      },
+      "home": "${TEMP_ROOT}/u_uninstall_absent",
+      "id": "user_uninstall_absent_target",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "mkdir",
+          "path": "${TEMP_ROOT}/u_uninstall_absent/.claude"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: uninstall ${HOME}/.claude/skills/sol: refusing to remove non-directory\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/u_uninstall_file",
+      "id": "user_uninstall_refuses_regular_file",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "content_b64": "bm90IGEgZGlyCg==",
+          "op": "write_file",
+          "path": "${TEMP_ROOT}/u_uninstall_file/.claude/skills/sol"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: uninstall ${HOME}/.claude/skills/sol: refusing to remove non-directory\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/u_uninstall_symlink",
+      "id": "user_uninstall_refuses_symlink",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "mkdir",
+          "path": "${TEMP_ROOT}/external_uninstall"
+        },
+        {
+          "op": "symlink",
+          "path": "${TEMP_ROOT}/u_uninstall_symlink/.claude/skills/sol",
+          "target": "${TEMP_ROOT}/external_uninstall"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "codex"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed codex sol -> ${HOME}/.codex/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/u_absent_install",
+      "id": "user_install_absent_agent_config",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "skipped claude (config dir absent at ${HOME}/.claude)\nno AI coding agent config directories found \u2014 skipping skill registration\n"
+      },
+      "home": "${TEMP_ROOT}/u_absent_uninstall",
+      "id": "user_uninstall_absent_single_config",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "skipped claude (config dir absent at ${HOME}/.claude)\nskipped codex (config dir absent at ${HOME}/.codex)\nno AI coding agent config directories found \u2014 skipping skill registration\n"
+      },
+      "home": "${TEMP_ROOT}/u_global_skip",
+      "id": "user_uninstall_absent_agent_config",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--agent",
+        "gemini"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "skipped gemini (config dir absent at ${HOME}/.gemini)\nno AI coding agent config directories found \u2014 skipping skill registration\n"
+      },
+      "home": "${TEMP_ROOT}/u_gemini_explicit",
+      "id": "explicit_gemini_absent_not_silent",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_install",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude journal -> ${TEMP_ROOT}/p_install/.claude/skills/journal\ninstalled claude sol -> ${TEMP_ROOT}/p_install/.claude/skills/sol\ninstalled agents journal -> ${TEMP_ROOT}/p_install/.agents/skills/journal\ninstalled agents sol -> ${TEMP_ROOT}/p_install/.agents/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home",
+      "id": "project_install",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_idempotent",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/p_home_idempotent",
+      "id": "project_idempotent_reinstall",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_idempotent"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_link_changed",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "replaced claude sol -> ${TEMP_ROOT}/p_link_changed/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_link_changed",
+      "id": "project_link_target_changed",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_link_changed"
+        },
+        {
+          "op": "remove",
+          "path": "${TEMP_ROOT}/p_link_changed/.claude/skills/sol"
+        },
+        {
+          "op": "symlink",
+          "path": "${TEMP_ROOT}/p_link_changed/.claude/skills/sol",
+          "target": "bogus-target"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_user_content",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude sol -> ${TEMP_ROOT}/p_user_content/.claude/skills/sol\ninstalled agents journal -> ${TEMP_ROOT}/p_user_content/.agents/skills/journal\ninstalled agents sol -> ${TEMP_ROOT}/p_user_content/.agents/skills/sol\nWarnings:\nwarning claude journal -> ${TEMP_ROOT}/p_user_content/.claude/skills/journal (user content at target preserved)\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_user_content",
+      "id": "project_user_content_preserved",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "content_b64": "dXNlci1jb250ZW50Cg==",
+          "op": "write_file",
+          "path": "${TEMP_ROOT}/p_user_content/.claude/skills/journal"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_stale_link",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "removed claude entities (stale) -> ${TEMP_ROOT}/p_stale_link/.claude/skills/entities\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_stale_link",
+      "id": "project_stale_link_removal",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_stale_link"
+        },
+        {
+          "op": "symlink",
+          "path": "${TEMP_ROOT}/p_stale_link/.claude/skills/entities",
+          "target": "../../../solstone/apps/entities/talent/entities"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_stale_content",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "Warnings:\nwarning claude entities -> ${TEMP_ROOT}/p_stale_content/.claude/skills/entities (user content at stale target preserved)\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_stale_content",
+      "id": "project_stale_non_symlink_preserved",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_stale_content"
+        },
+        {
+          "content_b64": "dXNlciBzdGFsZQo=",
+          "op": "write_file",
+          "path": "${TEMP_ROOT}/p_stale_content/.claude/skills/entities/SKILL.md"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "uninstall",
+        "--project",
+        "${TEMP_ROOT}/p_uninstall",
+        "--agent",
+        "all"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "removed claude journal -> ${TEMP_ROOT}/p_uninstall/.claude/skills/journal\nremoved claude sol -> ${TEMP_ROOT}/p_uninstall/.claude/skills/sol\nremoved agents journal -> ${TEMP_ROOT}/p_uninstall/.agents/skills/journal\nremoved agents sol -> ${TEMP_ROOT}/p_uninstall/.agents/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_uninstall",
+      "id": "project_uninstall",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_uninstall"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "list"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "agent      skill                state\nclaude     sol                  installed\ncodex      sol                  not installed\ngemini     sol                  not installed\n"
+      },
+      "home": "${TEMP_ROOT}/u_list",
+      "id": "list_user_mode",
+      "mode": "user",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "copy_user_skill",
+          "path": "${TEMP_ROOT}/u_list/.claude/skills/sol"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "list",
+        "--project",
+        "${TEMP_ROOT}/p_list"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "agent      skill                state\nclaude     journal              installed\nclaude     sol                  installed\nagents     journal              installed\nagents     sol                  installed\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_list",
+      "id": "list_project_mode",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "agent": "all",
+          "op": "project_links",
+          "path": "${TEMP_ROOT}/p_list"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "list",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "compare_stderr": false,
+        "exit": 2,
+        "stderr": "",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/u_list_agent_error",
+      "id": "list_rejects_agent",
+      "mode": "usage",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_reject_codex",
+        "--agent",
+        "codex"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: --agent codex is not supported with --project; use --agent all or --agent claude\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/p_home_reject_codex",
+      "id": "project_rejects_codex",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_reject_gemini",
+        "--agent",
+        "gemini"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: --agent gemini is not supported with --project; use --agent all or --agent claude\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/p_home_reject_gemini",
+      "id": "project_rejects_gemini",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${TEMP_ROOT}/p_const_cwd",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude journal -> ${CWD}/.claude/skills/journal\ninstalled claude sol -> ${CWD}/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_const_cwd",
+      "id": "project_no_value_uses_cwd",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": [
+        {
+          "op": "mkdir",
+          "path": "${TEMP_ROOT}/p_const_cwd"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "~/foo",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude journal -> ${HOME}/foo/.claude/skills/journal\ninstalled claude sol -> ${HOME}/foo/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_tilde",
+      "id": "project_tilde_expands",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/p_nonexistent/deep",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 0,
+        "stderr": "",
+        "stdout": "installed claude journal -> ${TEMP_ROOT}/p_nonexistent/deep/.claude/skills/journal\ninstalled claude sol -> ${TEMP_ROOT}/p_nonexistent/deep/.claude/skills/sol\n"
+      },
+      "home": "${TEMP_ROOT}/p_home_nonexistent",
+      "id": "project_nonexistent_dir_created",
+      "mode": "project",
+      "project_root": "${PROJECT_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: expected bundled umbrella skill at solstone/talent/sol/SKILL.md (${FAKE_ROOT}/solstone/talent/sol/SKILL.md)\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/missing_user_home",
+      "id": "payload_missing_user_mode",
+      "mode": "payload-missing",
+      "project_root": "${FAKE_ROOT}",
+      "setup": []
+    },
+    {
+      "argv": [
+        "skills",
+        "install",
+        "--project",
+        "${TEMP_ROOT}/missing_project_target",
+        "--agent",
+        "claude"
+      ],
+      "cwd": "${PROJECT_ROOT}",
+      "expected": {
+        "exit": 1,
+        "stderr": "error: expected project skill at ${FAKE_ROOT}/solstone/talent/sol/SKILL.md\n",
+        "stdout": ""
+      },
+      "home": "${TEMP_ROOT}/missing_project_home",
+      "id": "payload_missing_project_mode",
+      "mode": "payload-missing",
+      "project_root": "${FAKE_ROOT}",
+      "setup": []
+    }
+  ]
+}
