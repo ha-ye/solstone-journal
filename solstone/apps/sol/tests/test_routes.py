@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+WORKSPACE_PATH = Path(__file__).resolve().parents[1] / "workspace.html"
+APP_CSS_PATH = (
+    Path(__file__).resolve().parents[4] / "solstone" / "convey" / "static" / "app.css"
+)
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -63,6 +68,14 @@ def _talents_snapshot(journal: Path) -> dict[Path, int]:
     if not talents_dir.exists():
         return {}
     return {path: path.stat().st_mtime_ns for path in sorted(talents_dir.rglob("*"))}
+
+
+def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
+    index = css.find(f"{selector} {{", start)
+    assert index != -1, f"{selector} rule was not found"
+    close = css.find("}", index)
+    assert close != -1, f"{selector} rule is not closed"
+    return index, css[index : close + 1]
 
 
 def test_sol_day_serves_spa_shell(client):
@@ -137,3 +150,29 @@ def test_api_index_is_read_only(sol_env):
 
     assert response.status_code == 200
     assert _talents_snapshot(sol_env.journal) == before
+
+
+def test_segment_summary_talent_meta_uses_declared_copy():
+    from solstone.apps.sol import routes as sol_routes
+
+    sol_routes._build_talents_meta.cache_clear()
+    try:
+        meta = sol_routes._build_talents_meta()["timeline:segment_summary"]
+    finally:
+        sol_routes._build_talents_meta.cache_clear()
+
+    assert meta["title"] == "Segment Summary"
+    assert (
+        meta["description"]
+        == "Names the single most important event in each segment for the timeline."
+    )
+
+
+def test_agent_card_title_wrap_rule_is_local_to_sol_workspace():
+    workspace = WORKSPACE_PATH.read_text(encoding="utf-8")
+    app_css = APP_CSS_PATH.read_text(encoding="utf-8")
+    _, title_rule = _rule_block(workspace, ".agent-card-title")
+
+    assert "min-width: 0;" in title_rule
+    assert "overflow-wrap: anywhere;" in title_rule
+    assert ".agent-card-title" not in app_css
