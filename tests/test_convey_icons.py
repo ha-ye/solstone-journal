@@ -39,6 +39,7 @@ CONVERTED_FILES = (
     ROOT / "solstone" / "apps" / "health" / "workspace.html",
     ROOT / "solstone" / "apps" / "health" / "static" / "health.js",
     ROOT / "solstone" / "apps" / "network" / "workspace.html",
+    ROOT / "solstone" / "convey" / "static" / "app.js",
     ROOT / "solstone" / "convey" / "static" / "status_pane.js",
     ROOT / "solstone" / "convey" / "static" / "shell.html",
 )
@@ -185,6 +186,10 @@ CONVERTED_GLYPH_RESIDUE = {
         "audio: '<svg",
         "screen: '<svg",
         "signals: '<svg",
+        "icon: '🗑️'",
+        "icon: '⚠️'",
+        "icon: '↩️'",
+        "icon: '⏱️'",
     ),
     "solstone/apps/speakers/workspace.html": (
         '<div class="surface-state-icon" aria-hidden="true"><svg',
@@ -200,7 +205,18 @@ CONVERTED_GLYPH_RESIDUE = {
         "generateBtn.textContent = '✨';",
         "voiceIcon.textContent = '🎤';",
         "deleteBtn.textContent = '🗑️';",
+        "icon: '🗑️'",
+        "icon: '↩️',\n        title: 'Delete cancelled'",
+        "icon: '⏱️'",
+        "icon: '⚠️'",
+        "icon: '↩️',\n        title: doneMessage",
     ),
+    "solstone/apps/settings/workspace.html": (
+        "icon: '❌'",
+        "icon: '✅'",
+        "icon: '🔄'",
+    ),
+    "solstone/apps/support/background.html": ("icon: '🛟'",),
     "solstone/apps/health/workspace.html": (
         '<div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on your device</div>',
     ),
@@ -215,27 +231,17 @@ CONVERTED_GLYPH_RESIDUE = {
     "solstone/convey/static/status_pane.js": (
         "bell.textContent = '🔔';",
         "bell.textContent = '🔕';",
+        "${escape(n.icon)}",
     ),
-    "solstone/convey/static/shell.html": (
-        '<button id="notif-bell" title="enable browser notifications" aria-label="enable browser notifications">🔔</button>',
-    ),
-}
-
-OUT_OF_SCOPE_GLYPHS = {
-    "solstone/apps/entities/workspace.html": (
-        "icon: '🗑️'",
-        "icon: '↩️',\n        title: 'Delete cancelled'",
-        "icon: '⏱️'",
+    "solstone/convey/static/websocket.js": (
+        "icon: '✓'",
         "icon: '⚠️'",
-        "icon: '↩️',\n        title: doneMessage",
-        "⚠️ this will permanently remove this entity from all detected day files. this action cannot be undone.",
-        "⚠️ this will permanently delete this entity and all associated data. this action cannot be undone.",
-        "starBtn.textContent = '☆';",
     ),
-    "solstone/apps/health/static/health.js": (
-        '"LOGS_SERVICE_COLLAPSED": "── {service} ── ({n} lines, ★ {errors} errors)"',
-        "const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';",
-        "el.textContent = `⚠ Disconnected (${agoText})`;",
+    "solstone/convey/static/app.js": (
+        'const ERROR_ICON = \'<svg viewBox="0 0 24 24"',
+        "icon: options.icon || '📬'",
+        "body: notif.message,\n          icon: notif.icon,",
+        "${window.AppServices.escapeHtml(n.icon)}",
     ),
     "solstone/observe/sense.py": (
         'return "🎙️"',
@@ -246,6 +252,22 @@ OUT_OF_SCOPE_GLYPHS = {
         'icon = "👁️"',
     ),
     "solstone/observe/describe.py": ('"icon": "👁️",',),
+    "solstone/convey/static/shell.html": (
+        '<button id="notif-bell" title="enable browser notifications" aria-label="enable browser notifications">🔔</button>',
+    ),
+}
+
+OUT_OF_SCOPE_GLYPHS = {
+    "solstone/apps/entities/workspace.html": (
+        "⚠️ this will permanently remove this entity from all detected day files. this action cannot be undone.",
+        "⚠️ this will permanently delete this entity and all associated data. this action cannot be undone.",
+        "starBtn.textContent = '☆';",
+    ),
+    "solstone/apps/health/static/health.js": (
+        '"LOGS_SERVICE_COLLAPSED": "── {service} ── ({n} lines, ★ {errors} errors)"',
+        "const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';",
+        "el.textContent = `⚠ Disconnected (${agoText})`;",
+    ),
     "solstone/observe/categories/meeting.py": (
         'video = "📹" if p.get("video") else "🔇"',
     ),
@@ -274,6 +296,47 @@ OUT_OF_SCOPE_GLYPHS = {
     "solstone/convey/static/shell.html": (
         '<button id="hamburger" aria-label="toggle navigation" aria-expanded="false">☰</button>',
     ),
+}
+
+NOTIFICATION_ICON_EMITTERS = {
+    "solstone/apps/transcripts/workspace.html": (
+        ("icon: '🗑️'", "icon: 'trash-2'"),
+        ("icon: '⚠️'", "icon: 'triangle-alert'"),
+        ("icon: '↩️'", "icon: 'undo-2'"),
+        ("icon: '⏱️'", "icon: 'timer'"),
+    ),
+    "solstone/apps/settings/workspace.html": (
+        ("icon: '❌'", "icon: 'circle-x'"),
+        ("icon: '✅'", "icon: 'circle-check'"),
+        ("icon: '🔄'", "icon: 'refresh-cw'"),
+    ),
+    "solstone/apps/entities/workspace.html": (
+        ("icon: '🗑️'", "icon: 'trash-2'"),
+        ("icon: '↩️'", "icon: 'undo-2'"),
+        ("icon: '⏱️'", "icon: 'timer'"),
+        ("icon: '⚠️'", "icon: 'triangle-alert'"),
+    ),
+    "solstone/apps/support/background.html": (("icon: '🛟'", "icon: 'life-buoy'"),),
+    "solstone/convey/static/websocket.js": (
+        ("icon: '✓'", "icon: 'check'"),
+        ("icon: '⚠️'", "icon: 'triangle-alert'"),
+    ),
+    "solstone/convey/static/app.js": (
+        ("icon: options.icon || '📬'", "_defaultIconName: 'mailbox'"),
+        (
+            "body: notif.message,\n          icon: notif.icon,",
+            "tag: `${notif.app}-${notif.id}`",
+        ),
+    ),
+    "solstone/observe/sense.py": (
+        ('return "🎙️"', 'return "mic-vocal"'),
+        ('return "👁️"', 'return "eye"'),
+        ('return "🤖"', 'return "bot"'),
+        ('icon = "🤖"', "icon=_handler_icon(handler_name)"),
+        ('icon = "🎙️"', "icon=_handler_icon(handler_name)"),
+        ('icon = "👁️"', "icon=_handler_icon(handler_name)"),
+    ),
+    "solstone/observe/describe.py": (('"icon": "👁️",', '"icon": "eye",'),),
 }
 
 
@@ -519,6 +582,23 @@ def test_converted_glyphs_are_gone_and_out_of_scope_glyphs_survive():
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         for snippet in snippets:
             assert snippet in text, f"out-of-scope glyph changed: {rel_path}"
+
+
+def test_notification_icon_emitters_use_lucide_names():
+    for rel_path, rows in NOTIFICATION_ICON_EMITTERS.items():
+        raw_text = (ROOT / rel_path).read_text(encoding="utf-8")
+        scanned = _glyph_scan_source(raw_text)
+        for old_snippet, new_snippet in rows:
+            assert old_snippet not in scanned, f"notification glyph remains: {rel_path}"
+            assert new_snippet in raw_text, (
+                f"notification icon name missing: {rel_path}"
+            )
+
+
+def test_glyph_scan_source_decodes_unicode_escape_icon_literal():
+    source = "icon: '\\uD83D\\uDD04'"
+
+    assert "icon: '🔄'" in _glyph_scan_source(source)
 
 
 def test_l2_icon_accessibility_and_call_idiom_are_preserved():

@@ -6024,7 +6024,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       let pendingNotificationId = null;
       pendingNotificationId = window.AppServices.notifications.show({
         app: 'transcripts',
-        icon: '🗑️',
+        icon: 'trash-2',
         title: 'Deleting segment…',
         message: 'Cancels in 10s',
         dismissible: true,
@@ -6039,7 +6039,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       if (data.search_index_warning === true) {
         window.AppServices.notifications.show({
           app: 'transcripts',
-          icon: '⚠️',
+          icon: 'triangle-alert',
           title: 'Search index may be stale',
           message: 'Search results may be briefly stale until the supervisor is restarted and the index is rebuilt.',
           dismissible: true,
@@ -6082,7 +6082,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         refreshSegmentIndicators();
         window.AppServices.notifications.show({
           app: 'transcripts',
-          icon: '↩️',
+          icon: 'undo-2',
           title: 'Delete cancelled',
           autoDismiss: 3000
         });
@@ -6092,7 +6092,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       if (response.status === 410) {
         window.AppServices.notifications.show({
           app: 'transcripts',
-          icon: '⏱️',
+          icon: 'timer',
           title: 'Too late — already deleted',
           autoDismiss: 3000
         });
@@ -6103,7 +6103,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     } catch (err) {
       window.AppServices.notifications.show({
         app: 'transcripts',
-        icon: '⚠️',
+        icon: 'triangle-alert',
         title: 'Couldn\'t cancel delete',
         message: err.message || 'Please try again.',
         autoDismiss: 3000

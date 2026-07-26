@@ -20,6 +20,7 @@ tests/fixtures/journal/chronicle/*/health/*.jsonl
 /config*.py
 .installed
 .python-version-hash
+.rust-core-hash
 /journal/*
 /identity.md
 .agents/

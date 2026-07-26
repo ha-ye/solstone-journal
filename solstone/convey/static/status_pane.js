@@ -452,6 +452,7 @@
     if (!statusPaneOpen && history.length === _lastHistoryLen) return;
     _lastHistoryLen = history.length;
     const escape = window.AppServices.escapeHtml;
+    const resolveIcon = value => window.AppServices.notifications._resolveIcon(value);
 
     if (history.length === 0) {
       container.innerHTML = '<span style="color: #9ca3af;">no recent activity</span>';
@@ -464,13 +465,13 @@
       if (n.action) {
         return `<a href="${escape(n.action)}" class="status-pane-history-item" style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; text-decoration: none; color: inherit;"
           ${n.facet ? `onclick="window.selectFacet && window.selectFacet('${escape(n.facet)}')"` : ''}>
-          <span style="font-size: 16px; flex-shrink: 0;">${escape(n.icon)}</span>
+          <span class="icon-slot" style="font-size: 16px; flex-shrink: 0;" aria-hidden="true">${resolveIcon(n.icon)}</span>
           <span style="font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escape(n.title)}</span>
           <span style="color: #9ca3af; font-size: 11px; flex-shrink: 0;">${relativeAge}</span>
         </a>`;
       } else {
         return `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 0 -8px;">
-          <span style="font-size: 16px; flex-shrink: 0;">${escape(n.icon)}</span>
+          <span class="icon-slot" style="font-size: 16px; flex-shrink: 0;" aria-hidden="true">${resolveIcon(n.icon)}</span>
           <span style="font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escape(n.title)}</span>
           <span style="color: #9ca3af; font-size: 11px; flex-shrink: 0;">${relativeAge}</span>
         </div>`;

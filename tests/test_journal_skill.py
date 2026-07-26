@@ -98,44 +98,39 @@ def test_make_skills_idempotent(tmp_path):
         }
 
     env = {"HOME": str(tmp_path / "home")}
-    first_run = subprocess.run(
-        [
-            str(native),
-            "__solstone_identity=sol",
-            "skills",
-            "install",
-            "--project",
-            str(temp_root),
-            "--agent",
-            "all",
-        ],
-        cwd=temp_root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+
+    def install() -> subprocess.CompletedProcess[str]:
+        # Deliberately not check=True: a CalledProcessError reports only the
+        # exit status in pytest's summary and swallows the binary's own
+        # explanation, which is the whole diagnosis. Assert instead, and put
+        # stderr in the failure message.
+        run = subprocess.run(
+            [
+                str(native),
+                "__solstone_identity=sol",
+                "skills",
+                "install",
+                "--project",
+                str(temp_root),
+                "--agent",
+                "all",
+            ],
+            cwd=temp_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, (
+            f"sol skills install exited {run.returncode}: {run.stderr.strip()!r}"
+        )
+        return run
+
+    first_run = install()
     assert first_run.stderr == ""
 
     first = link_state(temp_root)
 
-    second_run = subprocess.run(
-        [
-            str(native),
-            "__solstone_identity=sol",
-            "skills",
-            "install",
-            "--project",
-            str(temp_root),
-            "--agent",
-            "all",
-        ],
-        cwd=temp_root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    second_run = install()
     assert second_run.stderr == ""
 
     second = link_state(temp_root)

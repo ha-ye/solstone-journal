@@ -88,10 +88,10 @@ def _sanitize_beacon_reason(reason: str) -> str:
 
 def _handler_icon(handler_name: str) -> str:
     if handler_name == "transcribe":
-        return "🎙️"
+        return "mic-vocal"
     if handler_name == "describe":
-        return "👁️"
-    return "🤖"
+        return "eye"
+    return "bot"
 
 
 class QueuedItem:
@@ -595,17 +595,12 @@ class FileSensor:
             )
 
             if self.callosum:
-                icon = "🤖"
-                if handler_name == "transcribe":
-                    icon = "🎙️"
-                elif handler_name == "describe":
-                    icon = "👁️"
                 self.callosum.emit(
                     "notification",
                     "show",
                     message=f"{handler_name.capitalize()} failed for {file_path.name}",
                     title=f"{handler_name.capitalize()} Error",
-                    icon=icon,
+                    icon=_handler_icon(handler_name),
                     app="sense",
                     action=f"/app/health?log={log_rel}",
                 )

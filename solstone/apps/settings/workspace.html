@@ -4868,7 +4868,7 @@ function notifyError(title, message) {
   if (window.AppServices?.notifications) {
     window.AppServices.notifications.show({
       app: 'settings',
-      icon: '\u274C',
+      icon: 'circle-x',
       title,
       message,
       dismissible: true,
@@ -4881,7 +4881,7 @@ function notifySuccess(title, message) {
   if (window.AppServices?.notifications) {
     window.AppServices.notifications.show({
       app: 'settings',
-      icon: '\u2705',
+      icon: 'circle-check',
       title,
       message,
       dismissible: true,
@@ -4897,7 +4897,7 @@ function promptReload() {
   if (window.AppServices?.notifications) {
     window.AppServices.notifications.show({
       app: 'settings',
-      icon: '\uD83D\uDD04',
+      icon: 'refresh-cw',
       title: 'reload to apply',
       message: 'click to update facet bar',
       action: window.location.pathname,
