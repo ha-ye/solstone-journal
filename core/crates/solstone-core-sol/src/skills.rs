@@ -980,7 +980,7 @@ fn collect_file_rel_paths_inner(
 ) -> io::Result<()> {
     for entry in sorted_entries(dir)? {
         let metadata = fs::symlink_metadata(&entry)?;
-        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        if metadata.file_type().is_dir() {
             collect_file_rel_paths_inner(root, &entry, output)?;
             continue;
         }
@@ -1542,6 +1542,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn mixed_writability_regular_file_component_still_installs_writable_agent() {
+        let temp = unique_temp("mixed-writability-file-component");
+        let home = temp.join("home");
+        let claude_config = home.join(".claude");
+        let claude_skills_root = home.join(".claude/skills");
+        let codex_skills_root = home.join(".codex/skills");
+        fs::create_dir_all(&home).expect("create home");
+        fs::write(&claude_config, "not a directory").expect("create regular file component");
+        fs::create_dir_all(&codex_skills_root).expect("create writable codex skills root");
+        let skill_dir = source_root().join("solstone/talent/sol");
+
+        let report = install_user(&skill_dir, &home, AgentSelection::All);
+
+        let error = report
+            .rows
+            .iter()
+            .find(|row| row.action == Action::Error)
+            .expect("expected one structural error row");
+        assert_eq!(error.agent, "claude");
+        assert_eq!(error.path, claude_skills_root);
+        let output = report_output(report, "install");
+        assert_eq!(output.exit, 1);
+        assert!(home.join(".codex/skills/sol/SKILL.md").is_file());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn mixed_writability_installs_writable_agent_and_reports_unwritable_agent() {
         use std::os::unix::fs::PermissionsExt;
         let is_root = Command::new("id")
@@ -1551,6 +1579,7 @@ mod tests {
             .and_then(|output| String::from_utf8(output.stdout).ok())
             .is_some_and(|uid| uid.trim() == "0");
         if is_root {
+            eprintln!("skipped under root: chmod permission-bit vector requires non-root uid");
             return;
         }
         let temp = unique_temp("mixed-writability");
