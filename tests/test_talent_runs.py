@@ -191,9 +191,7 @@ def _epoch_ms(value: datetime) -> int:
 
 
 @freeze_time("2026-07-25 12:00:00")
-def test_default_scan_counts_today_execution_in_old_journal_day(
-    monkeypatch, tmp_path
-):
+def test_default_scan_counts_today_execution_in_old_journal_day(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     now = datetime.now()
     _write_day(
@@ -211,9 +209,9 @@ def test_default_scan_counts_today_execution_in_old_journal_day(
     scan = read_unresolved_agent_failures()
 
     assert scan.ok is True
-    assert [(failure.use_id, failure.name, failure.ts) for failure in scan.failures] == [
-        ("today-old-index", "flow", _epoch_ms(now))
-    ]
+    assert [
+        (failure.use_id, failure.name, failure.ts) for failure in scan.failures
+    ] == [("today-old-index", "flow", _epoch_ms(now))]
 
 
 @freeze_time("2026-07-25 12:00:00")
@@ -309,9 +307,7 @@ def test_default_scan_keeps_later_failure_across_journal_day_indexes(
 
 
 @freeze_time("2026-07-25 12:00:00")
-def test_default_scan_unreadable_index_returns_partial_degraded(
-    monkeypatch, tmp_path
-):
+def test_default_scan_unreadable_index_returns_partial_degraded(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     now = datetime.now()
     readable = _write_day(
@@ -419,9 +415,7 @@ def test_default_scan_excludes_entries_without_today_attributable_ts(
 
 
 @freeze_time("2026-07-25 12:00:00")
-def test_explicit_day_scan_keeps_journal_day_timestamp_semantics(
-    monkeypatch, tmp_path
-):
+def test_explicit_day_scan_keeps_journal_day_timestamp_semantics(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     old_ts = _epoch_ms(datetime.now() - timedelta(days=4))
     _write_day(

@@ -477,9 +477,7 @@ class TestAttentionResolution:
         assert "1" in result.placeholder_text
         assert len(result.placeholder_text) <= 90
 
-    def test_p0_cortex_error_executed_today_from_old_index(
-        self, tmp_path, monkeypatch
-    ):
+    def test_p0_cortex_error_executed_today_from_old_index(self, tmp_path, monkeypatch):
         """A run executed today surfaces even if recorded under an older journal day."""
         import json
         from datetime import datetime, timedelta
@@ -564,8 +562,7 @@ class TestAttentionResolution:
         assert "import" not in result.placeholder_text
         assert any("incomplete" in line for line in result.context_lines)
         assert any(
-            "Do not report a zero error count" in line
-            for line in result.context_lines
+            "Do not report a zero error count" in line for line in result.context_lines
         )
 
     def test_p0_readiness_error_prefers_setup_guidance(self, tmp_path, monkeypatch):
