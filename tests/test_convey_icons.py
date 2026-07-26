@@ -74,6 +74,19 @@ ICON_SLOT_OPEN_RE = re.compile(
     re.IGNORECASE,
 )
 EMPTY_ICONS_MAP_RE = re.compile(r"const\s+emptyIcons\s*=\s*\{[\s\S]*?\n\s*\};")
+L2_ICON_SLOT_CSS_FILES = {
+    "icon-slot": ROOT / "solstone" / "convey" / "static" / "app.css",
+    "entity-delete-btn": ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+    "voiceprint-icon": ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+    "facet-rel-voiceprint": ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+    "btn-icon": ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+    "vitals-chip": ROOT / "solstone" / "apps" / "health" / "workspace.html",
+    "trust-indicator": ROOT / "solstone" / "apps" / "health" / "workspace.html",
+    "link-hero-icon": ROOT / "solstone" / "apps" / "network" / "workspace.html",
+    "col-activity": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
+    "activity-item": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
+    "summary-item": ROOT / "solstone" / "apps" / "sol" / "workspace.html",
+}
 
 CONVERTED_GLYPH_RESIDUE = {
     "solstone/apps/search/workspace.html": (
@@ -83,6 +96,13 @@ CONVERTED_GLYPH_RESIDUE = {
     "solstone/apps/sol/workspace.html": (
         '<div class="empty-state-icon">🤖</div>',
         '<div class="empty-state-icon">⚠️</div>',
+        '<th class="col-activity" title="thinking events">💭</th>',
+        '<th class="col-activity" title="tool calls">🔧</th>',
+        '<th class="col-activity" title="cost">💰</th>',
+        '<span class="summary-item" title="${costInfo.title}">💰 ${costInfo.text}</span>',
+        "thinking.innerHTML = `💭 ${agent.thinking_count}`;",
+        "tools.innerHTML = `🔧 ${agent.tool_count}`;",
+        "cost.innerHTML = `💰 ${costInfo.text}`;",
     ),
     "solstone/apps/import/workspace.html": (
         '<div class="no-imports-icon">📥</div>',
@@ -124,9 +144,62 @@ CONVERTED_GLYPH_RESIDUE = {
         "text: '<svg",
         "audio: '<svg",
     ),
+    "solstone/apps/entities/workspace.html": (
+        "voiceprint.textContent = '🎤';",
+        "indicators.push('🎤 Has voiceprint');",
+        "generateBtn.textContent = '✨';",
+        "voiceIcon.textContent = '🎤';",
+        "deleteBtn.textContent = '🗑️';",
+    ),
+    "solstone/apps/health/workspace.html": (
+        '<div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on your device</div>',
+    ),
+    "solstone/apps/health/static/health.js": (
+        "const due = s.due ? ' ⏰' : '';",
+        "elements.trustIndicator.textContent = '🔒 all data stored locally on your device';",
+        "elements.trustIndicator.textContent = '🔒 All data stored locally · Syncing to ' + s.host;",
+    ),
+    "solstone/apps/network/workspace.html": (
+        '<div class="link-hero-icon" aria-hidden="true">📡</div>',
+    ),
+    "solstone/convey/static/status_pane.js": (
+        "bell.textContent = '🔔';",
+        "bell.textContent = '🔕';",
+    ),
+    "solstone/convey/static/shell.html": (
+        '<button id="notif-bell" title="enable browser notifications" aria-label="enable browser notifications">🔔</button>',
+    ),
 }
 
 OUT_OF_SCOPE_GLYPHS = {
+    "solstone/apps/entities/workspace.html": (
+        "icon: '🗑️'",
+        "icon: '↩️',\n        title: 'Delete cancelled'",
+        "icon: '⏱️'",
+        "icon: '⚠️'",
+        "icon: '↩️',\n        title: doneMessage",
+        "⚠️ this will permanently remove this entity from all detected day files. this action cannot be undone.",
+        "⚠️ this will permanently delete this entity and all associated data. this action cannot be undone.",
+        "starBtn.textContent = '☆';",
+    ),
+    "solstone/apps/health/static/health.js": (
+        '"LOGS_SERVICE_COLLAPSED": "── {service} ── ({n} lines, ★ {errors} errors)"',
+        "const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';",
+        "el.textContent = `⚠ Disconnected (${agoText})`;",
+    ),
+    "solstone/apps/network/workspace.html": (
+        '<p class="link-pair-success-check" aria-hidden="true">✓</p>',
+    ),
+    "solstone/apps/sol/workspace.html": (
+        "successBadge.textContent = '✓ ' + successCount;",
+        "failBadge.textContent = '✗ ' + agent.failed_count;",
+        "statusIcon.textContent = '\\u23f3';",
+        "statusIcon.textContent = '\\u2717';",
+        "statusIcon.textContent = '\\u2713';",
+    ),
+    "solstone/convey/static/shell.html": (
+        '<button id="hamburger" aria-label="toggle navigation" aria-expanded="false">☰</button>',
+    ),
     "solstone/apps/support/workspace.html": (
         "<h3>🛟 getting help</h3>",
         "<h3>🔍 search the knowledge base</h3>",
@@ -189,6 +262,24 @@ def requested_icon_names(source: str) -> set[str]:
 
 def _inline_slot_icon_names(path: Path, svg_to_name: Mapping[str, str]) -> set[str]:
     return {svg_to_name[svg] for svg in _icon_slot_svgs(path) if svg in svg_to_name}
+
+
+def _rule_bodies_for_svg_class(source: str, class_name: str) -> list[str]:
+    class_ref = re.escape(class_name)
+    bodies: list[str] = []
+    for match in re.finditer(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]+)\}", source):
+        selectors = [
+            selector.strip() for selector in match.group("selectors").split(",")
+        ]
+        if any(
+            re.search(
+                rf"(?<![A-Za-z0-9_-])\.{class_ref}(?![A-Za-z0-9_-])[^{{}}]*\bsvg\b",
+                selector,
+            )
+            for selector in selectors
+        ):
+            bodies.append(match.group("body"))
+    return bodies
 
 
 def test_convey_icons_runtime_accessor_in_browser_vm():
@@ -289,6 +380,32 @@ def test_convey_icon_slots_have_no_unvouched_inline_svg():
     assert not offenders, "unvouched icon-slot SVG(s): " + "; ".join(offenders)
 
 
+def test_l2_icon_slot_css_declares_current_color_stroke_and_size():
+    required = {
+        "width": "1em",
+        "height": "1em",
+        "stroke-width": "1.5",
+        "stroke": "currentColor",
+        "fill": "none",
+    }
+    offenders = []
+    for class_name, path in L2_ICON_SLOT_CSS_FILES.items():
+        text = path.read_text(encoding="utf-8")
+        bodies = _rule_bodies_for_svg_class(text, class_name)
+        if not bodies:
+            offenders.append(f"{path.relative_to(ROOT)}: .{class_name} svg missing")
+            continue
+        joined = "\n".join(bodies)
+        for prop, value in required.items():
+            if not re.search(
+                rf"{re.escape(prop)}\s*:\s*{re.escape(value)}\s*;", joined
+            ):
+                offenders.append(
+                    f"{path.relative_to(ROOT)}: .{class_name} svg missing {prop}: {value}"
+                )
+    assert not offenders
+
+
 def test_converted_glyphs_are_gone_and_out_of_scope_glyphs_survive():
     for rel_path, snippets in CONVERTED_GLYPH_RESIDUE.items():
         text = (ROOT / rel_path).read_text(encoding="utf-8")
@@ -299,6 +416,86 @@ def test_converted_glyphs_are_gone_and_out_of_scope_glyphs_survive():
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         for snippet in snippets:
             assert snippet in text, f"out-of-scope glyph changed: {rel_path}"
+
+
+def test_l2_icon_accessibility_and_call_idiom_are_preserved():
+    l2_paths = (
+        ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+        ROOT / "solstone" / "apps" / "health" / "workspace.html",
+        ROOT / "solstone" / "apps" / "health" / "static" / "health.js",
+        ROOT / "solstone" / "apps" / "network" / "workspace.html",
+        ROOT / "solstone" / "apps" / "sol" / "workspace.html",
+        ROOT / "solstone" / "convey" / "static" / "status_pane.js",
+        ROOT / "solstone" / "convey" / "static" / "shell.html",
+    )
+    l2_source = "\n".join(path.read_text(encoding="utf-8") for path in l2_paths)
+    l2_runtime_names = {
+        "trash-2",
+        "sparkles",
+        "bell",
+        "bell-off",
+        "alarm-clock",
+        "brain",
+        "wrench",
+        "coins",
+        "lock",
+        "mic-vocal",
+    }
+    offenders = []
+    for match in CALL_RE.finditer(l2_source):
+        if match.group("name") not in l2_runtime_names:
+            continue
+        call_end = match.end()
+        if "?." not in match.group(0) or not re.match(
+            r"\s*\|\|\s*''", l2_source[call_end:]
+        ):
+            offenders.append(match.group(0))
+    assert not offenders
+    assert not re.search(r"window\.ConveyIcons\??\.svg\([^)]*,", l2_source)
+
+    sol = (ROOT / "solstone" / "apps" / "sol" / "workspace.html").read_text(
+        encoding="utf-8"
+    )
+    assert '<span class="sr-only">thinking events</span>' in sol
+    assert '<span class="sr-only">tool calls</span>' in sol
+    assert '<span class="sr-only">cost</span>' in sol
+
+    entities = (ROOT / "solstone" / "apps" / "entities" / "workspace.html").read_text(
+        encoding="utf-8"
+    )
+    assert "deleteBtn.setAttribute('aria-label', deleteBtn.title);" in entities
+    assert "generateBtn.setAttribute('aria-label', generateBtn.title);" in entities
+    assert "voiceprint.setAttribute('role', 'img');" in entities
+    assert "voiceprint.setAttribute('aria-label', voiceprint.title);" in entities
+    assert "voiceIcon.setAttribute('role', 'img');" in entities
+    assert "voiceIcon.setAttribute('aria-label', voiceIcon.title);" in entities
+    assert "deleteBtn.onclick = (e) => {" in entities
+    assert "generateBtn.onclick = () => {" in entities
+    assert 'aria-hidden="true"' in l2_source
+
+
+def test_l2_health_trust_text_and_escaping_are_preserved():
+    health_js = (
+        ROOT / "solstone" / "apps" / "health" / "static" / "health.js"
+    ).read_text(encoding="utf-8")
+    health_html = (ROOT / "solstone" / "apps" / "health" / "workspace.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "const escapeHtml = (value) => window.AppServices.escapeHtml(value);"
+        in health_js
+    )
+    assert "escapeHtml(s.host)" in health_js
+    assert "escapeHtml(key)" in health_js
+    assert "escapeHtml(next)" in health_js
+
+    assert "</span> all data stored locally on your device</div>" in health_html
+    assert "lockIcon + ' all data stored locally on your device'" in health_js
+    assert (
+        "lockIcon + ' All data stored locally · Syncing to ' + escapeHtml(s.host)"
+        in health_js
+    )
 
 
 def test_surface_state_error_actions_are_wired_after_conversion():
