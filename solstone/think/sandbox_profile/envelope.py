@@ -68,8 +68,10 @@ ERROR_CODES = frozenset(
         "sandbox_marker_bad_run_id",
         "sandbox_marker_path_mismatch",
         "intent_missing",
+        "intent_malformed",
         "intent_run_mismatch",
         "payload_invalid",
+        "spb_instance_mismatch",
         "unknown_capability",
         "unsupported_capability_action",
         "internal_error",
@@ -88,8 +90,10 @@ GUIDANCE: dict[str, str | None] = {
     "sandbox_marker_bad_run_id": "Use a canonical UUID run_id.",
     "sandbox_marker_path_mismatch": "Point SOLSTONE_JOURNAL at the marker's canonical journal path.",
     "intent_missing": "Run prepare first.",
+    "intent_malformed": "Use the owning run or create a fresh sandbox.",
     "intent_run_mismatch": "Use the owning run or create a fresh sandbox.",
     "payload_invalid": "Send one valid JSON object on stdin for the selected capability.",
+    "spb_instance_mismatch": "Send a hosted backup binding for the prepared runtime instance_id.",
     "unknown_capability": "Use one of the supported capabilities.",
     "unsupported_capability_action": "Use one of the supported capabilities for this action.",
     "internal_error": "Inspect logs and retry in a fresh sandbox.",
@@ -103,8 +107,13 @@ class CapabilityEnvelope:
     residuals: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, object]:
+        if self.name not in manifest.CAPABILITY_ORDER:
+            raise ValueError(f"unsupported capability name: {self.name!r}")
         if self.state not in CAPABILITY_STATES:
             raise ValueError(f"unsupported capability state: {self.state!r}")
+        for residual in self.residuals:
+            if residual not in RESIDUAL_CODES:
+                raise ValueError(f"unsupported residual code: {residual!r}")
         return {
             "name": self.name,
             "state": self.state,

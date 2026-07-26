@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 
-from solstone.think.sandbox_profile import envelope
+import pytest
+
+from solstone.think.sandbox_profile import envelope, manifest
 from tests.sandbox_profile import invoke, output_json, prepare_ok, sandbox_journal
 
 
@@ -51,6 +53,17 @@ def test_state_exit_mapping_is_bijective() -> None:
         "cleanup_failed": 3,
     }
     assert len(set(envelope.EXIT_BY_STATE.values())) == len(envelope.EXIT_BY_STATE)
+
+
+def test_capability_serializer_enforces_closed_vocabulary() -> None:
+    with pytest.raises(ValueError, match="unsupported capability name"):
+        envelope.CapabilityEnvelope("unknown", envelope.CAP_READY).to_json()
+    with pytest.raises(ValueError, match="unsupported residual code"):
+        envelope.CapabilityEnvelope(
+            manifest.CAPABILITY_SCOUT,
+            envelope.CAP_DEGRADED,
+            ("typo_residual",),
+        ).to_json()
 
 
 def test_cli_exit_codes_cover_ok_degraded_error_and_cleanup_failed(

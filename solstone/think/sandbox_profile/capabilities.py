@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -19,6 +20,9 @@ from solstone.think.journal_config import (
 )
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import LinkState, ca_dir
+from solstone.think.providers.local_endpoint import (
+    confidential_fingerprint_provenance_block,
+)
 from solstone.think.sandbox_profile import envelope, intent, manifest
 from solstone.think.services import scout, spl, spp
 from solstone.think.services.spb_handoff import _BINDING_FIELDS, _binding_from_payload
@@ -37,9 +41,10 @@ _DISABLE_CARRIED_RESIDUALS: dict[str, frozenset[str]] = {
 
 
 class PayloadValidationError(ValueError):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, error_code: str = "payload_invalid") -> None:
         super().__init__(message)
         self.message = message
+        self.error_code = error_code
 
 
 def _read_json_file(path: Path) -> Any:
@@ -110,6 +115,25 @@ def _cap_intent_state(intent_payload: dict[str, Any] | None, name: str) -> str |
     return state if isinstance(state, str) else None
 
 
+def _observed_at_apply(
+    intent_payload: dict[str, Any] | None, name: str
+) -> dict[str, Any]:
+    if not isinstance(intent_payload, dict):
+        return {}
+    observed = intent_payload.get("observed_at_apply")
+    if not isinstance(observed, dict):
+        return {}
+    block = observed.get(name)
+    return block if isinstance(block, dict) else {}
+
+
+def _observed_string(
+    intent_payload: dict[str, Any] | None, name: str, field: str
+) -> str | None:
+    value = _observed_at_apply(intent_payload, name).get(field)
+    return value if isinstance(value, str) and value else None
+
+
 def _is_applied_intent(state: str | None) -> bool:
     return state in {intent.INTENT_APPLIED, intent.INTENT_APPLY_STARTED}
 
@@ -120,6 +144,11 @@ def _is_disabled_intent(state: str | None) -> bool:
 
 def _cap(name: str, state: str, *residuals: str) -> envelope.CapabilityEnvelope:
     return envelope.CapabilityEnvelope(name, state, tuple(residuals))
+
+
+def _secret_sha256(value: str) -> str:
+    # scout.KEY_FINGERPRINT_FIELD is written from this same UTF-8 SHA-256 input.
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _validate_exact_fields(
@@ -173,7 +202,10 @@ def _validate_spb_payload(payload: dict[str, Any], journal_path: Path) -> None:
     if not isinstance(instance_id, str) or not instance_id:
         raise PayloadValidationError("spb requires prepared runtime identity")
     if payload.get("instance_id") != instance_id:
-        raise PayloadValidationError("spb payload instance_id does not match runtime")
+        raise PayloadValidationError(
+            "spb payload field instance_id does not match runtime",
+            error_code="spb_instance_mismatch",
+        )
     try:
         _binding_from_payload(payload)
     except ValueError:
@@ -232,7 +264,8 @@ def _scout_status(
     state = _cap_intent_state(intent_payload, manifest.CAPABILITY_SCOUT)
     block = config.get("services", {}).get("scout")
     applied = isinstance(block, dict) and block.get("state") != "pending"
-    has_key = bool(config.get("env", {}).get("GOOGLE_API_KEY"))
+    key = config.get("env", {}).get("GOOGLE_API_KEY")
+    has_key = isinstance(key, str) and bool(key)
     complete = applied and has_key
     if complete and state is None:
         return _cap(
@@ -243,6 +276,22 @@ def _scout_status(
             manifest.CAPABILITY_SCOUT, envelope.CAP_DEGRADED, "intent_finalize_missing"
         )
     if complete:
+        live_fingerprint = _secret_sha256(key)
+        stored_fingerprint = block.get(scout.KEY_FINGERPRINT_FIELD)
+        recorded_fingerprint = _observed_string(
+            intent_payload, manifest.CAPABILITY_SCOUT, scout.KEY_FINGERPRINT_FIELD
+        )
+        expected = recorded_fingerprint or (
+            stored_fingerprint if isinstance(stored_fingerprint, str) else None
+        )
+        if expected is not None and (
+            live_fingerprint != expected or stored_fingerprint != expected
+        ):
+            return _cap(
+                manifest.CAPABILITY_SCOUT,
+                envelope.CAP_DEGRADED,
+                "scout_key_fingerprint_mismatch",
+            )
         return _cap(manifest.CAPABILITY_SCOUT, envelope.CAP_READY)
     if _is_disabled_intent(state) or state in {None, intent.INTENT_PREPARED}:
         return _cap(manifest.CAPABILITY_SCOUT, envelope.CAP_NOT_APPLIED)
@@ -260,6 +309,7 @@ def _spl_status(
 ) -> envelope.CapabilityEnvelope:
     state = _cap_intent_state(intent_payload, manifest.CAPABILITY_SPL)
     posture = _posture(config)
+    link_state = _read_link_state(journal_path)
     token = _read_service_token(journal_path)
     complete = posture == "spl" and token is not None
     if complete and state is None:
@@ -271,6 +321,21 @@ def _spl_status(
             manifest.CAPABILITY_SPL, envelope.CAP_DEGRADED, "intent_finalize_missing"
         )
     if complete:
+        recorded_instance_id = _observed_string(
+            intent_payload, manifest.CAPABILITY_SPL, "instance_id"
+        )
+        live_instance_id = (
+            link_state.get("instance_id") if isinstance(link_state, dict) else None
+        )
+        if (
+            recorded_instance_id is not None
+            and live_instance_id != recorded_instance_id
+        ):
+            return _cap(
+                manifest.CAPABILITY_SPL,
+                envelope.CAP_DEGRADED,
+                "spl_identity_missing",
+            )
         return _cap(manifest.CAPABILITY_SPL, envelope.CAP_READY)
     if posture == "spl" and token is None:
         return _cap(manifest.CAPABILITY_SPL, envelope.CAP_DEGRADED, "spl_token_missing")
@@ -304,6 +369,18 @@ def _spb_status(
         return _cap(
             manifest.CAPABILITY_SPB, envelope.CAP_DEGRADED, "intent_finalize_missing"
         )
+    recorded_instance_id = _observed_string(
+        intent_payload, manifest.CAPABILITY_SPB, "instance_id"
+    )
+    live_instance_id = binding.get("instance_id") if isinstance(binding, dict) else None
+    if (
+        binding is not None
+        and recorded_instance_id is not None
+        and live_instance_id != recorded_instance_id
+    ):
+        return _cap(
+            manifest.CAPABILITY_SPB, envelope.CAP_DEGRADED, "spb_instance_mismatch"
+        )
     if complete:
         return _cap(manifest.CAPABILITY_SPB, envelope.CAP_READY)
     if binding is None and _is_applied_intent(state):
@@ -329,7 +406,7 @@ def _spp_status(
     config: dict[str, Any], intent_payload: dict[str, Any] | None
 ) -> envelope.CapabilityEnvelope:
     state = _cap_intent_state(intent_payload, manifest.CAPABILITY_SPP)
-    block = config.get("services", {}).get("confidential")
+    block = confidential_fingerprint_provenance_block(config)
     local = config.get("providers", {}).get("local", {})
     credential = local.get("credential") if isinstance(local, dict) else None
     complete = isinstance(block, dict) and bool(credential)
@@ -342,6 +419,21 @@ def _spp_status(
             manifest.CAPABILITY_SPP, envelope.CAP_DEGRADED, "intent_finalize_missing"
         )
     if complete:
+        recorded_fingerprint = _observed_string(
+            intent_payload,
+            manifest.CAPABILITY_SPP,
+            spp.CREDENTIAL_FINGERPRINT_FIELD,
+        )
+        live_fingerprint = block.get(spp.CREDENTIAL_FINGERPRINT_FIELD)
+        if (
+            recorded_fingerprint is not None
+            and live_fingerprint != recorded_fingerprint
+        ):
+            return _cap(
+                manifest.CAPABILITY_SPP,
+                envelope.CAP_DEGRADED,
+                "spp_credential_fingerprint_mismatch",
+            )
         return _cap(manifest.CAPABILITY_SPP, envelope.CAP_READY)
     if _is_disabled_intent(state) or state in {None, intent.INTENT_PREPARED}:
         return _cap(manifest.CAPABILITY_SPP, envelope.CAP_NOT_APPLIED)

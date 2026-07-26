@@ -67,11 +67,3 @@ def synthetic_owner_metadata(run_id: str) -> SyntheticOwner:
         journal_name=f"Synthetic sandbox {slug}",
         home_label=f"sandbox-{slug}",
     )
-
-
-def supported_contract_payload() -> dict[str, object]:
-    return {
-        "profile": PROFILE,
-        "contract_version": CONTRACT_VERSION,
-        "capabilities": list(CAPABILITY_ORDER),
-    }

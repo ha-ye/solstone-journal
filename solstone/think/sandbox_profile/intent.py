@@ -97,6 +97,10 @@ def require_intent(journal_path: str | Path, run_id: str) -> dict[str, Any]:
     payload = load_intent(journal_path)
     if payload is None:
         raise FileNotFoundError("sandbox profile intent is missing")
+    return _validate_intent_payload(payload, run_id)
+
+
+def _validate_intent_payload(payload: dict[str, Any], run_id: str) -> dict[str, Any]:
     existing = payload.get("run_id")
     if existing != run_id:
         raise IntentRunMismatch(str(existing) if isinstance(existing, str) else "")
@@ -112,10 +116,7 @@ def require_intent(journal_path: str | Path, run_id: str) -> dict[str, Any]:
 def ensure_prepared(journal_path: str | Path, run_id: str) -> dict[str, Any]:
     existing = load_intent(journal_path)
     if existing is not None:
-        if existing.get("run_id") != run_id:
-            prior = existing.get("run_id")
-            raise IntentRunMismatch(str(prior) if isinstance(prior, str) else "")
-        return existing
+        return _validate_intent_payload(existing, run_id)
     payload = _default_intent(run_id)
     _write(intent_path(journal_path), payload)
     return payload

@@ -72,7 +72,9 @@ def _supported_apply_action() -> tuple[str, ...]:
 
 
 def _supported_disable_action() -> tuple[str, ...]:
-    return ("Supported disable capabilities: all, scout, spl, spb, spp.",)
+    return (
+        f"Supported disable capabilities: all, {', '.join(manifest.APPLY_CAPABILITIES)}.",
+    )
 
 
 def _emit(result: envelope.Envelope, *, json_output: bool) -> NoReturn:
@@ -161,7 +163,10 @@ def _capability_status(
         )
     except intent.IntentError:
         return _error(
-            action=action, code="internal_error", message="intent is unreadable"
+            action=action,
+            code="intent_malformed",
+            message="sandbox profile intent is malformed",
+            run_id=ctx.run_id,
         )
     caps = capabilities.observe_capabilities(ctx.journal_path, intent_payload)
     return envelope.Envelope(
@@ -328,6 +333,16 @@ def prepare(
             ),
             json_output=json_output,
         )
+    except intent.IntentError:
+        _emit(
+            _error(
+                action=action,
+                code="intent_malformed",
+                message="sandbox profile intent is malformed",
+                run_id=ctx.run_id,
+            ),
+            json_output=json_output,
+        )
     except Exception:
         log.debug("sandbox profile prepare failed without payload details")
         _emit(
@@ -409,8 +424,8 @@ def apply(
         _emit(
             _error(
                 action=action,
-                code="internal_error",
-                message="intent is unreadable",
+                code="intent_malformed",
+                message="sandbox profile intent is malformed",
                 run_id=ctx.run_id,
             ),
             json_output=json_output,
@@ -423,12 +438,22 @@ def apply(
             capability,
             payload,
         )
-    except (PayloadReadError, capabilities.PayloadValidationError):
+    except PayloadReadError:
         _emit(
             _error(
                 action=action,
                 code="payload_invalid",
                 message="payload is invalid",
+                run_id=ctx.run_id,
+            ),
+            json_output=json_output,
+        )
+    except capabilities.PayloadValidationError as exc:
+        _emit(
+            _error(
+                action=action,
+                code=exc.error_code,
+                message=exc.message,
                 run_id=ctx.run_id,
             ),
             json_output=json_output,
@@ -534,6 +559,16 @@ def disable(
                 action=action,
                 code="intent_run_mismatch",
                 message="sandbox profile intent belongs to a different run",
+                run_id=ctx.run_id,
+            ),
+            json_output=json_output,
+        )
+    except intent.IntentError:
+        _emit(
+            _error(
+                action=action,
+                code="intent_malformed",
+                message="sandbox profile intent is malformed",
                 run_id=ctx.run_id,
             ),
             json_output=json_output,

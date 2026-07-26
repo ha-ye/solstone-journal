@@ -62,7 +62,9 @@ def test_spb_rejects_instance_id_mismatch_before_local_mutation(
     body = output_json(result)
 
     assert result.exit_code == 2
-    assert body["error"]["code"] == "payload_invalid"
+    assert body["error"]["code"] == "spb_instance_mismatch"
+    assert "instance_id" in body["error"]["message"]
+    assert "not-the-runtime-instance" not in result.output
     assert not (journal / "backup" / "hosted" / "binding.json").exists()
 
 
