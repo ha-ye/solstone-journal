@@ -4,6 +4,7 @@
 """Tests for the activities module and activities agent hooks."""
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 
@@ -342,6 +343,51 @@ def test_migrate_custom_activity_icons_to_emoji_is_idempotent(monkeypatch):
                 "emoji": "🎯",
             }
         ]
+
+
+def test_migrate_custom_activity_icons_to_emoji_skips_hybrid_record(
+    monkeypatch,
+    caplog,
+):
+    from solstone.think.activities import migrate_custom_activity_icons_to_emoji
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+        activities_dir = Path(tmpdir) / "facets" / "work" / "activities"
+        activities_dir.mkdir(parents=True)
+        activities_file = activities_dir / "activities.jsonl"
+        original = (
+            json.dumps(
+                {
+                    "id": "hybrid_custom",
+                    "custom": True,
+                    "name": "Hybrid custom",
+                    "description": "Ambiguous stored shape",
+                    "emoji": "🎯",
+                    "icon": "🎨",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        activities_file.write_text(original, encoding="utf-8")
+
+        with caplog.at_level(logging.INFO, logger="solstone.think.activities"):
+            first = migrate_custom_activity_icons_to_emoji()
+            second = migrate_custom_activity_icons_to_emoji()
+
+        assert first["files_scanned"] == 1
+        assert first["files_changed"] == 0
+        assert first["records_changed"] == 0
+        assert second["files_scanned"] == 1
+        assert second["files_changed"] == 0
+        assert second["records_changed"] == 0
+        assert activities_file.read_text(encoding="utf-8") == original
+        assert sum(
+            "skipping activity icon migration for facet work activity hybrid_custom"
+            in record.getMessage()
+            for record in caplog.records
+        ) == 2
 
 
 def test_add_activity_to_facet(monkeypatch):

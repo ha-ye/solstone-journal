@@ -579,6 +579,15 @@ def migrate_custom_activity_icons_to_emoji(
             if not (record.get("custom") or activity_id not in defaults_by_id):
                 continue
 
+            if record.get("emoji"):
+                logger.info(
+                    "skipping activity icon migration for facet %s activity %s; "
+                    "emoji already present",
+                    facet,
+                    activity_id,
+                )
+                continue
+
             record_changed = False
             emoji, icon = _normalized_icon_fields(record)
             if emoji is not None and record.get("emoji") != emoji:
