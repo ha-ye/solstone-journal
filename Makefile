@@ -72,8 +72,25 @@ USER_BIN := $(HOME)/.local/bin
 	python3 -c "import sys; print(sys.version_info[:2])" > "$$tmp_file"; \
 	if [ ! -f $@ ] || ! cmp -s "$$tmp_file" $@; then mv "$$tmp_file" $@; else rm -f "$$tmp_file"; fi
 
+# The native `solstone-core` binary is built by maturin from Rust sources that
+# live OUTSIDE its package directory — packages/solstone-core/pyproject.toml
+# points maturin at ../../core. So none of `.installed`'s other prerequisites
+# move when native code changes: `.installed` stays satisfied, `uv sync` never
+# runs, and .venv/bin/solstone-core keeps serving whatever was built at first
+# install. Every Python test and check that shells out to that binary then
+# exercises stale native bytes while reporting green. This stamp puts the Rust
+# tree into the prerequisite chain; the `cache-keys` block in
+# packages/solstone-core/pyproject.toml is what makes the `uv sync` this
+# triggers actually rebuild. Hashed by content, not mtime, so a checkout or a
+# touch that changes nothing does not force a reinstall. core/target/ is
+# deliberately absent — the build writes it, so keying on it never settles.
+.rust-core-hash: FORCE
+	@tmp_file=$$(mktemp); \
+	python3 -c 'import hashlib, pathlib; root = pathlib.Path("core"); pats = ("Cargo.toml", "Cargo.lock", "crates/**/Cargo.toml", "crates/**/*.rs", "fixtures/**/*"); paths = sorted({p for pat in pats for p in root.glob(pat) if p.is_file()}); print(hashlib.sha256(b"".join(str(p).encode() + b"\0" + p.read_bytes() + b"\0" for p in paths)).hexdigest())' > "$$tmp_file"; \
+	if [ ! -f $@ ] || ! cmp -s "$$tmp_file" $@; then mv "$$tmp_file" $@; else rm -f "$$tmp_file"; fi
+
 # Marker file to track installation
-.installed: pyproject.toml packages/*/pyproject.toml uv.lock .python-version-hash
+.installed: pyproject.toml packages/*/pyproject.toml uv.lock .python-version-hash .rust-core-hash
 	python3 scripts/render_packaging.py
 	$(MAKE) preflight
 	@echo "Installing package with uv..."
