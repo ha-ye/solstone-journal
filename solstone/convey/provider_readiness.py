@@ -488,6 +488,16 @@ def chat_view(code: str, provider: str) -> dict[str, Any]:
     }
 
 
+def _model_not_found_copy(provider: str, model: str) -> tuple[str, str]:
+    return (
+        f'{provider} doesn\'t offer "{model}" to this key',
+        (
+            f'The credentials reached {provider}, but "{model}" isn\'t available '
+            "to this key. Pick a different model in Thinking."
+        ),
+    )
+
+
 def _build_view(
     reason_code: str,
     *,
@@ -515,6 +525,8 @@ def _build_view(
     else:
         summary = _render_template(entry.summary, display_name)
         detail = _render_template(entry.detail, display_name)
+        if reason_code == "model_not_found" and model:
+            summary, detail = _model_not_found_copy(display_name, model)
         recovery_action = entry.recovery_action
     return ReadinessView(
         semantic_key=semantic_key_for(reason_code, provider, model),

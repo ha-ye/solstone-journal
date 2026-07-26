@@ -141,6 +141,53 @@ def test_unknown_status_uses_neutral_readiness_copy():
         assert view.recovery_action is None
 
 
+def test_model_not_found_copy_names_concrete_model():
+    view = present_for_reason(
+        "model_not_found",
+        provider="google",
+        model="gemini-3.5-flash",
+        status="unhealthy",
+    )
+
+    assert view.summary == 'Gemini doesn\'t offer "gemini-3.5-flash" to this key'
+    assert view.detail == (
+        'The credentials reached Gemini, but "gemini-3.5-flash" isn\'t available '
+        "to this key. Pick a different model in Thinking."
+    )
+    assert "gemini-3.5-flash" in view.summary
+    assert "gemini-3.5-flash" in view.detail
+    assert view.recovery_action == _ENTRIES["model_not_found"].recovery_action
+
+
+def test_model_not_found_without_model_uses_static_copy():
+    for model in (None, ""):
+        view = present_for_reason(
+            "model_not_found",
+            provider="google",
+            model=model,
+            status="unhealthy",
+        )
+
+        assert view.summary == "Gemini doesn't offer this model to this key"
+        assert view.detail == _ENTRIES["model_not_found"].detail
+
+
+def test_model_not_found_neutral_status_uses_neutral_copy():
+    view = present_for_reason(
+        "model_not_found",
+        provider="google",
+        model="gemini-3.5-flash",
+        status="unknown",
+    )
+
+    assert view.severity == "neutral"
+    assert view.summary == (
+        "Gemini is set up — readiness will be confirmed when it's next used"
+    )
+    assert view.detail == "No action needed right now."
+    assert view.recovery_action is None
+
+
 def test_proof_unavailable_copy_preserves_without_setup_prompt():
     view = present_for_reason(
         "local_artifact_proof_unavailable",

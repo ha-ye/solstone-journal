@@ -125,6 +125,13 @@ def test_registry_shape():
         assert action is None or set(action) == {"label", "href"}
 
 
+def test_model_not_found_static_projection_has_no_model_placeholder():
+    reason = chat_reason_projection()["model_not_found"]
+
+    assert "{model}" not in reason["template"]
+    assert "{model}" not in chat_view("model_not_found", "google")["message"]
+
+
 def test_render_known_codes():
     for code, reason in chat_reason_projection().items():
         rendered = chat_view(code, "google")
