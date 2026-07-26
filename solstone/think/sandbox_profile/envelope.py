@@ -15,12 +15,11 @@ TOP_DEGRADED = "degraded"
 TOP_ERROR = "error"
 TOP_CLEANUP_FAILED = "cleanup_failed"
 
-EXIT_BY_STATE: dict[str, int] = {
-    TOP_OK: 0,
-    TOP_DEGRADED: 1,
-    TOP_ERROR: 2,
-    TOP_CLEANUP_FAILED: 3,
-}
+TOP_STATES = frozenset({TOP_OK, TOP_DEGRADED, TOP_ERROR, TOP_CLEANUP_FAILED})
+EXIT_COMPLETE = 0
+EXIT_INTERNAL_FAILURE = 1
+EXIT_REFUSED = 2
+EXIT_RESIDUAL = 3
 
 CAP_NOT_APPLIED = "not_applied"
 CAP_READY = "ready"
@@ -144,7 +143,7 @@ class Envelope:
     contract_version: int = field(default=manifest.CONTRACT_VERSION)
 
     def to_json(self) -> dict[str, object]:
-        if self.state not in EXIT_BY_STATE:
+        if self.state not in TOP_STATES:
             raise ValueError(f"unsupported top-level state: {self.state!r}")
         return {
             "contract_version": self.contract_version,
@@ -159,7 +158,13 @@ class Envelope:
 
     @property
     def exit_code(self) -> int:
-        return EXIT_BY_STATE[self.state]
+        if self.state == TOP_OK:
+            return EXIT_COMPLETE
+        if self.state == TOP_ERROR:
+            if self.error is not None and self.error.code == "internal_error":
+                return EXIT_INTERNAL_FAILURE
+            return EXIT_REFUSED
+        return EXIT_RESIDUAL
 
 
 def empty_capabilities() -> tuple[CapabilityEnvelope, ...]:

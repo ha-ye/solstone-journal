@@ -33,7 +33,7 @@ def test_envelope_field_order_types_and_default_json_output(
     assert raw["contract_version"] == 1
     assert raw["action"] == "describe"
     assert raw["profile"] == "full"
-    assert isinstance(raw["run_id"], str)
+    assert raw["run_id"] is None
     assert [cap["name"] for cap in raw["capabilities"]] == [
         "scout",
         "spl",
@@ -45,14 +45,31 @@ def test_envelope_field_order_types_and_default_json_output(
     assert not (journal / "config" / "journal.json").exists()
 
 
-def test_state_exit_mapping_is_bijective() -> None:
-    assert envelope.EXIT_BY_STATE == {
-        "ok": 0,
-        "degraded": 1,
-        "error": 2,
-        "cleanup_failed": 3,
-    }
-    assert len(set(envelope.EXIT_BY_STATE.values())) == len(envelope.EXIT_BY_STATE)
+def test_exit_mapping_distinguishes_internal_failure_from_known_outcomes() -> None:
+    caps = envelope.empty_capabilities()
+    assert envelope.Envelope("status", "full", None, "ok", caps).exit_code == 0
+    assert envelope.Envelope("status", "full", None, "degraded", caps).exit_code == 3
+    assert (
+        envelope.Envelope("status", "full", None, "cleanup_failed", caps).exit_code == 3
+    )
+    assert (
+        envelope.error_envelope(
+            action="status",
+            code="payload_invalid",
+            message="invalid",
+            run_id=None,
+        ).exit_code
+        == 2
+    )
+    assert (
+        envelope.error_envelope(
+            action="status",
+            code="internal_error",
+            message="failed",
+            run_id=None,
+        ).exit_code
+        == 1
+    )
 
 
 def test_capability_serializer_enforces_closed_vocabulary() -> None:
@@ -83,7 +100,7 @@ def test_cli_exit_codes_cover_ok_degraded_error_and_cleanup_failed(
     cleanup = invoke(["disable", "spb", "--json"])
 
     assert ok.exit_code == 0
-    assert degraded.exit_code == 1
+    assert degraded.exit_code == 3
     assert error.exit_code == 2
     assert cleanup.exit_code == 3
     assert output_json(cleanup)["state"] == "cleanup_failed"

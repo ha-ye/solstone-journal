@@ -86,11 +86,11 @@ def test_apply_atomic_faults_are_intent_first_and_status_names_partial_state(
         cap for cap in status_body["capabilities"] if cap["name"] == capability
     )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     if fail_on_replace == 1:
         assert cap_status["state"] == "not_applied"
     else:
-        assert status.exit_code == 1
+        assert status.exit_code == 3
         assert cap_status["state"] == "degraded"
         assert residual in cap_status["residuals"]
 
@@ -131,8 +131,8 @@ def test_spb_apply_fault_boundaries_are_named_and_retry_converges(
     status_body = output_json(status)
     spb = next(cap for cap in status_body["capabilities"] if cap["name"] == "spb")
 
-    assert failed.exit_code == 2
-    assert status.exit_code == 1
+    assert failed.exit_code == 1
+    assert status.exit_code == 3
     assert spb["state"] == "degraded"
     assert residual in spb["residuals"]
 

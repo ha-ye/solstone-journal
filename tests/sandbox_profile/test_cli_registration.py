@@ -47,3 +47,17 @@ def test_apply_unknown_capability_refuses(tmp_path, monkeypatch) -> None:
 
     assert result.exit_code == 2
     assert body["error"]["code"] == "unknown_capability"
+
+
+def test_describe_is_marker_free_preflight(tmp_path, monkeypatch) -> None:
+    journal = tmp_path / "unmarked"
+    journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    result = invoke(["describe", "--json"])
+    body = output_json(result)
+
+    assert result.exit_code == 0
+    assert body["run_id"] is None
+    assert body["state"] == "ok"
+    assert not (journal / ".solstone-sandbox.json").exists()

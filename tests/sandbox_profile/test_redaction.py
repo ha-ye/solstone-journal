@@ -36,7 +36,7 @@ def test_payload_secret_absent_from_argv_output_stderr_logs_and_exception(
     )
     body = output_json(result)
 
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     assert body["error"]["code"] == "internal_error"
     assert secret not in result.output
     assert secret not in caplog.text

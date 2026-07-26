@@ -288,14 +288,10 @@ def describe(
             ),
             json_output=json_output,
         )
-    ctx_or_error = _marker_context(action)
-    if isinstance(ctx_or_error, envelope.Envelope):
-        _emit(ctx_or_error, json_output=json_output)
-    ctx = ctx_or_error
     result = envelope.Envelope(
         action=action,
-        profile=ctx.profile,
-        run_id=ctx.run_id,
+        profile=manifest.PROFILE,
+        run_id=None,
         state=envelope.TOP_OK,
         capabilities=envelope.empty_capabilities(),
         next_actions=_supported_contract_action(),

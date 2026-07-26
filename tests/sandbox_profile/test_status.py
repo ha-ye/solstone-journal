@@ -49,7 +49,7 @@ def test_status_reports_intent_observed_split_without_network(
     body = output_json(status)
     scout = next(cap for cap in body["capabilities"] if cap["name"] == "scout")
 
-    assert status.exit_code == 1
+    assert status.exit_code == 3
     assert body["state"] == "degraded"
     assert scout["state"] == "degraded"
     assert "scout_block_missing" in scout["residuals"]
@@ -82,7 +82,7 @@ def _capability(body: dict[str, object], name: str) -> dict[str, object]:
 def _assert_degraded_residual(result, name: str, residual: str) -> None:
     body = output_json(result)
     cap = _capability(body, name)
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert body["state"] == "degraded"
     assert cap["state"] == "degraded"
     assert residual in cap["residuals"]
