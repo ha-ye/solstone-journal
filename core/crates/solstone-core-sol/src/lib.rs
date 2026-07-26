@@ -33,6 +33,7 @@ use solstone_core_sol_client_cli::{
 };
 
 mod generated;
+mod skills;
 
 use generated::journal_host_commands::{JOURNAL_HOST_COMMAND_COUNT, JOURNAL_HOST_COMMANDS};
 
@@ -49,7 +50,7 @@ const COMPAT_SENTINEL_ARMED: &str = "armed";
 const COMPAT_ARGV0_MARKER_PREFIX: &str = "__solstone_native_argv0=";
 const COMPAT_RECURSION_ERROR: &str =
     "sol: compatibility dispatch recursion detected. Reinstall solstone and solstone-core.";
-const TOP_LEVEL_COMPAT_COMMANDS: &[&str] = &["doctor", "check", "skills", "link"];
+const TOP_LEVEL_COMPAT_COMMANDS: &[&str] = &["doctor", "check", "link"];
 
 pub fn run(public_argv0: &str, args: Vec<OsString>) -> ExitCode {
     run_with_stdin_provider(public_argv0, args, &RealStdinProvider)
@@ -80,6 +81,7 @@ fn run_with_stdin_provider(
         [command] if command == OsStr::new("--path") => run_plain_path(),
         [command] if command == OsStr::new("path") => run_path(),
         [command] if command == OsStr::new("status") => run_status(),
+        [command, rest @ ..] if command == OsStr::new("skills") => render_output(skills::run(rest)),
         [command, rest @ ..] if command == OsStr::new("call") => {
             run_call(public_argv0, &args, rest, stdin_provider)
         }

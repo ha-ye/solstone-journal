@@ -25,7 +25,6 @@ PUBLIC_BINARIES = frozenset({"sol", "solstone"})
 TOP_LEVEL_COMPAT_MODULES = {
     "doctor": "solstone.think.doctor",
     "check": "solstone.think.check",
-    "skills": "solstone.think.skills_cli",
     "link": "solstone.think.link",
 }
 

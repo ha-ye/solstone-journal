@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from solstone.think.sol_compat_inventory import (
     CompatTarget,
     marker_for_public_argv0,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _capture_forwarding(
@@ -97,6 +100,22 @@ def test_allowed_top_level_commands_forward_exact_process_state(
             "cwd": Path.cwd(),
         }
     ]
+
+
+def test_rust_and_python_top_level_compat_collections_match() -> None:
+    source = (
+        REPO_ROOT / "core/crates/solstone-core-sol/src/lib.rs"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const\s+TOP_LEVEL_COMPAT_COMMANDS\s*:\s*&\[\s*&str\s*\]\s*=\s*&\[(?P<body>.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+    rust_commands = re.findall(r'"([^"]+)"', match.group("body"))
+
+    assert len(rust_commands) == len(set(rust_commands))
+    assert set(rust_commands) == set(TOP_LEVEL_COMPAT_MODULES)
 
 
 JOURNAL_ERRORS, JOURNAL_PATHS = frozen_journal_remainder_paths()

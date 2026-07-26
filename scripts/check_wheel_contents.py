@@ -83,6 +83,7 @@ CORE_REQUIRED_SDIST_MEMBERS = {
     "core/crates/solstone-core-sol/src/generated/journal_host_commands.rs",
     "core/crates/solstone-core-sol/src/generated/mod.rs",
     "core/crates/solstone-core-sol/src/lib.rs",
+    "core/crates/solstone-core-sol/src/skills.rs",
     "core/crates/solstone-core-sol-client/Cargo.toml",
     "core/crates/solstone-core-sol-client/src/aggregate.rs",
     "core/crates/solstone-core-sol-client/src/command.rs",
