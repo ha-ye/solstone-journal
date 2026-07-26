@@ -266,6 +266,12 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             return "provider_unavailable"
         if exc_name in {"LLMNoResponseError", "LLMResponseError"}:
             return "provider_response_invalid"
+        # Keep this message rescue ahead of the cloud BadRequest ->
+        # provider_request_rejected fallback. OpenHands maps only "context length
+        # exceeded" to LLMContextWindowExceedError; the other recognised
+        # context-window messages arrive as LLMBadRequestError and would
+        # otherwise be classified as a permanent request rejection. See
+        # tests/test_openhands_context_boundary.py for the dependency contract.
         if _contains_any(message_lower, _CONTEXT_WINDOW_PATTERNS):
             return "context_window_exceeded"
         # MaxIterationsReached is OpenHands' event-code spelling of the same limit;
