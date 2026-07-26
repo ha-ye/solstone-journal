@@ -5,6 +5,8 @@ use std::error::Error;
 use std::f32::consts::PI;
 use std::fmt;
 
+pub mod diarization;
+
 pub const WESPEAKER_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const WESPEAKER_MEL_BINS: usize = 80;
 pub const WESPEAKER_FRAME_LENGTH_SAMPLES: usize = 400;
