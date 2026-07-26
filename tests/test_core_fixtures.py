@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -152,6 +153,11 @@ def _decode_decimal_rows(rows: list[str]) -> np.ndarray:
 
 def test_speaker_filterbank_fixture_spans_near_silent_and_broadband_regimes() -> None:
     fixture = build_core_fixtures.build_speaker_filterbank_fixture()
+    waveform_bytes = base64.b64decode(fixture["waveform"]["samples_f32_le_base64"])
+    expected_waveform = build_core_fixtures._speaker_filterbank_waveform()
+    assert len(waveform_bytes) == expected_waveform.size * 4
+    assert waveform_bytes == expected_waveform.astype("<f4", copy=False).tobytes()
+
     matrix = _decode_decimal_rows(fixture["matrices"]["filterbank_cmn"]["rows"])
     near_start, near_end = fixture["waveform"]["near_silent_rows"]
     broad_start, broad_end = fixture["waveform"]["broadband_rows"]

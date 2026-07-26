@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import importlib.metadata
@@ -612,9 +613,10 @@ def _encoder_config_constants() -> dict[str, Any]:
 
 
 def _speaker_fixture_identity(fixture: str) -> dict[str, Any]:
+    fixture_version = 2 if fixture == "solstone-speaker-filterbank" else 1
     return {
         "fixture": fixture,
-        "fixture_version": 1,
+        "fixture_version": fixture_version,
         "generated_by": "make core-fixtures",
         "kaldi_native_fbank_version": _package_version("kaldi-native-fbank"),
         "source_constants": {
@@ -687,6 +689,9 @@ def build_speaker_filterbank_fixture() -> dict[str, Any]:
             "broadband_amplitude": SPEAKER_FILTERBANK_BROADBAND_AMPLITUDE,
             "near_silent_rows": list(SPEAKER_FILTERBANK_NEAR_ROWS),
             "broadband_rows": list(SPEAKER_FILTERBANK_BROADBAND_ROWS),
+            "samples_f32_le_base64": base64.b64encode(
+                audio.astype("<f4", copy=False).tobytes()
+            ).decode("ascii"),
         },
         "call_site_agreement": {
             "array_equal": True,
