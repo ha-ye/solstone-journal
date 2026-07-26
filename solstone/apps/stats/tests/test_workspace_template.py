@@ -259,3 +259,111 @@ def test_stats_routes_resolve(stats_env):
 
 def test_stats_routes_do_not_use_render_template():
     assert "render_template" not in (APP_ROOT / "routes.py").read_text(encoding="utf-8")
+
+
+def _style_block() -> str:
+    raw_template = (APP_ROOT / "workspace.html").read_text(encoding="utf-8")
+    style_start = raw_template.index("<style>")
+    style_end = raw_template.index("</style>", style_start)
+    return raw_template[style_start:style_end]
+
+
+def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
+    index = css.find(f"{selector} {{", start)
+    assert index != -1, f"{selector} rule was not found"
+    close = css.find("}", index)
+    assert close != -1, f"{selector} rule is not closed"
+    return index, css[index : close + 1]
+
+
+def _px_declaration(rule: str, prop: str) -> float:
+    match = re.search(rf"(?m)^\s*{re.escape(prop)}:\s*([^;]+);", rule)
+    assert match is not None, f"{prop} declaration was not found"
+    value = match.group(1).strip()
+    px_match = re.fullmatch(r"-?(?:\d+(?:\.\d+)?|\.\d+)px", value)
+    assert px_match is not None, f"{prop} must be a single px length, got {value!r}"
+    return float(px_match.group(0)[:-2])
+
+
+def test_stats_bar_label_gutter_keeps_legend_clearance():
+    css = _style_block()
+    _, bar_label_rule = _rule_block(css, ".bar-label")
+    _, bar_chart_rule = _rule_block(css, ".bar-chart")
+
+    bottom_offset = _px_declaration(bar_label_rule, "bottom")
+    margin_bottom = _px_declaration(bar_chart_rule, "margin-bottom")
+
+    assert margin_bottom >= abs(bottom_offset) + 2
+
+
+def test_stats_bar_chart_replacement_keeps_nonzero_flex_growth():
+    css = _style_block()
+    _, chart_rule = _rule_block(css, ".chart")
+    _, bar_chart_rule = _rule_block(css, ".bar-chart")
+
+    grow_match = re.search(r"(?m)^\s*flex-grow:\s*([^;]+);", bar_chart_rule)
+    if grow_match is not None:
+        grow_value = grow_match.group(1).strip()
+    else:
+        flex_match = re.search(r"(?m)^\s*flex:\s*([^;]+);", bar_chart_rule)
+        assert flex_match is not None, "bar-chart flex declaration was not found"
+        grow_value = flex_match.group(1).strip().split()[0]
+
+    try:
+        flex_grow = float(grow_value)
+    except ValueError:
+        raise AssertionError(
+            f"bar-chart flex grow must be numeric, got {grow_value!r}"
+        ) from None
+
+    assert flex_grow > 0
+    assert "height: 100%;" not in bar_chart_rule
+    assert "display: flex;" in chart_rule
+    assert "flex-direction: column;" in chart_rule
+
+
+def test_stats_bar_tooltip_rest_state_uses_sanctioned_restore_mechanism():
+    css = _style_block()
+    _, rest_rule = _rule_block(css, ".bar::after")
+    _, hover_rule = _rule_block(css, ".bar:hover::after")
+
+    rest_nulls_content = re.search(r'(?m)^\s*content:\s*(?:""|\'\');', rest_rule)
+    rest_hides_display = re.search(r"(?m)^\s*display:\s*none;", rest_rule)
+    hover_restores_content = re.search(
+        r"(?m)^\s*content:\s*attr\(data-tip\);", hover_rule
+    )
+    hover_display_match = re.search(r"(?m)^\s*display:\s*([^;]+);", hover_rule)
+    hover_restores_display = (
+        hover_display_match is not None
+        and hover_display_match.group(1).strip().lower() != "none"
+    )
+
+    assert rest_nulls_content or rest_hides_display
+    assert hover_restores_content or hover_restores_display
+
+
+def test_stats_bar_after_rest_content_attr_guard_is_scoped_to_bar_tooltip():
+    css = _style_block()
+    _, rest_rule = _rule_block(css, ".bar::after")
+
+    # .heatmap-cell::after has the same pattern but is deliberately out of scope; this guard does not claim to cover it.
+    assert "content: attr(" not in rest_rule
+
+
+def test_stats_backlog_badge_declares_inline_axis_self_alignment():
+    css = _style_block()
+    _, badge_rule = _rule_block(css, ".backlog-badge")
+    match = re.search(r"(?m)^\s*justify-self:\s*([^;]+);", badge_rule)
+    assert match is not None, "backlog-badge justify-self declaration was not found"
+
+    assert match.group(1).strip() in {
+        "start",
+        "flex-start",
+        "self-start",
+        "left",
+        "center",
+        "end",
+        "flex-end",
+        "self-end",
+        "right",
+    }

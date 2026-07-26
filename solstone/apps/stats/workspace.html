@@ -261,6 +261,7 @@ h1 {
   color: #6c4b00;
   font-size: 0.8em;
   font-weight: 700;
+  justify-self: start;
   padding: 0.25em 0.65em;
 }
 
@@ -353,6 +354,8 @@ h1 {
 }
 
 .chart {
+  display: flex;
+  flex-direction: column;
   height: 300px;
   position: relative;
   margin-top: 1.5em;
@@ -363,9 +366,11 @@ h1 {
 .bar-chart {
   display: flex;
   align-items: flex-end;
-  height: 100%;
+  flex: 1 1 auto;
+  height: auto;
   gap: 3px;
   padding: 0 16px;
+  margin-bottom: 22px;
 }
 
 .bar {
@@ -382,7 +387,7 @@ h1 {
 }
 
 .bar::after {
-  content: attr(data-tip);
+  content: "";
   position: absolute;
   bottom: 100%;
   left: 50%;
@@ -400,6 +405,7 @@ h1 {
 }
 
 .bar:hover::after {
+  content: attr(data-tip);
   opacity: 1;
 }
 
@@ -633,7 +639,7 @@ h1 {
 .token-legend {
   display: flex;
   gap: 1.5em;
-  margin-top: 1em;
+  margin-top: 0;
   font-size: 0.85em;
   justify-content: flex-start;
   font-weight: 500;
