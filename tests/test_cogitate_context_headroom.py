@@ -36,6 +36,9 @@ _SEED_TEXT = (
     "and verification details for this run.\n" * 40
 )
 _PAD_UNIT = " measured evidence padding"
+# These caps turn tokenizer non-growth into harness failures instead of hangs.
+_MAX_SEED_TURNS = 256
+_MAX_PAD_STEPS = 4096
 
 
 @dataclass(frozen=True)
@@ -191,13 +194,14 @@ def _seed_history(
     llm: _RecordingLLM,
     target_low: int,
 ) -> None:
-    seed_turns = 0
-    while True:
+    last_count: int | None = None
+    for seed_turns in range(_MAX_SEED_TURNS):
         next_count = _prepared_count(
             conversation=conversation,
             llm=llm,
             candidate=_SEED_TEXT,
         )
+        last_count = next_count
         if seed_turns >= openhands._LOCAL_CONDENSER_KEEP_FIRST and (
             next_count >= target_low - 256
         ):
@@ -207,7 +211,12 @@ def _seed_history(
             f"before final padding; next_count={next_count}, target_low={target_low}"
         )
         _run_turn(conversation, _SEED_TEXT)
-        seed_turns += 1
+
+    assert False, (
+        "harness precondition failed: seed history did not reach the target "
+        f"band after {_MAX_SEED_TURNS} turns; observed_count={last_count}, "
+        f"target_band=[{target_low - 256}, {target_low})"
+    )
 
 
 def _pad_to_band(
@@ -220,10 +229,17 @@ def _pad_to_band(
 ) -> tuple[str, int]:
     text = "Final measured turn."
     count = _prepared_count(conversation=conversation, llm=llm, candidate=text)
-    while count <= lower_exclusive:
+    pad_steps = 0
+    while count <= lower_exclusive and pad_steps < _MAX_PAD_STEPS:
         text += _PAD_UNIT
         count = _prepared_count(conversation=conversation, llm=llm, candidate=text)
+        pad_steps += 1
 
+    assert count > lower_exclusive, (
+        f"harness precondition failed: {label} padding did not reach the "
+        f"target band after {pad_steps} steps; observed_count={count}, "
+        f"target_band=({lower_exclusive}, {upper_inclusive}]"
+    )
     assert count <= upper_inclusive, (
         f"harness precondition failed: {label} prepared count {count} not in "
         f"({lower_exclusive}, {upper_inclusive}]"
