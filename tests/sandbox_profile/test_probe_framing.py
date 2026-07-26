@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -170,3 +171,36 @@ def test_replay_rejects_non_object_json(tmp_path) -> None:
 
     _assert_stale(journal)
 
+
+def test_replay_rejects_symlinked_ledger_before_decode(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    path = probe_contract.probe_ledger_path(journal)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "target.jsonl"
+    target.write_text("[]\n", encoding="utf-8")
+    path.symlink_to(target)
+
+    _assert_stale(journal)
+
+
+def test_replay_rejects_fifo_ledger_before_decode(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    path = probe_contract.probe_ledger_path(journal)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path)
+
+    _assert_stale(journal)
+
+
+def test_replay_maps_deep_json_recursion_to_stale(tmp_path) -> None:
+    journal = tmp_path / "journal"
+    path = probe_contract.probe_ledger_path(journal)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    depth = 10_000
+    path.write_text("[" * depth + "0" + "]" * depth + "\n", encoding="utf-8")
+
+    with pytest.raises(probe_records.ProbeOperationError) as excinfo:
+        replay_probe_ledger(journal)
+
+    assert excinfo.value.code == probe_contract.STABLE_ERROR_STALE_ATTEMPT
+    assert excinfo.value.__cause__ is None

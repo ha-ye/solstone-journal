@@ -3,22 +3,20 @@
 
 """Fail-closed replay for the sandbox production-probe ledger.
 
-This ledger coordinates probes that may touch disposable production-facing
-services. Replay therefore treats ambiguity as unsafe instead of attempting
-repair: a torn record, cardinality mismatch, missing attempt directory, orphan
-attempt directory, or wrong attempt-directory mode becomes a stale attempt that
-requires external whole-profile stop. The forward-barrier rule is intentionally
-strict for the same reason. A new attempt may contact production only after its
-own start record has reached disk, and only two prior terminal classes are
-considered settled enough to permit that write: the clean-success class, or the
-proof-failure degradation class whose proof rows all report closed cleanup.
-Cancelled, internal-error, cleanup-unverified, and incomplete attempts remain
-stale until the whole profile is removed.
+Replay validates any preexisting ledger as one regular non-symlink file and
+reads it through a no-follow descriptor before partial JSONL validation. Torn
+records, bounded decode failures including recursion, cardinality mismatches,
+attempt-directory mismatches, and unsafe terminal classes become stale attempts
+that require external whole-profile stop. The replay result retains ledger
+byte-size and identity metadata for the writer-side descriptor checks.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +24,18 @@ from solstone.think.sandbox_profile import json_codec, probe_records, probe_slot
 from solstone.think.sandbox_profile import probe_contract as contract
 
 
+@dataclass(frozen=True, slots=True)
+class _LedgerRead:
+    payloads: tuple[dict[str, Any], ...]
+    size: int
+    identity: tuple[int, int] | None
+
+
 def replay_probe_ledger(journal_path: Path) -> probe_records.ProbeReplay:
     journal = Path(journal_path)
     ledger_path = contract.probe_ledger_path(journal)
-    raw_payloads = _read_framed_payloads(ledger_path)
+    ledger = _read_framed_payloads(ledger_path)
+    raw_payloads = ledger.payloads
     attempt_count_type = contract.RECORD_CARDINALITY["attempt_count_type"]
     attempt_count = sum(
         1 for payload in raw_payloads if payload.get("type") == attempt_count_type
@@ -44,27 +50,49 @@ def replay_probe_ledger(journal_path: Path) -> probe_records.ProbeReplay:
     return probe_records.ProbeReplay(
         journal_path=journal,
         ledger_path=ledger_path,
+        ledger_size_bytes=ledger.size,
+        ledger_identity=ledger.identity,
         run_id=run_id,
         attempts=attempts,
         retry_permitted=retry_permitted,
     )
 
 
-def _read_framed_payloads(ledger_path: Path) -> tuple[dict[str, Any], ...]:
+def _read_framed_payloads(ledger_path: Path) -> _LedgerRead:
     try:
-        size = ledger_path.stat().st_size
+        ledger_stat = ledger_path.lstat()
     except FileNotFoundError:
-        return ()
+        return _LedgerRead(payloads=(), size=0, identity=None)
     except OSError:
         probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+    if stat.S_ISLNK(ledger_stat.st_mode) or not stat.S_ISREG(ledger_stat.st_mode):
+        probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+    size = ledger_stat.st_size
     if size > contract.MAX_LEDGER_BYTES:
         probe_records.raise_probe_error(contract.STABLE_ERROR_ATTEMPT_LIMIT_REACHED)
+    identity = (ledger_stat.st_dev, ledger_stat.st_ino)
+    fd: int | None = None
     try:
-        raw = ledger_path.read_bytes()
+        fd = os.open(ledger_path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(fd_stat.st_mode)
+            or (fd_stat.st_dev, fd_stat.st_ino) != identity
+            or fd_stat.st_size != size
+        ):
+            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+        raw = os.read(fd, size + 1)
+        if len(raw) != size:
+            probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+    except probe_records.ProbeOperationError:
+        raise
     except OSError:
         probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
+    finally:
+        if fd is not None:
+            os.close(fd)
     if not raw:
-        return ()
+        return _LedgerRead(payloads=(), size=size, identity=identity)
     if not raw.endswith(b"\n"):
         probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
     payloads: list[dict[str, Any]] = []
@@ -78,12 +106,12 @@ def _read_framed_payloads(ledger_path: Path) -> tuple[dict[str, Any], ...]:
                 object_pairs_hook=json_codec.reject_duplicate_keys
             )
             payload, end = decoder.raw_decode(text)
-        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError, RecursionError):
             probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
         if end != len(text) or not isinstance(payload, dict):
             probe_records.raise_probe_error(contract.STABLE_ERROR_STALE_ATTEMPT)
         payloads.append(payload)
-    return tuple(payloads)
+    return _LedgerRead(payloads=tuple(payloads), size=size, identity=identity)
 
 
 def _fold_records(

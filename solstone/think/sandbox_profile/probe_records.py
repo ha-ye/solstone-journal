@@ -143,6 +143,8 @@ class ProbeAttemptReplay:
 class ProbeReplay:
     journal_path: Path
     ledger_path: Path
+    ledger_size_bytes: int
+    ledger_identity: tuple[int, int] | None
     run_id: str | None
     attempts: tuple[ProbeAttemptReplay, ...]
     retry_permitted: bool

@@ -30,6 +30,8 @@ def test_empty_ledger_is_retry_permitted(tmp_path) -> None:
 
     assert replay.retry_permitted is True
     assert replay.attempt_count == 0
+    assert replay.ledger_size_bytes == 0
+    assert replay.ledger_identity is None
 
 
 def test_ok_terminal_is_retry_permitted(tmp_path) -> None:
@@ -43,6 +45,9 @@ def test_ok_terminal_is_retry_permitted(tmp_path) -> None:
 
     assert replay.retry_permitted is True
     assert replay.run_id == RUN_ID
+    ledger_stat = probe_contract.probe_ledger_path(journal).stat()
+    assert replay.ledger_size_bytes == ledger_stat.st_size
+    assert replay.ledger_identity == (ledger_stat.st_dev, ledger_stat.st_ino)
     assert_inventory_unchanged(before, after)
 
 
