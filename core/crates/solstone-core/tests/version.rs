@@ -53,6 +53,30 @@ fn sol_root_output(program: &Path, cwd: &Path, public_argv0: &str) -> Output {
     )
 }
 
+#[cfg(unix)]
+fn compat_child_with_retry(program: &Path, public_argv0: &str) -> std::process::Child {
+    for _ in 0..100 {
+        match Command::new(program)
+            .arg(identity_arg(public_argv0))
+            .args(["check", "message"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => return child,
+            Err(error) if error.kind() == ErrorKind::ExecutableFileBusy => {
+                sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("solstone-core should spawn: {error:?}"),
+        }
+    }
+    panic!(
+        "fake solstone-core stayed busy after retries: {}",
+        program.display()
+    )
+}
+
 #[test]
 fn version_writes_stdout_and_exits_zero() {
     let output = Command::new(bin())
@@ -357,7 +381,6 @@ fn sol_root_installed_layout_canonicalizes_lib64_alias_independent_of_cwd() {
 fn sol_and_solstone_identities_forward_compat_with_public_argv0_identity() {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Stdio;
 
     let env_root = temp_path("compat-sibling-python");
     let bin_dir = env_root.join("bin");
@@ -388,14 +411,7 @@ fn sol_and_solstone_identities_forward_compat_with_public_argv0_identity() {
         ("sol", "__solstone_native_argv0=sol"),
         ("solstone", "__solstone_native_argv0=solstone"),
     ] {
-        let mut child = Command::new(&fake_solstone_core)
-            .arg(identity_arg(public_argv0))
-            .args(["notify", "message"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("solstone-core should spawn");
+        let mut child = compat_child_with_retry(&fake_solstone_core, public_argv0);
         child
             .stdin
             .as_mut()
@@ -408,7 +424,7 @@ fn sol_and_solstone_identities_forward_compat_with_public_argv0_identity() {
         assert_eq!(
             String::from_utf8(output.stdout).expect("stdout should be utf-8"),
             format!(
-                "sentinel=armed\npython_argv=<-P><-m><solstone.think.sol_compat_cli><{expected_marker}><notify><message>\nstdin=payload"
+                "sentinel=armed\npython_argv=<-P><-m><solstone.think.sol_compat_cli><{expected_marker}><check><message>\nstdin=payload"
             )
         );
         assert_eq!(

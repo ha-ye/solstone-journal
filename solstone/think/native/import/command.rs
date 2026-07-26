@@ -603,6 +603,7 @@ mod tests {
             files: Some(files),
             build_identity: None,
             client_item_ids: Some(client_item_ids),
+            notification_sink: None,
         })
     }
 

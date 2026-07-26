@@ -24,8 +24,7 @@
     {
       "commands": [
         "skills",
-        "link",
-        "contract"
+        "link"
       ],
       "heading": "Tools"
     }
@@ -53,7 +52,7 @@
     "identity"
   ],
   "days_line": "Days: 2",
-  "expected_bare_sol_stdout": "sol - journal access CLI (solstone)\n\nJournal: ${JOURNAL}\nDays: 2\n\nUsage: sol <command> [args...]\n\nConversation\n  chat\n\nYour journal\n  call\n  import\n\nSee & diagnose\n  notify\n  doctor\n  check\n\nTools\n  skills\n  link\n  contract\n\nApps (sol call <app>):\n  call activities\n  call awareness\n  call body\n  call chat\n  call entities\n  call facets\n  call import\n  call link\n  call settings\n  call sol\n  call speakers\n  call support\n  call thinking\n  call transcripts\n  call health\n  call journal\n  call ledger\n  call navigate\n  call profile\n  call identity\n\n",
+  "expected_bare_sol_stdout": "sol - journal access CLI (solstone)\n\nJournal: ${JOURNAL}\nDays: 2\n\nUsage: sol <command> [args...]\n\nConversation\n  chat\n\nYour journal\n  call\n  import\n\nSee & diagnose\n  notify\n  doctor\n  check\n\nTools\n  skills\n  link\n\nApps (sol call <app>):\n  call activities\n  call awareness\n  call body\n  call chat\n  call entities\n  call facets\n  call import\n  call link\n  call settings\n  call sol\n  call speakers\n  call support\n  call thinking\n  call transcripts\n  call health\n  call journal\n  call ledger\n  call navigate\n  call profile\n  call identity\n\n",
   "header": "sol - journal access CLI (solstone)",
   "journal_line": "Journal: ${JOURNAL}",
   "oracle": {

@@ -57,6 +57,15 @@ pub trait ClientItemIdProvider {
     fn client_item_id(&self) -> String;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationSinkError {
+    Unavailable,
+}
+
+pub trait NotificationSink {
+    fn send_line(&self, line: &str) -> Result<(), NotificationSinkError>;
+}
+
 pub trait FileProvider {
     fn read(&self, path: &Path) -> IoResult<Vec<u8>>;
     fn read_to_string(&self, path: &Path) -> std::io::Result<String>;
@@ -121,6 +130,42 @@ pub struct ScriptedHttpTransport {
 #[derive(Debug)]
 pub struct ScriptedChatEventSource {
     inputs: RefCell<VecDeque<ChatInput>>,
+}
+
+#[derive(Debug, Default)]
+pub struct RecordingNotificationSink {
+    recorded: RefCell<Vec<String>>,
+    fail: bool,
+}
+
+impl RecordingNotificationSink {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn failing() -> Self {
+        Self {
+            recorded: RefCell::new(Vec::new()),
+            fail: true,
+        }
+    }
+
+    #[must_use]
+    pub fn recorded(&self) -> Vec<String> {
+        self.recorded.borrow().clone()
+    }
+}
+
+impl NotificationSink for RecordingNotificationSink {
+    fn send_line(&self, line: &str) -> Result<(), NotificationSinkError> {
+        self.recorded.borrow_mut().push(line.to_string());
+        if self.fail {
+            return Err(NotificationSinkError::Unavailable);
+        }
+        Ok(())
+    }
 }
 
 impl ScriptedChatEventSource {

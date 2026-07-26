@@ -20,6 +20,7 @@ ORACLE_BLOB = "a20570fc0994f6215a013e8c89ce7776ddec7d17"
 CALL_PATH = "solstone/think/call.py"
 JOURNAL_PLACEHOLDER = "${JOURNAL}"
 VERSION_PLACEHOLDER = "${VERSION}"
+RETIRED_ACCESS_COMMANDS = frozenset({"contract"})
 
 
 def git_bytes(*args: str) -> bytes:
@@ -139,6 +140,35 @@ def access_groups(tree: ast.Module, names: dict[str, str]) -> list[dict[str, Any
     return groups
 
 
+def filter_retired_access_commands(
+    groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    present = {
+        command
+        for group in groups
+        for command in group["commands"]
+        if command in RETIRED_ACCESS_COMMANDS
+    }
+    missing = sorted(RETIRED_ACCESS_COMMANDS - present)
+    if missing:
+        raise RuntimeError(
+            f"retired access command(s) absent from oracle: {', '.join(missing)}"
+        )
+    filtered: list[dict[str, Any]] = []
+    for group in groups:
+        commands = [
+            command
+            for command in group["commands"]
+            if command not in RETIRED_ACCESS_COMMANDS
+        ]
+        if not commands:
+            raise RuntimeError(
+                f"retired access command filter emptied group {group['heading']!r}"
+            )
+        filtered.append({"heading": group["heading"], "commands": commands})
+    return filtered
+
+
 def call_overrides(call_tree: ast.Module) -> dict[str, str]:
     raw = assignment(call_tree, "CALL_NAME_OVERRIDES")
     if not isinstance(raw, ast.Dict):
@@ -248,7 +278,7 @@ def build() -> dict[str, Any]:
         raise RuntimeError(
             "oracle no longer uses os.path.isdir(path) for Days omission"
         )
-    groups = access_groups(tree, names)
+    groups = filter_retired_access_commands(access_groups(tree, names))
     apps = call_groups()
     return {
         "schema": "native-sol-root-contract-v1",

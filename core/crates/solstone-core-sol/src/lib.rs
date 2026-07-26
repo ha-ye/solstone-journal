@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{IsTerminal, Read, Result as IoResult};
+use std::io::{IsTerminal, Read, Result as IoResult, Write};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::{Mutex, mpsc};
@@ -21,13 +23,13 @@ use solstone_core_sol_client::command::CommandOutput;
 use solstone_core_sol_client::port::read_convey_port;
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ChatInput, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, ProcessOutput, ProcessSpawner,
+    HttpTransport, NotificationSink, NotificationSinkError, ProcessOutput, ProcessSpawner,
 };
 use solstone_core_sol_client::sse::SseDecoder;
 use solstone_core_sol_client::transport::UreqHttpTransport;
 use solstone_core_sol_client_cli::{
     DispatchSeams, Outcome, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    dispatch_sol_import_with_seams, evaluate_args, help,
+    dispatch_sol_import_with_seams, dispatch_sol_notify_with_seams, evaluate_args, help,
 };
 
 mod generated;
@@ -47,8 +49,7 @@ const COMPAT_SENTINEL_ARMED: &str = "armed";
 const COMPAT_ARGV0_MARKER_PREFIX: &str = "__solstone_native_argv0=";
 const COMPAT_RECURSION_ERROR: &str =
     "sol: compatibility dispatch recursion detected. Reinstall solstone and solstone-core.";
-const TOP_LEVEL_COMPAT_COMMANDS: &[&str] =
-    &["notify", "doctor", "check", "contract", "skills", "link"];
+const TOP_LEVEL_COMPAT_COMMANDS: &[&str] = &["doctor", "check", "skills", "link"];
 
 pub fn run(public_argv0: &str, args: Vec<OsString>) -> ExitCode {
     run_with_stdin_provider(public_argv0, args, &RealStdinProvider)
@@ -87,6 +88,9 @@ fn run_with_stdin_provider(
         }
         [command, rest @ ..] if command == OsStr::new("import") => {
             run_top_level_native(public_argv0, &args, "import", rest, stdin_provider)
+        }
+        [command, rest @ ..] if command == OsStr::new("notify") => {
+            run_top_level_native(public_argv0, &args, "notify", rest, stdin_provider)
         }
         [flag, ..] if flag.to_string_lossy().starts_with('-') => {
             render_output(usage_error_output())
@@ -480,6 +484,7 @@ fn run_dispatched(
     let build_identity = RealBuildIdentityProvider;
     let client_item_ids = RealClientItemIdProvider;
     let chat_events = ChannelChatEventSource::default();
+    let notification_sink = UnixNotificationSink::new(journal.path.join("health/callosum.sock"));
 
     let output = match outcome {
         Outcome::Migrated { .. } | Outcome::MovedStub { .. } => dispatch_sol_call_with_seams(
@@ -494,6 +499,7 @@ fn run_dispatched(
                 files: Some(&files),
                 build_identity: Some(&build_identity),
                 client_item_ids: Some(&client_item_ids),
+                notification_sink: None,
             },
         ),
         Outcome::Chat { .. } => dispatch_sol_chat_with_seams(
@@ -508,6 +514,7 @@ fn run_dispatched(
                 files: Some(&files),
                 build_identity: Some(&build_identity),
                 client_item_ids: Some(&client_item_ids),
+                notification_sink: None,
             },
         ),
         Outcome::Import { .. } => dispatch_sol_import_with_seams(
@@ -522,6 +529,22 @@ fn run_dispatched(
                 files: Some(&files),
                 build_identity: Some(&build_identity),
                 client_item_ids: Some(&client_item_ids),
+                notification_sink: None,
+            },
+        ),
+        Outcome::Notify { .. } => dispatch_sol_notify_with_seams(
+            &args,
+            &env,
+            &stdin,
+            &today,
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: Some(&files),
+                build_identity: Some(&build_identity),
+                client_item_ids: Some(&client_item_ids),
+                notification_sink: Some(&notification_sink),
             },
         ),
         Outcome::Unsupported { .. } => unsupported_output(),
@@ -765,6 +788,43 @@ fn discover_binary_home() -> Result<PathBuf, HomeError> {
     }
     let fallback = env::home_dir();
     discover_home(None, fallback.as_deref())
+}
+
+#[derive(Debug)]
+struct UnixNotificationSink {
+    socket_path: PathBuf,
+}
+
+impl UnixNotificationSink {
+    fn new(socket_path: PathBuf) -> Self {
+        Self { socket_path }
+    }
+}
+
+impl NotificationSink for UnixNotificationSink {
+    fn send_line(&self, line: &str) -> Result<(), NotificationSinkError> {
+        #[cfg(unix)]
+        {
+            let timeout = Some(Duration::from_secs(2));
+            let mut stream = UnixStream::connect(&self.socket_path)
+                .map_err(|_| NotificationSinkError::Unavailable)?;
+            stream
+                .set_write_timeout(timeout)
+                .map_err(|_| NotificationSinkError::Unavailable)?;
+            stream
+                .set_read_timeout(timeout)
+                .map_err(|_| NotificationSinkError::Unavailable)?;
+            stream
+                .write_all(line.as_bytes())
+                .map_err(|_| NotificationSinkError::Unavailable)?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = line;
+            Err(NotificationSinkError::Unavailable)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1233,6 +1293,7 @@ mod tests {
             os_args(&["call", "activities", "list", "--help"]),
             os_args(&["chat", "--help"]),
             os_args(&["import", "--help"]),
+            os_args(&["notify", "--help"]),
         ] {
             let _ = run_with_stdin_provider("sol", args, &provider);
         }
@@ -1259,6 +1320,7 @@ mod tests {
                 files: None,
                 build_identity: None,
                 client_item_ids: None,
+                notification_sink: None,
             },
         );
 
@@ -1421,5 +1483,90 @@ mod tests {
             &unknown,
             &unknown_outcome
         ));
+    }
+
+    #[test]
+    fn retired_contract_is_unsupported_not_compat() {
+        assert!(!is_top_level_compat_command(OsStr::new("contract")));
+        assert!(matches!(
+            evaluate_args(&os_args(&["contract"])),
+            Outcome::Unsupported { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_no_socket_renders_send_failure_with_real_sink() {
+        let root = temp_path("notify-no-socket");
+        fs::create_dir_all(&root).expect("create notify temp dir");
+        let output = run_notify_with_real_sink(
+            &["hello"],
+            &UnixNotificationSink::new(root.join("callosum.sock")),
+        );
+
+        assert_eq!(output.stdout, "");
+        assert_eq!(
+            output.stderr,
+            "Failed to send notification (is callosum running?)\n"
+        );
+        assert_eq!(output.exit, 1);
+        fs::remove_dir_all(root).expect("cleanup notify no socket");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notify_accept_then_close_renders_send_failure_with_real_sink() {
+        use std::os::unix::net::UnixListener;
+
+        let root = temp_path("notify-reject");
+        fs::create_dir_all(&root).expect("create notify temp dir");
+        let socket = root.join("callosum.sock");
+        let listener = UnixListener::bind(&socket).expect("bind notify socket");
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept notify socket");
+            drop(stream);
+        });
+        let message = "x".repeat(1024 * 1024);
+        let start = Instant::now();
+        let output =
+            run_notify_with_real_sink(&[message.as_str()], &UnixNotificationSink::new(socket));
+
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "notify send failure exceeded two-second bound"
+        );
+        assert_eq!(output.stdout, "");
+        assert_eq!(
+            output.stderr,
+            "Failed to send notification (is callosum running?)\n"
+        );
+        assert_eq!(output.exit, 1);
+        handle.join().expect("notify listener thread");
+        fs::remove_dir_all(root).expect("cleanup notify reject");
+    }
+
+    #[cfg(unix)]
+    fn run_notify_with_real_sink(args: &[&str], sink: &UnixNotificationSink) -> CommandOutput {
+        let args = args
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>();
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![]);
+        dispatch_sol_notify_with_seams(
+            &args,
+            &env,
+            "",
+            "20260723",
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: None,
+                build_identity: None,
+                client_item_ids: None,
+                notification_sink: Some(sink),
+            },
+        )
     }
 }

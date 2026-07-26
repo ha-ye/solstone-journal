@@ -8,7 +8,7 @@ use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport,
+    HttpTransport, NotificationSink,
 };
 
 pub mod help;
@@ -18,6 +18,7 @@ pub enum Outcome {
     Migrated { path: Vec<OsString> },
     Chat { args: Vec<OsString> },
     Import { args: Vec<OsString> },
+    Notify { args: Vec<OsString> },
     MovedStub { name: OsString },
     Unsupported { args: Vec<OsString> },
 }
@@ -29,6 +30,7 @@ pub struct DispatchSeams<'a> {
     pub files: Option<&'a dyn FileProvider>,
     pub build_identity: Option<&'a dyn BuildIdentityProvider>,
     pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
+    pub notification_sink: Option<&'a dyn NotificationSink>,
 }
 
 #[must_use]
@@ -51,6 +53,16 @@ pub fn evaluate_args(args: &[OsString]) -> Outcome {
                     args: args.to_vec(),
                 },
                 |_entry| Outcome::Import {
+                    args: rest.to_vec(),
+                },
+            )
+        }
+        [command, rest @ ..] if command == OsStr::new("notify") => {
+            match_generated_surface_path("sol-notify", &[String::from("notify")]).map_or_else(
+                || Outcome::Unsupported {
+                    args: args.to_vec(),
+                },
+                |_entry| Outcome::Notify {
                     args: rest.to_vec(),
                 },
             )
@@ -84,6 +96,7 @@ pub fn dispatch_sol_chat_with_seams(
         files: seams.files,
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
+        notification_sink: None,
     })
 }
 
@@ -110,6 +123,34 @@ pub fn dispatch_sol_import_with_seams(
         files: seams.files,
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
+        notification_sink: None,
+    })
+}
+
+#[must_use]
+pub fn dispatch_sol_notify_with_seams(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    seams: DispatchSeams<'_>,
+) -> CommandOutput {
+    let Some((_, handler)) = match_generated_surface_path("sol-notify", &[String::from("notify")])
+    else {
+        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+    };
+    handler(CommandContext {
+        args,
+        env,
+        stdin,
+        today,
+        transport: seams.transport,
+        clock: seams.clock,
+        chat_events: None,
+        files: seams.files,
+        build_identity: seams.build_identity,
+        client_item_ids: seams.client_item_ids,
+        notification_sink: seams.notification_sink,
     })
 }
 
@@ -152,6 +193,7 @@ pub fn dispatch_sol_call(
             files: None,
             build_identity: None,
             client_item_ids: None,
+            notification_sink: None,
         },
     )
 }
@@ -179,6 +221,7 @@ pub fn dispatch_sol_call_with_seams(
         files: seams.files,
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
+        notification_sink: None,
     })
 }
 
@@ -288,6 +331,16 @@ mod tests {
             evaluate_args(&args(&["import", "sample.txt"])),
             Outcome::Import {
                 args: args(&["sample.txt"])
+            }
+        );
+    }
+
+    #[test]
+    fn routes_top_level_notify_to_notify_shell() {
+        assert_eq!(
+            evaluate_args(&args(&["notify", "hello"])),
+            Outcome::Notify {
+                args: args(&["hello"])
             }
         );
     }

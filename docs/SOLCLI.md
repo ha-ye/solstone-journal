@@ -400,7 +400,7 @@ CLI commands, a native `native/authority.toml` plus `native/command.rs`.
 
 | Group | Commands |
 |-------|----------|
-| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `maintenance`, `top`, `health`, `notify`, `heartbeat` |
+| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `maintenance`, `top`, `health`, `notify` (`sol notify`, native), `heartbeat` |
 | Service | `service` (+ aliases `up`, `down`, `start`), `navigate`, `identity`, `settings`, `install-provider` |
 | Observe (capture) | `transcribe`, `describe`, `sense`, `transfer`, `observer` |
 | Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage`, `providers` |

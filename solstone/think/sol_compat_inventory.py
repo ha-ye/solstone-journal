@@ -23,10 +23,8 @@ EXIT_SOFTWARE = 70
 PUBLIC_BINARIES = frozenset({"sol", "solstone"})
 
 TOP_LEVEL_COMPAT_MODULES = {
-    "notify": "solstone.think.notify_cli",
     "doctor": "solstone.think.doctor",
     "check": "solstone.think.check",
-    "contract": "solstone.think.contract_cli",
     "skills": "solstone.think.skills_cli",
     "link": "solstone.think.link",
 }

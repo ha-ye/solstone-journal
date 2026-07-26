@@ -101,6 +101,8 @@ def check_conformance(
         errors.append("native sol conformance discovered zero OpenAPI operations")
     if not any(authority.entry_type == "top-level-import" for authority in authorities):
         errors.append("native sol conformance missing top-level import authority")
+    if not any(authority.entry_type == "top-level-notify" for authority in authorities):
+        errors.append("native sol conformance missing top-level notify authority")
 
     for authority in sorted(authorities, key=lambda entry: entry.operation_id):
         raw_authority = raw_authority_by_operation.get(authority.operation_id)
@@ -130,6 +132,8 @@ def check_conformance(
                     "import",
                 )
             )
+        elif authority.entry_type == "top-level-notify":
+            errors.extend(check_non_http_entry(authority, contract_by_operation))
         else:
             errors.append(
                 f"{authority.operation_id}: unsupported entry_type "

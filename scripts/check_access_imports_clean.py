@@ -80,6 +80,7 @@ NATIVE_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sol status", ["sol", "status"]),
     ("sol chat --help", ["sol", "chat", "--help"]),
     ("sol import --help", ["sol", "import", "--help"]),
+    ("sol notify --help", ["sol", "notify", "--help"]),
     ("sol call --help", ["sol", "call", "--help"]),
     ("sol call activities --help", ["sol", "call", "activities", "--help"]),
     (
@@ -90,11 +91,6 @@ NATIVE_CASES: tuple[tuple[str, list[str]], ...] = (
 TOP_LEVEL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = tuple(
     (f"sol {command} --help", ["sol", command, "--help"], module)
     for command, module in sorted(TOP_LEVEL_COMPAT_MODULES.items())
-    # `contract` remains in the native compatibility allowlist, but it imports
-    # solstone.think.contract.journal -> jsonschema, which is owned by the
-    # journal-host extra. Routing to Python and thin-base importability are
-    # separate properties; do not grow the thin base to make this case pass.
-    if command != "contract"
 )
 JOURNAL_COMPAT_CASES: tuple[tuple[str, list[str], str], ...] = (
     (

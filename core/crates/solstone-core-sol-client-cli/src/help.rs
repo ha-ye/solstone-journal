@@ -6,6 +6,7 @@ use solstone_core_sol_client::aggregate::{self, InventoryEntry};
 use solstone_core_sol_client::command::CommandOutput;
 
 const ROOT_CONTRACT_JSON: &str = include_str!("../../../fixtures/native-sol/root-contract-v1.json");
+const NOTIFY_HELP: &str = "usage: sol notify [-h] [--title TITLE] [--icon ICON] [--event EVENT]\n                  [--action ACTION] [--facet FACET] [--app APP]\n                  [--badge BADGE] [--auto-dismiss AUTO_DISMISS] [--no-dismiss]\n                  [-v] [-d]\n                  message [message ...]\n\nSend a notification via callosum\n\npositional arguments:\n  message               notification message text\n\noptions:\n  -h, --help            show this help message and exit\n  --title TITLE         notification title\n  --icon ICON           emoji icon\n  --event EVENT         event name (default: show)\n  --action ACTION       URL path to open on click\n  --facet FACET         facet context\n  --app APP             source app name\n  --badge BADGE         badge text or number\n  --auto-dismiss AUTO_DISMISS\n                        auto-dismiss after N milliseconds\n  --no-dismiss          make notification non-dismissible\n  -v, --verbose         Enable verbose output\n  -d, --debug           Enable debug logging\n";
 
 pub struct RootHelpStatus<'a> {
     pub journal_path: Option<&'a str>,
@@ -90,6 +91,10 @@ pub fn render_sol_call_help(args: &[String]) -> Option<CommandOutput> {
 pub fn render_top_level_help(command: &str, args: &[String]) -> Option<CommandOutput> {
     if args.len() != 1 || !is_help(args[0].as_str()) {
         return None;
+    }
+    if command == "notify" {
+        leaf_for_path("sol-notify", &[command.to_string()])?;
+        return Some(CommandOutput::success(NOTIFY_HELP));
     }
     let surface = match command {
         "chat" => "sol-chat",
@@ -355,12 +360,26 @@ mod tests {
     }
 
     #[test]
+    fn notify_top_level_help_matches_argparse_bytes() {
+        let output =
+            render_top_level_help("notify", &["--help".to_string()]).expect("notify help output");
+
+        assert_eq!(output.stdout, NOTIFY_HELP);
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.exit, 0);
+        assert_eq!(output.stdout.len(), 992);
+    }
+
+    #[test]
     fn every_positive_inventory_leaf_renders_declared_metadata() {
         let mut seen = BTreeSet::new();
         let mut scanned = 0;
         let mut secondary_scanned = 0;
         for entry in aggregate::entries() {
-            if !matches!(entry.surface, "sol-call" | "sol-chat" | "sol-import") {
+            if !matches!(
+                entry.surface,
+                "sol-call" | "sol-chat" | "sol-import" | "sol-notify"
+            ) {
                 continue;
             }
             scanned += 1;

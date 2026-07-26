@@ -36,7 +36,14 @@ PARAM_KEYS = {
 }
 PARAM_REQUIRED_KEYS = PARAM_KEYS - {"default", "flag_value"}
 ORACLE_PATH = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
-ENTRY_TYPES = {"http", "moved-stub", "top-level-chat", "top-level-import", "local"}
+ENTRY_TYPES = {
+    "http",
+    "moved-stub",
+    "top-level-chat",
+    "top-level-import",
+    "top-level-notify",
+    "local",
+}
 COMMAND_KINDS = {"command", "callback", "top-level"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 FINAL_ORACLE_TOTAL = 178
@@ -44,6 +51,7 @@ FINAL_HTTP_TOTAL = 152
 FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
 FINAL_TOP_LEVEL_CHAT_TOTAL = 1
 FINAL_TOP_LEVEL_IMPORT_TOTAL = 1
+FINAL_TOP_LEVEL_NOTIFY_TOTAL = 1
 FINAL_STUB_COUNTS = {"moved-stub": 2, "local": 1}
 FINAL_HTTP_GROUP_COUNTS = {
     "activities": 6,
@@ -146,7 +154,7 @@ def parse_entry(
         raise ValueError(f"{label}: path must be a non-empty string list")
     command_path = tuple(raw_path)
     surface = raw_entry.get("surface", "sol-call")
-    if surface not in {"sol-call", "sol-chat", "sol-import"}:
+    if surface not in {"sol-call", "sol-chat", "sol-import", "sol-notify"}:
         raise ValueError(f"{label}: unsupported surface {surface!r}")
     kind = require_string(raw_entry, "kind", Path(label))
     if kind not in COMMAND_KINDS:
@@ -477,6 +485,7 @@ def check_top_level_partition(entries: list[AuthorityEntry]) -> list[str]:
     expected = {
         ("sol-chat", "top-level-chat"): FINAL_TOP_LEVEL_CHAT_TOTAL,
         ("sol-import", "top-level-import"): FINAL_TOP_LEVEL_IMPORT_TOTAL,
+        ("sol-notify", "top-level-notify"): FINAL_TOP_LEVEL_NOTIFY_TOTAL,
     }
     actual: dict[tuple[str, str], int] = {}
     for entry in entries:

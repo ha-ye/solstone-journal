@@ -127,10 +127,10 @@ def build_bundle(root: Path = ROOT) -> dict[str, Any]:
     return {
         "contract": "solstone-journal-at-rest",
         "contract_version": 1,
-        "generated_by": "sol contract build",
+        "generated_by": "python -m solstone.think.contract_cli build",
         "description": (
             "Generated journal at-rest contract bundle. Do not hand-edit; "
-            "regenerate with `sol contract build`."
+            "regenerate with `python -m solstone.think.contract_cli build`."
         ),
         "layout": layout,
         "schemas": {key: schemas[key] for key in sorted(schemas)},
@@ -154,7 +154,10 @@ def check_artifact(path: Path = ARTIFACT_PATH) -> list[str]:
         current = ""
     if current == expected:
         return []
-    return [f"{_repo_relative(path)} is stale; run `sol contract build`"]
+    return [
+        f"{_repo_relative(path)} is stale; run "
+        "`python -m solstone.think.contract_cli build`"
+    ]
 
 
 def classify_breaking_changes(

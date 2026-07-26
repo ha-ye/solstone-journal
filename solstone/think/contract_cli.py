@@ -32,7 +32,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
         committed = json.loads(journal.ARTIFACT_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
         print(
-            "journal contract bundle is missing; run `sol contract build`",
+            "journal contract bundle is missing; run "
+            "`python -m solstone.think.contract_cli build`",
             file=sys.stderr,
         )
         return 1
