@@ -237,6 +237,34 @@ OUT_OF_SCOPE_GLYPHS = {
         "const icon = e.type === 'agent' ? '⚙' : e.type === 'import' ? '↓' : '⚠';",
         "el.textContent = `⚠ Disconnected (${agoText})`;",
     ),
+    "solstone/observe/sense.py": (
+        'return "🎙️"',
+        'return "👁️"',
+        'return "🤖"',
+        'icon = "🤖"',
+        'icon = "🎙️"',
+        'icon = "👁️"',
+    ),
+    "solstone/observe/describe.py": (
+        '"icon": "👁️",',
+    ),
+    "solstone/observe/categories/meeting.py": (
+        'video = "📹" if p.get("video") else "🔇"',
+    ),
+    "solstone/apps/__init__.py": (
+        'icon = metadata.get("icon", "📦")',
+    ),
+    "solstone/think/facets.py": (
+        '"emoji": "📦",',
+        'emoji: str = "📦",',
+    ),
+    "solstone/apps/settings/routes.py": (
+        'emoji: Icon emoji (optional, default: "📦")',
+        'emoji = data.get("emoji", "📦")',
+    ),
+    "solstone/think/tools/call.py": (
+        'emoji: str = typer.Option("📦", "--emoji", help="Icon emoji."),',
+    ),
     "solstone/apps/network/workspace.html": (
         '<p class="link-pair-success-check" aria-hidden="true">✓</p>',
     ),
