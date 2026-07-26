@@ -341,6 +341,10 @@ def test_ac7_chronicle_allowlist_and_task_log_day_routing(journal):
 
 def test_ac8_ac9_talent_logs_indexes_and_malformed_names(journal):
     old_day = _day(31)
+    older_day = _day(32)
+    malformed_day = _day(33)
+    empty_day = _day(34)
+    invalid_utf8_day = _day(35)
     recent_day = _day(1)
     talent_dir = journal / "talents" / "default"
     old_run = _write(talent_dir / f"{_epoch_ms(old_day)}.jsonl")
@@ -352,14 +356,26 @@ def test_ac8_ac9_talent_logs_indexes_and_malformed_names(journal):
     log_link = journal / "talents" / "linked.log"
     log_link.parent.mkdir(parents=True, exist_ok=True)
     log_link.symlink_to(log_target)
-    old_index = _write(journal / "talents" / f"{old_day}.jsonl")
-    recent_index = _write(journal / "talents" / f"{recent_day}.jsonl")
+    old_all_valid_old_index = _write(
+        journal / "talents" / f"{old_day}.jsonl",
+        json.dumps({"ts": int(_epoch_ms(old_day)), "status": "completed"}) + "\n",
+    )
+    old_recent_ts_index = _write(
+        journal / "talents" / f"{older_day}.jsonl",
+        json.dumps({"ts": int(_epoch_ms(recent_day)), "status": "completed"}) + "\n",
+    )
+    old_malformed_index = _write(journal / "talents" / f"{malformed_day}.jsonl")
+    old_empty_index = _write(journal / "talents" / f"{empty_day}.jsonl", "\n\n")
+    old_invalid_utf8_index = journal / "talents" / f"{invalid_utf8_day}.jsonl"
+    old_invalid_utf8_index.parent.mkdir(parents=True, exist_ok=True)
+    old_invalid_utf8_index.write_bytes(b"\xff")
+    recent_index = _write(journal / "talents" / f"{recent_day}.jsonl", "x")
     bad_index = _write(journal / "talents" / "20260231.jsonl")
 
     result = prune(config=LogRetentionConfig(days=30))
 
     assert not old_run.exists()
-    assert not old_index.exists()
+    assert not old_all_valid_old_index.exists()
     for protected in (
         recent_run,
         active,
@@ -367,6 +383,10 @@ def test_ac8_ac9_talent_logs_indexes_and_malformed_names(journal):
         regular_log,
         log_link,
         log_target,
+        old_recent_ts_index,
+        old_malformed_index,
+        old_empty_index,
+        old_invalid_utf8_index,
         recent_index,
         bad_index,
     ):
@@ -374,6 +394,8 @@ def test_ac8_ac9_talent_logs_indexes_and_malformed_names(journal):
     reasons = {error["reason"] for error in result.errors}
     assert "malformed_talent_timestamp" in reasons
     assert "malformed_date" in reasons
+    assert "malformed_talent_index_row" in reasons
+    assert "unreadable_talent_index" in reasons
 
 
 def test_ac10_ac11_symlink_unlinked_only_and_cache_mtime_day_logged(journal):

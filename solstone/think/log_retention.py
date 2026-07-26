@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -109,6 +110,14 @@ class PruneResult:
                 f"log-retention: pruned {' and '.join(parts)} ({size}) for this day"
             )
         return messages
+
+
+@dataclass(frozen=True)
+class _TalentDayIndexInspection:
+    delete: bool
+    reason: str | None = None
+    message: str | None = None
+    hint: str | None = None
 
 
 def load_log_retention_config() -> LogRetentionConfig:
@@ -389,16 +398,122 @@ def _scan_talent_day_index(
             path=target,
             result=result,
         )
-        if day is not None and day < cutoff:
+        if day is None:
+            continue
+        if day >= cutoff:
+            continue
+
+        formatted_day = _format_day(day)
+        inspection = _inspect_old_talent_day_index(target, cutoff)
+        if inspection.reason is not None:
+            _record_skip_error(
+                journal_path,
+                result,
+                "talent_day_index",
+                target,
+                formatted_day,
+                inspection.reason,
+                inspection.message or "talent day-index skipped during pruning",
+                inspection.hint,
+            )
+            continue
+        if inspection.delete:
             _delete_target(
                 journal_path,
                 result,
                 "talent_day_index",
                 target,
-                _format_day(day),
+                formatted_day,
                 target_kind="file",
                 dry_run=dry_run,
             )
+            continue
+        _mark_skipped(result, "talent_day_index")
+
+
+def _inspect_old_talent_day_index(path: Path, cutoff: date) -> _TalentDayIndexInspection:
+    valid_row_days: list[date] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    return _malformed_talent_index_row(
+                        path,
+                        f"line {line_number}: malformed JSON",
+                    )
+                if not isinstance(payload, dict):
+                    return _malformed_talent_index_row(
+                        path,
+                        f"line {line_number}: non-object row",
+                    )
+                if "ts" not in payload:
+                    return _malformed_talent_index_row(
+                        path,
+                        f"line {line_number}: missing ts",
+                    )
+                timestamp = payload.get("ts")
+                if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+                    return _malformed_talent_index_row(
+                        path,
+                        f"line {line_number}: non-integer ts",
+                    )
+                row_day = _talent_day_index_row_local_date(timestamp)
+                if row_day is None:
+                    return _malformed_talent_index_row(
+                        path,
+                        f"line {line_number}: invalid ts",
+                    )
+                valid_row_days.append(row_day)
+    except FileNotFoundError:
+        return _TalentDayIndexInspection(
+            delete=False,
+            reason="missing_file_race",
+            message="talent day-index disappeared before pruning could inspect rows",
+            hint=None,
+        )
+    except UnicodeDecodeError:
+        return _TalentDayIndexInspection(
+            delete=False,
+            reason="unreadable_talent_index",
+            message=f"failed to read talent day-index as UTF-8: {path.name}",
+            hint=None,
+        )
+    except OSError as exc:
+        return _TalentDayIndexInspection(
+            delete=False,
+            reason="unreadable_talent_index",
+            message=f"failed to read talent day-index before pruning: {exc}",
+            hint=DELETE_FAILED_HINT,
+        )
+
+    if not valid_row_days:
+        return _TalentDayIndexInspection(delete=False)
+    if all(row_day < cutoff for row_day in valid_row_days):
+        return _TalentDayIndexInspection(delete=True)
+    return _TalentDayIndexInspection(delete=False)
+
+
+def _malformed_talent_index_row(path: Path, detail: str) -> _TalentDayIndexInspection:
+    return _TalentDayIndexInspection(
+        delete=False,
+        reason="malformed_talent_index_row",
+        message=f"malformed talent day-index row in {path.name}: {detail}",
+        hint=None,
+    )
+
+
+def _talent_day_index_row_local_date(timestamp_ms: int) -> date | None:
+    # Log-retention cutoffs are local dates; match _parse_epoch_ms so a row and
+    # a run-log filename on the same timestamp prune on the same local day.
+    try:
+        return datetime.fromtimestamp(timestamp_ms / 1000).date()
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 def _scan_cogitate_history_cache(
