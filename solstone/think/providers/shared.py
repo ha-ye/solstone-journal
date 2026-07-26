@@ -688,5 +688,7 @@ __all__ = [
     "USAGE_KEYS",
     "classify_canned_generate",
     "classify_provider_error",
+    "exception_chain",
+    "is_cloud_model_not_found",
     "safe_raw",
 ]

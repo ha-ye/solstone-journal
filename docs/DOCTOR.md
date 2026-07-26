@@ -200,7 +200,7 @@ See [CALLOSUM.md](CALLOSUM.md) Tract Registry for event schemas.
 # View an agent's final result
 jq -r 'select(.event=="finish") | .result' journal/talents/default/1234567890123.jsonl
 
-# List today's agents with their prompts
+# List agents in today's journal-day index with their prompts
 for id in $(jq -r '.use_id' journal/talents/$(date +%Y%m%d).jsonl 2>/dev/null); do
   f=$(find journal/agents -maxdepth 2 -path "*/${id}.jsonl" -print -quit)
   [ -n "$f" ] || continue
@@ -268,12 +268,18 @@ Causes: Slow transcription, describe API rate limits.
 # Watch all service logs
 tail -f journal/health/*.log
 
-# Count today's agents by status
+# Count entries in today's journal-day index by status
 echo "Completed: $([ -f journal/talents/$(date +%Y%m%d).jsonl ] && wc -l < journal/talents/$(date +%Y%m%d).jsonl || echo 0)"
 echo "Running: $(ls journal/talents/*/*_active.jsonl 2>/dev/null | wc -l)"
 
-# Find agents that errored today
-jq -r 'select(.status=="error") | .use_id' journal/talents/$(date +%Y%m%d).jsonl 2>/dev/null
+# Find agents that errored on today's local execution day
+jq -r --arg today "$(date +%Y%m%d)" '
+  (.ts | select(type != "boolean") | tonumber?) as $ts
+  | select($ts > 0)
+  | select((($ts / 1000) | localtime | strftime("%Y%m%d")) == $today)
+  | select(.status == "error")
+  | .use_id
+' journal/talents/????????.jsonl 2>/dev/null
 
 # Check token usage for today
 wc -l journal/tokens/$(date +%Y%m%d).jsonl

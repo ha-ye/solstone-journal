@@ -243,8 +243,8 @@ _ENTRIES: dict[str, _Entry] = {
         klass="setup",
         summary="{provider} doesn't offer this model to this key",
         detail=(
-            "The key reached the provider, but this model is not available to "
-            "it. Pick a different model in Thinking."
+            "The credentials reached the provider, but the selected model isn't "
+            "available to this key. Pick a different model in Thinking."
         ),
         recovery_action=_THINKING_ACTION,
     ),
