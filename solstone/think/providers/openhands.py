@@ -158,8 +158,20 @@ def _local_output_reserve_tokens(window: int) -> int:
     return window // 4
 
 
+_LOCAL_TOKENIZER_DIVERGENCE_FACTOR = 1.125
+
+
 def _local_condenser_max_tokens(window: int) -> int:
-    return window * 11 // 16
+    """Modeled input boundary with a measured client/server tokenizer margin.
+
+    This factor is not a system/tool overhead term. The condenser token count
+    already includes the system prompt and tool schemas. It is a safety factor
+    for one production observation (n=1): 12,437 served tokens vs 11,237
+    LiteLLM-estimated tokens, or +10.7%, rounded upward.
+    """
+
+    modeled_input_budget = window - _local_output_reserve_tokens(window)
+    return math.floor(modeled_input_budget / _LOCAL_TOKENIZER_DIVERGENCE_FACTOR)
 
 
 def _resolve_allowed_roots(config: dict[str, Any]) -> list[Path]:

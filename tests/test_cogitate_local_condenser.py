@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 from tests._logging_isolation import preserve_global_logging
 
 with preserve_global_logging():
@@ -76,18 +78,17 @@ def test_build_cogitate_agent_skips_condenser_for_small_endpoint_window():
 
 
 def test_local_condenser_window_invariants():
-    condenser_max_tokens = openhands._local_condenser_max_tokens(
-        LOCAL_MIN_CONTEXT_TOKENS
-    )
-    output_reserve_tokens = openhands._local_output_reserve_tokens(
-        LOCAL_MIN_CONTEXT_TOKENS
-    )
-    assert condenser_max_tokens // 2 + output_reserve_tokens < LOCAL_MIN_CONTEXT_TOKENS
-    assert condenser_max_tokens + output_reserve_tokens <= LOCAL_MIN_CONTEXT_TOKENS
-    assert condenser_max_tokens < LOCAL_MIN_CONTEXT_TOKENS
-    assert 11000 <= condenser_max_tokens <= 11500
-    assert openhands._local_output_reserve_tokens(16384) == 4096
-    assert openhands._local_condenser_max_tokens(16384) == 11264
+    for window, expected_reserve in ((16384, 4096), (32768, 8192)):
+        boundary = openhands._local_condenser_max_tokens(window)
+        reserve = openhands._local_output_reserve_tokens(window)
+
+        assert reserve == expected_reserve
+        assert (
+            math.ceil(boundary * openhands._LOCAL_TOKENIZER_DIVERGENCE_FACTOR) + reserve
+            <= window
+        )
+        assert boundary < window - reserve
+        assert boundary > 0
     assert openhands._LOCAL_CONDENSER_KEEP_FIRST < 240 // 2 - 1
 
 

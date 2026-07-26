@@ -372,7 +372,9 @@ def test_run_cogitate_local_window_threaded_once(
     assert window_calls == [endpoint]
     assert llm_calls[0]["endpoint"] is endpoint
     assert llm_calls[0]["served_window"] == 16384
-    assert agent_calls[0]["condenser_max_tokens"] == 11264
+    assert agent_calls[0][
+        "condenser_max_tokens"
+    ] == openhands._local_condenser_max_tokens(16384)
     llm = fake_openhands.LLM.instances[0]
     assert llm.max_input_tokens == 16384
     assert llm.max_output_tokens == 4096
