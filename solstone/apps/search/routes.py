@@ -12,6 +12,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from solstone.convey.day_grid import build_day_grid_payload
+from solstone.convey.icons import lucide_svg
 from solstone.convey.reasons import INVALID_DAY, SEARCH_FAILED
 from solstone.convey.utils import error_response, format_date, parse_pagination_params
 from solstone.think.facets import get_facets
@@ -29,19 +30,20 @@ search_bp = Blueprint(
 
 # Agent icons for display
 AGENT_ICONS = {
-    "flow": "📝",
-    "knowledge_graph": "🗺️",
-    "meetings": "📅",
-    "event": "📅",
-    "span": "🧵",
-    "audio": "🎤",
-    "screen": "🖥️",
-    "entity": "👤",
-    "entity:attached": "👤",
-    "entity:detected": "👤",
-    "news": "📰",
-    "import": "📥",
+    "flow": "activity",
+    "knowledge_graph": "chart-network",
+    "meetings": "users",
+    "event": "calendar-days",
+    "span": "timeline",
+    "audio": "mic-vocal",
+    "screen": "monitor",
+    "entity": "user",
+    "entity:attached": "user-check",
+    "entity:detected": "user-search",
+    "news": "newspaper",
+    "import": "import",
 }
+AGENT_ICON_FALLBACK = "file-text"
 
 # Agent display names
 AGENT_LABELS = {
@@ -67,6 +69,14 @@ def _agent_label(agent: str | None) -> str:
     if mapped is not None:
         return mapped
     return " ".join(agent.replace("_", " ").split()).title()
+
+
+def _agent_icon(agent: str | None) -> str:
+    return AGENT_ICONS.get(agent or "", AGENT_ICON_FALLBACK)
+
+
+def _agent_icon_svg(agent: str | None) -> str | None:
+    return lucide_svg(_agent_icon(agent))
 
 
 DAY_RE = re.compile(r"^\d{8}$")
@@ -169,7 +179,8 @@ def _format_result(result: dict, query: str, facets_map: dict) -> dict:
         "id": result.get("id", ""),
         "day": meta.get("day", ""),
         "agent": agent,
-        "agent_icon": AGENT_ICONS.get(agent, "📄"),
+        "agent_icon": _agent_icon(agent),
+        "agent_icon_svg": _agent_icon_svg(agent),
         "agent_label": _agent_label(agent),
         "facet": facet_name,
         "facet_title": facet_info.get("title", facet_name),
@@ -318,7 +329,8 @@ def search_journal_api() -> Any:
             {
                 "name": agent,
                 "label": _agent_label(agent),
-                "icon": AGENT_ICONS.get(agent, "📄"),
+                "icon": _agent_icon(agent),
+                "icon_svg": _agent_icon_svg(agent),
                 "count": count,
             }
         )

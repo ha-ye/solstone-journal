@@ -126,6 +126,20 @@ def test_import_detail_static_module_serves(client):
     assert b"renderDetail" in response.data
 
 
+def test_import_sources_emit_icon_svg_not_emoji(client):
+    response = client.get("/app/import/api/sources")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    sources = payload["items"]
+    assert payload["total"] == len(sources)
+    assert sources
+    by_name = {source["name"]: source for source in sources}
+    assert "emoji" not in by_name["quick"]
+    assert by_name["quick"]["icon"] == "zap"
+    assert "<svg" in by_name["quick"]["icon_svg"]
+
+
 def test_import_workspace_detail_static_wiring_and_deleted_tabs():
     workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
 

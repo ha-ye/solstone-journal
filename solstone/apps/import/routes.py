@@ -15,6 +15,7 @@ from werkzeug.utils import secure_filename
 
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit, state
+from solstone.convey.icons import lucide_svg
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     IMPORT_CLIENT_ID_CONFLICT,
@@ -89,7 +90,6 @@ SOURCE_METADATA = [
     {
         "name": "ics",
         "display_name": "Calendar",
-        "emoji": "📅",
         "icon": "calendar",
         "description": "Import events from Google Calendar, Apple Calendar, or Outlook",
         "input_type": "file",
@@ -100,7 +100,6 @@ SOURCE_METADATA = [
     {
         "name": "chatgpt",
         "display_name": "ChatGPT",
-        "emoji": "💬",
         "icon": "message-square",
         "description": "Import your conversation history from ChatGPT",
         "input_type": "file",
@@ -111,7 +110,6 @@ SOURCE_METADATA = [
     {
         "name": "claude",
         "display_name": "Claude",
-        "emoji": "🤖",
         "icon": "message-circle",
         "description": "Import your conversation history from Claude",
         "input_type": "file",
@@ -122,7 +120,6 @@ SOURCE_METADATA = [
     {
         "name": "gemini",
         "display_name": "Gemini",
-        "emoji": "✨",
         "icon": "sparkles",
         "description": "Import your activity history from Google Gemini",
         "input_type": "file",
@@ -133,7 +130,6 @@ SOURCE_METADATA = [
     {
         "name": "obsidian",
         "display_name": "Notes",
-        "emoji": "📝",
         "icon": "file-text",
         "description": "Import notes from Obsidian, Logseq, or any markdown vault",
         "input_type": "path_input",
@@ -144,7 +140,6 @@ SOURCE_METADATA = [
     {
         "name": "kindle",
         "display_name": "Kindle",
-        "emoji": "📚",
         "icon": "book-open",
         "description": "Import highlights and clippings from your Kindle",
         "input_type": "file",
@@ -155,7 +150,6 @@ SOURCE_METADATA = [
     {
         "name": "journal_archive",
         "display_name": "Journal",
-        "emoji": "📓",
         "icon": "book",
         "description": "import a full journal export from another journal",
         "input_type": "file",
@@ -166,7 +160,6 @@ SOURCE_METADATA = [
     {
         "name": "granola",
         "display_name": "Granola",
-        "emoji": "🌾",
         "icon": "mic",
         "description": "Import meeting transcripts from Granola via muesli",
         "input_type": "path_input",
@@ -177,7 +170,6 @@ SOURCE_METADATA = [
     {
         "name": "recording",
         "display_name": "meeting audio",
-        "emoji": "🎙️",
         "icon": "mic",
         "description": "import audio from meetings or conversations",
         "input_type": "file",
@@ -188,7 +180,6 @@ SOURCE_METADATA = [
     {
         "name": "document",
         "display_name": "Document",
-        "emoji": "📄",
         "icon": "file",
         "description": "Import a PDF document",
         "input_type": "file",
@@ -199,7 +190,6 @@ SOURCE_METADATA = [
     {
         "name": "image",
         "display_name": "Image",
-        "emoji": "🖼️",
         "icon": "image",
         "description": "Add a photo or screenshot and let sol describe what's in it",
         "input_type": "file",
@@ -210,7 +200,6 @@ SOURCE_METADATA = [
     {
         "name": "quick",
         "display_name": "Quick Import",
-        "emoji": "⚡",
         "icon": "zap",
         "description": "Paste text or drop any file for quick import",
         "input_type": "text",
@@ -219,6 +208,12 @@ SOURCE_METADATA = [
         "accept": "",
     },
 ]
+
+
+def _source_metadata_payload(source: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(source)
+    payload["icon_svg"] = lucide_svg(source["icon"])
+    return payload
 
 
 def _link_id_from_identity() -> str | None:
@@ -879,7 +874,9 @@ def import_list() -> Any:
 @import_bp.route("/api/sources")
 def import_sources() -> Any:
     """Return available import source metadata."""
-    return jsonify(SOURCE_METADATA)
+    return respond_collection(
+        [_source_metadata_payload(source) for source in SOURCE_METADATA]
+    )
 
 
 @import_bp.route("/api/check-path/<source>")
@@ -1039,7 +1036,7 @@ def import_content_list(timestamp: str) -> Any:
             "source_display": source_meta["display_name"]
             if source_meta
             else source_type,
-            "source_emoji": source_meta["emoji"] if source_meta else "",
+            "source_icon_svg": lucide_svg(source_meta["icon"]) if source_meta else None,
         }
     )
 

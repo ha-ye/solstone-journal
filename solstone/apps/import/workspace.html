@@ -34,7 +34,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.import-source-card-emoji {
+.import-source-card-icon {
   font-size: 2.1em;
   line-height: 1;
   display: flex;
@@ -44,6 +44,14 @@
   height: 2.5rem;
   flex-shrink: 0;
   overflow: hidden;
+}
+
+.import-source-card-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .import-source-card-name {
@@ -508,8 +516,16 @@
   gap: 0.45rem;
 }
 
-.import-source-inline-emoji {
+.import-source-inline-icon {
   font-size: 1.1rem;
+}
+
+.import-source-inline-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .import-stats-cell {
@@ -697,7 +713,7 @@ const IMPORT_TERMINAL_EVENTS = new Set(['completed', 'error']);
 
 let cachedSources = [];
 let sourceMetadataByName = {};
-let sourceEmojiByName = {};
+let sourceIconSvgByName = {};
 let currentFile = null;
 let currentGuideSource = null;
 let currentGuidedFile = null;
@@ -804,9 +820,10 @@ function handleHashChange() {
 async function loadSourceGrid() {
   if (!cachedSources.length) {
     const res = await fetch('/app/import/api/sources');
-    cachedSources = await res.json();
+    const payload = await res.json();
+    cachedSources = payload.items || [];
     sourceMetadataByName = Object.fromEntries(cachedSources.map(source => [source.name, source]));
-    sourceEmojiByName = Object.fromEntries(cachedSources.map(source => [source.name, source.emoji || '']));
+    sourceIconSvgByName = Object.fromEntries(cachedSources.map(source => [source.name, source.icon_svg || '']));
   }
 
   const grid = document.getElementById('importGrid');
@@ -820,7 +837,7 @@ async function loadSourceGrid() {
       : `navigateTo(&quot;guide/${source.name}&quot;)`;
     return `
       <button type="button" class="import-source-card" onclick="${clickHandler}">
-        <div class="import-source-card-emoji" aria-label="${escapeHtml(source.display_name)}">${source.emoji || ''}</div>
+        <div class="import-source-card-icon" aria-label="${escapeHtml(source.display_name)}">${source.icon_svg || ''}</div>
         <div class="import-source-card-name">${escapeHtml(source.display_name)}</div>
         <div class="import-source-card-desc">${escapeHtml(source.description || '')}</div>
       </button>
@@ -1042,9 +1059,9 @@ function renderProgressStats(eventData) {
 }
 
 function renderSourceDisplay(sourceType, sourceDisplay, fallbackText = '-') {
-  const emoji = sourceEmojiByName[sourceType] || '';
+  const iconSvg = sourceIconSvgByName[sourceType] || '';
   const displayText = sourceDisplay || fallbackText || '-';
-  return `<div class="import-source-inline">${emoji ? `<span class="import-source-inline-emoji">${emoji}</span>` : ''}<span>${escapeHtml(displayText)}</span></div>`;
+  return `<div class="import-source-inline">${iconSvg ? `<span class="import-source-inline-icon" aria-hidden="true">${iconSvg}</span>` : ''}<span>${escapeHtml(displayText)}</span></div>`;
 }
 
 function getImportById(importId) {
@@ -1463,7 +1480,7 @@ async function loadGuidedFlow(sourceName) {
 
   guideSteps.innerHTML = `
     <div>
-      <h3 class="import-guide-title">${source.emoji || ''} ${escapeHtml(source.display_name)}</h3>
+      <h3 class="import-guide-title">${escapeHtml(source.display_name)}</h3>
       <p class="import-guide-subtitle">${escapeHtml(source.description || '')}</p>
     </div>
     <form id="guidedImportForm" onsubmit="return false;"><ol class="import-steps-list">
@@ -1561,7 +1578,7 @@ function renderQuickImportFlow() {
 
   guideSteps.innerHTML = `
     <div>
-      <h3 class="import-guide-title">⚡ quick import</h3>
+      <h3 class="import-guide-title">quick import</h3>
       <p class="import-guide-subtitle">Paste text or drop a file, then confirm the detected timestamp in the modal.</p>
     </div>
     <form id="importForm">
@@ -2169,6 +2186,19 @@ if (document.readyState === 'loading') {
 
 /* Content tab */
 .import-content-summary { margin-bottom: 1em; padding: 0.75em 1em; background: #f0f7ff; border-radius: 4px; font-size: 0.95em; }
+.import-content-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.35em;
+  vertical-align: -0.15em;
+}
+.import-content-summary-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
+}
 .import-content-controls { display: flex; gap: 0.75em; margin-bottom: 1em; }
 .import-content-search { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em; }
 .import-content-search:hover:not(:focus) { border-color: #a0aec0; }
@@ -2322,9 +2352,10 @@ function loadContent(page = 1) {
 
 function renderContentSummary(data) {
   const el = document.getElementById('contentSummary');
-  const emoji = data.source_emoji || '';
+  const iconSvg = data.source_icon_svg || '';
   const display = data.source_display || '';
-  el.innerHTML = `${emoji} <strong>${display}</strong> — ${data.total} items`;
+  const iconHtml = iconSvg ? `<span class="import-content-summary-icon" aria-hidden="true">${iconSvg}</span>` : '';
+  el.innerHTML = `${iconHtml}<strong>${escapeHtml(display)}</strong> — ${data.total} items`;
 }
 
 function renderContentMonths(months) {

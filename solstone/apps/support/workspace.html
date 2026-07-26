@@ -508,7 +508,7 @@
 
     <!-- Section: Feedback -->
     <div id="section-feedback" class="support-section" role="tabpanel" aria-labelledby="tab-feedback">
-      <p class="support-section-intro">💬 Share your impressions, ideas, or anything on your mind. Your feedback shapes the product.</p>
+      <p class="support-section-intro">Share your impressions, ideas, or anything on your mind. Your feedback shapes the product.</p>
       <div class="support-feedback-form">
         <form id="feedback-form" novalidate>
           <label for="feedback-text">your feedback</label>
@@ -536,15 +536,15 @@
     <!-- Section: Help & Guidance -->
     <div id="section-help" class="support-section" role="tabpanel" aria-labelledby="tab-help">
       <div class="support-help-card">
-        <h3>🛟 getting help</h3>
+        <h3>getting help</h3>
         <p>Just say "I need help" or "something's not working" in the chat bar. Your sol will handle everything — searching for answers, running diagnostics, and filing a ticket if needed.</p>
       </div>
       <div class="support-help-card">
-        <h3>🔍 search the knowledge base</h3>
+        <h3>search the knowledge base</h3>
         <p>ask your question in the chat bar. your sol will search the knowledge base and bring back the most relevant help.</p>
       </div>
       <div class="support-help-card">
-        <h3>🩺 run diagnostics</h3>
+        <h3>run diagnostics</h3>
         <p class="support-diagnostics-desc">Check your system health locally — no data is sent anywhere.</p>
         <button class="support-btn" id="diagnostics-btn">run diagnostics</button>
         <div class="support-diagnostics-loading" id="diagnostics-loading">running diagnostics…</div>
@@ -552,11 +552,11 @@
         <div class="support-diagnostics-results" id="diagnostics-results"></div>
       </div>
       <div class="support-help-card">
-        <h3>📢 announcements</h3>
+        <h3>announcements</h3>
         <p>product updates and known issues appear in the announcements area at the top of this panel when there's something new.</p>
       </div>
       <div class="support-help-card">
-        <h3>🔒 privacy</h3>
+        <h3>privacy</h3>
         <p>Nothing leaves your device without your explicit approval. You review every ticket before it's sent and can edit or redact anything. Journal content is never included unless you attach it yourself.</p>
       </div>
     </div>
@@ -982,9 +982,8 @@
         return;
       }
       banner.style.display = '';
-      const icons = {'known-issue': '⚠️', 'maintenance': '🔧', 'info': '📢'};
       banner.innerHTML = items.map(a =>
-        `<div><h4>${icons[a.type] || '📢'} ${esc(a.title || '')}</h4><p style="margin:0;">${esc((a.content || '').slice(0, 200))}</p></div>`
+        `<div><h4>${esc(a.title || '')}</h4><p style="margin:0;">${esc((a.content || '').slice(0, 200))}</p></div>`
       ).join('');
     } catch (err) {
       if (!announcementsFirstPaintDone) {

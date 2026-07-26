@@ -60,9 +60,14 @@ def test_import_sources_include_journal_archive(client):
 
     assert response.status_code == 200
     data = response.get_json()
-    journal_source = next(item for item in data if item["name"] == "journal_archive")
+    assert data["total"] == len(data["items"])
+    journal_source = next(
+        item for item in data["items"] if item["name"] == "journal_archive"
+    )
     assert journal_source["display_name"] == "Journal"
-    assert journal_source["emoji"] == "📓"
+    assert "emoji" not in journal_source
+    assert journal_source["icon"] == "book"
+    assert "<svg" in journal_source["icon_svg"]
     assert journal_source["accept"] == ".zip"
     assert journal_source["has_guide"] is True
     assert journal_source["input_type"] == "file"

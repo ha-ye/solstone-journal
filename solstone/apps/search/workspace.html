@@ -93,6 +93,14 @@
   font-size: 0.85rem;
 }
 
+.filter-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
+}
+
 /* Main content area */
 .search-main {
   flex: 1;
@@ -282,6 +290,14 @@ button.day-header {
 
 .result-agent-icon {
   font-size: 0.9rem;
+}
+
+.result-agent-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .result-facet {
@@ -914,7 +930,7 @@ button.day-header {
         agentHtml += `
           <label class="filter-item ${isActive ? 'active' : ''}">
             <input type="radio" name="agent" value="${escapeHtml(t.name)}" ${isActive ? 'checked' : ''}>
-            <span class="filter-icon">${t.icon}</span>
+            <span class="filter-icon" aria-hidden="true">${t.icon_svg || ''}</span>
             <span class="filter-label">${escapeHtml(t.label)}</span>
             <span class="filter-count">${t.count}</span>
           </label>
@@ -1039,7 +1055,7 @@ button.day-header {
     item.innerHTML = `
       <div class="result-meta">
         <span class="result-agent">
-          <span class="result-agent-icon">${result.agent_icon}</span>
+          <span class="result-agent-icon" aria-hidden="true">${result.agent_icon_svg || ''}</span>
           ${escapeHtml(result.agent_label)}
         </span>
         ${facetBadge}

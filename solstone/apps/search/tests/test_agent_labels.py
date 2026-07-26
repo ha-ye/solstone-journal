@@ -11,6 +11,7 @@ import pytest
 
 from solstone.apps.search import routes
 from solstone.convey import create_app
+from solstone.convey.icons import lucide_svg
 
 
 def _counts_payload(counts: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +51,7 @@ def _stub_search(
     counts: dict[str, Any] | list[dict[str, Any]],
     *,
     coverage: dict[str, str] | None = None,
+    results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     recorded: dict[str, Any] = {"search_counts": [], "search_journal": []}
     count_payloads = counts if isinstance(counts, list) else [counts]
@@ -58,7 +60,7 @@ def _stub_search(
         recorded["limit"] = kwargs.get("limit")
         recorded["offset"] = kwargs.get("offset")
         recorded["search_journal"].append(kwargs)
-        return 0, []
+        return 0, results or []
 
     def fake_counts(*_args, **kwargs):
         recorded["search_counts"].append(kwargs)
@@ -102,6 +104,49 @@ def test_unmapped_talent_payload_keeps_raw_name_and_humanises_label(
     assert response.status_code == 200
     payload = response.get_json()
     assert [
-        {key: talent[key] for key in ("name", "label", "count")}
+        {key: talent[key] for key in ("name", "label", "icon", "icon_svg", "count")}
         for talent in payload["talents"]
-    ] == [{"name": "_todos_todo", "label": "Todos Todo", "count": 4}]
+    ] == [
+        {
+            "name": "_todos_todo",
+            "label": "Todos Todo",
+            "icon": "file-text",
+            "icon_svg": lucide_svg("file-text"),
+            "count": 4,
+        }
+    ]
+
+
+def test_search_payload_resolves_agent_icon_svg(search_client, monkeypatch):
+    _stub_search(
+        monkeypatch,
+        {
+            "agents": {"flow": 4},
+            "days": {"20260304": 1},
+            "total": 1,
+        },
+        results=[
+            {
+                "id": "result-1",
+                "text": "flow result",
+                "metadata": {
+                    "day": "20260304",
+                    "agent": "flow",
+                    "facet": "",
+                    "path": "20260304/talents/flow.md",
+                    "idx": 0,
+                },
+                "score": 1.0,
+            }
+        ],
+    )
+
+    response = search_client.get("/app/search/api/search?q=test")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["talents"][0]["icon"] == "activity"
+    assert payload["talents"][0]["icon_svg"] == lucide_svg("activity")
+    result = payload["days"][0]["results"][0]
+    assert result["agent_icon"] == "activity"
+    assert result["agent_icon_svg"] == lucide_svg("activity")
