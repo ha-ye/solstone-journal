@@ -217,9 +217,7 @@ def expected_install_models_command() -> list[str]:
 
 def expected_skills_user_command() -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *setup.sol_console_command(),
         "skills",
         "install",
         "--agent",
@@ -229,9 +227,7 @@ def expected_skills_user_command() -> list[str]:
 
 def expected_skills_journal_command(journal: Path) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *setup.sol_console_command(),
         "skills",
         "install",
         "--project",
@@ -257,9 +253,7 @@ def expected_service_restart_command() -> list[str]:
 
 def expected_brain_bootstrap_command() -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *setup.sol_console_command(),
         "call",
         "thinking",
         "local",
@@ -2986,3 +2980,44 @@ def test_port_propagates_to_subprocess_argv(
     assert_command(calls, 4, expected_service_install_command(port=8080))
     assert_command(calls, 5, expected_brain_bootstrap_command())
     assert len(calls) == 6
+
+
+def test_setup_never_dispatches_access_commands_through_the_journal_surface() -> None:
+    """Setup must invoke journal-access commands through `sol`, never the module entry.
+
+    `python -m solstone.think.sol_cli` is `journal_main` — always the *journal*
+    surface — and since the dispatcher gained its access-command rejection it exits 2
+    for every command in the generated inventory. Setup built three of its own steps
+    that way, so `journal setup` failed `skills_user` and `skills_journal`, exited
+    non-zero, and the macOS app's first-run onboarding waited forever on a setup that
+    never reported completion.
+
+    Anchored to the generated inventory rather than a literal list, so adding a new
+    access command cannot silently reintroduce this.
+    """
+    from solstone.think.generated.access_rejections import JOURNAL_ACCESS_ONLY_COMMANDS
+
+    ctx = SimpleNamespace(journal_path=Path("/tmp/journal-under-test"))
+    commands = [
+        setup.skills_user_command(),
+        setup.skills_journal_command(ctx),
+        setup.brain_bootstrap_command(),
+    ]
+    sol_console = str(Path(sys.executable).parent / "sol")
+
+    checked = 0
+    for command in commands:
+        subcommand = next((arg for arg in command[1:] if not arg.startswith("-")), None)
+        if subcommand not in JOURNAL_ACCESS_ONLY_COMMANDS:
+            continue
+        checked += 1
+        assert command[0] == sol_console, (
+            f"{subcommand!r} is a journal-access command and must be invoked via the "
+            f"sol console script, got {command[0]!r}"
+        )
+        assert "solstone.think.sol_cli" not in command, (
+            f"{subcommand!r} is dispatched through the journal surface, which rejects it"
+        )
+
+    # Non-vacuous: all three builders carry an access command today.
+    assert checked == 3

@@ -785,6 +785,18 @@ def journal_console_command() -> list[str]:
     return [str(Path(sys.executable).parent / "journal")]
 
 
+def sol_console_command() -> list[str]:
+    """Resolve the native `sol` console script beside the running interpreter.
+
+    Journal-access commands (`skills`, `call`, ...) are owned by the sol surface.
+    `python -m solstone.think.sol_cli` is `journal_main`, i.e. always the *journal*
+    surface, so invoking an access command that way is rejected outright by the
+    dispatcher. Setup must therefore shell out to `sol`, exactly as
+    `journal_console_command` does for journal-service commands.
+    """
+    return [str(Path(sys.executable).parent / "sol")]
+
+
 def install_models_command(ctx: SetupContext) -> list[str]:
     return [
         *journal_console_command(),
@@ -796,9 +808,7 @@ def install_models_command(ctx: SetupContext) -> list[str]:
 
 def skills_user_command() -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *sol_console_command(),
         "skills",
         "install",
         "--agent",
@@ -808,9 +818,7 @@ def skills_user_command() -> list[str]:
 
 def skills_journal_command(ctx: SetupContext) -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *sol_console_command(),
         "skills",
         "install",
         "--project",
@@ -822,9 +830,7 @@ def skills_journal_command(ctx: SetupContext) -> list[str]:
 
 def brain_bootstrap_command() -> list[str]:
     return [
-        sys.executable,
-        "-m",
-        "solstone.think.sol_cli",
+        *sol_console_command(),
         "call",
         "thinking",
         "local",
