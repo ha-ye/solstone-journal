@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import textwrap
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -35,12 +36,33 @@ CONVERTED_FILES = (
     ROOT / "solstone" / "apps" / "speakers" / "workspace.html",
 )
 
-CALL_RE = re.compile(r"window\.ConveyIcons\.svg\(\s*'([a-z0-9-]+)'\s*\)")
+CALL_RE = re.compile(
+    r"window\.ConveyIcons\??\.svg\(\s*(?P<q>['\"`])(?P<name>[a-z0-9-]+)(?P=q)\s*\)"
+)
 SVG_RE = re.compile(r"<svg\b[\s\S]*?</svg>")
+L2_ICON_SLOT_CLASSES = (
+    "icon-slot",
+    "entity-delete-btn",
+    "voiceprint-icon",
+    "facet-rel-voiceprint",
+    "btn-icon",
+    "vitals-chip",
+    "trust-indicator",
+    "link-hero-icon",
+    "col-activity",
+    "activity-item",
+    "summary-item",
+)
+ICON_SLOT_CLASSES = (
+    "surface-state-icon",
+    "empty-icon",
+    *L2_ICON_SLOT_CLASSES,
+)
+ICON_SLOT_CLASS_PATTERN = "|".join(re.escape(cls) for cls in ICON_SLOT_CLASSES)
 ICON_SLOT_OPEN_RE = re.compile(
     r"<(?P<tag>[A-Za-z][A-Za-z0-9:-]*)\b"
     r"(?=[^>]*\bclass=(?P<quote>['\"])[^'\"]*"
-    r"(?<![A-Za-z0-9_-])(?:surface-state-icon|empty-icon)(?![A-Za-z0-9_-])"
+    rf"(?<![A-Za-z0-9_-])(?:{ICON_SLOT_CLASS_PATTERN})(?![A-Za-z0-9_-])"
     r"[^'\"]*(?P=quote))"
     r"[^>]*>",
     re.IGNORECASE,
@@ -155,6 +177,14 @@ def _converted_source() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in CONVERTED_FILES)
 
 
+def requested_icon_names(source: str) -> set[str]:
+    return {match.group("name") for match in CALL_RE.finditer(source)}
+
+
+def _inline_slot_icon_names(path: Path, svg_to_name: Mapping[str, str]) -> set[str]:
+    return {svg_to_name[svg] for svg in _icon_slot_svgs(path) if svg in svg_to_name}
+
+
 def test_convey_icons_runtime_accessor_in_browser_vm():
     node = _node_or_skip()
     script = textwrap.dedent(
@@ -216,11 +246,31 @@ def test_icon_slot_detector_finds_multiline_slot_svg(tmp_path: Path):
     ]
 
 
+def test_convey_icon_call_pattern_extracts_supported_literals_and_unknowns():
+    source = "\n".join(
+        (
+            "window.ConveyIcons.svg('bell')",
+            'window.ConveyIcons.svg("bell-off")',
+            "window.ConveyIcons.svg(`trash-2`)",
+            "window.ConveyIcons?.svg('sparkles')",
+        )
+    )
+    assert requested_icon_names(source) == {"bell", "bell-off", "trash-2", "sparkles"}
+
+    requested = requested_icon_names("window.ConveyIcons?.svg('not-real')")
+    assert requested - set(CONVEY_ICON_NAMES) == {"not-real"}
+
+
 def test_convey_icon_call_sites_are_allow_listed_and_complete():
-    requested = set(CALL_RE.findall(_converted_source()))
+    requested = requested_icon_names(_converted_source())
+    svg_to_name = {svg: name for name, svg in load_lucide_icons().items()}
+    inline = set()
+    for path in CONVERTED_FILES:
+        inline.update(_inline_slot_icon_names(path, svg_to_name))
+    used = requested | inline
     allow_list = set(CONVEY_ICON_NAMES)
-    assert requested <= allow_list
-    assert allow_list <= requested
+    assert used <= allow_list
+    assert allow_list <= used
 
 
 def test_convey_icon_slots_have_no_unvouched_inline_svg():
