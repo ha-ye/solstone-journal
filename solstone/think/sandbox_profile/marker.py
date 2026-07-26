@@ -9,10 +9,9 @@ import json
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
-from solstone.think.sandbox_profile import manifest
+from solstone.think.sandbox_profile import json_codec, manifest
 
 MAX_MARKER_BYTES = 64 * 1024
 MARKER_NAME = ".solstone-sandbox.json"
@@ -37,17 +36,6 @@ def canonical_path(path: str | Path) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: set[str] = set()
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise ValueError("duplicate key")
-        seen.add(key)
-        result[key] = value
-    return result
-
-
 def _load_marker(path: Path) -> object:
     try:
         raw = path.read_bytes()
@@ -63,7 +51,7 @@ def _load_marker(path: Path) -> object:
         raise MarkerError("sandbox_marker_unparseable", "sandbox marker is too large")
     try:
         text = raw.decode("utf-8")
-        decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
+        decoder = json.JSONDecoder(object_pairs_hook=json_codec.reject_duplicate_keys)
         payload, end = decoder.raw_decode(text.lstrip())
         prefix_len = len(text) - len(text.lstrip())
         if text[prefix_len + end :].strip():

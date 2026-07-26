@@ -24,6 +24,7 @@ from solstone.think.sandbox_profile import (
     capabilities,
     envelope,
     intent,
+    json_codec,
     manifest,
     marker,
 )
@@ -178,17 +179,6 @@ def _capability_status(
     )
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: set[str] = set()
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise ValueError("duplicate key")
-        seen.add(key)
-        result[key] = value
-    return result
-
-
 def _read_payload() -> dict[str, Any]:
     stream = getattr(sys.stdin, "buffer", None)
     if stream is None:
@@ -200,7 +190,7 @@ def _read_payload() -> dict[str, Any]:
     try:
         text = raw.decode("utf-8")
         stripped = text.lstrip()
-        decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
+        decoder = json.JSONDecoder(object_pairs_hook=json_codec.reject_duplicate_keys)
         payload, end = decoder.raw_decode(stripped)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
         raise PayloadReadError("payload must be one valid JSON object") from None
