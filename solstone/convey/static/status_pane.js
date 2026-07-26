@@ -511,15 +511,15 @@
     const perm = Notification.permission;
     bell.setAttribute('data-perm', perm);
     if (perm === 'granted') {
-      bell.textContent = '🔔';
+      bell.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('bell') || '')}</span>`;
       bell.title = 'browser notifications enabled';
       bell.setAttribute('aria-label', 'browser notifications enabled');
     } else if (perm === 'denied') {
-      bell.textContent = '🔕';
+      bell.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('bell-off') || '')}</span>`;
       bell.title = 'notifications blocked. update in browser settings';
       bell.setAttribute('aria-label', 'notifications blocked. update in browser settings');
     } else {
-      bell.textContent = '🔔';
+      bell.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('bell') || '')}</span>`;
       bell.title = 'enable browser notifications';
       bell.setAttribute('aria-label', 'enable browser notifications');
     }

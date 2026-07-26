@@ -34,6 +34,12 @@ CONVERTED_FILES = (
     ROOT / "solstone" / "apps" / "activities" / "workspace.html",
     ROOT / "solstone" / "apps" / "transcripts" / "workspace.html",
     ROOT / "solstone" / "apps" / "speakers" / "workspace.html",
+    ROOT / "solstone" / "apps" / "entities" / "workspace.html",
+    ROOT / "solstone" / "apps" / "health" / "workspace.html",
+    ROOT / "solstone" / "apps" / "health" / "static" / "health.js",
+    ROOT / "solstone" / "apps" / "network" / "workspace.html",
+    ROOT / "solstone" / "convey" / "static" / "status_pane.js",
+    ROOT / "solstone" / "convey" / "static" / "shell.html",
 )
 
 CALL_RE = re.compile(

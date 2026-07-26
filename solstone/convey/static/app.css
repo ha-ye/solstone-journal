@@ -623,20 +623,31 @@ body:has(.status-pane.visible) .facet-bar::after {
   font: inherit;
   margin-left: 6px;
   font-size: 12px;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.icon-slot svg {
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
 }
 
 #notif-bell[data-perm="granted"] {
+  color: var(--status-active);
   opacity: 1;
   cursor: default;
 }
 
 #notif-bell[data-perm="denied"] {
+  color: var(--status-error);
   opacity: 0.4;
   cursor: default;
 }
 
 #notif-bell[data-perm="default"] {
+  color: var(--status-inactive);
   opacity: 0.5;
   cursor: pointer;
 }

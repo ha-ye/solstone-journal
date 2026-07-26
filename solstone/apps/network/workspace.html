@@ -25,7 +25,7 @@
   </header>
 
   <section id="link-first-run-hero" class="link-hero" hidden aria-labelledby="link-hero-title">
-    <div class="link-hero-icon" aria-hidden="true">📡</div>
+    <div class="link-hero-icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /> <path d="m9 15 3-3" /> <path d="M17 13a6 6 0 0 0-6-6" /> <path d="M21 13A10 10 0 0 0 11 3" /> </svg></div>
     <h2 id="link-hero-title" data-copy="HERO_TITLE"></h2>
     <p class="link-hero-body" data-copy="HERO_BODY"></p>
     <div class="link-hero-actions">
@@ -321,6 +321,7 @@
   .link-hero { border: 1px solid #e4ded4; border-radius: 8px; background: #fffdfa; padding: 2em 1.5em; margin-bottom: 1.5em; text-align: center; }
   .link-hero[hidden] { display: none; }
   .link-hero-icon { font-size: 2.5em; line-height: 1; margin-bottom: 0.4em; }
+  .link-hero-icon svg { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 1.5; display: block; margin: 0 auto; }
   .link-hero h2 { margin: 0 0 0.5em; font-size: 1.3em; color: #333; }
   .link-hero-body { margin: 0 auto 1.25em; max-width: 32em; color: #555; line-height: 1.55; }
   .link-hero-actions { display: flex; gap: 1em; align-items: center; justify-content: center; flex-wrap: wrap; }

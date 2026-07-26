@@ -79,6 +79,18 @@
   color: var(--facet-color, var(--orange-ink));
 }
 
+.voiceprint-icon svg,
+.facet-rel-voiceprint svg,
+.btn-icon svg,
+.entity-delete-btn svg {
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  display: block;
+}
+
 .entity-card-mention-badge,
 .entity-card-badge {
   position: absolute;
@@ -874,8 +886,9 @@
   top: 50%;
   transform: translateY(-50%);
   cursor: pointer;
+  color: #6c757d;
   opacity: 0.4;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, color 0.2s;
   font-size: 1em;
   background: transparent;
   border: none;
@@ -893,16 +906,19 @@ tr:hover .entity-delete-btn {
 }
 
 .entity-delete-btn:hover {
+  color: #dc3545;
   opacity: 1 !important;
 }
 
 .entity-delete-btn:focus-visible {
+  color: #dc3545;
   opacity: 1;
   outline: 2px solid #dc3545;
   outline-offset: 2px;
 }
 
 .entity-delete-btn:active {
+  color: #dc3545;
   opacity: 1 !important;
   background: rgba(220, 53, 69, 0.1);
 }
@@ -3444,8 +3460,10 @@ function renderJournalDetailView(entity) {
       if (facet.has_voiceprint) {
         const voiceprint = document.createElement('span');
         voiceprint.className = 'facet-rel-voiceprint';
-        voiceprint.textContent = '🎤';
         voiceprint.title = 'Has voiceprint';
+        voiceprint.setAttribute('role', 'img');
+        voiceprint.setAttribute('aria-label', voiceprint.title);
+        voiceprint.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('mic-vocal') || '')}</span>`;
         meta.appendChild(voiceprint);
       }
 
@@ -4073,7 +4091,7 @@ function renderDetailView(entity, observations) {
     indicators.push(`Last active: ${displayDate}`);
   }
   if (entity.has_voiceprint) {
-    indicators.push('🎤 Has voiceprint');
+    indicators.push(`<span class="voiceprint-icon" aria-hidden="true">${(window.ConveyIcons?.svg('mic-vocal') || '')}</span> Has voiceprint`);
   }
   document.getElementById('detail-indicators').innerHTML = indicators.join(' · ');
 
@@ -4169,8 +4187,9 @@ function startDescriptionEdit(entity) {
   const generateBtn = document.createElement('button');
   generateBtn.type = 'button';
   generateBtn.className = 'btn-icon';
-  generateBtn.textContent = '✨';
   generateBtn.title = 'generate with AI';
+  generateBtn.setAttribute('aria-label', generateBtn.title);
+  generateBtn.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('sparkles') || '')}</span>`;
 
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
@@ -4909,8 +4928,10 @@ function createEntityCard(entity) {
   if (entity.has_voiceprint) {
     const voiceIcon = document.createElement('span');
     voiceIcon.className = 'voiceprint-icon';
-    voiceIcon.textContent = '🎤';
     voiceIcon.title = 'Has voiceprint';
+    voiceIcon.setAttribute('role', 'img');
+    voiceIcon.setAttribute('aria-label', voiceIcon.title);
+    voiceIcon.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('mic-vocal') || '')}</span>`;
     meta.appendChild(voiceIcon);
   }
 
@@ -5060,8 +5081,9 @@ function createDetectedRow(entity) {
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
   deleteBtn.className = 'entity-delete-btn';
-  deleteBtn.textContent = '🗑️';
   deleteBtn.title = 'Delete detected entity';
+  deleteBtn.setAttribute('aria-label', deleteBtn.title);
+  deleteBtn.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('trash-2') || '')}</span>`;
   deleteBtn.onclick = (e) => {
     e.stopPropagation();
     previewEntityDelete(entity.name);

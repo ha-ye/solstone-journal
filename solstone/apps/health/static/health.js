@@ -98,6 +98,8 @@
     lastEventTs: null,           // Timestamp of last event from WebSocket
   };
 
+  const escapeHtml = (value) => window.AppServices.escapeHtml(value);
+
   // DOM elements
   const elements = {
     healthGlanceSentence: document.getElementById('healthGlanceSentence'),
@@ -1326,7 +1328,7 @@
       for (const s of state.schedules) {
         const key = s.name || 'unnamed';
         const next = formatNextRun(s.next_run);
-        const due = s.due ? ' ⏰' : '';
+        const due = s.due ? `<span aria-hidden="true">${(window.ConveyIcons?.svg('alarm-clock') || '')}</span>` : '';
         let chip = existingByKey.get(key);
         if (!chip) {
           chip = document.createElement('span');
@@ -1334,7 +1336,7 @@
           chip.setAttribute('data-key', key);
           wrapper.appendChild(chip);
         }
-        chip.textContent = key + due + (next ? ' · ' + next : '');
+        chip.innerHTML = escapeHtml(key) + due + (next ? ' · ' + escapeHtml(next) : '');
         chip.setAttribute('title', s.every || '');
       }
     } else {
@@ -2072,11 +2074,12 @@
 
   function updateSyncCard() {
     const s = state.sync;
+    const lockIcon = `<span aria-hidden="true">${(window.ConveyIcons?.svg('lock') || '')}</span>`;
     // Show when there's queued work or active upload
     if (!s || (s.queue_size === 0 && !s.segment)) {
       elements.syncCard.classList.add('hidden');
       if (elements.trustIndicator) {
-        elements.trustIndicator.textContent = '🔒 all data stored locally on your device';
+        elements.trustIndicator.innerHTML = lockIcon + ' all data stored locally on your device';
       }
       updateAllQuiet();
       updateStatusSummary();
@@ -2094,9 +2097,9 @@
     ]);
     if (elements.trustIndicator) {
       if (s && s.host) {
-        elements.trustIndicator.textContent = '🔒 All data stored locally · Syncing to ' + s.host;
+        elements.trustIndicator.innerHTML = lockIcon + ' All data stored locally · Syncing to ' + escapeHtml(s.host);
       } else {
-        elements.trustIndicator.textContent = '🔒 all data stored locally on your device';
+        elements.trustIndicator.innerHTML = lockIcon + ' all data stored locally on your device';
       }
     }
 

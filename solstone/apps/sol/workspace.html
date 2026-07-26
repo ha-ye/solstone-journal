@@ -71,6 +71,17 @@
   gap: 0.3rem;
 }
 
+.day-summary .summary-item svg,
+.activity-item svg,
+.col-activity svg {
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  vertical-align: -0.125em;
+}
+
 .day-summary .summary-failed {
   color: #c62828;
 }
@@ -1068,9 +1079,9 @@
           <th class="col-model">model</th>
           <th class="col-provider">provider</th>
           <th class="col-runtime">runtime</th>
-          <th class="col-activity" title="thinking events">💭</th>
-          <th class="col-activity" title="tool calls">🔧</th>
-          <th class="col-activity" title="cost">💰</th>
+          <th class="col-activity" title="thinking events"><span aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 18V5" /> <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" /> <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" /> <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" /> <path d="M18 18a4 4 0 0 0 2-7.464" /> <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" /> <path d="M6 18a4 4 0 0 1-2-7.464" /> <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" /> </svg></span><span class="sr-only">thinking events</span></th>
+          <th class="col-activity" title="tool calls"><span aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" /> </svg></span><span class="sr-only">tool calls</span></th>
+          <th class="col-activity" title="cost"><span aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M13.744 17.736a6 6 0 1 1-7.48-7.48" /> <path d="M15 6h1v4" /> <path d="m6.134 14.768.866-.5 2 3.464" /> <circle cx="16" cy="8" r="6" /> </svg></span><span class="sr-only">cost</span></th>
           <th class="col-facet">facet</th>
           <th class="col-output">output</th>
           <th class="col-prompt">prompt</th>
@@ -1441,7 +1452,7 @@
     }
     if (totalCost > 0) {
       const costInfo = formatCost(totalCost);
-      parts.push(`<span class="summary-item" title="${costInfo.title}">💰 ${costInfo.text}</span>`);
+      parts.push(`<span class="summary-item" title="${costInfo.title}"><span aria-hidden="true">${(window.ConveyIcons?.svg('coins') || '')}</span> ${costInfo.text}</span>`);
     }
 
     summary.innerHTML = parts.join('');
@@ -1557,7 +1568,7 @@
       if (agent.thinking_count > 0) {
         const thinking = document.createElement('span');
         thinking.className = 'activity-item';
-        thinking.innerHTML = `💭 ${agent.thinking_count}`;
+        thinking.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('brain') || '')}</span> ${agent.thinking_count}`;
         thinking.title = `${agent.thinking_count} thinking events`;
         counts.appendChild(thinking);
       }
@@ -1565,7 +1576,7 @@
       if (agent.tool_count > 0) {
         const tools = document.createElement('span');
         tools.className = 'activity-item';
-        tools.innerHTML = `🔧 ${agent.tool_count}`;
+        tools.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('wrench') || '')}</span> ${agent.tool_count}`;
         tools.title = `${agent.tool_count} tool calls`;
         counts.appendChild(tools);
       }
@@ -1574,7 +1585,7 @@
         const costInfo = formatCost(agent.total_cost);
         const cost = document.createElement('span');
         cost.className = 'activity-item';
-        cost.innerHTML = `💰 ${costInfo.text}`;
+        cost.innerHTML = `<span aria-hidden="true">${(window.ConveyIcons?.svg('coins') || '')}</span> ${costInfo.text}`;
         cost.title = costInfo.title;
         counts.appendChild(cost);
       }

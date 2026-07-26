@@ -1156,11 +1156,25 @@
 }
 
 .vitals-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
   background: #e5e7eb;
   color: #374151;
   padding: 0.15em 0.5em;
   border-radius: 10px;
   font-size: 0.8em;
+}
+
+.vitals-chip svg,
+.trust-indicator svg {
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
 }
 
 .trust-indicator {
@@ -1363,6 +1377,11 @@
     font-size: 0.7em;
     text-align: center;
   }
+
+  .trust-indicator svg {
+    display: inline-block;
+    margin-right: 0.4em;
+  }
 }
 </style>
 
@@ -1446,7 +1465,7 @@
         <div class="vitals-value" id="schedulesValue" aria-hidden="true"></div>
       </div>
     </div>
-    <div class="trust-indicator" id="trustIndicator">🔒 all data stored locally on your device</div>
+    <div class="trust-indicator" id="trustIndicator"><span aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" /> </svg></span> all data stored locally on your device</div>
   </div>
 
   <div class="dashboard-card activity-section hidden" id="errorSummary">
