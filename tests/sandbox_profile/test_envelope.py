@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import json
+
+from solstone.think.sandbox_profile import envelope
+from tests.sandbox_profile import invoke, output_json, prepare_ok, sandbox_journal
+
+
+def test_envelope_field_order_types_and_default_json_output(
+    tmp_path, monkeypatch
+) -> None:
+    journal = sandbox_journal(tmp_path, monkeypatch)
+
+    result = invoke(["describe", "--profile", "full", "--contract-version", "1"])
+    raw = json.loads(result.output)
+
+    assert result.exit_code == 0
+    assert list(raw) == [
+        "contract_version",
+        "action",
+        "profile",
+        "run_id",
+        "state",
+        "capabilities",
+        "next_actions",
+        "error",
+    ]
+    assert raw["contract_version"] == 1
+    assert raw["action"] == "describe"
+    assert raw["profile"] == "full"
+    assert isinstance(raw["run_id"], str)
+    assert [cap["name"] for cap in raw["capabilities"]] == [
+        "scout",
+        "spl",
+        "spb",
+        "spp",
+        "runtime",
+    ]
+    assert raw["error"] is None
+    assert not (journal / "config" / "journal.json").exists()
+
+
+def test_state_exit_mapping_is_bijective() -> None:
+    assert envelope.EXIT_BY_STATE == {
+        "ok": 0,
+        "degraded": 1,
+        "error": 2,
+        "cleanup_failed": 3,
+    }
+    assert len(set(envelope.EXIT_BY_STATE.values())) == len(envelope.EXIT_BY_STATE)
+
+
+def test_cli_exit_codes_cover_ok_degraded_error_and_cleanup_failed(
+    tmp_path, monkeypatch
+) -> None:
+    journal = sandbox_journal(tmp_path, monkeypatch)
+    ok = invoke(["status", "--json"])
+    prepare_ok(journal)
+    error = invoke(["apply", "runtime", "--json"], input_text="{}")
+    intent_path = journal / "health" / "sandbox-profile" / "intent.json"
+    payload = json.loads(intent_path.read_text("utf-8"))
+    for cap in payload["capabilities"]:
+        if cap["name"] == "spb":
+            cap["intent_state"] = "applied"
+    intent_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    degraded = invoke(["status", "--json"])
+    cleanup = invoke(["disable", "spb", "--json"])
+
+    assert ok.exit_code == 0
+    assert degraded.exit_code == 1
+    assert error.exit_code == 2
+    assert cleanup.exit_code == 3
+    assert output_json(cleanup)["state"] == "cleanup_failed"

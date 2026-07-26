@@ -301,6 +301,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Provider install status records and proof cache (`health/providers/{local,parakeet}.json`, `health/providers/{local,parakeet}.proof-cache.json`) | `solstone/think/providers/install_state.py` + `solstone/think/providers/artifact_proof.py` |
 | Provider install leases (`health/providers/{local,parakeet}.lease`) | `solstone/think/providers/install_lease.py` |
 | Provider runtime health and retry-token records (`health/providers/runtime/{local,parakeet}.json`, `health/providers/runtime/{local,parakeet}.retry-token.json`, `health/providers/runtime/{local,parakeet}.operation.lock`) | `solstone/think/providers/runtime_health.py` |
+| Sandbox profile intent (`health/sandbox-profile/intent.json`) | `solstone/think/sandbox_profile/intent.py` — disposable sandbox lifecycle intent only; marker file remains externally owned and read-only |
 | Provider artifact manifests (`cache/providers/**/.solstone-provider-manifest.json`, `cache/providers/local/mlx/**/*.manifest.json`) | `solstone/think/providers/artifact_proof.py` |
 | nvattest appraiser cache (`cache/providers/nvattest/**`) | `solstone/think/providers/nvattest_install.py` |
 | Media offload ledger (`health/offload/<YYYYMMDD>.jsonl`) | `solstone/think/offload_ledger.py` |

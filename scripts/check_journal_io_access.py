@@ -183,6 +183,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/importers/plaud.py",  # streamed imported-audio install.
         "solstone/think/importers/sync.py",
         "solstone/think/importers/utils.py",
+        "solstone/think/sandbox_profile/intent.py",
     }
 )
 

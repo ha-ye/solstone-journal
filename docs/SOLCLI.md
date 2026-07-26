@@ -67,6 +67,13 @@ For host-only commands, use the `journal` dispatcher instead: create a Python
 module with `main()` and register it in `solstone/think/sol_cli.py` with the
 appropriate service or universal surface.
 
+`journal sandbox-profile` is a host-only service command for disposable sandbox
+journals. It is a deterministic, redacted lifecycle wrapper around existing
+service enable/disable owners and is gated by the externally owned
+`.solstone-sandbox.json` marker. Its closed capability vocabulary is defined in
+`solstone/think/sandbox_profile/manifest.py`; do not duplicate that list in
+generated skill references.
+
 ### Files to maintain
 
 | File | What to do |

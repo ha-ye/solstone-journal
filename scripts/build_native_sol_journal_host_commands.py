@@ -14,7 +14,7 @@ SOURCE = REPO_ROOT / "solstone/think/sol_cli.py"
 OUTPUT = (
     REPO_ROOT / "core/crates/solstone-core-sol/src/generated/journal_host_commands.rs"
 )
-EXPECTED_SERVICE_COMMANDS_COUNT = 42
+EXPECTED_SERVICE_COMMANDS_COUNT = 43
 EXPECTED_UNIVERSAL_COMMANDS = frozenset({"doctor", "check", "contract", "link"})
 EXPECTED_SERVICE_ALIASES = frozenset({"up", "down"})
 EXPECTED_UNIVERSAL_ALIASES = frozenset()
