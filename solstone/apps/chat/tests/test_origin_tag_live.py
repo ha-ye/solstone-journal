@@ -64,7 +64,7 @@ def test_workspace_scopes_talent_events_column_rule(chat_client):
     fragment = response.get_data(as_text=True)
     css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
     rule = """  .chat-transcript .chat-event--talent {
-    align-items: flex-start;
+    align-items: center;
     flex-direction: column;
   }"""
 
