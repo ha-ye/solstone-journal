@@ -60,11 +60,11 @@
     },
     {
       "app": "timeline",
-      "description": "",
+      "description": "Names the single most important event in each segment for the timeline.",
       "disabled": false,
       "key": "timeline:segment_summary",
       "source": "app",
-      "title": "timeline:segment_summary"
+      "title": "Segment Summary"
     },
     {
       "app": null,

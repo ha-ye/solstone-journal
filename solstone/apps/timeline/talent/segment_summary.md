@@ -1,5 +1,7 @@
 {
   "type": "generate",
+  "title": "Segment Summary",
+  "description": "Names the single most important event in each segment for the timeline.",
   "schedule": "segment",
   "priority": 41,
   "max_output_tokens": 1024,

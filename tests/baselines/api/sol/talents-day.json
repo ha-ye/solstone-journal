@@ -294,12 +294,12 @@
     "timeline:segment_summary": {
       "app": "timeline",
       "color": "#6c757d",
-      "description": null,
+      "description": "Names the single most important event in each segment for the timeline.",
       "multi_facet": false,
       "output_format": "json",
       "schedule": "segment",
       "source": "app",
-      "title": "timeline:segment_summary",
+      "title": "Segment Summary",
       "type": "generate"
     },
     "weekly_reflection": {

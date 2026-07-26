@@ -123,6 +123,19 @@ def test_scheduled_generators_have_valid_schedule():
             )
 
 
+def test_all_talent_configs_declare_non_empty_title():
+    talent = importlib.import_module("solstone.think.talent")
+
+    configs = talent.get_talent_configs(include_disabled=True)
+    missing = [
+        key
+        for key, meta in configs.items()
+        if not isinstance(meta.get("title"), str) or not meta["title"].strip()
+    ]
+
+    assert not missing, f"talent configs missing non-empty title: {missing}"
+
+
 def test_sense_in_segment_schedule():
     """Test that sense generator exists in segment schedule at priority 5."""
     talent = importlib.import_module("solstone.think.talent")
