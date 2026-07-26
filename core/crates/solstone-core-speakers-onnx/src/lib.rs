@@ -8,7 +8,7 @@ mod wespeaker;
 use std::error::Error;
 use std::fmt;
 
-use solstone_core_speakers::{PYANNOTE_WINDOW_S, WESPEAKER_MEL_BINS};
+use solstone_core_speakers::{PYANNOTE_SAMPLE_RATE_HZ, PYANNOTE_WINDOW_S, WESPEAKER_MEL_BINS};
 
 pub use pyannote::PyannoteSegmenter;
 pub use wespeaker::{SpeakerEmbedding, WespeakerEmbedder};
@@ -86,7 +86,7 @@ impl fmt::Display for SpeakerOnnxError {
                 actual_samples,
             } => write!(
                 formatter,
-                "pyannote ONNX audio window must have {expected_samples} samples ({PYANNOTE_WINDOW_S}s at 16 kHz), got {actual_samples}"
+                "pyannote ONNX audio window must have {expected_samples} samples ({PYANNOTE_WINDOW_S}s at {PYANNOTE_SAMPLE_RATE_HZ} Hz), got {actual_samples}"
             ),
             Self::InvalidModelIo { detail } => {
                 write!(formatter, "speaker ONNX model IO mismatch: {detail}")

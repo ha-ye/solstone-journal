@@ -198,17 +198,16 @@ where
         })?;
         validate_window_log_probs(window_index, &log_probs)?;
         let frame_start = frame_start_for_sample(start_sample, samples_per_frame);
-        let requested_frame_end = frame_start + log_probs.frames();
-        let frame_end = requested_frame_end.min(num_frames);
-        let used_frames = frame_end.saturating_sub(frame_start);
-        let stats_matrix = truncated_log_probs(&log_probs, used_frames)
-            .expect("validated pyannote log-probs can be truncated");
+        let frame_end = frame_start + log_probs.frames();
+        // A validated window has exactly the expected frame count; with starts at or before the
+        // final full window, round_ties_even(x) <= ceil(x) keeps frame_end within num_frames.
+        debug_assert!(frame_end <= num_frames);
         window_stats.push(
-            compute_speaker_window_stats(&stats_matrix)
+            compute_speaker_window_stats(&log_probs)
                 .expect("validated pyannote log-probs have the expected class count"),
         );
 
-        for local_frame in 0..used_frames {
+        for local_frame in 0..log_probs.frames() {
             let global_frame = frame_start + local_frame;
             let source_start = local_frame * PYANNOTE_CLASS_COUNT;
             let target_start = global_frame * PYANNOTE_CLASS_COUNT;
@@ -254,9 +253,9 @@ pub fn compute_speaker_window_stats(
             overlap_frames: 0,
         });
     }
-    let active_slot_count = counts[1..4]
+    let active_slot_count = PYANNOTE_SINGLE_SPEAKER_CLASSES
         .iter()
-        .filter(|count| (**count as f64 / speech_frames as f64) >= SLOT_ACTIVE_MIN_SHARE)
+        .filter(|class| (counts[**class] as f64 / speech_frames as f64) >= SLOT_ACTIVE_MIN_SHARE)
         .count();
     let overlap_frames = PYANNOTE_OVERLAP_CLASSES
         .iter()
@@ -352,27 +351,6 @@ fn validate_window_log_probs<E>(
         });
     }
     Ok(())
-}
-
-fn truncated_log_probs(
-    log_probs: &FeatureMatrix,
-    used_frames: usize,
-) -> Result<FeatureMatrix, SpeakerFeatureError> {
-    if used_frames == log_probs.frames() {
-        return Ok(log_probs.clone());
-    }
-    let len =
-        used_frames
-            .checked_mul(log_probs.bins())
-            .ok_or(SpeakerFeatureError::ShapeOverflow {
-                frames: used_frames,
-                bins: log_probs.bins(),
-            })?;
-    FeatureMatrix::from_row_major(
-        used_frames,
-        log_probs.bins(),
-        log_probs.data()[..len].to_vec(),
-    )
 }
 
 fn average_accumulated_log_probs(
@@ -597,7 +575,10 @@ mod tests {
             PYANNOTE_OVERLAP_STRIDE_S,
             |_, window| {
                 inspected = true;
-                assert_eq!(window.len(), 10 * PYANNOTE_SAMPLE_RATE_HZ as usize);
+                assert_eq!(
+                    window.len(),
+                    PYANNOTE_WINDOW_S as usize * PYANNOTE_SAMPLE_RATE_HZ as usize
+                );
                 assert!(window[..audio.len()].iter().all(|sample| *sample == 0.25));
                 assert!(window[audio.len()..].iter().all(|sample| *sample == 0.0));
                 Ok::<FeatureMatrix, Infallible>(class_matrix(&vec![0; PYANNOTE_FRAMES_PER_WINDOW]))
@@ -625,25 +606,7 @@ mod tests {
 
     #[test]
     fn segmentation_accumulates_f64_floors_counts_then_narrows_to_f32() {
-        let audio = vec![0.0; 14 * PYANNOTE_SAMPLE_RATE_HZ as usize];
-        let result = run_pyannote_segmentation_pass(
-            &audio,
-            PYANNOTE_SAMPLE_RATE_HZ,
-            PYANNOTE_DIARIZE_STRIDE_S,
-            |window_index, _window| {
-                let mut matrix = zero_matrix();
-                match window_index {
-                    0 => set_log_prob(&mut matrix, 236, 1, 100_000_000.0),
-                    1 => set_log_prob(&mut matrix, 118, 1, 1.0),
-                    2 => set_log_prob(&mut matrix, 0, 1, -100_000_000.0),
-                    _ => {}
-                }
-                Ok::<FeatureMatrix, Infallible>(matrix)
-            },
-        )
-        .expect("segmentation pass");
-        let expected = (1.0_f64 / 3.0) as f32;
-        let actual = result.avg_log_probs.row(236).expect("frame 236")[1];
+        let (actual, expected) = accumulated_mean_case();
 
         assert_eq!(actual, expected);
 
@@ -685,7 +648,7 @@ mod tests {
 
     #[test]
     fn no_speech_buffer_returns_zero_overlap_fraction() {
-        let audio = vec![0.0; 10 * PYANNOTE_SAMPLE_RATE_HZ as usize];
+        let audio = vec![0.0; PYANNOTE_WINDOW_S as usize * PYANNOTE_SAMPLE_RATE_HZ as usize];
 
         let result = run_pyannote_segmentation_pass(
             &audio,
@@ -701,25 +664,61 @@ mod tests {
     }
 
     #[test]
-    fn window_stats_use_post_tail_truncation_argmax() {
-        let mut classes = vec![4; PYANNOTE_FRAMES_PER_WINDOW];
-        classes[0] = 1;
-        classes[1] = 1;
-        let full = class_matrix(&classes);
-        let truncated = truncated_log_probs(&full, 2).expect("truncated matrix");
+    fn validated_window_frame_count_keeps_every_pass_window_within_num_frames() {
+        let cases = [
+            ("sub_window_tight", 137, PYANNOTE_OVERLAP_STRIDE_S),
+            (
+                "stride_aligned_overlap",
+                20 * PYANNOTE_SAMPLE_RATE_HZ as usize,
+                PYANNOTE_OVERLAP_STRIDE_S,
+            ),
+            (
+                "non_stride_aligned_overlap",
+                13 * PYANNOTE_SAMPLE_RATE_HZ as usize,
+                PYANNOTE_OVERLAP_STRIDE_S,
+            ),
+            (
+                "diarize_stride",
+                14 * PYANNOTE_SAMPLE_RATE_HZ as usize,
+                PYANNOTE_DIARIZE_STRIDE_S,
+            ),
+        ];
+        let window_samples = PYANNOTE_WINDOW_S as usize * PYANNOTE_SAMPLE_RATE_HZ as usize;
+        let samples_per_frame = window_samples as f64 / PYANNOTE_FRAMES_PER_WINDOW as f64;
+        let mut saw_tight_boundary = false;
 
-        assert_eq!(
-            compute_speaker_window_stats(&truncated).expect("stats"),
-            SpeakerWindowStats {
-                speech_frames: 2,
-                active_slot_count: 1,
-                overlap_frames: 0,
-            }
-        );
-        assert_ne!(
-            compute_speaker_window_stats(&full).expect("stats"),
-            compute_speaker_window_stats(&truncated).expect("stats")
-        );
+        for (name, samples, stride_s) in cases {
+            let audio = indexed_audio(samples);
+            let len_padded = samples.max(window_samples);
+            let num_frames = (len_padded as f64 / samples_per_frame).ceil() as usize;
+            let mut inspected_windows = 0_usize;
+
+            run_pyannote_segmentation_pass(
+                &audio,
+                PYANNOTE_SAMPLE_RATE_HZ,
+                stride_s,
+                |_, window| {
+                    let start_sample = window[0] as usize;
+                    let frame_start = frame_start_for_sample(start_sample, samples_per_frame);
+                    let frame_end = frame_start + PYANNOTE_FRAMES_PER_WINDOW;
+                    assert!(
+                        frame_end <= num_frames,
+                        "{name}: frame_end={frame_end} num_frames={num_frames}"
+                    );
+                    saw_tight_boundary |= frame_end == num_frames;
+                    inspected_windows += 1;
+                    Ok::<FeatureMatrix, Infallible>(class_matrix(&vec![
+                        0;
+                        PYANNOTE_FRAMES_PER_WINDOW
+                    ]))
+                },
+            )
+            .expect("segmentation pass");
+
+            assert!(inspected_windows > 0, "{name}");
+        }
+
+        assert!(saw_tight_boundary);
     }
 
     #[test]
@@ -861,7 +860,7 @@ mod tests {
 
     #[test]
     fn malformed_window_logprob_shape_reports_specific_error_variant() {
-        let audio = vec![0.0; 10 * PYANNOTE_SAMPLE_RATE_HZ as usize];
+        let audio = vec![0.0; PYANNOTE_WINDOW_S as usize * PYANNOTE_SAMPLE_RATE_HZ as usize];
         let error = run_pyannote_segmentation_pass(
             &audio,
             PYANNOTE_SAMPLE_RATE_HZ,
@@ -894,16 +893,40 @@ mod tests {
 
     #[test]
     fn segmentation_comparison_fails_when_value_exceeds_tolerance() {
-        let actual = vec![0.25_f32, 0.5];
-        let mut expected = actual.clone();
-        let tolerance = 1e-6_f32;
-        expected[1] += tolerance * 2.0;
+        let (actual_value, expected_value) = accumulated_mean_case();
+        let actual = vec![actual_value];
+        let mut expected = vec![expected_value];
+        let tolerance = 0.0_f32;
+        expected[0] = f32::from_bits(expected[0].to_bits() + 1);
 
         assert!(matrix_comparison_error("segmentation", &actual, &expected, tolerance).is_some());
     }
 
     fn indexed_audio(samples: usize) -> Vec<f32> {
         (0..samples).map(|index| index as f32).collect()
+    }
+
+    fn accumulated_mean_case() -> (f32, f32) {
+        let audio = vec![0.0; 14 * PYANNOTE_SAMPLE_RATE_HZ as usize];
+        let result = run_pyannote_segmentation_pass(
+            &audio,
+            PYANNOTE_SAMPLE_RATE_HZ,
+            PYANNOTE_DIARIZE_STRIDE_S,
+            |window_index, _window| {
+                let mut matrix = zero_matrix();
+                match window_index {
+                    0 => set_log_prob(&mut matrix, 236, 1, 100_000_000.0),
+                    1 => set_log_prob(&mut matrix, 118, 1, 1.0),
+                    2 => set_log_prob(&mut matrix, 0, 1, -100_000_000.0),
+                    _ => {}
+                }
+                Ok::<FeatureMatrix, Infallible>(matrix)
+            },
+        )
+        .expect("segmentation pass");
+        let actual = result.avg_log_probs.row(236).expect("frame 236")[1];
+        let expected = (1.0_f64 / 3.0) as f32;
+        (actual, expected)
     }
 
     fn zero_matrix() -> FeatureMatrix {

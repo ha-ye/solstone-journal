@@ -204,6 +204,10 @@ tolerance.
 boundaries for interval selection, speaker-evidence gating, sentence assignment,
 and k-selection. Silhouette scores are compared with
 `CLUSTER_SCORE_ABS_TOLERANCE`; selected k values and cluster labels remain exact.
+Native pyannote segmentation logic now lives in `solstone-core-speakers`, with
+ONNX model execution isolated in `solstone-core-speakers-onnx`.
+`speaker_stage_boundaries.json` remains a branch-boundary fixture; model-pass
+numeric parity is carried by the `tests/verify_speaker_differential.py` bundles.
 
 `tests/verify_indexer_differential.py` runs the indexer differential harness and
 writes its report under the harness work directory unless `--report` is supplied.
