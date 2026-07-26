@@ -37,10 +37,13 @@ def test_ok_terminal_is_retry_permitted(tmp_path) -> None:
     write_attempt_dir(journal)
     write_ledger(journal, complete_attempt_records())
 
+    before = repository_inventory(Path.cwd())
     replay = replay_probe_ledger(journal)
+    after = repository_inventory(Path.cwd())
 
     assert replay.retry_permitted is True
     assert replay.run_id == RUN_ID
+    assert_inventory_unchanged(before, after)
 
 
 def test_degraded_proof_failed_with_verified_cleanup_is_retry_permitted(

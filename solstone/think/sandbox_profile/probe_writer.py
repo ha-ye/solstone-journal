@@ -21,8 +21,6 @@ class ProbeAttemptWriter:
     _proofs: list[probe_records.ProofTerminalRecord] = field(default_factory=list)
     _next_proof_index: int = 0
     _proof_terminal_count: int = 0
-    _started_barrier_complete: bool = True
-    _last_proof_barrier_complete: bool = True
     _terminal_written: bool = False
     _poisoned_code: str | None = None
 
@@ -33,10 +31,6 @@ class ProbeAttemptWriter:
             proof = probe_records.validate_proof_name(proof)
         except probe_records.ProbeRecordValidationError:
             probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
-        if not self._started_barrier_complete or not self._last_proof_barrier_complete:
-            probe_records.raise_probe_error(
-                contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
-            )
         if proof != expected:
             probe_records.raise_probe_error(
                 contract.STABLE_ERROR_INTERNAL_ERROR, proof=proof
@@ -84,7 +78,6 @@ class ProbeAttemptWriter:
         self._proofs.append(record)
         self._next_proof_index += 1
         self._proof_terminal_count += 1
-        self._last_proof_barrier_complete = True
 
     def write_attempt_terminal(
         self,

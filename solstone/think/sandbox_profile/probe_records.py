@@ -290,19 +290,6 @@ def build_attempt_terminal_record(
     )
 
 
-def validate_record_payload(
-    payload: Mapping[str, Any],
-) -> AttemptStartedRecord | ProofTerminalRecord | AttemptTerminalRecord:
-    record_kind = payload.get("record_kind")
-    if record_kind == contract.RECORD_KIND_ATTEMPT_STARTED:
-        return validate_attempt_started_payload(payload)
-    if record_kind == contract.RECORD_KIND_PROOF_TERMINAL:
-        return validate_proof_terminal_payload(payload)
-    if record_kind == contract.RECORD_KIND_ATTEMPT_TERMINAL:
-        return validate_attempt_terminal_payload(payload)
-    raise ProbeRecordValidationError("unknown record kind")
-
-
 def validate_attempt_started_payload(
     payload: Mapping[str, Any],
 ) -> AttemptStartedRecord:
