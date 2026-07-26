@@ -572,6 +572,7 @@ fn readiness_summary(reason: &str) -> Option<&'static str> {
             Some("local model setup could not be verified")
         }
         "provider_key_invalid" => Some("your {provider} key didn't validate"),
+        "model_not_found" => Some("{provider} doesn't offer this model to this key"),
         "provider_quota_exceeded" => Some("your {provider} quota is spent"),
         "provider_request_rejected" => {
             Some("the provider refused a request sol sent; this is a defect in sol")

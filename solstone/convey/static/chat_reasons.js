@@ -102,6 +102,10 @@
       "template": "your {provider} key didn't validate",
       "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}
     },
+    "model_not_found": {
+      "template": "{provider} doesn't offer this model to this key",
+      "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}
+    },
     "provider_quota_exceeded": {
       "template": "your {provider} quota is spent",
       "action": null

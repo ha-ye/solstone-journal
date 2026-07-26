@@ -304,6 +304,64 @@ def test_execute_generate_provider_blank_records_runtime_failure(
     )
 
 
+def test_generate_model_not_found_records_runtime_failure(tmp_path, monkeypatch):
+    from litellm.exceptions import NotFoundError
+
+    from solstone.think.providers.brain_state import inspect_brain_state
+
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+    _write_ready_brain_record(tmp_path)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "missing_model_day_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "md",
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+    provider_module = MagicMock()
+    provider_module.run_generate.side_effect = NotFoundError(
+        "model not found",
+        model="gemini-3.5-flash",
+        llm_provider="gemini",
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: provider_module,
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "missing_model_day_gen",
+            "day": "20240101",
+            "output": "md",
+        },
+        monkeypatch,
+    )
+
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "model_not_found"
+    assert error_events[0]["provider"] == "google"
+    assert [event for event in events if event["event"] == "finish"] == []
+
+    inspection = inspect_brain_state(datetime.now(timezone.utc), journal_path=tmp_path)
+    record = inspection["record"]
+    assert record is not None
+    assert record["reason_code"] == "model_not_found"
+    assert record["evidence"]["generate"]["reason_code"] == "model_not_found"
+
+
 def test_execute_generate_provider_blank_rejected_when_config_switches_in_flight(
     tmp_path,
     monkeypatch,

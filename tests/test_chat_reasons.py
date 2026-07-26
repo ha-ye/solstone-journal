@@ -34,6 +34,7 @@ EXPECTED_CODES = {
     "archive_path_traversal",
     "cuda_runtime_incomplete",
     "provider_key_invalid",
+    "model_not_found",
     "provider_quota_exceeded",
     "provider_request_rejected",
     "network_unreachable",

@@ -497,6 +497,31 @@ def test_run_daily_prompts_skips_two_deterministic_failures(daily_journal, monke
     )
 
 
+def test_run_daily_prompts_skips_one_model_not_found_failure(
+    daily_journal, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    _write_health(
+        daily_journal,
+        DAY,
+        "001_daily.jsonl",
+        [_fail("alpha", reason_code="model_not_found")],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    _install_daily_mocks(monkeypatch, mod, _single_configs("alpha"), dispatched)
+
+    _run_daily_with_writer(mod, daily_journal, DAY, "002_daily.jsonl")
+
+    assert dispatched == []
+    skips = _skip_events(daily_journal, DAY, "002_daily.jsonl")
+    assert [(event["name"], event["reason"]) for event in skips] == [
+        ("alpha", "deterministic_failure_no_retry")
+    ]
+    assert skips[0]["detail"] == (
+        "1 same-day deterministic failures (model_not_found); not re-dispatching"
+    )
+
+
 def test_run_daily_prompts_schema_invalid_retries_until_third_failure(
     daily_journal, monkeypatch
 ):

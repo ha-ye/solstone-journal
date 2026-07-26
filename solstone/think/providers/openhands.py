@@ -68,6 +68,8 @@ from solstone.think.providers.shared import (
     GenerateResult,
     JSONEventCallback,
     classify_provider_error,
+    exception_chain,
+    is_cloud_model_not_found,
     safe_raw,
     validate_generate_result_strict,
 )
@@ -2034,29 +2036,10 @@ async def run_agenerate(
     )
 
 
-def _exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
-def _model_not_found(exc: BaseException) -> bool:
-    for item in _exception_chain(exc):
-        status = getattr(item, "status_code", None)
-        if status is None:
-            status = getattr(getattr(item, "response", None), "status_code", None)
-        if status == 404 or "notfound" in type(item).__name__.lower():
-            return True
-    return False
-
-
 def _validation_reason(exc: BaseException, provider: str) -> str:
-    if _model_not_found(exc):
+    if is_cloud_model_not_found(exc, provider):
         return "model_not_found"
-    for item in _exception_chain(exc):
+    for item in exception_chain(exc):
         reason = classify_provider_error(item, provider)
         if reason != "unknown":
             return reason

@@ -107,6 +107,159 @@ def test_classifies_openhands_bad_request_google_request_rejected():
     assert classify_provider_error(exc, "google") == "provider_request_rejected"
 
 
+def _litellm_not_found_error():
+    from litellm.exceptions import NotFoundError
+
+    return NotFoundError("model not found", model="m", llm_provider="gemini")
+
+
+def _openai_response(status_code: int):
+    import httpx
+
+    request = httpx.Request("GET", "https://api.openai.example/models/missing")
+    return httpx.Response(status_code, request=request)
+
+
+def _openai_not_found_error():
+    import openai
+
+    return openai.NotFoundError(
+        "model not found",
+        response=_openai_response(404),
+        body=None,
+    )
+
+
+def _mapped_provider_exception(exc: Exception) -> Exception:
+    from openhands.sdk.llm.exceptions.mapping import map_provider_exception
+
+    return map_provider_exception(exc)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        _litellm_not_found_error,
+        _openai_not_found_error,
+        lambda: _mapped_provider_exception(_litellm_not_found_error()),
+        lambda: _mapped_provider_exception(_openai_not_found_error()),
+    ],
+)
+def test_cloud_not_found_shapes_classify_model_not_found(factory):
+    for provider in ("google", "openai", "anthropic"):
+        assert classify_provider_error(factory(), provider) == "model_not_found"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        _litellm_not_found_error,
+        _openai_not_found_error,
+        lambda: _mapped_provider_exception(_litellm_not_found_error()),
+        lambda: _mapped_provider_exception(_openai_not_found_error()),
+    ],
+)
+def test_local_not_found_shapes_stay_unknown(factory):
+    assert classify_provider_error(factory(), "local") == "unknown"
+
+
+def test_anthropic_not_found_shape_classifies_model_not_found_when_installed():
+    import httpx
+
+    anthropic = pytest.importorskip("anthropic")
+    (not_found_error,) = _require_attrs(anthropic, "NotFoundError")
+    request = httpx.Request("GET", "https://api.anthropic.example/v1/models/missing")
+    response = httpx.Response(404, request=request)
+    exc = not_found_error("model not found", response=response, body=None)
+
+    for provider in ("google", "openai", "anthropic"):
+        assert classify_provider_error(exc, provider) == "model_not_found"
+    assert classify_provider_error(exc, "local") == "unknown"
+
+
+def test_status_only_404_shapes_do_not_classify_model_not_found():
+    import httpx
+
+    class StatusOnly:
+        status_code = 404
+
+    class ResponseOnly:
+        response = httpx.Response(
+            404, request=httpx.Request("GET", "https://example.invalid/missing")
+        )
+
+    unrelated = httpx.HTTPStatusError(
+        "not found",
+        request=httpx.Request("GET", "https://example.invalid/unrelated"),
+        response=httpx.Response(
+            404, request=httpx.Request("GET", "https://example.invalid/unrelated")
+        ),
+    )
+
+    for exc in (StatusOnly(), ResponseOnly(), unrelated):
+        for provider in ("google", "openai", "local"):
+            assert classify_provider_error(exc, provider) == "unknown"
+
+
+def test_sibling_classifications_stay_ahead_of_model_not_found():
+    import httpx
+    import openai
+    from litellm.exceptions import BadRequestError
+
+    auth = openai.AuthenticationError(
+        "bad key",
+        response=_openai_response(401),
+        body=None,
+    )
+    quota = openai.RateLimitError(
+        "rate limit",
+        response=_openai_response(429),
+        body=None,
+    )
+    ordinary_400 = BadRequestError(
+        "Invalid value for parameter 'temperature'",
+        model="gemini-test",
+        llm_provider="google",
+    )
+    status_500 = httpx.HTTPStatusError(
+        "server error",
+        request=httpx.Request("GET", "https://api.example.invalid/models"),
+        response=httpx.Response(
+            500, request=httpx.Request("GET", "https://api.example.invalid/models")
+        ),
+    )
+    status_503 = httpx.HTTPStatusError(
+        "unavailable",
+        request=httpx.Request("GET", "https://api.example.invalid/models"),
+        response=httpx.Response(
+            503, request=httpx.Request("GET", "https://api.example.invalid/models")
+        ),
+    )
+
+    cases = [
+        (auth, "provider_key_invalid"),
+        (quota, "provider_quota_exceeded"),
+        (ordinary_400, "provider_request_rejected"),
+        (status_500, "provider_unavailable"),
+        (status_503, "provider_unavailable"),
+        (httpx.ReadTimeout("timeout"), "chat_timeout"),
+        (httpx.ConnectError("connection failed"), "network_unreachable"),
+        (Exception("plain failure"), "unknown"),
+    ]
+
+    for exc, expected in cases:
+        assert classify_provider_error(exc, "google") == expected
+
+
+@pytest.mark.parametrize("message", _CONTEXT_WINDOW_PATTERNS)
+def test_context_window_messages_stay_context_window_before_model_not_found(message):
+    from litellm.exceptions import BadRequestError
+
+    exc = BadRequestError(message, model="gemini-test", llm_provider="google")
+
+    assert classify_provider_error(exc, "google") == "context_window_exceeded"
+
+
 @pytest.mark.parametrize("message", _CONTEXT_WINDOW_PATTERNS)
 def test_classifies_openhands_bad_request_context_window_messages_before_rejection(
     message,
@@ -231,6 +384,7 @@ def test_runtime_reason_codes_are_registered_with_owner_copy():
     for reason_code in (
         "context_window_exceeded",
         "context_budget_exceeded",
+        "model_not_found",
         "provider_request_rejected",
     ):
         assert reason_code in RUNTIME_REASON_CODES

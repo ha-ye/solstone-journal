@@ -443,6 +443,25 @@ def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     )
 
 
+def test_validation_model_not_found_uses_shared_cloud_predicate(monkeypatch):
+    from litellm.exceptions import NotFoundError
+
+    assert not hasattr(openhands, "_model_not_found")
+
+    def missing(*_args):
+        raise NotFoundError("model not found", model="m", llm_provider="gemini")
+
+    monkeypatch.setattr(openhands, "_probe", missing)
+
+    assert openhands.validate_key("google", "key") == {
+        "valid": True,
+        "probe_reason_code": "model_not_found",
+    }
+    assert openhands.validate_model("google", "missing", "key")["reason_code"] == (
+        "model_not_found"
+    )
+
+
 def test_validation_probe_rejects_blank_canned_response_without_retry(monkeypatch):
     calls: list[dict] = []
 

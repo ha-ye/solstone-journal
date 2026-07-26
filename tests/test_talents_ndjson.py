@@ -6,12 +6,21 @@
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from solstone.think.models import GPT_5
+from solstone.think.providers.brain_state import (
+    begin_brain_refresh,
+    finish_brain_refresh,
+    inspect_brain_state,
+)
+
+NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -71,6 +80,46 @@ def mock_prepare_config(request: dict) -> dict:
     return config
 
 
+def _ok_component() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "observed_at": NOW.isoformat(),
+        "expires_at": datetime(2026, 1, 3, 3, 4, 5, tzinfo=timezone.utc).isoformat(),
+    }
+
+
+def _write_ready_brain(journal_path):
+    config_path = journal_path / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "active": {
+                        "provider": "google",
+                        "model": "gemini-3.5-flash",
+                    }
+                },
+                "env": {"GOOGLE_API_KEY": "test-key"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    permit = begin_brain_refresh(NOW, journal_path=journal_path)
+    assert permit is not None
+    finish_brain_refresh(
+        permit,
+        {
+            "configuration": _ok_component(),
+            "lane_prerequisites": _ok_component(),
+            "generate": _ok_component(),
+            "cogitate": _ok_component(),
+        },
+        NOW,
+        journal_path=journal_path,
+    )
+
+
 def mock_all_providers(monkeypatch):
     """Mock the registered cogitate provider module with mock_run_cogitate.
 
@@ -128,6 +177,45 @@ def test_ndjson_single_request(mock_journal, monkeypatch, capsys):
 
     finish_events = [e for e in events if e["event"] == "finish"]
     assert finish_events
+
+
+def test_ndjson_cogitate_model_not_found_records_runtime_failure(
+    mock_journal, monkeypatch, capsys
+):
+    from litellm.exceptions import NotFoundError
+
+    _write_ready_brain(mock_journal)
+
+    async def run_cogitate(config, on_event=None):
+        del config, on_event
+        raise NotFoundError("model not found", model="m", llm_provider="gemini")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: SimpleNamespace(run_cogitate=run_cogitate),
+    )
+    monkeypatch.setattr("solstone.think.talents.prepare_config", mock_prepare_config)
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"prompt": "use tools"})))
+    mock_args = MagicMock()
+    mock_args.verbose = False
+    mock_args.dry_run = False
+
+    from solstone.think.talents import main_async
+
+    with patch("solstone.think.talents.setup_cli", return_value=mock_args):
+        asyncio.run(main_async())
+
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.out.strip().split("\n") if line]
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "model_not_found"
+    assert error_events[0]["provider"] == "google"
+
+    record = inspect_brain_state(NOW, journal_path=mock_journal)["record"]
+    assert record is not None
+    assert record["reason_code"] == "model_not_found"
+    assert record["evidence"]["cogitate"]["reason_code"] == "model_not_found"
 
 
 def test_ndjson_multiple_requests(mock_journal, monkeypatch, capsys):

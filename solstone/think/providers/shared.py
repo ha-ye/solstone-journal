@@ -194,11 +194,30 @@ def _exception_name_matches(
     return exc_name in names or any(exc_qualname.endswith(f".{name}") for name in names)
 
 
+def exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+# Deliberately class-shape based: real cloud SDK missing-model 404s are
+# NotFoundError-shaped classes (litellm, openai, anthropic), while a bare 404
+# can come from an unrelated endpoint. Do not broaden this to status alone.
+def is_cloud_model_not_found(exc: BaseException, provider: str) -> bool:
+    return is_cloud_provider(provider) and any(
+        "notfound" in type(item).__name__.lower() for item in exception_chain(exc)
+    )
+
+
 RUNTIME_REASON_CODES = frozenset(
     {
         "context_window_exceeded",
         "context_budget_exceeded",
         "local_capacity_exhausted",
+        "model_not_found",
         "provider_quota_exceeded",
         "provider_key_invalid",
         "chat_timeout",
@@ -328,6 +347,9 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             )
         ) and (status_code or 0) >= 500:
             return "provider_unavailable"
+
+        if is_cloud_model_not_found(exc, provider):
+            return "model_not_found"
 
         if isinstance(exc, RuntimeError):
             if _contains_any(message_lower, _CLI_UNAVAILABLE_PATTERNS):

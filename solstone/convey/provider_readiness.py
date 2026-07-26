@@ -239,6 +239,15 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Open provider setup and check the saved credentials.",
         recovery_action=_THINKING_ACTION,
     ),
+    "model_not_found": _Entry(
+        klass="setup",
+        summary="{provider} doesn't offer this model to this key",
+        detail=(
+            "The key reached the provider, but this model is not available to "
+            "it. Pick a different model in Thinking."
+        ),
+        recovery_action=_THINKING_ACTION,
+    ),
     "provider_quota_exceeded": _Entry(
         klass="provider",
         summary="your {provider} quota is spent",
