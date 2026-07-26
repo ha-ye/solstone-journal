@@ -24,13 +24,13 @@
 .occ {
   position: absolute;
   min-width: 40px;
+  min-height: 22px;
   border-radius: 4px;
-  opacity: 0.9;
   display: block;
   text-decoration: none;
   cursor: pointer;
   transition: opacity 0.15s ease, filter 0.15s ease;
-  color: #fff;
+  color: #111827;
   font-size: 0.75em;
   padding: 2px 6px;
   overflow: hidden;
@@ -41,7 +41,6 @@
 
 /* Activity blocks on timeline */
 .occ-activity {
-  opacity: 0.35;
   border: 2px solid;
   border-radius: 6px;
   display: flex;
@@ -50,7 +49,7 @@
   font-size: 0.75em;
   overflow: hidden;
   white-space: nowrap;
-  transition: opacity 0.15s ease;
+  transition: filter 0.15s ease;
   box-shadow: none;
 }
 
@@ -69,10 +68,10 @@ h1 {
 }
 
 .occ-activity:hover {
-  opacity: 0.55;
+  filter: brightness(0.92);
 }
 .occ-activity:active {
-  opacity: 0.7;
+  filter: brightness(0.86);
 }
 
 /* Activities section */
@@ -718,7 +717,7 @@ button.activity-detail-back {
       const height = Math.max((eMin - sMin) / totalMinutes * 100, 0.4);
       const color = levelColor(a.level_avg);
       const icon = a.icon || '🗓️';
-      html += `<a class='occ occ-activity' data-activity-id='${escapeHtml(a.id)}' tabindex='0' role='button' style='top:${top}%;height:${height}%;left:0;width:100%;border-color:${color};background:${color}' title='${escapeHtml(icon + " " + a.name)}'>${escapeHtml(icon)} ${escapeHtml(a.name)}</a>`;
+      html += `<a class='occ occ-activity' data-activity-id='${escapeHtml(a.id)}' tabindex='0' role='button' style='top:${top}%;height:${height}%;left:0;width:100%;border-color:${color};background:${color}40' title='${escapeHtml(icon + " " + a.name)}'>${escapeHtml(icon)} ${escapeHtml(a.name)}</a>`;
     });
 
     html += '</section>';
