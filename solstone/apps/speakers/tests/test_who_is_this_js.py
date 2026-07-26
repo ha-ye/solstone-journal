@@ -1127,7 +1127,11 @@ def test_spk_overview_select_css_detector_handles_parser_edges() -> None:
 
 
 def test_spk_overview_select_display_rules_have_hidden_override() -> None:
-    style_blocks = _style_blocks(WORKSPACE_HTML.read_text(encoding="utf-8"))
+    workspace_html = WORKSPACE_HTML.read_text(encoding="utf-8")
+    assert 'class="spk-overview-select"' in workspace_html, (
+        "the .spk-overview-select class was renamed; update this tripwire to follow it"
+    )
+    style_blocks = _style_blocks(workspace_html)
     assert style_blocks, "no <style> blocks found in speakers workspace"
     css_sources = [
         (f"speakers workspace style block {index}", block)
@@ -1135,6 +1139,7 @@ def test_spk_overview_select_display_rules_have_hidden_override() -> None:
     ]
     css_sources.append(("convey app.css", APP_CSS.read_text(encoding="utf-8")))
 
+    applying_rule_count = 0
     failures: list[str] = []
     for source_name, css in css_sources:
         display_selectors: list[str] = []
@@ -1147,6 +1152,7 @@ def test_spk_overview_select_display_rules_have_hidden_override() -> None:
             ]
             if not applying_selectors:
                 continue
+            applying_rule_count += 1
             declares_display = CSS_DISPLAY_DECLARATION.search(declarations) is not None
             if (
                 declares_display
@@ -1159,6 +1165,10 @@ def test_spk_overview_select_display_rules_have_hidden_override() -> None:
         if display_selectors and not has_hidden_display_none:
             failures.append(f"{source_name}: {', '.join(display_selectors)}")
 
+    assert applying_rule_count > 0, (
+        "no CSS rules apply to .spk-overview-select; update this tripwire "
+        "to follow the class if it was renamed"
+    )
     assert not failures, (
         ".spk-overview-select display rules need a co-located "
         "[hidden] display:none override: " + "; ".join(failures)
