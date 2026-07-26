@@ -17,7 +17,7 @@ pub fn notify(ctx: CommandContext<'_>) -> CommandOutput {
     if parsed.help {
         return CommandOutput::success(HELP);
     }
-    if parsed.message.is_empty() {
+    if !parsed.message_present {
         return argparse_error("the following arguments are required: message".to_string());
     }
     let Some(sink) = ctx.notification_sink else {
@@ -37,6 +37,7 @@ pub fn notify(ctx: CommandContext<'_>) -> CommandOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedArgs {
     message: String,
+    message_present: bool,
     title: Option<String>,
     icon: Option<String>,
     event: String,
@@ -53,6 +54,7 @@ impl Default for ParsedArgs {
     fn default() -> Self {
         Self {
             message: String::new(),
+            message_present: false,
             title: None,
             icon: None,
             event: "show".to_string(),
@@ -129,6 +131,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         }
         index += 1;
     }
+    parsed.message_present = !message.is_empty();
     parsed.message = message.join(" ");
     Ok(parsed)
 }
@@ -318,6 +321,36 @@ mod tests {
     }
 
     #[test]
+    fn empty_message_token_emits_empty_message() {
+        let sink = RecordingNotificationSink::new();
+        let output = run_notify_case(&[""], Some(&sink));
+
+        assert_eq!(output.exit, 0);
+        assert_eq!(
+            sink.recorded(),
+            vec![
+                "{\"tract\": \"notification\", \"event\": \"show\", \"message\": \"\"}\n"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_message_tokens_join_with_single_space() {
+        let sink = RecordingNotificationSink::new();
+        let output = run_notify_case(&["", ""], Some(&sink));
+
+        assert_eq!(output.exit, 0);
+        assert_eq!(
+            sink.recorded(),
+            vec![
+                "{\"tract\": \"notification\", \"event\": \"show\", \"message\": \" \"}\n"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn all_options_emit_in_python_json_order() {
         let sink = RecordingNotificationSink::new();
         let output = run_notify_case(
@@ -413,10 +446,6 @@ mod tests {
     #[test]
     fn malformed_args_follow_native_full_help_error_shape() {
         for (args, message) in [
-            (
-                Vec::<&str>::new(),
-                "the following arguments are required: message",
-            ),
             (vec!["--bogus", "hello"], "unrecognized arguments: --bogus"),
             (
                 vec!["--auto-dismiss", "nope", "hello"],
@@ -431,5 +460,17 @@ mod tests {
             );
             assert_eq!(output.exit, 2);
         }
+    }
+
+    #[test]
+    fn bare_notify_requires_a_positional_token() {
+        let output = run_notify_case(&[], None);
+
+        assert_eq!(output.stdout, "");
+        assert_eq!(
+            output.stderr,
+            format!("{HELP}sol notify: error: the following arguments are required: message\n")
+        );
+        assert_eq!(output.exit, 2);
     }
 }

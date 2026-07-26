@@ -806,6 +806,9 @@ impl NotificationSink for UnixNotificationSink {
         #[cfg(unix)]
         {
             let timeout = Some(Duration::from_secs(2));
+            // Python's settimeout(2.0) bounded connect and send. UnixStream::connect
+            // has no timeout API, so only the write/read below are bounded; AF_UNIX
+            // connect can still block if the listener backlog is saturated.
             let mut stream = UnixStream::connect(&self.socket_path)
                 .map_err(|_| NotificationSinkError::Unavailable)?;
             stream

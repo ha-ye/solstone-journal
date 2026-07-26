@@ -93,6 +93,7 @@ pub fn render_top_level_help(command: &str, args: &[String]) -> Option<CommandOu
         return None;
     }
     if command == "notify" {
+        // Inventory-presence guard: without the authority, top-level help should fall through.
         leaf_for_path("sol-notify", &[command.to_string()])?;
         return Some(CommandOutput::success(NOTIFY_HELP));
     }
@@ -337,7 +338,9 @@ fn push_line(output: &mut String, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use crate::{DispatchSeams, dispatch_sol_notify_with_seams};
+    use solstone_core_sol_client::seam::ScriptedHttpTransport;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn root_help_matches_generated_fixture_projection() {
@@ -368,6 +371,27 @@ mod tests {
         assert_eq!(output.stderr, "");
         assert_eq!(output.exit, 0);
         assert_eq!(output.stdout.len(), 992);
+
+        let args = vec!["--help".to_string()];
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![]);
+        let handler_output = dispatch_sol_notify_with_seams(
+            &args,
+            &env,
+            "",
+            "20260723",
+            DispatchSeams {
+                transport: &transport,
+                clock: None,
+                chat_events: None,
+                files: None,
+                build_identity: None,
+                client_item_ids: None,
+                notification_sink: None,
+            },
+        );
+        transport.assert_done();
+        assert_eq!(handler_output, output);
     }
 
     #[test]
