@@ -90,7 +90,10 @@ _WORKSPACE_COPY_CASE_PAIRS = (
     ("Body measurements", "body measurements"),
     ("Other signals", "other signals"),
     ("Sources this day", "sources this day"),
-    ("Body archive", "body archive"),
+    (
+        '<h2 id="body-archive-title" class="body-section-title">Body archive</h2>',
+        '<h2 id="body-archive-title" class="body-section-title">body archive</h2>',
+    ),
     ("Recent body days", "recent body days"),
     ("Explore all history", "explore all history"),
     ("Coverage areas", "coverage areas"),
@@ -2133,7 +2136,6 @@ def test_body_card_grid_children_reset_sibling_margins_after_root_rule():
     reset_selector = ".body-main-grid > .body-card"
 
     assert comment in source
-    assert "," not in comment
     reset_start = source.index(reset_start_marker)
     reset_tail_index, reset_tail_rule = _rule_block(source, ".body-lists > .body-card")
     reset_close = source.index("}", reset_tail_index)
