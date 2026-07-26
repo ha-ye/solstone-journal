@@ -10,6 +10,7 @@ from solstone.think.providers.cli import ProviderKeyMissingError, QuotaExhausted
 from solstone.think.providers.shared import (
     _CONTEXT_WINDOW_PATTERNS,
     classify_provider_error,
+    mark_cloud_model_request,
 )
 
 _OPENHANDS_BAD_REQUEST_GOOGLE_OUTAGE = (
@@ -175,6 +176,65 @@ def test_anthropic_not_found_shape_classifies_model_not_found_when_installed():
     for provider in ("google", "openai", "anthropic"):
         assert classify_provider_error(exc, provider) == "model_not_found"
     assert classify_provider_error(exc, "local") == "unknown"
+
+
+class ProviderModelLookupError(Exception):
+    status_code = 404
+
+
+class ProviderWrapperError(Exception):
+    status_code = 500
+
+
+def test_marked_cloud_model_request_404_classifies_model_not_found():
+    for provider in ("google", "openai", "anthropic"):
+        exc = ProviderModelLookupError("missing model")
+        mark_cloud_model_request(exc)
+        assert classify_provider_error(exc, provider) == "model_not_found"
+
+
+def test_marked_cloud_model_request_uses_status_from_chain_after_unwrap():
+    inner = ProviderModelLookupError("missing model")
+    outer = RuntimeError("transport wrapper")
+    outer.__cause__ = inner
+
+    mark_cloud_model_request(outer)
+
+    assert classify_provider_error(outer, "google") == "model_not_found"
+    assert classify_provider_error(inner, "google") == "model_not_found"
+
+
+def test_marked_cloud_model_request_uses_inner_404_when_outer_has_status():
+    inner = ProviderModelLookupError("missing model")
+    outer = ProviderWrapperError("transport wrapper")
+    outer.__cause__ = inner
+
+    mark_cloud_model_request(outer)
+
+    assert classify_provider_error(outer, "google") == "model_not_found"
+    assert classify_provider_error(inner, "google") == "model_not_found"
+
+
+def test_unmarked_cloud_model_request_404_stays_unknown():
+    for provider in ("google", "openai", "anthropic", "local"):
+        assert classify_provider_error(
+            ProviderModelLookupError("missing"), provider
+        ) == ("unknown")
+
+    inner = ProviderModelLookupError("missing model")
+    outer = RuntimeError("transport wrapper")
+    outer.__cause__ = inner
+
+    assert classify_provider_error(outer, "google") == "unknown"
+
+
+def test_lookalike_not_found_name_without_trusted_identity_stays_unknown():
+    class WidgetNotFoundError(Exception):
+        status_code = 404
+
+    assert classify_provider_error(WidgetNotFoundError("missing"), "google") == (
+        "unknown"
+    )
 
 
 def test_status_only_404_shapes_do_not_classify_model_not_found():

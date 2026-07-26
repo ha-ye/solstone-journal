@@ -70,6 +70,7 @@ from solstone.think.providers.shared import (
     classify_provider_error,
     exception_chain,
     is_cloud_model_not_found,
+    mark_cloud_model_request,
     safe_raw,
     validate_generate_result_strict,
 )
@@ -657,11 +658,15 @@ def _run_generate(
         thinking_budget=thinking_budget,
         responses_api=responses_api,
     )
-    response = (
-        llm.responses(messages, **call_kwargs)
-        if responses_api
-        else llm.completion(messages, **call_kwargs)
-    )
+    try:
+        response = (
+            llm.responses(messages, **call_kwargs)
+            if responses_api
+            else llm.completion(messages, **call_kwargs)
+        )
+    except Exception as exc:
+        mark_cloud_model_request(exc)
+        raise
     return _generate_result(response, model)
 
 
@@ -697,11 +702,15 @@ async def _run_agenerate(
         thinking_budget=thinking_budget,
         responses_api=responses_api,
     )
-    response = (
-        await llm.aresponses(messages, **call_kwargs)
-        if responses_api
-        else await llm.acompletion(messages, **call_kwargs)
-    )
+    try:
+        response = (
+            await llm.aresponses(messages, **call_kwargs)
+            if responses_api
+            else await llm.acompletion(messages, **call_kwargs)
+        )
+    except Exception as exc:
+        mark_cloud_model_request(exc)
+        raise
     return _generate_result(response, model)
 
 

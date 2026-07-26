@@ -218,6 +218,46 @@ def test_ndjson_cogitate_model_not_found_records_runtime_failure(
     assert record["evidence"]["cogitate"]["reason_code"] == "model_not_found"
 
 
+def test_ndjson_cogitate_generic_tool_404_stays_unknown(
+    mock_journal, monkeypatch, capsys
+):
+    class ToolLookupError(Exception):
+        status_code = 404
+
+    _write_ready_brain(mock_journal)
+
+    async def run_cogitate(config, on_event=None):
+        del config, on_event
+        raise ToolLookupError("tool endpoint missing")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: SimpleNamespace(run_cogitate=run_cogitate),
+    )
+    monkeypatch.setattr("solstone.think.talents.prepare_config", mock_prepare_config)
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"prompt": "use tools"})))
+    mock_args = MagicMock()
+    mock_args.verbose = False
+    mock_args.dry_run = False
+
+    from solstone.think.talents import main_async
+
+    with patch("solstone.think.talents.setup_cli", return_value=mock_args):
+        asyncio.run(main_async())
+
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.out.strip().split("\n") if line]
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "unknown"
+    assert error_events[0]["provider"] == "google"
+
+    record = inspect_brain_state(NOW, journal_path=mock_journal)["record"]
+    assert record is not None
+    assert record["reason_code"] is None
+    assert record["evidence"]["cogitate"].get("reason_code") is None
+
+
 def test_ndjson_multiple_requests(mock_journal, monkeypatch, capsys):
     """Test processing multiple NDJSON requests from stdin."""
     requests = [

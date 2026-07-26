@@ -168,6 +168,8 @@ _CONTEXT_WINDOW_PATTERNS = (
     "longer than the model's context length",
     "context length exceeded",
 )
+_CLOUD_MODEL_REQUEST_ATTR = "_solstone_cloud_model_request"
+_TRUSTED_MODEL_NOT_FOUND_MODULES = ("litellm.exceptions", "openai", "anthropic")
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -203,12 +205,45 @@ def exception_chain(exc: BaseException) -> list[BaseException]:
     return chain
 
 
-# Deliberately class-shape based: real cloud SDK missing-model 404s are
-# NotFoundError-shaped classes (litellm, openai, anthropic), while a bare 404
-# can come from an unrelated endpoint. Do not broaden this to status alone.
+def _chain_has_status_code(exc: BaseException, code: int) -> bool:
+    return any(_status_code(item) == code for item in exception_chain(exc))
+
+
+def mark_cloud_model_request(exc: BaseException) -> None:
+    for item in exception_chain(exc):
+        try:
+            setattr(item, _CLOUD_MODEL_REQUEST_ATTR, True)
+        except Exception:
+            # SDK exceptions that reject attributes must not replace the real failure.
+            continue
+
+
+def has_cloud_model_request_mark(exc: BaseException) -> bool:
+    return any(
+        getattr(item, _CLOUD_MODEL_REQUEST_ATTR, False) is True
+        for item in exception_chain(exc)
+    )
+
+
+def _is_trusted_model_not_found(exc: BaseException) -> bool:
+    exc_type = type(exc)
+    if "notfound" not in exc_type.__name__.lower():
+        return False
+    return any(
+        _module_matches(exc_type.__module__, module)
+        for module in _TRUSTED_MODEL_NOT_FOUND_MODULES
+    )
+
+
+# Missing-model classification first requires a built-in cloud provider. Trusted
+# SDK NotFound-shaped exceptions identify provider model misses by class/module;
+# otherwise a bare 404 is accepted only when narrow generate/probe transport
+# provenance is present on the exception chain. Status alone is insufficient.
 def is_cloud_model_not_found(exc: BaseException, provider: str) -> bool:
-    return is_cloud_provider(provider) and any(
-        "notfound" in type(item).__name__.lower() for item in exception_chain(exc)
+    if not is_cloud_provider(provider):
+        return False
+    return any(_is_trusted_model_not_found(item) for item in exception_chain(exc)) or (
+        has_cloud_model_request_mark(exc) and _chain_has_status_code(exc, 404)
     )
 
 
@@ -689,6 +724,8 @@ __all__ = [
     "classify_canned_generate",
     "classify_provider_error",
     "exception_chain",
+    "has_cloud_model_request_mark",
     "is_cloud_model_not_found",
+    "mark_cloud_model_request",
     "safe_raw",
 ]

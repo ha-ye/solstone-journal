@@ -15,8 +15,13 @@ from solstone.think.providers.cli import ProviderKeyMissingError
 from solstone.think.providers.shared import (
     CANNED_GENERATE_MAX_OUTPUT_TOKENS,
     CANNED_GENERATE_NUM_RETRIES,
+    classify_provider_error,
 )
 from tests.openhands_fakes import install_fake_openhands
+
+
+class ProviderCatalogError(Exception):
+    status_code = 404
 
 
 @pytest.fixture
@@ -386,6 +391,35 @@ async def test_run_agenerate_transport_kwargs_do_not_shadow_llm_timeout(
     assert "timeout" not in getattr(llm, transport_attr)
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "transport_attr"),
+    [
+        ("google", "gemini-3.5-flash", "acompletion"),
+        ("openai", "gpt-5.5", "aresponses"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_agenerate_marks_generic_transport_404(
+    fake_openhands,
+    monkeypatch,
+    provider,
+    model,
+    transport_attr,
+):
+    monkeypatch.setenv(openhands._API_KEY_ENV[provider], "test-key")
+
+    async def missing_model(self, messages, **kwargs):
+        del self, messages, kwargs
+        raise ProviderCatalogError("missing model")
+
+    monkeypatch.setattr(fake_openhands.LLM, transport_attr, missing_model)
+
+    with pytest.raises(ProviderCatalogError) as raised:
+        await openhands.run_agenerate("hello", model, provider=provider)
+
+    assert classify_provider_error(raised.value, provider) == "model_not_found"
+
+
 def test_validation_probe_uses_canned_generate_transport_contract(fake_openhands):
     assert openhands.validate_key("openai", "key") == {"valid": True}
     assert fake_openhands.LLM.instances[-1].max_output_tokens == (
@@ -407,15 +441,18 @@ def test_validation_probe_uses_canned_generate_transport_contract(fake_openhands
 
 
 def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
+    from litellm.exceptions import NotFoundError
+
     monkeypatch.setattr(openhands, "_probe", lambda *args: None)
     assert openhands.validate_key("google", "key") == {"valid": True}
     assert openhands.validate_model("openai", "gpt-5.5", "key") == {"valid": True}
 
-    class NotFoundError(RuntimeError):
-        status_code = 404
-
     def missing(*_args):
-        raise NotFoundError("missing")
+        raise NotFoundError(
+            "model not found",
+            model="gemini-3.5-flash",
+            llm_provider="gemini",
+        )
 
     monkeypatch.setattr(openhands, "_probe", missing)
     assert openhands.validate_key("google", "key") == {
@@ -440,6 +477,35 @@ def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     assert (
         openhands.validate_model("google", "gemini-3.5-flash", "bad")["reason_code"]
         == "provider_key_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "transport_attr"),
+    [
+        ("google", "gemini-3.5-flash", "completion"),
+        ("openai", "gpt-5.5", "responses"),
+    ],
+)
+def test_validation_probe_marks_generic_transport_404(
+    fake_openhands,
+    monkeypatch,
+    provider,
+    model,
+    transport_attr,
+):
+    def missing_model(self, messages, **kwargs):
+        del self, messages, kwargs
+        raise ProviderCatalogError("missing model")
+
+    monkeypatch.setattr(fake_openhands.LLM, transport_attr, missing_model)
+
+    assert openhands.validate_key(provider, "key") == {
+        "valid": True,
+        "probe_reason_code": "model_not_found",
+    }
+    assert openhands.validate_model(provider, model, "key")["reason_code"] == (
+        "model_not_found"
     )
 
 

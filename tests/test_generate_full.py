@@ -171,6 +171,48 @@ def _write_schema_file(tmp_path: Path, name: str, schema: dict) -> None:
     (tmp_path / name).write_text(json.dumps(schema, indent=2), encoding="utf-8")
 
 
+def _run_generate_failure(
+    tmp_path: Path,
+    monkeypatch,
+    side_effect: Exception,
+) -> list[dict]:
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+    _write_ready_brain_record(tmp_path)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "missing_model_day_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "md",
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+    provider_module = MagicMock()
+    provider_module.run_generate.side_effect = side_effect
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: provider_module,
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+
+    return run_generator_with_config(
+        mod,
+        {
+            "name": "missing_model_day_gen",
+            "day": "20240101",
+            "output": "md",
+        },
+        monkeypatch,
+    )
+
+
 def test_generate_output_ndjson(tmp_path, monkeypatch):
     """Test basic output generation via NDJSON protocol."""
     mod = importlib.import_module("solstone.think.talents")
@@ -309,45 +351,40 @@ def test_generate_model_not_found_records_runtime_failure(tmp_path, monkeypatch)
 
     from solstone.think.providers.brain_state import inspect_brain_state
 
-    mod = importlib.import_module("solstone.think.talents")
-    copy_day(tmp_path, monkeypatch)
-    _write_ready_brain_record(tmp_path)
-
-    import solstone.think.talent as talent
-
-    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
-    _write_generator_file(
+    events = _run_generate_failure(
         tmp_path,
-        "missing_model_day_gen",
-        {
-            "type": "generate",
-            "schedule": "daily",
-            "priority": 10,
-            "output": "md",
-            "load": {"transcripts": True, "percepts": True},
-        },
-    )
-    provider_module = MagicMock()
-    provider_module.run_generate.side_effect = NotFoundError(
-        "model not found",
-        model="gemini-3.5-flash",
-        llm_provider="gemini",
-    )
-    monkeypatch.setattr(
-        "solstone.think.providers.get_provider_module",
-        lambda _provider: provider_module,
-    )
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-
-    events = run_generator_with_config(
-        mod,
-        {
-            "name": "missing_model_day_gen",
-            "day": "20240101",
-            "output": "md",
-        },
         monkeypatch,
+        NotFoundError(
+            "model not found",
+            model="gemini-3.5-flash",
+            llm_provider="gemini",
+        ),
     )
+
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "model_not_found"
+    assert error_events[0]["provider"] == "google"
+    assert [event for event in events if event["event"] == "finish"] == []
+
+    inspection = inspect_brain_state(datetime.now(timezone.utc), journal_path=tmp_path)
+    record = inspection["record"]
+    assert record is not None
+    assert record["reason_code"] == "model_not_found"
+    assert record["evidence"]["generate"]["reason_code"] == "model_not_found"
+
+
+def test_generate_marked_transport_404_records_runtime_failure(tmp_path, monkeypatch):
+    from solstone.think.providers.brain_state import inspect_brain_state
+    from solstone.think.providers.shared import mark_cloud_model_request
+
+    class ProviderCatalogError(Exception):
+        status_code = 404
+
+    exc = ProviderCatalogError("missing model")
+    mark_cloud_model_request(exc)
+
+    events = _run_generate_failure(tmp_path, monkeypatch, exc)
 
     error_events = [event for event in events if event["event"] == "error"]
     assert len(error_events) == 1
