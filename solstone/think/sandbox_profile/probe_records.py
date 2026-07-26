@@ -440,6 +440,7 @@ def derive_attempt_terminal(
 ) -> tuple[str, str | None]:
     if not proofs:
         raise ProbeRecordValidationError("attempt needs proof rows")
+    validate_cancellation_suffix(proofs)
     context = _TerminalDerivationContext(proofs=tuple(proofs))
     for rule in contract.TERMINAL_DERIVATION:
         predicate_key = rule.get("predicate")
@@ -479,6 +480,52 @@ def validate_attempt_terminal_matches(
     expected_state, expected_reason = derive_attempt_terminal(proofs)
     if terminal.state != expected_state or terminal.terminal_reason != expected_reason:
         raise ProbeRecordValidationError("attempt terminal does not match proof rows")
+
+
+def validate_cancellation_suffix(proofs: Sequence[ProofTerminalRecord]) -> None:
+    proof_rows = tuple(proofs)
+    first_cancelled = next(
+        (
+            index
+            for index, proof in enumerate(proof_rows)
+            if proof.reason == contract.REASON_CANCELLED
+        ),
+        None,
+    )
+    if first_cancelled is None:
+        return
+
+    first = proof_rows[first_cancelled]
+    first_context = _ProofRuleContext(
+        record=first,
+        ordered_checks=contract.PROOF_CHECKS[first.proof],
+        failed_reasons=frozenset(
+            set(contract.PROOF_SPECIFIC_REASONS[first.proof])
+            | set(contract.FAILED_COMMON_REASONS)
+        ),
+    )
+    first_predicates = (
+        contract.CANCELLATION["first_started_predicate"],
+        contract.CANCELLATION["first_unstarted_predicate"],
+    )
+    if not all(isinstance(predicate, str) for predicate in first_predicates):
+        raise ProbeRecordValidationError("invalid cancellation rule")
+    if not any(
+        _predicate_matches(predicate, first_context)
+        for predicate in first_predicates
+        if isinstance(predicate, str)
+    ):
+        raise ProbeRecordValidationError("invalid cancellation first row")
+
+    suffix_predicate = contract.CANCELLATION["suffix_predicate"]
+    if not isinstance(suffix_predicate, str):
+        raise ProbeRecordValidationError("invalid cancellation rule")
+    suffix_context = _CancellationSuffixContext(
+        proofs=proof_rows,
+        start_index=first_cancelled + 1,
+    )
+    if not _predicate_matches(suffix_predicate, suffix_context):
+        raise ProbeRecordValidationError("invalid cancellation suffix")
 
 
 def _predicate_checks_complete(context: object) -> bool:

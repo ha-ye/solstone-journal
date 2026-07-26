@@ -95,6 +95,85 @@ class ProbeAttemptWriter:
             self._next_proof_index += 1
             self._proof_terminal_count += 1
 
+    def write_cancelled_attempt(
+        self,
+        *,
+        proof: str,
+        state: str,
+        checks: Sequence[str],
+        duration_ms: int | None,
+        finished_at: str | None = None,
+    ) -> None:
+        with self.slot.operation_guard():
+            self._raise_if_not_active_unlocked()
+            self._reject_after_terminal_unlocked()
+            self.slot.revalidate_identities_unlocked()
+            try:
+                first = self._build_first_cancelled_record_unlocked(
+                    proof=proof,
+                    state=state,
+                    checks=checks,
+                    duration_ms=duration_ms,
+                    finished_at=finished_at,
+                )
+            except (
+                probe_records.ProbeRecordValidationError,
+                probe_records.ProbeOperationError,
+            ):
+                self.slot._poison_unlocked(contract.STABLE_ERROR_INTERNAL_ERROR)
+                probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+
+            self._append_record_unlocked(
+                first.to_json_obj(),
+                record_type=contract.RECORD_TYPE_PROOF_TERMINAL,
+            )
+            self._proofs.append(first)
+            self._next_proof_index += 1
+            self._proof_terminal_count += 1
+
+            for later_proof in self.start.execution_order[self._next_proof_index :]:
+                try:
+                    record = probe_records.build_proof_terminal_record(
+                        run_id=self.start.run_id,
+                        attempt_id=self.start.attempt_id,
+                        proof=later_proof,
+                        state=contract.PROOF_STATE_NOT_RUN,
+                        checks=(),
+                        reason=contract.REASON_CANCELLED,
+                        duration_ms=None,
+                        finished_at=finished_at,
+                    )
+                except probe_records.ProbeRecordValidationError:
+                    self.slot._poison_unlocked(contract.STABLE_ERROR_INTERNAL_ERROR)
+                    probe_records.raise_probe_error(
+                        contract.STABLE_ERROR_INTERNAL_ERROR,
+                        proof=later_proof,
+                    )
+                self._append_record_unlocked(
+                    record.to_json_obj(),
+                    record_type=contract.RECORD_TYPE_PROOF_TERMINAL,
+                )
+                self._proofs.append(record)
+                self._next_proof_index += 1
+                self._proof_terminal_count += 1
+
+            try:
+                terminal = probe_records.build_attempt_terminal_record(
+                    run_id=self.start.run_id,
+                    attempt_id=self.start.attempt_id,
+                    proofs=self._proofs,
+                    finished_at=finished_at,
+                )
+            except probe_records.ProbeRecordValidationError:
+                self.slot._poison_unlocked(contract.STABLE_ERROR_INTERNAL_ERROR)
+                probe_records.raise_probe_error(contract.STABLE_ERROR_INTERNAL_ERROR)
+            self._append_record_unlocked(
+                terminal.to_json_obj(),
+                record_type=contract.RECORD_TYPE_ATTEMPT_TERMINAL,
+            )
+            self._terminal_written = True
+            self.slot.mark_spent_unlocked()
+
     def write_attempt_terminal(
         self,
         *,
@@ -147,6 +226,35 @@ class ProbeAttemptWriter:
                 contract.STABLE_ERROR_INTERNAL_ERROR, attempt_id=self.start.attempt_id
             )
         return self.start.execution_order[self._next_proof_index]
+
+    def _build_first_cancelled_record_unlocked(
+        self,
+        *,
+        proof: str,
+        state: str,
+        checks: Sequence[str],
+        duration_ms: int | None,
+        finished_at: str | None,
+    ) -> probe_records.ProofTerminalRecord:
+        expected = self._next_proof_unlocked()
+        proof = probe_records.validate_proof_name(proof)
+        if proof != expected:
+            raise probe_records.ProbeRecordValidationError("wrong cancellation proof")
+        consumed = proof in self._contact_consumed
+        if consumed and state != contract.PROOF_STATE_FAILED:
+            raise probe_records.ProbeRecordValidationError("invalid cancellation state")
+        if not consumed and state != contract.PROOF_STATE_NOT_RUN:
+            raise probe_records.ProbeRecordValidationError("invalid cancellation state")
+        return probe_records.build_proof_terminal_record(
+            run_id=self.start.run_id,
+            attempt_id=self.start.attempt_id,
+            proof=proof,
+            state=state,
+            checks=checks,
+            reason=contract.REASON_CANCELLED,
+            duration_ms=duration_ms,
+            finished_at=finished_at,
+        )
 
     def _validate_terminal_contact_unlocked(self, *, proof: str, state: str) -> None:
         consumed = proof in self._contact_consumed

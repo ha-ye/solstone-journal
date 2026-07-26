@@ -14,6 +14,7 @@ from tests.sandbox_profile import (
     ATTEMPT_ID,
     RUN_ID,
     complete_attempt_records,
+    terminal_record,
     write_attempt_dir,
     write_ledger,
 )
@@ -144,5 +145,61 @@ def test_attempt_directory_symlink_is_stale(tmp_path) -> None:
     parent.mkdir(parents=True)
     (parent / ATTEMPT_ID).symlink_to(target, target_is_directory=True)
     write_ledger(journal, complete_attempt_records())
+
+    _assert_error(journal, probe_contract.STABLE_ERROR_STALE_ATTEMPT)
+
+
+@pytest.mark.parametrize(
+    "later_override",
+    [
+        {
+            "state": probe_contract.PROOF_STATE_PASSED,
+            "checks": None,
+            "reason": None,
+            "duration_ms": 1,
+        },
+        {
+            "state": probe_contract.PROOF_STATE_FAILED,
+            "checks": (),
+            "reason": probe_contract.REASON_INTERNAL_ERROR,
+            "duration_ms": 1,
+        },
+        {
+            "state": probe_contract.PROOF_STATE_NOT_RUN,
+            "checks": (),
+            "reason": probe_contract.REASON_DEPENDENCY_FAILED,
+            "duration_ms": None,
+        },
+    ],
+)
+def test_cancelled_terminal_requires_exact_contiguous_not_run_suffix(
+    tmp_path,
+    later_override,
+) -> None:
+    journal = tmp_path / "journal"
+    selected = probe_contract.CAPABILITY_ORDER[:2]
+    records = complete_attempt_records(selected=selected)
+    first_proof = records[1]
+    later_proof = records[2]
+    first_proof["state"] = probe_contract.PROOF_STATE_FAILED
+    first_proof["checks"] = []
+    first_proof["reason"] = probe_contract.REASON_CANCELLED
+    first_proof["duration_ms"] = 1
+    later_proof["state"] = later_override["state"]
+    later_proof["checks"] = (
+        list(probe_contract.PROOF_CHECKS[selected[1]])
+        if later_override["checks"] is None
+        else list(later_override["checks"])
+    )
+    later_proof["reason"] = later_override["reason"]
+    later_proof["duration_ms"] = later_override["duration_ms"]
+    records[-1] = {
+        **terminal_record(proofs=[first_proof]),
+        "attempt_id": ATTEMPT_ID,
+        "state": probe_contract.ATTEMPT_STATE_CANCELLED,
+        "terminal_reason": probe_contract.REASON_CANCELLED,
+    }
+    write_attempt_dir(journal)
+    write_ledger(journal, records)
 
     _assert_error(journal, probe_contract.STABLE_ERROR_STALE_ATTEMPT)

@@ -512,6 +512,167 @@ def test_writer_replacement_cannot_escape_poisoned_slot(monkeypatch, tmp_path) -
     _assert_probe_error(second, probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
 
 
+def test_cancelled_attempt_before_any_proof_writes_not_run_suffix_and_terminal(
+    tmp_path,
+) -> None:
+    selected = probe_contract.CAPABILITY_ORDER[:2]
+    journal = tmp_path / "journal"
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        writer = begin_probe_attempt(
+            slot,
+            selected=selected,
+            execution_order=selected,
+            attempt_id=ATTEMPT_ID,
+            started_at=FIXED_TS,
+        )
+        writer.write_cancelled_attempt(
+            proof=selected[0],
+            state=probe_contract.PROOF_STATE_NOT_RUN,
+            checks=(),
+            duration_ms=None,
+            finished_at=FIXED_TS,
+        )
+        with pytest.raises(probe_records.ProbeOperationError) as second_begin:
+            begin_probe_attempt(
+                slot,
+                selected=(selected[0],),
+                execution_order=(selected[0],),
+                attempt_id=OTHER_ATTEMPT_ID,
+                started_at=FIXED_TS,
+            )
+
+    rows = _ledger_rows(journal)
+    assert [row["type"] for row in rows] == [
+        probe_contract.RECORD_TYPE_ATTEMPT_STARTED,
+        probe_contract.RECORD_TYPE_PROOF_TERMINAL,
+        probe_contract.RECORD_TYPE_PROOF_TERMINAL,
+        probe_contract.RECORD_TYPE_ATTEMPT_TERMINAL,
+    ]
+    assert rows[1]["state"] == probe_contract.PROOF_STATE_NOT_RUN
+    assert rows[1]["reason"] == probe_contract.REASON_CANCELLED
+    assert rows[2]["state"] == probe_contract.PROOF_STATE_NOT_RUN
+    assert rows[2]["checks"] == []
+    assert rows[2]["reason"] == probe_contract.REASON_CANCELLED
+    assert rows[-1]["state"] == probe_contract.ATTEMPT_STATE_CANCELLED
+    assert rows[-1]["terminal_reason"] == probe_contract.REASON_CANCELLED
+    _assert_probe_error(second_begin, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+
+    with pytest.raises(probe_records.ProbeOperationError) as reacquire:
+        acquire_probe_slot(journal, run_id=RUN_ID)
+    _assert_probe_error(reacquire, probe_contract.STABLE_ERROR_STALE_ATTEMPT)
+
+
+def test_cancelled_attempt_after_contact_in_flight_writes_failed_first_row(
+    tmp_path,
+) -> None:
+    selected = probe_contract.CAPABILITY_ORDER[:2]
+    journal = tmp_path / "journal"
+    contact_started = threading.Event()
+    release_contact = threading.Event()
+    cancel_result: list[str] = []
+
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        writer = begin_probe_attempt(
+            slot,
+            selected=selected,
+            execution_order=selected,
+            attempt_id=ATTEMPT_ID,
+            started_at=FIXED_TS,
+        )
+
+        def contact_operation() -> None:
+            contact_started.set()
+            assert release_contact.wait(timeout=2)
+
+        contact_thread = threading.Thread(
+            target=lambda: writer.dispatch_contact(selected[0], contact_operation)
+        )
+        contact_thread.start()
+        assert contact_started.wait(timeout=2)
+
+        def cancel() -> None:
+            writer.write_cancelled_attempt(
+                proof=selected[0],
+                state=probe_contract.PROOF_STATE_FAILED,
+                checks=probe_contract.PROOF_CHECKS[selected[0]][:1],
+                duration_ms=1,
+                finished_at=FIXED_TS,
+            )
+            cancel_result.append("done")
+
+        cancel_thread = threading.Thread(target=cancel)
+        cancel_thread.start()
+        release_contact.set()
+        contact_thread.join(timeout=2)
+        cancel_thread.join(timeout=2)
+
+    assert not contact_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert cancel_result == ["done"]
+    rows = _ledger_rows(journal)
+    assert rows[1]["state"] == probe_contract.PROOF_STATE_FAILED
+    assert rows[1]["checks"] == [probe_contract.PROOF_CHECKS[selected[0]][0]]
+    assert rows[1]["reason"] == probe_contract.REASON_CANCELLED
+    assert rows[2]["state"] == probe_contract.PROOF_STATE_NOT_RUN
+    assert rows[2]["reason"] == probe_contract.REASON_CANCELLED
+    assert rows[-1]["state"] == probe_contract.ATTEMPT_STATE_CANCELLED
+
+
+def test_malformed_first_cancellation_is_sticky_and_poisons_internal(
+    tmp_path,
+) -> None:
+    proof = _proof()
+    journal = tmp_path / "journal"
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        before_rows = _ledger_rows(journal)
+        with pytest.raises(probe_records.ProbeOperationError) as malformed:
+            writer.write_cancelled_attempt(
+                proof=proof,
+                state=probe_contract.PROOF_STATE_FAILED,
+                checks=(),
+                duration_ms=1,
+                finished_at=FIXED_TS,
+            )
+        with pytest.raises(probe_records.ProbeOperationError) as contact:
+            writer.dispatch_contact(proof, lambda: None)
+
+    _assert_probe_error(malformed, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+    _assert_probe_error(contact, probe_contract.STABLE_ERROR_INTERNAL_ERROR)
+    assert _ledger_rows(journal) == before_rows
+
+
+def test_failed_first_cancellation_append_is_sticky_and_poisons_exact_code(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    proof = _proof()
+    journal = tmp_path / "journal"
+    with acquire_probe_slot(journal, run_id=RUN_ID) as slot:
+        writer = _begin(slot)
+        writer.dispatch_contact(proof, lambda: None)
+        before_rows = _ledger_rows(journal)
+
+        def fail_write(_fd, _data):
+            raise OSError("secret")
+
+        monkeypatch.setattr(probe_durability, "_write_once", fail_write)
+        with pytest.raises(probe_records.ProbeOperationError) as failed_append:
+            writer.write_cancelled_attempt(
+                proof=proof,
+                state=probe_contract.PROOF_STATE_FAILED,
+                checks=probe_contract.PROOF_CHECKS[proof][:1],
+                duration_ms=1,
+                finished_at=FIXED_TS,
+            )
+        with pytest.raises(probe_records.ProbeOperationError) as contact:
+            writer.dispatch_contact(proof, lambda: None)
+
+    _assert_probe_error(failed_append, probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
+    _assert_probe_error(contact, probe_contract.STABLE_ERROR_RECORD_WRITE_FAILED)
+    assert _ledger_rows(journal) == before_rows
+
+
 def test_dispatch_contact_return_and_exception_consume_authorization(
     tmp_path,
 ) -> None:

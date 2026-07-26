@@ -33,7 +33,7 @@ def test_cleanup_unverified_precedes_every_other_reason() -> None:
     )
 
 
-def test_cancelled_precedes_internal_error_and_proof_failure() -> None:
+def test_valid_cancelled_suffix_maps_to_cancelled() -> None:
     proof = probe_contract.CAPABILITY_ORDER[0]
     records = [
         _proof(
@@ -43,8 +43,9 @@ def test_cancelled_precedes_internal_error_and_proof_failure() -> None:
         ),
         _proof(
             proof=proof,
-            state=probe_contract.PROOF_STATE_FAILED,
-            reason=probe_contract.REASON_INTERNAL_ERROR,
+            state=probe_contract.PROOF_STATE_NOT_RUN,
+            reason=probe_contract.REASON_CANCELLED,
+            duration_ms=None,
         ),
     ]
 
