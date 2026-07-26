@@ -237,7 +237,16 @@ def api_week(day: str) -> Any:
     try:
         _path, _raw_markdown, post = _load_reflection(canonical_day)
     except FileNotFoundError:
-        return error_response(FILE_NOT_FOUND, detail="Reflection not found")
+        return error_response(
+            FILE_NOT_FOUND,
+            detail="Reflection not found",
+            extra={
+                "copy": {
+                    "heading": reflections_copy.DETAIL_EMPTY_HEADING,
+                    "desc": reflections_copy.DETAIL_EMPTY_DESC,
+                }
+            },
+        )
 
     return jsonify(
         {

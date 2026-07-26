@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -67,6 +68,21 @@ def _render_template_call_functions() -> list[str]:
             parent = parents.get(parent)
         functions.append(parent.name if isinstance(parent, ast.FunctionDef) else "")
     return functions
+
+
+def _function_source(source: str, name: str) -> str:
+    start = source.index(f"function {name}(")
+    open_brace = source.index("{", start)
+    depth = 0
+    for index in range(open_brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"function {name} is not closed")
 
 
 def test_reflections_page_routes_serve_spa_shell(reflections_env):
@@ -137,6 +153,40 @@ def test_reflections_empty_body_matches_approved_replacement():
         "Every Sunday, sol writes one reflection from the week you've just lived: "
         "the conversations, decisions, follow-ups, the people. A view of your week, "
         "in your journal, with sol's notes."
+    )
+
+
+def test_reflections_workspace_missing_detail_uses_copy_gated_empty_surface():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    render_empty = _function_source(source, "renderDetailEmpty")
+    load = _function_source(source, "load")
+
+    assert "window.SurfaceState.empty({" in render_empty
+    assert "window.ConveyIcons.svg('calendar-days')" in render_empty
+    assert "heading: copy.heading" in render_empty
+    assert "desc: copy.desc" in render_empty
+    assert "err?.status === 404 && err?.payload?.copy" in load
+    assert "renderDetailEmpty(err.payload.copy);" in load
+    assert "renderError(err, load);" in load
+    assert load.index("renderDetailEmpty(err.payload.copy);") < load.index(
+        "renderError(err, load);"
+    )
+
+
+def test_reflections_workspace_non_copy_errors_fall_through_to_retry_error_surface():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    render_error = _function_source(source, "renderError")
+    load = _function_source(source, "load")
+
+    assert "window.SurfaceState.error({" in render_error
+    assert "retry: true" in render_error
+    assert re.search(
+        r"if \(err\?\.status === 404 && err\?\.payload\?\.copy\) \{"
+        r"[\s\S]*?renderDetailEmpty\(err\.payload\.copy\);"
+        r"[\s\S]*?return;"
+        r"[\s\S]*?\}"
+        r"\s*renderError\(err, load\);",
+        load,
     )
 
 

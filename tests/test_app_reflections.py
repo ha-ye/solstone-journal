@@ -222,11 +222,27 @@ def test_reflections_missing_week_returns_api_404(journal_copy):
 
     page_response = client.get("/app/reflections/20260315")
     api_response = client.get("/app/reflections/api/20260315")
+    body = api_response.get_json()
 
     assert page_response.status_code == 200
     assert b'data-solstone-shell="spa"' in page_response.data
     assert api_response.status_code == 404
-    assert api_response.get_json()["reason_code"] == "file_not_found"
+    assert body["reason_code"] == "file_not_found"
+    assert body["copy"] == {
+        "heading": reflections_copy.DETAIL_EMPTY_HEADING,
+        "desc": reflections_copy.DETAIL_EMPTY_DESC,
+    }
+
+
+def test_reflections_unparseable_week_error_has_no_empty_copy(journal_copy):
+    client = _make_client(journal_copy)
+
+    response = client.get("/app/reflections/api/notaday")
+    body = response.get_json()
+
+    assert response.status_code == 404
+    assert body["reason_code"] == "file_not_found"
+    assert "copy" not in body
 
 
 def test_reflections_raw_returns_markdown(journal_copy):

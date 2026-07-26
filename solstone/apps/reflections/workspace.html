@@ -408,6 +408,16 @@
     renderReflectionGrid(copy);
   }
 
+  function renderDetailEmpty(copy) {
+    content.innerHTML = window.SurfaceState
+      ? window.SurfaceState.empty({
+          icon: window.ConveyIcons.svg('calendar-days'),
+          heading: copy.heading,
+          desc: copy.desc
+        })
+      : `<p>${escapeHtml(copy.heading)}</p><p>${escapeHtml(copy.desc)}</p>`;
+  }
+
   function renderDetail(payload, requestedDay) {
     if (payload.day && requestedDay && payload.day !== requestedDay) {
       window.history.replaceState(
@@ -465,6 +475,10 @@
         renderIndex(payload);
       }
     } catch (err) {
+      if (err?.status === 404 && err?.payload?.copy) {
+        renderDetailEmpty(err.payload.copy);
+        return;
+      }
       renderError(err, load);
     }
   }

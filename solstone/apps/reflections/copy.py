@@ -16,6 +16,8 @@ EMPTY_UNTIL_THEN = (
     "Until then, this page will be empty. "
     "Reflections appear here every week, newest first."
 )
+DETAIL_EMPTY_HEADING = "No reflection for this week"
+DETAIL_EMPTY_DESC = "This week does not have a reflection yet."
 
 SAMPLE_LINK_LABEL = "see a sample reflection →"
 
