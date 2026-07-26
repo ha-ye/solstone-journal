@@ -26,7 +26,7 @@ from solstone.apps.settings import install_copy, transcribe_resource
 from solstone.apps.utils import log_app_action
 from solstone.convey import chat_stream, state
 from solstone.convey import copy as convey_copy
-from solstone.convey.icons import resolve_icon_svg
+from solstone.convey.icons import is_lucide_icon, resolve_icon_svg
 from solstone.convey.reasons import (
     ACTIVITY_INVALID,
     ACTIVITY_NOT_FOUND,
@@ -131,11 +131,30 @@ def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object
         "color": str(data.get("color") or ""),
         "emoji": str(data.get("emoji") or ""),
         "icon": str(data.get("icon") or ""),
-        "icon_svg": resolve_icon_svg(
-            data.get("icon"), str(data.get("emoji") or "")
-        ),
+        "icon_svg": resolve_icon_svg(data.get("icon"), str(data.get("emoji") or "")),
         "muted": bool(data.get("muted", False)),
     }
+
+
+def _public_activity_record(activity: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(activity)
+    icon = payload.get("icon")
+    payload["icon_svg"] = resolve_icon_svg(icon if isinstance(icon, str) else None, "")
+    return payload
+
+
+def _public_activity_records(activities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_public_activity_record(activity) for activity in activities]
+
+
+def _validate_activity_icon(value: object) -> str | None:
+    if value is None:
+        return None
+    if value == "":
+        return ""
+    if not isinstance(value, str) or not is_lucide_icon(value):
+        raise ValueError("icon must be a Lucide name; send emoji in emoji")
+    return value
 
 
 # API keys that can be configured in the env section
@@ -1489,7 +1508,7 @@ def get_default_activities() -> Any:
     try:
         from solstone.think.activities import get_default_activities as _get_defaults
 
-        return jsonify({"activities": _get_defaults()})
+        return jsonify({"activities": _public_activity_records(_get_defaults())})
     except Exception:
         logger.exception("error loading default activities")
         return _settings_operation_failed()
@@ -1518,7 +1537,12 @@ def get_facet_activities(facet_name: str) -> Any:
         attached = _get_facet_activities(facet_name)
         defaults = _get_defaults()
 
-        return jsonify({"activities": attached, "defaults": defaults})
+        return jsonify(
+            {
+                "activities": _public_activity_records(attached),
+                "defaults": _public_activity_records(defaults),
+            }
+        )
 
     except Exception:
         logger.exception("error loading facet activities")
@@ -1537,7 +1561,8 @@ def add_facet_activity(facet_name: str) -> Any:
         name: Display name (required for custom, optional for predefined)
         description: Activity description (optional)
         priority: "high", "normal", or "low" (optional, default: "normal")
-        icon: Emoji icon (optional, for custom activities)
+        emoji: Glyph fallback (optional, for custom activities)
+        icon: Lucide icon name (optional, for custom activities)
     """
     try:
         from solstone.think.activities import (
@@ -1588,6 +1613,11 @@ def add_facet_activity(facet_name: str) -> Any:
                 detail="'name' is required for custom activities",
             )
 
+        try:
+            icon = _validate_activity_icon(data.get("icon"))
+        except ValueError as exc:
+            return error_response(ACTIVITY_INVALID, detail=str(exc))
+
         activity = add_activity_to_facet(
             facet_name,
             activity_id,
@@ -1595,7 +1625,8 @@ def add_facet_activity(facet_name: str) -> Any:
             description=data.get("description"),
             instructions=data.get("instructions"),
             priority=priority,
-            icon=data.get("icon"),
+            emoji=data.get("emoji"),
+            icon=icon,
         )
 
         log_app_action(
@@ -1605,7 +1636,9 @@ def add_facet_activity(facet_name: str) -> Any:
             params={"activity_id": activity_id},
         )
 
-        return jsonify({"success": True, "activity": activity}), 201
+        return jsonify(
+            {"success": True, "activity": _public_activity_record(activity)}
+        ), 201
 
     except Exception:
         logger.exception("error adding activity")
@@ -1621,7 +1654,8 @@ def update_facet_activity(facet_name: str, activity_id: str) -> Any:
         instructions: Detection/level instructions for the LLM
         priority: "high", "normal", or "low"
         name: New name (only for custom activities)
-        icon: New icon (only for custom activities)
+        emoji: New glyph fallback (only for custom activities)
+        icon: New Lucide icon name (only for custom activities)
     """
     try:
         from solstone.think.activities import update_activity_in_facet
@@ -1644,6 +1678,11 @@ def update_facet_activity(facet_name: str, activity_id: str) -> Any:
                 detail="priority must be 'high', 'normal', or 'low'",
             )
 
+        try:
+            icon = _validate_activity_icon(data.get("icon"))
+        except ValueError as exc:
+            return error_response(ACTIVITY_INVALID, detail=str(exc))
+
         activity = update_activity_in_facet(
             facet_name,
             activity_id,
@@ -1651,7 +1690,8 @@ def update_facet_activity(facet_name: str, activity_id: str) -> Any:
             instructions=data.get("instructions"),
             priority=priority,
             name=data.get("name"),
-            icon=data.get("icon"),
+            emoji=data.get("emoji"),
+            icon=icon,
         )
 
         if activity is None:
@@ -1667,7 +1707,7 @@ def update_facet_activity(facet_name: str, activity_id: str) -> Any:
             params={"activity_id": activity_id, "updates": data},
         )
 
-        return jsonify({"success": True, "activity": activity})
+        return jsonify({"success": True, "activity": _public_activity_record(activity)})
 
     except Exception:
         logger.exception("error updating activity")

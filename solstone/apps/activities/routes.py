@@ -12,6 +12,7 @@ from flask import Blueprint, current_app, jsonify, redirect, request, url_for
 
 from solstone.convey import state
 from solstone.convey.date_nav import build_date_nav_index
+from solstone.convey.icons import lucide_svg, resolve_icon_svg
 from solstone.convey.reasons import (
     ACTIVITIES_BUSY,
     ACTIVITY_ALREADY_EXISTS,
@@ -59,7 +60,8 @@ activities_bp = Blueprint(
     url_prefix="/app/activities",
 )
 
-_GENERIC_ACTIVITY_ICON = "\U0001f5d3"
+_GENERIC_ACTIVITY_EMOJI = "\U0001f5d3"
+_GENERIC_ACTIVITY_LUCIDE = "calendar-days"
 
 
 @activities_bp.route("/")
@@ -373,9 +375,13 @@ def _enrich_activity_record(
         activity_def = get_default_activity_by_id(activity_type)
 
     name = activity_def.get("name", activity_type) if activity_def else activity_type
+    emoji = activity_def.get("emoji", "") if activity_def else ""
     icon = activity_def.get("icon", "") if activity_def else ""
-    if not icon:
-        icon = _GENERIC_ACTIVITY_ICON
+    icon_svg = resolve_icon_svg(icon, "") if icon else None
+    if not emoji and not icon_svg:
+        emoji = _GENERIC_ACTIVITY_EMOJI
+        icon = _GENERIC_ACTIVITY_LUCIDE
+        icon_svg = lucide_svg(_GENERIC_ACTIVITY_LUCIDE)
 
     segments = record.get("segments", [])
     start_time = end_time = None
@@ -428,7 +434,9 @@ def _enrich_activity_record(
         "id": record["id"],
         "activity": activity_type,
         "name": name,
+        "emoji": emoji,
         "icon": icon,
+        "icon_svg": icon_svg,
         "facet": facet,
         "description": record.get("description", ""),
         "level_avg": record.get("level_avg", 0.5),

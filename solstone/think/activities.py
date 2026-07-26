@@ -27,6 +27,7 @@ from solstone.think.utils import get_journal, segment_parse
 
 logger = logging.getLogger(__name__)
 ANTICIPATION_FUZZY_THRESHOLD = 0.85
+LUCIDE_ICON_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 
 # ---------------------------------------------------------------------------
 # Default Activities
@@ -40,7 +41,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "meeting",
         "name": "Meetings",
         "description": "Video calls, in-person meetings, and conferences",
-        "icon": "📅",
+        "emoji": "📅",
+        "icon": "users",
         "always_on": True,
         "instructions": (
             "Levels: high=actively speaking/presenting, medium=listening attentively,"
@@ -52,70 +54,80 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "call",
         "name": "call",
         "description": "a call you have planned",
-        "icon": "📞",
+        "emoji": "📞",
+        "icon": "phone",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "deadline",
         "name": "deadline",
         "description": "a deadline you are working toward",
-        "icon": "⏰",
+        "emoji": "⏰",
+        "icon": "alarm-clock",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "appointment",
         "name": "appointment",
         "description": "an appointment on your calendar",
-        "icon": "📌",
+        "emoji": "📌",
+        "icon": "pin",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "event",
         "name": "event",
         "description": "an event you plan to attend",
-        "icon": "🎟️",
+        "emoji": "🎟️",
+        "icon": "ticket",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "travel",
         "name": "travel",
         "description": "travel you have planned",
-        "icon": "✈️",
+        "emoji": "✈️",
+        "icon": "plane",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "reminder",
         "name": "reminder",
         "description": "a reminder for something upcoming",
-        "icon": "🔔",
+        "emoji": "🔔",
+        "icon": "bell",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "errand",
         "name": "errand",
         "description": "an errand you plan to do",
-        "icon": "🧾",
+        "emoji": "🧾",
+        "icon": "receipt",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "celebration",
         "name": "celebration",
         "description": "a celebration on the calendar",
-        "icon": "🎉",
+        "emoji": "🎉",
+        "icon": "party-popper",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "doctor_appointment",
         "name": "doctor appointment",
         "description": "a medical appointment on your calendar",
-        "icon": "🩺",
+        "emoji": "🩺",
+        "icon": "stethoscope",
         "instructions": "Scheduled events emitted by talent/schedule.md; not detected from sense data.",
     },
     {
         "id": "coding",
         "name": "Coding",
         "description": "Programming, code review, and debugging",
-        "icon": "💻",
+        "emoji": "💻",
+        "icon": "code-xml",
         "instructions": (
             "Levels: high=writing or debugging code, medium=reading/reviewing code,"
             " low=IDE or editor open but not focused."
@@ -127,7 +139,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "browsing",
         "name": "Browsing",
         "description": "Web browsing, research, and reading online",
-        "icon": "🌐",
+        "emoji": "🌐",
+        "icon": "globe",
         "instructions": (
             "Levels: high=actively navigating/researching, medium=reading a page,"
             " low=browser open but idle."
@@ -138,7 +151,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "email",
         "name": "Email",
         "description": "Email reading and composition",
-        "icon": "📧",
+        "emoji": "📧",
+        "icon": "mail",
         "always_on": True,
         "instructions": (
             "Levels: high=composing or actively reading email,"
@@ -150,7 +164,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "messaging",
         "name": "Messaging",
         "description": "Chat, Slack, Discord, and text messaging",
-        "icon": "💬",
+        "emoji": "💬",
+        "icon": "messages-square",
         "always_on": True,
         "instructions": (
             "Levels: high=active conversation, medium=reading messages,"
@@ -162,7 +177,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "ai_conversation",
         "name": "AI Conversation",
         "description": "Conversations with AI assistants like ChatGPT, Claude, and Gemini",
-        "icon": "🤖",
+        "emoji": "🤖",
+        "icon": "bot",
         "instructions": (
             "Levels: high=actively prompting and reading responses,"
             " medium=reviewing AI output or refining prompts,"
@@ -177,7 +193,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "writing",
         "name": "Writing",
         "description": "Documents, notes, and long-form writing",
-        "icon": "✍️",
+        "emoji": "✍️",
+        "icon": "pencil-line",
         "instructions": (
             "Levels: high=actively composing text, medium=editing/revising,"
             " low=document open but not being edited."
@@ -188,7 +205,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "reading",
         "name": "Reading",
         "description": "Books, PDFs, articles, highlights, and documentation",
-        "icon": "📖",
+        "emoji": "📖",
+        "icon": "book-open",
         "instructions": (
             "Levels: high=focused reading, medium=skimming content,"
             " low=document open but attention elsewhere."
@@ -201,7 +219,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "video",
         "name": "Video",
         "description": "Watching videos and streaming content",
-        "icon": "🎬",
+        "emoji": "🎬",
+        "icon": "clapperboard",
         "instructions": (
             "Levels: high=actively watching, medium=video playing while"
             " doing something else, low=video paused or minimized."
@@ -212,7 +231,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "gaming",
         "name": "Gaming",
         "description": "Games and entertainment",
-        "icon": "🎮",
+        "emoji": "🎮",
+        "icon": "gamepad-2",
         "instructions": (
             "Levels: high=actively playing, medium=in menus or waiting,"
             " low=game open but tabbed out."
@@ -223,7 +243,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "social",
         "name": "Social Media",
         "description": "Social media browsing and interaction",
-        "icon": "📱",
+        "emoji": "📱",
+        "icon": "share-2",
         "instructions": (
             "Levels: high=posting or actively engaging, medium=scrolling feed,"
             " low=social app open but idle."
@@ -234,7 +255,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "planning",
         "name": "Planning",
         "description": "Scheduling, calendar management, meeting preparation, and agenda setting",
-        "icon": "📋",
+        "emoji": "📋",
+        "icon": "calendar-check",
         "instructions": (
             "Levels: high=actively scheduling or preparing agendas,"
             " medium=reviewing calendar or event details,"
@@ -250,7 +272,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "productivity",
         "name": "Productivity",
         "description": "Spreadsheets, slides, and task management",
-        "icon": "📊",
+        "emoji": "📊",
+        "icon": "chart-column",
         "instructions": (
             "Levels: high=actively editing or organizing, medium=reviewing data,"
             " low=app open but not focused."
@@ -262,7 +285,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "terminal",
         "name": "Terminal",
         "description": "Command line and shell sessions",
-        "icon": "⌨️",
+        "emoji": "⌨️",
+        "icon": "terminal",
         "instructions": (
             "Levels: high=running commands or scripts, medium=reading output,"
             " low=terminal open but idle."
@@ -274,7 +298,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "design",
         "name": "Design",
         "description": "Design tools and image editing",
-        "icon": "🎨",
+        "emoji": "🎨",
+        "icon": "palette",
         "instructions": (
             "Levels: high=actively creating or editing, medium=reviewing designs,"
             " low=design tool open but idle."
@@ -285,7 +310,8 @@ DEFAULT_ACTIVITIES: list[dict[str, str]] = [
         "id": "music",
         "name": "Music",
         "description": "Music listening and audio",
-        "icon": "🎵",
+        "emoji": "🎵",
+        "icon": "music",
         "instructions": (
             "Levels: high=actively choosing or browsing music,"
             " medium=playlist running while working, low=ambient background audio."
@@ -302,6 +328,27 @@ def get_default_activities() -> list[dict[str, str]]:
     Returns a copy to prevent mutation.
     """
     return [dict(a) for a in DEFAULT_ACTIVITIES]
+
+
+def _lucide_name_shaped(value: object) -> bool:
+    return isinstance(value, str) and bool(LUCIDE_ICON_NAME_RE.fullmatch(value))
+
+
+def _normalized_icon_fields(entry: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return canonical (emoji, icon) fields for a stored activity config entry."""
+    emoji = entry.get("emoji")
+    icon = entry.get("icon")
+
+    if not isinstance(emoji, str) or not emoji:
+        emoji = None
+
+    if not isinstance(icon, str) or not icon:
+        return emoji, None
+
+    if _lucide_name_shaped(icon):
+        return emoji, icon
+
+    return emoji or icon, None
 
 
 def _get_activities_path(facet: str) -> Path:
@@ -358,7 +405,8 @@ def get_facet_activities(facet: str) -> list[dict[str, Any]]:
         - id: Activity identifier
         - name: Display name
         - description: Activity description
-        - icon: Emoji icon (if predefined)
+        - emoji: Glyph fallback
+        - icon: Lucide icon name
         - priority: "high", "normal", or "low"
         - custom: True if user-created (not in defaults)
         - always_on: True if auto-included from defaults
@@ -395,6 +443,8 @@ def get_facet_activities(facet: str) -> list[dict[str, Any]]:
         else:
             activity = {"id": activity_id, "custom": True}
 
+        emoji, icon = _normalized_icon_fields(fa)
+
         # Apply facet overrides
         if "name" in fa:
             activity["name"] = fa["name"]
@@ -402,8 +452,10 @@ def get_facet_activities(facet: str) -> list[dict[str, Any]]:
             activity["description"] = fa["description"]
         if "priority" in fa:
             activity["priority"] = fa["priority"]
-        if "icon" in fa:
-            activity["icon"] = fa["icon"]
+        if emoji is not None:
+            activity["emoji"] = emoji
+        if icon is not None:
+            activity["icon"] = icon
         if "instructions" in fa:
             activity["instructions"] = fa["instructions"]
 
@@ -437,7 +489,8 @@ def save_facet_activities(facet: str, activities: list[dict[str, Any]]) -> None:
             - description: Activity description
             Optional for all:
             - priority: "high", "normal", or "low"
-            - icon: Emoji icon
+            - emoji: Glyph fallback
+            - icon: Lucide icon name
             - instructions: Detection/level instructions for the LLM
     """
     # Build lookup for defaults to determine what needs to be stored
@@ -482,12 +535,72 @@ def save_facet_activities(facet: str, activities: list[dict[str, Any]]) -> None:
                 entry["instructions"] = activity["instructions"]
             if activity.get("priority"):
                 entry["priority"] = activity["priority"]
+            if activity.get("emoji"):
+                entry["emoji"] = activity["emoji"]
             if activity.get("icon"):
                 entry["icon"] = activity["icon"]
 
         entries.append(entry)
 
     _save_activities_jsonl(facet, entries)
+
+
+def migrate_custom_activity_icons_to_emoji(
+    *, dry_run: bool = False
+) -> dict[str, int | bool]:
+    """Migrate legacy custom activity glyphs from icon to emoji.
+
+    Stored custom activities used to treat ``icon`` as an emoji glyph. The
+    current shape reserves ``icon`` for Lucide names and stores glyphs in
+    ``emoji``. Predefined activities are intentionally left alone because
+    public write paths never stored icon overrides for them.
+    """
+    defaults_by_id = {a["id"]: a for a in DEFAULT_ACTIVITIES}
+    facets_dir = Path(get_journal()) / "facets"
+    result: dict[str, int | bool] = {
+        "dry_run": dry_run,
+        "files_scanned": 0,
+        "files_changed": 0,
+        "records_changed": 0,
+    }
+    if not facets_dir.exists():
+        return result
+
+    for path in sorted(facets_dir.glob("*/activities/activities.jsonl")):
+        facet = path.parent.parent.name
+        records = _load_activities_jsonl(facet)
+        result["files_scanned"] = int(result["files_scanned"]) + 1
+        changed = False
+
+        for record in records:
+            activity_id = record.get("id")
+            if not activity_id:
+                continue
+            if not (record.get("custom") or activity_id not in defaults_by_id):
+                continue
+
+            record_changed = False
+            emoji, icon = _normalized_icon_fields(record)
+            if emoji is not None and record.get("emoji") != emoji:
+                record["emoji"] = emoji
+                record_changed = True
+            if icon is None and "icon" in record:
+                record.pop("icon", None)
+                record_changed = True
+            elif icon is not None and record.get("icon") != icon:
+                record["icon"] = icon
+                record_changed = True
+
+            if record_changed:
+                changed = True
+                result["records_changed"] = int(result["records_changed"]) + 1
+
+        if changed:
+            result["files_changed"] = int(result["files_changed"]) + 1
+            if not dry_run:
+                _save_activities_jsonl(facet, records)
+
+    return result
 
 
 def get_default_activity_by_id(activity_id: str) -> dict[str, Any] | None:
@@ -539,6 +652,7 @@ def add_activity_to_facet(
     description: str | None = None,
     instructions: str | None = None,
     priority: str = "normal",
+    emoji: str | None = None,
     icon: str | None = None,
 ) -> dict[str, Any]:
     """Add an activity to a facet.
@@ -553,7 +667,8 @@ def add_activity_to_facet(
         description: Activity description
         instructions: Detection/level instructions for the LLM
         priority: "high", "normal", or "low"
-        icon: Emoji icon
+        emoji: Glyph fallback
+        icon: Lucide icon name
 
     Returns:
         The added activity dict
@@ -589,6 +704,8 @@ def add_activity_to_facet(
             activity["instructions"] = instructions
         if priority and priority != "normal":
             activity["priority"] = priority
+        if emoji:
+            activity["emoji"] = emoji
         if icon:
             activity["icon"] = icon
 
@@ -630,6 +747,7 @@ def update_activity_in_facet(
     instructions: str | None = None,
     priority: str | None = None,
     name: str | None = None,
+    emoji: str | None = None,
     icon: str | None = None,
 ) -> dict[str, Any] | None:
     """Update an activity's configuration in a facet.
@@ -641,7 +759,8 @@ def update_activity_in_facet(
         instructions: New detection/level instructions (None to keep existing)
         priority: New priority (None to keep existing)
         name: New name - only applies to custom activities
-        icon: New icon - only applies to custom activities
+        emoji: New glyph fallback - only applies to custom activities
+        icon: New Lucide icon name - only applies to custom activities
 
     Returns:
         Updated activity dict, or None if not found
@@ -670,12 +789,20 @@ def update_activity_in_facet(
                 else:
                     activity["priority"] = priority
 
-            # Only allow name/icon changes for custom activities
+            # Only allow name/emoji/icon changes for custom activities
             if activity.get("custom") or activity_id not in defaults_by_id:
                 if name is not None:
                     activity["name"] = name
+                if emoji is not None:
+                    if emoji:
+                        activity["emoji"] = emoji
+                    else:
+                        activity.pop("emoji", None)
                 if icon is not None:
-                    activity["icon"] = icon
+                    if icon:
+                        activity["icon"] = icon
+                    else:
+                        activity.pop("icon", None)
 
             break
 

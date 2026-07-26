@@ -8,10 +8,12 @@ import json
 import pytest
 
 from solstone.apps.activities.routes import (
-    _GENERIC_ACTIVITY_ICON,
+    _GENERIC_ACTIVITY_EMOJI,
+    _GENERIC_ACTIVITY_LUCIDE,
     _enrich_activity_record,
     activities_bp,
 )
+from solstone.convey.icons import lucide_svg
 
 
 @pytest.fixture
@@ -63,7 +65,9 @@ class TestActivitiesDayRoutes:
         data = resp.get_json()["items"]
         coding = next(a for a in data if a["activity"] == "coding")
         assert coding["name"] != ""
+        assert coding["emoji"] != ""
         assert coding["icon"] != ""
+        assert "<svg" in coding["icon_svg"]
 
     def test_returns_mixed_anticipated_and_realized_records(self, activities_client):
         resp = activities_client.get(
@@ -96,23 +100,31 @@ class TestActivitiesDayRoutes:
         assert call["endTime"] == "2026-04-22T15:30:00"
         assert call["duration_minutes"] == 90
         assert call["name"] == "call"
-        assert call["icon"] == "📞"
+        assert call["emoji"] == "📞"
+        assert call["icon"] == "phone"
+        assert call["icon_svg"] == lucide_svg("phone")
 
         deadline = by_id["anticipated_deadline_170000_0422"]
         assert deadline["startTime"] == "2026-04-22T17:00:00"
         assert "endTime" not in deadline
         assert "duration_minutes" not in deadline
-        assert deadline["icon"] == "⏰"
+        assert deadline["emoji"] == "⏰"
+        assert deadline["icon"] == "alarm-clock"
+        assert deadline["icon_svg"] == lucide_svg("alarm-clock")
 
         appointment = by_id["anticipated_appointment_000000_0422"]
         assert "startTime" not in appointment
         assert "endTime" not in appointment
         assert "duration_minutes" not in appointment
-        assert appointment["icon"] == "📌"
+        assert appointment["emoji"] == "📌"
+        assert appointment["icon"] == "pin"
+        assert appointment["icon_svg"] == lucide_svg("pin")
 
         unknown = by_id["anticipated_made_up_type_000000_0422"]
         assert unknown["name"] == "made_up_type"
-        assert unknown["icon"] == _GENERIC_ACTIVITY_ICON
+        assert unknown["emoji"] == _GENERIC_ACTIVITY_EMOJI
+        assert unknown["icon"] == _GENERIC_ACTIVITY_LUCIDE
+        assert unknown["icon_svg"] == lucide_svg(_GENERIC_ACTIVITY_LUCIDE)
         assert "duration_minutes" not in unknown
 
     def test_schedule_activity_defaults_are_lowercase(self):
@@ -136,17 +148,17 @@ class TestActivitiesDayRoutes:
             assert activity["name"] == activity["name"].lower()
 
     @pytest.mark.parametrize(
-        ("activity_id", "expected_name", "expected_icon"),
+        ("activity_id", "expected_name", "expected_emoji", "expected_icon"),
         [
-            ("call", "call", "📞"),
-            ("deadline", "deadline", "⏰"),
-            ("appointment", "appointment", "📌"),
-            ("event", "event", "🎟️"),
-            ("travel", "travel", "✈️"),
-            ("reminder", "reminder", "🔔"),
-            ("errand", "errand", "🧾"),
-            ("celebration", "celebration", "🎉"),
-            ("doctor_appointment", "doctor appointment", "🩺"),
+            ("call", "call", "📞", "phone"),
+            ("deadline", "deadline", "⏰", "alarm-clock"),
+            ("appointment", "appointment", "📌", "pin"),
+            ("event", "event", "🎟️", "ticket"),
+            ("travel", "travel", "✈️", "plane"),
+            ("reminder", "reminder", "🔔", "bell"),
+            ("errand", "errand", "🧾", "receipt"),
+            ("celebration", "celebration", "🎉", "party-popper"),
+            ("doctor_appointment", "doctor appointment", "🩺", "stethoscope"),
         ],
     )
     def test_enrich_activity_record_uses_global_default_for_schedule_activity(
@@ -154,6 +166,7 @@ class TestActivitiesDayRoutes:
         activities_client,
         activity_id,
         expected_name,
+        expected_emoji,
         expected_icon,
     ):
         record = {
@@ -170,7 +183,9 @@ class TestActivitiesDayRoutes:
 
         assert enriched is not None
         assert enriched["name"] == expected_name
+        assert enriched["emoji"] == expected_emoji
         assert enriched["icon"] == expected_icon
+        assert enriched["icon_svg"] == lucide_svg(expected_icon)
         assert enriched["duration_minutes"] == 30
 
     def test_enrich_activity_record_uses_generic_icon_for_unknown_activity(
@@ -191,7 +206,81 @@ class TestActivitiesDayRoutes:
 
         assert enriched is not None
         assert enriched["name"] == "made_up_type"
-        assert enriched["icon"] == _GENERIC_ACTIVITY_ICON
+        assert enriched["emoji"] == _GENERIC_ACTIVITY_EMOJI
+        assert enriched["icon"] == _GENERIC_ACTIVITY_LUCIDE
+        assert enriched["icon_svg"] == lucide_svg(_GENERIC_ACTIVITY_LUCIDE)
+        assert "duration_minutes" not in enriched
+
+    @pytest.mark.parametrize(
+        ("activity_id", "stored", "expected_emoji", "expected_icon"),
+        [
+            (
+                "custom_absent",
+                {
+                    "id": "custom_absent",
+                    "custom": True,
+                    "name": "Custom absent",
+                    "emoji": "🎯",
+                },
+                "🎯",
+                "",
+            ),
+            (
+                "custom_unknown",
+                {
+                    "id": "custom_unknown",
+                    "custom": True,
+                    "name": "Custom unknown",
+                    "emoji": "🎲",
+                    "icon": "not-real",
+                },
+                "🎲",
+                "not-real",
+            ),
+            (
+                "custom_legacy",
+                {
+                    "id": "custom_legacy",
+                    "custom": True,
+                    "name": "Custom legacy",
+                    "icon": "🎨",
+                },
+                "🎨",
+                "",
+            ),
+        ],
+    )
+    def test_enrich_activity_record_falls_back_to_stored_emoji(
+        self,
+        monkeypatch,
+        tmp_path,
+        activity_id,
+        stored,
+        expected_emoji,
+        expected_icon,
+    ):
+        activities_dir = tmp_path / "facets" / "work" / "activities"
+        activities_dir.mkdir(parents=True)
+        activities_file = activities_dir / "activities.jsonl"
+        activities_file.write_text(json.dumps(stored) + "\n", encoding="utf-8")
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+        record = {
+            "id": f"{activity_id}_090000_0422",
+            "activity": activity_id,
+            "target_date": "2026-04-22",
+            "start": None,
+            "end": None,
+            "description": "custom planned item",
+            "source": "anticipated",
+        }
+
+        enriched = _enrich_activity_record(record, "work", "20260422")
+
+        assert enriched is not None
+        assert enriched["emoji"] == expected_emoji
+        assert enriched["icon"] == expected_icon
+        assert enriched["icon_svg"] is None
         assert "duration_minutes" not in enriched
 
     def test_enrich_activity_record_omits_duration_when_end_before_start(

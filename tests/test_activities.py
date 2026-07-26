@@ -25,6 +25,8 @@ def test_get_default_activities():
         assert "id" in activity
         assert "name" in activity
         assert "description" in activity
+        assert "emoji" in activity
+        assert "icon" in activity
 
     # Check some known activities exist
     ids = [a["id"] for a in defaults]
@@ -37,6 +39,16 @@ def test_get_default_activities():
         assert "instructions" in activity, f"{activity['id']} missing instructions"
         assert isinstance(activity["instructions"], str)
         assert len(activity["instructions"]) > 0
+
+
+def test_default_activities_have_canonical_icon_shape():
+    """Default activities keep emoji fallback and explicit Lucide icon name."""
+    from solstone.think.activities import DEFAULT_ACTIVITIES, LUCIDE_ICON_NAME_RE
+
+    assert len(DEFAULT_ACTIVITIES) == 25
+    for activity in DEFAULT_ACTIVITIES:
+        assert activity["emoji"]
+        assert LUCIDE_ICON_NAME_RE.fullmatch(activity["icon"])
 
 
 def test_get_default_activities_returns_copy():
@@ -204,6 +216,8 @@ def test_facet_activities_roundtrip(monkeypatch):
                 "description": "A custom activity",
                 "instructions": "Custom activity detection hints",
                 "custom": True,
+                "emoji": "🎯",
+                "icon": "sparkles",
             },
         ]
         save_facet_activities("test_facet", activities)
@@ -243,6 +257,91 @@ def test_facet_activities_roundtrip(monkeypatch):
         assert custom["custom"] is True
         assert custom["name"] == "Custom"
         assert custom["instructions"] == "Custom activity detection hints"
+        assert custom["emoji"] == "🎯"
+        assert custom["icon"] == "sparkles"
+
+
+def test_get_facet_activities_normalizes_legacy_custom_icon_without_writing(
+    monkeypatch,
+):
+    """Legacy custom records with glyph in icon are normalized in memory only."""
+    from solstone.think.activities import get_facet_activities
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+        activities_dir = Path(tmpdir) / "facets" / "work" / "activities"
+        activities_dir.mkdir(parents=True)
+        activities_file = activities_dir / "activities.jsonl"
+        activities_file.write_text(
+            json.dumps(
+                {
+                    "id": "legacy_custom",
+                    "custom": True,
+                    "name": "Legacy custom",
+                    "description": "Old stored shape",
+                    "icon": "🎯",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        activities = get_facet_activities("work")
+
+        legacy = next(
+            activity for activity in activities if activity["id"] == "legacy_custom"
+        )
+        assert legacy["emoji"] == "🎯"
+        assert "icon" not in legacy
+        assert '"icon":' in activities_file.read_text(encoding="utf-8")
+        assert '"emoji":' not in activities_file.read_text(encoding="utf-8")
+
+
+def test_migrate_custom_activity_icons_to_emoji_is_idempotent(monkeypatch):
+    from solstone.think.activities import migrate_custom_activity_icons_to_emoji
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setenv("SOLSTONE_JOURNAL", tmpdir)
+        activities_dir = Path(tmpdir) / "facets" / "work" / "activities"
+        activities_dir.mkdir(parents=True)
+        activities_file = activities_dir / "activities.jsonl"
+        activities_file.write_text(
+            json.dumps(
+                {
+                    "id": "legacy_custom",
+                    "custom": True,
+                    "name": "Legacy custom",
+                    "description": "Old stored shape",
+                    "icon": "🎯",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = migrate_custom_activity_icons_to_emoji()
+        second = migrate_custom_activity_icons_to_emoji()
+
+        assert first["files_scanned"] == 1
+        assert first["files_changed"] == 1
+        assert first["records_changed"] == 1
+        assert second["files_scanned"] == 1
+        assert second["files_changed"] == 0
+        assert second["records_changed"] == 0
+
+        records = [
+            json.loads(line)
+            for line in activities_file.read_text(encoding="utf-8").splitlines()
+        ]
+        assert records == [
+            {
+                "id": "legacy_custom",
+                "custom": True,
+                "name": "Legacy custom",
+                "description": "Old stored shape",
+                "emoji": "🎯",
+            }
+        ]
 
 
 def test_add_activity_to_facet(monkeypatch):

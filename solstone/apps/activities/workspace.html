@@ -45,12 +45,34 @@
   border-radius: 6px;
   display: flex;
   align-items: flex-start;
+  gap: 0.3em;
   padding: 2px 6px;
   font-size: 0.75em;
   overflow: hidden;
   white-space: nowrap;
   transition: filter 0.15s ease;
   box-shadow: none;
+}
+
+.occ-activity-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.occ-activity-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
+}
+
+.occ-activity-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 h1 {
@@ -122,8 +144,19 @@ h1 {
 }
 
 .activity-card .act-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 1.3em;
   flex-shrink: 0;
+  line-height: 1;
+}
+
+.activity-card .act-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .activity-card .act-body {
@@ -194,8 +227,26 @@ h1 {
 }
 
 .activity-detail-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
   margin: 0 0 0.25em 0;
   font-size: 1.3em;
+}
+
+.activity-detail-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.activity-detail-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .activity-detail-header .ad-subtitle {
@@ -716,12 +767,16 @@ button.activity-detail-back {
       const top = ((sMin - startHour * 60) / totalMinutes) * 100;
       const height = Math.max((eMin - sMin) / totalMinutes * 100, 0.4);
       const color = levelColor(a.level_avg);
-      const icon = a.icon || '🗓️';
-      html += `<a class='occ occ-activity' data-activity-id='${escapeHtml(a.id)}' tabindex='0' role='button' style='top:${top}%;height:${height}%;left:0;width:100%;border-color:${color};background:${color}40' title='${escapeHtml(icon + " " + a.name)}'>${escapeHtml(icon)} ${escapeHtml(a.name)}</a>`;
+      const iconHtml = activityIconHtml(a);
+      html += `<a class='occ occ-activity' data-activity-id='${escapeHtml(a.id)}' tabindex='0' role='button' style='top:${top}%;height:${height}%;left:0;width:100%;border-color:${color};background:${color}40' title='${escapeHtml(a.name)}'><span class="occ-activity-icon" aria-hidden="true">${iconHtml}</span><span class="occ-activity-name">${escapeHtml(a.name)}</span></a>`;
     });
 
     html += '</section>';
     div.innerHTML = html;
+  }
+
+  function activityIconHtml(activity) {
+    return activity.icon_svg || escapeHtml(activity.emoji || '');
   }
 
   // ── Activities cards ──
@@ -741,9 +796,9 @@ button.activity-detail-back {
       const lvl = levelLabel(a.level_avg);
       const timeStr = a.startTime ? fmtTime(a.startTime) : '';
       const color = levelColor(a.level_avg);
-      const icon = a.icon || '🗓️';
+      const iconHtml = activityIconHtml(a);
       html += `<div class="activity-card" data-activity-id="${escapeHtml(a.id)}" tabindex="0" role="button" style="border-left-color:${color}">`;
-      html += `<span class="act-icon">${escapeHtml(icon)}</span>`;
+      html += `<span class="act-icon" aria-hidden="true">${iconHtml}</span>`;
       html += `<div class="act-body">`;
       html += `<div class="act-name">${escapeHtml(a.name)}</div>`;
       if (a.description) html += `<div class="act-desc">${escapeHtml(a.description)}</div>`;
@@ -783,12 +838,12 @@ button.activity-detail-back {
     const timeRange = a.startTime
       ? `${fmtTime(a.startTime)}${a.endTime ? ' – ' + fmtTime(a.endTime) : ''}`
       : '';
-    const icon = a.icon || '🗓️';
+    const iconHtml = activityIconHtml(a);
 
     let html = '';
     html += `<button type="button" class="activity-detail-back">← back to day</button>`;
     html += `<div class="activity-detail-header">`;
-    html += `<h2>${escapeHtml(icon)} ${escapeHtml(a.name)}</h2>`;
+    html += `<h2><span class="activity-detail-icon" aria-hidden="true">${iconHtml}</span><span>${escapeHtml(a.name)}</span></h2>`;
     html += `<div class="ad-subtitle">${escapeHtml(a.facet)}</div>`;
     html += `</div>`;
 

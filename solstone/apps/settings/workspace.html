@@ -1601,9 +1601,19 @@ input:checked + .slider:before {
 }
 
 .activity-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 1.5em;
   line-height: 1;
   flex-shrink: 0;
+}
+
+.activity-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .activity-info {
@@ -1714,7 +1724,18 @@ input:checked + .slider:before {
 }
 
 .activity-chip-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 1.1em;
+  line-height: 1;
+}
+
+.activity-chip-icon svg {
+  width: 1em;
+  height: 1em;
+  stroke-width: 1.5;
+  stroke: currentColor;
+  fill: none;
 }
 
 .activities-custom {
@@ -5829,7 +5850,7 @@ function renderActivities(data) {
     countEl.textContent = `(${attached.length})`;
     attachedList.innerHTML = attached.map(a => `
       <div class="activity-item" data-id="${a.id}">
-        <span class="activity-icon">${a.icon || '📌'}</span>
+        <span class="activity-icon" aria-hidden="true">${a.icon_svg || escapeHtml(a.emoji || '')}</span>
         <div class="activity-info">
           <div class="activity-name">${escapeHtml(a.name)}</div>
           <div class="activity-desc activity-desc-editable" data-id="${a.id}" title="double-click to edit">${escapeHtml(a.description) || '<em>no description</em>'}</div>
@@ -5861,7 +5882,7 @@ function renderActivities(data) {
       const isAttached = attachedIds.has(d.id);
       return `
         <span class="activity-chip ${isAttached ? 'activity-chip-attached' : ''}" data-id="${d.id}" ${isAttached ? '' : 'tabindex="0" role="button" title="click to add"'}>
-          <span class="activity-chip-icon">${d.icon || '📌'}</span>
+          <span class="activity-chip-icon" aria-hidden="true">${d.icon_svg || escapeHtml(d.emoji || '')}</span>
           <span>${escapeHtml(d.name)}</span>
         </span>
       `;

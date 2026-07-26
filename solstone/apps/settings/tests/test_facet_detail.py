@@ -9,6 +9,7 @@ from pathlib import Path
 from solstone.apps.settings import copy as settings_copy
 from solstone.convey import create_app
 from solstone.convey.icons import lucide_svg
+from solstone.convey.reasons import ACTIVITY_INVALID
 
 
 def _write_facet(
@@ -150,6 +151,69 @@ def test_settings_facets_api_returns_icon_override_svg(settings_env):
     facet = response.get_json()["facets"][0]
     assert facet["icon"] == "brain"
     assert facet["icon_svg"] == lucide_svg("brain")
+
+
+def test_settings_activity_post_accepts_emoji_and_lucide_icon(settings_env):
+    journal, client = _settings_client(settings_env)
+    _write_facet(journal, "activity-facet", title="Activity Facet")
+
+    response = client.post(
+        "/app/settings/api/facet/activity-facet/activities",
+        json={
+            "activity_id": "deep_work",
+            "name": "Deep work",
+            "description": "Focused custom work",
+            "emoji": "🎯",
+            "icon": "target",
+        },
+    )
+
+    assert response.status_code == 201
+    activity = response.get_json()["activity"]
+    assert activity["emoji"] == "🎯"
+    assert activity["icon"] == "target"
+    assert activity["icon_svg"] == lucide_svg("target")
+
+
+def test_settings_activity_post_rejects_emoji_in_icon(settings_env):
+    journal, client = _settings_client(settings_env)
+    _write_facet(journal, "activity-facet", title="Activity Facet")
+
+    response = client.post(
+        "/app/settings/api/facet/activity-facet/activities",
+        json={
+            "activity_id": "bad_icon",
+            "name": "Bad icon",
+            "emoji": "🎯",
+            "icon": "🎯",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == ACTIVITY_INVALID.code
+
+
+def test_settings_activity_put_rejects_emoji_in_icon(settings_env):
+    journal, client = _settings_client(settings_env)
+    _write_facet(journal, "activity-facet", title="Activity Facet")
+    created = client.post(
+        "/app/settings/api/facet/activity-facet/activities",
+        json={
+            "activity_id": "deep_work",
+            "name": "Deep work",
+            "emoji": "🎯",
+            "icon": "target",
+        },
+    )
+    assert created.status_code == 201
+
+    response = client.put(
+        "/app/settings/api/facet/activity-facet/activities/deep_work",
+        json={"icon": "🎯"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == ACTIVITY_INVALID.code
 
 
 def test_settings_index_has_hidden_guard():
