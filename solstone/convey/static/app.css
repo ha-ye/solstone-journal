@@ -161,13 +161,6 @@ body.has-app-bar .workspace {
     margin-left: 0 !important;
   }
 
-  .app-bar {
-    left: 8px;
-    right: 8px;
-    max-width: none;
-    width: auto;
-  }
-
   .menu-backdrop {
     position: fixed;
     inset: 0;
@@ -1897,7 +1890,12 @@ body.menu-all .menu-bar {
 }
 
 @media (max-width: 768px) {
+  /* Mobile: the base .app-bar positioning above re-expands the side inset by
+     source order, so re-assert the mobile inset here, below the base fixed
+     app-bar rule. */
   .app-bar {
+    left: 8px;
+    right: 8px;
     padding: 10px;
     gap: 10px;
   }
