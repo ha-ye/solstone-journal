@@ -24,7 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from scripts.check_extras_consistency import WORKSPACE_SOURCES
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.check_extras_consistency import WORKSPACE_SOURCES  # noqa: E402
 from scripts.check_release_preflight import (
     LANE_TOOL_KEYS,
     check_lane_tool_evidence,
