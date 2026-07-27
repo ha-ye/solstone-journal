@@ -88,7 +88,11 @@ from scripts.release_install_smoke import (
 )
 from scripts.release_ledger import (
     LedgerError,
+    RetainedLedgerSchema,
+    current_retained_ledger_schema,
     read_retained_ledger,
+    resolve_retained_ledger_schema,
+    retained_ledger_schema_declares_nvattest,
     validate_native_members_against_release_dir,
     write_ledger,
 )
@@ -158,6 +162,8 @@ SPEAKERS_ANALYZE_WORKSPACE_PACKAGE = "solstone-core-speakers-analyze"
 RESERVED_CANDIDATE_DIRNAME = "release-candidate"
 RELEASE_CANDIDATE_DISCARD_RETAINED_ENV = "RELEASE_CANDIDATE_DISCARD_RETAINED"
 RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV = "RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG"
+RETAINED_CANDIDATE_VALID_HEADING = "retained-candidate-valid"
+RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING = "retained-pre-nvattest-candidate-valid"
 
 DistPreflightOperation = Literal["cleanup", "inventory"]
 DistState = Literal["missing", "directory", "unsafe"]
@@ -2571,11 +2577,39 @@ def _nvattest_ledger_payload(
     }
 
 
+def _schema_absent_nvattest_failure(version: int) -> Failure:
+    return _failure(
+        "retained ledger schema does not declare nvattest",
+        expected="schema with nvattest binding",
+        actual=f"schema_version {version}",
+        repair="bash scripts/release.sh --recover",
+    )
+
+
+def _resolve_driver_retained_ledger_schema(
+    ledger: Mapping[str, Any],
+) -> tuple[int, RetainedLedgerSchema]:
+    try:
+        return resolve_retained_ledger_schema(ledger)
+    except LedgerError as exc:
+        raise DriverError(exc.failures) from None
+
+
+def _require_nvattest_schema(
+    ledger: Mapping[str, Any],
+) -> tuple[int, RetainedLedgerSchema]:
+    version, schema = _resolve_driver_retained_ledger_schema(ledger)
+    if not retained_ledger_schema_declares_nvattest(schema):
+        raise DriverError([_schema_absent_nvattest_failure(version)])
+    return version, schema
+
+
 def _retained_support_binding_failures(
     *,
     evidence_dir: Path,
     ledger: Mapping[str, Any],
 ) -> list[Failure]:
+    _require_nvattest_schema(ledger)
     failures: list[Failure] = []
     nvattest = ledger.get("nvattest")
     if not isinstance(nvattest, Mapping):
@@ -2637,6 +2671,7 @@ def _retained_authority_binding(
     release_dir: Path,
     ledger: Mapping[str, Any],
 ) -> tuple[bytes | None, list[Failure]]:
+    _require_nvattest_schema(ledger)
     names, name_failures = _ledger_candidate_file_names(ledger)
     if name_failures:
         return None, name_failures
@@ -2698,6 +2733,7 @@ def _validate_retained_nvattest_binding(
     release_dir: Path,
     version: str,
 ) -> dict[str, str]:
+    _require_nvattest_schema(ledger)
     failures: list[Failure] = []
     nvattest = ledger.get("nvattest")
     if not isinstance(nvattest, Mapping):
@@ -3262,19 +3298,34 @@ def _validate_publication_prerequisite_record(
     return validate_core_unsupported_tombstone_record(payload, version=version)
 
 
+def _required_evidence_entries(schema: RetainedLedgerSchema) -> set[str]:
+    entries = {"ledger.json", "proofs"}
+    if retained_ledger_schema_declares_nvattest(schema):
+        entries.update(("nvattest", "support"))
+    return entries
+
+
+def _evidence_inventory_text(entries: set[str]) -> str:
+    return ", ".join(sorted(entries))
+
+
 def _validate_evidence_inventory(
     evidence_dir: Path,
     *,
+    schema_version: int,
+    schema: RetainedLedgerSchema,
     publication_prerequisite_version: str | None = None,
 ) -> list[Failure]:
     failures: list[Failure] = []
+    required_entries = _required_evidence_entries(schema)
+    expected_inventory = _evidence_inventory_text(required_entries)
     try:
         evidence_entry = evidence_dir.lstat()
     except FileNotFoundError:
         return [
             _failure(
                 "release evidence directory is missing",
-                expected="ledger.json, proofs, nvattest, and support",
+                expected=expected_inventory,
                 actual="missing",
                 repair="bash scripts/release.sh --recover",
             )
@@ -3289,9 +3340,7 @@ def _validate_evidence_inventory(
             )
         ]
     entries = {path.name: path for path in evidence_dir.iterdir()}
-    required_entries = {"ledger.json", "proofs", "nvattest", "support"}
     accepted_entries = set(required_entries)
-    expected_inventory = "ledger.json, nvattest, proofs, support"
     if publication_prerequisite_version is not None:
         accepted_entries.add(CORE_UNSUPPORTED_TOMBSTONE_RECORD)
         expected_inventory = (
@@ -3302,7 +3351,7 @@ def _validate_evidence_inventory(
         failures.append(
             _failure(
                 "release evidence inventory is not exact",
-                expected=expected_inventory,
+                expected=f"schema_version {schema_version}: {expected_inventory}",
                 actual=", ".join(sorted(entries)) or "<empty>",
                 repair="bash scripts/release.sh --recover",
             )
@@ -3814,11 +3863,16 @@ def _pair_promote_payload_and_evidence(
     promoted_payload = False
     promoted_evidence = False
     try:
+        current_schema_version, current_schema = current_retained_ledger_schema()
         failures = [
             *_validate_flat_payload_inventory(
                 payload_staging, include_models=include_models
             ),
-            *_validate_evidence_inventory(evidence_staging),
+            *_validate_evidence_inventory(
+                evidence_staging,
+                schema_version=current_schema_version,
+                schema=current_schema,
+            ),
         ]
         for final_path, label in (
             (ready_path, "final payload"),
@@ -3933,19 +3987,33 @@ def _report(
     validate_current_release_metadata: bool = True,
     allow_publication_prerequisite: bool = False,
 ) -> CandidateReport:
+    ledger_path = evidence_dir / "ledger.json"
+    try:
+        ledger = read_retained_ledger(ledger_path)
+    except OSError as exc:
+        raise DriverError(
+            [
+                _failure(
+                    "retained ledger could not be read",
+                    expected="readable retained ledger.json",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        ) from None
+    except LedgerError as exc:
+        raise DriverError(exc.failures) from None
+    schema_version, schema = _resolve_driver_retained_ledger_schema(ledger)
     inventory_failures = _validate_evidence_inventory(
         evidence_dir,
+        schema_version=schema_version,
+        schema=schema,
         publication_prerequisite_version=(
             version if allow_publication_prerequisite else None
         ),
     )
     if inventory_failures:
         raise DriverError(inventory_failures)
-    ledger_path = evidence_dir / "ledger.json"
-    try:
-        ledger = read_retained_ledger(ledger_path)
-    except LedgerError as exc:
-        raise DriverError(exc.failures) from None
     models = ledger.get("models")
     include_models = isinstance(models, Mapping) and models.get("decision") == "include"
     if validate_current_release_metadata:
@@ -3997,14 +4065,17 @@ def _report(
         release_dir=release_dir,
         version=version,
     )
-    nvattest_hashes = _validate_retained_nvattest_binding(
-        evidence_dir=evidence_dir,
-        ledger=ledger,
-        digest=digest,
-        ledger_sha256=ledger_sha256,
-        release_dir=release_dir,
-        version=version,
-    )
+    if retained_ledger_schema_declares_nvattest(schema):
+        nvattest_hashes = _validate_retained_nvattest_binding(
+            evidence_dir=evidence_dir,
+            ledger=ledger,
+            digest=digest,
+            ledger_sha256=ledger_sha256,
+            release_dir=release_dir,
+            version=version,
+        )
+    else:
+        nvattest_hashes = {}
     return CandidateReport(
         heading=heading,
         version=version,
@@ -4037,7 +4108,13 @@ def _payload_report_inventory(release_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _evidence_report_inventory(evidence_dir: Path) -> list[dict[str, Any]]:
+def _evidence_report_inventory(
+    evidence_dir: Path,
+    *,
+    schema_version: int,
+    schema: RetainedLedgerSchema,
+) -> list[dict[str, Any]]:
+    _ = schema_version
     entries = [
         _inventory_entry(evidence_dir / "ledger.json", name="ledger.json"),
     ]
@@ -4046,6 +4123,8 @@ def _evidence_report_inventory(evidence_dir: Path) -> list[dict[str, Any]]:
         _inventory_entry(path, name=f"proofs/{path.name}")
         for path in sorted(proofs_dir.iterdir(), key=lambda item: item.name)
     )
+    if not retained_ledger_schema_declares_nvattest(schema):
+        return sorted(entries, key=lambda item: item["name"])
     nvattest_dir = evidence_dir / "nvattest"
     entries.extend(
         _inventory_entry(path, name=f"nvattest/{path.name}")
@@ -4067,7 +4146,15 @@ def _proof_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
     }
 
 
-def _nvattest_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
+def _nvattest_report_inventory(
+    evidence_dir: Path,
+    *,
+    schema_version: int,
+    schema: RetainedLedgerSchema,
+) -> dict[str, dict[str, Any]]:
+    _ = schema_version
+    if not retained_ledger_schema_declares_nvattest(schema):
+        return {}
     nvattest_dir = evidence_dir / "nvattest"
     return {
         target: _inventory_entry(nvattest_dir / f"{target}.json", name=f"{target}.json")
@@ -4075,7 +4162,15 @@ def _nvattest_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
     }
 
 
-def _support_report_inventory(evidence_dir: Path) -> list[dict[str, Any]]:
+def _support_report_inventory(
+    evidence_dir: Path,
+    *,
+    schema_version: int,
+    schema: RetainedLedgerSchema,
+) -> list[dict[str, Any]]:
+    _ = schema_version
+    if not retained_ledger_schema_declares_nvattest(schema):
+        return []
     support_dir = evidence_dir / "support"
     return [
         _inventory_entry(path, name=path.name)
@@ -4095,11 +4190,17 @@ def _publication_prerequisite_report_inventory(
 
 
 def format_report(report: CandidateReport) -> str:
+    try:
+        ledger = read_retained_ledger(report.evidence_dir / "ledger.json")
+    except LedgerError as exc:
+        raise DriverError(exc.failures) from None
+    schema_version, schema = _resolve_driver_retained_ledger_schema(ledger)
     payload = {
         "schema_version": 1,
         "kind": "solstone-release-candidate-report",
         "verdict": report.heading,
         "publication_authorization": "local candidate evidence only; not publication authorization",
+        "retained_ledger_schema_version": schema_version,
         "version": report.version,
         "release_dir": CANDIDATE,
         "evidence_dir": "EVIDENCE",
@@ -4108,10 +4209,12 @@ def format_report(report: CandidateReport) -> str:
         "ledger_sha256": report.ledger_sha256,
         "bundle_digest": report.bundle_digest,
         "payload_inventory": _payload_report_inventory(report.release_dir),
-        "evidence_inventory": _evidence_report_inventory(report.evidence_dir),
+        "evidence_inventory": _evidence_report_inventory(
+            report.evidence_dir,
+            schema_version=schema_version,
+            schema=schema,
+        ),
         "proof_inventory": _proof_report_inventory(report.evidence_dir),
-        "nvattest_inventory": _nvattest_report_inventory(report.evidence_dir),
-        "support_inventory": _support_report_inventory(report.evidence_dir),
         "proof_sha256": {
             target: report.proof_sha256[target]
             for target in sorted(report.proof_sha256)
@@ -4124,6 +4227,17 @@ def format_report(report: CandidateReport) -> str:
             _publication_prerequisite_report_inventory(report.evidence_dir)
         ),
     }
+    if retained_ledger_schema_declares_nvattest(schema):
+        payload["nvattest_inventory"] = _nvattest_report_inventory(
+            report.evidence_dir,
+            schema_version=schema_version,
+            schema=schema,
+        )
+        payload["support_inventory"] = _support_report_inventory(
+            report.evidence_dir,
+            schema_version=schema_version,
+            schema=schema,
+        )
     return canonical_json_bytes(payload).decode("utf-8")
 
 
@@ -4509,6 +4623,7 @@ def run_recover(
         ) from None
     except LedgerError as exc:
         raise DriverError(exc.failures) from None
+    schema_version, schema = _resolve_driver_retained_ledger_schema(ledger)
     selector_failures: list[Failure] = []
     if ledger.get("version") != version:
         selector_failures.append(
@@ -4530,8 +4645,13 @@ def run_recover(
         )
     if selector_failures:
         raise DriverError(selector_failures)
+    heading = (
+        RETAINED_CANDIDATE_VALID_HEADING
+        if retained_ledger_schema_declares_nvattest(schema)
+        else RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING
+    )
     return _report(
-        heading="retained-candidate-valid",
+        heading=heading,
         root=root,
         version=version,
         source_commit=source_commit,

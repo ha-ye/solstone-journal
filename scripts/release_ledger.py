@@ -36,19 +36,56 @@ from scripts.release_nvattest_support import validate_support_declarations
 from scripts.release_public_evidence import validate_public_evidence_tree
 
 RELEASE_EVIDENCE_CONTRACT_DOC = "docs/release-evidence-contract.md"
-CURRENT_LEDGER_SCHEMA_VERSION = 1
+CURRENT_LEDGER_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
 class RetainedLedgerSchema:
     top_level_keys: frozenset[str]
     models_keys: frozenset[str]
-    nvattest_keys: frozenset[str]
+    nvattest_keys: frozenset[str] | None
     policy_run_keys: frozenset[str]
 
 
 LEDGER_SCHEMA_REGISTRY: dict[int, RetainedLedgerSchema] = {
     1: RetainedLedgerSchema(
+        top_level_keys=frozenset(
+            (
+                "schema_version",
+                "kind",
+                "product",
+                "version",
+                "source_commit",
+                "candidate",
+                "models",
+                "core_lock_sha256",
+                "rust_targets",
+                "tool_evidence",
+                "native_members",
+                "dependency_policy",
+                "policy_run",
+                "native_summary",
+                "proofs",
+                "redaction",
+            )
+        ),
+        models_keys=frozenset(("decision", "package_version")),
+        nvattest_keys=None,
+        policy_run_keys=frozenset(
+            (
+                "advisory_source_id",
+                "db_snapshot_basename",
+                "db_commit",
+                "db_archive_sha256",
+                "advisory_count",
+                "advisory_acquired_at",
+                "db_commit_timestamp",
+                "policy_checked_at",
+                "result",
+            )
+        ),
+    ),
+    2: RetainedLedgerSchema(
         top_level_keys=frozenset(
             (
                 "schema_version",
@@ -87,7 +124,7 @@ LEDGER_SCHEMA_REGISTRY: dict[int, RetainedLedgerSchema] = {
                 "result",
             )
         ),
-    )
+    ),
 }
 RETAINED_LEDGER_CONSUMER_TOP_LEVEL_KEYS = frozenset(
     ("candidate", "core_lock_sha256", "models")
@@ -119,6 +156,16 @@ def _registered_ledger_schema(version: int) -> RetainedLedgerSchema:
 
 def _current_writer_schema() -> RetainedLedgerSchema:
     return _registered_ledger_schema(CURRENT_LEDGER_SCHEMA_VERSION)
+
+
+def current_retained_ledger_schema() -> tuple[int, RetainedLedgerSchema]:
+    return CURRENT_LEDGER_SCHEMA_VERSION, _current_writer_schema()
+
+
+def retained_ledger_schema_declares_nvattest(
+    schema: RetainedLedgerSchema,
+) -> bool:
+    return "nvattest" in schema.top_level_keys
 
 
 def _resolve_retained_ledger_schema(
@@ -206,6 +253,17 @@ def _resolve_retained_ledger_schema(
         )
 
     return version, schema, []
+
+
+def resolve_retained_ledger_schema(
+    payload: Mapping[str, Any],
+) -> tuple[int, RetainedLedgerSchema]:
+    version, schema, failures = _resolve_retained_ledger_schema(payload)
+    if failures:
+        raise LedgerError(failures)
+    if version is None or schema is None:
+        raise AssertionError("retained ledger schema resolution returned no schema")
+    return version, schema
 
 
 def _candidate_files(release_dir: Path) -> list[dict[str, Any]]:
@@ -474,6 +532,17 @@ def validate_nvattest_payload(
 ) -> list[Failure]:
     failures: list[Failure] = []
     resolved_schema = schema or _current_writer_schema()
+    if not retained_ledger_schema_declares_nvattest(resolved_schema):
+        if value is None:
+            return []
+        return [
+            _failure(
+                "retained ledger schema does not declare nvattest",
+                expected="schema with no nvattest binding",
+                actual="nvattest present",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
     if not isinstance(value, Mapping):
         return [
             _failure(
@@ -483,6 +552,8 @@ def validate_nvattest_payload(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
+    if resolved_schema.nvattest_keys is None:
+        raise AssertionError("nvattest schema has no declared key set")
     if set(value) != resolved_schema.nvattest_keys:
         failures.append(
             _failure(
