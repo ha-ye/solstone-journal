@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
@@ -356,14 +356,21 @@ def api_daily():
             detail="days must be between 1 and 90",
         )
 
-    today = date.today()
+    day = request.args.get("day", date.today().strftime("%Y%m%d"))
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, detail="Invalid day format")
+    try:
+        anchor = datetime.strptime(day, "%Y%m%d").date()
+    except ValueError:
+        return error_response(INVALID_DAY, detail="Invalid day format")
+
     rows = []
     for offset in range(days - 1, -1, -1):
-        day = (today - timedelta(days=offset)).strftime("%Y%m%d")
+        row_day = (anchor - timedelta(days=offset)).strftime("%Y%m%d")
         cost = 0.0
         tokens = 0
 
-        for entry in iter_token_log(day):
+        for entry in iter_token_log(row_day):
             model = entry.get("model", "unknown")
             if get_model_provider(model) == "unknown":
                 continue
@@ -375,7 +382,7 @@ def api_daily():
             if cost_data:
                 cost += cost_data["total_cost"]
 
-        rows.append({"day": day, "cost": round(cost, 4), "tokens": tokens})
+        rows.append({"day": row_day, "cost": round(cost, 4), "tokens": tokens})
 
     return respond_collection(rows)
 

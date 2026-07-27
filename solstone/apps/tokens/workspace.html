@@ -638,13 +638,17 @@
 <script>
   const TOKENS_COPY = {
     TOKENS_TILE_COST_LABEL: "today's cost",
+    TOKENS_TILE_COST_LABEL_OTHER_DAY: "cost",
     TOKENS_TILE_COST_VALUE: "${cost:.2f}",
     TOKENS_TILE_TOKENS_LABEL: "today's tokens",
+    TOKENS_TILE_TOKENS_LABEL_OTHER_DAY: "tokens",
     TOKENS_TILE_TOKENS_VALUE: "{tokens}",
     TOKENS_TILE_RUN_RATE_LABEL: "7-day run rate",
     TOKENS_TILE_RUN_RATE_VALUE: "~${rate:.2f}/day",
     TOKENS_TILE_TOP_DRIVER_LABEL: "today's biggest cost",
+    TOKENS_TILE_TOP_DRIVER_LABEL_OTHER_DAY: "biggest cost",
     TOKENS_TILE_TOP_DRIVER_VALUE: "{provider} · {model} ({pct}% of today)",
+    TOKENS_TILE_TOP_DRIVER_VALUE_OTHER_DAY: "{provider} · {model} ({pct}% of the day)",
     TOKENS_DISCLOSURE_PROVIDER: "{n} provider{s}, top: {top_name} {pct}%",
     TOKENS_DISCLOSURE_MODEL: "{n} model{s}, top: {top_name} {pct}%",
     TOKENS_DISCLOSURE_TOKEN_TYPE: "input / output / cached / reasoning",
@@ -652,9 +656,6 @@
     TOKENS_DISCLOSURE_SEGMENT: "{n} segment{s}"
   };
   window.TOKENS_COPY = TOKENS_COPY;
-  document.querySelectorAll('[data-tokens-copy-key]').forEach((el) => {
-    el.textContent = TOKENS_COPY[el.dataset.tokensCopyKey] || '';
-  });
 </script>
 
 <script>
@@ -669,6 +670,7 @@ const tableConfig = {
   'context-table': { dataKey: 'by_context', render: renderContextTable, filterInput: 'context-search' },
   'segment-table': { dataKey: 'by_segment', render: renderSegmentTable, filterInput: 'segment-search' },
 };
+applyTokensCopy(currentDay);
 
 // Format numbers
 function formatCost(value) {
@@ -693,6 +695,31 @@ function formatCopy(template, values) {
     if (v === undefined || v === null) return "";
     if (precision !== undefined) return Number(v).toFixed(Number(precision));
     return String(v);
+  });
+}
+
+function tokensTodayStamp() {
+  const now = new Date();
+  return String(now.getFullYear()) +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0');
+}
+
+function tokensCopyKeyForDay(key, day, today) {
+  const stamp = today || tokensTodayStamp();
+  const copy = window.TOKENS_COPY || {};
+  const otherKey = key + '_OTHER_DAY';
+  if (day && stamp && day !== stamp && copy[otherKey] !== undefined) {
+    return otherKey;
+  }
+  return key;
+}
+
+function applyTokensCopy(day) {
+  if (typeof document === 'undefined' || !document) return;
+  const copy = window.TOKENS_COPY || {};
+  document.querySelectorAll('[data-tokens-copy-key]').forEach((el) => {
+    el.textContent = copy[tokensCopyKeyForDay(el.dataset.tokensCopyKey, day)] || '';
   });
 }
 
@@ -838,9 +865,12 @@ function getModelDisplayName(model) {
   return names[model] || model;
 }
 
-async function loadDailySeries(days) {
+async function loadDailySeries(days, day) {
   try {
-    return (await window.apiJson(`/app/tokens/api/daily?days=${days}`))?.items ?? null;
+    const url = day
+      ? `/app/tokens/api/daily?days=${days}&day=${day}`
+      : `/app/tokens/api/daily?days=${days}`;
+    return (await window.apiJson(url))?.items ?? null;
   } catch (err) {
     console.error('Failed to load daily token series:', err);
     return null;
@@ -885,7 +915,7 @@ function populateTiles(data, dailyRows) {
   setText('glance-tokens', formatCopy(copy.TOKENS_TILE_TOKENS_VALUE, { tokens: tokens.toLocaleString() }));
   setText('glance-rate', formatCopy(copy.TOKENS_TILE_RUN_RATE_VALUE, { rate }));
   if (top) {
-    setText('glance-driver', formatCopy(copy.TOKENS_TILE_TOP_DRIVER_VALUE, {
+    setText('glance-driver', formatCopy(copy[tokensCopyKeyForDay('TOKENS_TILE_TOP_DRIVER_VALUE', currentDay)], {
       provider: top.provider,
       model: top.model,
       pct: Number(top.percent || 0).toFixed(1),
@@ -962,7 +992,7 @@ async function loadTokenData(day) {
   try {
     const [data, dailyRows] = await Promise.all([
       window.apiJson(`/app/tokens/api/usage?day=${day}`),
-      loadDailySeries(14),
+      loadDailySeries(14, day),
     ]);
     currentData = data;
     renderGlance(data, dailyRows);

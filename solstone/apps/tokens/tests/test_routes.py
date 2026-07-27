@@ -131,6 +131,9 @@ def _extract_tokens_copy(html: str) -> str:
 
 def _extract_function(html: str, function_name: str) -> str:
     start = html.index(f"function {function_name}")
+    async_prefix_start = start - len("async ")
+    if async_prefix_start >= 0 and html[async_prefix_start:start] == "async ":
+        start = async_prefix_start
     next_function = html.find("\nfunction ", start + 1)
     return html[start : next_function if next_function != -1 else len(html)].strip()
 
@@ -242,6 +245,53 @@ def test_api_daily_cross_month_boundary(tokens_env, monkeypatch):
     ]
     expected_rate = sum(row["cost"] for row in rows) / 7
     assert expected_rate == pytest.approx(0.4)
+
+
+def test_api_daily_window_ends_at_requested_day(tokens_env, monkeypatch):
+    token_logs = {
+        _day(6): [_entry("gpt-5", 1000)],
+        _day(0): [_entry("gpt-5", 4000)],
+    }
+    env = tokens_env(token_logs)
+    _patch_token_cost(monkeypatch)
+
+    earlier_response = env.client.get(f"/app/tokens/api/daily?days=7&day={_day(6)}")
+    today_response = env.client.get(f"/app/tokens/api/daily?days=7&day={_day(0)}")
+
+    assert earlier_response.status_code == 200
+    assert today_response.status_code == 200
+    earlier_items = earlier_response.get_json()["items"]
+    today_items = today_response.get_json()["items"]
+    assert earlier_items[0]["day"] == _day(12)
+    assert earlier_items[-1]["day"] == _day(6)
+    assert today_items[-1]["day"] == _day(0)
+    assert earlier_items != today_items
+    assert sum(row["cost"] for row in earlier_items[-7:]) != sum(
+        row["cost"] for row in today_items[-7:]
+    )
+
+
+def test_api_daily_without_day_anchors_on_today(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/api/daily?days=7")
+
+    assert response.status_code == 200
+    assert response.get_json()["items"][-1]["day"] == _day(0)
+
+
+def test_api_daily_rejects_invalid_day(tokens_env):
+    env = tokens_env({})
+
+    for day in ("notaday", "20260231", "99999999"):
+        response = env.client.get(f"/app/tokens/api/daily?days=7&day={day}")
+        assert response.status_code == 400
+        payload = response.get_json()
+        assert payload["reason_code"] == "invalid_day"
+        assert payload["detail"] == "Invalid day format"
+
+    response = env.client.get("/app/tokens/api/daily?days=abc&day=notaday")
+    assert response.status_code == 400
 
 
 def test_api_index_reports_nonzero_coverage_and_months(tokens_env, monkeypatch):
@@ -499,3 +549,217 @@ console.log(JSON.stringify({ singular, plural }));
     assert json.loads(completed.stdout)["singular"]["summary-provider"] == (
         "1 provider, top: openai 51.3%"
     )
+
+
+def test_tokens_load_token_data_threads_day_under_node(tokens_env):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    html = _tokens_workspace_html(tokens_env)
+    load_daily_series = _extract_function(html, "loadDailySeries")
+    load_token_data = _extract_function(html, "loadTokenData")
+
+    _assert_brace_balance("loadDailySeries", load_daily_series)
+    _assert_brace_balance("loadTokenData", load_token_data)
+
+    script = "\n".join(
+        [
+            "global.window = global;",
+            "const urls = [];",
+            "const errors = [];",
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            """
+window.apiJson = async function(url) {
+  urls.push(url);
+  if (url.includes('/api/daily')) return {items: []};
+  return {items: []};
+};
+function renderGlance(data, dailyRows) {
+  assert(Array.isArray(dailyRows), 'daily rows should be an array');
+}
+function renderDashboard(data) {}
+const nodes = {
+  'tokens-loading': {style: {}},
+  dashboard: {style: {}}
+};
+global.document = {
+  getElementById(id) {
+    if (!nodes[id]) throw new Error('missing node ' + id);
+    return nodes[id];
+  }
+};
+window.CONVEY_COPY = {RELOAD_HINT: 'reload'};
+window.SurfaceState = {
+  error(opts) { return opts; },
+  replaceLoading(_id, state) {
+    throw state?.detail || new Error('catch branch reached');
+  }
+};
+global.console = {
+  error(...args) { errors.push(args); },
+  warn() {},
+  log() {}
+};
+""",
+            load_daily_series,
+            load_token_data,
+            """
+async function run() {
+  await loadTokenData('20260101');
+  assert(errors.length === 0, 'no errors after explicit day');
+  assert(urls.includes('/app/tokens/api/usage?day=20260101'), 'usage day url');
+  const dailyUrl = urls.find((url) => url.includes('/app/tokens/api/daily'));
+  assert(dailyUrl && dailyUrl.includes('day=20260101'), 'daily day url');
+
+  urls.length = 0;
+  await loadTokenData(null);
+  assert(errors.length === 0, 'no errors after null day');
+  const nullDailyUrl = urls.find((url) => url.includes('/app/tokens/api/daily'));
+  assert(nullDailyUrl && !nullDailyUrl.includes('day='), 'daily omits null day');
+}
+run().catch((err) => {
+  console.log(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_tokens_copy_constants_include_other_day_variants(tokens_env):
+    html = _tokens_workspace_html(tokens_env)
+    copy = _tokens_copy_constants(html)
+
+    expected = {
+        "TOKENS_TILE_COST_LABEL_OTHER_DAY": "cost",
+        "TOKENS_TILE_TOKENS_LABEL_OTHER_DAY": "tokens",
+        "TOKENS_TILE_TOP_DRIVER_LABEL_OTHER_DAY": "biggest cost",
+        "TOKENS_TILE_TOP_DRIVER_VALUE_OTHER_DAY": (
+            "{provider} · {model} ({pct}% of the day)"
+        ),
+    }
+    for key, value in expected.items():
+        assert copy[key] == value
+        assert f'{key}: "{value}"' in html
+
+    assert copy["TOKENS_TILE_TOP_DRIVER_VALUE"].endswith("% of today)")
+    assert copy["TOKENS_TILE_TOP_DRIVER_VALUE_OTHER_DAY"].endswith("% of the day)")
+    assert "TOKENS_TILE_RUN_RATE_LABEL_OTHER_DAY" not in html
+
+
+def test_tokens_copy_key_resolver_under_node(tokens_env):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    html = _tokens_workspace_html(tokens_env)
+    tokens_copy = _extract_tokens_copy(html)
+    today_stamp = _extract_function(html, "tokensTodayStamp")
+    copy_key_for_day = _extract_function(html, "tokensCopyKeyForDay")
+
+    _assert_brace_balance("TOKENS_COPY", tokens_copy)
+    _assert_brace_balance("tokensTodayStamp", today_stamp)
+    _assert_brace_balance("tokensCopyKeyForDay", copy_key_for_day)
+
+    script = "\n".join(
+        [
+            "global.window = global;",
+            tokens_copy,
+            "window.TOKENS_COPY = TOKENS_COPY;",
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            today_stamp,
+            copy_key_for_day,
+            """
+function stampNow() {
+  const now = new Date();
+  return String(now.getFullYear()) +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0');
+}
+assert(
+  tokensCopyKeyForDay('TOKENS_TILE_COST_LABEL', '20260101', '20260726') ===
+    'TOKENS_TILE_COST_LABEL_OTHER_DAY',
+  'non-today uses other-day key'
+);
+assert(
+  tokensCopyKeyForDay('TOKENS_TILE_COST_LABEL', '20260726', '20260726') ===
+    'TOKENS_TILE_COST_LABEL',
+  'today uses base key'
+);
+assert(
+  tokensCopyKeyForDay('TOKENS_TILE_RUN_RATE_LABEL', '20260101', '20260726') ===
+    'TOKENS_TILE_RUN_RATE_LABEL',
+  'missing other-day key falls back'
+);
+assert(
+  tokensCopyKeyForDay('TOKENS_TILE_COST_LABEL', null, '20260726') ===
+    'TOKENS_TILE_COST_LABEL',
+  'missing day falls back'
+);
+assert(
+  TOKENS_COPY[tokensCopyKeyForDay('TOKENS_TILE_COST_LABEL', '20260101', '20260726')] === 'cost',
+  'non-today value'
+);
+assert(
+  TOKENS_COPY[tokensCopyKeyForDay('TOKENS_TILE_COST_LABEL', '20260726', '20260726')] === "today's cost",
+  'today value'
+);
+const before = stampNow();
+const actual = tokensTodayStamp();
+const after = stampNow();
+assert(/^\\d{8}$/.test(actual), 'stamp shape');
+assert(actual === before || actual === after, 'stamp race tolerance');
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_tokens_top_driver_copy_is_day_aware_under_node(tokens_env):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    html = _tokens_workspace_html(tokens_env)
+    tokens_copy = _extract_tokens_copy(html)
+    format_copy = _extract_function(html, "formatCopy")
+    today_stamp = _extract_function(html, "tokensTodayStamp")
+    copy_key_for_day = _extract_function(html, "tokensCopyKeyForDay")
+    populate_tiles = _extract_function(html, "populateTiles")
+
+    _assert_brace_balance("TOKENS_COPY", tokens_copy)
+    _assert_brace_balance("formatCopy", format_copy)
+    _assert_brace_balance("tokensTodayStamp", today_stamp)
+    _assert_brace_balance("tokensCopyKeyForDay", copy_key_for_day)
+    assert "tokensCopyKeyForDay('TOKENS_TILE_TOP_DRIVER_VALUE'" in populate_tiles
+
+    script = "\n".join(
+        [
+            "global.window = global;",
+            tokens_copy,
+            "window.TOKENS_COPY = TOKENS_COPY;",
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            format_copy,
+            today_stamp,
+            copy_key_for_day,
+            """
+const values = {provider: 'openai', model: 'gpt-5', pct: '51.3'};
+const other = formatCopy(
+  TOKENS_COPY[tokensCopyKeyForDay('TOKENS_TILE_TOP_DRIVER_VALUE', '20260101', '20260726')],
+  values
+);
+const today = formatCopy(
+  TOKENS_COPY[tokensCopyKeyForDay('TOKENS_TILE_TOP_DRIVER_VALUE', '20260726', '20260726')],
+  values
+);
+assert(other.endsWith('% of the day)'), 'other-day suffix');
+assert(today.endsWith('% of today)'), 'today suffix');
+""",
+        ]
+    )
+
+    subprocess.run([node, "-e", script], check=True, text=True)
