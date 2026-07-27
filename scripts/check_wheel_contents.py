@@ -59,6 +59,7 @@ MAX_SPEAKERS_ANALYZE_WHEEL_BYTES = 30 * 1024 * 1024
 PARAKEET_HELPER_MEMBER = (
     "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
 )
+NVATTEST_AUTHORITY_MEMBER = "solstone/think/providers/nvattest_authority_v1.json"
 ROOT_LAUNCHER_NAMES = ("sol", "solstone")
 CORE_SCRIPT_NAMES = ("solstone-core",)
 SPEAKERS_ANALYZE_SCRIPT_NAMES = ("solstone-core-speakers-analyze",)
@@ -298,6 +299,31 @@ def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
         errors.extend(_check_record(path, wheel))
         if platform_wheel:
             errors.extend(_check_base_platform_helper(path, wheel))
+    return errors
+
+
+def _check_nvattest_authority_member(base_wheels: list[Path]) -> list[str]:
+    errors: list[str] = []
+    expected_digest: str | None = None
+    expected_wheel: str | None = None
+    for path in base_wheels:
+        with zipfile.ZipFile(path) as wheel:
+            if NVATTEST_AUTHORITY_MEMBER not in wheel.namelist():
+                errors.append(
+                    f"{path.name}: missing nvattest authority member "
+                    f"{NVATTEST_AUTHORITY_MEMBER}"
+                )
+                continue
+            digest = hashlib.sha256(wheel.read(NVATTEST_AUTHORITY_MEMBER)).hexdigest()
+        if expected_digest is None:
+            expected_digest = digest
+            expected_wheel = path.name
+            continue
+        if digest != expected_digest:
+            errors.append(
+                f"{path.name}: nvattest authority member digest mismatch; "
+                f"expected {expected_digest} from {expected_wheel}, actual {digest}"
+            )
     return errors
 
 
@@ -1509,6 +1535,7 @@ def check_dist(
 
     for path in base_wheels:
         errors.extend(check_base_wheel(path, max_bytes))
+    errors.extend(_check_nvattest_authority_member(base_wheels))
     for path in models_wheels:
         errors.extend(check_models_wheel(path, expected))
     for path in core_wheels:

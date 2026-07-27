@@ -137,9 +137,26 @@ def _install_failing_confidential_transport(
     spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
     monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    _stub_nvattest_installed(monkeypatch)
     establish = Mock(side_effect=RatlsChannelError(reason_code))
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
     return establish
+
+
+def _stub_nvattest_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from solstone.think.providers.nvattest_install import NvattestEnsureResult
+    from solstone.think.services import spp_transport
+
+    monkeypatch.setattr(
+        spp_transport,
+        "ensure_nvattest_installed",
+        Mock(
+            return_value=NvattestEnsureResult(
+                status="already_installed",
+                nvattest_dir=Path("nvattest-fixture"),
+            )
+        ),
+    )
 
 
 class _FakeChannel:
@@ -839,6 +856,7 @@ def test_confidential_stt_stale_session_replacement_failure_defers_before_egress
     spp.record_attestation_verified(_stale_session(object()))
     mocks = _install_stt_backend_mocks(monkeypatch, confidential_result=None)
     establish = Mock(side_effect=RatlsChannelError("gateway_unreachable"))
+    _stub_nvattest_installed(monkeypatch)
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
     httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
@@ -903,6 +921,7 @@ def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch
             object(), epoch=kwargs["epoch"]
         )
     )
+    _stub_nvattest_installed(monkeypatch)
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
     captured: dict = {}
 

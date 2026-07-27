@@ -14,6 +14,7 @@ from pathlib import Path
 
 import scripts.check_wheel_contents as checker
 from tests.helpers.release_wheel_fixtures import (
+    NVATTEST_AUTHORITY_BYTES,
     ROOT_LAUNCHER_BYTES,
     minimal_elf,
     minimal_fat_macho,
@@ -451,6 +452,51 @@ def test_base_wheel_validator_rejects_wrong_arch_platform_helper(
     )
 
 
+def test_dist_check_accepts_identical_nvattest_authority_in_root_wheels(
+    tmp_path: Path,
+) -> None:
+    _write_minimal_dist(tmp_path)
+    write_core_wheel(tmp_path)
+    write_platform_base_wheel(tmp_path)
+
+    errors = checker.check_dist(tmp_path, {}, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert not [error for error in errors if "nvattest authority" in error]
+
+
+def test_dist_check_rejects_missing_nvattest_authority_from_root_wheel(
+    tmp_path: Path,
+) -> None:
+    _write_minimal_dist(tmp_path)
+    write_core_wheel(tmp_path)
+    write_platform_base_wheel(tmp_path, nvattest_authority_bytes=None)
+
+    errors = checker.check_dist(tmp_path, {}, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert any(
+        "missing nvattest authority member" in error
+        and checker.NVATTEST_AUTHORITY_MEMBER in error
+        for error in errors
+    )
+
+
+def test_dist_check_rejects_mismatched_nvattest_authority_bytes(
+    tmp_path: Path,
+) -> None:
+    _write_minimal_dist(tmp_path)
+    write_core_wheel(tmp_path)
+    write_platform_base_wheel(tmp_path, nvattest_authority_bytes=b"different\n")
+
+    errors = checker.check_dist(tmp_path, {}, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert any(
+        "nvattest authority member digest mismatch" in error
+        and "expected" in error
+        and "actual" in error
+        for error in errors
+    )
+
+
 def _add_tar_member(archive: tarfile.TarFile, name: str) -> None:
     content = b"x"
     info = tarfile.TarInfo(name)
@@ -468,7 +514,12 @@ def _write_core_sdist(path: Path, *, missing: str | None = None) -> Path:
     return sdist
 
 
-def _write_minimal_wheel(path: Path, name: str) -> Path:
+def _write_minimal_wheel(
+    path: Path,
+    name: str,
+    *,
+    nvattest_authority_bytes: bytes | None = NVATTEST_AUTHORITY_BYTES,
+) -> Path:
     wheel_path = path / f"{name}-1.2.3-py3-none-any.whl"
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         members = {
@@ -480,6 +531,8 @@ def _write_minimal_wheel(path: Path, name: str) -> Path:
             members[f"{name}-1.2.3.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
             for launcher, content in ROOT_LAUNCHER_BYTES.items():
                 members[f"{name}-1.2.3.data/scripts/{launcher}"] = content
+            if nvattest_authority_bytes is not None and name == "solstone":
+                members[checker.NVATTEST_AUTHORITY_MEMBER] = nvattest_authority_bytes
             record_name = f"{name}-1.2.3.dist-info/RECORD"
             record = "\n".join(
                 f"{member},{record_hash(content)},{len(content)}"

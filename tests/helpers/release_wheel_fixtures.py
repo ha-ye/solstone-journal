@@ -26,6 +26,7 @@ SPEAKERS_ANALYZE_DEFAULT_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
 
 ELF_HEADER_SIZE = 64
 ELF_PROGRAM_HEADER_SIZE = 56
+NVATTEST_AUTHORITY_BYTES = b'{"schema_version":1}\n'
 ROOT_LAUNCHER_BYTES = {
     name: f"#!/bin/sh\necho fixture {name}\n".encode("utf-8")
     for name in checker.ROOT_LAUNCHER_NAMES
@@ -302,6 +303,7 @@ def write_platform_base_wheel(
     helper_name: str | None = checker.PARAKEET_HELPER_MEMBER,
     helper_binary: bytes | None = None,
     helper_mode: int = 0o755,
+    nvattest_authority_bytes: bytes | None = NVATTEST_AUTHORITY_BYTES,
     extra_payload_size: int = 0,
     version: str = "1.2.3",
 ) -> Path:
@@ -317,6 +319,8 @@ def write_platform_base_wheel(
     }
     for launcher_name, content in ROOT_LAUNCHER_BYTES.items():
         members[f"solstone-{version}.data/scripts/{launcher_name}"] = content
+    if nvattest_authority_bytes is not None:
+        members[checker.NVATTEST_AUTHORITY_MEMBER] = nvattest_authority_bytes
     if helper_name is not None:
         members[helper_name] = helper_binary
     if extra_payload_size:

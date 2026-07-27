@@ -27,6 +27,7 @@ from solstone.think.providers.brain_state import (
     build_active_brain_fingerprint,
     finish_brain_refresh,
 )
+from solstone.think.providers.nvattest_install import NvattestEnsureResult
 from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from tests.helpers.journal_config import seed_journal_config
@@ -852,6 +853,16 @@ def test_disable_confidential_restores_synchronously(
         spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:2222"
 
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    monkeypatch.setattr(
+        spp_transport,
+        "ensure_nvattest_installed",
+        Mock(
+            return_value=NvattestEnsureResult(
+                status="already_installed",
+                nvattest_dir=journal_copy / "nvattest",
+            )
+        ),
+    )
     monkeypatch.setattr(spp_transport, "_start_listener_locked", fake_start_listener)
     spp.provision_confidential_handoff(_payload("fresh"))
 

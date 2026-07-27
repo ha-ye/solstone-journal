@@ -27,6 +27,7 @@ from scripts.check_wheel_contents import (
     CPU_TYPE_ARM64,
     ELF_MACHINE,
     EXPECTED_MODEL_SHA256,
+    NVATTEST_AUTHORITY_MEMBER,
     SPEAKERS_ANALYZE_SCRIPT_NAMES,
     SPEAKERS_ANALYZE_TARGETS,
 )
@@ -51,6 +52,7 @@ SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
     ("linux", "x86_64")
 ]
 from tests.helpers.release_wheel_fixtures import (
+    NVATTEST_AUTHORITY_BYTES,
     ROOT_LAUNCHER_BYTES,
     minimal_elf,
     minimal_macho,
@@ -159,6 +161,7 @@ def _write_metadata_wheel(path: Path) -> None:
             members[f"solstone-{version}.dist-info/WHEEL"] = b"Wheel-Version: 1.0\n"
             for name, content in ROOT_LAUNCHER_BYTES.items():
                 members[f"solstone-{version}.data/scripts/{name}"] = content
+            members[NVATTEST_AUTHORITY_MEMBER] = NVATTEST_AUTHORITY_BYTES
             record_name = f"solstone-{version}.dist-info/RECORD"
             record = "\n".join(
                 f"{name},{record_hash(content)},{len(content)}"
