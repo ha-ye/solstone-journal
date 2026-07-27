@@ -678,6 +678,7 @@ def _nvattest_services(
     candidate_paths: Sequence[Path],
     support_paths: Sequence[Path],
     canonical_authority_bytes: bytes,
+    call_counts: dict[str, int] | None = None,
 ) -> nvattest_proof.NvattestProofServices:
     env_root = root / "nvattest-env" / target
     policy_os, policy_arch = TARGET_POLICY[target]
@@ -687,7 +688,12 @@ def _nvattest_services(
         for entry in expected_distribution_entries(candidate_paths)
     )
 
+    def count(name: str) -> None:
+        if call_counts is not None:
+            call_counts[name] = call_counts.get(name, 0) + 1
+
     def create_environment(_target: str) -> Path:
+        count("nvattest_create_environment")
         (env_root / "bin").mkdir(parents=True, exist_ok=True)
         python = env_root / "bin" / "python"
         python.write_text(
@@ -702,6 +708,7 @@ def _nvattest_services(
         candidate_wheels: Sequence[Path],
         support_wheels: Sequence[Path],
     ) -> CommandResult:
+        count("nvattest_install_wheels")
         assert tuple(candidate_wheels) == tuple(candidate_paths)
         assert tuple(support_wheels) == tuple(support_paths)
         site_root = env_root / "lib" / "python3.13" / "site-packages"
@@ -732,6 +739,7 @@ def _nvattest_services(
         )
 
     def fetch(label: str, url: str, dest: Path) -> nvattest_proof.FetchObservation:
+        count("nvattest_fetch")
         dest.parent.mkdir(parents=True, exist_ok=True)
         if label == "archive":
             artifact = authority_target["artifact"]
@@ -758,6 +766,7 @@ def _nvattest_services(
         target_key: str,
         journal_path: Path,
     ) -> nvattest_proof.DriverObservation:
+        count("nvattest_run_package_install")
         assert target_key == _nvattest_target_key(target)
         payload = _nvattest_driver_payload(
             target=target,
@@ -781,14 +790,17 @@ def _nvattest_services(
         )
 
     def run_smoke(nvattest_bin: Path) -> CommandResult:
+        count("nvattest_run_smoke")
         return _nvattest_command_result((str(nvattest_bin), "--help"), stdout="usage\n")
 
-    return nvattest_proof.NvattestProofServices(
-        create_environment=create_environment,
-        install_wheels=install_wheels,
-        fetch=fetch,
-        run_package_install=run_package_install,
-        integrity_recheck=lambda _journal, _target_key, _fetches, driver_observation: {
+    def integrity_recheck(
+        _journal: Path,
+        _target_key: str,
+        _fetches: Mapping[str, nvattest_proof.FetchObservation],
+        driver_observation: nvattest_proof.DriverObservation,
+    ) -> dict[str, Any]:
+        count("nvattest_integrity_recheck")
+        return {
             "members": driver_observation.payload["members"],
             "sidecar": driver_observation.payload["sidecar"],
             "sidecar_path": driver_observation.payload["sidecar_path"],
@@ -797,20 +809,43 @@ def _nvattest_services(
             "tree_fingerprint_sha256": driver_observation.payload[
                 "tree_fingerprint_sha256"
             ],
-        },
+        }
+
+    def clock() -> datetime:
+        count("nvattest_clock")
+        return datetime(2026, 7, 20, 12, 35, tzinfo=UTC)
+
+    def cleanup(path: Path) -> None:
+        count("nvattest_cleanup")
+        shutil.rmtree(path)
+
+    def observe_host() -> nvattest_proof.HostObservation:
+        count("nvattest_observe_host")
+        return nvattest_proof.HostObservation(os=policy_os, arch=policy_arch)
+
+    return nvattest_proof.NvattestProofServices(
+        create_environment=create_environment,
+        install_wheels=install_wheels,
+        fetch=fetch,
+        run_package_install=run_package_install,
+        integrity_recheck=integrity_recheck,
         run_smoke=run_smoke,
-        clock=lambda: datetime(2026, 7, 20, 12, 35, tzinfo=UTC),
-        cleanup=lambda path: shutil.rmtree(path),
-        observe_host=lambda: nvattest_proof.HostObservation(
-            os=policy_os, arch=policy_arch
-        ),
+        clock=clock,
+        cleanup=cleanup,
+        observe_host=observe_host,
     )
 
 
 def services(
     root: Path, *, native_mutation: str | None = None
 ) -> driver.CandidateServices:
+    call_counts: dict[str, int] = {}
+
+    def count(name: str) -> None:
+        call_counts[name] = call_counts.get(name, 0) + 1
+
     def clean_outputs(repo_root: Path, version: str) -> None:
+        count("clean_outputs")
         for relative in (
             "build",
             "dist",
@@ -825,6 +860,7 @@ def services(
                 path.unlink()
 
     def build_local_dist(repo_root: Path, include_models: bool) -> None:
+        count("build_local_dist")
         dist = repo_root / "dist"
         dist.mkdir(parents=True, exist_ok=True)
         for name in driver._expected_local_dist_names(include_models=include_models):
@@ -847,6 +883,7 @@ def services(
     def create_source_bundle(
         _repo: Path, commit: str, output_path: Path
     ) -> SourceBundle:
+        count("create_source_bundle")
         assert commit == SOURCE_COMMIT
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"bundle")
@@ -860,6 +897,7 @@ def services(
     def build_host(
         source_bundle: SourceBundle, commit: str, output_dir: Path
     ) -> BuildHostResult:
+        count("build_host")
         assert source_bundle.path.read_bytes() == b"bundle"
         assert source_bundle.source_commit == SOURCE_COMMIT
         assert source_bundle.sha256 == hashlib.sha256(b"bundle").hexdigest()
@@ -868,6 +906,7 @@ def services(
         return write_macos_host_outputs(output_dir, mutate=native_mutation)
 
     def materialize_support_wheels(destination: Path) -> tuple[Path, ...]:
+        count("materialize_support_wheels")
         entries = read_support_lock_entries(root / "uv.lock")
         return tuple(
             write_support_wheel(destination, name=entry.name, version=entry.version)
@@ -875,6 +914,7 @@ def services(
         )
 
     def run_target_proofs(**kwargs: Any) -> TargetProofPaths:
+        count("run_target_proofs")
         output_path = Path(kwargs["output_path"])
         target = str(kwargs["target"])
         install_paths = target_install_paths_from_ledger(
@@ -938,37 +978,73 @@ def services(
                 candidate_paths=install_paths,
                 support_paths=support_paths,
                 canonical_authority_bytes=NVATTEST_AUTHORITY_BYTES,
+                call_counts=call_counts,
             ),
             canonical_authority_bytes=NVATTEST_AUTHORITY_BYTES,
         )
         return TargetProofPaths(install=install_receipt, nvattest=nvattest_receipt)
 
     def cleanup(paths: Sequence[Path]) -> None:
+        count("cleanup_transients")
         for path in paths:
             if path.is_dir():
                 shutil.rmtree(path)
             elif path.exists() or path.is_symlink():
                 path.unlink()
 
-    return driver.CandidateServices(
-        git_head=lambda _repo: SOURCE_COMMIT,
-        git_status=lambda _repo: "",
-        core_lock_sha256=lambda _repo: LOCK_SHA,
-        clean_outputs=clean_outputs,
-        build_local_dist=build_local_dist,
-        prepare_policy=lambda _repo, _env: _policy(),
-        coordinator_tool_evidence=lambda: {
+    def git_head(_repo: Path) -> str:
+        count("git_head")
+        return SOURCE_COMMIT
+
+    def git_status(_repo: Path) -> str:
+        count("git_status")
+        return ""
+
+    def core_lock_sha256(_repo: Path) -> str:
+        count("core_lock_sha256")
+        return LOCK_SHA
+
+    def prepare_policy(_repo: Path, _env: Mapping[str, str]) -> PolicyRun:
+        count("prepare_policy")
+        return _policy()
+
+    def coordinator_tool_evidence() -> Mapping[str, Mapping[str, str]]:
+        count("coordinator_tool_evidence")
+        return {
             lane: pins.fixture_lane_tool_evidence(lane)
             for lane in ("source", "linux-x86_64-musl", "linux-aarch64-musl")
-        },
+        }
+
+    def challenge_factory() -> str:
+        count("challenge_factory")
+        return hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+
+    def transaction_hook(_point: str) -> None:
+        count("transaction_hook")
+
+    def reset_call_counts() -> None:
+        for name in tuple(call_counts):
+            call_counts[name] = 0
+
+    service = driver.CandidateServices(
+        git_head=git_head,
+        git_status=git_status,
+        core_lock_sha256=core_lock_sha256,
+        clean_outputs=clean_outputs,
+        build_local_dist=build_local_dist,
+        prepare_policy=prepare_policy,
+        coordinator_tool_evidence=coordinator_tool_evidence,
         create_source_bundle=create_source_bundle,
         build_host=build_host,
         cleanup_transients=cleanup,
-        challenge_factory=lambda: hashlib.sha256(str(root).encode("utf-8")).hexdigest(),
+        challenge_factory=challenge_factory,
         materialize_support_wheels=materialize_support_wheels,
         run_target_proofs=run_target_proofs,
-        transaction_hook=lambda _point: None,
+        transaction_hook=transaction_hook,
     )
+    object.__setattr__(service, "call_counts", call_counts)
+    object.__setattr__(service, "reset_call_counts", reset_call_counts)
+    return service
 
 
 def recover(root: Path) -> driver.CandidateReport:

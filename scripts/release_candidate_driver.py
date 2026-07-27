@@ -2416,7 +2416,17 @@ def _retained_authority_binding(
         return authority_bytes, failures
     authority = nvattest.get("authority")
     authority_sha256 = nvattest.get("authority_sha256")
-    if isinstance(authority, Mapping) and authority_bytes is not None:
+    if not isinstance(authority, Mapping):
+        failures.append(
+            _failure(
+                "retained nvattest authority is invalid",
+                expected="ledger nvattest authority object",
+                actual=type(authority).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+        return authority_bytes, failures
+    if authority_bytes is not None:
         canonical = _canonical_nvattest_authority_bytes(authority)
         if canonical != authority_bytes:
             failures.append(
@@ -2437,6 +2447,125 @@ def _retained_authority_binding(
                 )
             )
     return authority_bytes, failures
+
+
+def _validate_retained_nvattest_binding(
+    *,
+    evidence_dir: Path,
+    ledger: Mapping[str, Any],
+    digest: str,
+    ledger_sha256: str,
+    release_dir: Path,
+    version: str,
+) -> dict[str, str]:
+    failures: list[Failure] = []
+    nvattest = ledger.get("nvattest")
+    if not isinstance(nvattest, Mapping):
+        raise DriverError(
+            [
+                _failure(
+                    "retained ledger nvattest binding is invalid",
+                    expected="nvattest object",
+                    actual=type(nvattest).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        )
+
+    authority_bytes, authority_failures = _retained_authority_binding(
+        release_dir=release_dir,
+        ledger=ledger,
+    )
+    failures.extend(authority_failures)
+    challenge = nvattest.get("challenge")
+    if not isinstance(challenge, str) or not CHALLENGE_RE.fullmatch(challenge):
+        failures.append(
+            _failure(
+                "retained nvattest challenge is invalid",
+                expected="64 lowercase hexadecimal characters",
+                actual=repr(challenge),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+
+    support_distributions = nvattest.get("support_distributions")
+    support_declaration_failures = validate_support_declarations(
+        support_distributions,
+        repair="bash scripts/release.sh --recover",
+    )
+    failures.extend(support_declaration_failures)
+    if not support_declaration_failures:
+        failures.extend(
+            _retained_support_binding_failures(evidence_dir=evidence_dir, ledger=ledger)
+        )
+    if support_declaration_failures or authority_bytes is None:
+        raise DriverError(failures)
+
+    assert isinstance(support_distributions, Sequence)
+    hashes: dict[str, str] = {}
+    for target in PROOF_TARGETS:
+        path = evidence_dir / "nvattest" / f"{target}.json"
+        if not path.is_file() or path.is_symlink():
+            failures.append(
+                _failure(
+                    "release nvattest receipt is missing",
+                    expected=f"{target} nvattest receipt",
+                    actual="missing",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+            continue
+        data = path.read_bytes()
+        failures.extend(
+            validate_nvattest_proof_bytes(
+                data,
+                expected_challenge=challenge if isinstance(challenge, str) else "",
+                target=target,
+                version=version,
+                source_commit=str(ledger.get("source_commit")),
+                core_lock_sha256=str(ledger.get("core_lock_sha256")),
+                candidate_digest=digest,
+                ledger_sha256=ledger_sha256,
+                canonical_authority_bytes=authority_bytes,
+                expected_support_distributions=support_distributions,  # type: ignore[arg-type]
+            )
+        )
+        try:
+            receipt = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            receipt = None
+        installed_authority = (
+            receipt.get("installed_authority") if isinstance(receipt, Mapping) else None
+        )
+        if isinstance(installed_authority, Mapping) and installed_authority.get(
+            "size_bytes"
+        ) != len(authority_bytes):
+            failures.append(
+                _failure(
+                    "nvattest receipt installed authority size disagrees with candidate wheels",
+                    expected=str(len(authority_bytes)),
+                    actual=str(installed_authority.get("size_bytes")),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        hashes[target] = file_sha256_size(path)[0]
+    extras = sorted(
+        path.name
+        for path in (evidence_dir / "nvattest").glob("*.json")
+        if path.stem not in PROOF_TARGETS
+    )
+    if extras:
+        failures.append(
+            _failure(
+                "release nvattest set has extra targets",
+                expected=", ".join(PROOF_TARGETS),
+                actual=", ".join(extras),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    if failures:
+        raise DriverError(failures)
+    return hashes
 
 
 def _ledger_candidate_file_names(
@@ -3404,15 +3533,6 @@ def _validate_deep_ledger_binding(
     )
     failures.extend(native_member_failures)
     failures.extend(_validate_native_summary(release_dir, ledger))
-    authority_bytes, authority_failures = _retained_authority_binding(
-        release_dir=release_dir,
-        ledger=ledger,
-    )
-    failures.extend(authority_failures)
-    failures.extend(
-        _retained_support_binding_failures(evidence_dir=evidence_dir, ledger=ledger)
-    )
-    _ = authority_bytes
     failures.extend(validate_public_evidence_tree("ledger", ledger))
     return failures
 
@@ -3559,89 +3679,6 @@ def _proof_hashes(
     return hashes
 
 
-def _nvattest_hashes(
-    nvattest_dir: Path,
-    *,
-    ledger: Mapping[str, Any],
-    digest: str,
-    ledger_sha256: str,
-    release_dir: Path,
-    version: str,
-) -> dict[str, str]:
-    authority_bytes, authority_failures = _retained_authority_binding(
-        release_dir=release_dir,
-        ledger=ledger,
-    )
-    if authority_failures or authority_bytes is None:
-        raise DriverError(authority_failures)
-    nvattest = ledger.get("nvattest")
-    if not isinstance(nvattest, Mapping):
-        raise DriverError(
-            [
-                _failure(
-                    "retained ledger nvattest binding is invalid",
-                    expected="nvattest object",
-                    actual=type(nvattest).__name__,
-                    repair="bash scripts/release.sh --recover",
-                )
-            ]
-        )
-    support_distributions = nvattest.get("support_distributions")
-    support_failures = validate_support_declarations(
-        support_distributions,
-        repair="bash scripts/release.sh --recover",
-    )
-    if support_failures:
-        raise DriverError(support_failures)
-    hashes: dict[str, str] = {}
-    for target in PROOF_TARGETS:
-        path = nvattest_dir / f"{target}.json"
-        if not path.is_file() or path.is_symlink():
-            raise DriverError(
-                [
-                    _failure(
-                        "release nvattest receipt is missing",
-                        expected=f"{target} nvattest receipt",
-                        actual="missing",
-                        repair="bash scripts/release.sh --recover",
-                    )
-                ]
-            )
-        data = path.read_bytes()
-        failures = validate_nvattest_proof_bytes(
-            data,
-            expected_challenge=str(nvattest.get("challenge")),
-            target=target,
-            version=version,
-            source_commit=str(ledger.get("source_commit")),
-            core_lock_sha256=str(ledger.get("core_lock_sha256")),
-            candidate_digest=digest,
-            ledger_sha256=ledger_sha256,
-            canonical_authority_bytes=authority_bytes,
-            expected_support_distributions=support_distributions,  # type: ignore[arg-type]
-        )
-        if failures:
-            raise DriverError(failures)
-        hashes[target] = file_sha256_size(path)[0]
-    extras = sorted(
-        path.name
-        for path in nvattest_dir.glob("*.json")
-        if path.stem not in PROOF_TARGETS
-    )
-    if extras:
-        raise DriverError(
-            [
-                _failure(
-                    "release nvattest set has extra targets",
-                    expected=", ".join(PROOF_TARGETS),
-                    actual=", ".join(extras),
-                    repair="bash scripts/release.sh --recover",
-                )
-            ]
-        )
-    return hashes
-
-
 def _report(
     *,
     heading: str,
@@ -3720,8 +3757,8 @@ def _report(
         release_dir=release_dir,
         version=version,
     )
-    nvattest_hashes = _nvattest_hashes(
-        evidence_dir / "nvattest",
+    nvattest_hashes = _validate_retained_nvattest_binding(
+        evidence_dir=evidence_dir,
         ledger=ledger,
         digest=digest,
         ledger_sha256=ledger_sha256,

@@ -142,6 +142,10 @@ def version_object_key(product: str, version: str, name: str) -> str:
     return f"{version_prefix(product, version)}{name}"
 
 
+def nvattest_public_receipt_name(target: str) -> str:
+    return f"{target}.nvattest.json"
+
+
 def product_prefix(product: str) -> str:
     return f"releases/{product}/"
 
@@ -985,8 +989,31 @@ def collect_candidate_parts(report: CandidateReport) -> CandidateTransparencyPar
             )
         proofs.append(NamedDigest(name=name, sha256=digest))
         version_files[name] = path
+    nvattest_dir = report.evidence_dir / "nvattest"
+    for target, digest in sorted(report.nvattest_sha256.items()):
+        name = nvattest_public_receipt_name(target)
+        path = nvattest_dir / f"{target}.json"
+        try:
+            actual_digest, _actual_bytes = file_sha256_size(path)
+        except OSError as exc:
+            fail_closed(
+                "retained nvattest receipt could not be read",
+                expected=f"nvattest/{target}.json",
+                actual=type(exc).__name__,
+                repair="bash scripts/release.sh --recover <version> <source-commit>",
+            )
+        if actual_digest != digest:
+            fail_closed(
+                "retained nvattest digest does not match candidate report",
+                expected=digest,
+                actual=actual_digest,
+                repair="bash scripts/release.sh --recover <version> <source-commit>",
+            )
+        proofs.append(NamedDigest(name=name, sha256=digest))
+        version_files[name] = path
     validate_retained_source_clean(report)
     validate_retained_proof_versions(report, ledger)
+    validate_retained_nvattest_versions(report, ledger)
     return CandidateTransparencyParts(
         artifacts=tuple(sorted(artifacts, key=lambda item: item.name)),
         manifests=tuple(sorted(manifests, key=lambda item: item.name)),
@@ -1066,6 +1093,55 @@ def validate_retained_proof_versions(
             failures.append(
                 failure(
                     "retained proof version is stale",
+                    expected=report.version,
+                    actual=repr(payload.get("version")),
+                    repair="bash scripts/release.sh --recover <version> <source-commit>",
+                )
+            )
+    if failures:
+        raise DriverError(failures)
+
+
+def validate_retained_nvattest_versions(
+    report: CandidateReport,
+    ledger: Mapping[str, Any],
+) -> None:
+    expected_targets = (
+        ledger.get("proofs", {}).get("expected_targets")
+        if isinstance(ledger.get("proofs"), Mapping)
+        else None
+    )
+    expected_target_set = (
+        set(expected_targets) if isinstance(expected_targets, list) else set()
+    )
+    failures: list[Failure] = []
+    for path in sorted((report.evidence_dir / "nvattest").glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append(
+                failure(
+                    "retained nvattest receipt could not be read",
+                    expected=path.name,
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover <version> <source-commit>",
+                )
+            )
+            continue
+        target = payload.get("target")
+        if target not in expected_target_set:
+            failures.append(
+                failure(
+                    "retained nvattest target is stale or unexpected",
+                    expected=", ".join(sorted(expected_target_set)),
+                    actual=repr(target),
+                    repair="bash scripts/release.sh --recover <version> <source-commit>",
+                )
+            )
+        if payload.get("version") != report.version:
+            failures.append(
+                failure(
+                    "retained nvattest version is stale",
                     expected=report.version,
                     actual=repr(payload.get("version")),
                     repair="bash scripts/release.sh --recover <version> <source-commit>",

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ import pytest
 
 import scripts.transparency_publish as publisher
 from scripts.release_candidate_driver import CandidateReport, DriverError
+from scripts.release_install_smoke import PROOF_TARGETS
+from scripts.release_public_evidence import validate_public_evidence_tree
 from scripts.transparency_core import (
     ENTRY_OBJECT_NAME,
     ENTRY_SIGNATURE_NAME,
@@ -28,11 +31,13 @@ from scripts.transparency_core import (
     build_latest_pointer,
     build_ledger_entry,
     canonical_json_bytes,
+    collect_candidate_parts,
     entry_trusted_comment,
     latest_key,
     latest_signature_key,
     latest_trusted_comment,
     ledger_key,
+    nvattest_public_receipt_name,
     parse_latest_bytes,
     parse_ledger_entry_bytes,
     sha256_bytes,
@@ -42,7 +47,6 @@ from scripts.transparency_head_log import HeadLogRow, append_head_row
 from scripts.transparency_signing import FakeTransparencySigner
 from scripts.transparency_transport import DirectoryTransparencyTransport, HttpResult
 
-PROOF_TARGETS = ("linux-aarch64-musl", "linux-x86_64-musl", "macos-arm64")
 SOURCE_COMMIT = "a" * 40
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "transparency"
 STAGING_MANIFEST_SHA256 = (
@@ -70,12 +74,14 @@ def _candidate(
     *,
     version: str = "0.9.1",
     proof_version: str | None = None,
+    nvattest_version: str | None = None,
     dirty: bool = False,
 ) -> CandidateReport:
     release_dir = root / "dist" / "release-candidate" / version
     evidence_dir = root / "target" / "release-evidence" / version
     release_dir.mkdir(parents=True, exist_ok=True)
     (evidence_dir / "proofs").mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "nvattest").mkdir(parents=True, exist_ok=True)
     package_names = [f"package-{index}.whl" for index in range(11)]
     manifest_names = [
         "solstone-core.rust-release-manifest.json",
@@ -125,7 +131,13 @@ def _candidate(
         path = evidence_dir / "proofs" / f"{target}.json"
         path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
         proof_hashes[target] = _sha(path)[0]
-        nvattest_hashes[target] = "0" * 64
+        nvattest = {"target": target, "version": nvattest_version or version}
+        nvattest_path = evidence_dir / "nvattest" / f"{target}.json"
+        nvattest_path.write_text(
+            json.dumps(nvattest, sort_keys=True),
+            encoding="utf-8",
+        )
+        nvattest_hashes[target] = _sha(nvattest_path)[0]
     return CandidateReport(
         heading="retained-candidate-valid",
         version=version,
@@ -138,6 +150,13 @@ def _candidate(
         nvattest_sha256=nvattest_hashes,
         bundle_digest="c" * 64,
     )
+
+
+def _refresh_nvattest_digest(report: CandidateReport, target: str) -> CandidateReport:
+    nvattest_sha256 = dict(report.nvattest_sha256)
+    receipt = report.evidence_dir / "nvattest" / f"{target}.json"
+    nvattest_sha256[target] = _sha(receipt)[0]
+    return replace(report, nvattest_sha256=nvattest_sha256)
 
 
 def _patch_recover(monkeypatch: pytest.MonkeyPatch, *, version: str = "0.9.1") -> None:
@@ -511,17 +530,18 @@ def test_staging_payload_is_archive_superset(
     artifact_names = {path.name for path in (stage.payload_dir / "artifacts").iterdir()}
     assert artifact_names == {f"package-{index}.whl" for index in range(11)}
     evidence_names = {path.name for path in stage.version_dir.iterdir()}
-    assert {
+    expected_receipts = {f"{target}.json" for target in PROOF_TARGETS} | {
+        nvattest_public_receipt_name(target) for target in PROOF_TARGETS
+    }
+    expected_evidence = {
         ENTRY_OBJECT_NAME,
         ENTRY_SIGNATURE_NAME,
-        "linux-aarch64-musl.json",
-        "linux-x86_64-musl.json",
-        "macos-arm64.json",
         "solstone-core.rust-release-manifest.json",
         "solstone-journal-cuda.rust-release-manifest.json",
         "solstone-journal-models.rust-release-manifest.json",
         "solstone-journal.rust-release-manifest.json",
-    }.issubset(evidence_names)
+    } | expected_receipts
+    assert expected_evidence <= evidence_names
     assert (stage.payload_dir / LEDGER_OBJECT_NAME).is_file()
     assert (stage.payload_dir / LATEST_OBJECT_NAME).is_file()
     assert (stage.payload_dir / LATEST_SIGNATURE_NAME).is_file()
@@ -552,9 +572,36 @@ def test_built_entry_inventory_matches_retained_rail_ledger(
         for item in candidate_files
         if item["name"].endswith(".rust-release-manifest.json")
     }
-    assert {(item["name"], item["sha256"]) for item in entry["proofs"]} == {
+    expected_proofs = {
         (f"{target}.json", digest) for target, digest in report.proof_sha256.items()
+    } | {
+        (nvattest_public_receipt_name(target), digest)
+        for target, digest in report.nvattest_sha256.items()
     }
+    assert {(item["name"], item["sha256"]) for item in entry["proofs"]} == (
+        expected_proofs
+    )
+    assert len(entry["proofs"]) == len(PROOF_TARGETS) * 2
+
+
+def test_install_proof_glob_stays_scoped_to_install_receipts(tmp_path: Path) -> None:
+    report = _candidate(tmp_path)
+    install_receipts = {f"{target}.json" for target in PROOF_TARGETS}
+    nvattest_receipts = {
+        nvattest_public_receipt_name(target) for target in PROOF_TARGETS
+    }
+
+    assert {
+        path.name for path in (report.evidence_dir / "proofs").glob("*.json")
+    } == install_receipts
+    assert {
+        path.name for path in (report.evidence_dir / "nvattest").glob("*.json")
+    } == install_receipts
+
+    parts = collect_candidate_parts(report)
+    assert {item.name for item in parts.proofs} == (
+        install_receipts | nvattest_receipts
+    )
 
 
 def test_excluded_models_package_names_are_not_transparency_artifacts(
@@ -637,15 +684,17 @@ def test_publish_genesis_uploads_fixed_layout_and_order(
         in result.public_urls
     )
     calls = [(call["plane"], call["op"], call["key"]) for call in transport.call_log]
+    receipt_names = sorted(
+        {f"{target}.json" for target in PROOF_TARGETS}
+        | {nvattest_public_receipt_name(target) for target in PROOF_TARGETS}
+    )
     immutable = [
         version_object_key(PRODUCT, "0.9.1", ENTRY_OBJECT_NAME),
         version_object_key(PRODUCT, "0.9.1", ENTRY_SIGNATURE_NAME),
         *[
             version_object_key(PRODUCT, "0.9.1", name)
             for name in (
-                "linux-aarch64-musl.json",
-                "linux-x86_64-musl.json",
-                "macos-arm64.json",
+                *receipt_names,
                 "solstone-core.rust-release-manifest.json",
                 "solstone-journal-cuda.rust-release-manifest.json",
                 "solstone-journal-models.rust-release-manifest.json",
@@ -1505,6 +1554,98 @@ def test_stale_proofs_fail_closed_before_signing(
             now=datetime(2026, 7, 22, 12, 0, tzinfo=UTC),
         )
     assert error.value.failures[0].error == "retained proof version is stale"
+
+
+def test_missing_nvattest_receipt_fails_closed(tmp_path: Path) -> None:
+    report = _candidate(tmp_path)
+    target = PROOF_TARGETS[0]
+    (report.evidence_dir / "nvattest" / f"{target}.json").unlink()
+
+    with pytest.raises(DriverError) as error:
+        collect_candidate_parts(report)
+
+    assert error.value.failures[0].error == (
+        "retained nvattest receipt could not be read"
+    )
+
+
+def test_extra_nvattest_receipt_fails_closed(tmp_path: Path) -> None:
+    report = _candidate(tmp_path)
+    extra = report.evidence_dir / "nvattest" / "unexpected.json"
+    extra.write_text(
+        json.dumps(
+            {
+                "target": "not-a-proof-target",
+                "version": report.version,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DriverError) as error:
+        collect_candidate_parts(report)
+
+    assert error.value.failures[0].error == (
+        "retained nvattest target is stale or unexpected"
+    )
+
+
+def test_stale_nvattest_receipt_fails_closed(tmp_path: Path) -> None:
+    report = _candidate(tmp_path)
+    target = PROOF_TARGETS[0]
+    receipt = report.evidence_dir / "nvattest" / f"{target}.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "target": target,
+                "version": f"{report.version}.stale",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    report = _refresh_nvattest_digest(report, target)
+
+    with pytest.raises(DriverError) as error:
+        collect_candidate_parts(report)
+
+    assert error.value.failures[0].error == "retained nvattest version is stale"
+
+
+def test_staged_nvattest_public_evidence_contains_no_private_reach_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch)
+    stage = _stage_candidate(tmp_path, monkeypatch)
+    forbidden_fragments = (
+        str(tmp_path),
+        "response_body",
+        "credential",
+        "secret",
+        "token",
+        "password",
+        "bearer",
+    )
+
+    for target in PROOF_TARGETS:
+        name = nvattest_public_receipt_name(target)
+        path = stage.version_dir / name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        evidence_text = json.dumps(payload, sort_keys=True).lower()
+
+        assert _sha(path)[0] == report.nvattest_sha256[target]
+        assert validate_public_evidence_tree("nvattest_proof", payload) == []
+        assert all(
+            fragment.lower() not in evidence_text for fragment in forbidden_fragments
+        )
+        assert all(
+            not value.startswith("/")
+            for value in payload.values()
+            if isinstance(value, str)
+        )
 
 
 def test_dirty_retained_manifest_fails_closed_before_signing(

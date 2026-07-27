@@ -13,6 +13,7 @@ tag readiness, and it never invokes git or gh.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -37,7 +38,12 @@ from scripts.check_rust_release_manifest import (  # noqa: E402
     rust_artifact_targets,
     validate_core_unsupported_tombstone_record,
 )
-from scripts.release_candidate_driver import CandidateReport, DriverError  # noqa: E402
+from scripts.build_nvattest_authority import render_nvattest_authority_json  # noqa: E402
+from scripts.release_candidate_driver import (  # noqa: E402
+    CandidateReport,
+    DriverError,
+    _retained_authority_binding,
+)
 from scripts.release_ledger import read_retained_ledger  # noqa: E402
 from scripts.transparency_core import (  # noqa: E402
     fail_closed,
@@ -479,6 +485,49 @@ def _verify_recover(config: PublishConfig) -> CandidateReport:
             ]
         )
     return report
+
+
+def _assert_nvattest_authority_matches_checkout(
+    config: PublishConfig,
+    report: CandidateReport,
+) -> None:
+    authority_bytes, failures = _retained_authority_binding(
+        release_dir=report.release_dir,
+        ledger=config.retained_ledger,
+    )
+    if authority_bytes is None and not failures:
+        failures.append(
+            failure(
+                "release publish retained nvattest authority is missing",
+                expected="retained candidate root wheel authority bytes",
+                actual="<missing>",
+                repair=(
+                    "bash scripts/release.sh --recover "
+                    f"{config.version} {config.source_commit}"
+                ),
+            )
+        )
+    if failures:
+        raise DriverError(failures)
+
+    checkout_authority_bytes = render_nvattest_authority_json().encode("utf-8")
+    if checkout_authority_bytes != authority_bytes:
+        raise DriverError(
+            [
+                failure(
+                    (
+                        "release publish checkout nvattest authority does not match "
+                        "retained candidate"
+                    ),
+                    expected=hashlib.sha256(authority_bytes).hexdigest(),
+                    actual=hashlib.sha256(checkout_authority_bytes).hexdigest(),
+                    repair=(
+                        "run the publisher from the release checkout at "
+                        f"{config.source_commit}"
+                    ),
+                )
+            ]
+        )
 
 
 def _verify_core_unsupported_tombstone_prerequisite(config: PublishConfig) -> None:
@@ -1061,7 +1110,8 @@ def publish_release(
     max_verify_attempts: int = DEFAULT_VERIFY_ATTEMPTS,
     verify_sleep_seconds: float = DEFAULT_VERIFY_SLEEP_SECONDS,
 ) -> PublishResult:
-    _verify_recover(config)
+    report = _verify_recover(config)
+    _assert_nvattest_authority_matches_checkout(config, report)
     if config.mode == "production":
         _ensure_source_commit_exists(config, git_runner)
         _verify_core_unsupported_tombstone_prerequisite(config)

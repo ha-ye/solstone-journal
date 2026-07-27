@@ -8,8 +8,9 @@ import json
 import logging
 import subprocess
 import sys
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import pytest
 import scripts.check_rust_release_manifest as manifest
 import scripts.check_wheel_contents as wheel_checker
 import scripts.release_publish as publisher
+from scripts.build_nvattest_authority import render_nvattest_authority_json
 from scripts.release_candidate_driver import (
     CandidateReport,
     DriverError,
@@ -25,6 +27,7 @@ from scripts.release_candidate_driver import (
 from scripts.release_candidate_driver import (
     run_candidate as run_release_candidate,
 )
+from scripts.release_install_smoke import PROOF_TARGETS
 from scripts.transparency_core import failure
 from tests.helpers.release_candidate_fixtures import (
     MACOS_ONNXRUNTIME,
@@ -46,11 +49,6 @@ from tests.helpers.release_candidate_fixtures import (
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
 TOKEN = "pypi-canary-token"
-PROOF_TARGETS = (
-    "linux-x86_64-musl",
-    "linux-aarch64-musl",
-    "macos-arm64",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +117,24 @@ def _manifest_names() -> list[str]:
     ]
 
 
+def _checkout_authority_bytes() -> bytes:
+    return render_nvattest_authority_json().encode("utf-8")
+
+
+def _write_publish_fixture_file(path: Path, content: bytes) -> None:
+    if path.name.startswith("solstone-") and path.name.endswith(".whl"):
+        info = zipfile.ZipInfo(
+            wheel_checker.NVATTEST_AUTHORITY_MEMBER,
+            (2026, 7, 20, 12, 0, 0),
+        )
+        info.create_system = 3
+        info.external_attr = 0o644 << 16
+        with zipfile.ZipFile(path, "w") as wheel:
+            wheel.writestr(info, _checkout_authority_bytes())
+        return
+    path.write_bytes(content)
+
+
 def _candidate(
     root: Path,
     *,
@@ -131,6 +147,7 @@ def _candidate(
     evidence_dir = root / "target" / "release-evidence" / candidate_version
     release_dir.mkdir(parents=True, exist_ok=True)
     (evidence_dir / "proofs").mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "nvattest").mkdir(parents=True, exist_ok=True)
 
     names = [
         *publisher.expected_package_names(include_models=include_models),
@@ -139,12 +156,17 @@ def _candidate(
     if unknown_name is not None:
         names.append(unknown_name)
     for name in names:
-        (release_dir / name).write_bytes(f"retained bytes for {name}\n".encode())
+        _write_publish_fixture_file(
+            release_dir / name,
+            f"retained bytes for {name}\n".encode(),
+        )
 
     files: list[dict[str, Any]] = []
     for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
         digest, byte_count = _sha(path)
         files.append({"bytes": byte_count, "name": path.name, "sha256": digest})
+    authority_bytes = _checkout_authority_bytes()
+    authority = json.loads(authority_bytes.decode("utf-8"))
 
     ledger = {
         "candidate": {
@@ -160,6 +182,14 @@ def _candidate(
         "models": {
             "decision": "include" if include_models else "exclude",
             "package_version": _models_version(),
+        },
+        "nvattest": {
+            "authority": authority,
+            "authority_sha256": hashlib.sha256(authority_bytes).hexdigest(),
+            "challenge": hashlib.sha256(
+                f"publish fixture challenge {candidate_version}".encode("utf-8")
+            ).hexdigest(),
+            "support_distributions": [],
         },
         "product": "solstone",
         "proofs": {"expected_targets": list(PROOF_TARGETS)},
@@ -180,7 +210,12 @@ def _candidate(
             encoding="utf-8",
         )
         proof_hashes[target] = _sha(path)[0]
-        nvattest_hashes[target] = "0" * 64
+        nvattest_path = evidence_dir / "nvattest" / f"{target}.json"
+        nvattest_path.write_text(
+            json.dumps({"target": target, "version": candidate_version}),
+            encoding="utf-8",
+        )
+        nvattest_hashes[target] = _sha(nvattest_path)[0]
 
     return CandidateReport(
         heading="retained-candidate-valid",
@@ -214,6 +249,20 @@ def _write_ledger(report: CandidateReport, ledger: Mapping[str, Any]) -> None:
     (report.evidence_dir / "ledger.json").write_text(
         json.dumps(ledger, sort_keys=True), encoding="utf-8"
     )
+
+
+def _mutate_first_authority_target(authority: Mapping[str, Any], label: str) -> None:
+    targets = authority["targets"]
+    first_key = sorted(targets)[0]
+    targets[first_key]["artifact"]["sha256"] = hashlib.sha256(
+        f"{label} {first_key}".encode("utf-8")
+    ).hexdigest()
+
+
+def _divergent_checkout_authority_json() -> str:
+    authority = json.loads(render_nvattest_authority_json())
+    _mutate_first_authority_target(authority, "checkout authority divergence")
+    return json.dumps(authority, indent=2, sort_keys=True) + "\n"
 
 
 def _config(
@@ -502,6 +551,93 @@ def _gh_runner(calls: list[str], *, fail: bool = False) -> publisher.ProcessRunn
     return run
 
 
+@dataclass
+class PublishSeamCounters:
+    index_calls: int = 0
+    upload_calls: int = 0
+    git_calls: int = 0
+    gh_calls: int = 0
+
+    def index_client(
+        self,
+        _base_url: str,
+        projects: Sequence[publisher.ProjectExpectation],
+    ) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
+        self.index_calls += 1
+        return _empty_snapshot(projects)
+
+    def upload_runner(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        self.upload_calls += 1
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    def git_runner(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        self.git_calls += 1
+        return subprocess.CompletedProcess(
+            list(argv),
+            0,
+            stdout=SOURCE_COMMIT,
+            stderr="",
+        )
+
+    def gh_runner(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        self.gh_calls += 1
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    def assert_zero(self) -> None:
+        assert self.index_calls == 0
+        assert self.upload_calls == 0
+        assert self.git_calls == 0
+        assert self.gh_calls == 0
+
+
+def _patch_late_publish_steps_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+) -> None:
+    def forbidden(name: str) -> Callable[..., Any]:
+        def run(*_args: Any, **_kwargs: Any) -> Any:
+            calls.append(name)
+            raise AssertionError(f"{name} must not be invoked")
+
+        return run
+
+    for name in (
+        "classify_candidate_artifacts",
+        "_read_changelog_block",
+        "_index_matches",
+        "_run_twine_upload",
+        "_verify_uploaded_index",
+        "publish_git_tag",
+        "record_github_release_witness",
+    ):
+        monkeypatch.setattr(publisher, name, forbidden(name))
+
+
 def _forbidden_runner(label: str, calls: list[str]) -> publisher.ProcessRunner:
     def run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(label)
@@ -528,6 +664,22 @@ def _run_publish(
         gh_runner=gh_runner or _forbidden_runner("witness", calls),
         sleep=lambda _seconds: None,
         max_verify_attempts=max_verify_attempts,
+        verify_sleep_seconds=0,
+    )
+
+
+def _run_publish_with_counted_seams(
+    config: publisher.PublishConfig,
+    seams: PublishSeamCounters,
+) -> publisher.PublishResult:
+    return publisher.publish_release(
+        config=config,
+        index_client=seams.index_client,
+        upload_runner=seams.upload_runner,
+        git_runner=seams.git_runner,
+        gh_runner=seams.gh_runner,
+        sleep=lambda _seconds: None,
+        max_verify_attempts=1,
         verify_sleep_seconds=0,
     )
 
@@ -975,6 +1127,98 @@ def test_recover_heading_must_be_retained_valid(
 
     assert _first_failure(excinfo.value) == "release publish recover verdict is invalid"
     assert calls == []
+
+
+@pytest.mark.parametrize("mode", ("production", "test"))
+def test_recovery_failure_short_circuits_before_publisher_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: publisher.Mode,
+) -> None:
+    report = _candidate(tmp_path)
+    config = _config(tmp_path, report, mode=mode)
+    late_calls: list[str] = []
+    _patch_late_publish_steps_forbidden(monkeypatch, late_calls)
+
+    def recover(_root: Path, *, version: str, source_commit: str) -> CandidateReport:
+        raise DriverError(
+            [
+                failure(
+                    "release publish recovery failed",
+                    expected=version,
+                    actual=source_commit,
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(publisher, "recover_candidate", recover)
+    seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish_with_counted_seams(config, seams)
+
+    assert _first_failure(excinfo.value) == "release publish recovery failed"
+    seams.assert_zero()
+    assert late_calls == []
+
+
+@pytest.mark.parametrize("mode", ("production", "test"))
+def test_retained_authority_binding_failure_short_circuits_before_publisher_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: publisher.Mode,
+) -> None:
+    report = _candidate(tmp_path)
+    ledger = _ledger(report)
+    _mutate_first_authority_target(
+        ledger["nvattest"]["authority"],
+        "retained authority divergence",
+    )
+    _write_ledger(report, ledger)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    late_calls: list[str] = []
+    _patch_late_publish_steps_forbidden(monkeypatch, late_calls)
+    seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish_with_counted_seams(
+            _config(tmp_path, report, mode=mode, ledger=ledger),
+            seams,
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "retained nvattest authority disagrees with candidate wheels"
+    )
+    seams.assert_zero()
+    assert late_calls == []
+
+
+@pytest.mark.parametrize("mode", ("production", "test"))
+def test_checkout_authority_divergence_short_circuits_before_publisher_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: publisher.Mode,
+) -> None:
+    report = _candidate(tmp_path)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    monkeypatch.setattr(
+        publisher,
+        "render_nvattest_authority_json",
+        _divergent_checkout_authority_json,
+    )
+    late_calls: list[str] = []
+    _patch_late_publish_steps_forbidden(monkeypatch, late_calls)
+    seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish_with_counted_seams(_config(tmp_path, report, mode=mode), seams)
+
+    assert _first_failure(excinfo.value) == (
+        "release publish checkout nvattest authority does not match retained candidate"
+    )
+    seams.assert_zero()
+    assert late_calls == []
 
 
 def test_unknown_asset_class_prevents_transport(

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import inspect
 import json
@@ -413,6 +414,161 @@ def _same_or_descendant(path: Path, parent: Path) -> bool:
 def _real_candidate(tmp_path: Path) -> tuple[Path, driver.CandidateReport]:
     root = _repo(tmp_path)
     return root, driver.run_candidate(root, _env(), _services(root))
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.write_bytes(checker.canonical_json_bytes(payload))
+
+
+def _ledger_path(report: driver.CandidateReport) -> Path:
+    return report.evidence_dir / "ledger.json"
+
+
+def _write_ledger(report: driver.CandidateReport, payload: Mapping[str, Any]) -> str:
+    path = _ledger_path(report)
+    _write_json(path, payload)
+    return driver.file_sha256_size(path)[0]
+
+
+def _nvattest_receipt_path(report: driver.CandidateReport, target: str) -> Path:
+    return report.evidence_dir / "nvattest" / f"{target}.json"
+
+
+def _proof_receipt_path(report: driver.CandidateReport, target: str) -> Path:
+    return report.evidence_dir / "proofs" / f"{target}.json"
+
+
+def _update_retained_receipt_ledger_sha(
+    report: driver.CandidateReport, ledger_sha256: str
+) -> None:
+    for target in driver.PROOF_TARGETS:
+        for path in (
+            _proof_receipt_path(report, target),
+            _nvattest_receipt_path(report, target),
+        ):
+            payload = _read_json(path)
+            payload["ledger_sha256"] = ledger_sha256
+            _write_json(path, payload)
+
+
+def _assert_fails_with_error(root: Path, expected_error: str) -> None:
+    with pytest.raises(driver.DriverError) as exc:
+        _recover(root)
+
+    errors = [failure.error for failure in exc.value.failures]
+    assert expected_error in errors, errors
+
+
+def _reset_service_call_counts(services: driver.CandidateServices) -> None:
+    services.reset_call_counts()
+
+
+def _assert_service_call_counts_zero(services: driver.CandidateServices) -> None:
+    counts = dict(services.call_counts)
+    assert counts
+    assert counts == {name: 0 for name in counts}
+
+
+def _assert_recovery_failure_preserves_retained_tree(
+    root: Path,
+    report: driver.CandidateReport,
+    expected_error: str,
+    services: driver.CandidateServices,
+) -> None:
+    before_payload = _structural_snapshot(report.release_dir)
+    before_evidence = _structural_snapshot(report.evidence_dir)
+    _reset_service_call_counts(services)
+
+    _assert_fails_with_error(root, expected_error)
+
+    assert _structural_snapshot(report.release_dir) == before_payload
+    assert _structural_snapshot(report.evidence_dir) == before_evidence
+    _assert_service_call_counts_zero(services)
+
+
+def _retained_support_declarations(
+    report: driver.CandidateReport,
+) -> list[dict[str, Any]]:
+    support_paths = tuple(
+        path.resolve()
+        for path in sorted((report.evidence_dir / "support").glob("*.whl"))
+    )
+    declarations = driver.support_distribution_entries(support_paths)
+    assert (
+        {entry["name"] for entry in declarations}
+        == driver.SUPPORT_DISTRIBUTION_NAMES
+    )
+    return declarations
+
+
+def _sync_nvattest_receipt_with_ledger(
+    receipt: dict[str, Any],
+    *,
+    nvattest: Mapping[str, Any],
+    ledger_sha256: str,
+) -> None:
+    authority = nvattest["authority"]
+    assert isinstance(authority, Mapping)
+    authority_bytes = driver._canonical_nvattest_authority_bytes(authority)
+    host = receipt["host"]
+    assert isinstance(host, Mapping)
+    target_key = host["authority_target_key"]
+    authority_targets = authority["targets"]
+    assert isinstance(authority_targets, Mapping)
+    authority_target = authority_targets[target_key]
+    assert isinstance(authority_target, Mapping)
+    source = authority_target["source"]
+    artifact = authority_target["artifact"]
+    companion_manifest = authority_target["companion_manifest"]
+    assert isinstance(source, Mapping)
+    assert isinstance(artifact, Mapping)
+    assert isinstance(companion_manifest, Mapping)
+
+    receipt["challenge"] = nvattest["challenge"]
+    receipt["ledger_sha256"] = ledger_sha256
+    receipt["support_distributions"] = copy.deepcopy(nvattest["support_distributions"])
+    receipt["installed_authority"]["sha256"] = nvattest["authority_sha256"]
+    receipt["installed_authority"]["size_bytes"] = len(authority_bytes)
+    receipt["nvattest"] = {
+        "artifact": {
+            "name": artifact["name"],
+            "sha256": artifact["sha256"],
+            "size_bytes": artifact["size_bytes"],
+            "url": artifact["url"],
+        },
+        "companion_manifest": {
+            "name": companion_manifest["name"],
+            "sha256": companion_manifest["sha256"],
+            "url": companion_manifest["url"],
+        },
+        "source": {
+            "fork_commit": source["fork_commit"],
+            "upstream_base": source["upstream_base"],
+            "version": source["version"],
+        },
+        "target_key": target_key,
+    }
+    receipt["archive_fetch"] = {
+        "sha256": artifact["sha256"],
+        "size_bytes": artifact["size_bytes"],
+        "url": artifact["url"],
+    }
+    receipt["manifest_fetch"]["sha256"] = companion_manifest["sha256"]
+    receipt["manifest_fetch"]["url"] = companion_manifest["url"]
+    receipt["companion_manifest"]["sha256"] = companion_manifest["sha256"]
+    receipt["companion_manifest"]["target_key"] = target_key
+    receipt["integrity"]["sidecar"]["artifact"] = dict(artifact)
+    receipt["integrity"]["sidecar"]["target_key"] = target_key
+    receipt["integrity"]["sidecar"]["version"] = source["version"]
+    sidecar_bytes = checker.canonical_json_bytes(receipt["integrity"]["sidecar"])
+    receipt["integrity"]["sidecar_sha256"] = hashlib.sha256(sidecar_bytes).hexdigest()
+    receipt["integrity"]["sidecar_size_bytes"] = len(sidecar_bytes)
 
 
 def _write_directory_sentinel(path: Path) -> None:
@@ -2967,4 +3123,204 @@ def test_recovery_rejects_self_consistent_native_member_forgery(
     assert (
         exc.value.failures[0].error
         == "retained ledger native_members do not match finalized wheels"
+    )
+
+
+def test_recovery_rejects_self_consistent_nvattest_authority_forgery(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    before_payload = _structural_snapshot(report.release_dir)
+    ledger = _read_json(_ledger_path(report))
+    nvattest = ledger["nvattest"]
+    forged_authority = copy.deepcopy(nvattest["authority"])
+    assert isinstance(forged_authority, dict)
+    for target_key, authority_target in sorted(forged_authority["targets"].items()):
+        authority_target["artifact"]["sha256"] = hashlib.sha256(
+            f"forged authority {target_key}".encode("utf-8")
+        ).hexdigest()
+    forged_authority_bytes = driver._canonical_nvattest_authority_bytes(
+        forged_authority
+    )
+    forged_challenge = hashlib.sha256(
+        f"forged challenge {report.version}".encode("utf-8")
+    ).hexdigest()
+    assert CHALLENGE_RE.fullmatch(forged_challenge)
+    nvattest["challenge"] = forged_challenge
+    nvattest["authority"] = forged_authority
+    nvattest["authority_sha256"] = hashlib.sha256(forged_authority_bytes).hexdigest()
+    nvattest["support_distributions"] = _retained_support_declarations(report)
+    forged_ledger_sha = _write_ledger(report, ledger)
+    _update_retained_receipt_ledger_sha(report, forged_ledger_sha)
+
+    for target in driver.PROOF_TARGETS:
+        receipt_path = _nvattest_receipt_path(report, target)
+        receipt = _read_json(receipt_path)
+        _sync_nvattest_receipt_with_ledger(
+            receipt,
+            nvattest=nvattest,
+            ledger_sha256=forged_ledger_sha,
+        )
+        _write_json(receipt_path, receipt)
+
+    assert _structural_snapshot(report.release_dir) == before_payload
+    _assert_fails_with_error(
+        root,
+        "retained nvattest authority disagrees with candidate wheels",
+    )
+
+
+def test_recovery_success_preserves_retained_tree_and_uses_no_seams(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+    report = driver.run_candidate(root, _env(), services)
+    before_payload = _structural_snapshot(report.release_dir)
+    before_evidence = _structural_snapshot(report.evidence_dir)
+    _reset_service_call_counts(services)
+
+    recovered = _recover(root)
+
+    assert recovered.heading == "retained-candidate-valid"
+    assert _structural_snapshot(report.release_dir) == before_payload
+    assert _structural_snapshot(report.evidence_dir) == before_evidence
+    _assert_service_call_counts_zero(services)
+
+
+def test_recovery_failure_preserves_retained_tree_and_uses_no_seams(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    services = _services(root)
+    report = driver.run_candidate(root, _env(), services)
+    _nvattest_receipt_path(report, driver.PROOF_TARGETS[0]).unlink()
+
+    _assert_recovery_failure_preserves_retained_tree(
+        root,
+        report,
+        "release nvattest inventory is not exact",
+        services,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("extra", "release nvattest inventory is not exact"),
+        ("duplicate", "nvattest proof target is not bound to expected input"),
+        ("swapped", "nvattest proof target is not bound to expected input"),
+        ("stale", "nvattest proof version is not bound to expected input"),
+        ("replayed", "nvattest proof challenge is not bound to expected input"),
+        ("mutated", "nvattest proof kind is invalid"),
+        ("noncanonical", "nvattest proof bytes are not canonical"),
+    ],
+)
+def test_recovery_rejects_retained_nvattest_receipt_mutations(
+    tmp_path: Path,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    targets = tuple(driver.PROOF_TARGETS)
+    first_target = targets[0]
+    second_target = targets[1]
+    first_path = _nvattest_receipt_path(report, first_target)
+    second_path = _nvattest_receipt_path(report, second_target)
+
+    if mutation == "extra":
+        extra_path = report.evidence_dir / "nvattest" / "extra.json"
+        extra_path.write_bytes(first_path.read_bytes())
+    elif mutation == "duplicate":
+        second_path.write_bytes(first_path.read_bytes())
+    elif mutation == "swapped":
+        first_bytes = first_path.read_bytes()
+        second_bytes = second_path.read_bytes()
+        first_path.write_bytes(second_bytes)
+        second_path.write_bytes(first_bytes)
+    elif mutation == "stale":
+        receipt = _read_json(first_path)
+        receipt["version"] = f"{report.version}+stale"
+        _write_json(first_path, receipt)
+    elif mutation == "replayed":
+        replay_root = _repo(tmp_path / "replayed")
+        replay_report = driver.run_candidate(
+            replay_root, _env(), _services(replay_root)
+        )
+        replayed_challenge = _read_json(_ledger_path(replay_report))["nvattest"][
+            "challenge"
+        ]
+        assert CHALLENGE_RE.fullmatch(replayed_challenge)
+        assert replayed_challenge != _read_json(_ledger_path(report))["nvattest"][
+            "challenge"
+        ]
+        receipt = _read_json(first_path)
+        receipt["challenge"] = replayed_challenge
+        _write_json(first_path, receipt)
+    elif mutation == "mutated":
+        receipt = _read_json(first_path)
+        receipt["kind"] = "mutated-nvattest-receipt"
+        _write_json(first_path, receipt)
+    elif mutation == "noncanonical":
+        receipt = _read_json(first_path)
+        first_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8"
+        )
+    else:
+        raise AssertionError(f"unknown mutation {mutation}")
+
+    _assert_fails_with_error(root, expected_error)
+
+
+def test_recovery_rejects_retained_nvattest_wrong_challenge(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger = _read_json(_ledger_path(report))
+    invalid_challenge = "not-a-valid-nvattest-challenge"
+    assert not CHALLENGE_RE.fullmatch(invalid_challenge)
+    ledger["nvattest"]["challenge"] = invalid_challenge
+    ledger_sha = _write_ledger(report, ledger)
+    _update_retained_receipt_ledger_sha(report, ledger_sha)
+
+    _assert_fails_with_error(root, "retained ledger nvattest challenge is invalid")
+
+
+def test_recovery_rejects_retained_nvattest_support_wheel_byte_mutation(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    support_path = sorted((report.evidence_dir / "support").glob("*.whl"))[0]
+    support_path.write_bytes(support_path.read_bytes() + b"\nmutated support bytes\n")
+
+    _assert_fails_with_error(
+        root,
+        "retained nvattest support bytes disagree with ledger",
+    )
+
+
+def test_recovery_rejects_retained_nvattest_support_declaration_mutation(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    report = driver.run_candidate(root, _env(), _services(root))
+    ledger = _read_json(_ledger_path(report))
+    declarations = ledger["nvattest"]["support_distributions"]
+    assert (
+        {entry["name"] for entry in declarations}
+        == driver.SUPPORT_DISTRIBUTION_NAMES
+    )
+    declarations[0]["sha256"] = hashlib.sha256(
+        f"forged support declaration {declarations[0]['name']}".encode("utf-8")
+    ).hexdigest()
+    ledger_sha = _write_ledger(report, ledger)
+    _update_retained_receipt_ledger_sha(report, ledger_sha)
+
+    _assert_fails_with_error(
+        root,
+        "retained nvattest support bytes disagree with ledger",
     )
