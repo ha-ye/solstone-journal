@@ -8,6 +8,16 @@ const vm = require('vm');
 const modalLayerPath = process.argv[2];
 const caseName = process.argv[3];
 
+// Focusability the browser grants without an author-supplied tabindex.
+const NATIVELY_FOCUSABLE_TAGS = new Set([
+  'BUTTON',
+  'INPUT',
+  'SELECT',
+  'TEXTAREA',
+  'SUMMARY',
+  'IFRAME',
+]);
+
 class FakeClassList {
   constructor(element) {
     this.element = element;
@@ -128,8 +138,12 @@ class FakeElement {
   removeChild(child) {
     const index = this.children.indexOf(child);
     assert(index !== -1, 'child is not attached to parent');
+    const active = this.ownerDocument.activeElement;
     this.children.splice(index, 1);
     child.parentElement = null;
+    if (active && child.contains(active)) {
+      this.ownerDocument.activeElement = null;
+    }
     this.ownerDocument._notifyMutation();
     return child;
   }
@@ -178,10 +192,20 @@ class FakeElement {
     return false;
   }
 
+  isFocusable() {
+    if (this.disabled) return false;
+    if (this.hasAttribute('tabindex')) return true;
+    if (this.hasAttribute('contenteditable')) return true;
+    if (this.tagName === 'A' || this.tagName === 'AREA') return this.hasAttribute('href');
+    return NATIVELY_FOCUSABLE_TAGS.has(this.tagName);
+  }
+
   focus() {
+    if (!this.isFocusable()) return;
     if (this.ownerDocument.activeElement === this) return;
     this.ownerDocument.activeElement = this;
-    this.ownerDocument.dispatchEvent({ type: 'focusin', target: this });
+    this.ownerDocument.focusLog.push(this);
+    this.ownerDocument.dispatchEvent(makeEvent('focusin', { target: this }));
   }
 
   matches(selector) {
@@ -240,6 +264,7 @@ class FakeDocument {
     this.readyState = 'complete';
     this.activeElement = null;
     this.observers = [];
+    this.focusLog = [];
     this.body = new FakeElement(this, 'body');
   }
 
@@ -247,14 +272,27 @@ class FakeDocument {
     return new FakeElement(this, tagName);
   }
 
-  addEventListener(type, listener) {
+  addEventListener(type, listener, useCapture) {
     if (!this.listeners[type]) this.listeners[type] = [];
-    this.listeners[type].push(listener);
+    this.listeners[type].push({ listener, capture: Boolean(useCapture) });
   }
 
+  // document sits in both the capture and the bubble path of a descendant
+  // dispatch, so its capture listeners run before any of its bubble listeners.
   dispatchEvent(event) {
-    const listeners = this.listeners[event.type] || [];
-    listeners.forEach((listener) => listener(event));
+    const entries = this.listeners[event.type] || [];
+    const phases = [
+      entries.filter((entry) => entry.capture),
+      entries.filter((entry) => !entry.capture),
+    ];
+    phases.forEach((phase) => {
+      if (event.propagationStopped) return;
+      phase.forEach((entry) => {
+        if (event.immediatePropagationStopped) return;
+        entry.listener(event);
+      });
+    });
+    return event;
   }
 
   listenerCount(type) {
@@ -342,6 +380,26 @@ function computedPosition(element) {
     return 'fixed';
   }
   return 'static';
+}
+
+function makeEvent(type, props = {}) {
+  return {
+    type,
+    ...props,
+    defaultPrevented: false,
+    propagationStopped: false,
+    immediatePropagationStopped: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {
+      this.propagationStopped = true;
+    },
+    stopImmediatePropagation() {
+      this.propagationStopped = true;
+      this.immediatePropagationStopped = true;
+    },
+  };
 }
 
 function el(document, tagName, attrs = {}) {
@@ -497,7 +555,8 @@ function makeWorkspaceShape(context, kind) {
 
   if (kind === 'speakers') {
     const backdrop = el(document, 'div', { class: 'spk-who-backdrop', hidden: true });
-    const modal = dialog(document, { class: 'spk-who-dialog' });
+    // who_is_this.js authors this tabindex when it builds the dialog shell.
+    const modal = dialog(document, { class: 'spk-who-dialog', tabindex: '-1' });
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
     return {
@@ -616,22 +675,180 @@ function testInitialFocusSkipsInvalidCandidates() {
   assert.strictEqual(context.document.activeElement, target);
 }
 
-function testForwardAndReverseWrap() {
+function openDialogWithCandidates(context, count) {
+  const shape = makeWorkspaceShape(context, 'network-pair');
+  const candidates = [];
+  for (let index = 0; index < count; index += 1) {
+    const button = el(context.document, 'button', { id: `candidate-${index}` });
+    shape.dialog.appendChild(button);
+    candidates.push(button);
+  }
+  shape.open();
+  assertActive(context, shape);
+  return { shape, candidates };
+}
+
+function pressTab(context, shiftKey = false) {
+  return context.document.dispatchEvent(makeEvent('keydown', { key: 'Tab', shiftKey }));
+}
+
+// Mirrors the unconditional index-cycling document-bubble trap that Observer
+// (workspace.html:939) and the Transcripts screenshot modal (l.5559) install.
+function installDownstreamTrap(context, container) {
+  const trap = { entries: [] };
+  context.document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    trap.entries.push({ defaultPrevented: event.defaultPrevented });
+    const focusable = container.querySelectorAll('button');
+    if (!focusable.length) return;
+    const index = focusable.indexOf(context.document.activeElement);
+    event.preventDefault();
+    if (event.shiftKey) {
+      focusable[index <= 0 ? focusable.length - 1 : index - 1].focus();
+    } else {
+      focusable[index >= focusable.length - 1 ? 0 : index + 1].focus();
+    }
+  });
+  return trap;
+}
+
+function testTabWrapsForwardAtLastCandidate() {
+  const context = makeContext();
+  const { candidates } = openDialogWithCandidates(context, 3);
+  candidates[candidates.length - 1].focus();
+
+  const before = context.document.focusLog.length;
+  const event = pressTab(context);
+
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, candidates[0]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+}
+
+function testTabWrapsReverseAtFirstCandidate() {
+  const context = makeContext();
+  const { candidates } = openDialogWithCandidates(context, 3);
+  assert.strictEqual(context.document.activeElement, candidates[0]);
+
+  const before = context.document.focusLog.length;
+  const event = pressTab(context, true);
+
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, candidates[candidates.length - 1]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+}
+
+function testTabFromOutsideEntersDialog() {
+  const context = makeContext();
+  const { shape, candidates } = openDialogWithCandidates(context, 3);
+
+  // Removing the focused control drops focus outside the dialog without a focusin.
+  shape.dialog.removeChild(candidates[0]);
+  context.flushFrames();
+  assert.strictEqual(context.document.activeElement, null);
+
+  const forward = pressTab(context);
+  assert.strictEqual(forward.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, candidates[1]);
+
+  context.document.activeElement = null;
+  const reverse = pressTab(context, true);
+  assert.strictEqual(reverse.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, candidates[2]);
+}
+
+function testTabWithoutCandidatesFocusesDialog() {
   const context = makeContext();
   const shape = makeWorkspaceShape(context, 'network-pair');
-  const first = el(context.document, 'button', { id: 'first' });
-  const last = el(context.document, 'button', { id: 'last' });
-  shape.dialog.appendChild(first);
-  shape.dialog.appendChild(last);
+  const disabled = el(context.document, 'button', { disabled: true });
+  shape.dialog.appendChild(disabled);
   shape.open();
   assertActive(context, shape);
 
-  shape.skip.focus();
-  assert.strictEqual(context.document.activeElement, first);
+  const event = pressTab(context);
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, shape.dialog);
+  assert.strictEqual(shape.dialog.getAttribute('tabindex'), '-1');
 
-  context.document.dispatchEvent({ type: 'keydown', key: 'Tab', shiftKey: true });
-  shape.facet.focus();
-  assert.strictEqual(context.document.activeElement, last);
+  shape.close();
+  assertInactive(context, shape);
+  assert(!shape.dialog.hasAttribute('tabindex'));
+
+  shape.open();
+  assertActive(context, shape);
+  pressTab(context);
+  assert.strictEqual(context.document.activeElement, shape.dialog);
+  assert(shape.dialog.hasAttribute('tabindex'));
+
+  context.document.body.removeChild(shape.workspace);
+  context.flushFrames();
+  assert(!shape.dialog.hasAttribute('tabindex'));
+}
+
+function testAuthoredDialogTabIndexPreserved() {
+  const context = makeContext();
+  const shape = makeWorkspaceShape(context, 'speakers');
+  assert.strictEqual(shape.dialog.getAttribute('tabindex'), '-1');
+  shape.open();
+  assertActive(context, shape);
+
+  const event = pressTab(context);
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.strictEqual(context.document.activeElement, shape.dialog);
+
+  shape.close();
+  assertInactive(context, shape);
+  assert.strictEqual(shape.dialog.getAttribute('tabindex'), '-1');
+}
+
+function testInteriorTabStaysNative() {
+  const context = makeContext();
+  const { shape, candidates } = openDialogWithCandidates(context, 3);
+  const trap = installDownstreamTrap(context, shape.dialog);
+  candidates[1].focus();
+
+  const before = context.document.focusLog.length;
+  const event = pressTab(context);
+
+  assert.strictEqual(trap.entries.length, 1);
+  assert.strictEqual(trap.entries[0].defaultPrevented, false);
+  assert.strictEqual(context.document.activeElement, candidates[2]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+  assert.strictEqual(event.propagationStopped, false);
+}
+
+function testBoundaryTabBlocksDownstreamTrap() {
+  const context = makeContext();
+  const { shape, candidates } = openDialogWithCandidates(context, 3);
+  const trap = installDownstreamTrap(context, shape.dialog);
+
+  candidates[candidates.length - 1].focus();
+  let before = context.document.focusLog.length;
+  pressTab(context);
+  assert.strictEqual(trap.entries.length, 0);
+  assert.strictEqual(context.document.activeElement, candidates[0]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+
+  before = context.document.focusLog.length;
+  pressTab(context, true);
+  assert.strictEqual(trap.entries.length, 0);
+  assert.strictEqual(context.document.activeElement, candidates[candidates.length - 1]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+
+  context.document.activeElement = null;
+  before = context.document.focusLog.length;
+  pressTab(context);
+  assert.strictEqual(trap.entries.length, 0);
+  assert.strictEqual(context.document.activeElement, candidates[0]);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
+
+  candidates.forEach((candidate) => shape.dialog.removeChild(candidate));
+  context.flushFrames();
+  before = context.document.focusLog.length;
+  pressTab(context);
+  assert.strictEqual(trap.entries.length, 0);
+  assert.strictEqual(context.document.activeElement, shape.dialog);
+  assert.strictEqual(context.document.focusLog.length, before + 1);
 }
 
 function testOutsideFocusRedirects() {
@@ -642,7 +859,7 @@ function testOutsideFocusRedirects() {
   shape.open();
   assertActive(context, shape);
 
-  shape.notifications.focus();
+  shape.skip.focus();
   assert.strictEqual(context.document.activeElement, first);
 }
 
@@ -668,8 +885,8 @@ function testRepeatedWorkspaceMountedIsIdempotent() {
   shell(context.document);
   context.ConveyModalLayer.init();
   context.ConveyModalLayer.init();
-  context.document.dispatchEvent({ type: 'workspace:mounted', target: context.document });
-  context.document.dispatchEvent({ type: 'workspace:mounted', target: context.document });
+  context.document.dispatchEvent(makeEvent('workspace:mounted', { target: context.document }));
+  context.document.dispatchEvent(makeEvent('workspace:mounted', { target: context.document }));
 
   assert.strictEqual(context.document.observers.length, 1);
   assert.strictEqual(context.document.listenerCount('workspace:mounted'), 1);
@@ -742,7 +959,13 @@ const cases = {
   activation_deactivation: testActivationDeactivation,
   inert_restoration: testInertRestoration,
   initial_focus_skips_invalid: testInitialFocusSkipsInvalidCandidates,
-  forward_reverse_wrap: testForwardAndReverseWrap,
+  tab_wraps_forward_at_last_candidate: testTabWrapsForwardAtLastCandidate,
+  tab_wraps_reverse_at_first_candidate: testTabWrapsReverseAtFirstCandidate,
+  tab_from_outside_enters_dialog: testTabFromOutsideEntersDialog,
+  tab_without_candidates_focuses_dialog: testTabWithoutCandidatesFocusesDialog,
+  authored_dialog_tabindex_preserved: testAuthoredDialogTabIndexPreserved,
+  interior_tab_stays_native: testInteriorTabStaysNative,
+  boundary_tab_blocks_downstream_trap: testBoundaryTabBlocksDownstreamTrap,
   outside_focus_redirect: testOutsideFocusRedirects,
   opener_restoration_after_sync_focus: testOpenerRestoresAfterSynchronousAppFocus,
   repeated_workspace_mounted_idempotent: testRepeatedWorkspaceMountedIsIdempotent,

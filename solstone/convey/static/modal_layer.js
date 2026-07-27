@@ -32,6 +32,7 @@
   let lastOutsideFocus = null;
   let lastTabWasBackward = false;
   const inertRecords = new Map();
+  const temporaryTabIndexDialogs = new Set();
 
   function bodyElement() {
     if (!document.body) {
@@ -228,6 +229,20 @@
       .filter(isFocusableCandidate);
   }
 
+  function ensureDialogFocusable(dialog) {
+    if (dialog.hasAttribute('tabindex')) return;
+    temporaryTabIndexDialogs.add(dialog);
+    dialog.setAttribute('tabindex', '-1');
+  }
+
+  function restoreDialogTabIndex(keep) {
+    temporaryTabIndexDialogs.forEach((dialog) => {
+      if (dialog === keep) return;
+      dialog.removeAttribute('tabindex');
+      temporaryTabIndexDialogs.delete(dialog);
+    });
+  }
+
   function focusDialog(dialog, reverse) {
     const candidates = focusableCandidates(dialog);
     const target = reverse ? candidates[candidates.length - 1] : candidates[0];
@@ -235,9 +250,15 @@
       target.focus();
       return;
     }
-    if (typeof dialog.focus === 'function') {
-      dialog.focus();
-    }
+    ensureDialogFocusable(dialog);
+    dialog.focus();
+  }
+
+  function shouldWrapFocus(dialog, focused, reverse) {
+    if (!focused || !dialog.contains(focused)) return true;
+    const candidates = focusableCandidates(dialog);
+    if (!candidates.length || focused === dialog) return true;
+    return focused === (reverse ? candidates[0] : candidates[candidates.length - 1]);
   }
 
   function restoreOpener() {
@@ -262,6 +283,7 @@
       bodyElement().classList.remove(BODY_ACTIVE_CLASS);
       clearMarkers();
       applyInert(null);
+      restoreDialogTabIndex(null);
       if (previousDialog) {
         restoreOpener();
       }
@@ -271,6 +293,7 @@
     bodyElement().classList.add(BODY_ACTIVE_CLASS);
     applyMarkers(dialog);
     applyInert(dialog);
+    restoreDialogTabIndex(dialog);
 
     if (previousDialog !== dialog) {
       const focused = document.activeElement;
@@ -304,9 +327,13 @@
   }
 
   function handleKeyDown(event) {
-    if (event.key === 'Tab') {
-      lastTabWasBackward = Boolean(event.shiftKey);
-    }
+    if (event.key !== 'Tab') return;
+    lastTabWasBackward = Boolean(event.shiftKey);
+    if (!activeDialog) return;
+    if (!shouldWrapFocus(activeDialog, document.activeElement, lastTabWasBackward)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    focusDialog(activeDialog, lastTabWasBackward);
   }
 
   function init() {
