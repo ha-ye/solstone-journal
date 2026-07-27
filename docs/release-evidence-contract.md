@@ -22,8 +22,8 @@ changed; the reader had.
 
 `LEDGER_SCHEMA_REGISTRY` in `scripts/release_ledger.py` owns the retained ledger
 shape by `schema_version`. Each registered version declares one whole shape:
-the top-level key set plus the `models`, `nvattest`, and `policy_run` sub-key
-sets.
+the top-level key set plus the required sub-key sets for sections present in
+that version.
 
 - the writer stamps `CURRENT_LEDGER_SCHEMA_VERSION` and asserts its own output
   equals that version's registry entry (`ledger top-level key set drifted`)
@@ -47,17 +47,19 @@ retained candidate on disk is publishable: the guards catch edits to registered
 shapes and frozen fixtures, but they do not revalidate retained bytes that are
 not committed as fixtures.
 
-The same applies to the sub-key sets validated the same way — `models`,
-`nvattest`, and `policy_run`. The top level is where this first bit, but adding a
-required sub-key breaks already-cut candidates identically. Everything below
+The same applies to the sub-key sets validated the same way. The top level is
+where this first bit, but adding a required sub-key to a section present in a
+registered version breaks already-cut candidates identically. Everything below
 covers the whole shape, not just the top level.
 
 ## `schema_version` is dispatched, not a free escape hatch
 
-`CURRENT_LEDGER_SCHEMA_VERSION` is `1`, and version `1` is the only product
-schema registered today. The reader branches on `schema_version` now, but that
-does not make a bump a free escape hatch: a new value must be registered, tested,
-and tolerated intentionally while the old version stays registered.
+`CURRENT_LEDGER_SCHEMA_VERSION` is `2`. Versions `1` and `2` are registered
+today: version `1` is the pre-`nvattest` retained-ledger shape, and version `2`
+is the current `nvattest`-bound writer shape. The reader branches on
+`schema_version` now, but that does not make a bump a free escape hatch: a new
+value must be registered, tested, and tolerated intentionally while the old
+version stays registered.
 
 So bumping it is its own coordinated change across every reader that pins the
 retained-ledger schema value. Grep for `schema_version` before assuming a bump is
@@ -89,9 +91,13 @@ it carries no expiry warning of its own.
 If you find yourself needing to publish a candidate whose retained ledger the
 current reader rejects, the recovery is to run the publisher from a worktree
 checked out at that release's own tag, with the retained candidate and evidence
-copied in. Historical validation is release-bound by design: the schema,
-exception set, and asset classifier that apply are the ones current at the
-manifest's `source_commit`, not the ones on the default branch today.
+copied in. Current recovery can validate a registered pre-`nvattest` v1 retained
+candidate and reports `retained-pre-nvattest-candidate-valid` for that case, but
+publication requires the v2 `retained-candidate-valid` report because publication
+also binds the candidate's `nvattest` authority. Historical validation is
+release-bound by design: the schema, exception set, and asset classifier that
+apply are the ones current at the manifest's `source_commit`, not the ones on the
+default branch today.
 
 ## `--candidate` refuses before discarding retained bytes
 
@@ -131,7 +137,8 @@ enumerate; fix the unreadable path or broken git state first.
 
 Keep at least one **frozen** retained ledger fixture per registered
 `schema_version`: committed bytes that the reader must still accept, and that are
-never regenerated.
+never regenerated. The pre-`nvattest` v1 fixture is the real retained 1.0.17
+ledger; the v2 fixture is the canonical current-shape ledger.
 
 Provenance is not what makes a fixture work — freezing is. A fixture produced by
 today's writer becomes a pre-change artifact the moment anyone edits the shape,
