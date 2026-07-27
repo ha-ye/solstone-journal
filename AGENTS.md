@@ -186,17 +186,20 @@ schema registry and frozen fixture tests make that visible; read
 outstanding retained candidate before merging such a change.
 
 `bash scripts/release.sh --recover <version> <source-commit>` is
-retained-byte-only, read-only validation. It preserves retained payload, ledger,
-and proofs, revalidates them, and reports `retained-candidate-valid`. It never
-rebuilds, refreshes advisories, contacts hosts, installs wheels, reads
-authentication, or uses the network.
+retained-byte-only, read-only validation. It preserves retained payload and
+evidence, revalidates them, and reports `retained-candidate-valid` for v2
+evidence or `retained-pre-nvattest-candidate-valid` for registered
+pre-nvattest v1 evidence; publication requires v2. It never rebuilds, refreshes
+advisories, contacts hosts, installs wheels, reads authentication, or uses the
+network.
 
-Recovery re-derives the nvattest authority from the retained candidate wheel
-bytes rather than reading it from the ledger, requires every target's extraction
-to agree, and holds that extraction against the ledger's authority payload, its
-byte digest, and every receipt's installed authority. It re-hashes the retained
-support wheels against the ledger declarations and against every receipt, and
-binds the challenge and the candidate identities through both receipt classes.
+For v2 evidence, recovery re-derives the nvattest authority from the retained
+candidate wheel bytes rather than reading it from the ledger, requires every
+target's extraction to agree, and holds that extraction against the ledger's
+authority payload, its byte digest, and every receipt's installed authority. It
+re-hashes the retained support wheels against the ledger declarations and
+against every receipt, and binds the challenge and the candidate identities
+through both receipt classes.
 Because the anchor is the retained wheel bytes, a forgery that rewrites the
 ledger and every receipt to agree with itself is still rejected. Recovery reads
 no release lock, no clock, and no network, and writes nothing on either the
@@ -241,13 +244,16 @@ credentials, minisign key paths, and archive channel come from
 `TRANSPARENCY_*` env vars, while the public base defaults to
 `https://transparency.solstone.app`.
 `RELEASE_DIR` must resolve to `dist/release-candidate/<version>/`; the
-corresponding rail evidence is derived from `target/release-evidence/<version>/`,
-which holds `ledger.json`, one install/smoke receipt per configured native
+corresponding rail evidence is derived from `target/release-evidence/<version>/`.
+The evidence directory is inventory-exact within its retained ledger schema
+version: a missing entry and an unexpected extra both fail closed. Current v2
+evidence holds `ledger.json`, one install/smoke receipt per configured native
 target under `proofs/`, one challenge-bound nvattest receipt per the same
-targets under `nvattest/`, the retained locked support wheels under `support/`,
-and, after the prerequisite is published, the single post-finalization tombstone
-verification record. Each of those directories is inventory-exact in both
-directions: a missing entry and an unexpected extra both fail closed.
+targets under `nvattest/`, and the retained locked support wheels under
+`support/`; registered pre-nvattest v1 evidence holds only `ledger.json` and
+the install/smoke receipts under `proofs/`. After the prerequisite is published,
+the single post-finalization tombstone verification record is the only optional
+extra allowed for either schema version.
 
 The public layout is fixed:
 `releases/<product>/v/<version>/ledger-entry.json`,
