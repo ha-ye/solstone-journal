@@ -6,6 +6,7 @@
 import math
 
 ENCODER_ID: str = "wespeaker-resnet34-256"
+WESPEAKER_EMBEDDING_WIDTH: int = 256
 
 OWNER_THRESHOLD: float = 0.43
 # Benchmark sweep: 0.05 cuts L1 owner false-claims on non-owner statements from 14.1% to 2.6% at a cost of 69% -> 65% per-statement L1 owner recall.
