@@ -270,7 +270,7 @@ Chosen: PL mode requires `observe.observer.spl_relay_url`. There is no fallback
 to a hardcoded relay URL.
 
 Rationale: the scope says the relay URL must come from `peer.json.relay_url` or
-`observe.observer.spl_relay_url`, but Phase A intentionally omitted `relay_url`
+`observe.observer.spl_relay_url`, but phase A intentionally omitted `relay_url`
 from `peer.json`. The actual bundle writer records only `label`, `paired_at`,
 `instance_id`, `home_label`, `fingerprint`, `local_endpoints`, and `role`
 (`solstone/think/link/join_cli.py:120-134`). Therefore the only valid relay URL
@@ -300,7 +300,7 @@ Startup validation in `ObserverClient.__init__()`:
 - `pair_mode=pl` plus any missing required file raises.
 - `pair_mode=dl` keeps today’s behavior unchanged.
 
-Required bundle files are the Phase A set: `private.pem`, `cert.pem`, `chain.pem`,
+Required bundle files are the phase A set: `private.pem`, `cert.pem`, `chain.pem`,
 `home_attestation.jwt`, and `peer.json` (`solstone/think/link/bundle.py`).
 The bundle path is `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` or
 `~/.config/solstone-observer/spl/<label>/`

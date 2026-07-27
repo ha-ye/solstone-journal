@@ -145,7 +145,7 @@ Idempotency trade-off: phase-1 dedupe releases on `owner_chat_open` by request i
 and repeated opens are idempotent because dropping an already-absent pending
 request is a no-op. Repeated reloads therefore append repeated
 `owner_chat_open` events, which is acceptable — each page load is an engagement
-signal. No suppression logic in Phase 2.
+signal. No suppression logic in phase 2.
 
 ### D4. Backend context surfaced to chat-bar
 
@@ -511,7 +511,7 @@ Add or extend:
   `_chat_event.html` emits no body for sol-initiated kinds. D1 only needs the
   anchor, not visible transcript content.
 - `last_chat_request_at` resets on convey restart. Persisting it is intentionally
-  rejected for Phase 2.
+  rejected for phase 2.
 - `_broadcast_to_sse_clients()` sends every event to every subscriber. Updating
   per `subscriber.key_prefix` is correct because every subscriber saw the
   sol-ping frame.

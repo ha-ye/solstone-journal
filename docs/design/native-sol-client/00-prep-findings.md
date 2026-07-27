@@ -30,7 +30,7 @@
 | Brute force | Fixed likely base: `solstone/think/convey_client.py`, `solstone/think/utils.py`, `solstone/think/service.py`, `solstone/apps/activities/call.py`, `solstone/apps/support/call.py`, `solstone/think/tools/health.py`, `solstone/think/pipeline_health.py`, `solstone/think/chat_cli.py`, `solstone/think/call.py`; chose 11 from 18 plausible production dependencies; checked 31,824 combinations. | No match in raw sorted `git ls-tree` format. Closest arbitrary prefix: `1d14714d5545f5e9f1817fe5ecf0be17df0f16e3172d201a886205bd5bea5f28`. |
 | Brute-force serialization variants | Same 31,824 combinations across six recipes: raw sorted `git ls-tree`, path-sorted `git ls-tree`, `path sha`, `sha path`, sha-only, path-only. | No match. |
 
-**Decision question:** The reviewer's frozen inputs are **not present** and the 20-file digest is **not reproducible to pin** from plausible current-tree candidates. Because the oracle canonical serialization is nowhere specified and the digest cannot be reproduced, this is an **OPEN BLOCKER** for senior escalation.
+**Decision question:** The reviewer's frozen inputs are **not present** and the 20-file digest is **not reproducible to pin** from plausible current-tree candidates. Because the oracle canonical serialization is nowhere specified and the digest cannot be reproduced, this is an **OPEN BLOCKER** for escalation.
 
 ## 2. Grammar-Oracle Format Reconnaissance (P1)
 

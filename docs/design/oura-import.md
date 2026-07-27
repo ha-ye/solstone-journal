@@ -33,7 +33,7 @@ Oura joins as a **second health source family** using the same storage, dedupe, 
 
 ## 2. (a) What the Oura API v2 adds beyond the Apple Health mirror
 
-Jack's ring already reaches the journal indirectly: the Oura app mirrors some series into Apple Health, and those arrive with `source_family="apple_health"` and a ring `source_name`. What the mirror carries (empirically: sleep stages and some vitals) versus what it **cannot** carry (Oura's computed scores and contributors) is the reason this lane exists.
+The owner's ring already reaches the journal indirectly: the Oura app mirrors some series into Apple Health, and those arrive with `source_family="apple_health"` and a ring `source_name`. What the mirror carries (empirically: sleep stages and some vitals) versus what it **cannot** carry (Oura's computed scores and contributors) is the reason this lane exists.
 
 ### Endpoints worth importing (Oura API v2, `https://api.ouraring.com/v2/usercollection/...`)
 
@@ -195,7 +195,7 @@ Never tokens, never client credentials, never raw values in the cursor. Catalog 
 **OAuth (design only; phase O2, OWNER-PRESENT-ONLY).**
 
 - Authorization-code flow; **PKCE preferred if Oura supports it** (⚠ unverified — Oura's documented flow historically uses a client secret; if PKCE isn't supported, the confidential-client secret lives behind the same token boundary below, and nothing else changes).
-- Redirect: loopback `http://localhost:<ephemeral>/callback` on the journal host, opened in the owner's browser with the owner at the keyboard. No headless, no automated retry, no unattended re-auth ever; if tokens die, sync degrades to a factual "authorization needed" status until Jack runs the step again.
+- Redirect: loopback `http://localhost:<ephemeral>/callback` on the journal host, opened in the owner's browser with the owner at the keyboard. No headless, no automated retry, no unattended re-auth ever; if tokens die, sync degrades to a factual "authorization needed" status until the owner runs the step again.
 - **Token boundary: journal configuration, never the repo.** Client id, (secret if applicable), access + refresh tokens live in the journal's config domain under the reserved key `oura` (`OAUTH_CONFIG_KEY` in the skeleton), written exclusively through the config owner `solstone/think/journal_config.py` (L2). Never in this repository, never in env vars, never in logs, never in `imports/oura.json`, never through Oracle/Claude prompts. Refresh-token rotation writes through the same owner.
 - **Dev-account cap noted:** Oura developer apps are limited to roughly 10 users before requiring Oura's partnership review — irrelevant for a single owner, but it means client credentials must never be shared or committed, and a future multi-owner story needs Oura's blessing first.
 - Scopes: future owner-present authorization requests ask for `daily`, `heartrate`, `workout`, `tag`, `session`, `spo2`, `stress`, `heart_health`, and `metabolic`. `email` and `personal` are no longer requested.
@@ -238,14 +238,14 @@ Oura sync applies the validated raw-retention decision from `PreSaveGateDecision
 | Phase | Contents | Guardrail |
 |---|---|---|
 | **O0 — landed tonight** | Design doc; `oura.py` parse/normalize/dedupe skeleton; synthetic fixtures; `"oura"` in `SENSITIVE_IMPORTERS`; file-importer registry entry with only detect/preview/dry-run live; sync + OAuth seams raise `NotImplementedError` | No network code (test-enforced); no journal writes; no sync registry entry |
-| **O1 — file-import save path (synthetic only)** | Raw install under `imports/<id>/raw/oura/`; normalized shards; dedupe upserts; optional `--with-day-summaries` writing `import.oura` transcripts from `render_day_summary`; L2 table + hygiene-script owner entries extended to `oura.py`; body app absorbs record types (family rules, sleep card, "How recovered am I?" card, window `day_context`) | Gate enforced; synthetic fixtures and temp journals only until Jack's separate live approval |
-| **O2 — first OAuth. OWNER-PRESENT-ONLY.** | Register Oura dev app; verify PKCE vs confidential, scopes, rate limits, sandbox against live docs; interactive `sol import oura auth` with Jack at the keyboard; tokens land in journal config via `journal_config.py`; single `personal_info` verification call; nothing unattended | **Jack physically present for every step**; no credentials anywhere but journal config |
+| **O1 — file-import save path (synthetic only)** | Raw install under `imports/<id>/raw/oura/`; normalized shards; dedupe upserts; optional `--with-day-summaries` writing `import.oura` transcripts from `render_day_summary`; L2 table + hygiene-script owner entries extended to `oura.py`; body app absorbs record types (family rules, sleep card, "How recovered am I?" card, window `day_context`) | Gate enforced; synthetic fixtures and temp journals only until the owner's separate live approval |
+| **O2 — first OAuth. OWNER-PRESENT-ONLY.** | Register Oura dev app; verify PKCE vs confidential, scopes, rate limits, sandbox against live docs; interactive `sol import oura auth` with the owner at the keyboard; tokens land in journal config via `journal_config.py`; single `personal_info` verification call; nothing unattended | **Owner physically present for every step**; no credentials anywhere but journal config |
 | **O3 — sync** | Real `sync()` (catalog default, gated save); `SYNCABLE_REGISTRY` entry + flip the phase-guard test; cursor state `imports/oura.json`; trailing-7-day revision window; 30-day backfill chunks; double-run idempotence verified | Gate before first write; catalog mode writes nothing |
 | **O4 — steady state** | 6-hourly schedule (opt-in per §6); backfill completion; pending-export reconciliation when it arrives (read-only inspection first); webhooks study (deferred — needs a public endpoint) | Scheduled runs only after explicit opt-in recorded in the approval artifact |
 
 ---
 
-## 8. Open questions for Jack (morning)
+## 8. Open questions for the owner (morning)
 
 1. **PKCE vs client secret** — can't verify Oura's current OAuth support offline; decides whether a secret enters journal config at O2.
 2. **Family naming** — keeping `oura_api` vs `oura` split assumes the account export may still arrive with a different shape. If you cancel the export request, we could collapse to one `oura` family before any live data exists (cheapest moment to rename).
