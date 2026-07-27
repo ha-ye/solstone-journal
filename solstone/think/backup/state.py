@@ -146,6 +146,11 @@ def get_backup_config() -> dict[str, Any]:
     return merge_backup_config(config)
 
 
+def get_daily_key() -> str | None:
+    daily_key = get_backup_config()["daily_key"]
+    return daily_key if isinstance(daily_key, str) and daily_key else None
+
+
 def get_destination() -> Destination | None:
     destination = get_backup_config()["destination"]
     repository = destination.get("repository")
@@ -532,6 +537,7 @@ __all__ = [
     "clear_backup_config",
     "generate_and_store_keys",
     "get_backup_config",
+    "get_daily_key",
     "get_destination",
     "get_keys",
     "merge_backup_config",

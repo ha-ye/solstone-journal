@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import json as json_module
 import os
+import signal
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_PROCESS_GROUP_CLEANUP_UNVERIFIED = "process_group_cleanup_unverified"
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,60 @@ def _timeout_text(value: str | bytes | None) -> str:
     return value
 
 
+def _decode_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
+
+def _wait_timeout(proc: subprocess.Popen[bytes], timeout: float) -> bool:
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def _terminate_process_group(
+    proc: subprocess.Popen[bytes],
+    *,
+    terminate_grace_s: float,
+    kill_grace_s: float,
+) -> bool:
+    if proc.poll() is not None:
+        return True
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    if _wait_timeout(proc, terminate_grace_s):
+        return _process_group_absent(proc.pid)
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    if not _wait_timeout(proc, kill_grace_s):
+        return False
+    return _process_group_absent(proc.pid)
+
+
+def _process_group_absent(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def reason_for_returncode(returncode: int) -> str:
     return {
         3: "incomplete",
@@ -138,41 +195,98 @@ def run_restic(
     max_repack_size: str | None = None,
     timeout: float | None = None,
     pass_fds: tuple[int, ...] = (),
+    process_group: bool = False,
+    stdin_bytes: bytes | None = None,
+    scrub_values: Iterable[str | None] = (),
+    terminate_grace_s: float = 3.0,
+    kill_grace_s: float = 5.0,
 ) -> ResticResult:
     env, secrets = _child_env(repository, password, backend_env)
+    scrub_secrets = (*secrets, *tuple(scrub_values))
     argv = _build_argv(restic_path, args, json, max_repack_size)
     _guard_argv(argv, secrets)
-    safe_argv = tuple(argv)
+    safe_argv = tuple(_scrub(token, scrub_secrets) for token in argv)
 
     # Long-running/streaming backup mode is deferred: ManagedProcess.spawn
     # writes raw child stdout/stderr to health logs and the callosum logs tract,
     # and restic output may include presigned backend URLs or repo strings.
-    try:
-        result = subprocess.run(
-            argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-            pass_fds=pass_fds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = _scrub(_timeout_text(exc.stdout), secrets)
-        stderr = _scrub(_timeout_text(exc.stderr), secrets)
+    if not process_group and stdin_bytes is None:
+        try:
+            result = subprocess.run(
+                argv,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout,
+                pass_fds=pass_fds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = _scrub(_timeout_text(exc.stdout), scrub_secrets)
+            stderr = _scrub(_timeout_text(exc.stderr), scrub_secrets)
+            return ResticResult(
+                returncode=124,
+                stdout=stdout,
+                stderr=stderr,
+                json=None,
+                argv=safe_argv,
+            )
+
+        stdout = _scrub(result.stdout or "", scrub_secrets)
+        stderr = _scrub(result.stderr or "", scrub_secrets)
+        parsed_json = _parse_json(stdout) if json else None
         return ResticResult(
-            returncode=124,
+            returncode=result.returncode,
             stdout=stdout,
             stderr=stderr,
+            json=parsed_json,
+            argv=safe_argv,
+        )
+
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        close_fds=True,
+        pass_fds=pass_fds,
+        start_new_session=process_group,
+    )
+    try:
+        raw_stdout, raw_stderr = proc.communicate(input=stdin_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        cleanup_verified = True
+        if process_group:
+            cleanup_verified = _terminate_process_group(
+                proc,
+                terminate_grace_s=terminate_grace_s,
+                kill_grace_s=kill_grace_s,
+            )
+        else:
+            proc.kill()
+            cleanup_verified = _wait_timeout(proc, kill_grace_s)
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=0)
+        except subprocess.TimeoutExpired:
+            raw_stdout = exc.output
+            raw_stderr = exc.stderr
+        stderr_text = _decode_output(raw_stderr)
+        if not cleanup_verified:
+            stderr_text = f"{stderr_text}\n{_PROCESS_GROUP_CLEANUP_UNVERIFIED}"
+        return ResticResult(
+            returncode=124,
+            stdout=_scrub(_decode_output(raw_stdout), scrub_secrets),
+            stderr=_scrub(stderr_text, scrub_secrets),
             json=None,
             argv=safe_argv,
         )
 
-    stdout = _scrub(result.stdout or "", secrets)
-    stderr = _scrub(result.stderr or "", secrets)
+    stdout = _scrub(_decode_output(raw_stdout), scrub_secrets)
+    stderr = _scrub(_decode_output(raw_stderr), scrub_secrets)
     parsed_json = _parse_json(stdout) if json else None
     return ResticResult(
-        returncode=result.returncode,
+        returncode=proc.returncode,
         stdout=stdout,
         stderr=stderr,
         json=parsed_json,

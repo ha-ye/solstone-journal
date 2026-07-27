@@ -72,6 +72,19 @@ def test_partial_backup_section_gets_per_field_defaults(
     assert config["last_backup"] == state.BACKUP_DEFAULTS["last_backup"]
 
 
+def test_get_daily_key_returns_only_daily_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {"backup": {"daily_key": "daily-secret", "recovery_key": "recovery-secret"}},
+    )
+
+    assert state.get_daily_key() == "daily-secret"
+
+
 def test_merge_backup_config_applies_defaults_to_raw_config() -> None:
     config = state.merge_backup_config(
         {

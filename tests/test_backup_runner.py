@@ -65,6 +65,36 @@ def test_run_restic_builds_safe_argv_and_minimal_env(
     assert captured["pass_fds"] == ()
 
 
+def test_run_restic_default_path_does_not_use_popen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls["argv"] = argv
+        calls["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def fail_popen(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("default path should not use Popen")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner.subprocess, "Popen", fail_popen)
+
+    result = runner.run_restic(
+        ["snapshots"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+    )
+
+    assert result.returncode == 0
+    assert calls["argv"] == ["/usr/bin/restic", "snapshots"]
+    assert calls["kwargs"]["text"] is True
+    assert calls["kwargs"]["capture_output"] is True
+    assert "input" not in calls["kwargs"]
+
+
 def test_run_restic_threads_pass_fds(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, Any] = {}
 
@@ -92,6 +122,54 @@ def test_run_restic_threads_pass_fds(monkeypatch: pytest.MonkeyPatch):
         "/dev/fd/17",
     ]
     assert captured["pass_fds"] == (17,)
+
+
+def test_run_restic_opt_in_process_group_threads_stdin_and_scrubs_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            captured["input"] = input
+            captured["timeout"] = timeout
+            return (
+                b'{"message":"repo-url snapshot-id"}\n',
+                b"stderr repo-url snapshot-id",
+            )
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic(
+        ["ls", "snapshot-id"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        process_group=True,
+        stdin_bytes=b"payload",
+        timeout=9,
+        scrub_values=("repo-url", "snapshot-id"),
+    )
+
+    assert captured["kwargs"]["start_new_session"] is True
+    assert captured["kwargs"]["close_fds"] is True
+    assert captured["input"] == b"payload"
+    assert captured["timeout"] == 9
+    assert "snapshot-id" not in result.argv
+    assert "snapshot-id" not in result.stdout
+    assert "repo-url" not in result.stderr
+    assert result.returncode == 0
 
 
 def test_run_restic_scrubs_success_output_and_json(

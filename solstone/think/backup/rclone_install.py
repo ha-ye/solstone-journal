@@ -147,13 +147,19 @@ def _sentinel_payload(
     }
 
 
-def _check_ready(tool_dir: Path, os_name: str, arch: str) -> Path | None:
-    sentinel_path = _sentinel_path(tool_dir)
+def check_rclone_ready(
+    tool_dir: Path | None = None,
+    *,
+    version_timeout: float = 10.0,
+) -> Path | None:
+    os_name, arch = _platform_info()
+    resolved_tool_dir = tool_dir if tool_dir is not None else _tool_dir(os_name)
+    sentinel_path = _sentinel_path(resolved_tool_dir)
     try:
         payload = json.loads(sentinel_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    binary_path = _binary_path(tool_dir)
+    binary_path = _binary_path(resolved_tool_dir)
     expected = _sentinel_payload(
         os_name,
         arch,
@@ -176,7 +182,7 @@ def _check_ready(tool_dir: Path, os_name: str, arch: str) -> Path | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=version_timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -195,7 +201,10 @@ def ensure_rclone(
     os_name, arch = _platform_info()
     resolved_tool_dir = tool_dir if tool_dir is not None else _tool_dir(os_name)
     if not force:
-        ready_path = _check_ready(resolved_tool_dir, os_name, arch)
+        ready_path = check_rclone_ready(
+            resolved_tool_dir,
+            version_timeout=10.0,
+        )
         if ready_path is not None:
             return ready_path
 
@@ -235,6 +244,7 @@ __all__ = [
     "RCLONE_BUNDLE_ENV",
     "RCLONE_VERSION",
     "RCLONE_ZIP_SHA256",
+    "check_rclone_ready",
     "ensure_rclone",
     "select_rclone_asset",
 ]

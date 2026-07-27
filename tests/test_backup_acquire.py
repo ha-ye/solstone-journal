@@ -110,6 +110,30 @@ def test_ensure_restic_reuses_ready_sentinel_without_downloading(
     assert calls == 0
 
 
+def test_inspect_restic_ready_distinguishes_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_linux_amd64(monkeypatch)
+
+    assert readiness.inspect_restic_ready(tmp_path) == (None, "restic_missing")
+
+
+def test_inspect_restic_ready_distinguishes_incompatible_present_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_linux_amd64(monkeypatch)
+    binary = tmp_path / "restic"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    assert readiness.inspect_restic_ready(tmp_path) == (
+        None,
+        "restic_incompatible",
+    )
+
+
 @pytest.mark.parametrize(
     ("os_name", "arch", "expected_filename"),
     [

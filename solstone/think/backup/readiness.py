@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -159,6 +160,40 @@ def _restic_version_ok(binary_path: Path) -> bool:
     return result.returncode == 0 and f"restic {RESTIC_VERSION}" in result.stdout
 
 
+def _restic_version_ok_bounded(binary_path: Path, *, timeout: float) -> bool:
+    try:
+        proc = subprocess.Popen(
+            [str(binary_path), "version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    try:
+        stdout, _stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+        return False
+    return proc.returncode == 0 and f"restic {RESTIC_VERSION}" in stdout
+
+
 def _verify_binary(binary_path: Path, expected_sha256: str) -> bool:
     if not binary_path.is_file() or not os.access(binary_path, os.X_OK):
         return False
@@ -186,3 +221,34 @@ def check_restic_ready(tool_dir: Path | None = None) -> Path | None:
     if not _verify_binary(binary_path, expected_sha256):
         return None
     return binary_path
+
+
+def inspect_restic_ready(
+    tool_dir: Path | None = None,
+    *,
+    version_timeout: float = 5.0,
+) -> tuple[Path | None, str | None]:
+    ready_path = check_restic_ready(tool_dir)
+    if ready_path is not None:
+        return ready_path, None
+
+    os_name, arch = _platform_info()
+    resolved_tool_dir = tool_dir if tool_dir is not None else _tool_dir(os_name)
+    binary_path = _binary_path(resolved_tool_dir)
+    binary_present = binary_path.is_file() and os.access(binary_path, os.X_OK)
+    if not binary_present:
+        return None, "restic_missing"
+
+    expected_sha256 = _sentinel_ready(
+        _load_sentinel(_sentinel_path(resolved_tool_dir)),
+        os_name,
+        arch,
+        binary_path,
+    )
+    if expected_sha256 is None:
+        return None, "restic_incompatible"
+    if not _restic_version_ok_bounded(binary_path, timeout=version_timeout):
+        return None, "restic_incompatible"
+    if not _verify_binary(binary_path, expected_sha256):
+        return None, "restic_incompatible"
+    return None, "restic_incompatible"
