@@ -655,6 +655,9 @@ install-checks: .installed
 	@echo "=== Checking sandbox probe contract ==="
 	@$(MAKE) check-sandbox-probe-contract
 	@echo ""
+	@echo "=== Checking nvattest authority ==="
+	@$(MAKE) check-nvattest-authority
+	@echo ""
 	@echo "=== Running rust format check ==="
 	@$(MAKE) check-rust-fmt
 	@echo ""
@@ -833,6 +836,12 @@ sandbox-probe-contract:
 
 check-sandbox-probe-contract: .installed
 	$(VENV_BIN)/python scripts/build_sandbox_probe_contract.py --check
+
+nvattest-authority:
+	$(VENV_BIN)/python scripts/build_nvattest_authority.py
+
+check-nvattest-authority: .installed
+	$(VENV_BIN)/python scripts/build_nvattest_authority.py --check
 
 build-native-sol-grammar-oracle: .installed
 	$(VENV_BIN)/python scripts/build_native_sol_authority_grammar.py
