@@ -61,6 +61,7 @@ from solstone.apps.settings.install_copy import (
     STT_NO_LOCAL_STT_RECOVERY,
 )
 from solstone.apps.speakers.encoder_config import (
+    ENCODER_ID,
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
     SPEAKER_EVIDENCE_VERSION,
@@ -139,7 +140,7 @@ DEFAULT_MIN_SPEECH_SECONDS = 1.0
 # Minimum statement duration for embedding (seconds)
 MIN_STATEMENT_DURATION = 0.3
 
-EMBEDDER_NAME = "wespeaker-resnet34-256"
+EMBEDDER_NAME = ENCODER_ID
 WESPEAKER_MODEL_SHA256 = (
     "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
 )
@@ -725,6 +726,7 @@ def _statements_to_jsonl(
     speaker_evidence: SpeakerEvidenceDecision | None = None,
     processing_record: dict | None = None,
     sound_tags: dict | None = None,
+    speaker_analysis_producer: str | None = None,
 ) -> list[str]:
     """Convert statements to JSONL lines.
 
@@ -744,6 +746,7 @@ def _statements_to_jsonl(
         speaker_evidence: Optional local diarization engagement decision
         processing_record: Optional _solstone_processing record
         sound_tags: Optional ambient sound-tag metadata
+        speaker_analysis_producer: Optional segment-level speaker analysis producer id
 
     Returns:
         List of JSON strings (metadata line first, then entries)
@@ -781,6 +784,8 @@ def _statements_to_jsonl(
             float(speaker_evidence.multi_window_fraction), 4
         )
         metadata["speaker_evidence_version"] = SPEAKER_EVIDENCE_VERSION
+    if speaker_analysis_producer is not None:
+        metadata["speaker_analysis_producer"] = speaker_analysis_producer
 
     # Add segment metadata (from SEGMENT_META env var)
     if segment_meta:
@@ -1031,71 +1036,139 @@ def process_audio(
         if suffix.endswith("_audio") and suffix != "audio":
             source = suffix[:-6]  # Remove "_audio" suffix
 
-        # Generate embeddings before timestamp restoration
-        # Use reduced audio buffer if available for consistent timestamps
-        with timings.time("embed"):
-            embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
-        from solstone.observe.transcribe.overlap import (
-            compute_overlap_and_logprobs,
-            decide_speaker_evidence,
+        speaker_analysis_event_fields: dict[str, object] = {}
+        speaker_analysis_producer: str | None = None
+        native_completed = False
+
+        from solstone.observe.transcribe.speakers_analyze_seam import (
+            EXIT_CONFIG as SPEAKERS_ANALYZE_EXIT_CONFIG,
+        )
+        from solstone.observe.transcribe.speakers_analyze_seam import (
+            PRODUCER_ID as SPEAKERS_ANALYZE_PRODUCER_ID,
+        )
+        from solstone.observe.transcribe.speakers_analyze_seam import (
+            maybe_run_native_speaker_analysis,
         )
 
-        with timings.time("overlap"):
-            overlap_result = compute_overlap_and_logprobs(audio_buffer)
-            speaker_evidence = decide_speaker_evidence(
-                overlap_result.overlap_fraction,
-                overlap_result.window_stats,
-            )
-            overlap_fraction_value = overlap_result.overlap_fraction
-            pyannote_logprobs = overlap_result.avg_log_probs
-
-        # Restore original timestamps if audio was reduced.
+        native_restored_statements = statements
         if reduction:
             from solstone.observe.vad import restore_statement_timestamps
 
-            statements = restore_statement_timestamps(statements, reduction)
-            logging.info(
-                f"  Restored timestamps from reduced audio "
-                f"({reduction.reduced_duration:.1f}s -> {reduction.original_duration:.1f}s)"
+            native_restored_statements = restore_statement_timestamps(
+                statements, reduction
             )
 
-        # Local speaker diarization for backends that produce no speaker labels.
-        # Reuse the pyannote log-probs computed above so the diarizer skips its
-        # own pyannote pass when the speaker-evidence gate engages it.
-        if speaker_evidence.speaker_evidence != "multi":
-            logging.info(
-                "  Skipping diarization: speaker_evidence=%s overlap=%.2f "
-                "multi_window_fraction=%.2f",
-                speaker_evidence.speaker_evidence,
-                overlap_fraction_value,
-                speaker_evidence.multi_window_fraction,
-            )
-        else:
-            try:
-                from solstone.observe.transcribe.diarize import diarize_auto_k
-
-                with timings.time("diarize"):
-                    labels = diarize_auto_k(
-                        raw_path,
-                        statements,
-                        avg_log_probs=pyannote_logprobs,
-                        audio=audio_buffer,
+        native_result = maybe_run_native_speaker_analysis(
+            journal=journal_path,
+            raw_path=raw_path,
+            full_audio=audio_buffer,
+            statement_audio=stt_buffer,
+            reduced_audio=reduced_audio,
+            statements_pre_restore=statements,
+            statements_restored=native_restored_statements,
+            sample_rate=SAMPLE_RATE,
+            min_statement_duration=MIN_STATEMENT_DURATION,
+        )
+        if native_result.status == "config_error":
+            event.update(native_result.event_fields)
+            _emit_transcribed(
+                event,
+                outcome="failed",
+                timings=timings,
+                backend=resolved_backend,
+                model_info=model_info,
+                backend_config=backend_config,
+                audio_seconds=audio_seconds,
+                reduced_seconds=reduced_seconds,
+                reason=str(
+                    native_result.event_fields.get(
+                        "speaker_analysis_reason", "speaker-analysis-config"
                     )
-                assigned = 0
-                for stmt, lbl in zip(statements, labels):
-                    if lbl is not None:
-                        stmt["speaker"] = lbl
-                        assigned += 1
+                ),
+                error="speaker_analysis_config",
+            )
+            raise SystemExit(SPEAKERS_ANALYZE_EXIT_CONFIG)
+        if native_result.status == "accepted":
+            assert native_result.statements is not None
+            assert native_result.embeddings_data is not None
+            assert native_result.speaker_evidence is not None
+            assert native_result.overlap_fraction is not None
+            statements = native_result.statements
+            embeddings_data = native_result.embeddings_data
+            speaker_evidence = native_result.speaker_evidence
+            overlap_fraction_value = native_result.overlap_fraction
+            speaker_analysis_event_fields.update(native_result.event_fields)
+            speaker_analysis_producer = SPEAKERS_ANALYZE_PRODUCER_ID
+            native_completed = True
+        elif native_result.status == "fallback":
+            speaker_analysis_event_fields.update(native_result.event_fields)
+
+        if not native_completed:
+            # Generate embeddings before timestamp restoration
+            # Use reduced audio buffer if available for consistent timestamps
+            with timings.time("embed"):
+                embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
+            from solstone.observe.transcribe.overlap import (
+                compute_overlap_and_logprobs,
+                decide_speaker_evidence,
+            )
+
+            with timings.time("overlap"):
+                overlap_result = compute_overlap_and_logprobs(audio_buffer)
+                speaker_evidence = decide_speaker_evidence(
+                    overlap_result.overlap_fraction,
+                    overlap_result.window_stats,
+                )
+                overlap_fraction_value = overlap_result.overlap_fraction
+                pyannote_logprobs = overlap_result.avg_log_probs
+
+            # Restore original timestamps if audio was reduced.
+            if reduction:
+                from solstone.observe.vad import restore_statement_timestamps
+
+                statements = restore_statement_timestamps(statements, reduction)
                 logging.info(
-                    "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
-                    assigned,
-                    len(statements),
+                    f"  Restored timestamps from reduced audio "
+                    f"({reduction.reduced_duration:.1f}s -> {reduction.original_duration:.1f}s)"
+                )
+
+            # Local speaker diarization for backends that produce no speaker labels.
+            # Reuse the pyannote log-probs computed above so the diarizer skips its
+            # own pyannote pass when the speaker-evidence gate engages it.
+            if speaker_evidence.speaker_evidence != "multi":
+                logging.info(
+                    "  Skipping diarization: speaker_evidence=%s overlap=%.2f "
+                    "multi_window_fraction=%.2f",
+                    speaker_evidence.speaker_evidence,
                     overlap_fraction_value,
+                    speaker_evidence.multi_window_fraction,
                 )
-            except Exception:
-                logging.exception(
-                    "Local diarization failed; speaker labels will be absent"
-                )
+            else:
+                try:
+                    from solstone.observe.transcribe.diarize import diarize_auto_k
+
+                    with timings.time("diarize"):
+                        labels = diarize_auto_k(
+                            raw_path,
+                            statements,
+                            avg_log_probs=pyannote_logprobs,
+                            audio=audio_buffer,
+                        )
+                    assigned = 0
+                    for stmt, lbl in zip(statements, labels):
+                        if lbl is not None:
+                            stmt["speaker"] = lbl
+                            assigned += 1
+                    logging.info(
+                        "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
+                        assigned,
+                        len(statements),
+                        overlap_fraction_value,
+                    )
+                except Exception:
+                    logging.exception(
+                        "Local diarization failed; speaker labels will be absent"
+                    )
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
@@ -1120,6 +1193,7 @@ def process_audio(
             speaker_evidence=speaker_evidence,
             processing_record=processing_record,
             sound_tags=sound_tags,
+            speaker_analysis_producer=speaker_analysis_producer,
         )
 
         # Write JSONL
@@ -1167,6 +1241,7 @@ def process_audio(
         except ValueError:
             rel_output = jsonl_path
         event["output"] = rel_output
+        event.update(speaker_analysis_event_fields)
 
         _emit_transcribed(
             event,
@@ -1247,6 +1322,8 @@ def process_audio(
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
         try:
             event = _build_base_event(raw_path, vad_result, segment, observer)
+            if "speaker_analysis_event_fields" in locals():
+                event.update(speaker_analysis_event_fields)
             _emit_transcribed(
                 event,
                 outcome="failed",
