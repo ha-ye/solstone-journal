@@ -229,12 +229,17 @@ def test_mobile_facet_chrome_compacts_without_shrinking_touch_targets():
     _, pill_rule = _rule_block(
         mobile_block, ".facet-bar .facet-pills-container .facet-pill"
     )
+    _, trailing_space_rule = _rule_block(
+        mobile_block, ".facet-bar .facet-pills-container::after"
+    )
 
     assert "padding-inline: 8px;" in bar_rule
     assert "gap: 8px;" in bar_rule
     assert "gap: 8px;" in container_rule
     assert "padding-inline: 6px;" in pill_rule
     assert "min-inline-size: 44px;" in pill_rule
+    assert 'content: "";' in trailing_space_rule
+    assert "flex: 0 0 8px;" in trailing_space_rule
 
 
 def test_mobile_facet_pill_flex_shrink_override_wins_by_specificity():

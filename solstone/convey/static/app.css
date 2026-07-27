@@ -703,6 +703,12 @@ body:has(.status-pane.visible) .facet-bar::after {
     min-inline-size: 44px;
     padding-inline: 6px;
   }
+
+  /* Leave enough trailing scroll room for a selected pill's heavier label. */
+  .facet-bar .facet-pills-container::after {
+    content: "";
+    flex: 0 0 8px;
+  }
 }
 
 /* Menu Bar (left sidebar) */
