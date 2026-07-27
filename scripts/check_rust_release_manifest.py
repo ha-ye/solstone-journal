@@ -2359,6 +2359,7 @@ def run_fixtures_mode() -> list[Failure]:
                 )
             ]
         try:
+            from scripts.build_nvattest_authority import render_nvattest_authority_json
             from scripts.release_advisory_policy import PolicyRun
             from scripts.release_digest import candidate_digest, file_sha256_size
             from scripts.release_install_smoke import (
@@ -2378,9 +2379,8 @@ def run_fixtures_mode() -> list[Failure]:
                 target_install_paths_from_ledger,
                 write_install_proof,
             )
-            from scripts.build_nvattest_authority import render_nvattest_authority_json
-            from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
             from scripts.release_ledger import read_retained_ledger, write_ledger
+            from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
         except ImportError as exc:
             return [
                 _failure(

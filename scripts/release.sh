@@ -19,16 +19,27 @@
 #      version being constructed.
 #   3. Build local artifacts and receive macOS artifacts through the externally
 #      configured build-host channel.
-#   4. Collect per-target install/smoke proofs through configured proof-host
-#      channels, then pair-promote payload and evidence.
-#   5. Revalidate payload, manifests, ledger, and proofs, then print canonical
-#      local readiness JSON. This is not publication authorization.
+#   4. Generate a fresh proof challenge, extract the nvattest authority from the
+#      candidate's own root wheels and require every target to agree, and
+#      materialize the locked support-wheel set, verifying it against uv.lock.
+#      All of this happens before the ledger is written and before any proof
+#      host is contacted.
+#   5. Collect a per-target receipt pair through configured proof-host channels
+#      -- the install/smoke proof and a challenge-bound nvattest proof -- then
+#      pair-promote payload and evidence.
+#   6. Revalidate payload, manifests, ledger, retained support wheels, and both
+#      receipt classes, then print canonical local readiness JSON. This is not
+#      publication authorization.
 #
 # Recovery flow:
 #   `--recover <version> <source-commit>` is retained-byte-only, read-only
-#   validation. It preserves retained payload, ledger, and proofs and never
-#   rebuilds, refreshes advisories, contacts hosts, installs wheels, reads
-#   authentication, or uses the network.
+#   validation. It preserves retained payload, ledger, retained support wheels,
+#   and both receipt classes, and never rebuilds, refreshes advisories, contacts
+#   hosts, installs wheels, reads authentication, or uses the network. It
+#   re-derives the nvattest authority from the retained candidate wheel bytes
+#   rather than trusting the ledger, so a ledger and receipt set forged to agree
+#   with itself is still rejected. It reads no release lock: lock agreement is
+#   enforced when the candidate is cut.
 #
 # Dry-run flow:
 #   `--dry-run-linux` is structural only. It emits no ready payload, manifest,
@@ -44,14 +55,19 @@ Usage: scripts/release.sh [--candidate|--recover <version> <source-commit>|--dry
 
 Modes:
   --candidate       Finalize a non-publishing all-host release candidate, write
-                    retained local evidence, and report readiness digests.
+                    retained local evidence, and report readiness digests. Each
+                    attempt generates a fresh proof challenge and requires a
+                    per-target receipt pair: the install/smoke proof and a
+                    challenge-bound nvattest proof.
                     DESTRUCTIVE: fresh construction deletes prior raw
                     build/dist outputs and that version's stale payload/evidence
                     before policy or build work begins.
   --recover VERSION SOURCE_COMMIT
                     Retained-byte-only, read-only validation of payload, ledger,
-                    and target install/smoke proofs. Preserves retained bytes
-                    and never rebuilds or refreshes.
+                    retained support wheels, and both per-target receipt classes
+                    (install/smoke and nvattest). Re-derives the nvattest
+                    authority from the retained wheel bytes. Preserves retained
+                    bytes and never rebuilds, refreshes, or reads the network.
   --dry-run-linux   Structural Linux-only dry-run. Emits no ready payload,
                     manifest, ledger, proof, or clean-source claim.
   -h, --help        Show this help.

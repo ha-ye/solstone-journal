@@ -643,7 +643,9 @@ class ExternalProofHostChannel:
             _validate_directory_identities(identities)
             self._file_copier(path, destination_dir / path.name)
             _validate_directory_identities(identities)
-            _validate_regular_file(destination_dir / path.name, label=f"request {label}")
+            _validate_regular_file(
+                destination_dir / path.name, label=f"request {label}"
+            )
             copied_sha256, copied_bytes = file_sha256_size(destination_dir / path.name)
             _validate_directory_identities(identities)
             if copied_sha256 != source_sha256 or copied_bytes != source_bytes:

@@ -301,8 +301,7 @@ def _runner(
         assert request["paths"]["candidate_dir"] == "candidate"
         assert request["paths"]["support_dir"] == "support"
         assert (
-            request["paths"]["authority_file"]
-            == "authority/nvattest_authority_v1.json"
+            request["paths"]["authority_file"] == "authority/nvattest_authority_v1.json"
         )
         assert all(
             str(entry["path"]).startswith("candidate/")

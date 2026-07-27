@@ -4146,9 +4146,7 @@ def run_candidate(
                 support_wheel_paths=support_paths,
                 canonical_authority_bytes=authority_bytes,
                 output_path=proofs_dir / f"{target}.json",
-                nvattest_output_path=(
-                    evidence_staging / "nvattest" / f"{target}.json"
-                ),
+                nvattest_output_path=(evidence_staging / "nvattest" / f"{target}.json"),
             )
             proof_paths[target] = target_proofs.install
         failures = validate_public_evidence_tree("ledger", ledger_payload)

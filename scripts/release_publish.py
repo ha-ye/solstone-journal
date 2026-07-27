@@ -31,6 +31,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.build_nvattest_authority import (
+    render_nvattest_authority_json,  # noqa: E402
+)
 from scripts.check_rust_release_manifest import (  # noqa: E402
     CORE_UNSUPPORTED_TOMBSTONE_RECORD,
     Failure,
@@ -38,7 +41,6 @@ from scripts.check_rust_release_manifest import (  # noqa: E402
     rust_artifact_targets,
     validate_core_unsupported_tombstone_record,
 )
-from scripts.build_nvattest_authority import render_nvattest_authority_json  # noqa: E402
 from scripts.release_candidate_driver import (  # noqa: E402
     CandidateReport,
     DriverError,

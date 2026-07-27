@@ -228,9 +228,7 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
     support_paths = candidate_fixtures._write_fixture_support_wheels(  # noqa: SLF001
         support_dir
     )
-    (authority_dir / "nvattest_authority_v1.json").write_bytes(
-        NVATTEST_AUTHORITY_BYTES
-    )
+    (authority_dir / "nvattest_authority_v1.json").write_bytes(NVATTEST_AUTHORITY_BYTES)
     channel = proof_rail.ExternalProofHostChannel(
         "linux-x86_64-musl",
         ["adapter"],

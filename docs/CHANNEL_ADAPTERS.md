@@ -97,6 +97,28 @@ The macOS build lane also requires `remote_run_wrapper`, `tmux_window`, and
 `unlock_workdir`; these name the operator-provided command wrapper and the
 already-prepared operator session used to run the existing build target.
 
+## Proof Lane Payload
+
+A proof lane produces a **receipt pair** per target from a single host
+round-trip: the install/smoke proof and a challenge-bound nvattest proof. The
+request therefore carries, in addition to the candidate wheels and ledger, the
+locked support-wheel set, the canonical nvattest authority bytes, and the
+challenge. The response carries two explicit proof descriptors rather than one.
+
+Two names sit close together and mean different things. The channel seam the
+rail calls is `run_target_proofs`; it returns both receipt paths. The install
+prover the adapter harness invokes remains
+`scripts.release_install_smoke.run_install_proof` and is unchanged. The harness
+invokes that prover and `scripts.release_nvattest_proof.run_nvattest_proof`
+side by side, writing one output file for each.
+
+The authority appears in the request twice by design, mirroring how candidate
+wheels are carried: as a descriptor of its digest and byte count, and as a
+staged file path. Support wheels are staged, copied, and re-hashed after the
+copy exactly as candidate wheels are, and the staged support directory is
+covered by the same directory-identity guards. Cleanup still always runs, local
+and remote.
+
 ## Tool Evidence
 
 The macOS build adapter derives expected tool evidence from the rail pins. For

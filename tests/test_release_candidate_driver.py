@@ -500,10 +500,9 @@ def _retained_support_declarations(
         for path in sorted((report.evidence_dir / "support").glob("*.whl"))
     )
     declarations = driver.support_distribution_entries(support_paths)
-    assert (
-        {entry["name"] for entry in declarations}
-        == driver.SUPPORT_DISTRIBUTION_NAMES
-    )
+    assert {
+        entry["name"] for entry in declarations
+    } == driver.SUPPORT_DISTRIBUTION_NAMES
     return declarations
 
 
@@ -3253,9 +3252,10 @@ def test_recovery_rejects_retained_nvattest_receipt_mutations(
             "challenge"
         ]
         assert CHALLENGE_RE.fullmatch(replayed_challenge)
-        assert replayed_challenge != _read_json(_ledger_path(report))["nvattest"][
-            "challenge"
-        ]
+        assert (
+            replayed_challenge
+            != _read_json(_ledger_path(report))["nvattest"]["challenge"]
+        )
         receipt = _read_json(first_path)
         receipt["challenge"] = replayed_challenge
         _write_json(first_path, receipt)
@@ -3310,10 +3310,9 @@ def test_recovery_rejects_retained_nvattest_support_declaration_mutation(
     report = driver.run_candidate(root, _env(), _services(root))
     ledger = _read_json(_ledger_path(report))
     declarations = ledger["nvattest"]["support_distributions"]
-    assert (
-        {entry["name"] for entry in declarations}
-        == driver.SUPPORT_DISTRIBUTION_NAMES
-    )
+    assert {
+        entry["name"] for entry in declarations
+    } == driver.SUPPORT_DISTRIBUTION_NAMES
     declarations[0]["sha256"] = hashlib.sha256(
         f"forged support declaration {declarations[0]['name']}".encode("utf-8")
     ).hexdigest()

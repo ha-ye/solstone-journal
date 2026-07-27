@@ -162,18 +162,48 @@ pair-promotes payload and evidence, and prints canonical local readiness JSON.
 This is candidate evidence only, not publication authorization. Advisory acquisition
 is a separate operator operation documented in `scripts/release_advisory_policy.py`.
 
+Every candidate attempt generates a fresh proof challenge and requires, for each
+configured native target, a challenge-bound nvattest receipt alongside the
+unchanged install/smoke receipt. Before the ledger is written and before any
+proof host is contacted, the rail extracts the nvattest authority from the
+candidate's own root wheels, requires every target's extraction to agree
+byte-for-byte, and materializes the locked support-wheel set declared by
+`uv.lock`, verifying each wheel's bytes against the lock. Challenge, authority,
+and that exact support set are then handed to every target lane. Two attempts
+over identical version, source, and payload inputs differ only in the challenge,
+the receipts bound to it, and observation timestamps.
+
+The retained support declarations recorded in the ledger *are* the lock-derived
+declarations captured when the candidate was cut. Disagreement with the release
+lock therefore fails at cut time rather than being re-litigated later, which is
+why a retained candidate keeps validating after an unrelated dependency bump.
+
 `bash scripts/release.sh --recover <version> <source-commit>` is
 retained-byte-only, read-only validation. It preserves retained payload, ledger,
 and proofs, revalidates them, and reports `retained-candidate-valid`. It never
 rebuilds, refreshes advisories, contacts hosts, installs wheels, reads
 authentication, or uses the network.
 
+Recovery re-derives the nvattest authority from the retained candidate wheel
+bytes rather than reading it from the ledger, requires every target's extraction
+to agree, and holds that extraction against the ledger's authority payload, its
+byte digest, and every receipt's installed authority. It re-hashes the retained
+support wheels against the ledger declarations and against every receipt, and
+binds the challenge and the candidate identities through both receipt classes.
+Because the anchor is the retained wheel bytes, a forgery that rewrites the
+ledger and every receipt to agree with itself is still rejected. Recovery reads
+no release lock, no clock, and no network, and writes nothing on either the
+success or the failure path.
+
 `bash scripts/release.sh --dry-run-linux` validates the Linux structural plan
 only. It emits no ready payload, manifest, ledger, proof, or clean-source claim.
 
-Candidate readiness means candidate payload, ledger, and per-target
-install/smoke proofs are locally consistent for the retained bytes. Proofs do
-not authorize publication and do not prove external distribution.
+Candidate readiness means candidate payload, ledger, retained support wheels,
+and both per-target receipt classes — install/smoke and nvattest — are locally
+consistent for the retained bytes. Proofs do not authorize publication and do
+not prove external distribution. Live SPP composite acceptance, real remote
+lanes, and production URL reach are VPE post-ship work; this rail does not
+attest them.
 
 Aggregate release publication is the retryable delivery step for an already
 finalized retained candidate. `make publish-release
@@ -183,6 +213,14 @@ artifact set, verifies PyPI digests, tags `v<version>` at the retained source
 commit, and records a GitHub Release witness. `make publish-release-test
 RELEASE_DIR=<retained ready dir>` is TestPyPI upload+verify only; it does not
 validate changelog or tag readiness and does not invoke git or gh.
+
+Publication additionally refuses when the retained candidate's nvattest
+authority does not bind to the current checkout's canonical authority. That
+prerequisite runs immediately after retained-candidate revalidation and before
+the mode branch, so production and test alike fail with no index, upload, tag,
+or witness call attempted. The repair is to publish from a checkout whose
+authority matches the retained candidate, or to cut a new candidate; the
+retained bytes are never rewritten to satisfy the check.
 
 The no-arg release path, `--test`, `make release`, and `make release-test` stay
 locked out. They fail before any token, transport, build-host, git, upload, tag,
@@ -197,14 +235,20 @@ credentials, minisign key paths, and archive channel come from
 `https://transparency.solstone.app`.
 `RELEASE_DIR` must resolve to `dist/release-candidate/<version>/`; the
 corresponding rail evidence is derived from `target/release-evidence/<version>/`,
-which holds `ledger.json`, the three proof receipts under `proofs/`, and, after
-the prerequisite is published, the single post-finalization tombstone verification
-record.
+which holds `ledger.json`, one install/smoke receipt per configured native
+target under `proofs/`, one challenge-bound nvattest receipt per the same
+targets under `nvattest/`, the retained locked support wheels under `support/`,
+and, after the prerequisite is published, the single post-finalization tombstone
+verification record. Each of those directories is inventory-exact in both
+directions: a missing entry and an unexpected extra both fail closed.
 
 The public layout is fixed:
 `releases/<product>/v/<version>/ledger-entry.json`,
 `ledger-entry.json.minisig`, the byte-identical companion manifests, and the
-byte-identical native proof receipts are immutable create-only objects.
+byte-identical native proof receipts of both classes are immutable create-only
+objects. Install/smoke receipts publish under their target name; nvattest
+receipts publish under `<target>.nvattest.json`, mapped from their retained
+sibling directory at a single point in the publisher.
 `releases/<product>/ledger.jsonl` is mutable and derived.
 `releases/<product>/latest.json.minisig` and `latest.json` are the signed pointer
 pair, written in that order.
