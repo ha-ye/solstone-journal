@@ -8,20 +8,28 @@ This module performs no network access at import time.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
-import platform
 import shutil
 import stat
-import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from solstone.think.journal_io import LockTimeout
 from solstone.think.journal_io.locking import hold_lock
+from solstone.think.providers.install_state import (
+    canonical_fingerprint,
+    fingerprint_sha256,
+)
+from solstone.think.providers.nvattest_authority import (
+    NvattestTargetEntry,
+    authority_entry,
+    nvattest_target_key,
+)
 from solstone.think.providers.rfdetr_install import (
     RfdetrInstallError,
 )
@@ -32,11 +40,19 @@ from solstone.think.utils import get_journal
 
 SPP_NVATTEST_DIR_ENV = "SPP_NVATTEST_DIR"
 SIDECAR_NAME = ".nvattest-install.json"
+SIDECAR_SCHEMA_VERSION = 1
 CA_BUNDLE_RELATIVE_PATH = Path("share") / "ca" / "ca-bundle.pem"
 ENSURE_LOCK_TIMEOUT_S = 0.1
 ENSURE_LOCK_POLL_INTERVAL_S = 0.02
+DOWNLOADS_DIR_NAME = ".downloads"
+EXTRACT_DIR_NAME = ".extract"
+INSTALL_LOCK_SIDECAR_NAME = ".install.lock"
+HOUSEKEEPING_NAMES = frozenset(
+    {DOWNLOADS_DIR_NAME, EXTRACT_DIR_NAME, INSTALL_LOCK_SIDECAR_NAME}
+)
+PAYLOAD_TOP_LEVEL = ("bin", "lib", "share", "LICENSE")
+EXECUTABLE_MASK = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 
-NvattestArchiveKey = Literal["linux-x86_64"]
 NvattestEnsureStatus = Literal[
     "already_installed",
     "installed",
@@ -55,79 +71,11 @@ class NvattestInstallError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class NvattestArchiveSpec:
-    version: str
-    url: str
-    archive_name: str
-    sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class NvattestInstallRecord:
-    version: str
-    archive_name: str
-    archive_sha256: str
-
-    def to_json(self) -> str:
-        return (
-            json.dumps(
-                {
-                    "archive_name": self.archive_name,
-                    "archive_sha256": self.archive_sha256,
-                    "version": self.version,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class NvattestEnsureResult:
     status: NvattestEnsureStatus
     nvattest_dir: Path | None = None
     reason_code: str | None = None
     detail: str | None = None
-
-
-NVATTEST_ARCHIVES: dict[NvattestArchiveKey, NvattestArchiveSpec] = {
-    "linux-x86_64": NvattestArchiveSpec(
-        version="1.2.2-sol.1",
-        url=(
-            "https://updates.solstone.app/providers/nvattest/"
-            "libnvat-linux-x86_64-1.2.2-sol.1-archive.tar.xz"
-        ),
-        archive_name="libnvat-linux-x86_64-1.2.2-sol.1-archive.tar.xz",
-        sha256="60ef75d1873e7129f03ea80d107d92b2ef216d2a8815958617b30d9c721d474a",
-    ),
-}
-
-
-def nvattest_archive_key(
-    os_name: str | None = None,
-    arch: str | None = None,
-) -> NvattestArchiveKey | None:
-    if os_name is None:
-        os_name = "linux" if sys.platform.startswith("linux") else sys.platform
-    if arch is None:
-        arch = platform.machine()
-    normalized_arch = arch.lower()
-    if os_name == "linux" and normalized_arch in {"amd64", "x64", "x86_64"}:
-        return "linux-x86_64"
-    return None
-
-
-def resolve_nvattest_archive_spec(
-    archive_key: NvattestArchiveKey | None = None,
-) -> NvattestArchiveSpec:
-    resolved = archive_key or nvattest_archive_key()
-    if resolved is None:
-        raise NvattestInstallError(
-            "platform_unsupported",
-            "nvattest archive unsupported on this platform",
-        )
-    return NVATTEST_ARCHIVES[resolved]
 
 
 def cache_root(journal_path: str | Path | None = None) -> Path:
@@ -154,7 +102,7 @@ def ensure_nvattest_installed(
     *,
     explicit_override: str | Path | None = None,
     journal_path: str | Path | None = None,
-    spec: NvattestArchiveSpec | None = None,
+    entry: NvattestTargetEntry | None = None,
     lock_timeout: float = ENSURE_LOCK_TIMEOUT_S,
 ) -> NvattestEnsureResult:
     """Ensure the journal-cache nvattest install is ready without blocking peers."""
@@ -172,7 +120,7 @@ def ensure_nvattest_installed(
         )
 
     try:
-        resolved_spec = spec or resolve_nvattest_archive_spec()
+        resolved_entry = entry or resolve_nvattest_authority_entry()
     except NvattestInstallError as exc:
         return NvattestEnsureResult(
             status="platform_unsupported",
@@ -186,14 +134,14 @@ def ensure_nvattest_installed(
             timeout=lock_timeout,
             poll_interval=ENSURE_LOCK_POLL_INTERVAL_S,
         ):
-            if _installed(nvattest_dir, resolved_spec):
+            if _installed(nvattest_dir, resolved_entry):
                 return NvattestEnsureResult(
                     status="already_installed",
                     nvattest_dir=nvattest_dir,
                 )
             try:
                 installed = install_nvattest(
-                    spec=resolved_spec,
+                    entry=resolved_entry,
                     journal_path=journal_path,
                 )
             except NvattestInstallError as exc:
@@ -216,58 +164,55 @@ def nvattest_cache_ready(
     *,
     explicit_override: str | Path | None = None,
     journal_path: str | Path | None = None,
-    spec: NvattestArchiveSpec | None = None,
+    entry: NvattestTargetEntry | None = None,
 ) -> bool:
     """Return whether the cache install is quiescent and ready for a reader."""
 
     if explicit_override is not None or os.environ.get(SPP_NVATTEST_DIR_ENV):
         return True
     root = cache_root(journal_path)
-    if not root.exists():
+    if not root.exists() or _install_lock_is_held(journal_path):
         return False
     try:
-        resolved_spec = spec or resolve_nvattest_archive_spec()
+        resolved_entry = entry or resolve_nvattest_authority_entry()
     except NvattestInstallError:
         return False
-    try:
-        with hold_lock(
-            _install_lock_path(journal_path),
-            timeout=0.0,
-            poll_interval=ENSURE_LOCK_POLL_INTERVAL_S,
-        ):
-            return _installed(root, resolved_spec)
-    except LockTimeout:
-        return False
+    return _installed(root, resolved_entry)
 
 
 def install_nvattest(
     *,
     force: bool = False,
-    spec: NvattestArchiveSpec | None = None,
+    entry: NvattestTargetEntry | None = None,
     journal_path: str | Path | None = None,
 ) -> Path:
     """Download, verify, and install nvattest into the journal provider cache."""
 
-    spec = spec or resolve_nvattest_archive_spec()
+    entry = entry or resolve_nvattest_authority_entry()
     root = cache_root(journal_path)
-    if not force and _installed(root, spec):
+    if not force and _installed(root, entry):
         return root
 
-    archive = _archive_path(spec, journal_path)
-    extract_dir = root / ".extract"
-    _download_file(spec.url, archive, spec.sha256)
-    shutil.rmtree(extract_dir, ignore_errors=True)
+    archive = _archive_path(entry, journal_path)
+    extract_dir = root / EXTRACT_DIR_NAME
+    raw_dir = extract_dir / "raw"
+    payload_dir = extract_dir / "payload"
     try:
-        _safe_extract_nvattest_tarball(archive, extract_dir)
-        source = _find_extracted_root(extract_dir)
-        _install_extracted_tree(source, root)
-        _write_sidecar(
-            root / SIDECAR_NAME,
-            NvattestInstallRecord(
-                version=spec.version,
-                archive_name=spec.archive_name,
-                archive_sha256=spec.sha256,
-            ),
+        _download_file(
+            entry.artifact.url,
+            archive,
+            entry.artifact.size_bytes,
+            entry.artifact.sha256,
+        )
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        _safe_extract_nvattest_tarball(archive, raw_dir)
+        source = _find_extracted_root(raw_dir, entry)
+        _materialize_payload_tree(source, payload_dir, entry)
+        fingerprint = _tree_fingerprint_sha256(payload_dir, entry)
+        _promote_payload_tree(
+            payload_dir,
+            root,
+            _sidecar_json(entry, fingerprint),
         )
         return root
     finally:
@@ -275,38 +220,81 @@ def install_nvattest(
         archive.unlink(missing_ok=True)
 
 
-def _has_runtime_layout(root: Path) -> bool:
-    return (
-        (root / "bin" / "nvattest").is_file()
-        and (root / "lib").is_dir()
-        and (root / CA_BUNDLE_RELATIVE_PATH).is_file()
-    )
+def resolve_nvattest_authority_entry() -> NvattestTargetEntry:
+    target_key = nvattest_target_key()
+    if target_key is None:
+        raise NvattestInstallError(
+            "platform_unsupported",
+            "nvattest archive unsupported on this platform",
+        )
+    return authority_entry(target_key)
 
 
-def _installed(root: Path, spec: NvattestArchiveSpec) -> bool:
-    if not _has_runtime_layout(root):
-        return False
+def _installed(root: Path, entry: NvattestTargetEntry) -> bool:
     try:
         data = json.loads((root / SIDECAR_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
+    if not _sidecar_matches(data, entry):
+        return False
+    try:
+        return _tree_fingerprint_sha256(root, entry) == data["tree_fingerprint_sha256"]
+    except (NvattestInstallError, OSError):
+        return False
+
+
+def _sidecar_matches(data: object, entry: NvattestTargetEntry) -> bool:
     if not isinstance(data, dict):
         return False
+    if set(data) != {
+        "artifact",
+        "schema_version",
+        "target_key",
+        "tree_fingerprint_sha256",
+        "version",
+    }:
+        return False
     return (
-        data.get("archive_sha256") == spec.sha256
-        and data.get("version") == spec.version
+        data.get("schema_version") == SIDECAR_SCHEMA_VERSION
+        and data.get("target_key") == entry.key
+        and data.get("version") == entry.source.version
+        and data.get("artifact") == entry.artifact.to_payload()
+        and _is_sha256(data.get("tree_fingerprint_sha256"))
     )
 
 
 def _archive_path(
-    spec: NvattestArchiveSpec,
+    entry: NvattestTargetEntry,
     journal_path: str | Path | None = None,
 ) -> Path:
-    return cache_root(journal_path) / ".downloads" / spec.archive_name
+    return cache_root(journal_path) / DOWNLOADS_DIR_NAME / entry.artifact.name
 
 
 def _install_lock_path(journal_path: str | Path | None = None) -> Path:
     return cache_root(journal_path) / ".install"
+
+
+def _install_lock_is_held(journal_path: str | Path | None = None) -> bool:
+    lock_path = _install_lock_path(journal_path).parent / INSTALL_LOCK_SIDECAR_NAME
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return True
+            return False
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+    return False
 
 
 def _sha256_file(path: Path) -> str:
@@ -317,9 +305,22 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_file(path: Path, expected_sha256: str) -> None:
+def _verify_file(
+    path: Path,
+    expected_size_bytes: int,
+    expected_sha256: str,
+) -> None:
     if not path.is_file():
         raise NvattestInstallError("file_missing", f"nvattest asset missing: {path}")
+    actual_size = path.stat().st_size
+    if actual_size != expected_size_bytes:
+        raise NvattestInstallError(
+            "archive_size_mismatch",
+            (
+                f"size mismatch for {path.name}: expected {expected_size_bytes}, "
+                f"got {actual_size}"
+            ),
+        )
     actual_sha256 = _sha256_file(path)
     if actual_sha256 != expected_sha256:
         raise NvattestInstallError(
@@ -335,7 +336,12 @@ def _tmp_path(dest: Path) -> Path:
     return dest.with_name(f"{dest.name}.tmp")
 
 
-def _download_file(url: str, dest: Path, expected_sha256: str) -> None:
+def _download_file(
+    url: str,
+    dest: Path,
+    expected_size_bytes: int,
+    expected_sha256: str,
+) -> None:
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -349,7 +355,7 @@ def _download_file(url: str, dest: Path, expected_sha256: str) -> None:
                 for chunk in response.iter_bytes():
                     if chunk:
                         handle.write(chunk)
-        _verify_file(tmp, expected_sha256)
+        _verify_file(tmp, expected_size_bytes, expected_sha256)
         tmp.replace(dest)
     except NvattestInstallError:
         tmp.unlink(missing_ok=True)
@@ -372,63 +378,235 @@ def _safe_extract_nvattest_tarball(tarball: Path, dest: Path) -> None:
         raise NvattestInstallError("archive_extract_failed", str(exc)) from exc
 
 
-def _find_extracted_root(extract_dir: Path) -> Path:
-    if _has_runtime_layout(extract_dir):
-        return extract_dir
-    matches = [
-        path
+def _find_extracted_root(extract_dir: Path, entry: NvattestTargetEntry) -> Path:
+    candidates = [extract_dir]
+    candidates.extend(
+        path.parent.parent
         for path in extract_dir.rglob("nvattest")
-        if path.is_file()
-        and path.parent.name == "bin"
-        and _has_runtime_layout(path.parent.parent)
-    ]
-    if len(matches) != 1:
+        if path.is_file() and path.parent.name == "bin"
+    )
+    valid: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            _payload_member_facts(candidate, entry)
+        except NvattestInstallError:
+            continue
+        valid.append(candidate)
+    if len(valid) != 1:
         raise NvattestInstallError(
             "archive_layout_invalid",
-            f"expected exactly one extracted nvattest binary, found {len(matches)}",
+            f"expected exactly one extracted nvattest payload, found {len(valid)}",
         )
-    return matches[0].parent.parent
+    return valid[0]
 
 
-def _install_extracted_tree(source: Path, root: Path) -> None:
-    binary = source / "bin" / "nvattest"
-    lib_dir = source / "lib"
-    ca_bundle = source / CA_BUNDLE_RELATIVE_PATH
-    if not binary.is_file() or not lib_dir.is_dir() or not ca_bundle.is_file():
+def _materialize_payload_tree(
+    source: Path,
+    payload_dir: Path,
+    entry: NvattestTargetEntry,
+) -> None:
+    shutil.rmtree(payload_dir, ignore_errors=True)
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    for name in PAYLOAD_TOP_LEVEL:
+        src = source / name
+        dst = payload_dir / name
+        if src.is_dir():
+            shutil.copytree(src, dst, symlinks=True)
+        elif src.is_file():
+            shutil.copy2(src, dst)
+        else:
+            raise NvattestInstallError(
+                "archive_layout_invalid",
+                f"extracted archive missing payload member: {name}",
+            )
+    _payload_member_facts(payload_dir, entry)
+
+
+def _tree_fingerprint_sha256(root: Path, entry: NvattestTargetEntry) -> str:
+    fingerprint = {"members": _payload_member_facts(root, entry)}
+    return fingerprint_sha256(canonical_fingerprint(fingerprint))
+
+
+def _payload_member_facts(
+    root: Path,
+    entry: NvattestTargetEntry,
+) -> list[dict[str, Any]]:
+    expected = {member.relpath: member for member in entry.inventory}
+    expected_dirs = _expected_payload_dirs(entry)
+    observed_dirs: set[str] = set()
+    observed: dict[str, dict[str, Any]] = {}
+    for top_level in ("bin", "lib", "share"):
+        _scan_payload_path(root / top_level, root, observed, observed_dirs)
+    _scan_payload_path(root / "LICENSE", root, observed, observed_dirs)
+
+    extra_dirs = observed_dirs - expected_dirs
+    if extra_dirs:
+        raise NvattestInstallError(
+            "archive_layout_invalid",
+            f"nvattest payload contains extra directories: {sorted(extra_dirs)}",
+        )
+    if set(observed) != set(expected):
         raise NvattestInstallError(
             "archive_layout_invalid",
             (
-                "extracted archive must contain bin/nvattest, lib/, "
-                "and share/ca/ca-bundle.pem"
+                "nvattest payload member set mismatch: "
+                f"missing={sorted(set(expected) - set(observed))} "
+                f"extra={sorted(set(observed) - set(expected))}"
             ),
         )
+    for relpath, expected_member in expected.items():
+        fact = observed[relpath]
+        if fact["kind"] != expected_member.kind:
+            raise NvattestInstallError(
+                "archive_layout_invalid",
+                f"nvattest payload wrong kind for {relpath}",
+            )
+        if fact["symlink_target"] != expected_member.symlink_target:
+            raise NvattestInstallError(
+                "archive_layout_invalid",
+                f"nvattest payload wrong symlink target for {relpath}",
+            )
+        if fact["executable"] != expected_member.executable:
+            raise NvattestInstallError(
+                "archive_layout_invalid",
+                f"nvattest payload wrong executable bit for {relpath}",
+            )
+    return [observed[relpath] for relpath in sorted(observed)]
 
+
+def _expected_payload_dirs(entry: NvattestTargetEntry) -> set[str]:
+    expected: set[str] = set()
+    for member in entry.inventory:
+        parts = Path(member.relpath).parts[:-1]
+        for index in range(1, len(parts) + 1):
+            expected.add(Path(*parts[:index]).as_posix())
+    return expected
+
+
+def _scan_payload_path(
+    path: Path,
+    root: Path,
+    observed: dict[str, dict[str, Any]],
+    observed_dirs: set[str],
+) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    relpath = path.relative_to(root).as_posix()
+    if stat.S_ISLNK(mode):
+        observed[relpath] = {
+            "content_sha256": None,
+            "executable": False,
+            "kind": "symlink",
+            "relpath": relpath,
+            "symlink_target": os.readlink(path),
+        }
+        return
+    if stat.S_ISDIR(mode):
+        observed_dirs.add(relpath)
+        for child in sorted(path.iterdir(), key=lambda item: item.name):
+            _scan_payload_path(child, root, observed, observed_dirs)
+        return
+    if stat.S_ISREG(mode):
+        observed[relpath] = {
+            "content_sha256": _sha256_file(path),
+            "executable": bool(mode & EXECUTABLE_MASK),
+            "kind": "regular",
+            "relpath": relpath,
+            "symlink_target": None,
+        }
+        return
+    observed[relpath] = {
+        "content_sha256": None,
+        "executable": False,
+        "kind": "other",
+        "relpath": relpath,
+        "symlink_target": None,
+    }
+
+
+def _promote_payload_tree(payload_dir: Path, root: Path, sidecar_json: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    for name in ("bin", "lib", "include", "share"):
-        shutil.rmtree(root / name, ignore_errors=True)
-    for name in ("LICENSE",):
-        (root / name).unlink(missing_ok=True)
+    aside = root / EXTRACT_DIR_NAME / "aside"
+    shutil.rmtree(aside, ignore_errors=True)
+    aside.mkdir(parents=True, exist_ok=True)
+    moved_old: list[str] = []
+    installed_new: list[str] = []
+    committed = False
+    try:
+        for name in PAYLOAD_TOP_LEVEL:
+            target = root / name
+            if target.exists() or target.is_symlink():
+                shutil.move(str(target), str(aside / name))
+                moved_old.append(name)
+        for name in PAYLOAD_TOP_LEVEL:
+            shutil.move(str(payload_dir / name), str(root / name))
+            installed_new.append(name)
+        sidecar_tmp = root / EXTRACT_DIR_NAME / "sidecar.tmp"
+        sidecar_tmp.write_text(sidecar_json, encoding="utf-8")
+        sidecar_tmp.replace(root / SIDECAR_NAME)
+        committed = True
+    except Exception:
+        if not committed:
+            for name in reversed(installed_new):
+                _remove_payload_path(root / name)
+            for name in reversed(moved_old):
+                shutil.move(str(aside / name), str(root / name))
+        raise
+    finally:
+        if committed:
+            shutil.rmtree(aside, ignore_errors=True)
 
-    for name in ("bin", "lib", "include", "share"):
-        src = source / name
-        if src.exists():
-            shutil.move(str(src), str(root / name))
-    license_src = source / "LICENSE"
-    if license_src.exists():
-        shutil.move(str(license_src), str(root / "LICENSE"))
-    _chmod_executable(root / "bin" / "nvattest")
+
+def _remove_payload_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
 
 
-def _chmod_executable(path: Path) -> None:
-    mode = path.stat().st_mode
-    path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+def _sidecar_json(entry: NvattestTargetEntry, tree_fingerprint_sha256: str) -> str:
+    return (
+        json.dumps(
+            {
+                "artifact": entry.artifact.to_payload(),
+                "schema_version": SIDECAR_SCHEMA_VERSION,
+                "target_key": entry.key,
+                "tree_fingerprint_sha256": tree_fingerprint_sha256,
+                "version": entry.source.version,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
-def _write_sidecar(path: Path, record: NvattestInstallRecord) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, delete=False, encoding="utf-8"
-    ) as handle:
-        tmp_path = Path(handle.name)
-        handle.write(record.to_json())
-    tmp_path.replace(path)
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and value == value.lower()
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+__all__ = [
+    "HOUSEKEEPING_NAMES",
+    "NvattestEnsureResult",
+    "NvattestEnsureStatus",
+    "NvattestInstallError",
+    "SIDECAR_NAME",
+    "SPP_NVATTEST_DIR_ENV",
+    "cache_root",
+    "ensure_nvattest_installed",
+    "install_nvattest",
+    "nvattest_cache_ready",
+    "resolve_nvattest_authority_entry",
+    "resolve_nvattest_dir",
+]

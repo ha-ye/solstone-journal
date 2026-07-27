@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.providers import local_install, parakeet_install, rfdetr_install
+from solstone.think.providers import (
+    local_install,
+    nvattest_install,
+    parakeet_install,
+    rfdetr_install,
+)
 from solstone.think.providers.local import LocalProviderError
 
 Extractor = Callable[[Path, Path], None]
@@ -25,6 +30,10 @@ Extractor = Callable[[Path, Path], None]
             parakeet_install.ParakeetProviderError,
         ),
         (local_install._safe_extract_tarball, LocalProviderError),
+        (
+            nvattest_install._safe_extract_nvattest_tarball,
+            nvattest_install.NvattestInstallError,
+        ),
     ],
 )
 def test_safe_extract_tarball_rejects_symlink_escape(
@@ -56,6 +65,10 @@ def test_safe_extract_tarball_rejects_symlink_escape(
             parakeet_install.ParakeetProviderError,
         ),
         (local_install._safe_extract_tarball, LocalProviderError),
+        (
+            nvattest_install._safe_extract_nvattest_tarball,
+            nvattest_install.NvattestInstallError,
+        ),
     ],
 )
 def test_safe_extract_tarball_rejects_hardlink_escape(
@@ -82,6 +95,7 @@ def test_safe_extract_tarball_rejects_hardlink_escape(
         rfdetr_install._safe_extract_tarball,
         parakeet_install._safe_extract_tarball,
         local_install._safe_extract_tarball,
+        nvattest_install._safe_extract_nvattest_tarball,
     ],
 )
 def test_safe_extract_tarball_allows_internal_relative_nvattest_symlink(

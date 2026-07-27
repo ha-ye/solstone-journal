@@ -20,6 +20,7 @@ from cryptography.x509.oid import NameOID, ObjectIdentifier
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.models import AttestationFailedError
 from solstone.think.providers import nvattest_install
+from solstone.think.providers.nvattest_authority import authority_entry
 from solstone.think.services import spp, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from solstone.think.services.spp_attest.composite import verify_composite
@@ -550,17 +551,13 @@ def test_refill_does_not_establish_while_nvattest_install_lock_is_held(
             gpu_reattest_at=now,
         )
     )
-    spec = nvattest_install.NvattestArchiveSpec(
-        version="9.9.9",
-        url="https://example.invalid/nvattest.tar.gz",
-        archive_name="nvattest.tar.gz",
-        sha256="a" * 64,
-    )
+    entry = authority_entry("linux-x86_64")
+    nvattest_install.cache_root(tmp_path).mkdir(parents=True)
 
     def cache_ready(**kwargs):
         return nvattest_install.nvattest_cache_ready(
             journal_path=tmp_path,
-            spec=spec,
+            entry=entry,
             **kwargs,
         )
 
