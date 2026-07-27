@@ -623,6 +623,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "solstone-core-speakers-analyze"
+version = "1.0.17"
+dependencies = [
+ "serde_json",
+ "solstone-core-speakers",
+ "solstone-core-speakers-onnx",
+]
+
+[[package]]
 name = "solstone-core-speakers-onnx"
 version = "1.0.17"
 dependencies = [

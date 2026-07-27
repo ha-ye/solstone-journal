@@ -1,0 +1,15 @@
+[package]
+name = "solstone-core-speakers-analyze"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+solstone-core-speakers.workspace = true
+solstone-core-speakers-onnx.workspace = true
+
+[lints]
+workspace = true

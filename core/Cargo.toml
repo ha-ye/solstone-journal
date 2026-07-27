@@ -9,6 +9,7 @@ members = [
     "crates/solstone-core-sol-client",
     "crates/solstone-core-sol-client-cli",
     "crates/solstone-core-speakers",
+    "crates/solstone-core-speakers-analyze",
     "crates/solstone-core-speakers-onnx",
 ]
 resolver = "3"
@@ -31,6 +32,7 @@ solstone-core-sol = { path = "crates/solstone-core-sol" }
 solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
 solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
 solstone-core-speakers = { path = "crates/solstone-core-speakers" }
+solstone-core-speakers-analyze = { path = "crates/solstone-core-speakers-analyze" }
 solstone-core-speakers-onnx = { path = "crates/solstone-core-speakers-onnx" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
