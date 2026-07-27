@@ -32,8 +32,10 @@ sets.
 - the reader also checks that the resolved version declares every top-level key
   required by the current consumer path
 
-Both checks are strict set equality, so a missing key and an unexpected extra key
-both fail closed.
+The writer self-assertion and reader shape comparison are strict set equality:
+a missing key and an unexpected extra key both fail closed. The consumer gate
+instead asserts the resolved version's declared top-level shape contains every
+key the current consumer path requires, and fails alone before shape comparison.
 
 The old trap was that writer and reader moved in the same commit, so any key-set
 change was self-consistent by construction. **The only thing such a change broke
