@@ -46,12 +46,15 @@ not be adopted.
 
 The SPL v0.2.0 path is:
 
-- `spl-core/src/bridge.rs:270-296` runs `upstream_request_headers`.
+- spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:270-296` runs
+  `upstream_request_headers`.
 - That function strips reserved headers before any opener sees them.
-- `spl-transport/src/journal_bridge_carrier.rs:63` calls
-  `self.opener.proxy_headers(upstream_headers)` on the already-filtered set.
-- `spl-transport/src/journal_bridge.rs:90-102` says opener implementations
-  must add the consumer's complete authentication-header set.
+- spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:63`
+  calls `self.opener.proxy_headers(upstream_headers)` on the already-filtered
+  set.
+- spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:90-102`
+  says opener implementations must add the consumer's complete
+  authentication-header set.
 
 That model is deliberately anti-spoofing: caller-supplied loopback attribution
 is stripped, and the opener injects authoritative headers. Setting
@@ -259,7 +262,7 @@ Behavior marker: `matches-python` for file layout and label selection;
 2. `port validation` - `matches-python`. Reject ports outside `1..=65535`
    before attempting bind, matching `serve_cli.py:195-198`.
 3. `bind address` - `matches-python`. SPL binds `127.0.0.1` internally at
-   `journal_bridge.rs:241`.
+   spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:241`.
 4. `startup line` - `expected-differs` unless native CLI gains streaming output.
    Current `CommandOutput` cannot emit before a resident handler returns.
 5. `request method/path/body` - `matches-python` in the SPL bridge: the request

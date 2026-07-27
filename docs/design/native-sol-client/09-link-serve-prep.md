@@ -51,7 +51,7 @@ Relevant public seams:
   ...
       let device_token = credential.device_token.clone().map(tokio::sync::Mutex::new);
   ```
-- `TransportClient::dial_carrier` is public and only falls back to relay when `relay_eligible()` is true. Evidence: `client.rs:107-147`:
+- `TransportClient::dial_carrier` is public and only falls back to relay when `relay_eligible()` is true. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/client.rs:107-147`:
   ```rust
   pub async fn dial_carrier(&self) -> Result<DialedCarrier, TransportError> {
   ...
@@ -64,7 +64,7 @@ Relevant public seams:
       self.credential.relay_origin.is_some() && self.device_token.is_some()
   }
   ```
-- The persistent relay carrier path requires `relay_origin`, `instance_id`, and current `device_token`, then calls a private relay dialer. Evidence: `client.rs:203-236`:
+- The persistent relay carrier path requires `relay_origin`, `instance_id`, and current `device_token`, then calls a private relay dialer. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/client.rs:203-236`:
   ```rust
   let origin = self.credential.relay_origin.as_deref().ok_or(TransportError::NoEndpoint)?;
   let instance_id = &self.credential.instance_id;
@@ -72,7 +72,7 @@ Relevant public seams:
   ...
   match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
   ```
-- `DialedCarrier` is opaque outside `spl-transport`; consumers cannot construct one directly. Evidence: `client.rs:31-45`:
+- `DialedCarrier` is opaque outside `spl-transport`; consumers cannot construct one directly. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/client.rs:31-45`:
   ```rust
   pub struct DialedCarrier {
       stream: Box<dyn CarrierIo>,
@@ -81,7 +81,7 @@ Relevant public seams:
   impl DialedCarrier {
       pub(crate) fn into_parts(self) -> (Box<dyn CarrierIo>, CarrierKind) {
   ```
-- The bridge opener trait requires returning that opaque carrier. Evidence: `journal_bridge.rs:93-107`:
+- The bridge opener trait requires returning that opaque carrier. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:93-107`:
   ```rust
   pub trait CarrierOpener: Send + Sync + 'static {
       fn proxy_headers(...);
@@ -90,7 +90,7 @@ Relevant public seams:
       ) -> Pin<Box<dyn Future<Output = Result<DialedCarrier, TransportError>> + Send + '_>>;
   }
   ```
-- `relay::dial_relay_carrier` is not public. Evidence: `relay.rs:445-455`:
+- `relay::dial_relay_carrier` is not public. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay.rs:445-455`:
   ```rust
   pub(crate) struct RelayCarrier {
   ...
@@ -104,7 +104,7 @@ Relevant public seams:
 
 Other public relay paths are one-shot or require an existing token:
 
-- `relay::dial_relay_ws` is public but requires `device_token` and returns a WebSocket, not `DialedCarrier`. Evidence: `relay.rs:322-331`:
+- `relay::dial_relay_ws` is public but requires `device_token` and returns a WebSocket, not `DialedCarrier`. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay.rs:322-331`:
   ```rust
   pub async fn dial_relay_ws(
       url: &str,
@@ -112,7 +112,7 @@ Other public relay paths are one-shot or require an existing token:
       outer: Arc<ClientConfig>,
   ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TransportError>
   ```
-- `relay::request_once_over_ws` is public and sends one HTTP request over an already-established relay WebSocket. Evidence: `relay.rs:392-405`:
+- `relay::request_once_over_ws` is public and sends one HTTP request over an already-established relay WebSocket. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay.rs:392-405`:
   ```rust
   pub async fn request_once_over_ws(
       ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -120,7 +120,7 @@ Other public relay paths are one-shot or require an existing token:
       handshake_timeout: Duration,
       method: &str,
   ```
-- `relay::request_once_relay` is public and one-shot; it also requires `device_token`. Evidence: `relay.rs:532-546`:
+- `relay::request_once_relay` is public and one-shot; it also requires `device_token`. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay.rs:532-546`:
   ```rust
   pub async fn request_once_relay(
       inner_config: Arc<ClientConfig>,
@@ -128,11 +128,11 @@ Other public relay paths are one-shot or require an existing token:
       instance_id: &str,
       device_token: &str,
   ```
-- `relay_token::refresh_device_token` is public but requires an existing current token. Evidence: `relay_token.rs:34-35`:
+- `relay_token::refresh_device_token` is public but requires an existing current token. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay_token.rs:34-35`:
   ```rust
   pub async fn refresh_device_token(relay_origin: &str, current_token: &str) -> RefreshOutcome {
   ```
-- Direct one-shot `connection::request_once` exists, but it is not a carrier and requires a caller-supplied TLS config and LAN host/port. Evidence: `connection.rs:49-67`:
+- Direct one-shot `connection::request_once` exists, but it is not a carrier and requires a caller-supplied TLS config and LAN host/port. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/connection.rs:49-67`:
   ```rust
   pub async fn request_once(
       config: Arc<ClientConfig>,
@@ -144,7 +144,7 @@ Other public relay paths are one-shot or require an existing token:
 
 Public enrollment exists only inside the relay pairing ceremony:
 
-- `pair_over_relay` is public and returns a `Credential` containing relay origin and device token. Evidence: `relay_pairing.rs:31-35` and `relay_pairing.rs:111-123`:
+- `pair_over_relay` is public and returns a `Credential` containing relay origin and device token. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay_pairing.rs:31-35` and spl-rust v0.2.0 `crates/spl-transport/src/relay_pairing.rs:111-123`:
   ```rust
   pub async fn pair_over_relay(...) -> Result<Credential, TransportError> {
   ...
@@ -152,7 +152,7 @@ Public enrollment exists only inside the relay pairing ceremony:
       device_token: Some(device_token),
       device_token_expires_at,
   ```
-- The control-plane device enrollment function itself is private. Evidence: `relay_pairing.rs:104-127`:
+- The control-plane device enrollment function itself is private. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/relay_pairing.rs:104-127`:
   ```rust
   let device_token =
       enroll_device(&link.relay_origin, &pair.instance_id, home_attestation).await?;
@@ -211,7 +211,7 @@ Only bootstrap is locally answered by the SPL bridge. There is no consumer-suppl
 
 Local-route evidence:
 
-- `CapabilityState::bootstrap_capability` answers only the fixed bootstrap route, and only returns a value when the capability gate is enabled. Evidence: `journal_bridge.rs:179-185`:
+- `CapabilityState::bootstrap_capability` answers only the fixed bootstrap route, and only returns a value when the capability gate is enabled. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:179-185`:
   ```rust
   fn bootstrap_capability(&self, path: &str) -> Option<&str> {
       if path == BOOTSTRAP_ROUTE {
@@ -221,7 +221,7 @@ Local-route evidence:
       }
   }
   ```
-- The request dispatch path checks bootstrap first, then otherwise authorizes and forwards upstream. Evidence: `journal_bridge.rs:332-414`:
+- The request dispatch path checks bootstrap first, then otherwise authorizes and forwards upstream. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:332-414`:
   ```rust
   let bootstrap_capability = runtime.capability.bootstrap_capability(request_head.path());
   let route = if bootstrap_capability.is_some() { "bootstrap" } else { "upstream" };
@@ -238,7 +238,7 @@ Local-route evidence:
       forward_buffered(...).await;
   }
   ```
-- The public config and policy have no local route callback. Evidence: `journal_bridge.rs:56-69` and `journal_bridge.rs:111-120`:
+- The public config and policy have no local route callback. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:56-69` and spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:111-120`:
   ```rust
   pub struct BridgePolicy {
       pub port: u16,
@@ -297,7 +297,7 @@ Python status source:
 
 SPL public handle:
 
-- `JournalBridgeHandle` public API exposes only bound port, contacted flag, bootstrap URL, and shutdown methods. Evidence: `journal_bridge.rs:123-162`:
+- `JournalBridgeHandle` public API exposes only bound port, contacted flag, bootstrap URL, and shutdown methods. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:123-162`:
   ```rust
   pub struct JournalBridgeHandle {
       port: u16,
@@ -315,7 +315,7 @@ SPL public handle:
 
 Private carrier state:
 
-- `MuxCarrier` keeps opener, carrier slot, and keepalive config private and crate-only. Evidence: `journal_bridge_carrier.rs:34-56`:
+- `MuxCarrier` keeps opener, carrier slot, and keepalive config private and crate-only. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:34-56`:
   ```rust
   pub(crate) struct MuxCarrier {
       opener: Arc<dyn CarrierOpener>,
@@ -323,7 +323,7 @@ Private carrier state:
       keepalive: KeepaliveConfig,
   }
   ```
-- Carrier liveness and stream receivers are crate-private. Evidence: `journal_bridge_carrier.rs:187-197`:
+- Carrier liveness and stream receivers are crate-private. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:187-197`:
   ```rust
   pub(crate) struct CarrierHandle {
       commands: mpsc::Sender<CarrierCommand>,
@@ -336,7 +336,7 @@ Private carrier state:
       cancelled: bool,
   }
   ```
-- The active stream map and keepalive counters are local coordinator variables. Evidence: `journal_bridge_carrier.rs:314-323`:
+- The active stream map and keepalive counters are local coordinator variables. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:314-323`:
   ```rust
   let mut streams: HashMap<u32, StreamState> = HashMap::new();
   let mut outstanding: Option<OutstandingProbe> = None;
@@ -347,15 +347,15 @@ Classification:
 
 | Key | Class | Evidence / limit |
 | --- | --- | --- |
-| `health` | (c) not producible faithfully on v0.2.0 public API | Python health requires `state == connected`, manager alive, session present, and `session.is_alive` (`dialer.py:696-701`). SPL carrier liveness is private in `CarrierHandle.alive` (`journal_bridge_carrier.rs:187-190`). |
-| `state` | (b) trackable consumer-side only as a supervisory approximation | A consumer can track its own start/shutdown/error states, but SPL exposes no bridge/carrier state enum; `JournalBridgeHandle` exposes no state getter (`journal_bridge.rs:131-162`). |
-| `manager_alive` | (b) trackable consumer-side only as an approximation | Python checks manager task, loop running, and closed flag (`dialer.py:689-695`). SPL `join` is private inside `JournalBridgeHandle` (`journal_bridge.rs:123-128`). |
+| `health` | (c) not producible faithfully on v0.2.0 public API | Python health requires `state == connected`, manager alive, session present, and `session.is_alive` (`dialer.py:696-701`). SPL carrier liveness is private in `CarrierHandle.alive` (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:187-190`). |
+| `state` | (b) trackable consumer-side only as a supervisory approximation | A consumer can track its own start/shutdown/error states, but SPL exposes no bridge/carrier state enum; `JournalBridgeHandle` exposes no state getter (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:131-162`). |
+| `manager_alive` | (b) trackable consumer-side only as an approximation | Python checks manager task, loop running, and closed flag (`dialer.py:689-695`). SPL `join` is private inside `JournalBridgeHandle` (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:123-128`). |
 | `connected_age_seconds` | (b) trackable consumer-side after consumer-observed successful `CarrierOpener::dial_carrier` | SPL has no public connected timestamp; consumer can stamp its own successful dial. |
 | `last_connected_at` | (b) trackable consumer-side after successful `CarrierOpener::dial_carrier` | Same limit as above. |
 | `last_failure` | (b) trackable consumer-side from public `TransportError` returns | SPL logs upstream failures internally, but consumer can record errors returned by its own opener. |
-| `next_retry_at` | (b) trackable only if the consumer owns retry/backoff | SPL bridge has retry-on-dead-open behavior in `MuxCarrier::open_stream` but exposes no retry schedule (`journal_bridge_carrier.rs:71-87`). |
-| `reconnect_count` | (b) trackable consumer-side by counting dial attempts/reconnect decisions | SPL does not expose `slot` replacement count (`journal_bridge_carrier.rs:103-123`). |
-| `active_requests` | (b) trackable only outside the stock handle, by consumer-owned wrapping around local request handling or carrier-open attempts | SPL tracks active streams internally in a private `HashMap` (`journal_bridge_carrier.rs:314-316`) and exposes no request counter through `JournalBridgeHandle`. |
+| `next_retry_at` | (b) trackable only if the consumer owns retry/backoff | SPL bridge has retry-on-dead-open behavior in `MuxCarrier::open_stream` but exposes no retry schedule (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:71-87`). |
+| `reconnect_count` | (b) trackable consumer-side by counting dial attempts/reconnect decisions | SPL does not expose `slot` replacement count (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:103-123`). |
+| `active_requests` | (b) trackable only outside the stock handle, by consumer-owned wrapping around local request handling or carrier-open attempts | SPL tracks active streams internally in a private `HashMap` (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge_carrier.rs:314-316`) and exposes no request counter through `JournalBridgeHandle`. |
 
 No listed key is derivable directly from the public `JournalBridgeHandle` API.
 
@@ -375,31 +375,31 @@ pub struct BridgeNames {
 Field effects:
 
 - `capability_cookie_name: String`
-  - Read during authorization: `check_capability_cookie` uses `head.cookie(&names.capability_cookie_name)`. Evidence: `bridge.rs:247-255`.
-  - Stripped from request cookies before upstream forwarding. Evidence: `bridge.rs:310-321`:
+  - Read during authorization: `check_capability_cookie` uses `head.cookie(&names.capability_cookie_name)`. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:247-255`.
+  - Stripped from request cookies before upstream forwarding. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:310-321`:
     ```rust
     if name == names.capability_cookie_name {
         return None;
     }
     ```
-  - Used in bootstrap `Set-Cookie`. Evidence: `journal_bridge.rs:452-455`:
+  - Used in bootstrap `Set-Cookie`. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:452-455`:
     ```rust
     "Set-Cookie: {}={capability}; {}\r\n"
     ```
 - `upstream_cookie_prefix: String`
-  - Stripped from local request cookie names before forwarding upstream. Evidence: `bridge.rs:321-322`:
+  - Stripped from local request cookie names before forwarding upstream. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:321-322`:
     ```rust
     let upstream_name = name.strip_prefix(&names.upstream_cookie_prefix)?;
     ```
-  - Prepended to upstream response cookie names. Evidence: `bridge.rs:364-371`:
+  - Prepended to upstream response cookie names. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:364-371`:
     ```rust
     format!("{}{}={cookie_value}", names.upstream_cookie_prefix, name.trim())
     ```
 - `observer_header_name: String`
-  - Rejected as caller auth if present under normalized name. Evidence: `bridge.rs:106-112`.
-  - Stripped from forwarded request headers. Evidence: `bridge.rs:299-307`.
+  - Rejected as caller auth if present under normalized name. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:106-112`.
+  - Stripped from forwarded request headers. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:299-307`.
 - `protocol_version_header_name: String`
-  - Same rejection and stripping behavior as observer header. Evidence: `bridge.rs:106-112` and `bridge.rs:299-307`.
+  - Same rejection and stripping behavior as observer header. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:106-112` and spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:299-307`.
 
 Reserved request header stripping:
 
@@ -414,7 +414,7 @@ fn is_reserved_request_header(name: &str, names: &BridgeNames) -> bool {
 }
 ```
 
-Source: `bridge.rs:299-308`.
+Source: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:299-308`.
 
 The observer protocol contract says attribution rides `X-Solstone-Observer` because Python `sol link serve` forwards X headers and strips `Authorization`. Evidence: `solstone/observe/protocol.py:19-23`:
 
@@ -434,7 +434,7 @@ observer_header_name = "x-solstone-bridge-observer"
 protocol_version_header_name = "x-solstone-bridge-protocol-version"
 ```
 
-Reasoning: `parse_request_head` normalizes header names to lowercase (`bridge.rs:60-61`), and `is_reserved_request_header` strips names that match `observer_header_name` or `protocol_version_header_name` case-insensitively (`bridge.rs:299-307`). If those fields are set to `x-solstone-observer` and `x-solstone-protocol-version`, SPL strips the protocol headers. If they are distinct as above, those two protocol headers are not reserved and can be forwarded under `RequestHeaderPolicy::ForwardAll` or an allow-list that includes them. The cookie fields do not reserve those X headers.
+Reasoning: `parse_request_head` normalizes header names to lowercase (spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:60-61`), and `is_reserved_request_header` strips names that match `observer_header_name` or `protocol_version_header_name` case-insensitively (spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:299-307`). If those fields are set to `x-solstone-observer` and `x-solstone-protocol-version`, SPL strips the protocol headers. If they are distinct as above, those two protocol headers are not reserved and can be forwarded under `RequestHeaderPolicy::ForwardAll` or an allow-list that includes them. The cookie fields do not reserve those X headers.
 
 ## 5. Response Header and Connection Model Deltas vs Python
 
@@ -442,7 +442,7 @@ Reasoning: `parse_request_head` normalizes header names to lowercase (`bridge.rs
 
 SPL response logic:
 
-- Drops `content-length` and hop-by-hop response headers, rewrites cookies and redirects, and otherwise forwards only an allow-list. Evidence: `bridge.rs:328-352`:
+- Drops `content-length` and hop-by-hop response headers, rewrites cookies and redirects, and otherwise forwards only an allow-list. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:328-352`:
   ```rust
   if name == "content-length" || HOP_BY_HOP.contains(&name.as_str()) {
       continue;
@@ -454,7 +454,7 @@ SPL response logic:
       _ => {}
   }
   ```
-- Allow-list evidence: `bridge.rs:453-479` includes `content-type`, `content-encoding`, `cache-control`, `etag`, `last-modified`, `expires`, `vary`, `accept-ranges`, `content-range`, `www-authenticate`, `retry-after`, CSP/security headers, and cross-origin policy headers.
+- Allow-list evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:453-479` includes `content-type`, `content-encoding`, `cache-control`, `etag`, `last-modified`, `expires`, `vary`, `accept-ranges`, `content-range`, `www-authenticate`, `retry-after`, CSP/security headers, and cross-origin policy headers.
 
 Python response logic:
 
@@ -483,13 +483,13 @@ Concrete headers Python forwards that SPL drops:
 - `Content-Disposition`: emitted by reflections PDF and news PDF routes. Evidence: `solstone/apps/reflections/routes.py:302-309` and `solstone/apps/news/routes.py:376-384`.
 - `X-Solstone-Request-Id`: installed globally on responses. Evidence: `solstone/convey/request_id.py:26-29`.
 - `X-Accel-Buffering`: emitted by SSE route. Evidence: `solstone/convey/root.py:257-260`.
-- `Transfer-Encoding`: Python response deny-list omits it (`serve_cli.py:48-56`) and test coverage uses it for streaming (`tests/link/test_link_serve.py:167-188`); SPL drops it via `HOP_BY_HOP` in `bridge.rs:338-339`.
-- `Content-Length`: Python forwards it because it is not in the response deny-list; SPL drops upstream `content-length` and writes its own in buffered/HEAD paths. Evidence: SPL drop at `bridge.rs:338-339` and replacement write at `journal_bridge.rs:719-724`.
+- `Transfer-Encoding`: Python response deny-list omits it (`serve_cli.py:48-56`) and test coverage uses it for streaming (`tests/link/test_link_serve.py:167-188`); SPL drops it via `HOP_BY_HOP` in spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:338-339`.
+- `Content-Length`: Python forwards it because it is not in the response deny-list; SPL drops upstream `content-length` and writes its own in buffered/HEAD paths. Evidence: SPL drop at spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:338-339` and replacement write at spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:719-724`.
 - Arbitrary X headers such as `X-Test`: Python test asserts it forwards `X-Test` (`tests/link/test_link_serve.py:109,133-135`); SPL allow-list would drop it.
 
 ### `Set-Cookie`
 
-SPL prefixes upstream cookie names and drops `Domain` and `Secure`. Evidence: `bridge.rs:359-392`:
+SPL prefixes upstream cookie names and drops `Domain` and `Secure`. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:359-392`:
 
 ```rust
 format!("{}{}={cookie_value}", names.upstream_cookie_prefix, name.trim())
@@ -503,7 +503,7 @@ Python passes `Set-Cookie` through because it is not in `RESPONSE_HOP_BY_HOP` an
 
 ### Request `Host`
 
-SPL strips upstream `host`. Evidence: `bridge.rs:299-308` includes:
+SPL strips upstream `host`. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:299-308` includes:
 
 ```rust
 || name.eq_ignore_ascii_case("host")
@@ -519,16 +519,16 @@ assert headers["Host"] == f"{serve_cli.LOOPBACK_HOST}:{server.server_address[1]}
 
 SPL handles one request per accepted TCP connection and closes:
 
-- `handle_conn` reads one request and then follows one forwarding path; there is no keep-alive request loop. Evidence: `journal_bridge.rs:332-414`.
-- Streaming path shuts down after stream end. Evidence: `journal_bridge.rs:617`.
-- Buffered path writes `connection: close` and shuts down. Evidence: `journal_bridge.rs:724-727`.
-- Streaming head writes `connection: close`. Evidence: `journal_bridge.rs:755-757`.
+- `handle_conn` reads one request and then follows one forwarding path; there is no keep-alive request loop. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:332-414`.
+- Streaming path shuts down after stream end. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:617`.
+- Buffered path writes `connection: close` and shuts down. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:724-727`.
+- Streaming head writes `connection: close`. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:755-757`.
 
 Python uses `ThreadingHTTPServer` / `BaseHTTPRequestHandler`. Evidence: `serve_cli.py:16` and `serve_cli.py:78`. It does not add `Connection: close` on normal proxied responses (`serve_cli.py:279-284`); status/error helpers set `self.close_connection = True` explicitly, for example `serve_cli.py:378-392`.
 
 ### Request body and `Transfer-Encoding`
 
-SPL `read_request` reads based on `Content-Length`; absent length becomes body length zero. Evidence: `journal_bridge.rs:633-675` and `journal_bridge.rs:677-688`:
+SPL `read_request` reads based on `Content-Length`; absent length becomes body length zero. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:633-675` and spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:677-688`:
 
 ```rust
 let content_length = parse_content_length(&head)?;
@@ -551,7 +551,7 @@ Test evidence: `tests/link/test_link_serve.py:195-218` asserts `400` and no tunn
 
 ### `CapabilityGate::Disabled` loopback host
 
-Disabled gate still requires exact loopback host validation. Evidence: `journal_bridge.rs:373-377`:
+Disabled gate still requires exact loopback host validation. Evidence: spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:373-377`:
 
 ```rust
 CapabilityState::Disabled => {
@@ -559,7 +559,7 @@ CapabilityState::Disabled => {
 }
 ```
 
-The only passing value is exactly `127.0.0.1:{port}`. Evidence: `bridge.rs:201-212`:
+The only passing value is exactly `127.0.0.1:{port}`. Evidence: spl-rust v0.2.0 `crates/spl-core/src/bridge.rs:201-212`:
 
 ```rust
 let expected_host = format!("127.0.0.1:{port}");
@@ -568,7 +568,7 @@ if head.host() != Some(expected_host.as_str()) {
 }
 ```
 
-Therefore a client sending `Host: localhost:5015` to a bridge bound on port `5015` receives a local 403 (`journal_bridge.rs:379-387`), not upstream forwarding.
+Therefore a client sending `Host: localhost:5015` to a bridge bound on port `5015` receives a local 403 (spl-rust v0.2.0 `crates/spl-transport/src/journal_bridge.rs:379-387`), not upstream forwarding.
 
 ## 6. Coverage Arithmetic
 
