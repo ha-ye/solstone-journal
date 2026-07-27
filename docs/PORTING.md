@@ -67,11 +67,26 @@ musl. The prebuilt ONNX Runtime wheels are glibc-only native libraries; the Linu
 library, so the three-target native dependency proof would fail rather than
 merely remain pending.
 
-The shipping shape for ONNX-bearing subsystems is a separate founder-owned
-decision. The likely direction is a separate glibc-tagged helper artifact,
-matching how `parakeet-server` and `llama-server` already arrive as separate
-native binaries. Do not design toward linking `solstone-core-speakers-onnx` into
-the `solstone-core` bin.
+The shipping shape for the speaker analyzer is settled: ship
+`solstone-core-speakers-analyze` as a separate platform wheel on its own glibc
+and macOS lanes, carrying the pinned CPU ONNX Runtime shared library that the
+helper dynamically links. Do not design toward linking
+`solstone-core-speakers-onnx` into the `solstone-core` bin.
+
+The musl-to-glibc substitution is local to that helper wheel. The `solstone-core`
+wheel stays on the existing static-musl Linux lanes and must remain byte-identical
+to the core wheel that would be produced without the speaker analyzer helper.
+The helper's Linux lanes use zig GNU targets and declare `manylinux_2_27`
+because prep measured both the CPU ONNX Runtime library and zig-built helper
+binary at `GLIBC_2.27`. Prep also measured a host GNU cargo-built helper binary
+at `GLIBC_2.34`; that measured regression is why host GNU builds are forbidden
+for the helper release lanes.
+
+| Helper target | Status | Evidence |
+|---------------|--------|----------|
+| Linux x86_64 glibc | Proven here. | Build, content check, install into a bare venv, and real-inference smoke using the shipped `pyannote-segmentation-3.0.onnx` and `wespeaker-resnet34-256.onnx` assets. |
+| Linux aarch64 glibc | Build and cross-link proven here; install-and-run smoke deferred to real aarch64 hardware in the release loop, VPE-DIRECT post-ship. | Local zig GNU cross-link artifact plus real-hardware install/smoke evidence from the release loop. Do not provision an emulator for this lane. |
+| macOS arm64 | Deferred to the macOS build host. | macOS build-host wheel, signing/notarization records for the executable and bundled dylib, RECORD repair, and macOS host evidence. This Linux host claims no macOS runtime proof. |
 
 | Evidence | Repository command | Class | Notes |
 |----------|--------------------|-------|-------|
