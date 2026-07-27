@@ -27,8 +27,9 @@ adapter, not for the indexer logic. The eventual iOS path is to link the system
 crate to the iOS gate.
 
 `solstone-core-speakers` stays in the iOS canary because it is pure Rust DSP.
-`solstone-core-speakers-onnx` is excluded: ONNX Runtime is a host native-runtime
-adapter, not mobile-ready subsystem logic.
+`solstone-core-speakers-analyze` and `solstone-core-speakers-onnx` are excluded:
+the analyzer transitively depends on the ONNX Runtime host native-runtime
+adapter, which is not mobile-ready subsystem logic.
 
 ## Native Dependency Release Proof
 
@@ -41,11 +42,13 @@ paths, not in a local shell profile. If a dependency cannot satisfy a supported
 target, document the blocker and stop the conversion before merging it.
 
 The ONNX Runtime speaker wrapper is a deliberate exception because it is outside
-the `solstone-core` shipping closure. No shipping bin depends on
-`solstone-core-speakers-onnx`, and `scripts/core_compile_inputs.py` walks only the
-`solstone-core` closure. That unreachability is load-bearing, not a convenience:
-reachability from the shipping bin is an open architecture question, currently
-believed unsatisfiable as-is. The Linux release lanes are
+the `solstone-core` shipping closure. The `solstone-core` shipping bin depends
+on no speaker ONNX crate, and `scripts/core_compile_inputs.py` walks only that
+shipping closure. `solstone-core-speakers-analyze` is a helper binary outside
+the shipping closure, matching the separate-native-binary shape described
+below. That unreachability is load-bearing, not a convenience: reachability from
+the shipping bin is an open architecture question, currently believed
+unsatisfiable as-is. The Linux release lanes are
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` via zig, i.e. static
 musl. The prebuilt ONNX Runtime wheels are glibc-only native libraries; the Linux
 1.25.0 wheel requires GLIBC symbols up to `GLIBC_2.27` and links `libstdc++` and
@@ -67,7 +70,7 @@ the `solstone-core` bin.
 | Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host. |
 | Rust dependency policy | `make check-rust-deny` | GNU-host check | Locked, offline bans/licenses/sources policy over the supported cargo-deny graph. |
 | Rust advisories | `make audit` | GNU-host check | Verifies a signed advisory mirror packet, materializes its bundle locally, then performs a locked offline advisory check without refreshing or mutating the operator inputs. |
-| iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate, and `solstone-core-speakers-onnx` because ONNX Runtime is host-only native linkage. |
+| iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate, and `solstone-core-speakers-analyze` plus `solstone-core-speakers-onnx` because the analyzer transitively depends on ONNX Runtime host-only native linkage. |
 | Core sdist compile inputs | `make check-core-sdist-compile-inputs` | Packaging-source check | Verifies shipping Rust compile-time inputs are discovered and covered by the normalized `solstone-core` sdist injection set. |
 | Release candidate rail | `scripts/release.sh --candidate` / `scripts/release.sh --recover <version> <source-commit>` | Local readiness evidence | DESTRUCTIVE: `--candidate` is fresh construction; before policy or build work it deletes prior raw build/dist outputs and that version's stale payload/evidence. It binds candidate payload, ledger, and per-target install/smoke proofs, then reports canonical local readiness JSON. `--recover` is retained-byte-only, read-only validation; it preserves retained payload, ledger, and proofs and never rebuilds or refreshes. Proofs cover local candidate bytes and native smoke only; publication is temporarily locked out of this rail. |
 
