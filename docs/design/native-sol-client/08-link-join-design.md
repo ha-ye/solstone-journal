@@ -235,7 +235,7 @@ Parity:
 - Add `core/fixtures/native-sol/parity/link_join.jsonl`; do not reuse
   `link.jsonl`, which already covers the `sol-call` link surface.
 - Author only pre-network vectors: `--help`, invalid `--as`, invalid `--label`,
-  and missing `--code`.
+  invalid pair link with `--home`, and missing `--code`.
 - `core/crates/solstone-core-sol-client-cli/src/bin/resolve_parity_leaves.rs`:
   add `"sol-link" => vec!["link".into(), "join".into()]`.
 - `core/crates/solstone-core-sol-client-cli/tests/parity.rs`: include the new

@@ -179,9 +179,14 @@ mod tests {
         KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
     };
     use serde_json::json;
-    use solstone_core_sol_client::seam::{LinkJoinPairTarget, LinkJoinRelayRequest};
+    use solstone_core_sol_client::seam::{
+        LinkJoinPairTarget, LinkJoinPairingErrorKind, LinkJoinRelayControlEndpoint,
+        LinkJoinRelayErrorKind, LinkJoinRelayRequest,
+    };
     use spl_core::PairRequest;
+    use spl_core::http::HttpError;
     use spl_core::http::HttpResponse;
+    use spl_core::mux::MuxError;
     use spl_core::pairlink::Endpoint;
     use spl_transport::pairing::{
         DirectPairPrepareFuture, DirectPairSendFuture, DirectPairingSeam,
@@ -308,6 +313,29 @@ mod tests {
         }
     }
 
+    fn json_error() -> serde_json::Error {
+        serde_json::from_str::<serde_json::Value>("{").expect_err("json error")
+    }
+
+    fn secret_substrings() -> &'static [&'static str] {
+        &[
+            "raw peer body secret",
+            "00112233445566778899aabbccddeeff",
+            "BEGIN CERTIFICATE REQUEST",
+            "sha256:secretfingerprint",
+            "https://go.solstone.app/p#SECRETFRAGMENT",
+        ]
+    }
+
+    fn assert_no_secret_substrings(text: &str) {
+        for secret in secret_substrings() {
+            assert!(
+                !text.contains(secret),
+                "secret substring {secret:?} leaked in {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn direct_path_uses_fake_spl_direct_seam_without_sockets() {
         let ca = Arc::new(TestCa::new());
@@ -352,6 +380,129 @@ mod tests {
             serde_json::from_slice(&calls[0].body).expect("request body");
         assert_eq!(request_body.device_label, "laptop");
         assert!(request_body.csr.contains("BEGIN CERTIFICATE REQUEST"));
+    }
+
+    #[test]
+    fn transport_error_mapping_covers_every_variant_without_secret_leaks() {
+        let cases = vec![
+            (
+                TransportError::Io(std::io::Error::other("raw peer body secret")),
+                LinkJoinPairingErrorKind::Io,
+            ),
+            (
+                TransportError::Tls("raw peer body secret".to_string()),
+                LinkJoinPairingErrorKind::Tls,
+            ),
+            (
+                TransportError::Crypto("sha256:secretfingerprint".to_string()),
+                LinkJoinPairingErrorKind::Crypto,
+            ),
+            (
+                TransportError::Mux(MuxError::Incomplete),
+                LinkJoinPairingErrorKind::Mux,
+            ),
+            (
+                TransportError::Http(HttpError::BadStatusLine("raw peer body secret".to_string())),
+                LinkJoinPairingErrorKind::Http,
+            ),
+            (
+                TransportError::Json(json_error()),
+                LinkJoinPairingErrorKind::Json,
+            ),
+            (
+                TransportError::PairLink("https://go.solstone.app/p#SECRETFRAGMENT".to_string()),
+                LinkJoinPairingErrorKind::PairLink,
+            ),
+            (
+                TransportError::Pairing("BEGIN CERTIFICATE REQUEST".to_string()),
+                LinkJoinPairingErrorKind::Pairing,
+            ),
+            (
+                TransportError::Pairing("relay response missing home attestation".to_string()),
+                LinkJoinPairingErrorKind::PairResponseMissingHomeAttestation,
+            ),
+            (
+                TransportError::Rejected {
+                    status: 409,
+                    body: "raw peer body secret".to_string(),
+                },
+                LinkJoinPairingErrorKind::Rejected { status: 409 },
+            ),
+            (
+                TransportError::Relay(RelayError::HomeOffline),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::HomeOffline),
+            ),
+            (
+                TransportError::Relay(RelayError::Unauthorized),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::Unauthorized),
+            ),
+            (
+                TransportError::Relay(RelayError::Unpaid),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::Unpaid),
+            ),
+            (
+                TransportError::Relay(RelayError::UnknownInstance),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::UnknownInstance),
+            ),
+            (
+                TransportError::Relay(RelayError::PairWindowClosed),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::PairWindowClosed),
+            ),
+            (
+                TransportError::Relay(RelayError::Overflow),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::Overflow),
+            ),
+            (
+                TransportError::Relay(RelayError::Abnormal),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::Abnormal),
+            ),
+            (
+                TransportError::Relay(RelayError::UpgradeRejected),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::UpgradeRejected),
+            ),
+            (
+                TransportError::Relay(RelayError::Stalled),
+                LinkJoinPairingErrorKind::Relay(LinkJoinRelayErrorKind::Stalled),
+            ),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: RelayControlEndpoint::EnrollDevice,
+                    status: 403,
+                },
+                LinkJoinPairingErrorKind::RelayControlRejected {
+                    endpoint: LinkJoinRelayControlEndpoint::EnrollDevice,
+                    status: 403,
+                },
+            ),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: RelayControlEndpoint::TokenRefresh,
+                    status: 403,
+                },
+                LinkJoinPairingErrorKind::RelayControlRejected {
+                    endpoint: LinkJoinRelayControlEndpoint::TokenRefresh,
+                    status: 403,
+                },
+            ),
+            (
+                TransportError::NoEndpoint,
+                LinkJoinPairingErrorKind::NoEndpoint,
+            ),
+            (
+                TransportError::NotPaired,
+                LinkJoinPairingErrorKind::NotPaired,
+            ),
+            (
+                TransportError::LocalOffset,
+                LinkJoinPairingErrorKind::LocalOffset,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let mapped = map_transport_error(error);
+            assert_eq!(mapped.kind, expected);
+            assert_no_secret_substrings(&format!("{mapped:?}"));
+        }
     }
 
     #[test]

@@ -720,6 +720,17 @@ fn spent_existing_path_message(path: &Path) -> String {
 }
 
 fn publish_bundle_atomic(bundle_dir: &Path, files: &BTreeMap<String, Vec<u8>>) -> io::Result<()> {
+    publish_bundle_atomic_with_writer(bundle_dir, files, write_bundle_file)
+}
+
+fn publish_bundle_atomic_with_writer<W>(
+    bundle_dir: &Path,
+    files: &BTreeMap<String, Vec<u8>>,
+    write_file: W,
+) -> io::Result<()>
+where
+    W: Fn(&Path, &[u8]) -> io::Result<()>,
+{
     let parent = bundle_dir
         .parent()
         .ok_or_else(|| io::Error::other("credential path has no parent"))?;
@@ -731,19 +742,42 @@ fn publish_bundle_atomic(bundle_dir: &Path, files: &BTreeMap<String, Vec<u8>>) -
         ));
     }
     let staging = create_staging_dir(parent, bundle_dir)?;
-    let result = write_bundle_to_staging(&staging, files).and_then(|()| {
-        fsync_directory(&staging);
-        fs::rename(&staging, bundle_dir)?;
-        fsync_directory(parent);
-        Ok(())
-    });
-    if result.is_err() && path_lexists(&staging) {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    result
+    write_bundle_to_staging(staging.path(), files, &write_file)?;
+    fsync_directory(staging.path());
+    fs::rename(staging.path(), bundle_dir)?;
+    fsync_directory(parent);
+    staging.disarm();
+    Ok(())
 }
 
-fn create_staging_dir(parent: &Path, bundle_dir: &Path) -> io::Result<PathBuf> {
+struct StagingDir {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagingDir {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if self.armed && path_lexists(&self.path) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn create_staging_dir(parent: &Path, bundle_dir: &Path) -> io::Result<StagingDir> {
     let bundle_name = bundle_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -757,8 +791,9 @@ fn create_staging_dir(parent: &Path, bundle_dir: &Path) -> io::Result<PathBuf> {
         let candidate = parent.join(format!(".{bundle_name}.{pid}.{nanos}.{attempt}"));
         match fs::create_dir(&candidate) {
             Ok(()) => {
-                chmod_dir(&candidate)?;
-                return Ok(candidate);
+                let staging = StagingDir::new(candidate);
+                chmod_dir(staging.path())?;
+                return Ok(staging);
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -770,20 +805,35 @@ fn create_staging_dir(parent: &Path, bundle_dir: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-fn write_bundle_to_staging(staging: &Path, files: &BTreeMap<String, Vec<u8>>) -> io::Result<()> {
+fn write_bundle_to_staging<W>(
+    staging: &Path,
+    files: &BTreeMap<String, Vec<u8>>,
+    write_file: &W,
+) -> io::Result<()>
+where
+    W: Fn(&Path, &[u8]) -> io::Result<()>,
+{
     if files.len() != BUNDLE_FILES.len()
         || BUNDLE_FILES.iter().any(|name| !files.contains_key(*name))
     {
         return Err(io::Error::other("credential bundle file set is incomplete"));
     }
     for (name, content) in files {
-        write_bundle_file(&staging.join(name), content)?;
+        write_file(&staging.join(name), content)?;
     }
     Ok(())
 }
 
 fn write_bundle_file(path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     file.write_all(content)?;
     file.sync_all()?;
     chmod_file(path)
@@ -821,9 +871,11 @@ fn chmod_file(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::seam::{
@@ -842,6 +894,27 @@ mod tests {
         include_str!("../../../../core/fixtures/native-sol/link-join/nested_endpoints_peer.json");
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    #[cfg(unix)]
+    static UMASK_MUTEX: Mutex<()> = Mutex::new(());
+    #[cfg(unix)]
+    struct UmaskGuard {
+        previous: nix::sys::stat::Mode,
+    }
+
+    #[cfg(unix)]
+    impl UmaskGuard {
+        fn set(mask: u32) -> Self {
+            let previous = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(mask));
+            Self { previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UmaskGuard {
+        fn drop(&mut self) {
+            let _ = nix::sys::stat::umask(self.previous);
+        }
+    }
 
     fn string_args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -921,6 +994,88 @@ mod tests {
             local_endpoints,
             relay_device_token: None,
             relay_device_token_expires_at: None,
+        }
+    }
+
+    fn bundle_files() -> BTreeMap<String, Vec<u8>> {
+        BTreeMap::from([
+            ("private.pem".to_string(), b"PRIVATE\n".to_vec()),
+            ("cert.pem".to_string(), b"CERT\n".to_vec()),
+            ("chain.pem".to_string(), b"CA\n".to_vec()),
+            (
+                "home_attestation.jwt".to_string(),
+                b"header.payload.signature".to_vec(),
+            ),
+            (
+                "peer.json".to_string(),
+                OBSERVER_PEER_JSON.as_bytes().to_vec(),
+            ),
+        ])
+    }
+
+    fn assert_bundle_files_exist(bundle: &Path) {
+        for name in BUNDLE_FILES {
+            assert!(bundle.join(name).is_file(), "{name}");
+        }
+    }
+
+    fn bundle_hashes(bundle: &Path) -> BTreeMap<String, String> {
+        BUNDLE_FILES
+            .iter()
+            .map(|name| {
+                let bytes = fs::read(bundle.join(name)).expect("bundle file bytes");
+                ((*name).to_string(), spl_core::ca::sha256_hex(&bytes))
+            })
+            .collect()
+    }
+
+    fn assert_no_dot_residue(parent: &Path) {
+        if !parent.exists() {
+            return;
+        }
+        let residues = fs::read_dir(parent)
+            .expect("parent entries")
+            .map(|entry| entry.expect("parent entry").file_name())
+            .filter(|name| name.to_string_lossy().starts_with('.'))
+            .collect::<Vec<_>>();
+        assert!(residues.is_empty(), "staging residue: {residues:?}");
+    }
+
+    fn secret_substrings() -> &'static [&'static str] {
+        &[
+            "raw peer body secret",
+            "00112233445566778899aabbccddeeff",
+            "BEGIN CERTIFICATE REQUEST",
+            "sha256:secretfingerprint",
+            "https://go.solstone.app/p#SECRETFRAGMENT",
+        ]
+    }
+
+    fn assert_no_secret_substrings(text: &str) {
+        for secret in secret_substrings() {
+            assert!(
+                !text.contains(secret),
+                "secret substring {secret:?} leaked in {text:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    fn assert_bundle_permissions_under_current_umask() {
+        let temp = temp_dir("permissions");
+        let bundle = temp.join("bundle");
+        publish_bundle_atomic(&bundle, &bundle_files()).expect("publish bundle");
+
+        assert_eq!(mode(&bundle), 0o700);
+        for name in BUNDLE_FILES {
+            assert_eq!(mode(&bundle.join(name)), 0o600, "{name}");
         }
     }
 
@@ -1084,10 +1239,88 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("bundle entries");
         assert_eq!(entries.len(), 1);
-        for name in BUNDLE_FILES {
-            assert!(bundle.join(name).is_file(), "{name}");
-        }
+        assert_bundle_files_exist(&bundle);
+        assert!(!path_lexists(&root.join("peers")));
         seam.assert_done();
+    }
+
+    #[test]
+    fn peer_success_writes_peer_bundle_only() {
+        let temp = temp_dir("peer-success");
+        let config = temp.join("config");
+        let env = base_env(&config, &temp.join("home"));
+        let root = temp.join("journal");
+        fs::create_dir_all(root.join("link")).expect("link dir");
+        fs::write(
+            root.join("link").join("state.json"),
+            "{\"instance_id\": \"sender-instance\"}",
+        )
+        .expect("state");
+        let mut additional_fields = Map::new();
+        additional_fields.insert(
+            "sender_instance_id".to_string(),
+            Value::String("sender-instance".to_string()),
+        );
+        let expected = LinkJoinDirectRequest {
+            additional_fields,
+            ..expected_direct_request("Test-Host")
+        };
+        let seam = ScriptedLinkJoinPairingSeam::new(vec![ExpectedLinkJoinPairingCall::Direct {
+            expected,
+            result: Ok(credential(Value::Null)),
+        }]);
+        let clock = FakeClock::at_unix(0);
+
+        let output = run(
+            &["--code", &direct_pair_link(), "--as", "peer"],
+            &env,
+            &root,
+            &seam,
+            &clock,
+        );
+
+        let bundle = root.join("peers").join("receiver-instance");
+        assert_eq!(
+            output.stdout,
+            format!(
+                "Linked Test-Host as peer.\nCredentials: {}\n",
+                bundle.display()
+            )
+        );
+        assert_eq!(output.exit, 0);
+        assert_bundle_files_exist(&bundle);
+        assert!(!path_lexists(&config.join("solstone-observer").join("spl")));
+        seam.assert_done();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_permissions_are_explicit_under_permissive_umask() {
+        let _lock = UMASK_MUTEX.lock().expect("umask lock");
+        let _guard = UmaskGuard::set(0o000);
+        assert_bundle_permissions_under_current_umask();
+    }
+
+    #[test]
+    fn mid_write_failure_leaves_no_final_or_staging_residue() {
+        let temp = temp_dir("mid-write");
+        let bundle = temp.join("spl").join("laptop");
+        let parent = bundle.parent().expect("bundle parent");
+        let writes = Cell::new(0usize);
+
+        let result =
+            publish_bundle_atomic_with_writer(&bundle, &bundle_files(), |path, content| {
+                if writes.get() == 1 {
+                    return Err(io::Error::other("injected mid-write failure"));
+                }
+                writes.set(writes.get() + 1);
+                write_bundle_file(path, content)
+            });
+
+        assert_eq!(writes.get(), 1);
+        assert!(result.is_err());
+        assert!(!path_lexists(&bundle));
+        assert_no_dot_residue(parent);
     }
 
     #[test]
@@ -1110,6 +1343,45 @@ mod tests {
         assert_eq!(output.stderr, PEER_STATE_GUIDANCE);
         assert_eq!(output.exit, 1);
         seam.assert_done();
+    }
+
+    #[test]
+    fn existing_bundle_refuses_without_mutating_any_file() {
+        let temp = temp_dir("refuse-without-mutation");
+        let config = temp.join("config");
+        let env = base_env(&config, &temp.join("home"));
+        let root = temp.join("journal");
+        let bundle = config.join("solstone-observer").join("spl").join("laptop");
+        let first_seam =
+            ScriptedLinkJoinPairingSeam::new(vec![ExpectedLinkJoinPairingCall::Direct {
+                expected: expected_direct_request("laptop"),
+                result: Ok(credential(Value::Null)),
+            }]);
+        let first_clock = FakeClock::at_unix(0);
+        let first = run(
+            &["--code", &direct_pair_link(), "--label", "laptop"],
+            &env,
+            &root,
+            &first_seam,
+            &first_clock,
+        );
+        assert_eq!(first.exit, 0);
+        first_seam.assert_done();
+        let before = bundle_hashes(&bundle);
+
+        let second_seam = ScriptedLinkJoinPairingSeam::new(vec![]);
+        let second_clock = FakeClock::at_unix(60);
+        let second = run(
+            &["--code", &direct_pair_link(), "--label", "laptop"],
+            &env,
+            &root,
+            &second_seam,
+            &second_clock,
+        );
+
+        assert_ne!(second.exit, 0);
+        assert_eq!(bundle_hashes(&bundle), before);
+        second_seam.assert_done();
     }
 
     #[test]
@@ -1282,6 +1554,58 @@ mod tests {
             ),
             NESTED_ENDPOINTS_JSON
         );
+    }
+
+    #[test]
+    fn pairing_error_text_covers_every_kind_without_secret_leaks() {
+        let mut kinds = vec![
+            LinkJoinPairingErrorKind::Io,
+            LinkJoinPairingErrorKind::Tls,
+            LinkJoinPairingErrorKind::Crypto,
+            LinkJoinPairingErrorKind::Mux,
+            LinkJoinPairingErrorKind::Http,
+            LinkJoinPairingErrorKind::Json,
+            LinkJoinPairingErrorKind::PairLink,
+            LinkJoinPairingErrorKind::Pairing,
+            LinkJoinPairingErrorKind::PairResponseMissingHomeAttestation,
+            LinkJoinPairingErrorKind::Rejected { status: 403 },
+            LinkJoinPairingErrorKind::RelayControlRejected {
+                endpoint: LinkJoinRelayControlEndpoint::EnrollDevice,
+                status: 403,
+            },
+            LinkJoinPairingErrorKind::RelayControlRejected {
+                endpoint: LinkJoinRelayControlEndpoint::TokenRefresh,
+                status: 403,
+            },
+            LinkJoinPairingErrorKind::NoEndpoint,
+            LinkJoinPairingErrorKind::NotPaired,
+            LinkJoinPairingErrorKind::LocalOffset,
+            LinkJoinPairingErrorKind::RuntimeUnavailable,
+        ];
+        kinds.extend(
+            [
+                LinkJoinRelayErrorKind::HomeOffline,
+                LinkJoinRelayErrorKind::Unauthorized,
+                LinkJoinRelayErrorKind::Unpaid,
+                LinkJoinRelayErrorKind::UnknownInstance,
+                LinkJoinRelayErrorKind::PairWindowClosed,
+                LinkJoinRelayErrorKind::Overflow,
+                LinkJoinRelayErrorKind::Abnormal,
+                LinkJoinRelayErrorKind::UpgradeRejected,
+                LinkJoinRelayErrorKind::Stalled,
+            ]
+            .into_iter()
+            .map(LinkJoinPairingErrorKind::Relay),
+        );
+
+        for kind in kinds {
+            let text = pairing_error_text(LinkJoinPairingError::new(kind.clone()));
+            assert!(!text.trim().is_empty(), "{kind:?}");
+            assert_no_secret_substrings(&text);
+            let code = transport_error_code(kind);
+            assert!(!code.trim().is_empty());
+            assert_no_secret_substrings(code);
+        }
     }
 
     #[test]

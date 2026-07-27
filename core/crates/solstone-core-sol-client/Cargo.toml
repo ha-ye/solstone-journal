@@ -13,5 +13,8 @@ solstone-core-journal = { workspace = true }
 spl-core = { workspace = true }
 ureq = { workspace = true }
 
+[dev-dependencies]
+nix = { workspace = true }
+
 [lints]
 workspace = true
