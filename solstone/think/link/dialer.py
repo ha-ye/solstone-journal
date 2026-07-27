@@ -180,10 +180,19 @@ async def open_tunnel(
             except BaseException as exc:
                 failures[label] = exc
                 continue
+            cleanup: list[Awaitable[Any]] = []
+            for sibling in done - {task}:
+                try:
+                    sibling_session = sibling.result()
+                except BaseException as exc:
+                    failures[tasks[sibling]] = exc
+                else:
+                    cleanup.append(sibling_session.close())
             for loser in pending:
                 loser.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                cleanup.append(loser)
+            if cleanup:
+                await asyncio.gather(*cleanup, return_exceptions=True)
             return session
 
     detail = "; ".join(

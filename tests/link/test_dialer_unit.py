@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import queue
 import threading
+from collections.abc import Iterator
 from concurrent.futures import CancelledError
 
 import pytest
@@ -69,6 +71,30 @@ class _SlowBodyStream:
         for chunk in self._chunks:
             await asyncio.sleep(0.03)
             yield chunk
+
+
+class _RaceSession:
+    def __init__(self, *, close_error: BaseException | None = None) -> None:
+        self.close_calls = 0
+        self.close_error = close_error
+
+    @property
+    def is_alive(self) -> bool:
+        return True
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _OrderedDone(set[asyncio.Task[object]]):
+    def __init__(self, ordered: tuple[asyncio.Task[object], ...]) -> None:
+        super().__init__(ordered)
+        self._ordered = ordered
+
+    def __iter__(self) -> Iterator[asyncio.Task[object]]:
+        return iter(self._ordered)
 
 
 class _ManagedSession:
@@ -150,6 +176,160 @@ async def test_lan_direct_race_picks_first_and_cancels_loser(monkeypatch) -> Non
 
     assert await dialer.open_tunnel(identity, None) is winner
     assert cancelled == ["10.0.0.1"]
+
+
+@pytest.mark.asyncio
+async def test_open_tunnel_closes_same_batch_success_sibling(monkeypatch) -> None:
+    identity = _identity(endpoints=({"ip": "10.0.0.1", "port": 7657},))
+    direct_session = _RaceSession()
+    relay_session = _RaceSession()
+
+    async def dial_direct(
+        _client: object,
+        _endpoint: dict[str, object],
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        return direct_session
+
+    async def dial_relay(
+        _client: object,
+        _relay_url: str,
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        return relay_session
+
+    monkeypatch.setattr(dialer, "_dial_direct_endpoint", dial_direct)
+    monkeypatch.setattr(dialer, "_dial_relay", dial_relay)
+
+    returned = await dialer.open_tunnel(identity, "https://relay.test")
+
+    assert returned in {direct_session, relay_session}
+    other = direct_session if returned is relay_session else relay_session
+    assert returned.close_calls == 0
+    assert other.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_open_tunnel_retrieves_same_batch_failure_before_return(
+    monkeypatch,
+) -> None:
+    identity = _identity(endpoints=({"ip": "10.0.0.1", "port": 7657},))
+    winner = _RaceSession()
+    success_task: asyncio.Task[object] | None = None
+    failure_task: asyncio.Task[object] | None = None
+    real_wait = asyncio.wait
+
+    async def dial_direct(
+        _client: object,
+        _endpoint: dict[str, object],
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        nonlocal success_task
+        success_task = asyncio.current_task()
+        return winner
+
+    async def dial_relay(
+        _client: object,
+        _relay_url: str,
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        nonlocal failure_task
+        failure_task = asyncio.current_task()
+        raise RuntimeError("same-batch relay failed")
+
+    async def wait_success_first(
+        pending: set[asyncio.Task[object]],
+        *,
+        return_when: str,
+    ) -> tuple[_OrderedDone, set[asyncio.Task[object]]]:
+        assert return_when is asyncio.FIRST_COMPLETED
+        await real_wait(pending, return_when=asyncio.ALL_COMPLETED)
+        assert success_task is not None
+        assert failure_task is not None
+        return _OrderedDone((success_task, failure_task)), set()
+
+    monkeypatch.setattr(dialer, "_dial_direct_endpoint", dial_direct)
+    monkeypatch.setattr(dialer, "_dial_relay", dial_relay)
+    monkeypatch.setattr(dialer.asyncio, "wait", wait_success_first)
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    contexts: list[dict[str, object]] = []
+
+    def capture_exception(
+        _loop: asyncio.AbstractEventLoop,
+        context: dict[str, object],
+    ) -> None:
+        contexts.append(context)
+
+    try:
+        loop.set_exception_handler(capture_exception)
+        assert await dialer.open_tunnel(identity, "https://relay.test") is winner
+        success_task = None
+        failure_task = None
+        for _index in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert [
+        context
+        for context in contexts
+        if context.get("message") == "Task exception was never retrieved"
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_open_tunnel_ignores_same_batch_sibling_close_error(monkeypatch) -> None:
+    identity = _identity(endpoints=({"ip": "10.0.0.1", "port": 7657},))
+    winner = _RaceSession()
+    extra = _RaceSession(close_error=RuntimeError("close failed"))
+    winner_task: asyncio.Task[object] | None = None
+    extra_task: asyncio.Task[object] | None = None
+    real_wait = asyncio.wait
+
+    async def dial_direct(
+        _client: object,
+        _endpoint: dict[str, object],
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        nonlocal winner_task
+        winner_task = asyncio.current_task()
+        return winner
+
+    async def dial_relay(
+        _client: object,
+        _relay_url: str,
+        _identity: ClientIdentity,
+        _deadline: float | None = None,
+    ) -> _RaceSession:
+        nonlocal extra_task
+        extra_task = asyncio.current_task()
+        return extra
+
+    async def wait_winner_first(
+        pending: set[asyncio.Task[object]],
+        *,
+        return_when: str,
+    ) -> tuple[_OrderedDone, set[asyncio.Task[object]]]:
+        assert return_when is asyncio.FIRST_COMPLETED
+        await real_wait(pending, return_when=asyncio.ALL_COMPLETED)
+        assert winner_task is not None
+        assert extra_task is not None
+        return _OrderedDone((winner_task, extra_task)), set()
+
+    monkeypatch.setattr(dialer, "_dial_direct_endpoint", dial_direct)
+    monkeypatch.setattr(dialer, "_dial_relay", dial_relay)
+    monkeypatch.setattr(dialer.asyncio, "wait", wait_winner_first)
+
+    assert await dialer.open_tunnel(identity, "https://relay.test") is winner
+    assert winner.close_calls == 0
+    assert extra.close_calls == 1
 
 
 @pytest.mark.asyncio
