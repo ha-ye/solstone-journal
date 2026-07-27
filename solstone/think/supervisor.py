@@ -6658,6 +6658,17 @@ def main() -> None:
     except Exception:
         logging.exception("Journal archive extract sweep raised; continuing startup")
 
+    try:
+        from solstone.observe.transcribe.speakers_analyze_seam import (
+            sweep_stale_speakers_analyze_dirs,
+        )
+
+        swept = sweep_stale_speakers_analyze_dirs()
+        if swept > 0:
+            logging.info("Swept %d stale speakers-analyze temp dir(s)", swept)
+    except Exception:
+        logging.exception("Speakers-analyze temp sweep raised; continuing startup")
+
     # Start Callosum in-process first - it's the message bus that other services depend on
     try:
         print("  Starting Callosum bus...", flush=True)
