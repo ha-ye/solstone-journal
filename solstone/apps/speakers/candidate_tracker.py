@@ -321,14 +321,31 @@ def recover_source_segment_sentence_ids(
     seg_dir = segment_path(day, segment_key, stream, create=False)
     if not seg_dir.exists():
         return None
-    load_embeddings_file, _normalize_embedding = _routes_helpers()
+    load_embeddings_file, normalize_embedding = _routes_helpers()
     emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
     if emb_data is None:
         return None
-    _embeddings, statement_ids, _durations_s = emb_data
-    available_ids = {int(sid) for sid in statement_ids}
+    embeddings, statement_ids, _durations_s = emb_data
+    sid_to_idx = {int(sid): index for index, sid in enumerate(statement_ids)}
+    available_ids = set(sid_to_idx)
     if cluster_label == SOLO_CLUSTER_LABEL:
-        return sorted(available_ids)
+        cluster_rows: list[tuple[int, np.ndarray]] = []
+        for sid in sorted(available_ids):
+            idx = sid_to_idx.get(sid)
+            if idx is None or idx >= len(embeddings):
+                continue
+            normalized = normalize_embedding(embeddings[idx])
+            if normalized is None:
+                continue
+            cluster_rows.append((sid, normalized))
+        trimmed_rows, centroid, _trimmed_count = trim_solo_cluster_rows(
+            cluster_rows,
+            embedding_for_row=lambda row: row[1],
+            normalize_embedding=normalize_embedding,
+        )
+        if centroid is None or not trimmed_rows:
+            return None
+        return sorted(sid for sid, _embedding in trimmed_rows)
 
     integer_labels = _load_integer_speaker_labels(seg_dir, source)
     if not integer_labels:

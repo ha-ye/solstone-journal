@@ -1328,6 +1328,49 @@ def test_backfill_source_sentence_ids_recovers_legacy_membership(
     assert source_segment_sentence_ids(candidate.source_segments[1]) is None
 
 
+def test_backfill_source_sentence_ids_trims_legacy_solo_membership(
+    speakers_env,
+    tmp_path,
+):
+    env = speakers_env()
+    base = _unit([1.0, 0.0])
+    outlier = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {SOLO_CLUSTER_LABEL: np.stack([base, base, base, outlier])},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    tracker = _seed_tracker(
+        tmp_path / "speaker_candidates.json",
+        [
+            _profile(
+                1,
+                base,
+                source_segments=[
+                    {
+                        "day": "20260101",
+                        "segment_key": "090000_300",
+                        "stream": STREAM,
+                        "source": "mic_audio",
+                        "cluster_label": SOLO_CLUSTER_LABEL,
+                    }
+                ],
+            )
+        ],
+    )
+    assert seg_dir.exists()
+
+    result = tracker.backfill_source_sentence_ids()
+
+    tracker.load()
+    candidate = _only_candidate(tracker)
+    assert result == {"updated": 1, "unresolved": 0, "already_present": 0}
+    assert source_segment_sentence_ids(candidate.source_segments[0]) == [1, 2, 3]
+
+
 def test_retroactive_confirm_relocates_members_from_stored_sentence_ids(
     speakers_env,
     tmp_path,
