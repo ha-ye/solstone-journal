@@ -26,7 +26,7 @@ app.json fields (all optional):
     {
       "icon": "🏠",           # Emoji icon for menu bar (default: "📦")
       "label": "Custom Label", # Display label (default: title-cased app name)
-      "facets": {},            # Facet options: {"disabled": true} to hide facet bar
+      "facets": {},            # Facet options: {"disabled": true} or false to hide facet bar
       "date_nav": {"unit": {"one": "item", ...}, "allow_future": false},
                               # Normalized {unit, allow_future, step} config;
                               # step: "week" makes the leaf level week rows
@@ -58,6 +58,16 @@ logger = logging.getLogger(__name__)
 
 class AppConfigError(ValueError):
     """Raised when app metadata contains an invalid configuration."""
+
+
+def _parse_facets(metadata: dict) -> dict:
+    """Normalize app facet metadata."""
+    facets = metadata.get("facets", {})
+    if isinstance(facets, bool):
+        return {} if facets else {"disabled": True}
+    if isinstance(facets, dict):
+        return facets
+    return {}
 
 
 def _parse_date_nav(metadata: dict) -> dict | None:
@@ -106,6 +116,8 @@ class App:
     background_template: Optional[str] = None
 
     # Facet configuration (optional, default {})
+    # A bare false is accepted as shorthand for {"disabled": true}.
+    # A bare true or omitted value means facets are enabled.
     # Options:
     #   - disabled: If true, facets bar is hidden for this app
     facets_config: dict = field(default_factory=dict)
@@ -254,9 +266,7 @@ class AppRegistry:
         label = metadata.get("label", app_name.replace("_", " "))
 
         # Parse facets config
-        facets_config = metadata.get("facets", {})
-        if not isinstance(facets_config, dict):
-            facets_config = {}
+        facets_config = _parse_facets(metadata)
 
         # Date navigation
         date_nav = _parse_date_nav(metadata)

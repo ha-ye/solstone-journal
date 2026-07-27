@@ -4,11 +4,18 @@
 """Tests for convey app placeholder and attention behavior."""
 
 import time
+from pathlib import Path
 
 import pytest
 from flask import Flask
 
-from solstone.apps import AppConfigError, AppRegistry, _parse_date_nav
+from solstone.apps import (
+    App,
+    AppConfigError,
+    AppRegistry,
+    _parse_date_nav,
+    _parse_facets,
+)
 from solstone.convey.apps import register_app_context
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.icons import lucide_svg
@@ -131,6 +138,85 @@ def test_parse_date_nav_normalizes_content_configs():
                 }
             }
         )
+
+
+def test_parse_facets_false_disables_facets():
+    facets_config = _parse_facets({"facets": False})
+
+    assert facets_config == {"disabled": True}
+    assert (
+        App(
+            name="synthetic",
+            icon="",
+            label="synthetic",
+            facets_config=facets_config,
+        ).facets_enabled()
+        is False
+    )
+
+
+def test_parse_facets_dict_passes_through():
+    facets_config = _parse_facets({"facets": {"disabled": True}})
+
+    assert facets_config == {"disabled": True}
+    assert (
+        App(
+            name="synthetic",
+            icon="",
+            label="synthetic",
+            facets_config=facets_config,
+        ).facets_enabled()
+        is False
+    )
+
+
+def test_parse_facets_true_and_absent_enable_facets():
+    for facets_config in (
+        _parse_facets({"facets": True}),
+        _parse_facets({}),
+    ):
+        assert facets_config == {}
+        assert (
+            App(
+                name="synthetic",
+                icon="",
+                label="synthetic",
+                facets_config=facets_config,
+            ).facets_enabled()
+            is True
+        )
+
+
+def test_parse_facets_non_boolean_non_dict_falls_back_to_empty():
+    assert _parse_facets({"facets": "nope"}) == {}
+
+
+def test_load_app_accepts_boolean_facets(tmp_path):
+    (tmp_path / "workspace.html").write_text("", encoding="utf-8")
+    (tmp_path / "app.json").write_text('{"facets": false}\n', encoding="utf-8")
+
+    app = AppRegistry()._load_app("synthetic_app", tmp_path)
+
+    assert app.facets_config == {"disabled": True}
+    assert app.facets_enabled() is False
+
+
+def test_discover_registers_every_workspace_app():
+    import solstone.apps as apps_pkg
+
+    apps_dir = Path(apps_pkg.__file__).parent
+    expected = {
+        path.name
+        for path in apps_dir.iterdir()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and (path / "workspace.html").exists()
+    }
+
+    registry = AppRegistry()
+    registry.discover()
+
+    assert set(registry.apps) == expected
 
 
 def test_shell_payload_emits_normalized_date_nav(monkeypatch):
