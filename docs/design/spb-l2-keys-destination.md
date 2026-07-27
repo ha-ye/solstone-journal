@@ -306,6 +306,9 @@ Logging, if any, is limited to returncode and reason code.
 
 - `run_restic(..., pass_fds: tuple[int, ...] = ()) -> ResticResult`
   Existing behavior with optional FD inheritance for pipe-backed password files.
+- `run_restic_json_records(...) -> ResticJsonRecordsResult`
+  Strict-UTF-8 JSON Lines from raw child stdout before diagnostic redaction,
+  zero-exit/cleanup-verified only, returned through one-shot opaque records.
 
 Read/write naming:
 
