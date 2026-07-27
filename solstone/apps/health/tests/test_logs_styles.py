@@ -78,6 +78,12 @@ def _css_rule(source: str, selector: str) -> str:
     return match.group("body")
 
 
+def _declared_color(body: str) -> str:
+    match = re.search(r"color:\s*(#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3}))\s*;", body)
+    assert match is not None, f"no color declaration in {body!r}"
+    return match.group(1)
+
+
 def _hex_to_rgb(color: str) -> tuple[float, float, float]:
     value = color.removeprefix("#")
     if len(value) == 3:
@@ -165,6 +171,28 @@ def test_vitals_chip_constrains_width_and_breaks_long_identifiers():
 def test_level_colors_meet_wcag_contrast():
     for level, foreground in LEVEL_FOREGROUNDS.items():
         assert _contrast_ratio(foreground, VIEWPORT_BACKGROUND) >= 4.5, level
+
+
+def test_log_empty_placeholder_and_expanded_service_header_colors_meet_contrast():
+    source = _workspace_source()
+
+    for selector in (".logs-viewport:empty::before", ".logs-service-header"):
+        body = _css_rule(source, selector)
+        foreground = _declared_color(body)
+        assert _contrast_ratio(foreground, VIEWPORT_BACKGROUND) >= 4.5, selector
+
+
+def test_log_empty_placeholder_and_service_header_color_rules_are_surgical():
+    source = _workspace_source()
+
+    for selector in (".logs-viewport:empty::before", ".logs-service-header"):
+        body = _css_rule(source, selector)
+        assert re.search(r"color:\s*#9ca3af\s*;", body)
+        assert "#6b7280" not in body
+
+    assert source.count("#6b7280") >= 26
+    collapsed = _css_rule(source, '.logs-service-header[aria-expanded="false"]')
+    assert re.search(r"color:\s*#d1d5db\s*;", collapsed)
 
 
 def test_level_foreground_colors_are_pinned():
