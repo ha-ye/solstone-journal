@@ -177,6 +177,12 @@ The retained support declarations recorded in the ledger *are* the lock-derived
 declarations captured when the candidate was cut. Disagreement with the release
 lock therefore fails at cut time rather than being re-litigated later, which is
 why a retained candidate keeps validating after an unrelated dependency bump.
+That durability is specific to dependency and lock drift. It does **not** extend
+to the retained ledger's own shape: changing its top-level key set breaks
+candidates that were already cut, and no test catches it because fixtures are
+regenerated from the current writer. Read `docs/release-evidence-contract.md`
+before adding to or removing from `TOP_LEVEL_KEYS`, and publish any outstanding
+retained candidate before merging such a change.
 
 `bash scripts/release.sh --recover <version> <source-commit>` is
 retained-byte-only, read-only validation. It preserves retained payload, ledger,
@@ -477,6 +483,8 @@ Bare links don't motivate clicking. Each entry below says when you actually need
 | `docs/testing.md` | Test structure, fixtures, debugging test isolation |
 | `docs/environment.md` | Journal path resolution, managed-wrapper behavior, service install details, and `SOLSTONE_JOURNAL` rules |
 | `docs/CHANNEL_ADAPTERS.md` | Release channel adapter config, scrub-gate expectations, and operator-safe placeholders |
+| `docs/release-evidence-contract.md` | **Required before changing the retained release ledger's top-level key set** — why such a change breaks already-cut candidates while every test stays green, what `schema_version` does and does not do here, and the frozen-fixture rule |
+| `docs/journal-format-contract-maintenance.md` | Changing a committed journal at-rest format (observer ingest envelopes, `stream.json`, `audio.jsonl`, `screen.jsonl`) — schema floor vs producer-local requirements, and which relaxations are safe |
 | `docs/coding-standards.md` | Full naming conventions, ruff config, dep-management details — reference for everything not promoted into this file |
 | `docs/project-structure.md` | Canonical directory layout; resolving "where does this file go" debates |
 | `docs/DOCTOR.md` | Diagnostics and debugging a running system |

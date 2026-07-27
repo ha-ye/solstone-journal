@@ -24,6 +24,6 @@ maintenance migration or a coordinated producer upgrade. There is no
 version-negotiation layer.
 
 Relaxing the floor by removing a `required` field is forward-compatible and
-safe. This lode relaxed `raw` from the floor for exactly this reason: producers
+safe. `raw` was relaxed from the floor for exactly this reason: producers
 with no source media can legitimately omit it while producers that own `raw`
 continue to pin it locally.
