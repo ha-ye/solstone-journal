@@ -1708,7 +1708,7 @@
       <div class="spk-owner-panel">
         <div class="spk-owner-title">is this your voice?</div>
         <div class="spk-owner-copy">
-          we found a likely owner voice pattern from ${escapeHtml(data.cluster_size || 0)} voice samples. review a few examples before confirming.
+          sol found a voice pattern that's likely yours, from ${escapeHtml(data.cluster_size || 0)} voice samples. review a few examples before confirming.
         </div>
         <div class="spk-owner-samples">
           ${samples.map((sample, index) => `
@@ -2369,9 +2369,9 @@
     discoveryBanner.style.display = 'block';
     discoveryBanner.innerHTML = `
       <div class="spk-discovery-panel">
-        <div class="spk-discovery-title">New speakers found</div>
+        <div class="spk-discovery-title">new speakers found</div>
         <div class="spk-discovery-copy">
-          We found ${clusters.length} recurring voice pattern${clusters.length > 1 ? 's' : ''} that ${clusters.length > 1 ? "don't" : "doesn't"} match any known speaker. Listen to samples and name them.
+          sol found ${clusters.length} recurring voice pattern${clusters.length > 1 ? 's' : ''} that ${clusters.length > 1 ? "don't" : "doesn't"} match anyone you've named. listen to a few samples and name them.
         </div>
         <div class="spk-discovery-clusters">
           ${clusters.map(cluster => `
@@ -2536,7 +2536,7 @@
         : 'no speakers discovered today';
       const emptyDesc = speakerFilter
         ? ''
-        : 'solstone hasn\'t found any speaker segments for this day yet';
+        : 'sol hasn\'t found any speaker segments for this day yet';
       segmentList.innerHTML = '<li>' + window.SurfaceState.empty({
         icon: window.ConveyIcons.svg('audio-lines'),
         heading: emptyHeading,
