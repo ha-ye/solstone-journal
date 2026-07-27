@@ -8,9 +8,18 @@ import pytest
 
 import scripts.build_native_sol_journal_host_commands as journal_host
 
-SERVICE_COMMANDS = ("setup", "think") + tuple(f"svc{i:02d}" for i in range(41))
+SERVICE_SENTINELS = ("setup", "think")
+SERVICE_COMMANDS = SERVICE_SENTINELS + tuple(
+    f"svc{i:02d}"
+    for i in range(
+        journal_host.EXPECTED_SERVICE_COMMANDS_COUNT - len(SERVICE_SENTINELS)
+    )
+)
 UNIVERSAL_COMMANDS = ("check", "contract", "doctor", "link")
 SERVICE_ALIASES = ("down", "up")
+SERVICE_SURFACE_COUNT = journal_host.EXPECTED_SERVICE_COMMANDS_COUNT + len(
+    SERVICE_ALIASES
+)
 
 
 def _raw_source(lines: list[str]) -> str:
@@ -96,7 +105,7 @@ def _raw_service_command_literal_count(source: str) -> int:
 def test_extract_keeps_service_commands_and_aliases_as_sorted_moved_list() -> None:
     moved = journal_host.extract(_source(_base_commands(), _base_aliases()))
 
-    assert len(moved) == 45
+    assert len(moved) == SERVICE_SURFACE_COUNT
     assert moved == sorted((*SERVICE_COMMANDS, *SERVICE_ALIASES))
 
 
@@ -169,7 +178,6 @@ def test_duplicate_service_command_preserves_old_count_but_is_rejected() -> None
             '    "svc36": Command("module.svc36", "service"),',
             '    "svc37": Command("module.svc37", "service"),',
             '    "svc38": Command("module.svc38", "service"),',
-            '    "svc39": Command("module.svc39", "service"),',
             '    "check": Command("module.check", "universal"),',
             '    "contract": Command("module.contract", "universal"),',
             '    "doctor": Command("module.doctor", "universal"),',
@@ -183,7 +191,10 @@ def test_duplicate_service_command_preserves_old_count_but_is_rejected() -> None
         ]
     )
 
-    assert _raw_service_command_literal_count(source) == 43
+    assert (
+        _raw_service_command_literal_count(source)
+        == journal_host.EXPECTED_SERVICE_COMMANDS_COUNT
+    )
     message = _raw_error(source)
 
     assert (
@@ -360,14 +371,13 @@ def test_spread_and_non_literal_keys_are_skipped_on_a_valid_source() -> None:
 
     moved = journal_host.extract(source)
 
-    assert len(moved) == 45
+    assert len(moved) == SERVICE_SURFACE_COUNT
     assert moved == sorted((*SERVICE_COMMANDS, *SERVICE_ALIASES))
 
 
 def test_production_registry_extracts_expected_partitions() -> None:
     partitions = journal_host.extract_partitions()
 
-    assert len(partitions.service_commands) == 43
     assert set(partitions.service_aliases) == {"up", "down"}
     assert set(partitions.universal_commands) == {
         "doctor",
@@ -376,32 +386,45 @@ def test_production_registry_extracts_expected_partitions() -> None:
         "link",
     }
     assert partitions.universal_aliases == ()
-    assert len(journal_host.extract()) == 45
 
 
-def test_service_command_count_rejects_44_service_commands_and_1_alias() -> None:
+def test_service_command_count_rejects_one_extra_service_command_despite_missing_alias() -> (
+    None
+):
     commands = _base_commands()
     commands["audio"] = "service"
     aliases = _base_aliases()
     del aliases["down"]
 
-    assert _old_combined_service_surface_count(commands, aliases) == 45
+    assert (
+        _old_combined_service_surface_count(commands, aliases) == SERVICE_SURFACE_COUNT
+    )
     message = _error(commands, aliases)
+    expected = journal_host.EXPECTED_SERVICE_COMMANDS_COUNT
 
-    assert message.startswith("journal-host service COMMANDS count 44 != 43: ")
+    assert message.startswith(
+        f"journal-host service COMMANDS count {expected + 1} != {expected}: "
+    )
     assert "'audio'" in message
 
 
-def test_service_command_count_rejects_42_service_commands_and_3_aliases() -> None:
+def test_service_command_count_rejects_one_missing_service_command_despite_extra_alias() -> (
+    None
+):
     commands = _base_commands()
     del commands["svc00"]
     aliases = _base_aliases()
     aliases["extra"] = "service"
 
-    assert _old_combined_service_surface_count(commands, aliases) == 45
+    assert (
+        _old_combined_service_surface_count(commands, aliases) == SERVICE_SURFACE_COUNT
+    )
     message = _error(commands, aliases)
+    expected = journal_host.EXPECTED_SERVICE_COMMANDS_COUNT
 
-    assert message.startswith("journal-host service COMMANDS count 42 != 43: ")
+    assert message.startswith(
+        f"journal-host service COMMANDS count {expected - 1} != {expected}: "
+    )
 
 
 @pytest.mark.parametrize("alias", ["up", "down"])

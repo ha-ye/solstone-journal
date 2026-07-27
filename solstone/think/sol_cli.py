@@ -160,7 +160,6 @@ COMMANDS: dict[str, Command] = {
     "talent": Command("solstone.think.talent_cli", "service"),
     "link": Command("solstone.think.link", "universal"),
     "spl": Command("solstone.think.spl", "service"),
-    "sandbox-profile": Command("solstone.think.sandbox_profile.cli", "service"),
     "navigate": Command("solstone.think.tools.navigate", "service"),
     "identity": Command("solstone.think.tools.sol", "service"),
     "engage": Command("solstone.think.engage", "service"),
