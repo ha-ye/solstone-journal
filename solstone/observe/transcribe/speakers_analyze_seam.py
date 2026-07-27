@@ -6,7 +6,7 @@
 This seam is bounded migration scaffolding, not a compatibility shim. It lets a
 configured journal route speaker embeddings, evidence, and local diarization
 through `solstone-core-speakers-analyze` while the absent key and explicit
-`python` path remain byte-for-byte Python. The selection keys remain out of
+`python` path remain byte-for-byte Python. The selection key remains out of
 journal_default.json because this is a two-release migration control: flip the
 absent-key default in 1.0.19, then delete the Python orchestration path and key
 in 1.0.20.
@@ -78,6 +78,7 @@ HelperLocator = Callable[[], Path]
 NativeRunner = Callable[..., subprocess.CompletedProcess[Any]]
 ModelPathResolver = Callable[[], tuple[Path, Path]]
 TempDirFactory = Callable[[Path], Path]
+RestoredStatements = list[dict[str, Any]] | Callable[[], list[dict[str, Any]]]
 
 
 def create_speakers_analyze_temp_dir(raw_path: Path) -> Path:
@@ -115,7 +116,7 @@ def maybe_run_native_speaker_analysis(
     statement_audio: np.ndarray,
     reduced_audio: np.ndarray | None,
     statements_pre_restore: list[dict[str, Any]],
-    statements_restored: list[dict[str, Any]],
+    statements_restored: RestoredStatements,
     sample_rate: int,
     min_statement_duration: float,
     config_reader: ConfigReader = read_journal_config,
@@ -176,13 +177,14 @@ def maybe_run_native_speaker_analysis(
 
     try:
         try:
+            restored_statements = _realize_statements_restored(statements_restored)
             request, payload_path = _build_request(
                 temp_dir=temp_dir,
                 full_audio=full_audio,
                 statement_audio=statement_audio,
                 reduced_audio=reduced_audio,
                 statements_pre_restore=statements_pre_restore,
-                statements_restored=statements_restored,
+                statements_restored=restored_statements,
                 sample_rate=sample_rate,
                 wespeaker_model_path=wespeaker_model_path,
                 pyannote_model_path=pyannote_model_path,
@@ -276,7 +278,7 @@ def maybe_run_native_speaker_analysis(
             accepted = _accepted_result_from_response(
                 response,
                 payload_path=payload_path,
-                statements_restored=statements_restored,
+                statements_restored=restored_statements,
                 expected_statement_ids=expected_statement_ids,
             )
         except NativePayloadError as exc:
@@ -320,6 +322,14 @@ def _resolve_config(config: dict[str, Any]) -> tuple[str, str | None]:
     if selected not in ("python", "native"):
         return "invalid", INVALID_SPEAKERS_ANALYZE_MESSAGE.format(value=selected)
     return str(selected), None
+
+
+def _realize_statements_restored(
+    statements_restored: RestoredStatements,
+) -> list[dict[str, Any]]:
+    if callable(statements_restored):
+        return statements_restored()
+    return statements_restored
 
 
 def _build_request(
@@ -468,9 +478,19 @@ def _accepted_result_from_response(
     if shape != [rows, WESPEAKER_EMBEDDING_WIDTH]:
         raise NativePayloadError("payload", "embedding-shape-mismatch")
     payload_bytes = _read_payload_bytes(payload_path, rows)
-    embeddings = np.frombuffer(payload_bytes, dtype="<f4").reshape(
-        (rows, WESPEAKER_EMBEDDING_WIDTH)
-    )
+    embeddings_data: dict[str, np.ndarray] | None
+    if rows > 0:
+        embeddings = np.frombuffer(payload_bytes, dtype="<f4").reshape(
+            (rows, WESPEAKER_EMBEDDING_WIDTH)
+        )
+        embeddings_data = {
+            "embeddings": embeddings.astype(np.float32, copy=False),
+            "statement_ids": np.asarray(statement_ids, dtype=np.int32),
+            "durations_s": np.asarray(durations_s, dtype=np.float32),
+            "encoder": np.array(ENCODER_ID),
+        }
+    else:
+        embeddings_data = None
 
     evidence = _required_object(response, "evidence")
     speaker_evidence = SpeakerEvidenceDecision(
@@ -492,12 +512,6 @@ def _accepted_result_from_response(
             if label is not None:
                 statement["speaker"] = int(label)
 
-    embeddings_data = {
-        "embeddings": embeddings.astype(np.float32, copy=False),
-        "statement_ids": np.asarray(statement_ids, dtype=np.int32),
-        "durations_s": np.asarray(durations_s, dtype=np.float32),
-        "encoder": np.array(ENCODER_ID),
-    }
     event_fields = {
         "speaker_analysis_path": "native",
     }

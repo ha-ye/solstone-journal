@@ -75,10 +75,10 @@ helper dynamically links. Do not design toward linking
 
 The config-gated speaker cutover seam is bounded migration scaffolding, not a
 compatibility shim. In 1.0.18, the seam ships inert: absent
-`core.speakers_analyze` means Python, and the key remains out of
-`journal_default.json`. The selection key remains out of `journal_default.json`
-because this is a two-release migration control: flip the absent-key default in
-1.0.19, then delete the Python orchestration path and key in 1.0.20.
+`core.speakers_analyze` means Python, and the selection key remains out of
+`journal_default.json` because this is a two-release migration control: flip the
+absent-key default in 1.0.19, then delete the Python orchestration path and key
+in 1.0.20.
 
 The musl-to-glibc substitution is local to that helper wheel. The `solstone-core`
 wheel stays on the existing static-musl Linux lanes and must remain byte-identical

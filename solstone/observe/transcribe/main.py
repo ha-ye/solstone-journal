@@ -1050,13 +1050,12 @@ def process_audio(
             maybe_run_native_speaker_analysis,
         )
 
-        native_restored_statements = statements
-        if reduction:
+        def native_restored_statements() -> list[dict]:
+            if not reduction:
+                return statements
             from solstone.observe.vad import restore_statement_timestamps
 
-            native_restored_statements = restore_statement_timestamps(
-                statements, reduction
-            )
+            return restore_statement_timestamps(statements, reduction)
 
         native_result = maybe_run_native_speaker_analysis(
             journal=journal_path,
@@ -1090,7 +1089,6 @@ def process_audio(
             raise SystemExit(SPEAKERS_ANALYZE_EXIT_CONFIG)
         if native_result.status == "accepted":
             assert native_result.statements is not None
-            assert native_result.embeddings_data is not None
             assert native_result.speaker_evidence is not None
             assert native_result.overlap_fraction is not None
             statements = native_result.statements

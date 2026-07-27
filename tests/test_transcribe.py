@@ -30,7 +30,7 @@ from solstone.observe.transcribe.overlap import (
     SpeakerWindowStats,
 )
 from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError, load_audio
-from solstone.observe.vad import VadResult
+from solstone.observe.vad import AudioReduction, SpeechSegment, VadResult
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.npz import load_npz
 from solstone.think.media import AUDIO_EXTENSIONS
@@ -739,6 +739,180 @@ def test_process_audio_native_failure_writes_python_identical_artifacts(tmp_path
     assert set(fallback_npz) == set(python_npz)
     for key in fallback_npz:
         np.testing.assert_array_equal(fallback_npz[key], python_npz[key])
+
+
+def test_process_audio_zero_row_native_response_writes_no_embedding_archive(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+    from solstone.observe.transcribe.speakers_analyze_seam import (
+        NativeSpeakerAnalysisResult,
+    )
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 2048)
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    native_result = NativeSpeakerAnalysisResult(
+        status="accepted",
+        statements=statements,
+        embeddings_data=None,
+        speaker_evidence=SpeakerEvidenceDecision("single", 0.0, 0.0),
+        overlap_fraction=0.0,
+        event_fields={
+            "speaker_analysis_path": "native",
+            "speaker_analysis_degradation": "gate_decline",
+            "speaker_analysis_stage": "evidence_gate",
+            "speaker_analysis_reason": "single",
+        },
+    )
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.main._embed_statements",
+            side_effect=AssertionError("Python embedder should not run"),
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_seam."
+            "maybe_run_native_speaker_analysis",
+            return_value=native_result,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        process_audio(
+            raw_path,
+            np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+            VadResult(
+                duration=10.0,
+                speech_duration=5.0,
+                has_speech=True,
+                speech_segments=[(1.0, 6.0)],
+            ),
+            {},
+            backend="parakeet",
+        )
+
+    assert raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.with_suffix(".npz").exists()
+
+
+def test_process_audio_python_selection_restores_once_after_embedding(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+    from solstone.observe.transcribe.speakers_analyze_seam import (
+        NativeSpeakerAnalysisResult,
+    )
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 2048)
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    reduction = AudioReduction(
+        segments=[SpeechSegment(5.0, 6.0, 0.0, 1.0)],
+        original_duration=10.0,
+        reduced_duration=1.0,
+    )
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    embeddings_data = {
+        "embeddings": np.zeros((1, 256), dtype=np.float32),
+        "statement_ids": np.zeros((1,), dtype=np.int32),
+        "durations_s": np.zeros((1,), dtype=np.float32),
+        "encoder": np.array("test"),
+    }
+    embed_seen: list[list[dict]] = []
+    restore_seen: list[list[dict]] = []
+
+    def fake_embed(_audio, seen_statements, _sample_rate):
+        embed_seen.append([dict(statement) for statement in seen_statements])
+        return embeddings_data
+
+    def fake_restore(seen_statements, _reduction):
+        restore_seen.append([dict(statement) for statement in seen_statements])
+        return [
+            {
+                **statement,
+                "start": statement["start"] + 5.0,
+                "end": statement["end"] + 5.0,
+            }
+            for statement in seen_statements
+        ]
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.main._embed_statements", side_effect=fake_embed
+        ),
+        patch(
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
+            return_value=_overlap_result(0.0),
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_seam."
+            "maybe_run_native_speaker_analysis",
+            return_value=NativeSpeakerAnalysisResult(status="python"),
+        ),
+        patch(
+            "solstone.observe.vad.restore_statement_timestamps",
+            side_effect=fake_restore,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        process_audio(
+            raw_path,
+            np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+            VadResult(
+                duration=10.0,
+                speech_duration=5.0,
+                has_speech=True,
+                speech_segments=[(1.0, 6.0)],
+            ),
+            {},
+            reduction=reduction,
+            reduced_audio=np.zeros(SAMPLE_RATE, dtype=np.float32),
+            backend="parakeet",
+        )
+
+    assert embed_seen == [statements]
+    assert restore_seen == [statements]
 
 
 def test_process_audio_records_analyzed_processing(tmp_path):

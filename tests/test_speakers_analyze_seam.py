@@ -84,7 +84,8 @@ def _base_response(
     labels: list[int | None] | None = [7, None],
     speaker_evidence: str = "multi",
 ) -> dict[str, Any]:
-    statement_ids = statement_ids or [1, 2]
+    if statement_ids is None:
+        statement_ids = [1, 2]
     return {
         "schema": RESPONSE_SCHEMA,
         "statement_embeddings": {
@@ -381,6 +382,35 @@ def test_statement_id_divergence_falls_back(tmp_path: Path):
     assert result.status == "fallback"
     assert result.event_fields["speaker_analysis_reason"] == "statement-id-divergence"
     assert recorder.failures[0]["stage"] == "payload"
+
+
+def test_zero_row_payload_accepts_without_embedding_data(tmp_path: Path):
+    short_statements = [
+        {"id": 1, "start": 0.0, "end": 0.1, "text": "one"},
+        {"id": 2, "start": 0.1, "end": 0.2, "text": "two"},
+    ]
+
+    def runner(_argv, **kwargs):
+        request = json.loads(kwargs["input"])
+        return _completed(
+            request,
+            response=_base_response(
+                statement_ids=[],
+                labels=None,
+                speaker_evidence="single",
+            ),
+        )
+
+    result = _run_native(
+        tmp_path,
+        runner=runner,
+        statements_pre_restore=short_statements,
+        statements_restored=short_statements,
+    )
+
+    assert result.status == "accepted"
+    assert result.embeddings_data is None
+    assert result.event_fields["speaker_analysis_degradation"] == "gate_decline"
 
 
 def test_native_failure_paths_are_observable_and_do_not_reread_config(tmp_path: Path):
