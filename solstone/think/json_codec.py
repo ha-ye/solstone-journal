@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Shared JSON decoding helpers for sandbox profile files."""
+"""Shared JSON decoding helpers."""
 
 from __future__ import annotations
 

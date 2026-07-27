@@ -20,11 +20,11 @@ from typing import Any, NoReturn
 
 import typer
 
+from solstone.think import json_codec
 from solstone.think.sandbox_profile import (
     capabilities,
     envelope,
     intent,
-    json_codec,
     manifest,
     marker,
 )

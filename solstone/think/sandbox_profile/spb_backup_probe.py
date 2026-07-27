@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import json as json_module
 import os
 import shutil
 import stat
@@ -31,14 +30,15 @@ from solstone.think.backup.hosted_provider import (
 )
 from solstone.think.backup.runner import (
     _PROCESS_GROUP_CLEANUP_UNVERIFIED,
+    ResticJsonRecordsResult,
     ResticResult,
     run_restic,
+    run_restic_json_records,
 )
 from solstone.think.sandbox_profile import (
     capabilities,
     envelope,
     intent,
-    json_codec,
     probe_contract,
 )
 
@@ -543,18 +543,17 @@ def _prove_prefix_empty(preflight: _Preflight, credentials: HostedCredentials) -
 
 
 def _run_init(preflight: _Preflight, credentials: HostedCredentials) -> None:
-    _run_restic_phase(preflight, credentials, ["init"], json=False)
+    _run_restic_phase(preflight, credentials, ["init"])
 
 
 def _run_backup(preflight: _Preflight, credentials: HostedCredentials) -> str:
-    result = _run_restic_phase(
+    result = _run_restic_records_phase(
         preflight,
         credentials,
         ["backup", "--stdin", "--stdin-filename", LOGICAL_SOURCE_PATH],
-        json=True,
         stdin_bytes=SPB_SYNTHETIC_FIXTURE_BYTES,
     )
-    records = _parse_json_records(result.stdout)
+    records = list(result.consume_records())
     return _validate_backup_records(records)
 
 
@@ -563,14 +562,13 @@ def _run_ls(
     credentials: HostedCredentials,
     snapshot_id: str,
 ) -> None:
-    result = _run_restic_phase(
+    result = _run_restic_records_phase(
         preflight,
         credentials,
         ["ls", "--long", snapshot_id],
-        json=True,
         scrub_values=(snapshot_id,),
     )
-    records = _parse_json_records(result.stdout)
+    records = list(result.consume_records())
     _validate_ls_records(records, snapshot_id, preflight)
 
 
@@ -579,24 +577,19 @@ def _run_restore(
     credentials: HostedCredentials,
     snapshot_id: str,
 ) -> None:
-    result = _run_restic_phase(
+    result = _run_restic_records_phase(
         preflight,
         credentials,
         ["restore", snapshot_id, "--target", str(preflight.restore_target)],
-        json=True,
         scrub_values=(snapshot_id,),
     )
-    _validate_restore_records(_parse_json_records(result.stdout))
+    _validate_restore_records(list(result.consume_records()))
 
 
 def _run_restic_phase(
     preflight: _Preflight,
     credentials: HostedCredentials,
     args: list[str],
-    *,
-    json: bool,
-    stdin_bytes: bytes | None = None,
-    scrub_values: tuple[str, ...] = (),
 ) -> ResticResult:
     with hosted_append_only_restic_session(
         preflight.proof_binding,
@@ -609,9 +602,41 @@ def _run_restic_phase(
             password=preflight.daily_key,
             restic_path=preflight.restic_path,
             backend_env=session.backend_env,
-            json=json,
+            json=False,
             timeout=RESTIC_CHILD_TIMEOUT_S,
             process_group=True,
+            scrub_values=(*preflight.scrub_values, session.destination.repository),
+            terminate_grace_s=TERM_GRACE_S,
+            kill_grace_s=KILL_GRACE_S,
+        )
+    _check_restic_result(result)
+    return result
+
+
+def _session_args(session: HostedResticSession, args: list[str]) -> list[str]:
+    return ["--no-cache", *session.global_options, *args]
+
+
+def _run_restic_records_phase(
+    preflight: _Preflight,
+    credentials: HostedCredentials,
+    args: list[str],
+    *,
+    stdin_bytes: bytes | None = None,
+    scrub_values: tuple[str, ...] = (),
+) -> ResticJsonRecordsResult:
+    with hosted_append_only_restic_session(
+        preflight.proof_binding,
+        rclone_path=preflight.rclone_path,
+        initial_credentials=credentials,
+    ) as session:
+        result = run_restic_json_records(
+            _session_args(session, args),
+            repository=session.destination.repository,
+            password=preflight.daily_key,
+            restic_path=preflight.restic_path,
+            backend_env=session.backend_env,
+            timeout=RESTIC_CHILD_TIMEOUT_S,
             stdin_bytes=stdin_bytes,
             scrub_values=(
                 *preflight.scrub_values,
@@ -621,41 +646,21 @@ def _run_restic_phase(
             terminate_grace_s=TERM_GRACE_S,
             kill_grace_s=KILL_GRACE_S,
         )
-    _check_restic_result(result, expect_json=json)
+    _check_restic_result(result)
+    if not result.has_records:
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
     return result
 
 
-def _session_args(session: HostedResticSession, args: list[str]) -> list[str]:
-    return ["--no-cache", *session.global_options, *args]
-
-
-def _check_restic_result(result: ResticResult, *, expect_json: bool) -> None:
+def _check_restic_result(
+    result: ResticResult | ResticJsonRecordsResult,
+) -> None:
     if _PROCESS_GROUP_CLEANUP_UNVERIFIED in result.stderr:
         raise _SpbProbeError(probe_contract.REASON_CLEANUP_UNVERIFIED) from None
     if result.returncode == 124:
         raise _SpbProbeError(probe_contract.REASON_DEADLINE_EXCEEDED) from None
     if result.returncode != 0:
         raise _SpbProbeError(probe_contract.REASON_REMOTE_REJECTED) from None
-    if expect_json and not result.stdout.strip():
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-
-
-def _parse_json_records(text: str) -> list[object]:
-    lines = [line for line in text.splitlines() if line.strip()]
-    if not lines:
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-    records: list[object] = []
-    try:
-        for line in lines:
-            records.append(
-                json_module.loads(
-                    line,
-                    object_pairs_hook=json_codec.reject_duplicate_keys,
-                )
-            )
-    except (json_module.JSONDecodeError, ValueError):
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-    return records
 
 
 def _validate_record(record: object) -> dict[str, object]:

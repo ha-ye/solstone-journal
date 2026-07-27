@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from solstone.think.sandbox_profile import json_codec, manifest
+from solstone.think import json_codec
+from solstone.think.sandbox_profile import manifest
 
 MAX_MARKER_BYTES = 64 * 1024
 MARKER_NAME = ".solstone-sandbox.json"

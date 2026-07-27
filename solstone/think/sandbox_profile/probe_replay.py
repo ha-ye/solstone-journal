@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from solstone.think.sandbox_profile import json_codec, probe_records, probe_slot
+from solstone.think import json_codec
 from solstone.think.sandbox_profile import probe_contract as contract
+from solstone.think.sandbox_profile import probe_records, probe_slot
 
 _ReplayRecord = (
     probe_records.AttemptStartedRecord

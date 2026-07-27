@@ -3,14 +3,26 @@
 
 from __future__ import annotations
 
+import copy
+import dataclasses
+import inspect
 import json
+import pickle
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solstone.think.backup import runner
+
+SNAPSHOT_ID = "5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d"
+LOGICAL_SOURCE_PATH = "/spb/source.bin"
+
+
+def _jsonl(*records: object) -> bytes:
+    return ("\n".join(json.dumps(record) for record in records) + "\n").encode()
 
 
 def test_run_restic_builds_safe_argv_and_minimal_env(
@@ -172,6 +184,344 @@ def test_run_restic_opt_in_process_group_threads_stdin_and_scrubs_argv(
     assert result.returncode == 0
 
 
+def test_run_restic_json_records_parses_raw_before_scrub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    raw_stdout = _jsonl(
+        {"message_type": "snapshot", "id": SNAPSHOT_ID, "paths": [LOGICAL_SOURCE_PATH]},
+        {"message_type": "node", "path": LOGICAL_SOURCE_PATH, "type": "file"},
+    )
+
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            captured["input"] = input
+            captured["timeout"] = timeout
+            return raw_stdout, b"stderr repo-url " + SNAPSHOT_ID.encode()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic_json_records(
+        ["ls", SNAPSHOT_ID],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        backend_env={"AWS_SECRET_ACCESS_KEY": "backend-secret"},
+        timeout=9,
+        stdin_bytes=b"payload",
+        scrub_values=("repo-url", SNAPSHOT_ID, LOGICAL_SOURCE_PATH),
+    )
+
+    assert captured["kwargs"]["start_new_session"] is True
+    assert captured["kwargs"]["close_fds"] is True
+    assert captured["kwargs"]["pass_fds"] == ()
+    assert captured["input"] == b"payload"
+    assert captured["timeout"] == 9
+    assert captured["argv"][-1] == "--json"
+    assert result.stdout == runner._RESTIC_JSON_STDOUT_REDACTED
+    assert result.stderr == runner._RESTIC_JSON_STDERR_REDACTED
+    assert SNAPSHOT_ID not in " ".join(result.argv)
+    assert LOGICAL_SOURCE_PATH not in " ".join(result.argv)
+    assert result.has_records is True
+    records = result.consume_records()
+    assert records[0]["id"] == SNAPSHOT_ID
+    assert records[0]["paths"] == [LOGICAL_SOURCE_PATH]
+    assert records[1]["path"] == LOGICAL_SOURCE_PATH
+    assert result.has_records is False
+    with pytest.raises(TypeError, match="unavailable"):
+        result.consume_records()
+
+
+@pytest.mark.parametrize(
+    "raw_stdout",
+    [
+        b"",
+        b"\xff",
+        b'{"message_type":',
+        b'\n{"message_type":"summary"}\n',
+        b'{"message_type":"status"}\n\n{"message_type":"summary"}\n',
+        b'{"message_type":"summary"}\n\n',
+        b"NaN\n",
+        b"Infinity\n",
+        b"-Infinity\n",
+        b'{"message_type":"summary","message_type":"summary"}\n',
+        b'{"outer":{"middle":{"key":1,"key":2}}}\n',
+    ],
+    ids=[
+        "empty",
+        "invalid_utf8",
+        "malformed",
+        "blank_leading_record",
+        "blank_middle_record",
+        "blank_trailing_record",
+        "nan",
+        "infinity",
+        "negative_infinity",
+        "duplicate_top_level",
+        "duplicate_nested_depth_two",
+    ],
+)
+def test_run_restic_json_records_rejections_are_content_free(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_stdout: bytes,
+) -> None:
+    canary = "spb/source.bin"
+
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            pass
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            return raw_stdout, b""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic_json_records(
+        ["backup", "--stdin-filename", f"/{canary}"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        scrub_values=(f"/{canary}",),
+    )
+
+    assert result.has_records is False
+    assert result.stdout in {"", runner._RESTIC_JSON_STDOUT_REDACTED}
+    with pytest.raises(TypeError) as excinfo:
+        result.consume_records()
+    assert canary not in str(excinfo.value)
+    rendered = "".join(
+        traceback.format_exception(
+            type(excinfo.value),
+            excinfo.value,
+            excinfo.value.__traceback__,
+        )
+    )
+    assert canary not in rendered
+
+
+def test_run_restic_json_records_preserves_all_json_value_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_stdout = b'{"object":true}\n[1,2]\n"text"\n7\ntrue\nfalse\nnull\n'
+
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            pass
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            return raw_stdout, b""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic_json_records(
+        ["backup", "--stdin"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+    )
+
+    assert result.consume_records() == (
+        {"object": True},
+        [1, 2],
+        "text",
+        7,
+        True,
+        False,
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_returncode", "expected_stderr"),
+    [
+        ("timeout", 124, runner._RESTIC_JSON_STDERR_REDACTED),
+        ("nonzero", 7, runner._RESTIC_JSON_STDERR_REDACTED),
+        (
+            "cleanup_unverified",
+            124,
+            (
+                f"{runner._RESTIC_JSON_STDERR_REDACTED}\n"
+                f"{runner._PROCESS_GROUP_CLEANUP_UNVERIFIED}"
+            ),
+        ),
+    ],
+)
+def test_run_restic_json_records_parse_gate_precedes_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_returncode: int,
+    expected_stderr: str,
+) -> None:
+    parse_calls = 0
+
+    def fake_parse(_raw_stdout: bytes | None) -> tuple[object, ...] | None:
+        nonlocal parse_calls
+        parse_calls += 1
+        return ({"message_type": "summary"},)
+
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            self.returncode = 7 if mode == "nonzero" else 0
+            self._calls = 0
+
+        def poll(self) -> None:
+            return None
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            self._calls += 1
+            if mode in {"timeout", "cleanup_unverified"} and self._calls == 1:
+                raise subprocess.TimeoutExpired(
+                    ["restic"],
+                    timeout=1,
+                    output=b'{"message_type":"summary"}\n',
+                    stderr=b"stderr",
+                )
+            return b'{"message_type":"summary"}\n', b"stderr"
+
+    monkeypatch.setattr(runner, "_parse_json_records", fake_parse)
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_process_group",
+        lambda *_args, **_kwargs: mode != "cleanup_unverified",
+    )
+
+    result = runner.run_restic_json_records(
+        ["backup", "--stdin"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.stderr == expected_stderr
+    assert result.has_records is False
+    assert parse_calls == 0
+
+
+def test_restic_json_records_result_is_opaque_and_one_shot() -> None:
+    canaries = ("SECRET-CANARY", SNAPSHOT_ID, LOGICAL_SOURCE_PATH)
+    result = runner.ResticJsonRecordsResult(
+        returncode=0,
+        stdout=runner._RESTIC_JSON_STDOUT_REDACTED,
+        stderr=runner._RESTIC_JSON_STDERR_REDACTED,
+        argv=("restic", "[redacted]"),
+        records=({"message_type": "summary", "secret": canaries[0]},),
+    )
+    same_shape = runner.ResticJsonRecordsResult(
+        returncode=0,
+        stdout=runner._RESTIC_JSON_STDOUT_REDACTED,
+        stderr=runner._RESTIC_JSON_STDERR_REDACTED,
+        argv=("restic", "[redacted]"),
+        records=({"message_type": "summary", "secret": canaries[0]},),
+    )
+
+    assert not hasattr(result, "__dict__")
+    assert repr(result) == "ResticJsonRecordsResult(state=available, <redacted>)"
+    assert result == result
+    assert result != same_shape
+    assert hash(result) == id(result)
+    for operation in (copy.copy, copy.deepcopy, pickle.dumps):
+        with pytest.raises(TypeError) as excinfo:
+            operation(result)
+        assert excinfo.value.__cause__ is None
+        rendered = "".join(
+            traceback.format_exception(
+                type(excinfo.value),
+                excinfo.value,
+                excinfo.value.__traceback__,
+            )
+        )
+        for canary in canaries:
+            assert canary not in str(excinfo.value)
+            assert canary not in rendered
+
+    records = result.consume_records()
+    assert records == ({"message_type": "summary", "secret": canaries[0]},)
+    assert result.has_records is False
+    assert repr(result) == "ResticJsonRecordsResult(state=closed, <redacted>)"
+    refusing_operations = (
+        vars,
+        dataclasses.asdict,
+        json.dumps,
+        lambda value: value.consume_records(),
+    )
+    for operation in refusing_operations:
+        with pytest.raises(TypeError) as excinfo:
+            operation(result)
+        assert excinfo.value.__cause__ is None
+        rendered = "".join(
+            traceback.format_exception(
+                type(excinfo.value),
+                excinfo.value,
+                excinfo.value.__traceback__,
+            )
+        )
+        for canary in canaries:
+            assert canary not in str(excinfo.value)
+            assert canary not in rendered
+
+
+def test_run_restic_json_records_api_exposes_no_parser_or_raw_escape_hatch() -> None:
+    signature = inspect.signature(runner.run_restic_json_records)
+    assert tuple(signature.parameters) == (
+        "args",
+        "repository",
+        "password",
+        "restic_path",
+        "backend_env",
+        "timeout",
+        "stdin_bytes",
+        "scrub_values",
+        "terminate_grace_s",
+        "kill_grace_s",
+    )
+    assert not any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    result = runner.ResticJsonRecordsResult(
+        returncode=0,
+        stdout="",
+        stderr="",
+        argv=("restic",),
+        records=None,
+    )
+    for name in ("json", "raw_stdout", "raw_stderr", "raw_output", "records"):
+        assert not hasattr(result, name)
+
+
 def test_run_restic_scrubs_success_output_and_json(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -306,7 +656,7 @@ def test_run_restic_timeout_returns_scrubbed_result(
         raise subprocess.TimeoutExpired(
             argv,
             timeout=1,
-            output=b"stdout repo-password backend-secret SESS-TOKEN",
+            output=b'{"message":"repo-password backend-secret SESS-TOKEN"}',
             stderr=b"stderr repo-password backend-secret SESS-TOKEN",
         )
 
@@ -321,6 +671,7 @@ def test_run_restic_timeout_returns_scrubbed_result(
             "AWS_SECRET_ACCESS_KEY": "backend-secret",
             "AWS_SESSION_TOKEN": "SESS-TOKEN",
         },
+        json=True,
         timeout=1,
     )
 
@@ -331,6 +682,57 @@ def test_run_restic_timeout_returns_scrubbed_result(
     assert "repo-password" not in result.stderr
     assert "backend-secret" not in result.stderr
     assert "SESS-TOKEN" not in result.stderr
+    assert result.json is None
+
+
+def test_run_restic_popen_timeout_json_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            self.returncode = 0
+            self._calls = 0
+
+        def poll(self) -> None:
+            return None
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            self._calls += 1
+            if self._calls == 1:
+                raise subprocess.TimeoutExpired(
+                    ["restic"],
+                    timeout=1,
+                    output=b'{"message":"repo-password"}',
+                    stderr=b"stderr repo-password",
+                )
+            return b'{"message":"repo-password"}', b"stderr repo-password"
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_process_group",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = runner.run_restic(
+        ["backup", "/tmp/data"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        json=True,
+        process_group=True,
+        timeout=1,
+    )
+
+    assert result.returncode == 124
+    assert "repo-password" not in result.stdout
+    assert "repo-password" not in result.stderr
     assert result.json is None
 
 
@@ -353,6 +755,59 @@ def test_parse_json_lines_from_scrubbed_stdout(
     )
 
     assert result.json == [{"message": "[redacted]"}, {"message": "ok"}]
+
+
+def test_run_restic_result_shape_and_dataclass_behavior_are_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            3,
+            stdout='{"message":"repo-password backend-secret","status":"ok"}',
+            stderr="stderr repo-password backend-secret",
+        )
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_restic(
+        ["backup", "/tmp/data"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        backend_env={"AWS_SECRET_ACCESS_KEY": "backend-secret"},
+        json=True,
+    )
+    same = runner.ResticResult(
+        3,
+        result.stdout,
+        result.stderr,
+        result.json,
+        result.argv,
+    )
+
+    assert tuple(field.name for field in dataclasses.fields(runner.ResticResult)) == (
+        "returncode",
+        "stdout",
+        "stderr",
+        "json",
+        "argv",
+    )
+    assert result.returncode == 3
+    assert result.stdout == '{"message":"[redacted] [redacted]","status":"ok"}'
+    assert result.stderr == "stderr [redacted] [redacted]"
+    assert result.json == {"message": "[redacted] [redacted]", "status": "ok"}
+    assert result.argv == ("/usr/bin/restic", "backup", "/tmp/data", "--json")
+    assert result == same
+    assert repr(result).startswith("ResticResult(")
+    assert dataclasses.asdict(result) == {
+        "returncode": 3,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "json": result.json,
+        "argv": result.argv,
+    }
+    assert pickle.loads(pickle.dumps(result)) == result
 
 
 @pytest.mark.parametrize(

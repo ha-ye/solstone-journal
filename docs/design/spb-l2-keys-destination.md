@@ -153,8 +153,8 @@ repository string.
 
 ## Restic invocation model
 
-`run_restic` remains the only restic invocation path in source code.
-SPB proof runs request JSON only for `backup --stdin`, `ls --long`, and `restore`; `init` remains human mode.
+`run_restic` remains the ordinary restic invocation path in source code.
+SPB proof runs use `run_restic_json_records` for `backup --stdin`, `ls --long`, and `restore`; `init` remains human mode on `run_restic`.
 Their JSON proof contract is closed over record kinds/cardinality but open to extra fields inside accepted records.
 SPB proof runs also pass `--no-cache`, avoiding a restic cache under the operator's home during the proof.
 

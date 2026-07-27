@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 
+from solstone.think.json_codec import reject_duplicate_keys
 from solstone.think.models import default_model_for_provider
 from solstone.think.providers.shared import (
     CANNED_GENERATE_TIMEOUT_S,
@@ -32,7 +33,6 @@ from solstone.think.sandbox_profile import (
     intent,
     probe_contract,
 )
-from solstone.think.sandbox_profile.json_codec import reject_duplicate_keys
 
 FRAME_PROTOCOL_VERSION = 1
 

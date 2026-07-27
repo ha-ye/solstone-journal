@@ -7,18 +7,19 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from solstone.think.backup import runner as backup_runner
 from solstone.think.backup.hosted import (
     HostedBinding,
     HostedCredentials,
     HostedCredsUnavailable,
 )
-from solstone.think.backup.runner import ResticResult
 from solstone.think.sandbox_profile import probe_contract
 from solstone.think.sandbox_profile import spb_backup_probe as probe
 from tests.sandbox_profile import (
@@ -57,22 +58,6 @@ HUMAN_INIT_STDOUT = """created restic repository 00000000 at local:/tmp/spb-rest
 Please note that knowledge of your password is required to access
 the repository. Losing your password means that your data is
 irrecoverably lost.
-"""
-HUMAN_BACKUP_STDOUT = """using parent snapshot 00000000
-
-Files:           1 new,     0 changed,     0 unmodified
-Dirs:            1 new,     0 changed,     0 unmodified
-Added to the repository: 1.000 KiB
-
-processed 1 files, 1.000 KiB in 0:00
-snapshot 00000000 saved
-"""
-HUMAN_LS_STDOUT = """/spb
-/spb/source.bin
-"""
-HUMAN_RESTORE_STDOUT = """restoring <snapshot> to /tmp/spb-restore
-
-Summary: Restored 2 files/dirs (1.000 KiB) in 0:00
 """
 
 
@@ -208,38 +193,6 @@ def _scrub_text(value: object, secrets: tuple[str, ...]) -> str:
     return text
 
 
-def _capture_child_surface(
-    args: list[str],
-    kwargs: dict[str, Any],
-) -> dict[str, object]:
-    backend_env = kwargs.get("backend_env") or {}
-    assert isinstance(backend_env, dict)
-    scrub_values = tuple(str(value) for value in kwargs.get("scrub_values", ()))
-    child_secret_values = tuple(
-        str(value)
-        for value in (
-            kwargs.get("password"),
-            kwargs.get("repository"),
-            *backend_env.values(),
-            *scrub_values,
-        )
-        if value
-    )
-    return {
-        "argv": tuple(_scrub_text(token, child_secret_values) for token in args),
-        "backend_env": {
-            key: _scrub_text(value, child_secret_values)
-            for key, value in backend_env.items()
-        },
-        "repository": _scrub_text(kwargs.get("repository", ""), child_secret_values),
-        "json": kwargs.get("json"),
-        "stdin_bytes": kwargs.get("stdin_bytes") or b"",
-        "scrub_values": tuple(
-            _scrub_text(value, child_secret_values) for value in scrub_values
-        ),
-    }
-
-
 def _captured_command(capture: dict[str, object]) -> str:
     argv = capture["argv"]
     assert isinstance(argv, tuple)
@@ -306,66 +259,142 @@ def _restic_command(args: list[str]) -> str:
     return next(token for token in ("init", "backup", "ls", "restore") if token in args)
 
 
+@dataclass(frozen=True)
+class _PhaseOutput:
+    returncode: int = 0
+    stdout: str | bytes = b""
+    stderr: str | bytes = b""
+    mutate_before_return: Callable[[], None] | None = None
+    restore_mutator: Callable[[Path], None] | None = None
+
+
+def _bytes(value: str | bytes) -> bytes:
+    return value.encode() if isinstance(value, str) else value
+
+
 def _assert_child_contract(
     args: list[str],
     kwargs: dict[str, Any],
     *,
     command: str,
-    require_json: bool | None = None,
+    input_bytes: bytes | None,
+    timeout: float | None,
 ) -> None:
     assert "--no-cache" in args
-    assert kwargs["process_group"] is True
-    assert kwargs["timeout"] == probe.RESTIC_CHILD_TIMEOUT_S
-    assert kwargs["password"]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["close_fds"] is True
+    assert kwargs["pass_fds"] == ()
+    assert timeout == probe.RESTIC_CHILD_TIMEOUT_S
+    env = kwargs["env"]
+    assert env["RESTIC_PASSWORD"]
     if command == "init":
-        assert kwargs.get("json") is False
-    elif require_json is True:
-        assert kwargs.get("json") is True
+        assert "--json" not in args
+    else:
+        assert "--json" in args
     if command == "backup":
-        assert kwargs["stdin_bytes"] == probe.SPB_SYNTHETIC_FIXTURE_BYTES
+        assert input_bytes == probe.SPB_SYNTHETIC_FIXTURE_BYTES
 
 
-def _json_mode(kwargs: dict[str, Any]) -> bool:
-    return kwargs.get("json") is True
+def _default_phase_output(command: str) -> _PhaseOutput:
+    if command == "init":
+        return _PhaseOutput(stdout=HUMAN_INIT_STDOUT)
+    if command == "backup":
+        return _PhaseOutput(stdout=_records(_summary_record()))
+    if command == "ls":
+        return _PhaseOutput(stdout=_records(*_ls_records()))
+    return _PhaseOutput(stdout=_records(_restore_summary_record()))
 
 
-def _fake_restic(
+def _capture_child_surface(
+    args: list[str],
+    kwargs: dict[str, Any],
+    *,
+    input_bytes: bytes | None,
+    timeout: float | None,
+) -> dict[str, object]:
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    child_secret_values = tuple(
+        str(value)
+        for value in (
+            *env.values(),
+            *CANARIES,
+            SNAPSHOT_ID,
+            probe.LOGICAL_SOURCE_PATH,
+        )
+        if value
+    )
+    return {
+        "argv": tuple(_scrub_text(token, child_secret_values) for token in args),
+        "env": {
+            key: _scrub_text(value, child_secret_values) for key, value in env.items()
+        },
+        "json": "--json" in args,
+        "stdin_bytes": input_bytes or b"",
+        "timeout": timeout,
+    }
+
+
+def _install_popen_harness(
+    monkeypatch: pytest.MonkeyPatch,
     events: list[str],
     *,
+    phase_outputs: dict[str, _PhaseOutput] | None = None,
     restore_mutator: Callable[[Path], None] | None = None,
     captures: list[dict[str, object]] | None = None,
-):
-    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = _restic_command(args)
-        if captures is not None:
-            captures.append(_capture_child_surface(args, kwargs))
-        events.append(command)
-        _assert_child_contract(args, kwargs, command=command)
-        if command == "init":
-            return ResticResult(0, HUMAN_INIT_STDOUT, "", None, tuple(args))
-        if command == "backup":
-            stdout = (
-                _records(_summary_record())
-                if _json_mode(kwargs)
-                else HUMAN_BACKUP_STDOUT
-            )
-            return ResticResult(0, stdout, "", None, tuple(args))
-        if command == "ls":
-            stdout = _records(*_ls_records()) if _json_mode(kwargs) else HUMAN_LS_STDOUT
-            return ResticResult(0, stdout, "", None, tuple(args))
-        target = Path(args[args.index("--target") + 1])
-        (target / "spb").mkdir(parents=True)
-        (target / "spb" / "source.bin").write_bytes(probe.SPB_SYNTHETIC_FIXTURE_BYTES)
-        if restore_mutator is not None:
-            restore_mutator(target)
-        stdout = (
-            _records(_restore_summary_record())
-            if _json_mode(kwargs)
-            else HUMAN_RESTORE_STDOUT
-        )
-        return ResticResult(0, stdout, "", None, tuple(args))
+    passwords: list[str] | None = None,
+) -> None:
+    outputs = dict(phase_outputs or {})
 
-    return fake_run_restic
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, args: list[str], **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.returncode = 0
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            command = _restic_command(self.args)
+            output = outputs.get(command, _default_phase_output(command))
+            self.returncode = output.returncode
+            if passwords is not None:
+                passwords.append(self.kwargs["env"]["RESTIC_PASSWORD"])
+            if captures is not None:
+                captures.append(
+                    _capture_child_surface(
+                        self.args,
+                        self.kwargs,
+                        input_bytes=input,
+                        timeout=timeout,
+                    )
+                )
+            events.append(command)
+            _assert_child_contract(
+                self.args,
+                self.kwargs,
+                command=command,
+                input_bytes=input,
+                timeout=timeout,
+            )
+            if output.mutate_before_return is not None:
+                output.mutate_before_return()
+            if command == "restore" and output.returncode == 0:
+                target = Path(self.args[self.args.index("--target") + 1])
+                (target / "spb").mkdir(parents=True)
+                (target / "spb" / "source.bin").write_bytes(
+                    probe.SPB_SYNTHETIC_FIXTURE_BYTES
+                )
+                mutator = output.restore_mutator or restore_mutator
+                if mutator is not None:
+                    mutator(target)
+            return _bytes(output.stdout), _bytes(output.stderr)
+
+    monkeypatch.setattr(backup_runner.subprocess, "Popen", FakePopen)
 
 
 def _install_sequenced_creds(
@@ -402,36 +431,25 @@ def _install_phase_restic(
     events: list[str],
     *,
     phase: str,
-    result: ResticResult,
+    result: _PhaseOutput,
     mutate_before_return: Callable[[], None] | None = None,
     captures: list[dict[str, object]] | None = None,
 ) -> None:
-    success = _fake_restic(events, captures=captures)
-
-    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = _restic_command(args)
-        if command != phase:
-            return success(args, **kwargs)
-        if captures is not None:
-            captures.append(_capture_child_surface(args, kwargs))
-        events.append(command)
-        _assert_child_contract(
-            args,
-            kwargs,
-            command=command,
-            require_json=command != "init",
+    output = result
+    if mutate_before_return is not None:
+        output = _PhaseOutput(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            mutate_before_return=mutate_before_return,
+            restore_mutator=result.restore_mutator,
         )
-        if mutate_before_return is not None:
-            mutate_before_return()
-        return ResticResult(
-            result.returncode,
-            result.stdout,
-            result.stderr,
-            result.json,
-            tuple(args),
-        )
-
-    monkeypatch.setattr(probe, "run_restic", fake_run_restic)
+    _install_popen_harness(
+        monkeypatch,
+        events,
+        phase_outputs={phase: output},
+        captures=captures,
+    )
 
 
 def _install_ls_records(
@@ -440,17 +458,11 @@ def _install_ls_records(
     *,
     stdout: str,
 ) -> None:
-    success = _fake_restic(events)
-
-    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = _restic_command(args)
-        if command != "ls":
-            return success(args, **kwargs)
-        events.append("ls")
-        _assert_child_contract(args, kwargs, command="ls", require_json=True)
-        return ResticResult(0, stdout, "", None, tuple(args))
-
-    monkeypatch.setattr(probe, "run_restic", fake_run_restic)
+    _install_popen_harness(
+        monkeypatch,
+        events,
+        phase_outputs={"ls": _PhaseOutput(stdout=stdout)},
+    )
 
 
 def _install_success_fakes(
@@ -460,6 +472,7 @@ def _install_success_fakes(
     *,
     restore_mutator: Callable[[Path], None] | None = None,
     captures: list[dict[str, object]] | None = None,
+    passwords: list[str] | None = None,
 ) -> None:
     def fetch(_binding, *, scope: str) -> HostedCredentials:
         assert scope == "operated"
@@ -472,10 +485,12 @@ def _install_success_fakes(
 
     monkeypatch.setattr(probe, "fetch_hosted_credentials", fetch)
     monkeypatch.setattr(probe.s3_wipe, "list_prefix_contents", list_prefix_contents)
-    monkeypatch.setattr(
-        probe,
-        "run_restic",
-        _fake_restic(events, restore_mutator=restore_mutator, captures=captures),
+    _install_popen_harness(
+        monkeypatch,
+        events,
+        restore_mutator=restore_mutator,
+        captures=captures,
+        passwords=passwords,
     )
 
 
@@ -529,6 +544,60 @@ def test_spb_success_uses_five_fresh_fetches_and_four_checks(
     _assert_canaries_absent(caplog.text)
     _assert_canaries_absent(repr(captures))
     _assert_surviving_attempt_files_canary_clean(attempt_dir)
+
+
+def test_spb_json_phase_scrub_set_contains_every_production_identifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    events: list[str] = []
+    _install_success_fakes(monkeypatch, clock, events)
+    observed: dict[str, set[str]] = {}
+    original = probe.run_restic_json_records
+
+    def spy_run_restic_json_records(args: list[str], **kwargs: Any):
+        command = _restic_command(args)
+        observed[command] = {str(value) for value in kwargs["scrub_values"] if value}
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(
+        probe,
+        "run_restic_json_records",
+        spy_run_restic_json_records,
+    )
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    assert outcome["state"] == probe_contract.PROOF_STATE_PASSED
+    binding = probe._load_binding(journal)
+    proof_binding = probe._proof_binding(binding, attempt_dir.name)
+    spb_root = attempt_dir / probe.SPB_DIR_NAME
+    restore_target = spb_root / probe.RESTORE_DIR_NAME
+    repository = f"rclone:spb:{proof_binding.bucket}/{proof_binding.prefix}"
+    expected_common = {
+        binding.broker_endpoint,
+        binding.account_id,
+        binding.instance_id,
+        binding.bucket,
+        binding.prefix,
+        binding.broker_token,
+        proof_binding.prefix,
+        str(attempt_dir),
+        str(spb_root),
+        str(restore_target),
+        probe.LOGICAL_SOURCE_PATH,
+        repository,
+    }
+    assert set(observed) == {"backup", "ls", "restore"}
+    for command, scrub_values in observed.items():
+        assert expected_common <= scrub_values
+        if command in {"ls", "restore"}:
+            assert SNAPSHOT_ID in scrub_values
+        else:
+            assert SNAPSHOT_ID not in scrub_values
 
 
 def test_nonempty_prefix_refuses_before_init(
@@ -732,14 +801,7 @@ def test_daily_key_comes_from_passed_journal_not_ambient_journal(
     clock = _install_clock(monkeypatch)
     events: list[str] = []
     passwords: list[str] = []
-    _install_success_fakes(monkeypatch, clock, events)
-    success = _fake_restic(events)
-
-    def run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        passwords.append(kwargs["password"])
-        return success(args, **kwargs)
-
-    monkeypatch.setattr(probe, "run_restic", run_restic)
+    _install_success_fakes(monkeypatch, clock, events, passwords=passwords)
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
 
@@ -876,7 +938,7 @@ def test_lease_remaining_above_seventy_five_proceeds_to_spawn(
         ],
     )
     _install_empty_listing(monkeypatch, events)
-    monkeypatch.setattr(probe, "run_restic", _fake_restic(events))
+    _install_popen_harness(monkeypatch, events)
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
 
@@ -1016,16 +1078,153 @@ def test_ambiguous_storage_listing_refuses_before_init(
 
 
 @pytest.mark.parametrize(
+    (
+        "phase",
+        "result",
+        "reason",
+        "checks",
+        "expected_parse_calls",
+        "expected_consume_calls",
+    ),
+    [
+        (
+            "init",
+            _PhaseOutput(
+                returncode=1,
+                stderr=backup_runner._PROCESS_GROUP_CLEANUP_UNVERIFIED,
+            ),
+            probe_contract.REASON_CLEANUP_UNVERIFIED,
+            (),
+            0,
+            0,
+        ),
+        (
+            "init",
+            _PhaseOutput(returncode=124, stderr="timeout"),
+            probe_contract.REASON_DEADLINE_EXCEEDED,
+            (),
+            0,
+            0,
+        ),
+        (
+            "backup",
+            _PhaseOutput(returncode=1, stdout=_records(_summary_record())),
+            probe_contract.REASON_REMOTE_REJECTED,
+            probe.PRIMITIVE_CHECKS[:1],
+            0,
+            0,
+        ),
+        (
+            "backup",
+            _PhaseOutput(stdout=""),
+            probe_contract.REASON_RESPONSE_INVALID,
+            probe.PRIMITIVE_CHECKS[:1],
+            1,
+            0,
+        ),
+        (
+            "backup",
+            _PhaseOutput(stdout='{"message_type":'),
+            probe_contract.REASON_RESPONSE_INVALID,
+            probe.PRIMITIVE_CHECKS[:1],
+            1,
+            0,
+        ),
+        (
+            "backup",
+            _PhaseOutput(
+                stdout=(
+                    '{"message_type":"summary","message_type":"summary",'
+                    '"total_files_processed":1,"total_bytes_processed":4096,'
+                    f'"snapshot_id":"{SNAPSHOT_ID}"}}\n'
+                )
+            ),
+            probe_contract.REASON_RESPONSE_INVALID,
+            probe.PRIMITIVE_CHECKS[:1],
+            1,
+            0,
+        ),
+        (
+            "backup",
+            _PhaseOutput(
+                stdout=_records(
+                    _summary_record(total_bytes_processed=probe.FIXTURE_LENGTH + 1)
+                )
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+            probe.PRIMITIVE_CHECKS[:1],
+            1,
+            1,
+        ),
+    ],
+    ids=[
+        "cleanup_unverified",
+        "timeout",
+        "nonzero",
+        "empty_parse_rejection",
+        "malformed_parse_rejection",
+        "duplicate_key_parse_rejection",
+        "semantic_rejection",
+    ],
+)
+def test_spb_precedence_table_and_parser_consume_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    result: _PhaseOutput,
+    reason: str,
+    checks: tuple[str, ...],
+    expected_parse_calls: int,
+    expected_consume_calls: int,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    events: list[str] = []
+    _install_success_fakes(monkeypatch, clock, events)
+    _install_phase_restic(monkeypatch, events, phase=phase, result=result)
+    parse_calls = 0
+    consume_calls = 0
+    original_parse = backup_runner._parse_json_records
+    original_consume = backup_runner.ResticJsonRecordsResult.consume_records
+
+    def counting_parse(raw_stdout: bytes | None) -> tuple[object, ...] | None:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(raw_stdout)
+
+    def counting_consume(
+        self: backup_runner.ResticJsonRecordsResult,
+    ) -> tuple[object, ...]:
+        nonlocal consume_calls
+        consume_calls += 1
+        return original_consume(self)
+
+    monkeypatch.setattr(backup_runner, "_parse_json_records", counting_parse)
+    monkeypatch.setattr(
+        backup_runner.ResticJsonRecordsResult,
+        "consume_records",
+        counting_consume,
+    )
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    _assert_failed(outcome, reason, checks=checks)
+    assert parse_calls == expected_parse_calls
+    assert consume_calls == expected_consume_calls
+
+
+@pytest.mark.parametrize(
     "result",
     [
-        ResticResult(1, "", "denied", None, ("restic", "init")),
-        ResticResult(124, "", "timeout", None, ("restic", "init")),
+        _PhaseOutput(returncode=1, stderr="denied"),
+        _PhaseOutput(returncode=124, stderr="timeout"),
     ],
 )
 def test_init_nonzero_and_timeout_map_to_expected_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    result: ResticResult,
+    result: _PhaseOutput,
 ) -> None:
     journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
     _install_ready_tools(monkeypatch)
@@ -1116,7 +1315,7 @@ def test_backup_failure_shapes_map_to_expected_reason(
         monkeypatch,
         events,
         phase="backup",
-        result=ResticResult(returncode, stdout, "denied", None, ("restic", "backup")),
+        result=_PhaseOutput(returncode=returncode, stdout=stdout, stderr="denied"),
     )
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
@@ -1141,13 +1340,7 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         monkeypatch,
         events,
         phase="backup",
-        result=ResticResult(
-            0,
-            _records(_summary_record(SNAPSHOT_ID)),
-            "",
-            None,
-            ("restic", "backup"),
-        ),
+        result=_PhaseOutput(stdout=_records(_summary_record(SNAPSHOT_ID))),
         mutate_before_return=mutate_fixture,
     )
 
@@ -1517,19 +1710,13 @@ def test_restore_failures(
             monkeypatch,
             events,
             phase="restore",
-            result=ResticResult(
-                returncode,
-                "",
-                "denied",
-                None,
-                ("restic", "restore"),
-            ),
+            result=_PhaseOutput(returncode=returncode, stderr="denied"),
         )
     elif mutator is not None:
-        monkeypatch.setattr(
-            probe,
-            "run_restic",
-            _fake_restic(events, restore_mutator=mutator),
+        _install_popen_harness(
+            monkeypatch,
+            events,
+            restore_mutator=mutator,
         )
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
@@ -1605,7 +1792,7 @@ def test_restore_json_strictness_failures(
         monkeypatch,
         events,
         phase="restore",
-        result=ResticResult(0, stdout, "", None, ("restic", "restore")),
+        result=_PhaseOutput(stdout=stdout),
     )
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
@@ -1626,12 +1813,9 @@ def test_process_group_survivor_ambiguity_maps_to_cleanup_unverified(
         monkeypatch,
         events,
         phase="init",
-        result=ResticResult(
-            1,
-            "",
-            "process_group_cleanup_unverified",
-            None,
-            ("restic", "init"),
+        result=_PhaseOutput(
+            returncode=1,
+            stderr=backup_runner._PROCESS_GROUP_CLEANUP_UNVERIFIED,
         ),
     )
 
@@ -1702,7 +1886,7 @@ def test_canaries_absent_across_success_timeout_and_error_paths(
             monkeypatch,
             events,
             phase="init",
-            result=ResticResult(124, "", "timeout", None, ("restic", "init")),
+            result=_PhaseOutput(returncode=124, stderr="timeout"),
             captures=captures,
         )
     elif mode == "error":
