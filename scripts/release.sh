@@ -10,8 +10,11 @@
 # publisher: make publish-release RELEASE_DIR=dist/release-candidate/<version>/
 # or make publish-release-test RELEASE_DIR=dist/release-candidate/<version>/.
 #
-# DESTRUCTIVE: --candidate is fresh construction; before policy or build work it
-# deletes prior raw build/dist outputs and that version's stale payload/evidence.
+# DESTRUCTIVE: --candidate is fresh construction. If retained
+# dist/release-candidate/<version> or target/release-evidence/<version> bytes
+# already exist, it refuses before cleanup unless the matching discard
+# authorization is set. Once authorized, it deletes prior raw build/dist outputs
+# and that version's stale payload/evidence before policy or build work.
 #
 # Candidate flow:
 #   1. Verify the expected source commit, clean source tree, and core lock.
@@ -59,9 +62,11 @@ Modes:
                     attempt generates a fresh proof challenge and requires a
                     per-target receipt pair: the install/smoke proof and a
                     challenge-bound nvattest proof.
-                    DESTRUCTIVE: fresh construction deletes prior raw
-                    build/dist outputs and that version's stale payload/evidence
-                    before policy or build work begins.
+                    DESTRUCTIVE: fresh construction refuses when retained
+                    payload/evidence already exists unless the matching optional
+                    discard authorization is set. Once authorized, it deletes
+                    prior raw build/dist outputs and that version's stale
+                    payload/evidence before policy or build work begins.
   --recover VERSION SOURCE_COMMIT
                     Retained-byte-only, read-only validation of payload, ledger,
                     retained support wheels, and both per-target receipt classes
@@ -94,6 +99,15 @@ Required environment:
 
   --dry-run-linux:
     RELEASE_MODEL_PACKAGES        include or exclude
+
+Optional environment:
+  --candidate:
+    RELEASE_CANDIDATE_DISCARD_RETAINED
+                                  <version>; discard retained payload/evidence
+                                  when no v<version> tag exists
+    RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG
+                                  <version>+<tag>; discard retained
+                                  payload/evidence even when tag exists
 
 Publication entry points:
   Running with no args, --test, make release, or make release-test fails closed

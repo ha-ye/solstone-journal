@@ -1001,6 +1001,10 @@ def services(
         count("git_status")
         return ""
 
+    def git_tag_commit(_repo: Path, _version: str) -> driver.TagLookup:
+        count("git_tag_commit")
+        return driver.TagLookup(state="absent", commit=None, detail=None)
+
     def core_lock_sha256(_repo: Path) -> str:
         count("core_lock_sha256")
         return LOCK_SHA
@@ -1030,6 +1034,7 @@ def services(
     service = driver.CandidateServices(
         git_head=git_head,
         git_status=git_status,
+        git_tag_commit=git_tag_commit,
         core_lock_sha256=core_lock_sha256,
         clean_outputs=clean_outputs,
         build_local_dist=build_local_dist,

@@ -124,11 +124,16 @@ def test_candidate_validates_build_host_before_destructive_cleanup() -> None:
     end = driver_text.index("\ndef ", start + 1)
     run_candidate_body = driver_text[start:end]
     default_services_call = "default_services("
+    retained_guard_call = "_retained_candidate_presence("
     cleanup_call = ".clean_outputs("
 
     assert default_services_call in run_candidate_body
+    assert retained_guard_call in run_candidate_body
     assert cleanup_call in run_candidate_body
     assert run_candidate_body.index(default_services_call) < run_candidate_body.index(
+        cleanup_call
+    )
+    assert run_candidate_body.index(retained_guard_call) < run_candidate_body.index(
         cleanup_call
     )
     with pytest.raises(BuildHostError) as exc:

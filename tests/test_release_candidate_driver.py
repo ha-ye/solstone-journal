@@ -475,6 +475,25 @@ def _assert_service_call_counts_zero(services: driver.CandidateServices) -> None
     assert counts == {name: 0 for name in counts}
 
 
+_GUARD_PRECEDING_SERVICE_CALLS = frozenset(
+    {"git_head", "git_status", "core_lock_sha256", "git_tag_commit"}
+)
+
+
+def _assert_no_post_guard_service_calls(
+    services: driver.CandidateServices,
+) -> None:
+    counts = dict(services.call_counts)
+    assert counts
+    assert counts.get("clean_outputs", 0) == 0
+    unexpected = {
+        name: count
+        for name, count in counts.items()
+        if name not in _GUARD_PRECEDING_SERVICE_CALLS and count != 0
+    }
+    assert unexpected == {}
+
+
 def _assert_recovery_failure_preserves_retained_tree(
     root: Path,
     report: driver.CandidateReport,
@@ -618,6 +637,74 @@ def _write_cleanup_preflight_sentinels(
 
 def _reserved_candidate_path(root: Path) -> Path:
     return root / "dist" / driver.RESERVED_CANDIDATE_DIRNAME
+
+
+def _retained_current_paths(root: Path) -> tuple[Path, Path]:
+    release_dir, _payload_staging, evidence_dir, _evidence_staging = _ready_paths(root)
+    return release_dir, evidence_dir
+
+
+def _write_retained_marker(path: Path, label: str) -> Path:
+    marker = path / "sentinel" / f"{label}.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(f"retained {label}", encoding="utf-8")
+    return marker
+
+
+def _seed_retained_current_paths(
+    root: Path, *, release: bool = True, evidence: bool = True
+) -> tuple[Path | None, Path | None]:
+    release_dir, evidence_dir = _retained_current_paths(root)
+    release_marker = _write_retained_marker(release_dir, "payload") if release else None
+    evidence_marker = (
+        _write_retained_marker(evidence_dir, "evidence") if evidence else None
+    )
+    return release_marker, evidence_marker
+
+
+def _tag_lookup_services(
+    root: Path,
+    state: driver.TagLookupState,
+    *,
+    commit: str | None = None,
+    detail: str | None = None,
+) -> driver.CandidateServices:
+    services = _services(root)
+
+    def git_tag_commit(_repo: Path, _version: str) -> driver.TagLookup:
+        services.call_counts["git_tag_commit"] = (
+            services.call_counts.get("git_tag_commit", 0) + 1
+        )
+        return driver.TagLookup(state=state, commit=commit, detail=detail)
+
+    replaced = replace(services, git_tag_commit=git_tag_commit)
+    object.__setattr__(replaced, "call_counts", services.call_counts)
+    object.__setattr__(replaced, "reset_call_counts", services.reset_call_counts)
+    return replaced
+
+
+def _assert_retained_snapshots_unchanged(
+    *,
+    root: Path,
+    release_dir: Path,
+    evidence_dir: Path,
+    before_release: tuple[TreeSnapshotEntry, ...],
+    before_evidence: tuple[TreeSnapshotEntry, ...],
+    markers: Sequence[Path | None],
+) -> None:
+    after_release = _structural_snapshot(release_dir)
+    after_evidence = _structural_snapshot(evidence_dir)
+    marker_status = ", ".join(
+        f"{marker.relative_to(root).as_posix()} exists={marker.exists()}"
+        for marker in markers
+        if marker is not None
+    )
+    assert (after_release, after_evidence) == (before_release, before_evidence), (
+        "retained snapshots changed; "
+        f"{marker_status}; "
+        f"before_release={before_release!r}; after_release={after_release!r}; "
+        f"before_evidence={before_evidence!r}; after_evidence={after_evidence!r}"
+    )
 
 
 def _write_expected_local_dist(root: Path, *, include_models: bool) -> None:
@@ -1194,6 +1281,276 @@ def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
         source_commit=SOURCE_COMMIT,
     )
     assert recovered.heading == "retained-candidate-valid"
+
+
+def test_candidate_refuses_published_retained_payload_and_evidence_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    release_dir, evidence_dir = _retained_current_paths(root)
+    markers = _seed_retained_current_paths(root)
+    before_release = _structural_snapshot(release_dir)
+    before_evidence = _structural_snapshot(evidence_dir)
+    services = _tag_lookup_services(root, "present", commit=SOURCE_COMMIT)
+    caught: driver.DriverError | None = None
+
+    try:
+        driver.run_candidate(root, _env(), services)
+    except driver.DriverError as exc:
+        caught = exc
+
+    _assert_retained_snapshots_unchanged(
+        root=root,
+        release_dir=release_dir,
+        evidence_dir=evidence_dir,
+        before_release=before_release,
+        before_evidence=before_evidence,
+        markers=markers,
+    )
+    assert caught is not None
+    failure = caught.failures[0]
+    assert failure.error == "published retained release evidence would be discarded"
+    assert failure.expected == (
+        "no retained release-candidate payload/evidence for published tag, or "
+        "RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=<version>+<tag>"
+    )
+    assert failure.actual == (
+        f"version {version}; tag v{version} -> {SOURCE_COMMIT}; "
+        "present retained paths: "
+        f"dist/release-candidate/{version}, target/release-evidence/{version}"
+    )
+    assert failure.repair == (
+        "set "
+        f"{driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}={version}+v{version} "
+        f"to discard retained payload/evidence for published tag v{version}"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_allows_unpublished_retained_evidence_with_soft_authorization(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root)
+    services = _services(root)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    failure = exc.value.failures[0]
+    assert failure.error == "retained release evidence would be discarded"
+    assert failure.actual == (
+        f"working-tree version {version}; colliding retained paths: "
+        f"dist/release-candidate/{version}, target/release-evidence/{version}; "
+        "absent retained paths: <none>"
+    )
+    _assert_no_post_guard_service_calls(services)
+    _reset_service_call_counts(services)
+    env = _env()
+    env[driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV] = version
+
+    report = driver.run_candidate(root, env, services)
+
+    assert report.heading == "candidate-proven"
+    assert services.call_counts["clean_outputs"] == 1
+
+
+def test_candidate_refuses_published_retained_payload_only(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root, evidence=False)
+    services = _tag_lookup_services(root, "present", commit=SOURCE_COMMIT)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    failure = exc.value.failures[0]
+    assert failure.error == "published retained release evidence would be discarded"
+    assert failure.actual == (
+        f"version {version}; tag v{version} -> {SOURCE_COMMIT}; "
+        f"present retained paths: dist/release-candidate/{version}"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_refuses_published_retained_evidence_only(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root, release=False)
+    services = _tag_lookup_services(root, "present", commit=SOURCE_COMMIT)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    failure = exc.value.failures[0]
+    assert failure.error == "published retained release evidence would be discarded"
+    assert failure.actual == (
+        f"version {version}; tag v{version} -> {SOURCE_COMMIT}; "
+        f"present retained paths: target/release-evidence/{version}"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_refuses_discard_authorization_for_other_version(
+    tmp_path: Path,
+) -> None:
+    version = checker._current_version()
+    cases = (
+        (
+            "soft",
+            driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV,
+            PRIOR_RETAINED_VERSION,
+            None,
+            (
+                f"set {driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}={version} "
+                f"or unset {driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}"
+            ),
+        ),
+        (
+            "hard",
+            driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV,
+            f"{PRIOR_RETAINED_VERSION}+v{PRIOR_RETAINED_VERSION}",
+            SOURCE_COMMIT,
+            (
+                f"set {driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}="
+                f"{version}+v{version} "
+                f"or unset {driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}"
+            ),
+        ),
+    )
+    for name, variable, value, commit, repair in cases:
+        root = _repo(tmp_path / name)
+        _seed_retained_current_paths(root)
+        services = (
+            _tag_lookup_services(root, "present", commit=commit)
+            if commit is not None
+            else _services(root)
+        )
+        env = _env()
+        env[variable] = value
+
+        with pytest.raises(driver.DriverError) as exc:
+            driver.run_candidate(root, env, services)
+
+        failure = exc.value.failures[0]
+        assert (
+            failure.error
+            == "release candidate discard authorization names a different version"
+        )
+        assert failure.expected == (
+            f"{variable}=<version> matching working-tree version {version}"
+        )
+        assert failure.actual == (
+            f"{variable}={value}; authorization version {PRIOR_RETAINED_VERSION}; "
+            f"working-tree version {version}"
+        )
+        assert failure.repair == repair
+        _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_soft_authorization_does_not_clear_published_tag_tier(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root)
+    services = _tag_lookup_services(root, "present", commit=SOURCE_COMMIT)
+    env = _env()
+    env[driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV] = version
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, env, services)
+
+    assert exc.value.failures[0].error == (
+        "published retained release evidence would be discarded"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_hard_authorization_satisfies_unpublished_soft_tier(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root)
+    services = _services(root)
+    env = _env()
+    env[driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV] = f"{version}+v{version}"
+
+    report = driver.run_candidate(root, env, services)
+
+    assert report.heading == "candidate-proven"
+    assert services.call_counts["clean_outputs"] == 1
+
+
+def test_candidate_refuses_undeterminable_retained_path_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    release_dir, _evidence_dir = _retained_current_paths(root)
+    release_dir.parent.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def lstat(path: Path) -> os.stat_result:
+        if path == release_dir:
+            raise PermissionError("denied")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    services = _services(root)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    failure = exc.value.failures[0]
+    assert failure.error == "retained release evidence state is undeterminable"
+    assert failure.actual == (
+        f"retained path check could not inspect "
+        f"dist/release-candidate/{version}: PermissionError"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_refuses_undeterminable_tag_lookup(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    version = checker._current_version()
+    _seed_retained_current_paths(root)
+    services = _tag_lookup_services(
+        root,
+        "undeterminable",
+        detail="git rev-parse exit 128",
+    )
+    env = _env()
+    env[driver.RELEASE_CANDIDATE_DISCARD_RETAINED_ENV] = version
+    env[driver.RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV] = f"{version}+v{version}"
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, env, services)
+
+    failure = exc.value.failures[0]
+    assert failure.error == "retained release evidence state is undeterminable"
+    assert failure.actual == (
+        f"tag lookup for v{version} was undeterminable: git rev-parse exit 128"
+    )
+    _assert_no_post_guard_service_calls(services)
+
+
+def test_candidate_default_fixture_refuses_retained_path_without_authorization(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    _seed_retained_current_paths(root, evidence=False)
+    services = _services(root)
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver.run_candidate(root, _env(), services)
+
+    assert exc.value.failures[0].error == "retained release evidence would be discarded"
+    assert services.call_counts["git_tag_commit"] == 1
+    _assert_no_post_guard_service_calls(services)
 
 
 def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:

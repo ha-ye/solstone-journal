@@ -156,10 +156,13 @@ MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
 SPEAKERS_ANALYZE_WORKSPACE_PACKAGE = "solstone-core-speakers-analyze"
 RESERVED_CANDIDATE_DIRNAME = "release-candidate"
+RELEASE_CANDIDATE_DISCARD_RETAINED_ENV = "RELEASE_CANDIDATE_DISCARD_RETAINED"
+RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV = "RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG"
 
 DistPreflightOperation = Literal["cleanup", "inventory"]
 DistState = Literal["missing", "directory", "unsafe"]
 ReservedState = Literal["unchecked", "absent", "directory", "unsafe"]
+TagLookupState = Literal["present", "absent", "undeterminable"]
 
 
 @dataclass(frozen=True)
@@ -186,9 +189,27 @@ class DryRunPlan:
 
 
 @dataclass(frozen=True)
+class TagLookup:
+    state: TagLookupState
+    commit: str | None
+    detail: str | None
+
+
+@dataclass(frozen=True)
+class RetainedCandidatePresence:
+    root: Path
+    release_dir: Path
+    evidence_dir: Path
+    present_paths: tuple[Path, ...]
+    absent_paths: tuple[Path, ...]
+    failures: tuple[Failure, ...]
+
+
+@dataclass(frozen=True)
 class CandidateServices:
     git_head: Callable[[Path], str]
     git_status: Callable[[Path], str]
+    git_tag_commit: Callable[[Path, str], TagLookup]
     core_lock_sha256: Callable[[Path], str]
     clean_outputs: Callable[[Path, str], None]
     build_local_dist: Callable[[Path, bool], None]
@@ -354,9 +375,218 @@ def _default_git_status(root: Path) -> str:
     )
 
 
+def _default_git_tag_commit(root: Path, version: str) -> TagLookup:
+    result = subprocess.run(
+        [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/tags/v{version}^{{}}",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return TagLookup(state="present", commit=result.stdout.strip(), detail=None)
+    if result.returncode == 1:
+        return TagLookup(state="absent", commit=None, detail=None)
+    return TagLookup(
+        state="undeterminable",
+        commit=None,
+        detail=f"git rev-parse exit {result.returncode}",
+    )
+
+
 def _default_core_lock_sha256(root: Path) -> str:
     digest, _bytes = file_sha256_size(root / "core" / "Cargo.lock")
     return digest
+
+
+def _retained_relative(root: Path, path: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _format_retained_paths(root: Path, paths: Sequence[Path]) -> str:
+    if not paths:
+        return "<none>"
+    return ", ".join(_retained_relative(root, path) for path in paths)
+
+
+def _undeterminable_retained_state_failure(version: str, actual: str) -> Failure:
+    return _failure(
+        "retained release evidence state is undeterminable",
+        expected=(
+            "retained release-candidate payload/evidence and published tag state "
+            "can be determined before cleanup"
+        ),
+        actual=actual,
+        repair=(
+            "fix the unreadable retained release state; "
+            f"{RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}={version} and "
+            f"{RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}={version}+v{version} "
+            "do not apply to undeterminable state"
+        ),
+    )
+
+
+def _retained_candidate_presence(root: Path, version: str) -> RetainedCandidatePresence:
+    release_dir = root / "dist" / RESERVED_CANDIDATE_DIRNAME / version
+    evidence_dir = root / "target" / "release-evidence" / version
+    present: list[Path] = []
+    absent: list[Path] = []
+    failures: list[Failure] = []
+    for path in (release_dir, evidence_dir):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            absent.append(path)
+        except OSError as exc:
+            failures.append(
+                _undeterminable_retained_state_failure(
+                    version,
+                    (
+                        "retained path check could not inspect "
+                        f"{_retained_relative(root, path)}: {type(exc).__name__}"
+                    ),
+                )
+            )
+        else:
+            present.append(path)
+    return RetainedCandidatePresence(
+        root=root,
+        release_dir=release_dir,
+        evidence_dir=evidence_dir,
+        present_paths=tuple(present),
+        absent_paths=tuple(absent),
+        failures=tuple(failures),
+    )
+
+
+def _authorization_version(value: str) -> str:
+    return value.split("+", 1)[0]
+
+
+def _authorization_mismatch_failure(
+    *,
+    variable: str,
+    value: str,
+    stated_version: str,
+    version: str,
+) -> Failure:
+    if variable == RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV:
+        repair = (
+            f"set {RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}={version}+v{version} "
+            f"or unset {RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}"
+        )
+    else:
+        repair = (
+            f"set {RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}={version} "
+            f"or unset {RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}"
+        )
+    return _failure(
+        "release candidate discard authorization names a different version",
+        expected=f"{variable}=<version> matching working-tree version {version}",
+        actual=(
+            f"{variable}={value}; authorization version {stated_version}; "
+            f"working-tree version {version}"
+        ),
+        repair=repair,
+    )
+
+
+def _authorization_mismatch_failures(
+    env: Mapping[str, str], version: str
+) -> list[Failure]:
+    failures: list[Failure] = []
+    for variable in (
+        RELEASE_CANDIDATE_DISCARD_RETAINED_ENV,
+        RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV,
+    ):
+        value = env.get(variable, "")
+        if not value:
+            continue
+        stated_version = _authorization_version(value)
+        if stated_version != version:
+            failures.append(
+                _authorization_mismatch_failure(
+                    variable=variable,
+                    value=value,
+                    stated_version=stated_version,
+                    version=version,
+                )
+            )
+    return failures
+
+
+def _retained_candidate_authorization_failures(
+    presence: RetainedCandidatePresence,
+    tag_lookup: TagLookup,
+    env: Mapping[str, str],
+    version: str,
+) -> list[Failure]:
+    if tag_lookup.state == "undeterminable":
+        detail = tag_lookup.detail or "git rev-parse exit unknown"
+        return [
+            _undeterminable_retained_state_failure(
+                version,
+                f"tag lookup for v{version} was undeterminable: {detail}",
+            )
+        ]
+    failures = _authorization_mismatch_failures(env, version)
+    if failures:
+        return failures
+    hard_value = f"{version}+v{version}"
+    hard_authorized = (
+        env.get(RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV, "") == hard_value
+    )
+    if tag_lookup.state == "present":
+        if hard_authorized:
+            return []
+        commit = tag_lookup.commit or "<missing>"
+        return [
+            _failure(
+                "published retained release evidence would be discarded",
+                expected=(
+                    "no retained release-candidate payload/evidence for published tag, "
+                    "or RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=<version>+<tag>"
+                ),
+                actual=(
+                    f"version {version}; tag v{version} -> {commit}; "
+                    "present retained paths: "
+                    f"{_format_retained_paths(presence.root, presence.present_paths)}"
+                ),
+                repair=(
+                    "set "
+                    f"{RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}={version}+v{version} "
+                    f"to discard retained payload/evidence for published tag v{version}"
+                ),
+            )
+        ]
+    soft_authorized = env.get(RELEASE_CANDIDATE_DISCARD_RETAINED_ENV, "") == version
+    if soft_authorized or hard_authorized:
+        return []
+    return [
+        _failure(
+            "retained release evidence would be discarded",
+            expected=(
+                "no retained release-candidate payload/evidence, or "
+                "RELEASE_CANDIDATE_DISCARD_RETAINED=<version>"
+            ),
+            actual=(
+                f"working-tree version {version}; colliding retained paths: "
+                f"{_format_retained_paths(presence.root, presence.present_paths)}; "
+                "absent retained paths: "
+                f"{_format_retained_paths(presence.root, presence.absent_paths)}"
+            ),
+            repair=(
+                f"set {RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}={version} "
+                "to discard retained payload/evidence for this unpublished candidate"
+            ),
+        )
+    ]
 
 
 def _is_missing(path: Path) -> bool:
@@ -1082,6 +1312,7 @@ def default_services(env: Mapping[str, str] | None = None) -> CandidateServices:
     return CandidateServices(
         git_head=_default_git_head,
         git_status=_default_git_status,
+        git_tag_commit=_default_git_tag_commit,
         core_lock_sha256=_default_core_lock_sha256,
         clean_outputs=_default_clean_outputs,
         build_local_dist=_default_build_local_dist,
@@ -4028,6 +4259,19 @@ def run_candidate(
         expected_lock_sha256=expected_lock,
         services=svc,
     )
+    retained_presence = _retained_candidate_presence(root, version)
+    if retained_presence.failures:
+        raise DriverError(retained_presence.failures)
+    if retained_presence.present_paths:
+        tag_lookup = svc.git_tag_commit(root, version)
+        retained_failures = _retained_candidate_authorization_failures(
+            retained_presence,
+            tag_lookup,
+            env,
+            version,
+        )
+        if retained_failures:
+            raise DriverError(retained_failures)
     svc.clean_outputs(root, version)
     policy_run = svc.prepare_policy(root, env)
     coordinator_tool_evidence = _validate_coordinator_tool_evidence(
