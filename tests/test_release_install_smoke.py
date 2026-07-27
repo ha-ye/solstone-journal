@@ -181,7 +181,7 @@ def _observation(
         path
         for path in install_paths
         if path.name.startswith("solstone_core_speakers_analyze-")
-        and "manylinux_2_27_x86_64" in path.name
+        and smoke.SPEAKERS_ANALYZE_LINUX_X86_64_TAG in path.name
     ]
     helper_bytes = b""
     if helper_wheels:

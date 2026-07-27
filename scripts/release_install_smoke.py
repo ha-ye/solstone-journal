@@ -36,6 +36,14 @@ from scripts.check_wheel_contents import (
 )
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
+from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
+
+# Derived, never restated: the helper's declared coverage lives in
+# solstone/think/probe.py. A literal here would keep selecting the old
+# filename if the measured floor ever moves, silently proving nothing.
+SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
+    ("linux", "x86_64")
+]
 
 PROOF_TARGETS: tuple[str, ...] = (
     "linux-x86_64-musl",
@@ -253,7 +261,10 @@ def _select_names_for_target(target: str, names: Sequence[str]) -> tuple[str, ..
         if not name.endswith(".whl"):
             continue
         if name.startswith("solstone_core_speakers_analyze-"):
-            if target == "linux-x86_64-musl" and "manylinux_2_27_x86_64" in name:
+            if (
+                target == "linux-x86_64-musl"
+                and SPEAKERS_ANALYZE_LINUX_X86_64_TAG in name
+            ):
                 selected.append(name)
             continue
         if name.startswith("solstone_core-"):

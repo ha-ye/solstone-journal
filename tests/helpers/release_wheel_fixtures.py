@@ -13,6 +13,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import scripts.check_wheel_contents as checker
+from solstone.think.probe import (
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
+)
+
+# Derived rather than written out: the fixture's default tag should track
+# the helper's declared coverage. Callers still pass deliberately wrong
+# tags for negative tests.
+SPEAKERS_ANALYZE_DEFAULT_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
+    ("linux", "x86_64")
+]
 
 ELF_HEADER_SIZE = 64
 ELF_PROGRAM_HEADER_SIZE = 56
@@ -221,7 +231,7 @@ def write_core_wheel(
 def write_speakers_analyze_wheel(
     path: Path,
     *,
-    tag: str = "manylinux_2_27_x86_64",
+    tag: str = SPEAKERS_ANALYZE_DEFAULT_TAG,
     version: str = "1.2.3",
     binary: bytes | None = None,
     library: bytes = b"fixture libonnxruntime.so.1 GLIBC_2.27\n",

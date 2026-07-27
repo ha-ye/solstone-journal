@@ -43,6 +43,13 @@ from scripts.release_install_smoke import (
     target_install_paths_from_ledger,
     write_install_proof,
 )
+from solstone.think.probe import (
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
+)
+
+SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
+    ("linux", "x86_64")
+]
 from tests.helpers.release_wheel_fixtures import (
     ROOT_LAUNCHER_BYTES,
     minimal_elf,
@@ -187,10 +194,12 @@ def _write_linux_core_wheels(dist_dir: Path) -> None:
 
 
 def _write_linux_speakers_analyze_wheels(dist_dir: Path) -> None:
-    for tag, machine in (
-        ("manylinux_2_27_x86_64", "x86_64"),
-        ("manylinux_2_27_aarch64", "aarch64"),
-    ):
+    # Derived from probe so these fixtures keep matching what the release code
+    # selects; a literal here would drift silently if the measured floor moved.
+    for platform_tuple, tag in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.items():
+        system, machine = platform_tuple
+        if system != "linux":
+            continue
         write_speakers_analyze_wheel(
             dist_dir,
             tag=tag,
@@ -435,7 +444,7 @@ def _proof_observation(
         path
         for path in install_paths
         if path.name.startswith("solstone_core_speakers_analyze-")
-        and "manylinux_2_27_x86_64" in path.name
+        and SPEAKERS_ANALYZE_LINUX_X86_64_TAG in path.name
     ]
     if helper_wheels:
         with zipfile.ZipFile(helper_wheels[0]) as wheel:

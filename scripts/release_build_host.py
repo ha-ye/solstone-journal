@@ -26,6 +26,14 @@ from scripts.check_rust_release_manifest import (
 )
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
+from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
+
+# Derived, never restated: the helper's declared coverage lives in
+# solstone/think/probe.py. A literal here would keep selecting the old
+# filename if the measured floor ever moves.
+SPEAKERS_ANALYZE_MACOS_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
+    ("darwin", "arm64")
+]
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 IdFactory = Callable[[], str]
@@ -531,7 +539,7 @@ def _expected_macos_wheel_names() -> tuple[str, str, str]:
         item
         for item in expected_wheels
         if item.startswith("solstone_core_speakers_analyze-")
-        and "macosx_14_0_arm64" in item
+        and SPEAKERS_ANALYZE_MACOS_TAG in item
     )
     return expected_root, expected_core, expected_speakers_analyze
 

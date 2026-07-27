@@ -33,6 +33,11 @@ REQUIRE_RUSTUP := command -v rustup >/dev/null 2>&1 || { echo "rustup is require
 # are therefore the checked-in developer path for the helper's GLIBC_2.27 floor.
 SPEAKERS_ANALYZE_LINUX_X86_64_MATURIN_ARGS := --locked --zig --compatibility manylinux_2_27 --auditwheel skip --target x86_64-unknown-linux-gnu
 SPEAKERS_ANALYZE_LINUX_AARCH64_MATURIN_ARGS := --locked --zig --compatibility manylinux_2_27 --auditwheel skip --target aarch64-unknown-linux-gnu
+# Derived, never written out: the helper's declared coverage lives in
+# solstone/think/probe.py, which is stdlib-only precisely so it imports here
+# without a venv. A literal would keep globbing the old filename if the
+# measured macOS minimum ever moves.
+SPEAKERS_ANALYZE_MACOS_TAG := $(shell PYTHONPATH=. python3 -c 'from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS as t; print(t["darwin", "arm64"])')
 # Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
@@ -396,12 +401,12 @@ wheel-macos: parakeet-helper
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
 	python3 -m scripts.record_macos_native_wheel --role core --wheel "$$CORE_MAC_WHEEL" --signing-facts "$$CORE_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-core.json
-	@echo "==> staging macosx_14_0_arm64 solstone-core-speakers-analyze runtime"
+	@echo "==> staging $(SPEAKERS_ANALYZE_MACOS_TAG) solstone-core-speakers-analyze runtime"
 	python3 scripts/stage_speakers_analyze_runtime.py --target macos-arm64
-	@echo "==> building macosx_14_0_arm64 solstone-core-speakers-analyze wheel"
+	@echo "==> building $(SPEAKERS_ANALYZE_MACOS_TAG) solstone-core-speakers-analyze wheel"
 	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core-speakers-analyze --wheel
 	@echo "==> signing and notarizing solstone-core-speakers-analyze and bundled ONNX Runtime dylib"
-	@SPEAKERS_MAC_WHEEL=$$(ls dist/solstone_core_speakers_analyze-*-macosx_14_0_arm64.whl); \
+	@SPEAKERS_MAC_WHEEL=$$(ls dist/solstone_core_speakers_analyze-*-$(SPEAKERS_ANALYZE_MACOS_TAG).whl); \
 	SPEAKERS_FACTS=$$(mktemp); \
 	SPEAKERS_TMP=$$(mktemp -d); \
 	trap 'rm -rf "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS"' EXIT; \

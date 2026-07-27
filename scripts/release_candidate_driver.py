@@ -96,6 +96,7 @@ from scripts.release_tool_pins import (
     RUSTC_RELEASE_PIN,
     fixture_lane_tool_evidence,
 )
+from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -118,6 +119,12 @@ SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS = (
     "--locked --zig --compatibility manylinux_2_27 --auditwheel skip "
     "--target aarch64-unknown-linux-gnu"
 )
+# Derived, never restated: the helper's declared coverage lives in
+# solstone/think/probe.py. A literal here would keep selecting the old
+# filename if the measured floor ever moves.
+SPEAKERS_ANALYZE_MACOS_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
+    ("darwin", "arm64")
+]
 ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
@@ -1163,7 +1170,7 @@ def _macos_wheel_role(path: Path) -> str | None:
         item
         for item in expected_wheels
         if item.startswith("solstone_core_speakers_analyze-")
-        and "macosx_14_0_arm64" in item
+        and SPEAKERS_ANALYZE_MACOS_TAG in item
     )
     if name == expected_core:
         return "core"

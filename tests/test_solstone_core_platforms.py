@@ -13,6 +13,7 @@ import solstone.think.probe as probe
 from solstone.think.probe import (
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_MARKERS,
+    SOLSTONE_CORE_PLATFORM_TAGS,
     SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS,
     SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
     SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
@@ -91,16 +92,46 @@ def test_core_pin_markers_match_probe_covered_platforms() -> None:
 
 
 def test_speakers_analyze_platform_tags_are_probe_declared_once() -> None:
+    # The covered-platform tuples ARE the declaration, so pinning them is the
+    # point of the test. The tags are not pinned as literals: a test that
+    # restates the string the code produced would pass whether or not the tag
+    # is honest. Assert the properties that would actually catch a defect.
     assert SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS == (
         ("linux", "x86_64"),
         ("linux", "aarch64"),
         ("darwin", "arm64"),
     )
-    assert SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS == {
-        ("linux", "x86_64"): "manylinux_2_27_x86_64",
-        ("linux", "aarch64"): "manylinux_2_27_aarch64",
-        ("darwin", "arm64"): "macosx_14_0_arm64",
-    }
+
+    # The dict cannot drift from the derivation function it is built from.
+    assert set(SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS) == set(
+        SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+    )
+    for platform_tuple, tag in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.items():
+        assert tag == probe._solstone_core_speakers_analyze_platform_tag(platform_tuple)
+
+    # Copying the core's Linux tag is the specific defect this coverage set
+    # exists to prevent: the core is static musl with no glibc floor, the
+    # helper dynamically links a glibc-only ONNX Runtime.
+    for platform_tuple in SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS:
+        system, _machine = platform_tuple
+        if system != "linux":
+            continue
+        assert (
+            SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[platform_tuple]
+            != SOLSTONE_CORE_PLATFORM_TAGS[platform_tuple]
+        )
+
+    # The Linux floor must not understate the measured GLIBC_2.27 requirement
+    # of the bundled ONNX Runtime library. Parsed, not string-compared, so a
+    # future floor rise stays green while a regression fails.
+    for platform_tuple, tag in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.items():
+        system, machine = platform_tuple
+        if system != "linux":
+            continue
+        match = re.fullmatch(rf"manylinux_(\d+)_(\d+)_{re.escape(machine)}", tag)
+        assert match is not None, tag
+        assert (int(match.group(1)), int(match.group(2))) >= (2, 27)
+
     assert not hasattr(probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS")
     assert not hasattr(
         probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_UNSUPPORTED_PLATFORM_MARKER"
