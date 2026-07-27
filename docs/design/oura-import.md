@@ -1,7 +1,7 @@
 # Oura API Lane — Design
 
 - **Date:** 2026-07-05 (overnight lane, owner-authorized)
-- **Repo:** `/Users/jack/solpbc/solstone`, branch `health-imports-phase1`
+- **Repo:** `solstone`, branch `health-imports-phase1`
 - **Companion skeleton:** `solstone/think/importers/oura.py` + `tests/test_oura_importer.py` + synthetic fixtures under `tests/fixtures/importers/health/oura_synthetic/` (landed with this doc; see §9)
 - **Hard rules honored:** no network code anywhere (a test greps the module for network-capable imports), no OAuth against real Oura, no live-journal writes, no credentials or token files, synthetic fixtures only. The first live OAuth authorization is **OWNER-PRESENT-ONLY** (§8, phase O2).
 - **Copy canon:** §13 of the repo guide. Oura's numbers render as attributed facts — "Readiness 82 · Oura's score" — never our gloss, never medical interpretation.
