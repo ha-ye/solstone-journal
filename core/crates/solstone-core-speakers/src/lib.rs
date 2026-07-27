@@ -3,6 +3,7 @@
 
 mod filterbank;
 mod segmentation;
+mod statements;
 
 use std::error::Error;
 use std::fmt;
@@ -22,6 +23,10 @@ pub use segmentation::{
     SPEAKER_EVIDENCE_SINGLE_MAX, SpeakerEvidence, SpeakerEvidenceDecision,
     SpeakerSegmentationError, SpeakerWindowStats, compute_speaker_window_stats,
     decide_speaker_evidence, run_pyannote_segmentation_pass,
+};
+pub use statements::{
+    AdmittedStatement, MIN_STATEMENT_DURATION_S, StatementAdmissionResult, StatementSpan,
+    admit_statement_features,
 };
 
 #[derive(Debug, Clone, PartialEq)]

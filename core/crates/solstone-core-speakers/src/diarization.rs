@@ -114,6 +114,13 @@ pub struct SentenceTiming {
     pub end_s: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterEmbeddingResult {
+    pub labels: Vec<usize>,
+    pub silhouette_k: Option<usize>,
+    pub effective_k: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Merge {
     left: usize,
@@ -227,27 +234,38 @@ pub fn cluster_embeddings(
     rows: usize,
     cols: usize,
     n_speakers: Option<usize>,
-) -> Result<Vec<usize>, DiarizationError> {
+) -> Result<ClusterEmbeddingResult, DiarizationError> {
     validate_embedding_shape(embeddings, rows, cols)?;
     if rows == 0 {
-        return Ok(Vec::new());
-    }
-
-    let upper = if rows > 1 { rows - 1 } else { 1 };
-    if upper <= 1 {
-        return Ok(vec![0; rows]);
+        // Python has no rows==0 guard here; its behavior is accidental. The
+        // analyzer short-circuits before clustering when no intervals exist, so
+        // this path only protects direct callers and tests.
+        return Ok(ClusterEmbeddingResult {
+            labels: Vec::new(),
+            silhouette_k: None,
+            effective_k: None,
+        });
     }
 
     let normalized = normalize_embedding_rows(embeddings, rows, cols)?;
-    let requested_k = match n_speakers {
-        Some(k) => k,
-        None => select_k_for_normalized_rows(&normalized, rows, cols)?,
+    let (requested_k, silhouette_k) = match n_speakers {
+        Some(k) => (k, None),
+        None => {
+            let selected = select_k_for_normalized_rows(&normalized, rows, cols)?;
+            (selected, Some(selected))
+        }
     };
     let k = clamp_speaker_count(requested_k, rows);
-    if k <= 1 {
-        return Ok(vec![0; rows]);
-    }
-    ahc_labels_from_normalized_rows(&normalized, rows, cols, k)
+    let labels = if k <= 1 {
+        vec![0; rows]
+    } else {
+        ahc_labels_from_normalized_rows(&normalized, rows, cols, k)?
+    };
+    Ok(ClusterEmbeddingResult {
+        labels,
+        silhouette_k,
+        effective_k: Some(k),
+    })
 }
 
 pub fn normalize_embedding_rows(
@@ -839,9 +857,9 @@ mod tests {
             0.01, 0.99,
         ];
 
-        let labels = cluster_embeddings(&embeddings, 6, 3, Some(3)).expect("cluster labels");
+        let result = cluster_embeddings(&embeddings, 6, 3, Some(3)).expect("cluster labels");
 
-        assert_same_partition(&labels, &[0, 0, 1, 1, 2, 2]);
+        assert_same_partition(&result.labels, &[0, 0, 1, 1, 2, 2]);
     }
 
     #[test]
@@ -898,9 +916,13 @@ mod tests {
             0.03, 0.97, 0.7, 0.7, 0.0, 0.7, 0.0, 0.7,
         ];
 
-        let mut previous = cluster_embeddings(&embeddings, 8, 3, Some(2)).expect("k=2");
+        let mut previous = cluster_embeddings(&embeddings, 8, 3, Some(2))
+            .expect("k=2")
+            .labels;
         for k in 3..=5 {
-            let current = cluster_embeddings(&embeddings, 8, 3, Some(k)).expect("labels");
+            let current = cluster_embeddings(&embeddings, 8, 3, Some(k))
+                .expect("labels")
+                .labels;
             assert!(partition_refines(&current, &previous));
             previous = current;
         }
@@ -950,28 +972,54 @@ mod tests {
         let embeddings = [0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0];
 
         let normalized = normalize_embedding_rows(&embeddings, 3, 2).expect("normalized");
-        let labels = cluster_embeddings(&embeddings, 3, 2, Some(2)).expect("labels");
+        let result = cluster_embeddings(&embeddings, 3, 2, Some(2)).expect("labels");
 
         assert_eq!(&normalized[0..2], &[0.0, 0.0]);
-        assert_eq!(labels.len(), 3);
+        assert_eq!(result.labels.len(), 3);
     }
 
     #[test]
-    fn empty_and_single_embedding_inputs_return_all_zero_labels_without_clustering() {
+    fn cluster_embeddings_reports_selection_for_zero_rows() {
         // Fixture cannot supply this because it has only populated clustering
         // curves, not empty or single-row degenerate inputs.
         let empty = cluster_embeddings(&[], 0, 2, None).expect("empty labels");
-        let single = cluster_embeddings(&[1.0_f32, 0.0], 1, 2, None).expect("single labels");
-        let two_rows =
-            cluster_embeddings(&[1.0_f32, 0.0, 0.0, 1.0], 2, 2, None).expect("two-row labels");
 
-        assert!(empty.is_empty());
-        assert_eq!(single, vec![0]);
-        assert_eq!(two_rows, vec![0, 0]);
+        assert_eq!(empty.labels, Vec::<usize>::new());
+        assert_eq!(empty.silhouette_k, None);
+        assert_eq!(empty.effective_k, None);
     }
 
     #[test]
-    fn requested_speaker_count_uses_python_clamp_before_clustering() {
+    fn cluster_embeddings_reports_selection_for_one_row() {
+        let result = cluster_embeddings(&[1.0_f32, 0.0], 1, 2, None).expect("single labels");
+
+        assert_eq!(result.labels, vec![0]);
+        assert_eq!(result.silhouette_k, Some(1));
+        assert_eq!(result.effective_k, Some(1));
+    }
+
+    #[test]
+    fn cluster_embeddings_reports_selection_for_two_rows() {
+        let result =
+            cluster_embeddings(&[1.0_f32, 0.0, 0.0, 1.0], 2, 2, None).expect("two-row labels");
+
+        assert_eq!(result.labels, vec![0, 0]);
+        assert_eq!(result.silhouette_k, Some(1));
+        assert_eq!(result.effective_k, Some(1));
+    }
+
+    #[test]
+    fn cluster_embeddings_reports_selection_for_three_rows() {
+        let result = cluster_embeddings(&[1.0_f32, 0.0, 0.0, 1.0, 0.8, 0.2], 3, 2, None)
+            .expect("three-row labels");
+
+        assert_eq!(result.labels.len(), 3);
+        assert_eq!(result.silhouette_k, Some(2));
+        assert_eq!(result.effective_k, Some(2));
+    }
+
+    #[test]
+    fn cluster_embeddings_reports_requested_speaker_count_without_silhouette() {
         // Fixture cannot supply this because selected fixture k values are
         // already in range; this directly pins the n <= k clamp degenerate.
         assert_eq!(clamp_speaker_count(99, 3), 2);
@@ -979,9 +1027,11 @@ mod tests {
         assert_eq!(clamp_speaker_count(4, 0), 1);
 
         let embeddings = [1.0_f32, 0.0, 0.0, 1.0, 0.8, 0.2];
-        let labels = cluster_embeddings(&embeddings, 3, 2, Some(99)).expect("labels");
+        let result = cluster_embeddings(&embeddings, 3, 2, Some(99)).expect("labels");
 
-        assert_eq!(unique_labels(&labels).len(), 2);
+        assert_eq!(unique_labels(&result.labels).len(), 2);
+        assert_eq!(result.silhouette_k, None);
+        assert_eq!(result.effective_k, Some(2));
     }
 
     #[test]
