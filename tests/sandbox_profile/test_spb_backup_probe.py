@@ -1069,6 +1069,14 @@ def test_init_nonzero_and_timeout_map_to_expected_reason(
             probe_contract.REASON_RESPONSE_INVALID,
         ),
         (
+            _records({"message_type": "status", "percent_done": 0.5}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_summary_record(), _summary_record()),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
             _records(_summary_record(), {"message_type": "status"}),
             probe_contract.REASON_RESPONSE_INVALID,
         ),
@@ -1086,6 +1094,8 @@ def test_init_nonzero_and_timeout_map_to_expected_reason(
         "wrong_total_bytes_processed",
         "uppercase_snapshot_id",
         "verbose_status_record",
+        "status_without_summary",
+        "duplicate_summary",
         "record_after_summary",
         "remote_rejected_preempts_stdout_validation",
     ],
@@ -1148,6 +1158,19 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         probe_contract.REASON_CONTENT_MISMATCH,
         checks=probe.PRIMITIVE_CHECKS[:1],
     )
+
+
+def test_backup_and_restore_accept_status_records_before_terminal_summary() -> None:
+    status_records = [
+        {"message_type": "status", "percent_done": 0.25},
+        {"message_type": "status", "percent_done": 0.75},
+    ]
+
+    assert (
+        probe._validate_backup_records([*status_records, _summary_record()])
+        == SNAPSHOT_ID
+    )
+    probe._validate_restore_records([*status_records, _restore_summary_record()])
 
 
 @pytest.mark.parametrize(
@@ -1256,6 +1279,73 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         ),
         (
             _records(
+                {
+                    "message_type": "snapshot",
+                    "id": SNAPSHOT_ID,
+                    "paths": [probe.LOGICAL_SOURCE_PATH],
+                },
+                {
+                    "message_type": "node",
+                    "path": probe.LOGICAL_SOURCE_PATH,
+                    "type": "file",
+                    "size": probe.FIXTURE_LENGTH,
+                },
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    extra=({"message_type": "node", "path": "/spb", "type": "dir"},)
+                )
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    extra=(
+                        {
+                            "message_type": "node",
+                            "path": probe.LOGICAL_SOURCE_PATH,
+                            "type": "file",
+                            "size": probe.FIXTURE_LENGTH,
+                        },
+                    )
+                )
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    extra=(
+                        {
+                            "message_type": "node",
+                            "path": "/spb/link",
+                            "type": "symlink",
+                        },
+                    )
+                )
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    extra=(
+                        {
+                            "message_type": "node",
+                            "path": "/spb/fifo",
+                            "type": "fifo",
+                        },
+                    )
+                )
+            ),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
                 *_ls_records(
                     extra=(
                         {"message_type": "node", "path": "/spb/extra", "type": "dir"},
@@ -1318,6 +1408,11 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         "missing_file_size",
         "wrong_file_size",
         "missing_file_node",
+        "missing_directory_node",
+        "duplicate_directory_node",
+        "duplicate_file_node",
+        "link_node",
+        "special_node",
         "extra_dir_node",
         "physical_source_path_node",
         "unknown_record_kind",
@@ -1464,6 +1559,14 @@ def test_restore_failures(
             probe_contract.REASON_RESPONSE_INVALID,
         ),
         (
+            _records({"message_type": "status", "percent_done": 0.5}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_restore_summary_record(), _restore_summary_record()),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
             _records(_restore_summary_record(), {"message_type": "status"}),
             probe_contract.REASON_RESPONSE_INVALID,
         ),
@@ -1481,6 +1584,8 @@ def test_restore_failures(
         "wrong_total_files",
         "wrong_bytes_restored",
         "verbose_status_record",
+        "status_without_summary",
+        "duplicate_summary",
         "record_after_summary",
         "duplicate_message_type_key",
     ],

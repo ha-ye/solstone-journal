@@ -3,16 +3,15 @@
 
 """Local restic boundary proof for the SPB probe contract.
 
-This test drives the real run_restic subprocess boundary against the installed
-restic binary and a tmp_path local repository. On this host, that may be restic
-0.18.1; this does not prove restic 0.19.0 runtime behavior. It proves that the
-boundary and probe validators accept genuine output from the installed restic.
-No broker, rclone, network backend, or production state is contacted.
+This test drives the real run_restic subprocess boundary against pinned restic
+0.19.0 and a tmp_path local repository. No broker, rclone, network backend, or
+production state is contacted.
 """
 
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,6 +30,17 @@ def test_run_restic_boundary_accepts_real_local_restic_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert RESTIC_BIN is not None
+    version = subprocess.run(
+        [RESTIC_BIN, "version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert version.stderr == ""
+    assert version.stdout.split()[:2] == ["restic", "0.19.0"]
+
     home = tmp_path / "home"
     tmp_dir = tmp_path / "tmp"
     for path in (home, tmp_dir):
