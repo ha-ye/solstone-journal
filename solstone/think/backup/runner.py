@@ -36,6 +36,7 @@ class _RawResticProcessResult:
     stdout: bytes | None
     stderr: bytes | None
     cleanup_verified: bool
+    timed_out: bool
 
 
 class ResticJsonRecordsResult:
@@ -84,8 +85,7 @@ class ResticJsonRecordsResult:
         return records
 
     def __repr__(self) -> str:
-        state = "available" if self.has_records else "closed"
-        return f"ResticJsonRecordsResult(state={state}, <redacted>)"
+        return "ResticJsonRecordsResult(<redacted>)"
 
     def __eq__(self, other: object) -> bool:
         return self is other
@@ -187,7 +187,10 @@ def _parse_json_records(raw_stdout: bytes | None) -> tuple[object, ...] | None:
         return None
     try:
         text = raw_stdout.decode("utf-8")
-        lines = text.splitlines()
+        # ASCII LF is the only record separator; zero or one final LF is tolerated.
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
         if not lines:
             return None
         records: list[object] = []
@@ -319,12 +322,14 @@ def _run_restic_popen(
             stdout=raw_stdout,
             stderr=raw_stderr,
             cleanup_verified=cleanup_verified,
+            timed_out=True,
         )
     return _RawResticProcessResult(
         returncode=proc.returncode,
         stdout=raw_stdout,
         stderr=raw_stderr,
         cleanup_verified=True,
+        timed_out=False,
     )
 
 
@@ -423,7 +428,7 @@ def run_restic(
         stderr_text = f"{stderr_text}\n{_PROCESS_GROUP_CLEANUP_UNVERIFIED}"
     stdout = _scrub(_decode_output(raw_result.stdout), scrub_secrets)
     stderr = _scrub(stderr_text, scrub_secrets)
-    if raw_result.returncode == 124:
+    if raw_result.timed_out:
         parsed_json = None
     else:
         parsed_json = _parse_json(stdout) if json else None

@@ -244,6 +244,114 @@ def test_run_restic_json_records_parses_raw_before_scrub(
 
 
 @pytest.mark.parametrize(
+    ("raw_stdout", "expected_records"),
+    [
+        (b'{"a":1}', ({"a": 1},)),
+        (b'{"a":1}\n', ({"a": 1},)),
+        (b'{"a":1}\n{"b":2}\n', ({"a": 1}, {"b": 2})),
+        (b'{"a":1}\r\n{"b":2}\r\n', ({"a": 1}, {"b": 2})),
+    ],
+    ids=[
+        "no_final_lf",
+        "one_final_lf",
+        "lf_records",
+        "crlf_records",
+    ],
+)
+def test_run_restic_json_records_accepts_lf_record_separators(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_stdout: bytes,
+    expected_records: tuple[object, ...],
+) -> None:
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            pass
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            return raw_stdout, b""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic_json_records(
+        ["backup", "--stdin"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+    )
+
+    assert result.has_records is True
+    assert result.consume_records() == expected_records
+
+
+@pytest.mark.parametrize(
+    "raw_stdout",
+    [
+        b'{"a":1}\x0b{"b":2}',
+        b'{"a":1}\x0c{"b":2}',
+        b'{"a":1}\x1c{"b":2}',
+        b'{"a":1}\x1d{"b":2}',
+        b'{"a":1}\x1e{"b":2}',
+        b'{"a":1}\xc2\x85{"b":2}',
+        b'{"a":1}\xe2\x80\xa8{"b":2}',
+        b'{"a":1}\xe2\x80\xa9{"b":2}',
+        b'\n{"a":1}',
+        b'{"a":1}\n\n{"b":2}',
+        b'{"a":1}\n\n',
+        b'{"a":1}\r\n\r\n',
+    ],
+    ids=[
+        "vt_separator",
+        "ff_separator",
+        "fs_separator",
+        "gs_separator",
+        "rs_separator",
+        "nel_separator",
+        "ls_separator",
+        "ps_separator",
+        "leading_blank",
+        "middle_blank",
+        "double_terminal_lf",
+        "separator_only_trailing_crlf",
+    ],
+)
+def test_run_restic_json_records_rejects_non_lf_record_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_stdout: bytes,
+) -> None:
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            pass
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            return raw_stdout, b""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic_json_records(
+        ["backup", "--stdin"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+    )
+
+    assert result.has_records is False
+
+
+@pytest.mark.parametrize(
     "raw_stdout",
     [
         b"",
@@ -448,7 +556,7 @@ def test_restic_json_records_result_is_opaque_and_one_shot() -> None:
     )
 
     assert not hasattr(result, "__dict__")
-    assert repr(result) == "ResticJsonRecordsResult(state=available, <redacted>)"
+    assert repr(result) == "ResticJsonRecordsResult(<redacted>)"
     assert result == result
     assert result != same_shape
     assert hash(result) == id(result)
@@ -470,7 +578,7 @@ def test_restic_json_records_result_is_opaque_and_one_shot() -> None:
     records = result.consume_records()
     assert records == ({"message_type": "summary", "secret": canaries[0]},)
     assert result.has_records is False
-    assert repr(result) == "ResticJsonRecordsResult(state=closed, <redacted>)"
+    assert repr(result) == "ResticJsonRecordsResult(<redacted>)"
     refusing_operations = (
         vars,
         dataclasses.asdict,
@@ -491,6 +599,7 @@ def test_restic_json_records_result_is_opaque_and_one_shot() -> None:
         for canary in canaries:
             assert canary not in str(excinfo.value)
             assert canary not in rendered
+    assert repr(result) == "ResticJsonRecordsResult(<redacted>)"
 
 
 def test_run_restic_json_records_api_exposes_no_parser_or_raw_escape_hatch() -> None:
@@ -683,6 +792,41 @@ def test_run_restic_timeout_returns_scrubbed_result(
     assert "backend-secret" not in result.stderr
     assert "SESS-TOKEN" not in result.stderr
     assert result.json is None
+
+
+@pytest.mark.parametrize("returncode", [0, 7, 124])
+def test_run_restic_popen_normal_completion_parses_json_for_returncode(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+) -> None:
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _argv: list[str], **_kwargs: Any) -> None:
+            self.returncode = returncode
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            return b'{"message":"repo-password"}', b"stderr repo-password"
+
+    monkeypatch.setattr(runner.subprocess, "Popen", FakePopen)
+
+    result = runner.run_restic(
+        ["backup", "/tmp/data"],
+        repository="s3:safe-bucket/path",
+        password="repo-password",
+        restic_path=Path("/usr/bin/restic"),
+        json=True,
+        process_group=True,
+    )
+
+    assert result.returncode == returncode
+    assert "repo-password" not in result.stdout
+    assert "repo-password" not in result.stderr
+    assert result.json == {"message": "[redacted]"}
 
 
 def test_run_restic_popen_timeout_json_is_none(
