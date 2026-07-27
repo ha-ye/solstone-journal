@@ -790,8 +790,13 @@ async def _open_tunnel_session(
         tls=tls,
         identity=identity,
     )
-    if pending_plaintext:
-        await session._mux.feed(bytes(pending_plaintext))
+    try:
+        if pending_plaintext:
+            await session._mux.feed(bytes(pending_plaintext))
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await session.close()
+        raise
     return session
 
 

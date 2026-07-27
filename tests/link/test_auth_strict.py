@@ -59,7 +59,7 @@ def test_strict_create_close_preserves_unrelated_raw_entries(tmp_path: Path) -> 
     after_remove = _load(path)
     assert _canonical_items(after_remove) == before
     assert not store.is_authorized("sha256:attempt")
-    store.verify_attempt_client_absent_strict("sha256:attempt")
+    store.verify_attempt_client_absent_strict(receipt)
 
 
 def test_strict_close_succeeds_after_listener_normalizes_unrelated_entries(
@@ -107,7 +107,7 @@ def test_strict_close_succeeds_after_listener_normalizes_unrelated_entries(
     after_close = _load(path)
     assert _canonical_items(after_close) == _canonical_items(normalized_before_close)
     assert {item["fingerprint"] for item in after_close} == {"sha256:one", "sha256:two"}
-    store.verify_attempt_client_absent_strict(receipt.fingerprint)
+    store.verify_attempt_client_absent_strict(receipt)
 
 
 def test_strict_add_missing_file_creates_attempt_only(tmp_path: Path) -> None:
@@ -326,11 +326,86 @@ def test_strict_receipt_type_redacts_manual_repr() -> None:
     receipt = StrictAuthorizationReceipt(
         fingerprint="sha256:secret",
         device_label="label",
-        paired_at="2026-01-01T00:00:00Z",
-        expected_item_canonical='{"fingerprint":"sha256:secret"}',
     )
 
     assert repr(receipt) == "StrictAuthorizationReceipt(<redacted>)"
+
+
+def test_strict_verify_absent_rejects_lingering_fingerprint(tmp_path: Path) -> None:
+    path = tmp_path / "authorized_clients.json"
+    store = AuthorizedClients(path)
+    receipt = store.add_attempt_client_strict(
+        fingerprint="sha256:attempt",
+        device_label="sandbox-spl-attempt",
+        instance_id="inst",
+    )
+
+    with pytest.raises(StrictAuthorizationError) as excinfo:
+        store.verify_attempt_client_absent_strict(receipt)
+
+    assert excinfo.value.code == "attempt_entry_present"
+
+
+def test_strict_verify_absent_rejects_lingering_label(tmp_path: Path) -> None:
+    path = tmp_path / "authorized_clients.json"
+    store = AuthorizedClients(path)
+    receipt = store.add_attempt_client_strict(
+        fingerprint="sha256:attempt",
+        device_label="sandbox-spl-attempt",
+        instance_id="inst",
+    )
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:other",
+                    "device_label": receipt.device_label,
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StrictAuthorizationError) as excinfo:
+        store.verify_attempt_client_absent_strict(receipt)
+
+    assert excinfo.value.code == "attempt_label_present"
+
+
+def test_strict_remove_rejects_label_lingering_after_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "authorized_clients.json"
+    store = AuthorizedClients(path)
+    receipt = store.add_attempt_client_strict(
+        fingerprint="sha256:attempt",
+        device_label="sandbox-spl-attempt",
+        instance_id="inst",
+    )
+    real_write = auth.write_json
+
+    def lingering_label_write(path_arg: Path, payload: object) -> None:
+        assert payload == []
+        real_write(
+            path_arg,
+            [
+                {
+                    "fingerprint": "sha256:other",
+                    "device_label": receipt.device_label,
+                }
+            ],
+        )
+
+    monkeypatch.setattr(auth, "write_json", lingering_label_write)
+
+    with pytest.raises(StrictAuthorizationError) as excinfo:
+        store.remove_attempt_client_strict(receipt)
+
+    assert excinfo.value.code == "label_absence_unverified"
+    assert excinfo.value.mutated is True
 
 
 def _load(path: Path) -> list[dict[str, object]]:

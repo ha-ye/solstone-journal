@@ -293,6 +293,39 @@ async def test_enroll_device_async_closes_on_validator_failure(
     assert getattr(clients[0], "closed") is True
 
 
+@pytest.mark.asyncio
+async def test_open_tunnel_session_closes_partial_session_when_pending_feed_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = FakeTransport()
+    current = asyncio.current_task()
+    before_tasks = {
+        task for task in asyncio.all_tasks() if task is not current and not task.done()
+    }
+
+    monkeypatch.setattr(client, "_build_tls_client_ctx", lambda _identity: object())
+    monkeypatch.setattr(client, "_new_tls_client", lambda _ctx: object())
+
+    async def fake_handshake(_transport: object, _tls: object) -> bytearray:
+        return bytearray(b"pending")
+
+    async def failing_feed(self, _plaintext: bytes) -> None:
+        raise RuntimeError("pending feed failed")
+
+    monkeypatch.setattr(client, "_drive_client_handshake", fake_handshake)
+    monkeypatch.setattr(client._DialerMultiplexer, "feed", failing_feed)
+
+    with pytest.raises(RuntimeError, match="pending feed failed"):
+        await client._open_tunnel_session(transport, _identity())
+
+    await asyncio.sleep(0)
+    after_tasks = {
+        task for task in asyncio.all_tasks() if task is not current and not task.done()
+    }
+    assert transport.closed is True
+    assert after_tasks <= before_tasks
+
+
 def _probing_body_source(probe: list[int]) -> client.BodySource:
     chunk_count = (INITIAL_WINDOW // RECOMMENDED_CHUNK) * 4
 

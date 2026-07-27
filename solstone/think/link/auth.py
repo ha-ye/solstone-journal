@@ -65,8 +65,6 @@ class StrictAuthorizationError(RuntimeError):
 class StrictAuthorizationReceipt:
     fingerprint: str
     device_label: str
-    paired_at: str
-    expected_item_canonical: str
 
     def __repr__(self) -> str:
         return "StrictAuthorizationReceipt(<redacted>)"
@@ -285,8 +283,6 @@ class AuthorizedClients:
                 return StrictAuthorizationReceipt(
                     fingerprint=fingerprint,
                     device_label=device_label,
-                    paired_at=paired_at,
-                    expected_item_canonical=_canonical_item(item),
                 )
 
     def remove_attempt_client_strict(
@@ -323,6 +319,12 @@ class AuthorizedClients:
                         "absence_unverified",
                         mutated=True,
                     )
+                if _find_strict_label(after, receipt.device_label) is not None:
+                    self._mark_cache_stale_locked()
+                    raise StrictAuthorizationError(
+                        "label_absence_unverified",
+                        mutated=True,
+                    )
                 if _canonical_items(after) != expected_unrelated:
                     self._mark_cache_stale_locked()
                     raise StrictAuthorizationError(
@@ -331,10 +333,15 @@ class AuthorizedClients:
                     )
                 self._reload_locked()
 
-    def verify_attempt_client_absent_strict(self, fingerprint: str) -> None:
+    def verify_attempt_client_absent_strict(
+        self,
+        receipt: StrictAuthorizationReceipt,
+    ) -> None:
         items, _identity = self._read_raw_list_strict(missing_ok=True)
-        if _find_strict_fingerprint(items, fingerprint) is not None:
+        if _find_strict_fingerprint(items, receipt.fingerprint) is not None:
             raise StrictAuthorizationError("attempt_entry_present")
+        if _find_strict_label(items, receipt.device_label) is not None:
+            raise StrictAuthorizationError("attempt_label_present")
 
     def touch_last_seen(
         self, fingerprint: str, *, now: dt.datetime | None = None
@@ -541,6 +548,16 @@ def _find_strict_fingerprint(
 ) -> int | None:
     for index, item in enumerate(items):
         if item.get("fingerprint") == fingerprint:
+            return index
+    return None
+
+
+def _find_strict_label(
+    items: list[dict[str, Any]],
+    device_label: str,
+) -> int | None:
+    for index, item in enumerate(items):
+        if item.get("device_label") == device_label:
             return index
     return None
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import dataclasses
 import json
 import logging
 import pickle
@@ -41,6 +42,14 @@ async def test_pass_path_binds_fingerprint_preserves_store_and_closes(
     captured: dict[str, Any] = {}
     _install_fake_readiness(monkeypatch)
     _install_unreachable_path_canaries(monkeypatch)
+    real_build_identity = probe._build_ephemeral_identity
+
+    def build_identity_with_private_canary(
+        journal_arg: Path,
+        attempt_arg: Path,
+    ) -> link_client.ClientIdentity:
+        identity = real_build_identity(journal_arg, attempt_arg)
+        return dataclasses.replace(identity, private_key_pem=CANARY_PRIVATE)
 
     async def fake_enroll(
         _relay_url: str,
@@ -57,8 +66,11 @@ async def test_pass_path_binds_fingerprint_preserves_store_and_closes(
         _deadline: float,
     ) -> FakeSession:
         captured["enrolled"] = enrolled
-        return FakeSession()
+        return FakeSession(identity=enrolled.identity)
 
+    monkeypatch.setattr(
+        probe, "_build_ephemeral_identity", build_identity_with_private_canary
+    )
     monkeypatch.setattr(link_client.Client, "enroll_device_async", fake_enroll)
     monkeypatch.setattr(probe, "_dial_with_deadline", fake_dial)
     caplog.set_level("DEBUG")
@@ -79,6 +91,7 @@ async def test_pass_path_binds_fingerprint_preserves_store_and_closes(
     assert (
         probe._attestation_device_fp(identity.home_attestation) == identity.fingerprint
     )
+    assert identity.private_key_pem == CANARY_PRIVATE
     secrets = (*CANARIES, identity.fingerprint)
     auth_payload = _load_auth(journal)
     attempt_entry = next(
@@ -150,6 +163,69 @@ async def test_lease_close_succeeds_after_touch_last_seen_normalizes_unrelated_e
     assert _canonical(after_close) == _canonical(normalized_before_close)
     assert {item["fingerprint"] for item in after_close} == {"sha256:one", "sha256:two"}
     assert lease.is_closed
+
+
+@pytest.mark.asyncio
+async def test_pin_override_during_readiness_refuses_before_write_or_contact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt = _prepared_journal(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    class MutatingObserver:
+        def __enter__(self) -> MutatingObserver:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def wait_snapshot(self, *, deadline: float | None = None):
+            monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://late.example")
+            return spl_readiness.SplReadinessSnapshot(
+                supervisor_ref="supervisor",
+                spl_pid=1,
+                spl_ref="spl",
+                convey_pid=2,
+                convey_ref="convey",
+                spl_connection_state="connected",
+                listen_generation=1,
+                link_health_observed_at_monotonic=1.0,
+                observed_relay_origin="https://link.solstone.app",
+                secure_listener_bound_accepting=True,
+                supervisor_observed_at_monotonic=1.0,
+            )
+
+        def reverify_before_authorization(self, _snapshot) -> None:
+            return None
+
+    async def enroll(*_args: object, **_kwargs: object) -> object:
+        calls.append("enroll")
+        raise AssertionError("enrollment must not be reached")
+
+    async def dial(*_args: object, **_kwargs: object) -> object:
+        calls.append("dial")
+        raise AssertionError("dial must not be reached")
+
+    monkeypatch.setattr(
+        probe.spl_readiness,
+        "open_spl_readiness_observer",
+        lambda _journal: MutatingObserver(),
+    )
+    monkeypatch.setattr(link_client.Client, "enroll_device_async", enroll)
+    monkeypatch.setattr(probe, "_dial_with_deadline", dial)
+
+    lease, outcome = await probe.prove_spl_relay_tunnel(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert lease is None
+    assert outcome["reason"] == probe_contract.REASON_CAPABILITY_NOT_READY
+    assert outcome["checks"] == ()
+    assert calls == []
+    assert not (journal / "link" / "authorized_clients.json").exists()
 
 
 @pytest.mark.asyncio
@@ -528,6 +604,49 @@ async def test_cancel_after_authorization_cleans_then_reraises(
 
 
 @pytest.mark.asyncio
+async def test_cancel_during_cleanup_shield_reports_ambiguous_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt = _prepared_journal(tmp_path, monkeypatch)
+    _install_fake_readiness(monkeypatch)
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def cancel_enroll(
+        *_args: object, **_kwargs: object
+    ) -> link_client.EnrolledDevice:
+        raise asyncio.CancelledError
+
+    async def ambiguous_cleanup(**_kwargs: object) -> bool:
+        cleanup_started.set()
+        await release_cleanup.wait()
+        return False
+
+    monkeypatch.setattr(link_client.Client, "enroll_device_async", cancel_enroll)
+    monkeypatch.setattr(
+        probe, "_cleanup_transport_and_authorization", ambiguous_cleanup
+    )
+
+    task = asyncio.create_task(
+        probe.prove_spl_relay_tunnel(
+            journal,
+            attempt_dir=attempt,
+            cancel_requested=lambda: False,
+        )
+    )
+    await cleanup_started.wait()
+    task.cancel()
+    release_cleanup.set()
+
+    lease, outcome = await task
+
+    assert lease is None
+    assert outcome["reason"] == probe_contract.REASON_CLEANUP_UNVERIFIED
+    assert outcome["checks"] == ()
+
+
+@pytest.mark.asyncio
 async def test_cancel_before_authorization_raises_without_cleanup_or_store_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -588,17 +707,15 @@ async def test_lease_close_failure_is_retryable(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["not_called", "rejected"])
-async def test_lease_lifecycle_consumer_not_called_or_rejected_closes_cleanly(
+async def test_lease_lifecycle_consumer_not_called_closes_cleanly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    mode: str,
 ) -> None:
     journal, _attempt = _prepared_journal(tmp_path, monkeypatch)
     store = probe.AuthorizedClients(journal / "link" / "authorized_clients.json")
     receipt = store.add_attempt_client_strict(
-        fingerprint="sha256:" + mode.replace("_", "") * 8,
-        device_label=f"sandbox-spl-{mode}",
+        fingerprint="sha256:" + "f" * 64,
+        device_label="sandbox-spl-not-called",
         instance_id="instance",
     )
     session = FakeSession()
@@ -669,6 +786,7 @@ async def test_proof_log_filter_attaches_only_specific_logger_and_detaches(
     journal, attempt = _prepared_journal(tmp_path, monkeypatch)
     _install_fake_readiness(monkeypatch)
     logger = logging.getLogger(link_client.LOG.name)
+    probe_logger = logging.getLogger(probe.__name__)
     before_filters = list(logger.filters)
     seen_filters: list[list[logging.Filter]] = []
 
@@ -679,7 +797,7 @@ async def test_proof_log_filter_attaches_only_specific_logger_and_detaches(
         timeout: float = 30.0,
     ) -> link_client.EnrolledDevice:
         seen_filters.append(list(logger.filters))
-        assert probe.LOG.filters == []
+        assert probe_logger.filters == []
         if mode == "exception":
             raise RuntimeError("POST failed: HTTP 403")
         if mode == "cancellation":
@@ -713,7 +831,7 @@ async def test_proof_log_filter_attaches_only_specific_logger_and_detaches(
 
     assert seen_filters and len(seen_filters[0]) == len(before_filters) + 1
     assert logger.filters == before_filters
-    assert probe.LOG.filters == []
+    assert probe_logger.filters == []
 
     caplog.set_level(logging.INFO, logger=link_client.LOG.name)
     link_client.LOG.info("client %s: enrolling device token", "sha256:normal")
@@ -897,11 +1015,17 @@ def _install_unreachable_path_canaries(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FakeSession:
-    def __init__(self, *, is_alive: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        is_alive: bool = True,
+        identity: link_client.ClientIdentity | None = None,
+    ) -> None:
         self.is_alive = is_alive
         self.closed = False
         self.close_calls = 0
         self.websocket: FakeWebSocket | None = None
+        self._identity = identity
 
     async def request(
         self,

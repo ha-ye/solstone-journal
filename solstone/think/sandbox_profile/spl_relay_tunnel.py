@@ -15,6 +15,8 @@ Failure mapping:
 - readiness or relay pin refusal -> capability_not_ready, checks=[]
 - strict store rejection while creating authorization with no mutation ->
   capability_not_ready, checks=[]
+- strict store rejection while creating authorization with ambiguous mutation ->
+  cleanup_unverified, checks=[]
 - strict store rejection during cleanup -> cleanup_unverified, overriding all
   prior reasons
 - local or request timeout -> deadline_exceeded, checks earned so far
@@ -36,6 +38,8 @@ success. On ambiguous cleanup it raises RelayTunnelCloseError with only the
 stable reason cleanup_unverified, leaves the lease open/retryable, and continues
 to own the authorization. The proof diagnostic already returned on pass is
 immutable; a later close failure is recorded separately by the coordinator.
+The composing coordinator reserves the full 20s SPL cleanup budget; this
+primitive consumes at most CLEANUP_SHIELD_SECONDS of that budget.
 The secure listener's touch_last_seen path is a non-strict writer and may
 independently normalize unrelated entries while the lease is live. This
 primitive's cleanup guarantee is scoped to its own removal: inside the cleanup
@@ -85,8 +89,6 @@ from solstone.think.link.ca import (
 )
 from solstone.think.link.paths import DEFAULT_RELAY_URL
 from solstone.think.sandbox_profile import probe_contract, spl_readiness
-
-LOG = logging.getLogger(__name__)
 
 WORK_DEADLINE_SECONDS = 60.0
 ENROLLMENT_DEADLINE_SECONDS = 30.0
@@ -246,6 +248,7 @@ async def prove_spl_relay_tunnel(
             identity = _build_ephemeral_identity(Path(journal), attempt_dir)
             _assert_fingerprint_binding(identity)
             _assert_enrollment_origin()
+            _assert_pinned_origin(Path(journal))
             observer.reverify_before_authorization(snapshot)
             _check_cancel(cancel_requested)
             store = AuthorizedClients(_authorized_clients_path(Path(journal)))
@@ -441,17 +444,24 @@ async def _cleanup_with_shield(
     store: AuthorizedClients | None,
     receipt: StrictAuthorizationReceipt,
 ) -> bool:
+    cleanup_task = asyncio.create_task(
+        asyncio.wait_for(
+            _cleanup_transport_and_authorization(
+                session=session,
+                store=store,
+                receipt=receipt,
+            ),
+            timeout=CLEANUP_SHIELD_SECONDS,
+        ),
+        name="spl-proof-cleanup",
+    )
     try:
-        return await asyncio.shield(
-            asyncio.wait_for(
-                _cleanup_transport_and_authorization(
-                    session=session,
-                    store=store,
-                    receipt=receipt,
-                ),
-                timeout=CLEANUP_SHIELD_SECONDS,
-            )
-        )
+        return await asyncio.shield(cleanup_task)
+    except asyncio.CancelledError:
+        try:
+            return await cleanup_task
+        except Exception:
+            return False
     except Exception:
         return False
 
@@ -624,7 +634,8 @@ def _assert_http_origin(url: str) -> None:
 
 def _assert_ws_origin(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
-    if f"{parsed.scheme}://{parsed.netloc}" != "wss://link.solstone.app":
+    expected = link_client._to_ws(DEFAULT_RELAY_URL)
+    if f"{parsed.scheme}://{parsed.netloc}" != expected:
         raise SplRelayTunnelError(probe_contract.REASON_CAPABILITY_NOT_READY)
 
 
