@@ -144,7 +144,7 @@ def test_deny_toml_models_supported_graph_and_unknown_git_policy() -> None:
     assert len(targets) == len(EXPECTED_GRAPH_TARGETS)
     assert set(targets) == EXPECTED_GRAPH_TARGETS
     assert sources["unknown-git"] == "deny"
-    assert "allow-git" not in sources
+    assert sources["allow-git"] == ["https://github.com/solpbc/spl-rust"]
 
 
 def test_workspace_forbids_unsafe_and_members_inherit_lints() -> None:

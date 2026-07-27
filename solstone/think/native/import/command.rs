@@ -604,6 +604,8 @@ mod tests {
             build_identity: None,
             client_item_ids: Some(client_item_ids),
             notification_sink: None,
+            link_pairing: None,
+            journal_root: None,
         })
     }
 

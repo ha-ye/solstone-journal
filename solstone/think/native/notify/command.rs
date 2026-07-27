@@ -273,6 +273,8 @@ mod tests {
             build_identity: None,
             client_item_ids: None,
             notification_sink: sink.map(|sink| sink as &dyn crate::seam::NotificationSink),
+            link_pairing: None,
+            journal_root: None,
         })
     }
 

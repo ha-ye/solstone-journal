@@ -1327,6 +1327,8 @@ mod tests {
             build_identity: None,
             client_item_ids: None,
             notification_sink: None,
+            link_pairing: None,
+            journal_root: None,
         });
 
         assert_eq!(

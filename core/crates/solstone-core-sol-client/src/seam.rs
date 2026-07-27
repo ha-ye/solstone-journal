@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Error, ErrorKind, Result as IoResult};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::ClientError;
@@ -64,6 +65,112 @@ pub enum NotificationSinkError {
 
 pub trait NotificationSink {
     fn send_line(&self, line: &str) -> Result<(), NotificationSinkError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkJoinRelayErrorKind {
+    HomeOffline,
+    Unauthorized,
+    Unpaid,
+    UnknownInstance,
+    PairWindowClosed,
+    Overflow,
+    Abnormal,
+    UpgradeRejected,
+    Stalled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkJoinRelayControlEndpoint {
+    EnrollDevice,
+    TokenRefresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkJoinPairingErrorKind {
+    Io,
+    Tls,
+    Crypto,
+    Mux,
+    Http,
+    Json,
+    PairLink,
+    Pairing,
+    PairResponseMissingHomeAttestation,
+    Rejected {
+        status: u16,
+    },
+    Relay(LinkJoinRelayErrorKind),
+    RelayControlRejected {
+        endpoint: LinkJoinRelayControlEndpoint,
+        status: u16,
+    },
+    NoEndpoint,
+    NotPaired,
+    LocalOffset,
+    RuntimeUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkJoinPairingError {
+    pub kind: LinkJoinPairingErrorKind,
+}
+
+impl LinkJoinPairingError {
+    #[must_use]
+    pub fn new(kind: LinkJoinPairingErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkJoinPairTarget {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkJoinDirectRequest {
+    pub targets: Vec<LinkJoinPairTarget>,
+    pub nonce_hex: String,
+    pub ca_fp_prefix: Vec<u8>,
+    pub device_label: String,
+    pub additional_fields: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkJoinRelayRequest {
+    pub relay_origin: String,
+    pub secret: Vec<u8>,
+    pub ca_fp_spki: Vec<u8>,
+    pub device_label: String,
+    pub additional_fields: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkJoinCredential {
+    pub client_key_pem: String,
+    pub client_cert_pem: String,
+    pub ca_chain_pem: Vec<String>,
+    pub ca_fingerprint: String,
+    pub instance_id: String,
+    pub home_label: String,
+    pub home_attestation: Option<String>,
+    pub local_endpoints: serde_json::Value,
+    pub relay_device_token: Option<String>,
+    pub relay_device_token_expires_at: Option<i64>,
+}
+
+pub trait LinkJoinPairingSeam: Send + Sync {
+    fn pair_direct(
+        &self,
+        request: LinkJoinDirectRequest,
+    ) -> Result<LinkJoinCredential, LinkJoinPairingError>;
+
+    fn pair_relay(
+        &self,
+        request: LinkJoinRelayRequest,
+    ) -> Result<LinkJoinCredential, LinkJoinPairingError>;
 }
 
 pub trait FileProvider {
@@ -138,6 +245,55 @@ pub struct RecordingNotificationSink {
     fail: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExpectedLinkJoinPairingCall {
+    Direct {
+        expected: LinkJoinDirectRequest,
+        result: Result<LinkJoinCredential, LinkJoinPairingError>,
+    },
+    Relay {
+        expected: LinkJoinRelayRequest,
+        result: Result<LinkJoinCredential, LinkJoinPairingError>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecordedLinkJoinPairingCall {
+    Direct(LinkJoinDirectRequest),
+    Relay(LinkJoinRelayRequest),
+}
+
+#[derive(Debug, Default)]
+pub struct ScriptedLinkJoinPairingSeam {
+    calls: Mutex<VecDeque<ExpectedLinkJoinPairingCall>>,
+    recorded: Mutex<Vec<RecordedLinkJoinPairingCall>>,
+}
+
+impl ScriptedLinkJoinPairingSeam {
+    #[must_use]
+    pub fn new(calls: Vec<ExpectedLinkJoinPairingCall>) -> Self {
+        Self {
+            calls: Mutex::new(calls.into()),
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn assert_done(&self) {
+        assert!(
+            self.calls.lock().expect("scripted calls lock").is_empty(),
+            "scripted link pairing calls were not exhausted"
+        );
+    }
+
+    #[must_use]
+    pub fn recorded(&self) -> Vec<RecordedLinkJoinPairingCall> {
+        self.recorded
+            .lock()
+            .expect("recorded link pairing lock")
+            .clone()
+    }
+}
+
 impl RecordingNotificationSink {
     #[must_use]
     pub fn new() -> Self {
@@ -165,6 +321,42 @@ impl NotificationSink for RecordingNotificationSink {
             return Err(NotificationSinkError::Unavailable);
         }
         Ok(())
+    }
+}
+
+impl LinkJoinPairingSeam for ScriptedLinkJoinPairingSeam {
+    fn pair_direct(
+        &self,
+        request: LinkJoinDirectRequest,
+    ) -> Result<LinkJoinCredential, LinkJoinPairingError> {
+        self.recorded
+            .lock()
+            .expect("recorded link pairing lock")
+            .push(RecordedLinkJoinPairingCall::Direct(request.clone()));
+        match self.calls.lock().expect("scripted calls lock").pop_front() {
+            Some(ExpectedLinkJoinPairingCall::Direct { expected, result }) => {
+                assert_eq!(request, expected);
+                result
+            }
+            other => panic!("expected direct link pairing call, got {other:?}"),
+        }
+    }
+
+    fn pair_relay(
+        &self,
+        request: LinkJoinRelayRequest,
+    ) -> Result<LinkJoinCredential, LinkJoinPairingError> {
+        self.recorded
+            .lock()
+            .expect("recorded link pairing lock")
+            .push(RecordedLinkJoinPairingCall::Relay(request.clone()));
+        match self.calls.lock().expect("scripted calls lock").pop_front() {
+            Some(ExpectedLinkJoinPairingCall::Relay { expected, result }) => {
+                assert_eq!(request, expected);
+                result
+            }
+            other => panic!("expected relay link pairing call, got {other:?}"),
+        }
     }
 }
 

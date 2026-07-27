@@ -2,10 +2,11 @@
 // Copyright (c) 2026 sol pbc
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::seam::{
     BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, NotificationSink,
+    HttpTransport, LinkJoinPairingSeam, NotificationSink,
 };
 
 #[derive(Clone, Copy)]
@@ -21,6 +22,8 @@ pub struct CommandContext<'a> {
     pub build_identity: Option<&'a dyn BuildIdentityProvider>,
     pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
     pub notification_sink: Option<&'a dyn NotificationSink>,
+    pub link_pairing: Option<&'a dyn LinkJoinPairingSeam>,
+    pub journal_root: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

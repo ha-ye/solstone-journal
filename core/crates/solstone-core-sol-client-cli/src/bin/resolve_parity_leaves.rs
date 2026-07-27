@@ -44,6 +44,7 @@ fn main() -> Result<(), String> {
             let lookup_args = match surface {
                 "sol-chat" => vec!["chat".to_string()],
                 "sol-import" => vec!["import".to_string()],
+                "sol-link" => vec!["link".to_string(), "join".to_string()],
                 "sol-notify" => vec!["notify".to_string()],
                 _ => argv,
             };

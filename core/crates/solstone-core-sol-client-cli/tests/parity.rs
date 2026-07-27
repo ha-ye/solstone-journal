@@ -9,7 +9,7 @@ use solstone_core_sol_client::error::ClientError;
 use solstone_core_sol_client::seam::{
     ChatInput, ExpectedHttpCall, FakeBuildIdentityProvider, FakeClientItemIdProvider, FakeClock,
     FixtureFileProvider, RecordedHttpCall, RecordingNotificationSink, ScriptedChatEventSource,
-    ScriptedHttpTransport,
+    ScriptedHttpTransport, ScriptedLinkJoinPairingSeam,
 };
 use solstone_core_sol_client::sse::iter_sse_events;
 use solstone_core_sol_client::transport::{
@@ -17,8 +17,8 @@ use solstone_core_sol_client::transport::{
     TimeoutPolicy, UploadRequest,
 };
 use solstone_core_sol_client_cli::{
-    DispatchSeams, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    dispatch_sol_import_with_seams, dispatch_sol_notify_with_seams,
+    DispatchSeams, LinkDispatchSeams, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
+    dispatch_sol_import_with_seams, dispatch_sol_link_with_seams, dispatch_sol_notify_with_seams,
 };
 
 const ACTIVITIES_VECTORS: &str =
@@ -38,6 +38,7 @@ const HEALTH_COVERAGE_VECTORS: &str =
 const IMPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/import.jsonl");
 const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/ledger.jsonl");
 const LINK_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link.jsonl");
+const LINK_JOIN_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link_join.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const NOTIFY_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/notify.jsonl");
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
@@ -68,6 +69,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(IMPORT_VECTORS))
         .chain(load_vectors(LEDGER_VECTORS))
         .chain(load_vectors(LINK_VECTORS))
+        .chain(load_vectors(LINK_JOIN_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(NOTIFY_VECTORS))
         .chain(load_vectors(PROFILE_VECTORS))
@@ -117,6 +119,7 @@ fn run_vector(vector: &Value) {
     } else {
         RecordingNotificationSink::new()
     };
+    let link_pairing = ScriptedLinkJoinPairingSeam::new(vec![]);
 
     let output = if vector["surface"].as_str() == Some("sol-chat") {
         dispatch_sol_chat_with_seams(
@@ -167,6 +170,20 @@ fn run_vector(vector: &Value) {
                 notification_sink: Some(&notification_sink),
             },
         )
+    } else if vector["surface"].as_str() == Some("sol-link") {
+        dispatch_sol_link_with_seams(
+            &argv,
+            &env,
+            stdin,
+            today,
+            LinkDispatchSeams {
+                transport: &transport,
+                clock: Some(&clock),
+                files: Some(&files),
+                link_pairing: Some(&link_pairing),
+                journal_root: Some(std::path::Path::new("/native-sol-parity-journal")),
+            },
+        )
     } else {
         dispatch_sol_call_with_seams(
             &argv,
@@ -185,6 +202,7 @@ fn run_vector(vector: &Value) {
         )
     };
     transport.assert_done();
+    link_pairing.assert_done();
     let mut actual = json!({
         "stdout": output.stdout,
         "stderr": output.stderr,

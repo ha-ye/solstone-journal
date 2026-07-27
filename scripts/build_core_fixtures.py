@@ -167,11 +167,14 @@ CLUSTER_PERTURB_EPSILON = 0.03
 
 @dataclass(frozen=True)
 class ArtifactDescriptor:
-    build: Callable[[], dict[str, Any]]
+    build: Callable[[], Any]
     comparison: str = "exact"
 
     def render(self) -> str:
-        return render_json(self.build())
+        value = self.build()
+        if isinstance(value, str):
+            return value
+        return render_json(value)
 
 
 def _package_version(name: str) -> str:
@@ -263,6 +266,68 @@ def build_edge_schema_fixture() -> dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+def render_peer_json(peer: dict[str, Any]) -> str:
+    return json.dumps(peer, indent=2) + "\n"
+
+
+def build_link_join_observer_ascii_peer_json() -> str:
+    return render_peer_json(
+        {
+            "label": "laptop",
+            "paired_at": "1970-01-01T00:00:00Z",
+            "instance_id": "receiver-instance",
+            "home_label": "Home",
+            "fingerprint": "sha256:abc",
+            "local_endpoints": [],
+            "role": "",
+        }
+    )
+
+
+def build_link_join_peer_non_ascii_peer_json() -> str:
+    return render_peer_json(
+        {
+            "label": "café",
+            "paired_at": "1970-01-01T00:00:00Z",
+            "instance_id": "receiver-instance",
+            "home_label": "Hôme",
+            "fingerprint": "sha256:abc",
+            "local_endpoints": [
+                {"endpoint": "réseau-local", "port": 7657, "scope": "lan"},
+            ],
+            "role": "peer",
+        }
+    )
+
+
+def build_link_join_nested_endpoints_peer_json() -> str:
+    return render_peer_json(
+        {
+            "label": "laptop",
+            "paired_at": "1970-01-01T00:00:00Z",
+            "instance_id": "receiver-instance",
+            "home_label": "Home",
+            "fingerprint": "sha256:abc",
+            "local_endpoints": [
+                {
+                    "ip": "10.0.0.2",
+                    "port": 7657,
+                    "scope": "lan",
+                    "meta": {
+                        "first": "one",
+                        "second": ["two", {"third": "three"}],
+                    },
+                },
+            ],
+            "role": "",
+        }
+    )
+
+
+def link_join_fixture_dir() -> Path:
+    return FIXTURE_DIR / "native-sol" / "link-join"
 
 
 def _markdown_fixture_cases() -> list[dict[str, Any]]:
@@ -1265,6 +1330,15 @@ def expected_outputs() -> dict[Path, ArtifactDescriptor]:
             build_speaker_stage_boundaries_fixture,
             comparison="speaker_stage_boundaries",
         ),
+        link_join_fixture_dir() / "observer_ascii_peer.json": ArtifactDescriptor(
+            build_link_join_observer_ascii_peer_json,
+        ),
+        link_join_fixture_dir() / "peer_non_ascii_peer.json": ArtifactDescriptor(
+            build_link_join_peer_non_ascii_peer_json,
+        ),
+        link_join_fixture_dir() / "nested_endpoints_peer.json": ArtifactDescriptor(
+            build_link_join_nested_endpoints_peer_json,
+        ),
     }
 
 
@@ -1272,6 +1346,7 @@ def write_outputs() -> None:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     for path, descriptor in expected_outputs().items():
         content = descriptor.render()
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         print(f"wrote {path.relative_to(ROOT)}")
 

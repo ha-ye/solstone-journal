@@ -19,6 +19,7 @@ try:
         FINAL_STUB_COUNTS,
         FINAL_TOP_LEVEL_CHAT_TOTAL,
         FINAL_TOP_LEVEL_IMPORT_TOTAL,
+        FINAL_TOP_LEVEL_LINK_TOTAL,
         FINAL_TOP_LEVEL_NOTIFY_TOTAL,
         REPO_ROOT,
         discover,
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
         FINAL_STUB_COUNTS,
         FINAL_TOP_LEVEL_CHAT_TOTAL,
         FINAL_TOP_LEVEL_IMPORT_TOTAL,
+        FINAL_TOP_LEVEL_LINK_TOTAL,
         FINAL_TOP_LEVEL_NOTIFY_TOTAL,
         REPO_ROOT,
         discover,
@@ -78,11 +80,17 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
         for entry in entries
         if entry.surface == "sol-notify" and entry.entry_type == "top-level-notify"
     }
+    required_top_level_link = {
+        entry.operation_id
+        for entry in entries
+        if entry.surface == "sol-link" and entry.entry_type == "top-level-link"
+    }
     required_dispatch = (
         required
         | required_stubs
         | required_top_level_chat
         | required_top_level_import
+        | required_top_level_link
         | required_top_level_notify
     )
     vectors = load_vectors(PARITY_DIR)
@@ -152,6 +160,11 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
             f"current top-level notify authority count {len(required_top_level_notify)} "
             f"!= {FINAL_TOP_LEVEL_NOTIFY_TOTAL}"
         )
+    if len(required_top_level_link) != FINAL_TOP_LEVEL_LINK_TOTAL:
+        errors.append(
+            f"current top-level link authority count {len(required_top_level_link)} "
+            f"!= {FINAL_TOP_LEVEL_LINK_TOTAL}"
+        )
     if not required_dispatch:
         errors.append("native dispatch authority set is empty")
     resolved_operations = {
@@ -197,6 +210,21 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
                 f"top-level notify {bucket_name}",
                 required_top_level_notify,
                 notify_buckets[bucket_name],
+            )
+        )
+    link_buckets = collect_buckets(
+        vectors,
+        resolved,
+        required_top_level_link,
+        {"top-level-link"},
+        errors,
+    )
+    for bucket_name in ("success", "failure"):
+        errors.extend(
+            compare_sets(
+                f"top-level link {bucket_name}",
+                required_top_level_link,
+                link_buckets[bucket_name],
             )
         )
 

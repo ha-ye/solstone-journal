@@ -3,12 +3,13 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 
 use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, NotificationSink,
+    HttpTransport, LinkJoinPairingSeam, NotificationSink,
 };
 
 pub mod help;
@@ -31,6 +32,14 @@ pub struct DispatchSeams<'a> {
     pub build_identity: Option<&'a dyn BuildIdentityProvider>,
     pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
     pub notification_sink: Option<&'a dyn NotificationSink>,
+}
+
+pub struct LinkDispatchSeams<'a> {
+    pub transport: &'a dyn HttpTransport,
+    pub clock: Option<&'a dyn Clock>,
+    pub files: Option<&'a dyn FileProvider>,
+    pub link_pairing: Option<&'a dyn LinkJoinPairingSeam>,
+    pub journal_root: Option<&'a Path>,
 }
 
 #[must_use]
@@ -97,6 +106,8 @@ pub fn dispatch_sol_chat_with_seams(
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
+        link_pairing: None,
+        journal_root: None,
     })
 }
 
@@ -124,6 +135,8 @@ pub fn dispatch_sol_import_with_seams(
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
+        link_pairing: None,
+        journal_root: None,
     })
 }
 
@@ -151,6 +164,43 @@ pub fn dispatch_sol_notify_with_seams(
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
         notification_sink: seams.notification_sink,
+        link_pairing: None,
+        journal_root: None,
+    })
+}
+
+#[must_use]
+pub fn dispatch_sol_link_with_seams(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    stdin: &str,
+    today: &str,
+    seams: LinkDispatchSeams<'_>,
+) -> CommandOutput {
+    let Some((_, handler)) =
+        match_generated_surface_path("sol-link", &[String::from("link"), String::from("join")])
+    else {
+        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+    };
+    let remaining = match args {
+        [command, subcommand, rest @ ..] if command == "link" && subcommand == "join" => rest,
+        [subcommand, rest @ ..] if subcommand == "join" => rest,
+        rest => rest,
+    };
+    handler(CommandContext {
+        args: remaining,
+        env,
+        stdin,
+        today,
+        transport: seams.transport,
+        clock: seams.clock,
+        chat_events: None,
+        files: seams.files,
+        build_identity: None,
+        client_item_ids: None,
+        notification_sink: None,
+        link_pairing: seams.link_pairing,
+        journal_root: seams.journal_root,
     })
 }
 
@@ -222,6 +272,8 @@ pub fn dispatch_sol_call_with_seams(
         build_identity: seams.build_identity,
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
+        link_pairing: None,
+        journal_root: None,
     })
 }
 

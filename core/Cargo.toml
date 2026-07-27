@@ -8,6 +8,7 @@ members = [
     "crates/solstone-core-sol",
     "crates/solstone-core-sol-client",
     "crates/solstone-core-sol-client-cli",
+    "crates/solstone-core-sol-link",
     "crates/solstone-core-speakers",
     "crates/solstone-core-speakers-analyze",
     "crates/solstone-core-speakers-onnx",
@@ -31,6 +32,7 @@ solstone-core-journal = { path = "crates/solstone-core-journal" }
 solstone-core-sol = { path = "crates/solstone-core-sol" }
 solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
 solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
+solstone-core-sol-link = { path = "crates/solstone-core-sol-link" }
 solstone-core-speakers = { path = "crates/solstone-core-speakers" }
 solstone-core-speakers-analyze = { path = "crates/solstone-core-speakers-analyze" }
 solstone-core-speakers-onnx = { path = "crates/solstone-core-speakers-onnx" }
@@ -41,8 +43,13 @@ md5 = "0.8.1"
 ort = { version = "=2.0.0-rc.12", default-features = false }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 rapidfuzz = "0.5.0"
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem", "x509-parser"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde_json = { version = "1.0.150", features = ["preserve_order", "float_roundtrip"] }
+spl-core = { git = "https://github.com/solpbc/spl-rust", tag = "v0.1.0" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", tag = "v0.1.0" }
+tokio = { version = "1", default-features = false }
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
 unicode-normalization = "0.1.25"
 unidecode = "0.3.0"

@@ -1,0 +1,15 @@
+{
+  "label": "caf\u00e9",
+  "paired_at": "1970-01-01T00:00:00Z",
+  "instance_id": "receiver-instance",
+  "home_label": "H\u00f4me",
+  "fingerprint": "sha256:abc",
+  "local_endpoints": [
+    {
+      "endpoint": "r\u00e9seau-local",
+      "port": 7657,
+      "scope": "lan"
+    }
+  ],
+  "role": "peer"
+}

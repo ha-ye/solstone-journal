@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+schema = "native-sol-authority-v1"
+source = "command.rs"
+
+[[entries]]
+surface = "sol-link"
+path = ["link", "join"]
+kind = "top-level"
+help = "join a solstone with a short code or pair link"
+operation_id = "link.join"
+entry_type = "top-level-link"
+handler = "link_join"
+params = [
+  { name = "home", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--home"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "code", kind = "option", type = "text", required = true, nargs = 1, multiple = false, options = ["--code"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "as_role", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--as"], secondary = [], hidden = false, is_flag = false, count = false },
+  { name = "label", kind = "option", type = "text", required = false, nargs = 1, multiple = false, options = ["--label"], secondary = [], hidden = false, is_flag = false, count = false },
+]

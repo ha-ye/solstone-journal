@@ -31,6 +31,17 @@ crate to the iOS gate.
 the analyzer transitively depends on the ONNX Runtime host native-runtime
 adapter, which is not mobile-ready subsystem logic.
 
+`solstone-core-sol-link` is excluded permanently by product shape, not deferred
+iOS debt. `sol link` is a desktop and linked-system surface; phones do not
+consume it, and iOS/watchOS pairing lives in `spl-swift`, a separate package
+with its own release rail. This matches the program's standing priority:
+desktop-first is the product goal, mobile-runtime constraints are explicitly
+not product requirements here, and the iOS canary is engineering insurance
+rather than a product gate. The split is still useful to mobile consumers:
+`spl-core` keeps pure pair-link parsing and CA logic iOS-eligible and
+cross-checkable without a platform toolchain, while only `spl-transport` needs
+the real host toolchain for `ring`'s C build.
+
 ## Native Dependency Release Proof
 
 A Rust conversion that adds or bumps a dependency with C/C++ build steps or
@@ -308,14 +319,16 @@ The detailed native atomicity design is in
 `docs/design/indexer-native-atomicity.md`.
 
 Native sol client design records:
-`docs/design/native-sol-client/00-prep-findings.md`,
-`docs/design/native-sol-client/01-oracle-repro.md`,
-`docs/design/native-sol-client/02-design.md`,
-`docs/design/native-sol-client/03-batch-prep.md`,
-`docs/design/native-sol-client/04-batch-design.md`,
-`docs/design/native-sol-client/05-raw-body-parity.md`,
-`docs/design/native-sol-client/06-cutover-design.md`, and
-`docs/design/native-sol-client/07-notify-contract-design.md`.
+
+- `docs/design/native-sol-client/00-prep-findings.md`
+- `docs/design/native-sol-client/01-oracle-repro.md`
+- `docs/design/native-sol-client/02-design.md`
+- `docs/design/native-sol-client/03-batch-prep.md`
+- `docs/design/native-sol-client/04-batch-design.md`
+- `docs/design/native-sol-client/05-raw-body-parity.md`
+- `docs/design/native-sol-client/06-cutover-design.md`
+- `docs/design/native-sol-client/07-notify-contract-design.md`
+- `docs/design/native-sol-client/08-link-join-design.md`
 
 ## Dual Paths And Shims
 

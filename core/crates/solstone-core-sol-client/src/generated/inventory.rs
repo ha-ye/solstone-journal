@@ -35,6 +35,8 @@ mod solstone_apps_transcripts_native_command_rs;
 mod solstone_think_native_chat_command_rs;
 #[path = "../../../../../solstone/think/native/import/command.rs"]
 mod solstone_think_native_import_command_rs;
+#[path = "../../../../../solstone/think/native/link/command.rs"]
+mod solstone_think_native_link_command_rs;
 #[path = "../../../../../solstone/think/native/moved/command.rs"]
 mod solstone_think_native_moved_command_rs;
 #[path = "../../../../../solstone/think/native/notify/command.rs"]
@@ -2050,6 +2052,20 @@ pub const ENTRIES: &[InventoryEntry] = &[
         handler: "import_top_level",
     },
     InventoryEntry {
+        surface: "sol-link",
+        path: &["link", "join"],
+        kind: "top-level",
+        help: "join a solstone with a short code or pair link",
+        authority_path: "solstone/think/native/link/authority.toml",
+        params_json: "[{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"home\",\"nargs\":1,\"options\":[\"--home\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"code\",\"nargs\":1,\"options\":[\"--code\"],\"required\":true,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"as_role\",\"nargs\":1,\"options\":[\"--as\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"label\",\"nargs\":1,\"options\":[\"--label\"],\"required\":false,\"secondary\":[],\"type\":\"text\"}]",
+        entry_type: "top-level-link",
+        operation_id: "link.join",
+        method: None,
+        route: None,
+        contract_operation_id: None,
+        handler: "link_join",
+    },
+    InventoryEntry {
         surface: "sol-call",
         path: &["identity"],
         kind: "callback",
@@ -2405,6 +2421,7 @@ pub const HANDLERS: &[Handler] = &[
     solstone_apps_transcripts_native_command_rs::stats,
     solstone_think_native_chat_command_rs::chat,
     solstone_think_native_import_command_rs::import_top_level,
+    solstone_think_native_link_command_rs::link_join,
     solstone_think_native_moved_command_rs::identity,
     solstone_think_native_moved_command_rs::navigate,
     solstone_think_native_notify_command_rs::notify,
