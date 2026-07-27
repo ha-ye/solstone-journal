@@ -20,7 +20,7 @@ from scripts.release_build_host import SourceBundle
 SOURCE_COMMIT = "a" * 40
 
 
-def _expected_macos_wheels() -> tuple[str, str]:
+def _expected_macos_wheels() -> tuple[str, str, str]:
     names = checker.expected_package_names(include_models=False)
     root = next(
         name
@@ -32,10 +32,16 @@ def _expected_macos_wheels() -> tuple[str, str]:
         for name in names
         if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
     )
-    return root, core
+    speakers_analyze = next(
+        name
+        for name in names
+        if name.startswith("solstone_core_speakers_analyze-")
+        and "macosx_14_0_arm64" in name
+    )
+    return root, core, speakers_analyze
 
 
-ROOT_WHEEL, CORE_WHEEL = _expected_macos_wheels()
+ROOT_WHEEL, CORE_WHEEL, SPEAKERS_ANALYZE_WHEEL = _expected_macos_wheels()
 
 
 def _run_git(repo: Path, argv: Sequence[str]) -> str:
@@ -246,15 +252,18 @@ def _channel(
             assert request["expected_outputs"] == {
                 "root_wheel": ROOT_WHEEL,
                 "core_wheel": CORE_WHEEL,
+                "speakers_analyze_wheel": SPEAKERS_ANALYZE_WHEEL,
                 "root_record": build_host.MACOS_ROOT_RECORD,
                 "core_record": build_host.MACOS_CORE_RECORD,
+                "speakers_analyze_record": (build_host.MACOS_SPEAKERS_ANALYZE_RECORD),
             }
             if during_build is not None:
                 during_build(cwd)
-            wheel_names = [ROOT_WHEEL, CORE_WHEEL]
+            wheel_names = [ROOT_WHEEL, CORE_WHEEL, SPEAKERS_ANALYZE_WHEEL]
             record_names = [
                 build_host.MACOS_ROOT_RECORD,
                 build_host.MACOS_CORE_RECORD,
+                build_host.MACOS_SPEAKERS_ANALYZE_RECORD,
             ]
             if write_files:
                 _write_expected(
@@ -324,10 +333,15 @@ def test_external_channel_validates_attestation_and_uses_shlex(
         output_dir=output_dir,
     )
 
-    assert [path.name for path in result.macos_wheels] == [ROOT_WHEEL, CORE_WHEEL]
+    assert [path.name for path in result.macos_wheels] == [
+        ROOT_WHEEL,
+        CORE_WHEEL,
+        SPEAKERS_ANALYZE_WHEEL,
+    ]
     assert [path.name for path in result.native_records] == [
         build_host.MACOS_ROOT_RECORD,
         build_host.MACOS_CORE_RECORD,
+        build_host.MACOS_SPEAKERS_ANALYZE_RECORD,
     ]
     assert calls == [
         ("adapter", "quoted arg", "build-macos", "request.json"),
@@ -741,7 +755,7 @@ def test_external_channel_rejects_unsafe_filename(
     bundle = _source_bundle(tmp_path)
 
     def mutate(payload: dict[str, object]) -> dict[str, object]:
-        payload["macos_wheels"] = [bad_name, CORE_WHEEL]
+        payload["macos_wheels"] = [bad_name, CORE_WHEEL, SPEAKERS_ANALYZE_WHEEL]
         return payload
 
     channel, _calls = _channel(
@@ -770,7 +784,7 @@ def test_external_channel_rejects_one_byte_filename_skew_before_acceptance(
     skewed_name = f"{ROOT_WHEEL[:-5]}x.whl"
 
     def mutate(payload: dict[str, object]) -> dict[str, object]:
-        payload["macos_wheels"] = [skewed_name, CORE_WHEEL]
+        payload["macos_wheels"] = [skewed_name, CORE_WHEEL, SPEAKERS_ANALYZE_WHEEL]
         return payload
 
     channel, _calls = _channel(
@@ -934,7 +948,7 @@ def test_external_channel_rejects_duplicates_extras_and_stale_output(
     bundle = _source_bundle(tmp_path)
 
     def duplicate_payload(payload: dict[str, object]) -> dict[str, object]:
-        payload["macos_wheels"] = [ROOT_WHEEL, ROOT_WHEEL]
+        payload["macos_wheels"] = [ROOT_WHEEL, ROOT_WHEEL, SPEAKERS_ANALYZE_WHEEL]
         return payload
 
     duplicate, _calls = _channel(
@@ -950,7 +964,12 @@ def test_external_channel_rejects_duplicates_extras_and_stale_output(
         )
 
     def extra_payload(payload: dict[str, object]) -> dict[str, object]:
-        payload["macos_wheels"] = [ROOT_WHEEL, CORE_WHEEL, "extra.whl"]
+        payload["macos_wheels"] = [
+            ROOT_WHEEL,
+            CORE_WHEEL,
+            SPEAKERS_ANALYZE_WHEEL,
+            "extra.whl",
+        ]
         return payload
 
     extra, _calls = _channel(

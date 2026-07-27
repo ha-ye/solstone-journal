@@ -9,9 +9,12 @@ from pathlib import Path
 
 from packaging.markers import Marker
 
+import solstone.think.probe as probe
 from solstone.think.probe import (
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_MARKERS,
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS,
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
     SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
     is_solstone_core_covered_platform,
 )
@@ -85,3 +88,20 @@ def test_core_pin_markers_match_probe_covered_platforms() -> None:
                 "platform_machine": machine,
             }
         ) != is_solstone_core_covered_platform(system, machine)
+
+
+def test_speakers_analyze_platform_tags_are_probe_declared_once() -> None:
+    assert SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS == (
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("darwin", "arm64"),
+    )
+    assert SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS == {
+        ("linux", "x86_64"): "manylinux_2_27_x86_64",
+        ("linux", "aarch64"): "manylinux_2_27_aarch64",
+        ("darwin", "arm64"): "macosx_14_0_arm64",
+    }
+    assert not hasattr(probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS")
+    assert not hasattr(
+        probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_UNSUPPORTED_PLATFORM_MARKER"
+    )

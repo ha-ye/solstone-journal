@@ -16,14 +16,25 @@ import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from scripts.stage_speakers_analyze_runtime import (
+    NOTICE_INSTALL_DIR as SPEAKERS_ANALYZE_NOTICE_INSTALL_DIR,
+)
+from scripts.stage_speakers_analyze_runtime import (
+    RUNTIME_INSTALL_DIR as SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
+)
+from scripts.stage_speakers_analyze_runtime import (
+    TARGETS as SPEAKERS_ANALYZE_TARGETS,
+)
 from solstone.think.probe import (
     SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_TAGS,
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS,
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
     CorePlatform,
     current_solstone_core_platform,
     is_solstone_core_covered_platform,
@@ -44,11 +55,13 @@ EXPECTED_MODEL_SHA256 = {
 MAX_BASE_WHEEL_BYTES = 4 * 1024 * 1024
 MAX_BASE_PLATFORM_WHEEL_BYTES = 6 * 1024 * 1024
 MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
+MAX_SPEAKERS_ANALYZE_WHEEL_BYTES = 30 * 1024 * 1024
 PARAKEET_HELPER_MEMBER = (
     "solstone/observe/transcribe/parakeet_helper/_bin/parakeet-helper"
 )
 ROOT_LAUNCHER_NAMES = ("sol", "solstone")
 CORE_SCRIPT_NAMES = ("solstone-core",)
+SPEAKERS_ANALYZE_SCRIPT_NAMES = ("solstone-core-speakers-analyze",)
 ELF_MAGIC = b"\x7fELF"
 ELF_CLASS_64 = 2
 ELF_DATA_LITTLE_ENDIAN = 1
@@ -58,8 +71,13 @@ ELF_MACHINE = {
 }
 PT_DYNAMIC = 2
 PT_INTERP = 3
+PT_LOAD = 1
 DT_NULL = 0
 DT_NEEDED = 1
+DT_STRTAB = 5
+DT_STRSZ = 10
+DT_RPATH = 15
+DT_RUNPATH = 29
 MH_MAGIC_64 = 0xFEEDFACF
 FAT_MAGIC = 0xCAFEBABE
 FAT_CIGAM = 0xBEBAFECA
@@ -146,6 +164,19 @@ CORE_REQUIRED_SDIST_MEMBERS = {
 CORE_TAG_PLATFORMS = {
     tag: platform for platform, tag in SOLSTONE_CORE_PLATFORM_TAGS.items()
 }
+SPEAKERS_ANALYZE_TAG_PLATFORMS = {
+    tag: platform
+    for platform, tag in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.items()
+}
+SPEAKERS_ANALYZE_PLATFORM_TARGETS = {
+    ("linux", "x86_64"): "linux-x86_64",
+    ("linux", "aarch64"): "linux-aarch64",
+    ("darwin", "arm64"): "macos-arm64",
+}
+SPEAKERS_ANALYZE_RUNPATH = "$ORIGIN/../lib/solstone-core-speakers-analyze"
+SPEAKERS_ANALYZE_FORBIDDEN_PROVIDER_RE = re.compile(
+    r"providers_(?:cuda|tensorrt|shared)", re.IGNORECASE
+)
 
 
 def _is_base_wheel(path: Path) -> bool:
@@ -158,6 +189,12 @@ def _is_models_wheel(path: Path) -> bool:
 
 def _is_core_wheel(path: Path) -> bool:
     return path.name.startswith("solstone_core-") and path.name.endswith(".whl")
+
+
+def _is_speakers_analyze_wheel(path: Path) -> bool:
+    return path.name.startswith(
+        "solstone_core_speakers_analyze-"
+    ) and path.name.endswith(".whl")
 
 
 def _is_core_sdist(path: Path) -> bool:
@@ -185,6 +222,14 @@ def _models_version() -> str:
 def _core_wheel_tag(path: Path) -> str:
     stem = path.name.removesuffix(".whl")
     return stem.split("-")[-1]
+
+
+def _wheel_version_from_name(path: Path, distribution: str) -> str:
+    stem = path.name.removesuffix(".whl")
+    prefix = f"{distribution}-"
+    if not stem.startswith(prefix):
+        raise ValueError(f"{path.name}: expected {distribution} wheel")
+    return stem.removeprefix(prefix).split("-", 1)[0]
 
 
 def _parse_core_platform(value: str) -> CorePlatform:
@@ -415,6 +460,137 @@ def _check_elf_dynamic_entries(
             break
         offset += 16
     return errors
+
+
+def _read_elf_c_string(content: bytes, offset: int) -> str | None:
+    if offset < 0 or offset >= len(content):
+        return None
+    end = content.find(b"\0", offset)
+    if end < 0:
+        return None
+    try:
+        return content[offset:end].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _elf_vaddr_to_offset(
+    vaddr: int, load_segments: Sequence[tuple[int, int, int]]
+) -> int | None:
+    for segment_vaddr, segment_offset, segment_size in load_segments:
+        if segment_vaddr <= vaddr < segment_vaddr + segment_size:
+            return segment_offset + (vaddr - segment_vaddr)
+    return None
+
+
+def _elf_dynamic_strings(content: bytes) -> tuple[list[str], str | None, str | None]:
+    if len(content) < 64 or content[:4] != ELF_MAGIC:
+        return [], None, None
+    phoff = struct.unpack_from("<Q", content, 32)[0]
+    phentsize = struct.unpack_from("<H", content, 54)[0]
+    phnum = struct.unpack_from("<H", content, 56)[0]
+    if phentsize < 56 or phoff + phentsize * phnum > len(content):
+        return [], None, None
+
+    load_segments: list[tuple[int, int, int]] = []
+    dynamic_offset: int | None = None
+    dynamic_size = 0
+    for index in range(phnum):
+        offset = phoff + phentsize * index
+        p_type = struct.unpack_from("<I", content, offset)[0]
+        p_offset = struct.unpack_from("<Q", content, offset + 8)[0]
+        p_vaddr = struct.unpack_from("<Q", content, offset + 16)[0]
+        p_filesz = struct.unpack_from("<Q", content, offset + 32)[0]
+        if p_type == PT_LOAD:
+            load_segments.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == PT_DYNAMIC:
+            dynamic_offset = p_offset
+            dynamic_size = p_filesz
+    if dynamic_offset is None:
+        return [], None, None
+
+    strtab_vaddr: int | None = None
+    needed_offsets: list[int] = []
+    runpath_offset: int | None = None
+    rpath_offset: int | None = None
+    offset = dynamic_offset
+    end = dynamic_offset + dynamic_size
+    while offset + 16 <= end and offset + 16 <= len(content):
+        tag, value = struct.unpack_from("<qQ", content, offset)
+        if tag == DT_NULL:
+            break
+        if tag == DT_STRTAB:
+            strtab_vaddr = value
+        elif tag == DT_NEEDED:
+            needed_offsets.append(value)
+        elif tag == DT_RUNPATH:
+            runpath_offset = value
+        elif tag == DT_RPATH:
+            rpath_offset = value
+        offset += 16
+    if strtab_vaddr is None:
+        return [], None, None
+
+    strtab_offset = _elf_vaddr_to_offset(strtab_vaddr, load_segments)
+    if strtab_offset is None:
+        return [], None, None
+    needed = [
+        value
+        for value in (
+            _read_elf_c_string(content, strtab_offset + needed_offset)
+            for needed_offset in needed_offsets
+        )
+        if value is not None
+    ]
+    runpath = (
+        _read_elf_c_string(content, strtab_offset + runpath_offset)
+        if runpath_offset is not None
+        else None
+    )
+    rpath = (
+        _read_elf_c_string(content, strtab_offset + rpath_offset)
+        if rpath_offset is not None
+        else None
+    )
+    return needed, runpath, rpath
+
+
+def _has_program_header(content: bytes, header_type: int) -> bool:
+    if len(content) < 64 or content[:4] != ELF_MAGIC:
+        return False
+    phoff = struct.unpack_from("<Q", content, 32)[0]
+    phentsize = struct.unpack_from("<H", content, 54)[0]
+    phnum = struct.unpack_from("<H", content, 56)[0]
+    if phentsize < 56 or phoff + phentsize * phnum > len(content):
+        return False
+    for index in range(phnum):
+        offset = phoff + phentsize * index
+        if struct.unpack_from("<I", content, offset)[0] == header_type:
+            return True
+    return False
+
+
+def _max_glibc_version(content: bytes) -> tuple[int, ...] | None:
+    versions = []
+    for match in re.finditer(rb"GLIBC_([0-9]+)\.([0-9]+)(?:\.([0-9]+))?", content):
+        versions.append(tuple(int(part) for part in match.groups(default=b"0")))
+    return max(versions) if versions else None
+
+
+def _format_version(version: tuple[int, ...] | None) -> str:
+    if version is None:
+        return "<none>"
+    parts = list(version)
+    while len(parts) > 2 and parts[-1] == 0:
+        parts.pop()
+    return ".".join(str(part) for part in parts)
+
+
+def _declared_manylinux_floor(tag: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"manylinux_(?P<major>[0-9]+)_(?P<minor>[0-9]+)_.+", tag)
+    if match is None:
+        return None
+    return (int(match.group("major")), int(match.group("minor")))
 
 
 def _check_elf_binary(
@@ -811,6 +987,308 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     return errors
 
 
+def _speakers_analyze_expected_members(
+    path: Path, platform_tuple: CorePlatform
+) -> tuple[set[str], str, str]:
+    version = _wheel_version_from_name(path, "solstone_core_speakers_analyze")
+    data_prefix = f"solstone_core_speakers_analyze-{version}.data"
+    dist_info_prefix = f"solstone_core_speakers_analyze-{version}.dist-info"
+    target_key = SPEAKERS_ANALYZE_PLATFORM_TARGETS[platform_tuple]
+    spec = SPEAKERS_ANALYZE_TARGETS[target_key]
+    binary_member = f"{data_prefix}/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]}"
+    library_member = (
+        f"{data_prefix}/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/"
+        f"{spec.runtime_staged_name}"
+    )
+    notice_members = {
+        f"{data_prefix}/{SPEAKERS_ANALYZE_NOTICE_INSTALL_DIR.as_posix()}/"
+        f"{notice.staged_name}"
+        for notice in spec.notices
+    }
+    return (
+        {
+            binary_member,
+            library_member,
+            *notice_members,
+            f"{dist_info_prefix}/METADATA",
+            f"{dist_info_prefix}/WHEEL",
+            f"{dist_info_prefix}/RECORD",
+            f"{dist_info_prefix}/sboms/solstone-core-speakers-analyze.cyclonedx.json",
+        },
+        binary_member,
+        library_member,
+    )
+
+
+def _check_speakers_analyze_elf_binary(
+    wheel_name: str,
+    content: bytes,
+    library_content: bytes,
+    platform_tuple: CorePlatform,
+    tag: str,
+) -> list[str]:
+    errors: list[str] = []
+    repair = "make wheel-speakers-analyze-linux-x86_64"
+    machine_name = platform_tuple[1]
+    expected_machine = ELF_MACHINE[machine_name]
+    if len(content) < 64 or content[:4] != ELF_MAGIC:
+        return [
+            _failure(
+                wheel_name,
+                "speakers analyze binary is not ELF64",
+                expected="ELF64 helper binary",
+                actual=content[:4].hex(),
+                repair=repair,
+            )
+        ]
+    actual_machine = struct.unpack_from("<H", content, 18)[0]
+    if actual_machine != expected_machine:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF machine does not match wheel tag",
+                expected=f"{machine_name} ({expected_machine:#06x})",
+                actual=f"{actual_machine:#06x}",
+                repair=repair,
+            )
+        )
+    if not _has_program_header(content, PT_INTERP):
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF binary is missing PT_INTERP",
+                expected="PT_INTERP program header present",
+                actual="missing",
+                repair=repair,
+            )
+        )
+    needed, runpath, rpath = _elf_dynamic_strings(content)
+    if not needed:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF binary is missing DT_NEEDED",
+                expected="at least one DT_NEEDED entry",
+                actual="<empty>",
+                repair=repair,
+            )
+        )
+    if "libonnxruntime.so.1" not in needed:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF binary does not need ONNX Runtime",
+                expected="DT_NEEDED libonnxruntime.so.1",
+                actual=", ".join(needed) or "<empty>",
+                repair=repair,
+            )
+        )
+    if runpath != SPEAKERS_ANALYZE_RUNPATH:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF RUNPATH is wrong",
+                expected=SPEAKERS_ANALYZE_RUNPATH,
+                actual=runpath or "<missing>",
+                repair=repair,
+            )
+        )
+    if rpath is not None:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze ELF uses legacy RPATH",
+                expected="DT_RUNPATH only",
+                actual=rpath,
+                repair=repair,
+            )
+        )
+
+    declared = _declared_manylinux_floor(tag)
+    binary_glibc = _max_glibc_version(content)
+    library_glibc = _max_glibc_version(library_content)
+    measured = max(
+        (version for version in (binary_glibc, library_glibc) if version is not None),
+        default=None,
+    )
+    if declared is None:
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze wheel tag does not declare a manylinux floor",
+                expected="manylinux_N_M platform tag",
+                actual=tag,
+                repair=repair,
+            )
+        )
+    elif measured is not None and declared < (measured[0], measured[1]):
+        errors.append(
+            _failure(
+                wheel_name,
+                "speakers analyze wheel tag understates GLIBC floor",
+                expected=f"declared floor >= measured GLIBC_{_format_version(measured)}",
+                actual=f"{tag} declares glibc {declared[0]}.{declared[1]}",
+                repair=repair,
+            )
+        )
+    return errors
+
+
+def check_speakers_analyze_wheel(path: Path) -> list[str]:
+    errors: list[str] = []
+    size = path.stat().st_size
+    if size > MAX_SPEAKERS_ANALYZE_WHEEL_BYTES:
+        errors.append(
+            _failure(
+                path.name,
+                "speakers analyze wheel is too large",
+                expected=f"<= {MAX_SPEAKERS_ANALYZE_WHEEL_BYTES} bytes",
+                actual=str(size),
+                repair="make wheel-speakers-analyze-linux-x86_64",
+            )
+        )
+    tag = _core_wheel_tag(path)
+    platform_tuple = SPEAKERS_ANALYZE_TAG_PLATFORMS.get(tag)
+    if platform_tuple is None:
+        errors.append(
+            _failure(
+                path.name,
+                "unsupported speakers analyze wheel tag",
+                expected=", ".join(
+                    sorted(SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.values())
+                ),
+                actual=tag,
+                repair="make wheel-speakers-analyze-linux-x86_64",
+            )
+        )
+        return errors
+
+    expected_members, binary_member, library_member = (
+        _speakers_analyze_expected_members(path, platform_tuple)
+    )
+    target_key = SPEAKERS_ANALYZE_PLATFORM_TARGETS[platform_tuple]
+    spec = SPEAKERS_ANALYZE_TARGETS[target_key]
+    with zipfile.ZipFile(path) as wheel:
+        names = set(wheel.namelist())
+        if names != expected_members:
+            errors.append(
+                _failure(
+                    path.name,
+                    "speakers analyze wheel member set is wrong",
+                    expected=", ".join(sorted(expected_members)),
+                    actual=", ".join(sorted(names)) or "<empty>",
+                    repair="make wheel-speakers-analyze-linux-x86_64",
+                )
+            )
+        provider_members = sorted(
+            name
+            for name in names
+            if SPEAKERS_ANALYZE_FORBIDDEN_PROVIDER_RE.search(Path(name).name)
+        )
+        if provider_members:
+            errors.append(
+                _failure(
+                    path.name,
+                    "speakers analyze wheel contains unproven provider library",
+                    expected="no providers_cuda, providers_tensorrt, or providers_shared libraries",
+                    actual=", ".join(provider_members),
+                    repair="python3 scripts/stage_speakers_analyze_runtime.py",
+                )
+            )
+        binary_infos = [
+            info for info in wheel.infolist() if info.filename == binary_member
+        ]
+        if len(binary_infos) != 1:
+            errors.append(
+                _failure(
+                    path.name,
+                    "speakers analyze binary member count is wrong",
+                    expected=f"exactly one {binary_member}",
+                    actual=str(len(binary_infos)),
+                    repair="make wheel-speakers-analyze-linux-x86_64",
+                )
+            )
+        else:
+            mode = (binary_infos[0].external_attr >> 16) & 0o777
+            if mode & 0o111 == 0:
+                errors.append(
+                    _failure(
+                        path.name,
+                        "speakers analyze binary is not executable",
+                        expected="executable mode bit set",
+                        actual=oct(mode),
+                        repair="make wheel-speakers-analyze-linux-x86_64",
+                    )
+                )
+
+        try:
+            library_content = wheel.read(library_member)
+        except KeyError:
+            library_content = b""
+        actual_library_sha = hashlib.sha256(library_content).hexdigest()
+        if actual_library_sha != spec.runtime_sha256:
+            errors.append(
+                _failure(
+                    path.name,
+                    "speakers analyze ONNX Runtime library digest mismatch",
+                    expected=spec.runtime_sha256,
+                    actual=actual_library_sha,
+                    repair="python3 scripts/stage_speakers_analyze_runtime.py",
+                )
+            )
+        for notice in spec.notices:
+            notice_member = (
+                f"solstone_core_speakers_analyze-{_wheel_version_from_name(path, 'solstone_core_speakers_analyze')}.data/"
+                f"{SPEAKERS_ANALYZE_NOTICE_INSTALL_DIR.as_posix()}/{notice.staged_name}"
+            )
+            try:
+                notice_content = wheel.read(notice_member)
+            except KeyError:
+                notice_content = b""
+            actual_notice_sha = hashlib.sha256(notice_content).hexdigest()
+            if actual_notice_sha != notice.sha256:
+                errors.append(
+                    _failure(
+                        path.name,
+                        f"speakers analyze notice digest mismatch for {notice.staged_name}",
+                        expected=notice.sha256,
+                        actual=actual_notice_sha,
+                        repair="python3 scripts/stage_speakers_analyze_runtime.py",
+                    )
+                )
+        if binary_infos:
+            binary_content = wheel.read(binary_member)
+            if platform_tuple[0] == "linux":
+                errors.extend(
+                    _check_speakers_analyze_elf_binary(
+                        f"{path.name}:{binary_member}",
+                        binary_content,
+                        library_content,
+                        platform_tuple,
+                        tag,
+                    )
+                )
+            else:
+                errors.extend(
+                    _check_macho_binary(
+                        f"{path.name}:{binary_member}",
+                        binary_content,
+                        platform_tuple,
+                        binary_label="solstone-core-speakers-analyze",
+                    )
+                )
+                errors.extend(
+                    _check_macho_binary(
+                        f"{path.name}:{library_member}",
+                        library_content,
+                        platform_tuple,
+                        binary_label="libonnxruntime.1.25.0.dylib",
+                    )
+                )
+        errors.extend(_check_record(path, wheel))
+    return errors
+
+
 def check_core_sdist(path: Path) -> list[str]:
     errors: list[str] = []
     with tarfile.open(path, "r:gz") as archive:
@@ -844,6 +1322,18 @@ def _core_platforms_for_scope(scope: ReleaseScope) -> tuple[CorePlatform, ...]:
     )
 
 
+def _speakers_analyze_platforms_for_scope(
+    scope: ReleaseScope,
+) -> tuple[CorePlatform, ...]:
+    if scope == "all-hosts":
+        return SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+    return tuple(
+        platform_tuple
+        for platform_tuple in SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+        if platform_tuple[0] == "linux"
+    )
+
+
 def _release_artifact_members(
     dist_dir: Path,
     *,
@@ -873,6 +1363,16 @@ def _release_artifact_members(
             (
                 dist_dir / f"solstone_core-{version}-py3-none-{tag}.whl",
                 f"core wheel for {platform_tuple[0]}/{platform_tuple[1]}",
+            )
+        )
+    for platform_tuple in _speakers_analyze_platforms_for_scope(release_scope):
+        tag = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[platform_tuple]
+        artifacts.append(
+            (
+                dist_dir
+                / f"solstone_core_speakers_analyze-{version}-py3-none-{tag}.whl",
+                "speakers analyze helper wheel for "
+                f"{platform_tuple[0]}/{platform_tuple[1]}",
             )
         )
     if release_scope == "all-hosts":
@@ -966,14 +1466,25 @@ def check_dist(
     base_wheels = [path for path in wheels if _is_base_wheel(path)]
     models_wheels = [path for path in wheels if _is_models_wheel(path)]
     core_wheels = [path for path in wheels if _is_core_wheel(path)]
+    speakers_analyze_wheels = [
+        path for path in wheels if _is_speakers_analyze_wheel(path)
+    ]
     core_sdists = sorted(
         path for path in dist_dir.glob("*.tar.gz") if _is_core_sdist(path)
     )
+    helper_only_dist = (
+        speakers_analyze_wheels
+        and not base_wheels
+        and not models_wheels
+        and not core_wheels
+        and not core_sdists
+        and release_scope is None
+    )
 
-    if not base_wheels:
+    if not helper_only_dist and not base_wheels:
         errors.append(f"{dist_dir}: no solstone base wheel found")
     require_models_wheel = release_scope is None or models_decision == "publish"
-    if require_models_wheel and not models_wheels:
+    if not helper_only_dist and require_models_wheel and not models_wheels:
         errors.append(f"{dist_dir}: no solstone_journal_models wheel found")
     system, machine = current_solstone_core_platform()
     required_tags: dict[str, str] = {}
@@ -986,12 +1497,14 @@ def check_dist(
             f"{platform_tuple[0]}/{platform_tuple[1]}"
         )
     found_core_tags = {_core_wheel_tag(path) for path in core_wheels}
-    for tag, platform_name in sorted(required_tags.items()):
-        if tag not in found_core_tags:
-            errors.append(
-                f"{dist_dir}: no solstone_core wheel found for {platform_name} ({tag})"
-            )
-    if not core_sdists:
+    if not helper_only_dist:
+        for tag, platform_name in sorted(required_tags.items()):
+            if tag not in found_core_tags:
+                errors.append(
+                    f"{dist_dir}: no solstone_core wheel found for "
+                    f"{platform_name} ({tag})"
+                )
+    if not helper_only_dist and not core_sdists:
         errors.append(f"{dist_dir}: no solstone_core sdist found")
 
     for path in base_wheels:
@@ -1000,6 +1513,8 @@ def check_dist(
         errors.extend(check_models_wheel(path, expected))
     for path in core_wheels:
         errors.extend(check_core_wheel(path, MAX_CORE_WHEEL_BYTES))
+    for path in speakers_analyze_wheels:
+        errors.extend(check_speakers_analyze_wheel(path))
     for path in core_sdists:
         errors.extend(check_core_sdist(path))
     if release_scope is not None:

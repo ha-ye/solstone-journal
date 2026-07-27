@@ -77,6 +77,7 @@ def test_live_lock_authorities_match_root_project_version() -> None:
     uv_workspace_names = {
         "solstone",
         "solstone-core",
+        "solstone-core-speakers-analyze",
         "solstone-journal",
         "solstone-journal-cuda",
     }
@@ -157,6 +158,25 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         manifest-path = "../../core/crates/solstone-core/Cargo.toml"
         profile = "release"
         strip = true
+        """,
+    )
+    _write(
+        tmp_path / "packages" / "solstone-core-speakers-analyze" / "pyproject.toml",
+        """
+        [build-system]
+        requires = ["maturin==1.14.1"]
+        build-backend = "maturin"
+
+        [project]
+        name = "solstone-core-speakers-analyze"
+        version = "0.0.1"
+
+        [tool.maturin]
+        bindings = "bin"
+        manifest-path = "../../core/crates/solstone-core-speakers-analyze/Cargo.toml"
+        profile = "release"
+        strip = true
+        data = "wheel-data"
         """,
     )
     _write(
@@ -290,6 +310,11 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     core_leaf = rendered[root / "packages" / "solstone-core" / "pyproject.toml"]
     assert 'version = "2.3.4"' in core_leaf
     assert "solstone[journal-host]==" not in core_leaf
+    speakers_analyze_leaf = rendered[
+        root / "packages" / "solstone-core-speakers-analyze" / "pyproject.toml"
+    ]
+    assert 'version = "2.3.4"' in speakers_analyze_leaf
+    assert "solstone[journal-host]==" not in speakers_analyze_leaf
     root_pyproject = rendered[root / "pyproject.toml"]
     for marker in SOLSTONE_CORE_PLATFORM_MARKERS:
         assert f'"solstone-core==2.3.4; {marker}"' in root_pyproject
@@ -318,6 +343,7 @@ def test_check_reports_synthetic_packaging_drift(
     assert "packaging metadata is stale" in out
     assert "drifted: pyproject.toml" in out
     assert "drifted: packages/solstone-core/pyproject.toml" in out
+    assert "drifted: packages/solstone-core-speakers-analyze/pyproject.toml" in out
     assert (
         "drifted: scripts/solstone-core-unsupported-platform-tombstone/setup.py" in out
     )

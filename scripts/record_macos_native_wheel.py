@@ -24,6 +24,9 @@ from scripts.check_rust_release_manifest import (
 from scripts.check_wheel_contents import (
     CORE_SCRIPT_NAMES,
     PARAKEET_HELPER_MEMBER,
+    SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
+    SPEAKERS_ANALYZE_TARGETS,
     core_wheel_script_members,
 )
 from scripts.release_digest import file_sha256_size
@@ -38,7 +41,7 @@ from scripts.release_tool_pins import (
     tool_value_matches_pin,
 )
 
-NativeRole = Literal["root", "core"]
+NativeRole = Literal["root", "core", "speakers-analyze"]
 
 KIND = "macos-native-record/v1"
 TARGET = {
@@ -90,23 +93,61 @@ def _members_for_role(
             info for info in wheel.infolist() if info.filename == PARAKEET_HELPER_MEMBER
         ]
         return {"parakeet-helper": helpers[0]} if len(helpers) == 1 else None
-    scripts = core_wheel_script_members(wheel)
-    names = {Path(info.filename).name for info in scripts}
-    if len(scripts) != len(CORE_SCRIPT_NAMES) or names != set(CORE_SCRIPT_NAMES):
+    if role == "core":
+        scripts = core_wheel_script_members(wheel)
+        names = {Path(info.filename).name for info in scripts}
+        if len(scripts) != len(CORE_SCRIPT_NAMES) or names != set(CORE_SCRIPT_NAMES):
+            return None
+        return {Path(info.filename).name: info for info in scripts}
+
+    script_members = [
+        info
+        for info in wheel.infolist()
+        if info.filename.endswith(f".data/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]}")
+    ]
+    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    dylib_suffix = (
+        f".data/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
+    )
+    dylib_members = [
+        info for info in wheel.infolist() if info.filename.endswith(dylib_suffix)
+    ]
+    if len(script_members) != 1 or len(dylib_members) != 1:
         return None
-    return {Path(info.filename).name: info for info in scripts}
+    return {
+        SPEAKERS_ANALYZE_SCRIPT_NAMES[0]: script_members[0],
+        dylib_name: dylib_members[0],
+    }
 
 
 def _expected_member_path(role: NativeRole) -> str:
     if role == "root":
         return PARAKEET_HELPER_MEMBER
-    return ", ".join(f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES)
+    if role == "core":
+        return ", ".join(f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES)
+    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    return (
+        f".data/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]} and "
+        f".data/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
+    )
 
 
 def _role_matches_wheel(role: NativeRole, wheel_name: str) -> bool:
     if role == "root":
         return wheel_name.startswith("solstone-") and wheel_name.endswith(".whl")
-    return wheel_name.startswith("solstone_core-") and wheel_name.endswith(".whl")
+    if role == "core":
+        return wheel_name.startswith("solstone_core-") and wheel_name.endswith(".whl")
+    return wheel_name.startswith(
+        "solstone_core_speakers_analyze-"
+    ) and wheel_name.endswith(".whl")
+
+
+def _primary_member_name(role: NativeRole) -> str:
+    if role == "root":
+        return "parakeet-helper"
+    if role == "core":
+        return "solstone-core"
+    return SPEAKERS_ANALYZE_SCRIPT_NAMES[0]
 
 
 def _read_members(
@@ -255,7 +296,7 @@ def _facts_by_member(
     if set(signing_facts) != {"members"}:
         return {}, [
             _failure(
-                "macOS core signing facts key set is wrong",
+                f"macOS {role} signing facts key set is wrong",
                 expected="members",
                 actual=", ".join(sorted(str(key) for key in signing_facts))
                 or "<empty>",
@@ -266,29 +307,37 @@ def _facts_by_member(
     if not isinstance(members, Mapping):
         return {}, [
             _failure(
-                "macOS core signing facts are missing members",
-                expected="members object keyed by solstone-core",
+                f"macOS {role} signing facts are missing members",
+                expected=f"members object keyed by {_expected_member_path(role)}",
                 actual=type(members).__name__,
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
-    if set(members) != set(CORE_SCRIPT_NAMES):
+    expected_names = (
+        set(CORE_SCRIPT_NAMES)
+        if role == "core"
+        else {
+            SPEAKERS_ANALYZE_SCRIPT_NAMES[0],
+            SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name,
+        }
+    )
+    if set(members) != expected_names:
         return {}, [
             _failure(
-                "macOS core signing facts member set is wrong",
-                expected=", ".join(CORE_SCRIPT_NAMES),
+                f"macOS {role} signing facts member set is wrong",
+                expected=", ".join(sorted(expected_names)),
                 actual=", ".join(sorted(str(key) for key in members)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
     failures: list[Failure] = []
     normalized: dict[str, Mapping[str, Any]] = {}
-    for name in sorted(CORE_SCRIPT_NAMES):
+    for name in sorted(expected_names):
         facts = members.get(name)
         if not isinstance(facts, Mapping):
             failures.append(
                 _failure(
-                    f"macOS core signing facts for {name} are invalid",
+                    f"macOS {role} signing facts for {name} are invalid",
                     expected="JSON object",
                     actual=type(facts).__name__,
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -376,8 +425,8 @@ def build_macos_native_record(
         if len(tool_payloads) != 1:
             failures.append(
                 _failure(
-                    "macOS signing tool facts differ across core members",
-                    expected="identical signing tool facts for every core member",
+                    f"macOS signing tool facts differ across {role} members",
+                    expected=f"identical signing tool facts for every {role} member",
                     actual=str(len(tool_payloads)),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -386,7 +435,7 @@ def build_macos_native_record(
         raise NativeRecordError(failures)
 
     wheel_sha256, wheel_bytes = file_sha256_size(wheel_path)
-    primary_name = "parakeet-helper" if role == "root" else "solstone-core"
+    primary_name = _primary_member_name(role)
     primary_facts = facts_by_member[primary_name]
     tools = primary_facts["tools"]
     record: dict[str, Any] = {
@@ -530,7 +579,7 @@ def validate_macos_native_record(
             name: _member_entry(member_path, member_bytes)
             for name, (member_path, member_bytes) in wheel_members.items()
         }
-        primary_name = "parakeet-helper" if role == "root" else "solstone-core"
+        primary_name = _primary_member_name(role)
         expected_member = expected_members[primary_name]
         if record.get("member") != expected_member:
             failures.append(
@@ -613,7 +662,9 @@ def write_macos_native_record(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--role", choices=("root", "core"), required=True)
+    parser.add_argument(
+        "--role", choices=("root", "core", "speakers-analyze"), required=True
+    )
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--signing-facts", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)

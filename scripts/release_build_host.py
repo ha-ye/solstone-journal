@@ -34,7 +34,10 @@ FileCopier = Callable[[Path, Path], object]
 
 MACOS_ROOT_RECORD = "macos-native-root.json"
 MACOS_CORE_RECORD = "macos-native-core.json"
-EXPECTED_NATIVE_RECORDS = frozenset((MACOS_ROOT_RECORD, MACOS_CORE_RECORD))
+MACOS_SPEAKERS_ANALYZE_RECORD = "macos-native-speakers-analyze.json"
+EXPECTED_NATIVE_RECORDS = frozenset(
+    (MACOS_ROOT_RECORD, MACOS_CORE_RECORD, MACOS_SPEAKERS_ANALYZE_RECORD)
+)
 REQUEST_KEYS = frozenset(
     (
         "schema_version",
@@ -48,7 +51,14 @@ REQUEST_KEYS = frozenset(
 )
 REQUEST_BUNDLE_KEYS = frozenset(("path", "source_commit", "sha256", "bytes"))
 REQUEST_OUTPUT_KEYS = frozenset(
-    ("root_wheel", "core_wheel", "root_record", "core_record")
+    (
+        "root_wheel",
+        "core_wheel",
+        "speakers_analyze_wheel",
+        "root_record",
+        "core_record",
+        "speakers_analyze_record",
+    )
 )
 REQUEST_PATH_KEYS = frozenset(("response", "output_dir"))
 RESPONSE_KEYS = frozenset(
@@ -493,15 +503,19 @@ def _validate_source_bundle(
 
 
 def _wheel_role(name: str) -> str | None:
-    expected_root, expected_core = _expected_macos_wheel_names()
+    expected_root, expected_core, expected_speakers_analyze = (
+        _expected_macos_wheel_names()
+    )
     if name == expected_core:
         return "core"
     if name == expected_root:
         return "root"
+    if name == expected_speakers_analyze:
+        return "speakers-analyze"
     return None
 
 
-def _expected_macos_wheel_names() -> tuple[str, str]:
+def _expected_macos_wheel_names() -> tuple[str, str, str]:
     expected_wheels = expected_package_names(include_models=False)
     expected_root = next(
         item
@@ -513,11 +527,19 @@ def _expected_macos_wheel_names() -> tuple[str, str]:
         for item in expected_wheels
         if item.startswith("solstone_core-") and "macosx_14_0_arm64" in item
     )
-    return expected_root, expected_core
+    expected_speakers_analyze = next(
+        item
+        for item in expected_wheels
+        if item.startswith("solstone_core_speakers_analyze-")
+        and "macosx_14_0_arm64" in item
+    )
+    return expected_root, expected_core, expected_speakers_analyze
 
 
 def _expected_release_version() -> str:
-    expected_root, _expected_core = _expected_macos_wheel_names()
+    expected_root, _expected_core, _expected_speakers_analyze = (
+        _expected_macos_wheel_names()
+    )
     return expected_root.removeprefix("solstone-").split("-", 1)[0]
 
 
@@ -698,7 +720,7 @@ def _names_from_payload(
             failures.append(
                 _failure(
                     "build-host returned unexpected macOS wheel",
-                    expected="root and core macOS arm64 wheels",
+                    expected="root, core, and speakers-analyze macOS arm64 wheels",
                     actual=safe,
                     repair="bash scripts/release.sh --candidate",
                 )
@@ -708,7 +730,9 @@ def _names_from_payload(
             failures.append(
                 _failure(
                     "build-host returned duplicate macOS wheel role",
-                    expected="one root wheel and one core wheel",
+                    expected=(
+                        "one root wheel, one core wheel, and one speakers-analyze wheel"
+                    ),
                     actual=role,
                     repair="bash scripts/release.sh --candidate",
                 )
@@ -717,11 +741,13 @@ def _names_from_payload(
     safe_records = tuple(
         safe for value in raw_records if (safe := _safe_basename(value)) is not None
     )
-    if set(wheel_by_role) != {"root", "core"}:
+    if set(wheel_by_role) != {"root", "core", "speakers-analyze"}:
         failures.append(
             _failure(
                 "build-host returned wrong macOS wheel set",
-                expected="one root wheel and one core wheel",
+                expected=(
+                    "one root wheel, one core wheel, and one speakers-analyze wheel"
+                ),
                 actual=", ".join(sorted(wheel_by_role)) or "<empty>",
                 repair="bash scripts/release.sh --candidate",
             )
@@ -738,8 +764,12 @@ def _names_from_payload(
     if failures:
         raise BuildHostError(failures)
     return (
-        (wheel_by_role["root"], wheel_by_role["core"]),
-        (MACOS_ROOT_RECORD, MACOS_CORE_RECORD),
+        (
+            wheel_by_role["root"],
+            wheel_by_role["core"],
+            wheel_by_role["speakers-analyze"],
+        ),
+        (MACOS_ROOT_RECORD, MACOS_CORE_RECORD, MACOS_SPEAKERS_ANALYZE_RECORD),
     )
 
 
@@ -888,7 +918,7 @@ class ExternalBuildHostChannel:
         source_bundle: SourceBundle,
         expected_commit: str,
     ) -> dict[str, object]:
-        root_wheel, core_wheel = _expected_macos_wheel_names()
+        root_wheel, core_wheel, speakers_analyze_wheel = _expected_macos_wheel_names()
         payload: dict[str, object] = {
             "schema_version": 1,
             "cohort_id": cohort_id,
@@ -903,8 +933,10 @@ class ExternalBuildHostChannel:
             "expected_outputs": {
                 "root_wheel": root_wheel,
                 "core_wheel": core_wheel,
+                "speakers_analyze_wheel": speakers_analyze_wheel,
                 "root_record": MACOS_ROOT_RECORD,
                 "core_record": MACOS_CORE_RECORD,
+                "speakers_analyze_record": MACOS_SPEAKERS_ANALYZE_RECORD,
             },
             "paths": {
                 "response": "response.json",

@@ -571,7 +571,11 @@ def test_macos_tool_finalizer_requires_valid_native_records() -> None:
 
     final, failures = preflight.finalize_macos_tool_evidence(
         preflight_evidence,
-        (_native_record("root"), _native_record("core")),
+        (
+            _native_record("root"),
+            _native_record("core"),
+            _native_record("speakers-analyze"),
+        ),
     )
 
     assert failures == []
@@ -582,7 +586,11 @@ def test_macos_tool_finalizer_requires_valid_native_records() -> None:
     bad_record["notarization_status"] = "rejected"
     final, failures = preflight.finalize_macos_tool_evidence(
         preflight_evidence,
-        (bad_record, _native_record("core")),
+        (
+            bad_record,
+            _native_record("core"),
+            _native_record("speakers-analyze"),
+        ),
     )
 
     assert final is None

@@ -88,11 +88,24 @@ def _write_metadata_wheel(path: Path) -> None:
                 for name, content in members.items()
             )
             members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        if path.name.startswith("solstone_core_speakers_analyze-"):
+            script_name = smoke.SPEAKERS_ANALYZE_SCRIPT_NAME
+            script_path = (
+                f"solstone_core_speakers_analyze-{version}.data/scripts/{script_name}"
+            )
+            members[script_path] = f"#!/bin/sh\necho {script_name}\n".encode("utf-8")
+            record_name = f"solstone_core_speakers_analyze-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
         for name, content in members.items():
             info = zipfile.ZipInfo(name)
             info.external_attr = (
                 0o755 << 16
-                if Path(name).name in smoke.ROOT_LAUNCHER_NAMES
+                if Path(name).name
+                in (*smoke.ROOT_LAUNCHER_NAMES, smoke.SPEAKERS_ANALYZE_SCRIPT_NAME)
                 else 0o644 << 16
             )
             wheel.writestr(info, content)
@@ -171,6 +184,7 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
     for name in (
         "solstone-1.0.0-py3-none-any.whl",
         "solstone_core-1.0.0-py3-none-linux_x86_64.whl",
+        "solstone_core_speakers_analyze-1.0.0-py3-none-manylinux_2_27_x86_64.whl",
     ):
         _write_metadata_wheel(candidate_dir / name)
     native_members = {
@@ -236,10 +250,19 @@ def _write_valid_install_proof(
     executable_paths = {
         name: env_root / "bin" / name for name in smoke.INSTALL_SCRIPT_NAMES
     }
+    if request_payload["target"] in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        executable_paths[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME] = (
+            env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME
+        )
     for name in smoke.ROOT_LAUNCHER_NAMES:
         executable_paths[name].write_bytes(ROOT_LAUNCHER_BYTES[name])
     for name in smoke.CORE_SCRIPT_NAMES:
         executable_paths[name].write_text(name, encoding="utf-8")
+    if smoke.SPEAKERS_ANALYZE_SCRIPT_NAME in executable_paths:
+        executable_paths[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME].write_text(
+            smoke.SPEAKERS_ANALYZE_SCRIPT_NAME,
+            encoding="utf-8",
+        )
     install_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=request_payload["target"],
@@ -290,13 +313,26 @@ def _write_valid_install_proof(
                 for name, path in sorted(executable_paths.items())
             ),
             smoke={
-                name: smoke.CommandResult(
-                    argv=(str(path), "--version"),
-                    exit_code=0,
-                    stdout=(
-                        f"{smoke.CORE_SMOKE_STDOUT[name]} {request_payload['version']}"
-                    ),
-                    env=smoke.SCRUBBED_COMMAND_ENV,
+                name: (
+                    smoke.CommandResult(
+                        argv=(str(path),),
+                        exit_code=0,
+                        stdout=json.dumps(
+                            {"schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                            separators=(",", ":"),
+                        ),
+                        env=smoke.SCRUBBED_COMMAND_ENV,
+                    )
+                    if name == smoke.SPEAKERS_ANALYZE_SCRIPT_NAME
+                    else smoke.CommandResult(
+                        argv=(str(path), "--version"),
+                        exit_code=0,
+                        stdout=(
+                            f"{smoke.CORE_SMOKE_STDOUT[name]} "
+                            f"{request_payload['version']}"
+                        ),
+                        env=smoke.SCRUBBED_COMMAND_ENV,
+                    )
                 )
                 for name, path in sorted(executable_paths.items())
             },
@@ -354,10 +390,11 @@ def test_build_request_response_round_trip_through_rail_parser(
     evidence = build_rail._validate_macos_tool_evidence(response)
     wheel_names, record_names = build_rail._names_from_payload(response)
     assert set(evidence) == set(expected_presign_lane_tool_evidence("macos-arm64"))
-    assert len(wheel_names) == 2
+    assert len(wheel_names) == 3
     assert tuple(record_names) == (
         build_rail.MACOS_ROOT_RECORD,
         build_rail.MACOS_CORE_RECORD,
+        build_rail.MACOS_SPEAKERS_ANALYZE_RECORD,
     )
 
 

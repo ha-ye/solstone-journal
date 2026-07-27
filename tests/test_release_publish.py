@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 
 import scripts.check_rust_release_manifest as manifest
+import scripts.check_wheel_contents as wheel_checker
 import scripts.release_publish as publisher
 from scripts.release_candidate_driver import (
     CandidateReport,
@@ -25,6 +27,13 @@ from scripts.release_candidate_driver import (
 )
 from scripts.transparency_core import failure
 from tests.helpers.release_candidate_fixtures import (
+    MACOS_ONNXRUNTIME,
+    SPEAKERS_ANALYZE_LICENSE_BYTES,
+    SPEAKERS_ANALYZE_RUNTIME_BYTES,
+    SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES,
+    write_core_unsupported_tombstone_record,
+)
+from tests.helpers.release_candidate_fixtures import (
     env as real_candidate_env,
 )
 from tests.helpers.release_candidate_fixtures import (
@@ -32,9 +41,6 @@ from tests.helpers.release_candidate_fixtures import (
 )
 from tests.helpers.release_candidate_fixtures import (
     services as real_candidate_services,
-)
-from tests.helpers.release_candidate_fixtures import (
-    write_core_unsupported_tombstone_record,
 )
 
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
@@ -45,6 +51,48 @@ PROOF_TARGETS = (
     "linux-aarch64-musl",
     "macos-arm64",
 )
+
+
+@pytest.fixture(autouse=True)
+def _patch_speakers_analyze_fixture_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched_targets = {}
+    for target, spec in tuple(wheel_checker.SPEAKERS_ANALYZE_TARGETS.items()):
+        runtime = (
+            MACOS_ONNXRUNTIME
+            if target == "macos-arm64"
+            else SPEAKERS_ANALYZE_RUNTIME_BYTES
+        )
+        notices = (
+            replace(
+                spec.notices[0],
+                sha256=hashlib.sha256(SPEAKERS_ANALYZE_LICENSE_BYTES).hexdigest(),
+            ),
+            replace(
+                spec.notices[1],
+                sha256=hashlib.sha256(
+                    SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES
+                ).hexdigest(),
+            ),
+        )
+        patched_targets[target] = replace(
+            spec,
+            runtime_sha256=hashlib.sha256(runtime).hexdigest(),
+            notices=notices,
+        )
+    for module in (
+        wheel_checker,
+        sys.modules.get("check_wheel_contents"),
+    ):
+        if module is None:
+            continue
+        for target, spec in patched_targets.items():
+            monkeypatch.setitem(
+                module.SPEAKERS_ANALYZE_TARGETS,
+                target,
+                spec,
+            )
 
 
 def _sha(path: Path) -> tuple[str, int]:

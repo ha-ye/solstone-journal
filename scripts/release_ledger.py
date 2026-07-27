@@ -423,11 +423,11 @@ def _native_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     failures: list[Failure] = []
     for record in records:
         role = record.get("role")
-        if role not in {"root", "core"}:
+        if role not in {"root", "core", "speakers-analyze"}:
             failures.append(
                 _failure(
                     "macOS native record role is invalid",
-                    expected="root or core",
+                    expected="root, core, or speakers-analyze",
                     actual=str(role),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -437,18 +437,18 @@ def _native_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             failures.append(
                 _failure(
                     "macOS native record role is duplicated",
-                    expected="one root and one core record",
+                    expected="one root, one core, and one speakers-analyze record",
                     actual=str(role),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
             continue
         by_role[str(role)] = record
-    if set(by_role) != {"root", "core"}:
+    if set(by_role) != {"root", "core", "speakers-analyze"}:
         failures.append(
             _failure(
                 "macOS native record set is incomplete",
-                expected="exactly root and core records",
+                expected="exactly root, core, and speakers-analyze records",
                 actual=", ".join(sorted(by_role)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -481,6 +481,7 @@ def _native_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {
         "macos_root_helper": summarize(by_role["root"]),
         "macos_core_script": summarize(by_role["core"]),
+        "macos_speakers_analyze": summarize(by_role["speakers-analyze"]),
     }
 
 
@@ -491,11 +492,11 @@ def _macos_records_by_role(
     by_role: dict[str, Mapping[str, Any]] = {}
     for record in records:
         role = record.get("role")
-        if role not in {"root", "core"}:
+        if role not in {"root", "core", "speakers-analyze"}:
             failures.append(
                 _failure(
                     "macOS native record role is invalid",
-                    expected="root or core",
+                    expected="root, core, or speakers-analyze",
                     actual=str(role),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
@@ -505,18 +506,18 @@ def _macos_records_by_role(
             failures.append(
                 _failure(
                     "macOS native record role is duplicated",
-                    expected="one root and one core record",
+                    expected="one root, one core, and one speakers-analyze record",
                     actual=str(role),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
             continue
         by_role[str(role)] = record
-    if set(by_role) != {"root", "core"}:
+    if set(by_role) != {"root", "core", "speakers-analyze"}:
         failures.append(
             _failure(
                 "macOS native record set is incomplete",
-                expected="exactly root and core records",
+                expected="exactly root, core, and speakers-analyze records",
                 actual=", ".join(sorted(by_role)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -710,7 +711,8 @@ def _native_members(
     if root_wheel_name is None:
         raise AssertionError("root wheel name missing without failures")
     return _native_members_from_wheels(
-        release_dir, root_wheel_name=str(root_wheel_name["name"])
+        release_dir,
+        root_wheel_name=str(root_wheel_name["name"]),
     )
 
 

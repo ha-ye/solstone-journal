@@ -480,11 +480,11 @@ def finalize_macos_tool_evidence(
         for record in native_records
         if isinstance(record, Mapping)
     }
-    if set(roles) != {"root", "core"}:
+    if set(roles) != {"root", "core", "speakers-analyze"}:
         failures.append(
             Failure(
-                error="macOS signed tool finalizer requires both native records",
-                expected="root and core native records",
+                error="macOS signed tool finalizer requires all native records",
+                expected="root, core, and speakers-analyze native records",
                 actual=", ".join(sorted(roles)) or "<empty>",
                 repair="bash scripts/release.sh --candidate",
             )

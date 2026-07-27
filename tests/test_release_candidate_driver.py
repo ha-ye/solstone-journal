@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tomllib
 import zipfile
@@ -22,6 +23,7 @@ from typing import Any
 import pytest
 
 import scripts.check_rust_release_manifest as checker
+import scripts.check_wheel_contents as wheel_checker
 import scripts.release_build_host as release_build_host
 import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
@@ -36,7 +38,12 @@ from tests.helpers.release_candidate_fixtures import (
     LOCK_SHA,
     MACOS_CORE,
     MACOS_HELPER,
+    MACOS_ONNXRUNTIME,
+    MACOS_SPEAKERS_ANALYZE,
     SOURCE_COMMIT,
+    SPEAKERS_ANALYZE_LICENSE_BYTES,
+    SPEAKERS_ANALYZE_RUNTIME_BYTES,
+    SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES,
     write_core_unsupported_tombstone_record,
 )
 from tests.helpers.release_candidate_fixtures import (
@@ -68,6 +75,48 @@ assert not PRIOR_RETAINED_VERSION.startswith(checker._current_version())
 assert not checker._current_version().startswith(PRIOR_RETAINED_VERSION)
 
 
+@pytest.fixture(autouse=True)
+def _patch_speakers_analyze_fixture_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched_targets = {}
+    for target, spec in tuple(wheel_checker.SPEAKERS_ANALYZE_TARGETS.items()):
+        runtime = (
+            MACOS_ONNXRUNTIME
+            if target == "macos-arm64"
+            else SPEAKERS_ANALYZE_RUNTIME_BYTES
+        )
+        notices = (
+            replace(
+                spec.notices[0],
+                sha256=hashlib.sha256(SPEAKERS_ANALYZE_LICENSE_BYTES).hexdigest(),
+            ),
+            replace(
+                spec.notices[1],
+                sha256=hashlib.sha256(
+                    SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES
+                ).hexdigest(),
+            ),
+        )
+        patched_targets[target] = replace(
+            spec,
+            runtime_sha256=hashlib.sha256(runtime).hexdigest(),
+            notices=notices,
+        )
+    for module in (
+        wheel_checker,
+        sys.modules.get("check_wheel_contents"),
+    ):
+        if module is None:
+            continue
+        for target, spec in patched_targets.items():
+            monkeypatch.setitem(
+                module.SPEAKERS_ANALYZE_TARGETS,
+                target,
+                spec,
+            )
+
+
 def _local_dist_names_for_build_argv(
     argv: Sequence[str], *, include_models: bool
 ) -> set[str]:
@@ -78,6 +127,19 @@ def _local_dist_names_for_build_argv(
             name
             for name in expected
             if name.startswith("solstone_core-") and name.endswith(".tar.gz")
+        }
+    if args == (
+        "uv",
+        "build",
+        "--package",
+        driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+        "--wheel",
+    ):
+        return {
+            name
+            for name in expected
+            if name.startswith("solstone_core_speakers_analyze-")
+            and name.endswith(".whl")
         }
     if len(args) == 4 and args[:3] == ("uv", "build", "--package"):
         package = args[3]
@@ -162,6 +224,23 @@ def _fabricate_local_dist_for_build_argv(
             if name.startswith("solstone_core-") and name.endswith(".whl")
         }
         remaining = sorted(name for name in core_wheels if not (dist / name).exists())
+        if remaining:
+            (dist / remaining[0]).write_bytes(b"package")
+        return
+    if args == (
+        "uv",
+        "build",
+        "--package",
+        driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+        "--wheel",
+    ):
+        helper_wheels = {
+            name
+            for name in driver._expected_local_dist_names(include_models=include_models)
+            if name.startswith("solstone_core_speakers_analyze-")
+            and name.endswith(".whl")
+        }
+        remaining = sorted(name for name in helper_wheels if not (dist / name).exists())
         if remaining:
             (dist / remaining[0]).write_bytes(b"package")
         return
@@ -480,7 +559,7 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
         name.startswith("solstone_core-") and "manylinux2014_aarch64" in name
         for name in release_names
     )
-    root_name, core_name = _macos_wheel_names()
+    root_name, core_name, speakers_analyze_name = _macos_wheel_names()
     with zipfile.ZipFile(first.release_dir / root_name) as wheel:
         assert wheel.read(PARAKEET_HELPER_MEMBER) == MACOS_HELPER
     with zipfile.ZipFile(first.release_dir / core_name) as wheel:
@@ -490,6 +569,22 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
             if Path(member.filename).name == "solstone-core"
         )
         assert wheel.read(member) == MACOS_CORE
+    with zipfile.ZipFile(first.release_dir / speakers_analyze_name) as wheel:
+        script_member = next(
+            member
+            for member in wheel.infolist()
+            if member.filename.endswith(".data/scripts/solstone-core-speakers-analyze")
+        )
+        dylib_member = next(
+            member
+            for member in wheel.infolist()
+            if member.filename.endswith(
+                ".data/data/lib/solstone-core-speakers-analyze/"
+                "libonnxruntime.1.25.0.dylib"
+            )
+        )
+        assert wheel.read(script_member) == MACOS_SPEAKERS_ANALYZE
+        assert wheel.read(dylib_member) == MACOS_ONNXRUNTIME
 
     recovered = _recover(first_root)
     assert recovered.heading == "retained-candidate-valid"
@@ -1855,6 +1950,12 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     expected_aarch64_env = _expected_scrubbed_env(
         tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
     )
+    expected_helper_x86_env = _expected_scrubbed_env(
+        tmp_path, driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS
+    )
+    expected_helper_aarch64_env = _expected_scrubbed_env(
+        tmp_path, driver.SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS
+    )
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         (
@@ -1885,6 +1986,44 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
             ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
             expected_aarch64_env,
         ),
+        (
+            (
+                "python3",
+                "scripts/stage_speakers_analyze_runtime.py",
+                "--target",
+                "linux-x86_64",
+            ),
+            _expected_scrubbed_env(tmp_path, ""),
+        ),
+        (
+            (
+                "uv",
+                "build",
+                "--package",
+                driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+                "--wheel",
+            ),
+            expected_helper_x86_env,
+        ),
+        (
+            (
+                "python3",
+                "scripts/stage_speakers_analyze_runtime.py",
+                "--target",
+                "linux-aarch64",
+            ),
+            _expected_scrubbed_env(tmp_path, ""),
+        ),
+        (
+            (
+                "uv",
+                "build",
+                "--package",
+                driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+                "--wheel",
+            ),
+            expected_helper_aarch64_env,
+        ),
     ]
     assert all("--exclude" not in argv for argv, _env in calls)
     assert [
@@ -1895,6 +2034,8 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
     assert [env["MATURIN_PEP517_ARGS"] for argv, env in calls if "--wheel" in argv] == [
         driver.CORE_X86_64_MATURIN_ARGS,
         driver.CORE_AARCH64_MATURIN_ARGS,
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS,
+        driver.SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS,
     ]
     assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
     for _argv, env in calls:
@@ -1953,6 +2094,32 @@ def test_default_build_local_dist_honors_include_models_build_selection(
         ("uv", "build", "--package", "solstone-core", "--sdist"),
         ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
         ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
+        (
+            "python3",
+            "scripts/stage_speakers_analyze_runtime.py",
+            "--target",
+            "linux-x86_64",
+        ),
+        (
+            "uv",
+            "build",
+            "--package",
+            driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+            "--wheel",
+        ),
+        (
+            "python3",
+            "scripts/stage_speakers_analyze_runtime.py",
+            "--target",
+            "linux-aarch64",
+        ),
+        (
+            "uv",
+            "build",
+            "--package",
+            driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+            "--wheel",
+        ),
     ]
     assert all("--exclude" not in call for call in calls)
     assert {path.name for path in (tmp_path / "dist").iterdir()} == set(
@@ -2376,6 +2543,11 @@ def test_fresh_cleanup_removes_nested_egg_infos_request_siblings_and_staging(
         / "packages"
         / "solstone-journal-models"
         / "solstone_journal_models.egg-info",
+        root
+        / "packages"
+        / driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE
+        / "solstone_core_speakers_analyze.egg-info",
+        root / "packages" / driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE / "wheel-data",
         root / "target" / "release-transfer" / f".{version}.request-abc123",
         root / "target" / "release-transfer" / f".{version}.source.bundle",
         root / "target" / "release-evidence" / f"{version}.staging",
@@ -2447,6 +2619,33 @@ def test_linux_maturin_contract_rejects_missing_or_wrong_tokens(args: str) -> No
 
 
 @pytest.mark.parametrize(
+    "args",
+    [
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace("--locked ", ""),
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace("--zig ", ""),
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace(
+            "--compatibility manylinux_2_27 ", ""
+        ),
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace("--auditwheel skip ", ""),
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace(
+            "--target x86_64-unknown-linux-gnu", ""
+        ),
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS.replace(
+            "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"
+        ),
+    ],
+)
+def test_speakers_analyze_linux_maturin_contract_rejects_missing_or_wrong_tokens(
+    args: str,
+) -> None:
+    failures = driver.validate_speakers_analyze_linux_maturin_args(
+        args,
+        target="x86_64-unknown-linux-gnu",
+    )
+    assert failures
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         "record_role",
@@ -2475,7 +2674,7 @@ def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
     services = _services(root)
 
     def cleanup(paths: Sequence[Path]) -> None:
-        root_name, _core_name = _macos_wheel_names()
+        root_name, _core_name, _speakers_name = _macos_wheel_names()
         wheel_path = root / "dist" / root_name
         if wheel_path.exists():
             write_platform_base_wheel(

@@ -14,10 +14,16 @@ from typing import Any
 import pytest
 
 import scripts.check_rust_release_manifest as checker
+import scripts.check_wheel_contents as wheel_checker
 import scripts.release_install_smoke as smoke
 from scripts.release_digest import candidate_digest, file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
-from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
+from tests.helpers.release_wheel_fixtures import (
+    ROOT_LAUNCHER_BYTES,
+    record_hash,
+    speakers_analyze_elf,
+    write_speakers_analyze_wheel,
+)
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -70,6 +76,23 @@ def _write_metadata_wheel(path: Path) -> None:
             wheel.writestr(info, content)
 
 
+def _write_speakers_analyze_wheel(path: Path) -> None:
+    tag = path.name.removesuffix(".whl").split("-")[-1]
+    binary = None
+    if "manylinux" in tag:
+        machine = "aarch64" if "aarch64" in tag else "x86_64"
+        binary = speakers_analyze_elf(wheel_checker.ELF_MACHINE[machine])
+    write_speakers_analyze_wheel(
+        path.parent,
+        tag=tag,
+        version=path.name.removesuffix(".whl").split("-")[1],
+        binary=binary,
+        library=b"fixture onnxruntime GLIBC_2.27\n",
+        license_notice=b"fixture license\n",
+        third_party_notice=b"fixture notices\n",
+    )
+
+
 def _candidate(tmp_path: Path) -> tuple[Path, list[Path]]:
     candidate = tmp_path / "candidate"
     candidate.mkdir()
@@ -78,13 +101,17 @@ def _candidate(tmp_path: Path) -> tuple[Path, list[Path]]:
         if name.endswith(".whl") and (
             name.startswith("solstone-")
             or name.startswith("solstone_core-")
+            or name.startswith("solstone_core_speakers_analyze-")
             or name.startswith("solstone_journal-")
             or name.startswith("solstone_journal_cuda-")
         ):
             wanted.append(name)
     paths = [candidate / name for name in wanted]
     for path in paths:
-        _write_metadata_wheel(path)
+        if path.name.startswith("solstone_core_speakers_analyze-"):
+            _write_speakers_analyze_wheel(path)
+        else:
+            _write_metadata_wheel(path)
     return candidate, paths
 
 
@@ -110,6 +137,13 @@ def _ledger_payload(digest: str, candidate: Path) -> dict:
             },
             "macos_root_helper": {
                 "member": {"path": "parakeet-helper", "sha256": "e" * 64, "bytes": 6}
+            },
+            "macos_speakers_analyze": {
+                "member": {
+                    "path": "solstone-core-speakers-analyze",
+                    "sha256": "f" * 64,
+                    "bytes": 7,
+                }
             },
         },
         "native_members": {
@@ -143,6 +177,24 @@ def _observation(
     (env_root / "bin" / "python").write_bytes(b"python")
     if macos:
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
+    helper_wheels = [
+        path
+        for path in install_paths
+        if path.name.startswith("solstone_core_speakers_analyze-")
+        and "manylinux_2_27_x86_64" in path.name
+    ]
+    helper_bytes = b""
+    if helper_wheels:
+        with zipfile.ZipFile(helper_wheels[0]) as wheel:
+            helper_member = next(
+                info
+                for info in wheel.infolist()
+                if info.filename.endswith(
+                    ".data/scripts/solstone-core-speakers-analyze"
+                )
+            )
+            helper_bytes = wheel.read(helper_member)
+        (env_root / "bin" / "solstone-core-speakers-analyze").write_bytes(helper_bytes)
     members = [
         {
             "name": name,
@@ -170,6 +222,33 @@ def _observation(
                 "symlink": False,
             }
         )
+    if helper_wheels:
+        members.append(
+            {
+                "name": "solstone-core-speakers-analyze",
+                "path": env_root / "bin" / "solstone-core-speakers-analyze",
+                "sha256": file_sha256_size(
+                    env_root / "bin" / "solstone-core-speakers-analyze"
+                )[0],
+                "symlink": False,
+            }
+        )
+    smoke_results = {
+        name: smoke.CommandResult(
+            argv=(str(env_root / "bin" / name), "--version"),
+            exit_code=0,
+            stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} 1.0.0",
+            env=smoke.SCRUBBED_COMMAND_ENV,
+        )
+        for name in smoke.INSTALL_SCRIPT_NAMES
+    }
+    if helper_wheels:
+        smoke_results["solstone-core-speakers-analyze"] = smoke.CommandResult(
+            argv=(str(env_root / "bin" / "solstone-core-speakers-analyze"),),
+            exit_code=0,
+            stdout='{"schema":"solstone-speaker-analyze-response-v1"}',
+            env=smoke.SCRUBBED_COMMAND_ENV,
+        )
     return smoke.InstallObservation(
         env_root=env_root,
         preexisting_distributions=(),
@@ -189,15 +268,7 @@ def _observation(
         ),
         installed_distributions=smoke.expected_distribution_entries(install_paths),
         installed_members=tuple(members),
-        smoke={
-            name: smoke.CommandResult(
-                argv=(str(env_root / "bin" / name), "--version"),
-                exit_code=0,
-                stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} 1.0.0",
-                env=smoke.SCRUBBED_COMMAND_ENV,
-            )
-            for name in smoke.INSTALL_SCRIPT_NAMES
-        },
+        smoke=smoke_results,
     )
 
 

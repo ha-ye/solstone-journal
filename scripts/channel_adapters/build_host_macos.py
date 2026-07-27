@@ -185,8 +185,10 @@ def build_macos(build_lane: LaneConfig, request_path: Path) -> None:
     outputs = req["expected_outputs"]
     root_wheel = outputs["root_wheel"]
     core_wheel = outputs["core_wheel"]
+    speakers_analyze_wheel = outputs["speakers_analyze_wheel"]
     root_record = outputs["root_record"]
     core_record = outputs["core_record"]
+    speakers_analyze_record = outputs["speakers_analyze_record"]
 
     bundle = Path(sb["path"])
     out_dir = Path(req["paths"]["output_dir"])
@@ -265,7 +267,14 @@ echo CHECKOUT_OK
             detail=(build.stderr or build.stdout or ""),
         )
 
-    expected_files = [root_wheel, core_wheel, root_record, core_record]
+    expected_files = [
+        root_wheel,
+        core_wheel,
+        speakers_analyze_wheel,
+        root_record,
+        core_record,
+        speakers_analyze_record,
+    ]
     quoted_expected_files = " ".join(shlex.quote(name) for name in expected_files)
     listing = ssh_run(
         build_lane,
@@ -306,8 +315,8 @@ echo DIST_OK
             "bundle_bytes": sb["bytes"],
         },
         "tool_evidence": tool_evidence,
-        "macos_wheels": [root_wheel, core_wheel],
-        "native_records": [root_record, core_record],
+        "macos_wheels": [root_wheel, core_wheel, speakers_analyze_wheel],
+        "native_records": [root_record, core_record, speakers_analyze_record],
     }
     write_json(resp_path, response)
 

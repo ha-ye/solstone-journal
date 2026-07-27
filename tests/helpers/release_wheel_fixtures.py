@@ -63,6 +63,93 @@ def minimal_elf(
     return bytes(content)
 
 
+def speakers_analyze_elf(
+    machine: int,
+    *,
+    needed: Sequence[str] = ("libonnxruntime.so.1", "libc.so.6"),
+    runpath: str | None = checker.SPEAKERS_ANALYZE_RUNPATH,
+    rpath: str | None = None,
+    include_interp: bool = True,
+    glibc: str = "2.27",
+) -> bytes:
+    phnum = 3 if include_interp else 2
+    phoff = ELF_HEADER_SIZE
+    headers_end = ELF_HEADER_SIZE + ELF_PROGRAM_HEADER_SIZE * phnum
+    interp = b"/lib64/ld-linux-x86-64.so.2\0"
+    interp_offset = headers_end
+    dynamic_offset = interp_offset + (len(interp) if include_interp else 0)
+
+    dynstr = bytearray(b"\0")
+    needed_offsets: list[int] = []
+    for value in needed:
+        needed_offsets.append(len(dynstr))
+        dynstr.extend(value.encode("utf-8") + b"\0")
+    runpath_offset: int | None = None
+    if runpath is not None:
+        runpath_offset = len(dynstr)
+        dynstr.extend(runpath.encode("utf-8") + b"\0")
+    rpath_offset: int | None = None
+    if rpath is not None:
+        rpath_offset = len(dynstr)
+        dynstr.extend(rpath.encode("utf-8") + b"\0")
+
+    dynamic_entries = 1 + len(needed_offsets) + int(runpath_offset is not None)
+    dynamic_entries += int(rpath_offset is not None) + 1
+    dynamic_size = dynamic_entries * 16
+    dynstr_offset = dynamic_offset + dynamic_size
+    glibc_marker = f"\0GLIBC_{glibc}\0".encode("ascii")
+    total_size = dynstr_offset + len(dynstr) + len(glibc_marker)
+    base_vaddr = 0x400000
+    content = bytearray(total_size)
+    content[:16] = b"\x7fELF\x02\x01\x01" + b"\0" * 9
+    struct.pack_into("<H", content, 16, 2)
+    struct.pack_into("<H", content, 18, machine)
+    struct.pack_into("<I", content, 20, 1)
+    struct.pack_into("<Q", content, 32, phoff)
+    struct.pack_into("<H", content, 52, ELF_HEADER_SIZE)
+    struct.pack_into("<H", content, 54, ELF_PROGRAM_HEADER_SIZE)
+    struct.pack_into("<H", content, 56, phnum)
+
+    def pack_phdr(index: int, p_type: int, offset: int, size: int, flags: int) -> None:
+        phdr = phoff + ELF_PROGRAM_HEADER_SIZE * index
+        struct.pack_into("<I", content, phdr, p_type)
+        struct.pack_into("<I", content, phdr + 4, flags)
+        struct.pack_into("<Q", content, phdr + 8, offset)
+        struct.pack_into("<Q", content, phdr + 16, base_vaddr + offset)
+        struct.pack_into("<Q", content, phdr + 24, base_vaddr + offset)
+        struct.pack_into("<Q", content, phdr + 32, size)
+        struct.pack_into("<Q", content, phdr + 40, size)
+        struct.pack_into("<Q", content, phdr + 48, 8)
+
+    pack_phdr(0, checker.PT_LOAD, 0, total_size, 5)
+    next_index = 1
+    if include_interp:
+        pack_phdr(next_index, checker.PT_INTERP, interp_offset, len(interp), 4)
+        content[interp_offset : interp_offset + len(interp)] = interp
+        next_index += 1
+    pack_phdr(next_index, checker.PT_DYNAMIC, dynamic_offset, dynamic_size, 6)
+
+    cursor = dynamic_offset
+    struct.pack_into(
+        "<qQ", content, cursor, checker.DT_STRTAB, base_vaddr + dynstr_offset
+    )
+    cursor += 16
+    for offset in needed_offsets:
+        struct.pack_into("<qQ", content, cursor, checker.DT_NEEDED, offset)
+        cursor += 16
+    if runpath_offset is not None:
+        struct.pack_into("<qQ", content, cursor, checker.DT_RUNPATH, runpath_offset)
+        cursor += 16
+    if rpath_offset is not None:
+        struct.pack_into("<qQ", content, cursor, checker.DT_RPATH, rpath_offset)
+        cursor += 16
+    struct.pack_into("<qQ", content, cursor, checker.DT_NULL, 0)
+    content[dynstr_offset : dynstr_offset + len(dynstr)] = dynstr
+    marker_offset = dynstr_offset + len(dynstr)
+    content[marker_offset : marker_offset + len(glibc_marker)] = glibc_marker
+    return bytes(content)
+
+
 def minimal_macho(cputype: int) -> bytes:
     content = bytearray(32)
     struct.pack_into("<I", content, 0, checker.MH_MAGIC_64)
@@ -128,6 +215,74 @@ def write_core_wheel(
             )
             _write_member(wheel, name, content, mode=mode)
         _write_member(wheel, f"solstone_core-{version}.dist-info/RECORD", record)
+    return wheel_path
+
+
+def write_speakers_analyze_wheel(
+    path: Path,
+    *,
+    tag: str = "manylinux_2_27_x86_64",
+    version: str = "1.2.3",
+    binary: bytes | None = None,
+    library: bytes = b"fixture libonnxruntime.so.1 GLIBC_2.27\n",
+    license_notice: bytes = b"fixture license\n",
+    third_party_notice: bytes = b"fixture third party notice\n",
+    executable: bool = True,
+    extra_members: Mapping[str, bytes] | None = None,
+    omit_member: str | None = None,
+    record_ok: bool = True,
+) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    wheel_path = path / f"solstone_core_speakers_analyze-{version}-py3-none-{tag}.whl"
+    data_prefix = f"solstone_core_speakers_analyze-{version}.data"
+    dist_info_prefix = f"solstone_core_speakers_analyze-{version}.dist-info"
+    platform_tuple = checker.SPEAKERS_ANALYZE_TAG_PLATFORMS[tag]
+    spec = checker.SPEAKERS_ANALYZE_TARGETS[
+        checker.SPEAKERS_ANALYZE_PLATFORM_TARGETS[platform_tuple]
+    ]
+    if binary is None:
+        if platform_tuple[0] == "darwin":
+            binary = minimal_macho(checker.CPU_TYPE_ARM64)
+        else:
+            machine = (
+                checker.ELF_MACHINE["aarch64"]
+                if platform_tuple[1] == "aarch64"
+                else checker.ELF_MACHINE["x86_64"]
+            )
+            binary = speakers_analyze_elf(machine)
+    members = {
+        f"{data_prefix}/{checker.SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{spec.runtime_staged_name}": library,
+        f"{data_prefix}/{checker.SPEAKERS_ANALYZE_NOTICE_INSTALL_DIR.as_posix()}/onnxruntime-LICENSE.txt": license_notice,
+        f"{data_prefix}/{checker.SPEAKERS_ANALYZE_NOTICE_INSTALL_DIR.as_posix()}/onnxruntime-ThirdPartyNotices.txt": third_party_notice,
+        f"{data_prefix}/scripts/solstone-core-speakers-analyze": binary,
+        f"{dist_info_prefix}/METADATA": (
+            f"Name: solstone-core-speakers-analyze\nVersion: {version}\n".encode()
+        ),
+        f"{dist_info_prefix}/WHEEL": b"Wheel-Version: 1.0\n",
+        f"{dist_info_prefix}/sboms/solstone-core-speakers-analyze.cyclonedx.json": b"{}",
+    }
+    if extra_members:
+        members.update(extra_members)
+    if omit_member is not None:
+        members.pop(omit_member, None)
+    rows = [
+        f"{name},{record_hash(content)},{len(content)}"
+        for name, content in members.items()
+    ]
+    rows.append(f"{dist_info_prefix}/RECORD,,")
+    record = "\n".join(rows).encode("utf-8")
+    if not record_ok:
+        record = record.replace(b"sha256=", b"sha256=broken", 1)
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        for name, content in members.items():
+            mode = (
+                0o755
+                if Path(name).name in checker.SPEAKERS_ANALYZE_SCRIPT_NAMES
+                and executable
+                else 0o644
+            )
+            _write_member(wheel, name, content, mode=mode)
+        _write_member(wheel, f"{dist_info_prefix}/RECORD", record)
     return wheel_path
 
 

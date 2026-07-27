@@ -53,11 +53,25 @@ def _write_metadata_wheel(path: Path) -> None:
                 for name, content in members.items()
             )
             members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
+        if path.name.startswith("solstone_core_speakers_analyze-"):
+            version = path.name.removesuffix(".whl").split("-")[1]
+            script_name = smoke.SPEAKERS_ANALYZE_SCRIPT_NAME
+            script_path = (
+                f"solstone_core_speakers_analyze-{version}.data/scripts/{script_name}"
+            )
+            members[script_path] = f"#!/bin/sh\necho {script_name}\n".encode("utf-8")
+            record_name = f"solstone_core_speakers_analyze-{version}.dist-info/RECORD"
+            record = "\n".join(
+                f"{name},{record_hash(content)},{len(content)}"
+                for name, content in members.items()
+            )
+            members[record_name] = f"{record}\n{record_name},,".encode("utf-8")
         for name, content in members.items():
             info = zipfile.ZipInfo(name)
             info.external_attr = (
                 0o755 << 16
-                if Path(name).name in smoke.ROOT_LAUNCHER_NAMES
+                if Path(name).name
+                in (*smoke.ROOT_LAUNCHER_NAMES, smoke.SPEAKERS_ANALYZE_SCRIPT_NAME)
                 else 0o644 << 16
             )
             wheel.writestr(info, content)
@@ -70,6 +84,7 @@ def _candidate(tmp_path: Path) -> Path:
         if name.endswith(".whl") and (
             name.startswith("solstone-")
             or name.startswith("solstone_core-")
+            or name.startswith("solstone_core_speakers_analyze-")
             or name.startswith("solstone_journal-")
             or name.startswith("solstone_journal_cuda-")
         ):
@@ -134,6 +149,11 @@ def _observation(
         (env_root / "bin" / name).write_bytes(content)
     for name in smoke.CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
+    if target in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        (env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME).write_text(
+            smoke.SPEAKERS_ANALYZE_SCRIPT_NAME,
+            encoding="utf-8",
+        )
     install_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=target,
@@ -157,6 +177,25 @@ def _observation(
     ]
     if target == "macos-arm64":
         (env_root / "bin" / "parakeet-helper").write_bytes(b"helper")
+    smoke_results = {
+        name: smoke.CommandResult(
+            argv=(str(env_root / "bin" / name), "--version"),
+            exit_code=0,
+            stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} {version}",
+            env=smoke.SCRUBBED_COMMAND_ENV,
+        )
+        for name in smoke.INSTALL_SCRIPT_NAMES
+    }
+    if target in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        smoke_results[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME] = smoke.CommandResult(
+            argv=(str(env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME),),
+            exit_code=0,
+            stdout=json.dumps(
+                {"schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                separators=(",", ":"),
+            ),
+            env=smoke.SCRUBBED_COMMAND_ENV,
+        )
     payload: dict[str, Any] = {
         "install": smoke.CommandResult(
             argv=(
@@ -174,15 +213,7 @@ def _observation(
         ),
         "installed_distributions": smoke.expected_distribution_entries(install_paths),
         "installed_members": tuple(members),
-        "smoke": {
-            name: smoke.CommandResult(
-                argv=(str(env_root / "bin" / name), "--version"),
-                exit_code=0,
-                stdout=f"{smoke.CORE_SMOKE_STDOUT[name]} {version}",
-                env=smoke.SCRUBBED_COMMAND_ENV,
-            )
-            for name in smoke.INSTALL_SCRIPT_NAMES
-        },
+        "smoke": smoke_results,
     }
     if mutate is not None:
         mutate(payload)

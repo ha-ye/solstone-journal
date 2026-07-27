@@ -14,7 +14,12 @@ import scripts.check_rust_release_manifest as checker
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.check_rust_release_manifest import canonical_json_bytes
-from scripts.check_wheel_contents import CORE_SCRIPT_NAMES
+from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
+    SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
+    SPEAKERS_ANALYZE_TARGETS,
+)
 from scripts.release_advisory_policy import PolicyRun
 
 SOURCE_COMMIT = "a" * 40
@@ -59,16 +64,16 @@ def _policy() -> PolicyRun:
 
 
 def _native(role: str, wheel_name: str, member_path: str) -> dict:
-    members = (
-        {
+    if role == "root":
+        members = {
             "parakeet-helper": {
                 "path": member_path,
                 "sha256": "f" * 64,
                 "bytes": 6,
             }
         }
-        if role == "root"
-        else {
+    elif role == "core":
+        members = {
             name: {
                 "path": f"solstone_core-1.2.3.data/scripts/{name}",
                 "sha256": "f" * 64,
@@ -76,7 +81,23 @@ def _native(role: str, wheel_name: str, member_path: str) -> dict:
             }
             for name in CORE_SCRIPT_NAMES
         }
-    )
+    else:
+        dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+        members = {
+            SPEAKERS_ANALYZE_SCRIPT_NAMES[0]: {
+                "path": member_path,
+                "sha256": "f" * 64,
+                "bytes": 6,
+            },
+            dylib_name: {
+                "path": (
+                    "solstone_core_speakers_analyze-1.2.3.data/"
+                    f"{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
+                ),
+                "sha256": "f" * 64,
+                "bytes": 6,
+            },
+        }
     return {
         "schema_version": 1,
         "kind": "macos-native-record/v1",
@@ -120,6 +141,12 @@ def _native_records() -> list[dict]:
         for name in checker.expected_package_names(include_models=False)
         if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
     )
+    speakers_wheel = next(
+        name
+        for name in checker.expected_package_names(include_models=False)
+        if name.startswith("solstone_core_speakers_analyze-")
+        and "macosx_14_0_arm64" in name
+    )
     return [
         _native(
             "root",
@@ -130,6 +157,11 @@ def _native_records() -> list[dict]:
             "core",
             core_wheel,
             "solstone_core-1.2.3.data/scripts/solstone-core",
+        ),
+        _native(
+            "speakers-analyze",
+            speakers_wheel,
+            "solstone_core_speakers_analyze-1.2.3.data/scripts/solstone-core-speakers-analyze",
         ),
     ]
 
@@ -160,6 +192,27 @@ def _candidate(root: Path) -> Path:
     info.external_attr = 0o755 << 16
     with zipfile.ZipFile(candidate / root_wheel, "w") as wheel:
         wheel.writestr(info, b"macos helper")
+    speakers_wheel = next(
+        name
+        for name in checker.expected_package_names(include_models=False)
+        if name.startswith("solstone_core_speakers_analyze-")
+        and "macosx_14_0_arm64" in name
+    )
+    speakers_version = speakers_wheel.removesuffix(".whl").split("-")[1]
+    speakers_prefix = f"solstone_core_speakers_analyze-{speakers_version}.data"
+    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    with zipfile.ZipFile(candidate / speakers_wheel, "w") as wheel:
+        for member in (
+            f"{speakers_prefix}/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]}",
+            (
+                f"{speakers_prefix}/"
+                f"{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
+            ),
+        ):
+            info = zipfile.ZipInfo(member)
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            wheel.writestr(info, b"native")
     return candidate
 
 
@@ -290,7 +343,7 @@ def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> Non
         )
 
 
-def test_ledger_requires_exactly_two_native_records(tmp_path: Path) -> None:
+def test_ledger_requires_exactly_three_native_records(tmp_path: Path) -> None:
     with pytest.raises(ledger.LedgerError) as exc:
         ledger.build_ledger(
             version="1.2.3",

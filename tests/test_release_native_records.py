@@ -14,7 +14,13 @@ import pytest
 
 import scripts.record_macos_native_wheel as native
 import scripts.release_tool_pins as pins
-from scripts.check_wheel_contents import CORE_SCRIPT_NAMES, PARAKEET_HELPER_MEMBER
+from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
+    PARAKEET_HELPER_MEMBER,
+    SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
+    SPEAKERS_ANALYZE_TARGETS,
+)
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -39,6 +45,35 @@ def _core_wheel(tmp_path: Path, content: bytes = b"core-script") -> Path:
     with zipfile.ZipFile(path, "w") as wheel:
         for name in CORE_SCRIPT_NAMES:
             info = zipfile.ZipInfo(f"solstone_core-1.2.3.data/scripts/{name}")
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            wheel.writestr(info, content)
+    return path
+
+
+def _speakers_analyze_wheel(
+    tmp_path: Path,
+    *,
+    script: bytes = b"speakers-script",
+    dylib: bytes = b"onnxruntime-dylib",
+) -> Path:
+    path = (
+        tmp_path / "solstone_core_speakers_analyze-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    )
+    data_prefix = "solstone_core_speakers_analyze-1.2.3.data"
+    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    with zipfile.ZipFile(path, "w") as wheel:
+        for member, content in (
+            (
+                f"{data_prefix}/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]}",
+                script,
+            ),
+            (
+                f"{data_prefix}/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}",
+                dylib,
+            ),
+        ):
+            info = zipfile.ZipInfo(member)
             info.create_system = 3
             info.external_attr = 0o755 << 16
             wheel.writestr(info, content)
@@ -72,6 +107,15 @@ def _core_facts(content: bytes) -> dict:
     return {"members": {name: _facts(content) for name in CORE_SCRIPT_NAMES}}
 
 
+def _speakers_analyze_facts(script: bytes, dylib: bytes) -> dict:
+    return {
+        "members": {
+            SPEAKERS_ANALYZE_SCRIPT_NAMES[0]: _facts(script),
+            SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name: _facts(dylib),
+        }
+    }
+
+
 def test_native_record_cli_and_makefile_use_package_module() -> None:
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -84,15 +128,20 @@ def test_native_record_cli_and_makefile_use_package_module() -> None:
 
     assert result.returncode == 0, result.stderr
     makefile = (root / "Makefile").read_text(encoding="utf-8")
-    assert makefile.count("python3 -m scripts.record_macos_native_wheel") == 2
+    assert makefile.count("python3 -m scripts.record_macos_native_wheel") == 3
     assert "python3 scripts/record_macos_native_wheel.py" not in makefile
 
 
-def test_exactly_two_role_records_are_written_and_not_interchangeable(
+def test_exactly_three_role_records_are_written_and_not_interchangeable(
     tmp_path: Path,
 ) -> None:
     root_wheel = _root_wheel(tmp_path, b"root")
     core_wheel = _core_wheel(tmp_path, b"core")
+    speakers_wheel = _speakers_analyze_wheel(
+        tmp_path,
+        script=b"speakers",
+        dylib=b"dylib",
+    )
 
     root = native.build_macos_native_record(
         role="root",
@@ -108,8 +157,23 @@ def test_exactly_two_role_records_are_written_and_not_interchangeable(
         source_commit=SOURCE_COMMIT,
         core_lock_sha256=CORE_LOCK,
     )
+    speakers = native.build_macos_native_record(
+        role="speakers-analyze",
+        wheel_path=speakers_wheel,
+        signing_facts=_speakers_analyze_facts(b"speakers", b"dylib"),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
 
-    assert {root["role"], core["role"]} == {"root", "core"}
+    assert {root["role"], core["role"], speakers["role"]} == {
+        "root",
+        "core",
+        "speakers-analyze",
+    }
+    assert set(speakers["members"]) == {
+        SPEAKERS_ANALYZE_SCRIPT_NAMES[0],
+        SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name,
+    }
     assert native.validate_macos_native_record(
         root,
         role="core",
@@ -119,6 +183,13 @@ def test_exactly_two_role_records_are_written_and_not_interchangeable(
     )
     assert native.validate_macos_native_record(
         core,
+        role="root",
+        wheel_path=root_wheel,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+    )
+    assert native.validate_macos_native_record(
+        speakers,
         role="root",
         wheel_path=root_wheel,
         source_commit=SOURCE_COMMIT,

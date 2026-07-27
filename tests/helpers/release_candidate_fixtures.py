@@ -27,6 +27,8 @@ from scripts.check_wheel_contents import (
     CPU_TYPE_ARM64,
     ELF_MACHINE,
     EXPECTED_MODEL_SHA256,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
+    SPEAKERS_ANALYZE_TARGETS,
 )
 from scripts.release_advisory_policy import PolicyRun
 from scripts.release_build_host import BuildHostResult, SourceBundle
@@ -46,8 +48,10 @@ from tests.helpers.release_wheel_fixtures import (
     minimal_elf,
     minimal_macho,
     record_hash,
+    speakers_analyze_elf,
     write_core_wheel,
     write_platform_base_wheel,
+    write_speakers_analyze_wheel,
 )
 
 SOURCE_COMMIT = "a" * 40
@@ -57,6 +61,11 @@ _LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
 _LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
 MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
 MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
+MACOS_SPEAKERS_ANALYZE = minimal_macho(CPU_TYPE_ARM64)
+MACOS_ONNXRUNTIME = minimal_macho(CPU_TYPE_ARM64)
+SPEAKERS_ANALYZE_RUNTIME_BYTES = b"fixture onnxruntime GLIBC_2.27\n"
+SPEAKERS_ANALYZE_LICENSE_BYTES = b"fixture onnxruntime license\n"
+SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES = b"fixture onnxruntime notices\n"
 _ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
 
 TombstoneMutation = Literal[
@@ -177,6 +186,22 @@ def _write_linux_core_wheels(dist_dir: Path) -> None:
         )
 
 
+def _write_linux_speakers_analyze_wheels(dist_dir: Path) -> None:
+    for tag, machine in (
+        ("manylinux_2_27_x86_64", "x86_64"),
+        ("manylinux_2_27_aarch64", "aarch64"),
+    ):
+        write_speakers_analyze_wheel(
+            dist_dir,
+            tag=tag,
+            binary=speakers_analyze_elf(ELF_MACHINE[machine]),
+            library=SPEAKERS_ANALYZE_RUNTIME_BYTES,
+            license_notice=SPEAKERS_ANALYZE_LICENSE_BYTES,
+            third_party_notice=SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES,
+            version=checker._current_version(),
+        )
+
+
 def _write_core_sdist(path: Path) -> None:
     version = checker._current_version()
     with path.open("wb") as raw:
@@ -214,7 +239,7 @@ def _write_models_wheel(path: Path) -> None:
             wheel.writestr(asset_info, (assets_dir / basename).read_bytes())
 
 
-def macos_wheel_names() -> tuple[str, str]:
+def macos_wheel_names() -> tuple[str, str, str]:
     names = checker.expected_package_names(include_models=False)
     root = next(
         name
@@ -226,7 +251,13 @@ def macos_wheel_names() -> tuple[str, str]:
         for name in names
         if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
     )
-    return root, core
+    speakers_analyze = next(
+        name
+        for name in names
+        if name.startswith("solstone_core_speakers_analyze-")
+        and "macosx_14_0_arm64" in name
+    )
+    return root, core, speakers_analyze
 
 
 def _facts(content: bytes) -> dict[str, Any]:
@@ -250,21 +281,33 @@ def _core_facts(content: bytes) -> dict[str, Any]:
     return {"members": {name: _facts(content) for name in CORE_SCRIPT_NAMES}}
 
 
+def _speakers_analyze_facts(script: bytes, dylib: bytes) -> dict[str, Any]:
+    return {
+        "members": {
+            SPEAKERS_ANALYZE_SCRIPT_NAMES[0]: _facts(script),
+            SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name: _facts(dylib),
+        }
+    }
+
+
 def write_macos_host_outputs(
     output_dir: Path,
     *,
     mutate: str | None = None,
 ) -> BuildHostResult:
     output_dir.mkdir(parents=True, exist_ok=True)
-    root_name, core_name = macos_wheel_names()
+    root_name, core_name, speakers_analyze_name = macos_wheel_names()
     root_wheel = output_dir / root_name
     core_wheel = output_dir / core_name
+    speakers_analyze_wheel = output_dir / speakers_analyze_name
     if mutate == "wrong_tag":
         root_wheel = output_dir / root_name.replace(
             "macosx_14_0_arm64", "manylinux2014_x86_64"
         )
     root_bytes = MACOS_HELPER
     core_bytes = MACOS_CORE
+    speakers_bytes = MACOS_SPEAKERS_ANALYZE
+    onnxruntime_bytes = MACOS_ONNXRUNTIME
     write_platform_base_wheel(
         root_wheel.parent,
         helper_binary=root_bytes,
@@ -278,6 +321,15 @@ def write_macos_host_outputs(
         binary=core_bytes,
         version=checker._current_version(),
     )
+    write_speakers_analyze_wheel(
+        speakers_analyze_wheel.parent,
+        tag="macosx_14_0_arm64",
+        binary=speakers_bytes,
+        library=onnxruntime_bytes,
+        license_notice=SPEAKERS_ANALYZE_LICENSE_BYTES,
+        third_party_notice=SPEAKERS_ANALYZE_THIRD_PARTY_NOTICE_BYTES,
+        version=checker._current_version(),
+    )
     root_record = native.build_macos_native_record(
         role="root",
         wheel_path=root_wheel,
@@ -289,6 +341,13 @@ def write_macos_host_outputs(
         role="core",
         wheel_path=core_wheel,
         signing_facts=_core_facts(core_bytes),
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=LOCK_SHA,
+    )
+    speakers_record = native.build_macos_native_record(
+        role="speakers-analyze",
+        wheel_path=speakers_analyze_wheel,
+        signing_facts=_speakers_analyze_facts(speakers_bytes, onnxruntime_bytes),
         source_commit=SOURCE_COMMIT,
         core_lock_sha256=LOCK_SHA,
     )
@@ -306,6 +365,7 @@ def write_macos_host_outputs(
         root_record["wheel"]["sha256"] = "0" * 64
     root_record_path = output_dir / "macos-native-root.json"
     core_record_path = output_dir / "macos-native-core.json"
+    speakers_record_path = output_dir / "macos-native-speakers-analyze.json"
     if mutate == "record_paths_swapped":
         root_record_path, core_record_path = core_record_path, root_record_path
     root_record_path.write_text(
@@ -314,9 +374,12 @@ def write_macos_host_outputs(
     core_record_path.write_text(
         json.dumps(core_record, sort_keys=True), encoding="utf-8"
     )
+    speakers_record_path.write_text(
+        json.dumps(speakers_record, sort_keys=True), encoding="utf-8"
+    )
     return BuildHostResult(
-        macos_wheels=(root_wheel, core_wheel),
-        native_records=(root_record_path, core_record_path),
+        macos_wheels=(root_wheel, core_wheel, speakers_analyze_wheel),
+        native_records=(root_record_path, core_record_path, speakers_record_path),
         tool_evidence=pins.fixture_presign_lane_tool_evidence("macos-arm64"),
     )
 
@@ -368,6 +431,48 @@ def _proof_observation(
                 "symlink": False,
             }
         )
+    helper_wheels = [
+        path
+        for path in install_paths
+        if path.name.startswith("solstone_core_speakers_analyze-")
+        and "manylinux_2_27_x86_64" in path.name
+    ]
+    if helper_wheels:
+        with zipfile.ZipFile(helper_wheels[0]) as wheel:
+            helper_member = next(
+                info
+                for info in wheel.infolist()
+                if info.filename.endswith(
+                    ".data/scripts/solstone-core-speakers-analyze"
+                )
+            )
+            helper_bytes = wheel.read(helper_member)
+        helper_path = env_root / "bin" / "solstone-core-speakers-analyze"
+        helper_path.write_bytes(helper_bytes)
+        members.append(
+            {
+                "name": "solstone-core-speakers-analyze",
+                "path": helper_path,
+                "sha256": hashlib.sha256(helper_bytes).hexdigest(),
+                "symlink": False,
+            }
+        )
+    smoke_results = {
+        name: CommandResult(
+            argv=(str(env_root / "bin" / name), "--version"),
+            exit_code=0,
+            stdout=f"{CORE_SMOKE_STDOUT[name]} {version}",
+            env=SCRUBBED_COMMAND_ENV,
+        )
+        for name in INSTALL_SCRIPT_NAMES
+    }
+    if helper_wheels:
+        smoke_results["solstone-core-speakers-analyze"] = CommandResult(
+            argv=(str(env_root / "bin" / "solstone-core-speakers-analyze"),),
+            exit_code=0,
+            stdout='{"schema":"solstone-speaker-analyze-response-v1"}',
+            env=SCRUBBED_COMMAND_ENV,
+        )
     return InstallObservation(
         env_root=env_root,
         preexisting_distributions=(),
@@ -387,15 +492,7 @@ def _proof_observation(
         ),
         installed_distributions=expected_distribution_entries(install_paths),
         installed_members=tuple(members),
-        smoke={
-            name: CommandResult(
-                argv=(str(env_root / "bin" / name), "--version"),
-                exit_code=0,
-                stdout=f"{CORE_SMOKE_STDOUT[name]} {version}",
-                env=SCRUBBED_COMMAND_ENV,
-            )
-            for name in INSTALL_SCRIPT_NAMES
-        },
+        smoke=smoke_results,
     )
 
 
@@ -423,6 +520,10 @@ def services(
             path = dist / name
             if name.startswith("solstone_journal_models-") and name.endswith(".whl"):
                 _write_models_wheel(path)
+            elif name.startswith("solstone_core_speakers_analyze-") and name.endswith(
+                ".whl"
+            ):
+                continue
             elif name.endswith(".whl"):
                 _write_metadata_wheel(path)
             elif name.startswith("solstone_core-") and name.endswith(".tar.gz"):
@@ -430,6 +531,7 @@ def services(
             else:
                 path.write_bytes(b"fixture package")
         _write_linux_core_wheels(repo_root / "dist")
+        _write_linux_speakers_analyze_wheels(repo_root / "dist")
 
     def create_source_bundle(
         _repo: Path, commit: str, output_path: Path

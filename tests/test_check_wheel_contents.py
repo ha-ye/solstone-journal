@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
@@ -18,12 +19,17 @@ from tests.helpers.release_wheel_fixtures import (
     minimal_fat_macho,
     minimal_macho,
     record_hash,
+    speakers_analyze_elf,
     write_core_wheel,
     write_platform_base_wheel,
+    write_speakers_analyze_wheel,
 )
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_wheel_contents.py"
 CPU_TYPE_X86_64 = 0x01000007
+SPEAKERS_LIBRARY = b"fixture libonnxruntime.so.1 GLIBC_2.27\n"
+SPEAKERS_LICENSE = b"fixture license\n"
+SPEAKERS_THIRD_PARTY_NOTICE = b"fixture third party notice\n"
 
 
 def _write_member(
@@ -36,6 +42,29 @@ def _write_member(
     info = zipfile.ZipInfo(name)
     info.external_attr = mode << 16
     wheel.writestr(info, content)
+
+
+def _patch_speakers_fixture_hashes(monkeypatch) -> None:
+    spec = checker.SPEAKERS_ANALYZE_TARGETS["linux-x86_64"]
+    notices = (
+        replace(
+            spec.notices[0],
+            sha256=checker.hashlib.sha256(SPEAKERS_LICENSE).hexdigest(),
+        ),
+        replace(
+            spec.notices[1],
+            sha256=checker.hashlib.sha256(SPEAKERS_THIRD_PARTY_NOTICE).hexdigest(),
+        ),
+    )
+    monkeypatch.setitem(
+        checker.SPEAKERS_ANALYZE_TARGETS,
+        "linux-x86_64",
+        replace(
+            spec,
+            runtime_sha256=checker.hashlib.sha256(SPEAKERS_LIBRARY).hexdigest(),
+            notices=notices,
+        ),
+    )
 
 
 def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
@@ -85,6 +114,16 @@ def test_core_wheel_validator_rejects_bare_linux_tag(tmp_path: Path) -> None:
 
     assert any("unsupported solstone-core wheel tag" in error for error in errors)
     assert any("bare linux tag" in error for error in errors)
+
+
+def test_core_wheel_validator_rejects_tag_outside_probe_constants(
+    tmp_path: Path,
+) -> None:
+    wheel = write_core_wheel(tmp_path, tag="manylinux_2_28_x86_64")
+
+    errors = checker.check_core_wheel(wheel, checker.MAX_CORE_WHEEL_BYTES)
+
+    assert any("unsupported solstone-core wheel tag" in error for error in errors)
 
 
 def test_core_wheel_validator_rejects_non_executable_binary(
@@ -185,6 +224,155 @@ def test_core_wheel_validator_rejects_fat_macho_without_arm64(tmp_path: Path) ->
     errors = checker.check_core_wheel(wheel, checker.MAX_CORE_WHEEL_BYTES)
 
     assert any("fat Mach-O has no arm64 slice" in error for error in errors)
+
+
+def test_speakers_analyze_wheel_validator_accepts_pinned_layout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    assert checker.check_speakers_analyze_wheel(wheel) == []
+
+
+def test_speakers_analyze_wheel_validator_requires_exact_member_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+        extra_members={"unexpected.txt": b"x"},
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "speakers analyze wheel member set is wrong" in error for error in errors
+    )
+
+
+def test_speakers_analyze_wheel_validator_requires_sbom(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+        omit_member=(
+            "solstone_core_speakers_analyze-1.2.3.dist-info/sboms/"
+            "solstone-core-speakers-analyze.cyclonedx.json"
+        ),
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "speakers analyze wheel member set is wrong" in error for error in errors
+    )
+
+
+def test_speakers_analyze_wheel_validator_rejects_provider_libraries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+        extra_members={
+            "solstone_core_speakers_analyze-1.2.3.data/data/lib/"
+            "solstone-core-speakers-analyze/libonnxruntime_providers_shared.so": b"x"
+        },
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any("contains unproven provider library" in error for error in errors)
+
+
+def test_speakers_analyze_wheel_validator_rejects_notice_hash_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=b"changed license\n",
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any("notice digest mismatch" in error for error in errors)
+
+
+def test_speakers_analyze_wheel_validator_requires_dynamic_elf_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    binary = speakers_analyze_elf(
+        checker.ELF_MACHINE["x86_64"],
+        needed=("libc.so.6",),
+        runpath="/wrong",
+        include_interp=False,
+    )
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        binary=binary,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any("missing PT_INTERP" in error for error in errors)
+    assert any("does not need ONNX Runtime" in error for error in errors)
+    assert any("RUNPATH is wrong" in error for error in errors)
+
+
+def test_speakers_analyze_wheel_validator_rejects_understated_glibc_floor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        binary=speakers_analyze_elf(checker.ELF_MACHINE["x86_64"], glibc="2.34"),
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any("wheel tag understates GLIBC floor" in error for error in errors)
+
+
+def test_speakers_analyze_helper_only_dist_is_checkable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    write_speakers_analyze_wheel(
+        tmp_path,
+        library=SPEAKERS_LIBRARY,
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_dist(tmp_path, {}, checker.MAX_BASE_WHEEL_BYTES)
+
+    assert errors == []
 
 
 def test_base_wheel_validator_rejects_tests_path_segment(tmp_path: Path) -> None:
@@ -363,6 +551,24 @@ def test_release_artifacts_derive_core_tags_from_probe(tmp_path: Path) -> None:
     for tag in checker.SOLSTONE_CORE_PLATFORM_TAGS.values():
         assert any(
             name.startswith("solstone_core-") and name.endswith(f"-py3-none-{tag}.whl")
+            for name in artifact_names
+        )
+
+
+def test_release_artifacts_derive_speakers_analyze_tags_from_probe(
+    tmp_path: Path,
+) -> None:
+    artifacts = checker.release_artifacts(
+        tmp_path,
+        release_scope="all-hosts",
+        models_decision="skip",
+    )
+    artifact_names = {path.name for path in artifacts}
+
+    for tag in checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.values():
+        assert any(
+            name.startswith("solstone_core_speakers_analyze-")
+            and name.endswith(f"-py3-none-{tag}.whl")
             for name in artifact_names
         )
 

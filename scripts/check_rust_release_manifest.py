@@ -34,6 +34,8 @@ for _path in (str(ROOT), str(_SCRIPTS_DIR)):
 from check_wheel_contents import (  # noqa: E402
     CORE_SCRIPT_NAMES,
     ROOT_LAUNCHER_NAMES,
+    SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
     release_artifacts,
 )
 
@@ -1277,7 +1279,9 @@ def _case_collision_failures(paths: Sequence[Path]) -> list[Failure]:
     return failures
 
 
-def _model_name_failures(package_names: set[str], expected_count: int) -> list[Failure]:
+def _model_name_failures(
+    package_names: set[str], expected_without_models_count: int
+) -> list[Failure]:
     model_like = {
         name for name in package_names if name.startswith("solstone_journal_models-")
     }
@@ -1301,11 +1305,11 @@ def _model_name_failures(package_names: set[str], expected_count: int) -> list[F
                 repair="use the models version derived from package metadata",
             )
         )
-    if expected_count == 15 and model_like:
+    if len(package_names) == expected_without_models_count and model_like:
         failures.append(
             _failure(
-                "15-file candidate contains models archive leftover",
-                expected="no solstone_journal_models archives in a 15-file candidate",
+                "models-skipped candidate contains models archive leftover",
+                expected="no solstone_journal_models archives in a models-skipped candidate",
                 actual=", ".join(sorted(model_like)),
                 repair="remove skipped models artifacts from the release candidate",
             )
@@ -1343,11 +1347,18 @@ def classify_release_dir(
     failures.extend(_case_collision_failures(entries))
     for entry in entries:
         failures.extend(_validate_regular_file(entry, label=entry.name))
-    if len(entries) not in {15, 17}:
+    expected_without_models = set(expected_package_names(include_models=False))
+    expected_with_models = set(expected_package_names(include_models=True))
+    expected_without_models_count = len(expected_without_models) + 4
+    expected_with_models_count = len(expected_with_models) + 4
+    if len(entries) not in {expected_without_models_count, expected_with_models_count}:
         failures.append(
             _failure(
-                "release directory must contain exactly 15 or 17 files",
-                expected="15 files without models or 17 files with models",
+                "release directory must contain exactly the expected file count",
+                expected=(
+                    f"{expected_without_models_count} files without models or "
+                    f"{expected_with_models_count} files with models"
+                ),
                 actual=str(len(entries)),
                 repair="validate the exact release candidate payload directory",
             )
@@ -1365,13 +1376,11 @@ def classify_release_dir(
                 repair="generate one companion manifest for each solstone_core artifact",
             )
         )
-    expected_without_models = set(expected_package_names(include_models=False))
-    expected_with_models = set(expected_package_names(include_models=True))
-    include_models = len(entries) == 17
+    include_models = len(entries) == expected_with_models_count
     expected_packages = (
         expected_with_models if include_models else expected_without_models
     )
-    failures.extend(_model_name_failures(package_names, len(entries)))
+    failures.extend(_model_name_failures(package_names, len(expected_without_models)))
     unknown = package_names - expected_with_models
     if unknown:
         failures.append(
@@ -1399,7 +1408,7 @@ def classify_release_dir(
                 "release directory contains extra assets",
                 expected=", ".join(sorted(expected_packages)),
                 actual=", ".join(sorted(extra)),
-                repair="remove assets outside the exact 15/17-file release payload",
+                repair="remove assets outside the exact release payload",
             )
         )
     try:
@@ -2011,6 +2020,10 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
         version = name.removesuffix(".whl").split("-")[1]
         return f"solstone-{version}.data/scripts"
 
+    def speakers_analyze_data_prefix(name: str) -> str:
+        version = name.removesuffix(".whl").split("-")[1]
+        return f"solstone_core_speakers_analyze-{version}.data/scripts"
+
     def record_hash(content: bytes) -> str:
         digest = hashlib.sha256(content).digest()
         encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
@@ -2078,6 +2091,29 @@ def write_inert_packages(dist_dir: Path, *, include_models: bool) -> None:
                 write_record(
                     wheel,
                     f"solstone-{name.removesuffix('.whl').split('-')[1]}.dist-info",
+                    members,
+                )
+            continue
+        if name.startswith("solstone_core_speakers_analyze-") and name.endswith(".whl"):
+            with zipfile.ZipFile(path, "w") as wheel:
+                meta_name, metadata = metadata_member(name)
+                members = {meta_name: metadata.encode("utf-8")}
+                wheel.writestr(meta_name, metadata)
+                for script_name in SPEAKERS_ANALYZE_SCRIPT_NAMES:
+                    info = zipfile.ZipInfo(
+                        f"{speakers_analyze_data_prefix(name)}/{script_name}"
+                    )
+                    info.create_system = 3
+                    info.external_attr = 0o755 << 16
+                    content = f"inert {script_name} for {name}\n".encode("utf-8")
+                    wheel.writestr(info, content)
+                    members[info.filename] = content
+                write_record(
+                    wheel,
+                    (
+                        "solstone_core_speakers_analyze-"
+                        f"{name.removesuffix('.whl').split('-')[1]}.dist-info"
+                    ),
                     members,
                 )
             continue
@@ -2330,6 +2366,9 @@ def run_fixtures_mode() -> list[Failure]:
                 INSTALL_SCRIPT_NAMES,
                 PROOF_TARGETS,
                 SCRUBBED_COMMAND_ENV,
+                SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS,
+                SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                SPEAKERS_ANALYZE_SCRIPT_NAME,
                 CommandResult,
                 InstallObservation,
                 _expected_install_members,
@@ -2379,6 +2418,14 @@ def run_fixtures_mode() -> list[Failure]:
             for name in expected_package_names(include_models=False)
             if name.startswith("solstone_core-") and "macosx_14_0_arm64" in name
         )
+        fixture_speakers_analyze_wheel = next(
+            name
+            for name in expected_package_names(include_models=False)
+            if name.startswith("solstone_core_speakers_analyze-")
+            and "macosx_14_0_arm64" in name
+        )
+        fixture_speakers_analyze_executable = next(iter(SPEAKERS_ANALYZE_SCRIPT_NAMES))
+        fixture_speakers_analyze_dylib = "libonnxruntime.1.25.0.dylib"
         native_records = [
             {
                 "role": "root",
@@ -2428,6 +2475,50 @@ def run_fixtures_mode() -> list[Failure]:
                         "bytes": 6,
                     }
                     for name in CORE_SCRIPT_NAMES
+                },
+                "tools": fixture_native_tools("macos-arm64"),
+                "signing_mode": "signed-verified",
+                "signing": {
+                    "signer_pinned": True,
+                    "team_pinned": True,
+                    "hardened_runtime": True,
+                    "trusted_timestamp": True,
+                },
+                "notarization_status": "accepted",
+            },
+            {
+                "role": "speakers-analyze",
+                "wheel": {
+                    "name": fixture_speakers_analyze_wheel,
+                    "sha256": "a" * 64,
+                    "bytes": 12,
+                },
+                "member": {
+                    "path": (
+                        "solstone_core_speakers_analyze-1.0.0.data/scripts/"
+                        f"{fixture_speakers_analyze_executable}"
+                    ),
+                    "sha256": "b" * 64,
+                    "bytes": 6,
+                },
+                "members": {
+                    fixture_speakers_analyze_executable: {
+                        "path": (
+                            "solstone_core_speakers_analyze-1.0.0.data/scripts/"
+                            f"{fixture_speakers_analyze_executable}"
+                        ),
+                        "sha256": "b" * 64,
+                        "bytes": 6,
+                    },
+                    fixture_speakers_analyze_dylib: {
+                        "path": (
+                            "solstone_core_speakers_analyze-1.0.0.data/"
+                            f"{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/"
+                            f"{fixture_speakers_analyze_dylib}"
+                        ),
+                        "sha256": "c" * 64,
+                        "bytes": 6,
+                    },
                 },
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",
@@ -2496,6 +2587,25 @@ def run_fixtures_mode() -> list[Failure]:
                     }
                     for name, expected in sorted(expected_members.items())
                 ]
+                smoke = {
+                    name: CommandResult(
+                        argv=(str(env_root / "bin" / name), "--version"),
+                        exit_code=0,
+                        stdout=f"{CORE_SMOKE_STDOUT[name]} {_current_version()}",
+                        env=SCRUBBED_COMMAND_ENV,
+                    )
+                    for name in INSTALL_SCRIPT_NAMES
+                }
+                if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+                    smoke[SPEAKERS_ANALYZE_SCRIPT_NAME] = CommandResult(
+                        argv=(str(env_root / "bin" / SPEAKERS_ANALYZE_SCRIPT_NAME),),
+                        exit_code=0,
+                        stdout=json.dumps(
+                            {"schema": SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                            separators=(",", ":"),
+                        ),
+                        env=SCRUBBED_COMMAND_ENV,
+                    )
                 proof = build_install_proof(
                     target=target,
                     version=_current_version(),
@@ -2527,15 +2637,7 @@ def run_fixtures_mode() -> list[Failure]:
                             install_paths
                         ),
                         installed_members=tuple(installed_members),
-                        smoke={
-                            name: CommandResult(
-                                argv=(str(env_root / "bin" / name), "--version"),
-                                exit_code=0,
-                                stdout=f"{CORE_SMOKE_STDOUT[name]} {_current_version()}",
-                                env=SCRUBBED_COMMAND_ENV,
-                            )
-                            for name in INSTALL_SCRIPT_NAMES
-                        },
+                        smoke=smoke,
                     ),
                     recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
                 )

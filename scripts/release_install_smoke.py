@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,7 +29,11 @@ from scripts.check_rust_release_manifest import (
     Failure,
     canonical_json_bytes,
 )
-from scripts.check_wheel_contents import CORE_SCRIPT_NAMES, ROOT_LAUNCHER_NAMES
+from scripts.check_wheel_contents import (
+    CORE_SCRIPT_NAMES,
+    ROOT_LAUNCHER_NAMES,
+    SPEAKERS_ANALYZE_SCRIPT_NAMES,
+)
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
 
@@ -56,6 +61,7 @@ TOP_LEVEL_KEYS = frozenset(
     )
 )
 PROOF_KIND = "solstone-native-install-proof"
+ROOT = Path(__file__).resolve().parent.parent
 CORE_SMOKE_STDOUT = {
     "sol": "sol (solstone)",
     "solstone": "sol (solstone)",
@@ -63,6 +69,10 @@ CORE_SMOKE_STDOUT = {
 }
 # Version smoke spans root launchers plus the core member.
 INSTALL_SCRIPT_NAMES = ROOT_LAUNCHER_NAMES + CORE_SCRIPT_NAMES
+SPEAKERS_ANALYZE_SCRIPT_NAME = SPEAKERS_ANALYZE_SCRIPT_NAMES[0]
+SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS = frozenset(("linux-x86_64-musl",))
+SPEAKERS_ANALYZE_RESPONSE_SCHEMA = "solstone-speaker-analyze-response-v1"
+SPEAKERS_ANALYZE_REQUEST_SCHEMA = "solstone-speaker-analyze-request-v1"
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
 RETAINED_PROOF_REPAIR = (
@@ -168,9 +178,12 @@ def _env_bin(env_root: Path, name: str) -> Path:
     return env_root / "bin" / name
 
 
-def _run_command(argv: Sequence[str]) -> CommandResult:
+def _run_command(
+    argv: Sequence[str], *, input_text: str | None = None
+) -> CommandResult:
     result = subprocess.run(
         list(argv),
+        input=input_text,
         capture_output=True,
         text=True,
         check=False,
@@ -238,6 +251,10 @@ def _select_names_for_target(target: str, names: Sequence[str]) -> tuple[str, ..
     selected: list[str] = []
     for name in sorted(names):
         if not name.endswith(".whl"):
+            continue
+        if name.startswith("solstone_core_speakers_analyze-"):
+            if target == "linux-x86_64-musl" and "manylinux_2_27_x86_64" in name:
+                selected.append(name)
             continue
         if name.startswith("solstone_core-"):
             if target == "linux-x86_64-musl" and "x86_64" in name:
@@ -319,6 +336,41 @@ def _find_single(root: Path, name: str) -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _speakers_analyze_request(env_root: Path) -> str:
+    work_dir = env_root / "speakers-analyze-smoke"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = work_dir / "audio.f32le"
+    audio_path.write_bytes(b"\0" * 4 * 16000)
+    payload_path = work_dir / "statement-embedding.f32le"
+    interval_payload_path = work_dir / "interval-embedding.f32le"
+    assets = (
+        ROOT
+        / "packages"
+        / "solstone-journal-models"
+        / "solstone_journal_models"
+        / "assets"
+    )
+    request = {
+        "schema": SPEAKERS_ANALYZE_REQUEST_SCHEMA,
+        "sample_rate_hz": 16000,
+        "full_audio_f32le_path": str(audio_path),
+        "reduced_audio_f32le_path": None,
+        "models": {
+            "pyannote_segmentation_onnx_path": str(
+                assets / "pyannote-segmentation-3.0.onnx"
+            ),
+            "wespeaker_onnx_path": str(assets / "wespeaker-resnet34-256.onnx"),
+        },
+        "output_payload_f32le_path": str(payload_path),
+        "interval_embedding_payload_f32le_path": str(interval_payload_path),
+        "statement_embedding": {
+            "spans": [{"statement_id": 1, "start_s": 0.0, "end_s": 0.5}]
+        },
+        "diarization": {"spans": [{"statement_id": 1, "start_s": 0.0, "end_s": 0.5}]},
+    }
+    return json.dumps(request, sort_keys=True)
+
+
 def _distribution_from_wheel_metadata(path: Path) -> Mapping[str, str] | None:
     try:
         with zipfile.ZipFile(path) as wheel:
@@ -386,7 +438,10 @@ def _default_observe_install(
     )
     after = _solstone_distributions(env_python)
     installed_members: list[Mapping[str, Any]] = []
-    executable_paths = {name: _env_bin(env_root, name) for name in INSTALL_SCRIPT_NAMES}
+    executable_names = list(INSTALL_SCRIPT_NAMES)
+    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        executable_names.append(SPEAKERS_ANALYZE_SCRIPT_NAME)
+    executable_paths = {name: _env_bin(env_root, name) for name in executable_names}
     for name, executable_path in executable_paths.items():
         if executable_path.is_file() or executable_path.is_symlink():
             installed_members.append(_installed_member(executable_path, name))
@@ -395,7 +450,21 @@ def _default_observe_install(
         installed_members.append(_installed_member(helper_path, "parakeet-helper"))
     smoke: dict[str, CommandResult] = {}
     for name, executable_path in executable_paths.items():
-        if executable_path.exists() or executable_path.is_symlink():
+        if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
+            if executable_path.exists() or executable_path.is_symlink():
+                smoke[name] = _run_command(
+                    (str(executable_path),),
+                    input_text=_speakers_analyze_request(env_root),
+                )
+            else:
+                smoke[name] = CommandResult(
+                    argv=(str(executable_path),),
+                    exit_code=127,
+                    stdout="",
+                    stderr="missing executable",
+                    env=SCRUBBED_COMMAND_ENV,
+                )
+        elif executable_path.exists() or executable_path.is_symlink():
             smoke[name] = _run_command((str(executable_path), "--version"))
         else:
             smoke[name] = CommandResult(
@@ -532,6 +601,15 @@ def _root_wheel_paths(install_paths: Sequence[Path]) -> tuple[Path, ...]:
     )
 
 
+def _speakers_analyze_wheel_paths(install_paths: Sequence[Path]) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in install_paths
+        if path.name.startswith("solstone_core_speakers_analyze-")
+        and path.name.endswith(".whl")
+    )
+
+
 def _root_launcher_members_from_wheel(
     wheel_path: Path,
 ) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
@@ -572,6 +650,48 @@ def _root_launcher_members_from_wheel(
             _failure(
                 "install proof root wheel is unreadable",
                 expected="readable root wheel",
+                actual=wheel_path.name,
+                repair="python3 scripts/check_wheel_contents.py",
+            )
+        ]
+
+
+def _speakers_analyze_members_from_wheel(
+    wheel_path: Path,
+) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
+    try:
+        with zipfile.ZipFile(wheel_path) as wheel:
+            scripts = sorted(
+                info
+                for info in wheel.infolist()
+                if info.filename.endswith(
+                    f".data/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAME}"
+                )
+            )
+            if len(scripts) != 1:
+                return {}, [
+                    _failure(
+                        "install proof speakers-analyze member set is invalid",
+                        expected=SPEAKERS_ANALYZE_SCRIPT_NAME,
+                        actual=", ".join(Path(info.filename).name for info in scripts)
+                        or "<empty>",
+                        repair="python3 scripts/check_wheel_contents.py",
+                    )
+                ]
+            script = scripts[0]
+            content = wheel.read(script)
+            return {
+                SPEAKERS_ANALYZE_SCRIPT_NAME: {
+                    "path": script.filename,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "bytes": len(content),
+                }
+            }, []
+    except (OSError, zipfile.BadZipFile):
+        return {}, [
+            _failure(
+                "install proof speakers-analyze wheel is unreadable",
+                expected="readable speakers-analyze wheel",
                 actual=wheel_path.name,
                 repair="python3 scripts/check_wheel_contents.py",
             )
@@ -621,6 +741,24 @@ def _expected_install_members(
             )
             continue
         members[name] = member
+    speakers_wheels = _speakers_analyze_wheel_paths(install_paths)
+    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        if len(speakers_wheels) != 1:
+            failures.append(
+                _failure(
+                    "install proof speakers-analyze wheel selection is invalid",
+                    expected="exactly one speakers-analyze helper wheel",
+                    actual=", ".join(path.name for path in speakers_wheels)
+                    or "<empty>",
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        else:
+            speakers_members, speakers_failures = _speakers_analyze_members_from_wheel(
+                speakers_wheels[0]
+            )
+            failures.extend(speakers_failures)
+            members.update(speakers_members)
     return members, failures
 
 
@@ -681,6 +819,47 @@ def _env_failures(label: str, env: Mapping[str, str]) -> list[Failure]:
                 )
             )
     return failures
+
+
+def _expected_smoke_names(target: str) -> set[str]:
+    names = set(INSTALL_SCRIPT_NAMES)
+    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+        names.add(SPEAKERS_ANALYZE_SCRIPT_NAME)
+    return names
+
+
+def _expected_smoke_argv(name: str) -> tuple[str, ...]:
+    if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
+        return (f"{ENVROOT}/bin/{name}",)
+    return (f"{ENVROOT}/bin/{name}", "--version")
+
+
+def _validate_speakers_analyze_stdout(stdout: str, *, repair: str) -> list[Failure]:
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        return [
+            _failure(
+                "install proof speakers-analyze smoke stdout is not JSON",
+                expected=f"{SPEAKERS_ANALYZE_RESPONSE_SCHEMA} JSON response",
+                actual=str(exc),
+                repair=repair,
+            )
+        ]
+    if not isinstance(payload, Mapping) or payload.get("schema") != (
+        SPEAKERS_ANALYZE_RESPONSE_SCHEMA
+    ):
+        return [
+            _failure(
+                "install proof speakers-analyze smoke response schema is invalid",
+                expected=SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                actual=repr(
+                    payload.get("schema") if isinstance(payload, Mapping) else payload
+                ),
+                repair=repair,
+            )
+        ]
+    return []
 
 
 def _expected_install_argv(
@@ -963,7 +1142,7 @@ def _validate_observation(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_smoke_names = set(INSTALL_SCRIPT_NAMES)
+    expected_smoke_names = _expected_smoke_names(target)
     if set(observation.smoke) != expected_smoke_names:
         failures.append(
             _failure(
@@ -982,7 +1161,7 @@ def _validate_observation(
             )
             for token in normalize_argv(result.argv)
         )
-        expected_smoke_argv = (f"{ENVROOT}/bin/{name}", "--version")
+        expected_smoke_argv = _expected_smoke_argv(name)
         if normalized_smoke_argv != expected_smoke_argv:
             failures.append(
                 _failure(
@@ -997,21 +1176,33 @@ def _validate_observation(
             failures.append(
                 _failure(
                     "install proof smoke command failed",
-                    expected=f"{name} version smoke exit 0",
+                    expected=(
+                        f"{name} real-inference smoke exit 0"
+                        if name == SPEAKERS_ANALYZE_SCRIPT_NAME
+                        else f"{name} version smoke exit 0"
+                    ),
                     actual=str(result.exit_code),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
-        expected_stdout = f"{CORE_SMOKE_STDOUT.get(name, name)} {version}"
-        if result.stdout != expected_stdout:
-            failures.append(
-                _failure(
-                    "install proof smoke stdout is not exact",
-                    expected=expected_stdout,
-                    actual=result.stdout,
+        if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
+            failures.extend(
+                _validate_speakers_analyze_stdout(
+                    result.stdout,
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
+        else:
+            expected_stdout = f"{CORE_SMOKE_STDOUT.get(name, name)} {version}"
+            if result.stdout != expected_stdout:
+                failures.append(
+                    _failure(
+                        "install proof smoke stdout is not exact",
+                        expected=expected_stdout,
+                        actual=result.stdout,
+                        repair="python3 scripts/check_rust_release_manifest.py",
+                    )
+                )
     return failures
 
 
@@ -1479,16 +1670,17 @@ def _validate_proof_semantics(
             )
     smoke = proof.get("smoke")
     smoke_items = smoke if isinstance(smoke, Mapping) else {}
-    if set(smoke_items) != set(INSTALL_SCRIPT_NAMES):
+    expected_smoke_names = _expected_smoke_names(target)
+    if set(smoke_items) != expected_smoke_names:
         failures.append(
             _failure(
                 "install proof smoke command set does not match release executables",
-                expected=", ".join(INSTALL_SCRIPT_NAMES),
+                expected=", ".join(sorted(expected_smoke_names)),
                 actual=", ".join(sorted(str(key) for key in smoke_items)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    for name in INSTALL_SCRIPT_NAMES:
+    for name in sorted(expected_smoke_names):
         smoke_entry = smoke_items.get(name) if isinstance(smoke_items, Mapping) else {}
         if not isinstance(smoke_entry, Mapping):
             failures.append(
@@ -1500,12 +1692,15 @@ def _validate_proof_semantics(
                 )
             )
             continue
-        expected_stdout = f"{CORE_SMOKE_STDOUT[name]} {version}"
         expected_smoke = {
-            "argv": [f"{ENVROOT}/bin/{name}", "--version"],
+            "argv": list(_expected_smoke_argv(name)),
             "env": dict(SCRUBBED_COMMAND_ENV),
             "exit_code": 0,
-            "stdout": expected_stdout,
+            "stdout": (
+                str(smoke_entry.get("stdout"))
+                if name == SPEAKERS_ANALYZE_SCRIPT_NAME
+                else f"{CORE_SMOKE_STDOUT[name]} {version}"
+            ),
             "stderr": "",
         }
         if dict(smoke_entry) != expected_smoke:
@@ -1514,6 +1709,13 @@ def _validate_proof_semantics(
                     "install proof smoke result does not match release version",
                     expected=repr(expected_smoke),
                     actual=repr(dict(smoke_entry)),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
+            failures.extend(
+                _validate_speakers_analyze_stdout(
+                    str(smoke_entry.get("stdout")),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
@@ -1903,11 +2105,12 @@ def validate_install_proof(
                     )
                 )
     smoke = proof.get("smoke")
-    if not isinstance(smoke, Mapping) or set(smoke) != set(INSTALL_SCRIPT_NAMES):
+    expected_smoke_names = _expected_smoke_names(target)
+    if not isinstance(smoke, Mapping) or set(smoke) != expected_smoke_names:
         failures.append(
             _failure(
                 "install proof smoke section is invalid",
-                expected=", ".join(INSTALL_SCRIPT_NAMES) + " smoke results",
+                expected=", ".join(sorted(expected_smoke_names)) + " smoke results",
                 actual=repr(smoke),
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
