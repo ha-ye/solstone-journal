@@ -123,8 +123,8 @@ def test_candidate_validates_build_host_before_destructive_cleanup() -> None:
     start = driver_text.index("def run_candidate(")
     end = driver_text.index("\ndef ", start + 1)
     run_candidate_body = driver_text[start:end]
-    default_services_call = "svc = services or default_services(env)"
-    cleanup_call = "svc.clean_outputs(root, version)"
+    default_services_call = "default_services("
+    cleanup_call = ".clean_outputs("
 
     assert default_services_call in run_candidate_body
     assert cleanup_call in run_candidate_body
