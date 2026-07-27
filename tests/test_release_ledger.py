@@ -29,13 +29,58 @@ from scripts.release_public_evidence import validate_public_evidence_tree
 
 SOURCE_COMMIT = "a" * 40
 CONTRACT_DOC = "docs/release-evidence-contract.md"
-CANONICAL_LEDGER_V1_FIXTURE = (
-    Path(__file__).parent / "fixtures" / "release_evidence" / "canonical-ledger-v1.json"
+RETAINED_LEDGER_V1_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "release_evidence"
+    / "retained-1.0.17"
+    / "ledger.json"
 )
-CANONICAL_LEDGER_V1_SHA256 = (
-    "ffbf2530d6548d2c108f0dd0ea19fd41bb601f775c73640d345273a8dd20d344"
+RETAINED_LEDGER_V1_SHA256 = (
+    "9aafdf7fa3bedfd943c7a26b9a6338e25d87d735ad144ecd4b0bf7c801ad5cc7"
 )
 EXPECTED_LEDGER_SCHEMA_V1_TOP_LEVEL_KEYS = frozenset(
+    (
+        "schema_version",
+        "kind",
+        "product",
+        "version",
+        "source_commit",
+        "candidate",
+        "models",
+        "core_lock_sha256",
+        "rust_targets",
+        "tool_evidence",
+        "native_members",
+        "dependency_policy",
+        "policy_run",
+        "native_summary",
+        "proofs",
+        "redaction",
+    )
+)
+EXPECTED_LEDGER_SCHEMA_V1_MODELS_KEYS = frozenset(("decision", "package_version"))
+EXPECTED_LEDGER_SCHEMA_V1_NVATTEST_KEYS = None
+EXPECTED_LEDGER_SCHEMA_V1_POLICY_RUN_KEYS = frozenset(
+    (
+        "advisory_source_id",
+        "db_snapshot_basename",
+        "db_commit",
+        "db_archive_sha256",
+        "advisory_count",
+        "advisory_acquired_at",
+        "db_commit_timestamp",
+        "policy_checked_at",
+        "result",
+    )
+)
+CANONICAL_LEDGER_V2_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "release_evidence" / "canonical-ledger-v2.json"
+)
+CANONICAL_LEDGER_V2_SHA256 = (
+    "3686dadcf4e9549495d3ceaf39ace59592dc16305b71eede0a3768e140c835f0"
+)
+EXPECTED_LEDGER_SCHEMA_V2_TOP_LEVEL_KEYS = frozenset(
     (
         "schema_version",
         "kind",
@@ -56,11 +101,11 @@ EXPECTED_LEDGER_SCHEMA_V1_TOP_LEVEL_KEYS = frozenset(
         "redaction",
     )
 )
-EXPECTED_LEDGER_SCHEMA_V1_MODELS_KEYS = frozenset(("decision", "package_version"))
-EXPECTED_LEDGER_SCHEMA_V1_NVATTEST_KEYS = frozenset(
+EXPECTED_LEDGER_SCHEMA_V2_MODELS_KEYS = frozenset(("decision", "package_version"))
+EXPECTED_LEDGER_SCHEMA_V2_NVATTEST_KEYS = frozenset(
     ("challenge", "authority_sha256", "authority", "support_distributions")
 )
-EXPECTED_LEDGER_SCHEMA_V1_POLICY_RUN_KEYS = frozenset(
+EXPECTED_LEDGER_SCHEMA_V2_POLICY_RUN_KEYS = frozenset(
     (
         "advisory_source_id",
         "db_snapshot_basename",
@@ -322,15 +367,25 @@ def _ledger_path(root: Path) -> Path:
 
 
 def _fixture_payload() -> dict:
-    return json.loads(CANONICAL_LEDGER_V1_FIXTURE.read_text(encoding="utf-8"))
+    return json.loads(CANONICAL_LEDGER_V2_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _v1_fixture_payload() -> dict:
+    return json.loads(RETAINED_LEDGER_V1_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _v2_fixture_payload() -> dict:
+    return json.loads(CANONICAL_LEDGER_V2_FIXTURE.read_text(encoding="utf-8"))
 
 
 def _failure_text(failure: checker.Failure) -> str:
     return "\n".join((failure.error, failure.expected, failure.actual, failure.repair))
 
 
-def _schema_v2_with_extra_key(extra_key: str) -> ledger.RetainedLedgerSchema:
-    schema = ledger.LEDGER_SCHEMA_REGISTRY[1]
+def _schema_with_extra_key(
+    schema_version: int, extra_key: str
+) -> ledger.RetainedLedgerSchema:
+    schema = ledger.LEDGER_SCHEMA_REGISTRY[schema_version]
     return ledger.RetainedLedgerSchema(
         top_level_keys=schema.top_level_keys | {extra_key},
         models_keys=schema.models_keys,
@@ -345,39 +400,73 @@ def _mutate_retained_policy_run(path: Path, field: str, value: str) -> None:
     path.write_bytes(canonical_json_bytes(payload))
 
 
-def test_registered_ledger_schema_v1_matches_literal_shape() -> None:
-    schema = ledger.LEDGER_SCHEMA_REGISTRY[1]
+@pytest.mark.parametrize(
+    ("schema_version", "expected_shape"),
+    (
+        (
+            1,
+            {
+                "top_level": EXPECTED_LEDGER_SCHEMA_V1_TOP_LEVEL_KEYS,
+                "models": EXPECTED_LEDGER_SCHEMA_V1_MODELS_KEYS,
+                "nvattest": EXPECTED_LEDGER_SCHEMA_V1_NVATTEST_KEYS,
+                "policy_run": EXPECTED_LEDGER_SCHEMA_V1_POLICY_RUN_KEYS,
+            },
+        ),
+        (
+            2,
+            {
+                "top_level": EXPECTED_LEDGER_SCHEMA_V2_TOP_LEVEL_KEYS,
+                "models": EXPECTED_LEDGER_SCHEMA_V2_MODELS_KEYS,
+                "nvattest": EXPECTED_LEDGER_SCHEMA_V2_NVATTEST_KEYS,
+                "policy_run": EXPECTED_LEDGER_SCHEMA_V2_POLICY_RUN_KEYS,
+            },
+        ),
+    ),
+)
+def test_registered_ledger_schema_matches_literal_shape(
+    schema_version: int, expected_shape: dict[str, object]
+) -> None:
+    schema = ledger.LEDGER_SCHEMA_REGISTRY[schema_version]
     actual_shape = {
         "top_level": schema.top_level_keys,
         "models": schema.models_keys,
         "nvattest": schema.nvattest_keys,
         "policy_run": schema.policy_run_keys,
     }
-    expected_shape = {
-        "top_level": EXPECTED_LEDGER_SCHEMA_V1_TOP_LEVEL_KEYS,
-        "models": EXPECTED_LEDGER_SCHEMA_V1_MODELS_KEYS,
-        "nvattest": EXPECTED_LEDGER_SCHEMA_V1_NVATTEST_KEYS,
-        "policy_run": EXPECTED_LEDGER_SCHEMA_V1_POLICY_RUN_KEYS,
-    }
-
     assert actual_shape == expected_shape, (
-        "Registered retained ledger schema version 1 changed. Append a new schema "
-        f"version and keep the old one registered; see {CONTRACT_DOC}."
+        f"Registered retained ledger schema version {schema_version} changed. "
+        f"Append a new schema version and keep the old one registered; see {CONTRACT_DOC}."
     )
+
+
+def test_registered_ledger_schema_nvattest_presence_is_self_consistent() -> None:
+    for schema in ledger.LEDGER_SCHEMA_REGISTRY.values():
+        declares_nvattest = ledger.retained_ledger_schema_declares_nvattest(schema)
+        assert (schema.nvattest_keys is None) == (not declares_nvattest)
+
+
+def test_consumer_completeness_gate_is_proper_subset_for_all_registered_versions() -> (
+    None
+):
+    for schema in ledger.LEDGER_SCHEMA_REGISTRY.values():
+        assert ledger.RETAINED_LEDGER_CONSUMER_TOP_LEVEL_KEYS < schema.top_level_keys
 
 
 def test_writer_stamps_current_schema_version_constant(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    synthetic_version = 99
     monkeypatch.setitem(
-        ledger.LEDGER_SCHEMA_REGISTRY, 2, ledger.LEDGER_SCHEMA_REGISTRY[1]
+        ledger.LEDGER_SCHEMA_REGISTRY,
+        synthetic_version,
+        ledger.LEDGER_SCHEMA_REGISTRY[ledger.CURRENT_LEDGER_SCHEMA_VERSION],
     )
-    monkeypatch.setattr(ledger, "CURRENT_LEDGER_SCHEMA_VERSION", 2)
+    monkeypatch.setattr(ledger, "CURRENT_LEDGER_SCHEMA_VERSION", synthetic_version)
 
     path = _ledger_path(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == synthetic_version
 
 
 def test_release_ledger_has_no_bare_top_level_keys_symbol() -> None:
@@ -389,8 +478,14 @@ def test_release_ledger_has_no_bare_top_level_keys_symbol() -> None:
     assert "set(payload) != schema.top_level_keys" in source
 
 
-def test_frozen_ledger_fixture_validates_with_reader_and_public_evidence() -> None:
-    payload = _fixture_payload()
+@pytest.mark.parametrize(
+    "fixture",
+    (RETAINED_LEDGER_V1_FIXTURE, CANONICAL_LEDGER_V2_FIXTURE),
+)
+def test_frozen_ledger_fixture_validates_with_reader_and_public_evidence(
+    fixture: Path,
+) -> None:
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
     failures = ledger.validate_retained_ledger(payload)
 
     assert failures == [], (
@@ -400,7 +495,7 @@ def test_frozen_ledger_fixture_validates_with_reader_and_public_evidence() -> No
         f"{[_failure_text(failure) for failure in failures]}"
     )
     try:
-        readback = ledger.read_retained_ledger(CANONICAL_LEDGER_V1_FIXTURE)
+        readback = ledger.read_retained_ledger(fixture)
     except ledger.LedgerError as exc:
         pytest.fail(
             "Frozen retained ledger fixture no longer validates through the file "
@@ -418,11 +513,20 @@ def test_frozen_ledger_fixture_validates_with_reader_and_public_evidence() -> No
     )
 
 
-def test_frozen_ledger_fixture_sha256_is_pinned() -> None:
-    actual = hashlib.sha256(CANONICAL_LEDGER_V1_FIXTURE.read_bytes()).hexdigest()
+@pytest.mark.parametrize(
+    ("fixture", "expected_sha256"),
+    (
+        (RETAINED_LEDGER_V1_FIXTURE, RETAINED_LEDGER_V1_SHA256),
+        (CANONICAL_LEDGER_V2_FIXTURE, CANONICAL_LEDGER_V2_SHA256),
+    ),
+)
+def test_frozen_ledger_fixture_sha256_is_pinned(
+    fixture: Path, expected_sha256: str
+) -> None:
+    actual = hashlib.sha256(fixture.read_bytes()).hexdigest()
 
-    assert actual == CANONICAL_LEDGER_V1_SHA256, (
-        "restore tests/fixtures/release_evidence/canonical-ledger-v1.json; never "
+    assert actual == expected_sha256, (
+        f"restore {fixture}; never "
         "regenerate the frozen retained ledger fixture to make a test pass. See "
         f"{CONTRACT_DOC}."
     )
@@ -500,21 +604,24 @@ def test_retained_ledger_rejects_unregistered_schema_version_alone() -> None:
     assert len(failures) == 1
     assert failures[0].error == "retained ledger schema_version 999 is not registered"
     assert "999" in _failure_text(failures[0])
-    assert "1" in failures[0].expected
+    assert "1, 2" in failures[0].expected
 
 
-def test_retained_ledger_accepts_registered_synthetic_v2_shape(
+def test_retained_ledger_accepts_registered_synthetic_future_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    extra_key = "shape_marker_v2"
+    synthetic_version = 99
+    extra_key = "shape_marker_future"
     monkeypatch.setitem(
-        ledger.LEDGER_SCHEMA_REGISTRY, 2, _schema_v2_with_extra_key(extra_key)
+        ledger.LEDGER_SCHEMA_REGISTRY,
+        synthetic_version,
+        _schema_with_extra_key(ledger.CURRENT_LEDGER_SCHEMA_VERSION, extra_key),
     )
-    assert extra_key in ledger.LEDGER_SCHEMA_REGISTRY[2].top_level_keys
+    assert extra_key in ledger.LEDGER_SCHEMA_REGISTRY[synthetic_version].top_level_keys
 
     payload = copy.deepcopy(_fixture_payload())
-    payload["schema_version"] = 2
-    payload[extra_key] = "shape marker v2"
+    payload["schema_version"] = synthetic_version
+    payload[extra_key] = "shape marker future"
     assert ledger.validate_retained_ledger(payload) == []
 
     missing_payload = copy.deepcopy(payload)
@@ -523,10 +630,10 @@ def test_retained_ledger_accepts_registered_synthetic_v2_shape(
     assert missing_failures[0].error == TOP_LEVEL_KEY_SET_INVALID
     assert all("not registered" not in failure.error for failure in missing_failures)
 
-    v1_extra_payload = copy.deepcopy(_fixture_payload())
-    v1_extra_payload[extra_key] = "shape marker v2"
-    v1_extra_failures = ledger.validate_retained_ledger(v1_extra_payload)
-    assert v1_extra_failures[0].error == TOP_LEVEL_KEY_SET_INVALID
+    current_extra_payload = copy.deepcopy(_fixture_payload())
+    current_extra_payload[extra_key] = "shape marker future"
+    current_extra_failures = ledger.validate_retained_ledger(current_extra_payload)
+    assert current_extra_failures[0].error == TOP_LEVEL_KEY_SET_INVALID
 
 
 def test_consumer_completeness_gate_fails_alone(
@@ -543,7 +650,7 @@ def test_consumer_completeness_gate_fails_alone(
 
     assert len(failures) == 1
     assert failures[0].error == (
-        "retained ledger schema_version 1 omits current consumer top-level key "
+        "retained ledger schema_version 2 omits current consumer top-level key "
         f"{absent_key}; see {CONTRACT_DOC}"
     )
     assert "schema_version" in _failure_text(failures[0])
@@ -552,10 +659,11 @@ def test_consumer_completeness_gate_fails_alone(
     assert "key set is invalid" not in _failure_text(failures[0])
 
 
-def test_consumer_completeness_gate_is_noop_for_version_1() -> None:
-    assert set(ledger.LEDGER_SCHEMA_REGISTRY) == {1}
+def test_consumer_completeness_gate_is_noop_for_registered_versions() -> None:
+    assert set(ledger.LEDGER_SCHEMA_REGISTRY) == {1, 2}
 
-    assert ledger.validate_retained_ledger(_fixture_payload()) == []
+    assert ledger.validate_retained_ledger(_v1_fixture_payload()) == []
+    assert ledger.validate_retained_ledger(_v2_fixture_payload()) == []
 
 
 def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:

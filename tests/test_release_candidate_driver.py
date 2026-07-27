@@ -15,7 +15,7 @@ import sys
 import tarfile
 import tomllib
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -457,6 +457,22 @@ def _update_retained_receipt_ledger_sha(
             _write_json(path, payload)
 
 
+def _retained_schema(
+    report: driver.CandidateReport,
+) -> tuple[int, ledger.RetainedLedgerSchema]:
+    return ledger.resolve_retained_ledger_schema(_read_json(_ledger_path(report)))
+
+
+def _derive_pre_nvattest_v1_tree(report: driver.CandidateReport) -> None:
+    payload = _read_json(_ledger_path(report))
+    payload.pop("nvattest")
+    payload["schema_version"] = 1
+    ledger_sha256 = _write_ledger(report, payload)
+    _update_retained_receipt_ledger_sha(report, ledger_sha256)
+    shutil.rmtree(report.evidence_dir / "nvattest")
+    shutil.rmtree(report.evidence_dir / "support")
+
+
 def _assert_fails_with_error(root: Path, expected_error: str) -> None:
     with pytest.raises(driver.DriverError) as exc:
         _recover(root)
@@ -854,7 +870,7 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
         assert wheel.read(dylib_member) == MACOS_ONNXRUNTIME
 
     recovered = _recover(first_root)
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
     assert recovered.bundle_digest == first.bundle_digest
 
 
@@ -874,7 +890,7 @@ def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
         source_commit=SOURCE_COMMIT,
     )
 
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
     assert _structural_snapshot(report.release_dir) == before_payload
     assert _structural_snapshot(report.evidence_dir) == before_evidence
 
@@ -902,7 +918,7 @@ def test_recovery_ignores_current_release_metadata_drift(
         source_commit=SOURCE_COMMIT,
     )
 
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
 
 
 def test_candidate_pair_promote_rejects_publication_prerequisite_in_staging(
@@ -966,8 +982,19 @@ def test_recovery_accepts_absent_publication_prerequisite(tmp_path: Path) -> Non
     recovered = _recover(root)
     payload = json.loads(driver.format_report(recovered))
 
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
+    assert payload["retained_ledger_schema_version"] == 2
     assert payload["publication_prerequisite_inventory"] == []
+
+
+def test_recovery_v2_retained_candidate_reports_current_heading(tmp_path: Path) -> None:
+    root, _report = _real_candidate(tmp_path)
+
+    recovered = _recover(root)
+    payload = json.loads(driver.format_report(recovered))
+
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
+    assert payload["retained_ledger_schema_version"] == 2
 
 
 def test_recovery_accepts_valid_publication_prerequisite_and_reports_inventory_without_mutation(
@@ -994,6 +1021,26 @@ def test_recovery_accepts_valid_publication_prerequisite_and_reports_inventory_w
     ]
 
 
+@pytest.mark.parametrize("derive_v1", (False, True))
+def test_recovery_tombstone_allowance_is_unchanged_for_registered_versions(
+    tmp_path: Path,
+    derive_v1: bool,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    if derive_v1:
+        _derive_pre_nvattest_v1_tree(report)
+    write_core_unsupported_tombstone_record(
+        report.evidence_dir,
+        report.version,
+    )
+
+    recovered = _recover(root)
+    payload = json.loads(driver.format_report(recovered))
+
+    assert recovered.version == report.version
+    assert payload["publication_prerequisite_inventory"]
+
+
 def test_evidence_inventory_accepts_prerequisite_for_historical_retained_version(
     tmp_path: Path,
 ) -> None:
@@ -1002,9 +1049,12 @@ def test_evidence_inventory_accepts_prerequisite_for_historical_retained_version
         report.evidence_dir,
         PRIOR_RETAINED_VERSION,
     )
+    schema_version, schema = _retained_schema(report)
 
     failures = driver._validate_evidence_inventory(
         report.evidence_dir,
+        schema_version=schema_version,
+        schema=schema,
         publication_prerequisite_version=PRIOR_RETAINED_VERSION,
     )
 
@@ -1019,9 +1069,12 @@ def test_evidence_inventory_rejects_current_version_prerequisite_for_historical_
         report.evidence_dir,
         checker._current_version(),
     )
+    schema_version, schema = _retained_schema(report)
 
     failures = driver._validate_evidence_inventory(
         report.evidence_dir,
+        schema_version=schema_version,
+        schema=schema,
         publication_prerequisite_version=PRIOR_RETAINED_VERSION,
     )
 
@@ -1030,6 +1083,168 @@ def test_evidence_inventory_rejects_current_version_prerequisite_for_historical_
         == "core unsupported-platform tombstone prerequisite version is invalid"
         for failure in failures
     )
+
+
+def test_recovery_resolves_v1_ledger_before_inventory_requires_nvattest(
+    tmp_path: Path,
+) -> None:
+    root, report = _real_candidate(tmp_path)
+    _derive_pre_nvattest_v1_tree(report)
+
+    recovered = _recover(root)
+    payload = json.loads(driver.format_report(recovered))
+
+    assert recovered.heading == driver.RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING
+    assert recovered.nvattest_sha256 == {}
+    assert payload["retained_ledger_schema_version"] == 1
+    assert payload["nvattest_sha256"] == {}
+    assert "nvattest_inventory" not in payload
+    assert "support_inventory" not in payload
+    assert not (report.evidence_dir / "nvattest").exists()
+    assert not (report.evidence_dir / "support").exists()
+
+
+def test_report_missing_ledger_fails_with_named_error(tmp_path: Path) -> None:
+    root, report = _real_candidate(tmp_path)
+    _ledger_path(report).unlink()
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._report(
+            heading=driver.RETAINED_CANDIDATE_VALID_HEADING,
+            root=root,
+            version=report.version,
+            source_commit=SOURCE_COMMIT,
+            expected_lock_sha256=LOCK_SHA,
+            release_dir=report.release_dir,
+            evidence_dir=report.evidence_dir,
+            check_local_models_version=False,
+            validate_current_release_metadata=False,
+            allow_publication_prerequisite=True,
+        )
+
+    assert [(failure.error, failure.actual) for failure in exc.value.failures] == [
+        ("retained ledger could not be read", "FileNotFoundError")
+    ]
+
+
+@pytest.mark.parametrize("entry", ("nvattest", "support"))
+def test_pre_nvattest_v1_evidence_inventory_rejects_stray_nvattest_family(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    _root, report = _real_candidate(tmp_path)
+    _derive_pre_nvattest_v1_tree(report)
+    (report.evidence_dir / entry).mkdir()
+    schema_version, schema = _retained_schema(report)
+
+    failures = driver._validate_evidence_inventory(
+        report.evidence_dir,
+        schema_version=schema_version,
+        schema=schema,
+        publication_prerequisite_version=None,
+    )
+
+    assert failures
+    assert (failures[0].error, failures[0].expected) == (
+        "release evidence inventory is not exact",
+        "schema_version 1: ledger.json, proofs",
+    )
+
+
+def test_pre_nvattest_v1_consumers_fail_loudly_by_version(
+    tmp_path: Path,
+) -> None:
+    _root, report = _real_candidate(tmp_path)
+    _derive_pre_nvattest_v1_tree(report)
+    ledger_payload = _read_json(_ledger_path(report))
+    schema_version, schema = _retained_schema(report)
+    ledger_sha256 = driver.file_sha256_size(_ledger_path(report))[0]
+
+    def capture(call: Callable[[], object]) -> tuple[str, object]:
+        try:
+            result = call()
+        except driver.DriverError as exc:
+            failures = [
+                {
+                    "actual": failure.actual,
+                    "error": failure.error,
+                    "expected": failure.expected,
+                }
+                for failure in exc.failures
+            ]
+            return ("DriverError", failures)
+        except Exception as exc:  # noqa: BLE001 - this test records exact diagnostics.
+            return (type(exc).__name__, str(exc))
+        return ("return", result)
+
+    expected_evidence_names = {"ledger.json"} | {
+        f"proofs/{target}.json" for target in driver.PROOF_TARGETS
+    }
+    expected_failure = [
+        {
+            "actual": "schema_version 1",
+            "error": "retained ledger schema does not declare nvattest",
+            "expected": "schema with nvattest binding",
+        }
+    ]
+
+    observed = {
+        "evidence_report_inventory": capture(
+            lambda: {
+                entry["name"]
+                for entry in driver._evidence_report_inventory(
+                    report.evidence_dir,
+                    schema_version=schema_version,
+                    schema=schema,
+                )
+            }
+        ),
+        "nvattest_report_inventory": capture(
+            lambda: driver._nvattest_report_inventory(
+                report.evidence_dir,
+                schema_version=schema_version,
+                schema=schema,
+            )
+        ),
+        "support_report_inventory": capture(
+            lambda: driver._support_report_inventory(
+                report.evidence_dir,
+                schema_version=schema_version,
+                schema=schema,
+            )
+        ),
+        "retained_support_binding": capture(
+            lambda: driver._retained_support_binding_failures(
+                evidence_dir=report.evidence_dir,
+                ledger=ledger_payload,
+            )
+        ),
+        "retained_authority_binding": capture(
+            lambda: driver._retained_authority_binding(
+                release_dir=report.release_dir,
+                ledger=ledger_payload,
+            )
+        ),
+        "retained_nvattest_binding": capture(
+            lambda: driver._validate_retained_nvattest_binding(
+                evidence_dir=report.evidence_dir,
+                ledger=ledger_payload,
+                release_dir=report.release_dir,
+                digest=report.candidate_digest,
+                ledger_sha256=ledger_sha256,
+                version=report.version,
+            )
+        ),
+    }
+
+    assert observed == {
+        "evidence_report_inventory": ("return", expected_evidence_names),
+        "nvattest_report_inventory": ("return", {}),
+        "support_report_inventory": ("return", []),
+        "retained_support_binding": ("DriverError", expected_failure),
+        "retained_authority_binding": ("DriverError", expected_failure),
+        "retained_nvattest_binding": ("DriverError", expected_failure),
+    }
 
 
 @pytest.mark.parametrize(
@@ -1280,7 +1495,7 @@ def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
         version=report.version,
         source_commit=SOURCE_COMMIT,
     )
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
 
 
 def test_candidate_refuses_published_retained_payload_and_evidence_before_cleanup(
@@ -2271,7 +2486,7 @@ def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None
         encoding="utf-8",
     )
     recovered = _recover(root)
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
 
 
 def test_default_build_local_dist_package_selection_tracks_workspace_sources() -> None:
@@ -3539,7 +3754,7 @@ def test_recovery_success_preserves_retained_tree_and_uses_no_seams(
 
     recovered = _recover(root)
 
-    assert recovered.heading == "retained-candidate-valid"
+    assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
     assert _structural_snapshot(report.release_dir) == before_payload
     assert _structural_snapshot(report.evidence_dir) == before_evidence
     _assert_service_call_counts_zero(services)

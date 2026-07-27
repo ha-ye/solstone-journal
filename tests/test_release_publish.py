@@ -21,6 +21,7 @@ import scripts.check_wheel_contents as wheel_checker
 import scripts.release_publish as publisher
 from scripts.build_nvattest_authority import render_nvattest_authority_json
 from scripts.release_candidate_driver import (
+    RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING,
     CandidateReport,
     DriverError,
 )
@@ -193,6 +194,7 @@ def _candidate(
         },
         "product": "solstone",
         "proofs": {"expected_targets": list(PROOF_TARGETS)},
+        "schema_version": 2,
         "source_commit": SOURCE_COMMIT,
         "version": candidate_version,
     }
@@ -1114,11 +1116,15 @@ def test_byte_divergence_from_recover_prevents_transport(
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "heading",
+    ("not-ready", RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING),
+)
 def test_recover_heading_must_be_retained_valid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, heading: str
 ) -> None:
     report = _candidate(tmp_path)
-    _patch_recover(monkeypatch, report, heading="not-ready")
+    _patch_recover(monkeypatch, report, heading=heading)
     calls: list[str] = []
     index = RecordingIndex(calls, [_empty_snapshot, _full_snapshot])
 
