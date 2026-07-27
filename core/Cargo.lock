@@ -1025,6 +1025,7 @@ name = "solstone-core-sol"
 version = "1.0.17"
 dependencies = [
  "chrono",
+ "nix",
  "serde_json",
  "solstone-core-journal",
  "solstone-core-sol-client",

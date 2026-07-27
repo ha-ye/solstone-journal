@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{IsTerminal, Read, Result as IoResult, Write};
+use std::io::{self, IsTerminal, Read, Result as IoResult, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -19,8 +19,9 @@ use solstone_core_journal::{
     ConfigError, HomeError, Source, detect_checkout_root, discover_home, read_config_journal,
     resolve_journal_path,
 };
-use solstone_core_sol_client::command::CommandOutput;
+use solstone_core_sol_client::command::{CommandContext, CommandOutput};
 use solstone_core_sol_client::port::read_convey_port;
+use solstone_core_sol_client::resident::{ResidentHandler, ShutdownSignal};
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ChatInput, ClientItemIdProvider, Clock, FileProvider,
     HttpTransport, NotificationSink, NotificationSinkError, ProcessOutput, ProcessSpawner,
@@ -688,6 +689,76 @@ fn exec_compat(python: &Path, _args: &[OsString]) -> ExitCode {
     ExitCode::from(EXIT_CONFIG)
 }
 
+pub fn run_resident_command(handler: ResidentHandler, context: CommandContext<'_>) -> ExitCode {
+    let shutdown = match RealShutdownSignal::install() {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            return render_output(CommandOutput::failure(
+                format!("native sol resident signal setup failed: {error}\n"),
+                i32::from(EXIT_TEMPFAIL),
+            ));
+        }
+    };
+
+    let resident = match handler(context) {
+        Ok(resident) => resident,
+        Err(output) => return render_output(output),
+    };
+
+    print!("{}", resident.startup());
+    if let Err(error) = io::stdout().flush() {
+        return render_output(CommandOutput::failure(
+            format!("native sol resident startup flush failed: {error}\n"),
+            i32::from(EXIT_TEMPFAIL),
+        ));
+    }
+
+    let output = resident.serve(&shutdown);
+    render_output(output)
+}
+
+#[cfg(unix)]
+struct RealShutdownSignal {
+    signals: nix::sys::signal::SigSet,
+}
+
+#[cfg(unix)]
+impl RealShutdownSignal {
+    fn install() -> Result<Self, nix::errno::Errno> {
+        use nix::sys::signal::{SigSet, Signal};
+
+        let mut signals = SigSet::empty();
+        signals.add(Signal::SIGINT);
+        signals.add(Signal::SIGTERM);
+        signals.thread_block()?;
+        Ok(Self { signals })
+    }
+}
+
+#[cfg(unix)]
+impl ShutdownSignal for RealShutdownSignal {
+    fn wait(&self) {
+        self.signals
+            .wait()
+            .expect("sigwait on a blocked SIGINT/SIGTERM set cannot fail");
+    }
+}
+
+#[cfg(not(unix))]
+struct RealShutdownSignal;
+
+#[cfg(not(unix))]
+impl RealShutdownSignal {
+    fn install() -> Result<Self, &'static str> {
+        Err("shutdown signals are unavailable on this platform")
+    }
+}
+
+#[cfg(not(unix))]
+impl ShutdownSignal for RealShutdownSignal {
+    fn wait(&self) {}
+}
+
 fn render_output(output: CommandOutput) -> ExitCode {
     print!("{}", output.stdout);
     eprint!("{}", output.stderr);
@@ -1109,6 +1180,14 @@ mod tests {
             output.stdout,
             format!("sol (solstone) {}\n", env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[test]
+    fn buffered_usage_error_output_stays_byte_identical_without_resident_arm() {
+        let output = usage_error_output();
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, USAGE);
+        assert_eq!(output.exit, i32::from(EXIT_USAGE));
     }
 
     #[test]
