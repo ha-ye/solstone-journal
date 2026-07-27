@@ -318,7 +318,7 @@ window.CUR_COPY = CUR_COPY;
         ${sample.stream ? `<span> · ${escapeHtml(sample.stream)}</span>` : ''}
         ${sample.segment_key ? `<span> · ${escapeHtml(sample.segment_key)}</span>` : ''}
         ${sample.source ? `<span> · ${escapeHtml(sample.source)}</span>` : ''}
-        ${sample.cluster_label !== undefined && sample.cluster_label >= 0 ? `<span> · ${escapeHtml(sample.cluster_label)}</span>` : ''}
+        ${sample.cluster_label !== undefined && sample.cluster_label >= 0 ? `<span> · cluster ${escapeHtml(sample.cluster_label)}</span>` : ''}
         ${sampleAudioHtml(sample)}
       </li>
     `;

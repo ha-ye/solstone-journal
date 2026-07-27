@@ -109,3 +109,67 @@ def test_speaker_candidate_pair_sample_suppresses_negative_cluster_label() -> No
     )
     result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_speaker_candidate_pair_sample_labels_nonnegative_cluster_label() -> None:
+    source = WORKSPACE_HTML.read_text(encoding="utf-8")
+    functions = "\n\n".join(
+        _extract_function(source, name)
+        for name in ("escapeHtml", "sampleAudioHtml", "speakerCandidatePairSampleHtml")
+    )
+    script = (
+        textwrap.dedent(
+            """
+            const assert = require('assert');
+
+            global.document = {
+              createElement() {
+                return {
+                  _text: '',
+                  set textContent(value) {
+                    this._text = value == null ? '' : String(value);
+                  },
+                  get innerHTML() {
+                    return this._text
+                      .replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;');
+                  },
+                };
+              },
+            };
+            """
+        )
+        + "\n"
+        + functions
+        + "\n"
+        + textwrap.dedent(
+            """
+            const fixture = {
+              day: 'day-alpha',
+              stream: 'stream-alpha',
+              segment_key: 'segment-alpha',
+              source: 'source-alpha',
+              audio_url: '/audio/sample-alpha.wav',
+            };
+
+            function renderWith(clusterLabel) {
+              const sample = { ...fixture };
+              if (clusterLabel !== undefined) sample.cluster_label = clusterLabel;
+              return speakerCandidatePairSampleHtml(sample);
+            }
+
+            const deleted = renderWith(undefined);
+            const neg = renderWith(-1);
+
+            assert(renderWith(3).includes('· cluster 3'));
+            assert(renderWith(0).includes('· cluster 0'));
+            assert(!neg.includes('cluster'));
+            assert.strictEqual(neg, deleted);
+            """
+        )
+    )
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
