@@ -124,6 +124,14 @@ port `0` so the OS chooses a free port, then read `TcpListener::local_addr()` to
 format the startup line. Bind failure returns `Err(CommandOutput::failure(...))`
 before startup output is printed.
 
+The startup line must include its trailing newline. `ResidentCommand::new()`
+does not require or append it; the fixture supplies it at
+`core/crates/solstone-core-sol/src/bin/solstone-resident-fixture.rs:49`, and
+the test asserts it at
+`core/crates/solstone-core-sol/tests/resident.rs:50-54`. A future resident
+command author must preserve that convention because `BufReader::read_line`
+waits for newline or EOF.
+
 This shape works with the borrowing rule in D1 because the listener is owned by
 the resident command's serve closure, while borrowed seams stay valid until the
 runner finishes inside `run_dispatched`.
@@ -157,12 +165,12 @@ threads before the runner has installed the mask. The trivial fixture should not
 spawn threads at all.
 
 Dependency placement: add `nix` with feature `signal` as a non-dev dependency of
-`solstone-core-sol`. The client crate currently has `nix` only as a
-dev-dependency (`core/crates/solstone-core-sol-client/Cargo.toml:16-17`), and
-`solstone-core-sol` currently has no `nix`
-(`core/crates/solstone-core-sol/Cargo.toml:9-15`). Keeping the real signal impl
-in `solstone-core-sol` avoids adding host signal behavior to the iOS-visible
-client surface.
+`solstone-core-sol` (`core/crates/solstone-core-sol/Cargo.toml:11`). Before
+this lode, the client crate had `nix` only as a dev-dependency
+(`core/crates/solstone-core-sol-client/Cargo.toml:16-17`), and
+`solstone-core-sol` had no `nix` in its dependency table. Keeping the real
+signal impl in `solstone-core-sol` avoids adding host signal behavior to the
+iOS-visible client surface.
 
 Behavior marker: `expected-differs` for handled SIGINT/SIGTERM versus default
 process death. The resident lane exits cleanly with code 0 instead of dying by
@@ -322,11 +330,13 @@ Behavior marker: no user-visible behavior change.
 
 AC 2 - buffered path unchanged:
 
-- Add a targeted byte-identity test for a representative buffered command through
-  the dispatch entry that gains the resident arm. Existing tests at
-  `core/crates/solstone-core-sol/src/lib.rs:1199-1280` cover helper bytes and
-  stdin avoidance, but they do not prove byte identity through the modified
-  dispatch path after resident support is added. A new test is required.
+- Because L5.8 ships no production resident arm and leaves dispatch untouched,
+  AC 2 is pinned with
+  `buffered_usage_error_output_stays_byte_identical_without_resident_arm` at
+  `core/crates/solstone-core-sol/src/lib.rs:1186-1190`. That test asserts the
+  exact `stdout`, `stderr`, and `exit` for `usage_error_output()`, which is the
+  representative buffered output adjacent to the new runner and proves the added
+  resident lane did not perturb buffered output construction.
 
 AC 3 - startup before completion:
 
@@ -357,12 +367,14 @@ AC 5 - SIGTERM:
 
 AC 6 - structural proof:
 
-- Prefer compile-time inhabitance checks in Rust tests: one test constructs a
-  `ResidentCommand` only through `ResidentCommand::new(startup, closure)`, and
-  another keeps the generated `HANDLERS: &[Handler]` path exercised as buffered.
-  Do not attempt a compile-fail harness unless the repo already has one for Rust;
-  prose-only is weaker, but a normal type-checking test plus private fields is
-  enough for this lode.
+- `resident_fixture_is_absent_from_inventory_and_handlers_are_buffered` at
+  `core/crates/solstone-core-sol/tests/resident.rs:149-166` asserts
+  `aggregate::handler_for(...)` is `None` for plausible fixture paths, asserts no
+  inventory entry path contains the fixture name, and passes
+  `aggregate::handler_bindings()` into `assert_buffered_handler_slice`.
+- The helper's `&'static [Handler]` parameter is the compile-time assertion: the
+  generated binding slice must stay on the buffered `Handler` lane, so a
+  resident handler binding would fail to type-check there.
 
 ## D10. Expected-Differs
 
