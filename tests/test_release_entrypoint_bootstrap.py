@@ -10,6 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from scripts.release_build_host import BuildHostError, ExternalBuildHostChannel
+
 ROOT = Path(__file__).resolve().parents[1]
 RETAINED_ROOTS = (
     Path("dist") / "release-candidate",
@@ -109,6 +113,28 @@ def _assert_no_import_failure(stderr: str) -> None:
 
 def _assert_no_external_seam(log: Path) -> None:
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
+def test_candidate_validates_build_host_before_destructive_cleanup() -> None:
+    """The candidate reachability test depends on this pre-cleanup validation."""
+    driver_text = (ROOT / "scripts" / "release_candidate_driver.py").read_text(
+        encoding="utf-8"
+    )
+    start = driver_text.index("def run_candidate(")
+    end = driver_text.index("\ndef ", start + 1)
+    run_candidate_body = driver_text[start:end]
+    default_services_call = "svc = services or default_services(env)"
+    cleanup_call = "svc.clean_outputs(root, version)"
+
+    assert default_services_call in run_candidate_body
+    assert cleanup_call in run_candidate_body
+    assert run_candidate_body.index(default_services_call) < run_candidate_body.index(
+        cleanup_call
+    )
+    with pytest.raises(BuildHostError) as exc:
+        ExternalBuildHostChannel.from_env({})
+    assert exc.value.failures[0].error == "build-host channel is not configured"
+    assert exc.value.failures[0].expected == "RELEASE_BUILD_HOST_CHANNEL command"
 
 
 def test_candidate_entrypoint_reaches_driver_build_host_validation(
