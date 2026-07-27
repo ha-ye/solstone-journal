@@ -1,0 +1,624 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from solstone.think.sandbox_profile import probe_contract
+from solstone.think.sandbox_profile import scout_provider_child as child
+from solstone.think.sandbox_profile import scout_provider_probe as probe
+from tests.sandbox_profile import (
+    invoke,
+    prepare_ok,
+    read_json,
+    sandbox_journal,
+    scout_payload,
+    write_attempt_dir,
+)
+
+CANARY_KEY = "scout-key-canary-value"
+CANARY_DISPATCH_TOKEN = "dispatch-token-canary"
+CANARY_ACCOUNT_ID = "acct-scout-canary"
+CANARY_NONCE = "nonce-canary-value"
+CANARY_INPUT_TOKENS = 1_234_567
+CANARY_OUTPUT_TOKENS = 7_654_321
+CANARY_USAGE_STRINGS = (str(CANARY_INPUT_TOKENS), str(CANARY_OUTPUT_TOKENS))
+CANARY_KEY_FINGERPRINT = hashlib.sha256(CANARY_KEY.encode("utf-8")).hexdigest()
+CANARY_MODEL_OUTPUT = json.dumps(
+    {"nonce": CANARY_NONCE},
+    separators=(",", ":"),
+)
+CANARY_REQUEST_URL = (
+    "https://generativelanguage.googleapis.com/v1alpha/models/"
+    "gemini-3.5-flash:generateContent"
+)
+CANARIES = (
+    CANARY_KEY,
+    "x-goog-api-key",
+    CANARY_NONCE,
+    probe.scout_prompt(CANARY_NONCE),
+    CANARY_MODEL_OUTPUT,
+    CANARY_DISPATCH_TOKEN,
+    CANARY_ACCOUNT_ID,
+    CANARY_KEY_FINGERPRINT,
+    "gemini-3.5-flash",
+    "gemini",
+    CANARY_REQUEST_URL,
+    *CANARY_USAGE_STRINGS,
+)
+
+
+def _ready_scout_journal(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    journal = sandbox_journal(tmp_path, monkeypatch)
+    prepare_ok(journal)
+    payload = scout_payload(CANARY_KEY)
+    payload["dispatch_token"] = CANARY_DISPATCH_TOKEN
+    payload["account_id"] = CANARY_ACCOUNT_ID
+    apply = invoke(["apply", "scout", "--json"], input_text=json.dumps(payload))
+    assert apply.exit_code == 0, apply.output
+    return journal, write_attempt_dir(journal)
+
+
+def _clear_provider_modules() -> None:
+    for name in list(sys.modules):
+        if name == "openhands" or name.startswith("openhands."):
+            del sys.modules[name]
+        if name == "litellm" or name.startswith("litellm."):
+            del sys.modules[name]
+
+
+def _snapshot(journal: Path) -> tuple[dict[str, str], bytes]:
+    _clear_provider_modules()
+    return dict(os.environ), (journal / "config" / "journal.json").read_bytes()
+
+
+def _assert_snapshot_unchanged(
+    journal: Path,
+    snapshot: tuple[dict[str, str], bytes],
+) -> None:
+    before_env, before_config = snapshot
+    assert dict(os.environ) == before_env
+    assert (journal / "config" / "journal.json").read_bytes() == before_config
+    assert not any(
+        name == "openhands" or name.startswith("openhands.") for name in sys.modules
+    )
+    assert not any(
+        name == "litellm" or name.startswith("litellm.") for name in sys.modules
+    )
+
+
+def _assert_attempt_empty(attempt: Path) -> None:
+    assert list(attempt.iterdir()) == []
+
+
+def _forbid_spawn(_containment: probe.ScoutContainment):
+    raise AssertionError("Scout provider proof spawned a child")
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _ok_child_code() -> str:
+    return f"""
+import hashlib
+import sys
+from solstone.think.sandbox_profile.scout_provider_probe import (
+    FRAME_PROTOCOL_VERSION,
+    STDIN_FRAME_MAX_BYTES,
+    STDOUT_FRAME_MAX_BYTES,
+    decode_frame,
+    encode_frame,
+)
+
+payload = decode_frame(sys.stdin.buffer.read(), cap=STDIN_FRAME_MAX_BYTES)
+nonce = payload["nonce"]
+out = {{
+    "protocol_version": FRAME_PROTOCOL_VERSION,
+    "result": "ok",
+    "nonce_sha256": hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
+    "finish_reason": "stop",
+    "usage": {{
+        "input_tokens": {CANARY_INPUT_TOKENS},
+        "output_tokens": {CANARY_OUTPUT_TOKENS},
+    }},
+}}
+sys.stdout.buffer.write(encode_frame(out, cap=STDOUT_FRAME_MAX_BYTES))
+sys.stdout.buffer.flush()
+"""
+
+
+def _stderr_flood_child_code() -> str:
+    return """
+import os
+import sys
+os.write(2, b"x" * 200000)
+sys.stderr.flush()
+""" + _ok_child_code()
+
+
+def _sleep_child_code() -> str:
+    return """
+import time
+time.sleep(60)
+"""
+
+
+def _spawn_code(code: str, captured: dict[str, Any]):
+    def spawn(containment: probe.ScoutContainment):
+        captured["env"] = dict(containment.env)
+        captured["cwd"] = containment.cwd
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=containment.cwd,
+            env=containment.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+        captured["pid"] = proc.pid
+        return proc
+
+    return spawn
+
+
+def test_parent_success_uses_contained_env_and_imports_no_openhands(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    for name in list(sys.modules):
+        if name == "openhands" or name.startswith("openhands."):
+            del sys.modules[name]
+        if name == "litellm" or name.startswith("litellm."):
+            del sys.modules[name]
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    before_env = dict(os.environ)
+    before_config = (journal / "config" / "journal.json").read_bytes()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(probe, "_spawn_child", _spawn_code(_ok_child_code(), captured))
+    monkeypatch.setattr(probe, "_new_nonce", lambda: "nonce-secret")
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert outcome["state"] == probe_contract.PROOF_STATE_PASSED
+    assert outcome["reason"] is None
+    assert outcome["checks"] == probe_contract.PROOF_CHECKS["scout"]
+    assert dict(os.environ) == before_env
+    assert (journal / "config" / "journal.json").read_bytes() == before_config
+    assert not any(
+        name == "openhands" or name.startswith("openhands.") for name in sys.modules
+    )
+    assert not any(
+        name == "litellm" or name.startswith("litellm.") for name in sys.modules
+    )
+    assert set(captured["env"]) == {
+        "HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "LITELLM_MODE",
+        "LITELLM_LOCAL_MODEL_COST_MAP",
+    }
+    assert captured["env"]["LITELLM_MODE"] == "PRODUCTION"
+    assert captured["env"]["LITELLM_LOCAL_MODEL_COST_MAP"] == "True"
+    for forbidden in (
+        "PATH",
+        "GOOGLE_API_KEY",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+    ):
+        assert forbidden not in captured["env"]
+    assert list(attempt.iterdir()) == []
+    for canary in (
+        "fake-google-key",
+        "x-goog-api-key",
+        "nonce-secret",
+        "dispatch-token",
+        "acct-scout",
+        "gemini-3.5-flash",
+        "gemini",
+        "generativelanguage.googleapis.com",
+        probe.SCOUT_PROOF_PRIVATE_ROOT_NAME,
+    ):
+        assert canary not in repr(outcome)
+        assert canary not in caplog.text
+
+
+def test_parent_cleanup_unverified_overrides_success(tmp_path, monkeypatch) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(probe, "_spawn_child", _spawn_code(_ok_child_code(), {}))
+    calls = {"count": 0}
+
+    def cleanup(path: Path, deadline: float) -> bool:
+        calls["count"] += 1
+        return calls["count"] == 1
+
+    monkeypatch.setattr(probe, "_cleanup_path_absent", cleanup)
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert outcome["state"] == probe_contract.PROOF_STATE_FAILED
+    assert outcome["reason"] == probe_contract.REASON_CLEANUP_UNVERIFIED
+    assert outcome["checks"] == probe_contract.PROOF_CHECKS["scout"]
+
+
+def test_parent_timeout_reaps_process_group(tmp_path, monkeypatch) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        probe, "_spawn_child", _spawn_code(_sleep_child_code(), captured)
+    )
+    monkeypatch.setattr(probe, "ABSOLUTE_DEADLINE_S", 0.5)
+    monkeypatch.setattr(probe, "WORK_CUTOFF_S", 0.1)
+    monkeypatch.setattr(probe, "TERM_GRACE_S", 0.1)
+    monkeypatch.setattr(probe, "KILL_GRACE_S", 0.1)
+    monkeypatch.setattr(probe, "ABSENCE_GRACE_S", 0.1)
+    started = time.monotonic()
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert time.monotonic() - started < 1.5
+    assert outcome["reason"] == probe_contract.REASON_DEADLINE_EXCEEDED
+    with pytest.raises(ProcessLookupError):
+        os.killpg(captured["pid"], 0)
+    assert list(attempt.iterdir()) == []
+
+
+def test_parent_concurrently_drains_stderr_without_deadlock(
+    tmp_path, monkeypatch
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        probe, "_spawn_child", _spawn_code(_stderr_flood_child_code(), {})
+    )
+    started = time.monotonic()
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert time.monotonic() - started < 5
+    assert outcome["reason"] == probe_contract.REASON_INTERNAL_ERROR
+    assert list(attempt.iterdir()) == []
+
+
+def _child_frame(payload: dict[str, object]) -> bytes:
+    return probe.encode_frame(payload, cap=probe.STDOUT_FRAME_MAX_BYTES)
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason", "prefix"),
+    [
+        (
+            {"protocol_version": 1, "result": probe_contract.REASON_REMOTE_REJECTED},
+            probe_contract.REASON_REMOTE_REJECTED,
+            probe.SCOUT_CHECKS[:0],
+        ),
+        (
+            {"protocol_version": 1, "result": probe_contract.REASON_RESPONSE_INVALID},
+            probe_contract.REASON_RESPONSE_INVALID,
+            probe.SCOUT_CHECKS[:0],
+        ),
+        (
+            {"protocol_version": 1, "result": probe_contract.REASON_INTERNAL_ERROR},
+            probe_contract.REASON_INTERNAL_ERROR,
+            probe.SCOUT_CHECKS[:0],
+        ),
+        (
+            {
+                "protocol_version": 1,
+                "result": "ok",
+                "nonce_sha256": hashlib.sha256(b"other").hexdigest(),
+                "finish_reason": "stop",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+            probe_contract.REASON_CONTENT_MISMATCH,
+            probe.SCOUT_CHECKS[:1],
+        ),
+        (
+            {
+                "protocol_version": 1,
+                "result": "ok",
+                "nonce_sha256": hashlib.sha256(b"nonce").hexdigest(),
+                "finish_reason": "length",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+            probe_contract.REASON_RESPONSE_INVALID,
+            probe.SCOUT_CHECKS[:2],
+        ),
+        (
+            {
+                "protocol_version": 1,
+                "result": "ok",
+                "nonce_sha256": hashlib.sha256(b"nonce").hexdigest(),
+                "finish_reason": "stop",
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+            probe_contract.REASON_USAGE_INVALID,
+            probe.SCOUT_CHECKS[:3],
+        ),
+        (
+            {
+                "protocol_version": 1,
+                "result": "ok",
+                "nonce_sha256": hashlib.sha256(b"nonce").hexdigest(),
+                "finish_reason": "stop",
+                "usage": {"input_tokens": True, "output_tokens": 1},
+            },
+            probe_contract.REASON_USAGE_INVALID,
+            probe.SCOUT_CHECKS[:3],
+        ),
+    ],
+)
+def test_state_machine_failed_reason_prefixes(payload, reason, prefix) -> None:
+    outcome, checks = probe._outcome_from_child_frame(
+        _child_frame(payload),
+        nonce="nonce",
+        start=time.monotonic(),
+    )
+    legal = set(probe_contract.PROOF_SPECIFIC_REASONS["scout"]) | set(
+        probe_contract.FAILED_COMMON_REASONS
+    )
+
+    assert outcome.reason == reason
+    assert outcome.reason in legal
+    assert outcome.state == probe_contract.PROOF_STATE_FAILED
+    assert checks == tuple(prefix)
+    assert outcome.checks == tuple(prefix)
+
+
+def test_state_machine_success_uses_contract_checks() -> None:
+    payload = {
+        "protocol_version": 1,
+        "result": "ok",
+        "nonce_sha256": hashlib.sha256(b"nonce").hexdigest(),
+        "finish_reason": "stop",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+
+    outcome, checks = probe._outcome_from_child_frame(
+        _child_frame(payload),
+        nonce="nonce",
+        start=time.monotonic(),
+    )
+
+    assert outcome.state == probe_contract.PROOF_STATE_PASSED
+    assert outcome.reason is None
+    assert checks == probe_contract.PROOF_CHECKS["scout"]
+    assert outcome.checks == probe_contract.PROOF_CHECKS["scout"]
+
+
+def _child_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    root = tmp_path / "child"
+    paths = {
+        "HOME": root / "home",
+        "TMPDIR": root / "tmp",
+        "XDG_CACHE_HOME": root / "cache",
+        "XDG_CONFIG_HOME": root / "config",
+        "XDG_DATA_HOME": root / "data",
+        "XDG_STATE_HOME": root / "state",
+    }
+    cwd = root / "cwd"
+    for path in (*paths.values(), cwd):
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return (
+        {
+            "LITELLM_MODE": "PRODUCTION",
+            "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+            **{key: str(value) for key, value in paths.items()},
+        },
+        cwd,
+    )
+
+
+def _run_real_child(tmp_path: Path, data: bytes) -> dict[str, Any]:
+    env, cwd = _child_env(tmp_path)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "solstone.think.sandbox_profile.scout_provider_child"],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+        pass_fds=(),
+        start_new_session=True,
+    )
+    stdout, stderr = proc.communicate(data, timeout=10)
+    assert proc.returncode == 0, stderr
+    assert stderr == b""
+    return probe.decode_frame(stdout, cap=probe.STDOUT_FRAME_MAX_BYTES)
+
+
+def test_real_child_rejects_malformed_duplicate_and_oversize_frames(tmp_path) -> None:
+    malformed = b"\x00\x00\x00\x10{}"
+    duplicate_payload = b'{"protocol_version":1,"protocol_version":1}'
+    duplicate = len(duplicate_payload).to_bytes(4, "big") + duplicate_payload
+    oversize = b"x" * (probe.STDIN_FRAME_MAX_BYTES + 5)
+
+    assert (
+        _run_real_child(tmp_path, malformed)["result"]
+        == probe_contract.REASON_INTERNAL_ERROR
+    )
+    assert (
+        _run_real_child(tmp_path, duplicate)["result"]
+        == probe_contract.REASON_INTERNAL_ERROR
+    )
+    assert (
+        _run_real_child(tmp_path, oversize)["result"]
+        == probe_contract.REASON_INTERNAL_ERROR
+    )
+
+
+def test_transport_enforces_single_official_request_without_leaking_header() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = probe.GeminiSingleRequestTransport(httpx.MockTransport(handler))
+    request = httpx.Request(
+        "POST",
+        "https://generativelanguage.googleapis.com/v1alpha/models/"
+        "gemini-3.5-flash:generateContent",
+        headers={"x-goog-api-key": "dummy-secret"},
+        content=b"{}",
+    )
+
+    response = transport.handle_request(request)
+    assert response.status_code == 200
+    assert transport.request_count == 1
+    assert len(seen) == 1
+    with pytest.raises(probe.ProbeInternalError) as exc:
+        transport.handle_request(request)
+    assert "dummy-secret" not in str(exc.value)
+    assert "x-goog-api-key" not in str(exc.value)
+
+
+def test_transport_maps_response_caps_and_outbound_caps() -> None:
+    outbound = probe.GeminiSingleRequestTransport(
+        httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+    )
+    request = httpx.Request(
+        "POST",
+        "https://generativelanguage.googleapis.com/v1alpha/models/"
+        "gemini-3.5-flash:generateContent",
+        content=b"x" * (probe.OUTBOUND_BODY_MAX_BYTES + 1),
+    )
+    with pytest.raises(probe.ProbeInternalError):
+        outbound.handle_request(request)
+
+    inbound = probe.GeminiSingleRequestTransport(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"x-test": "x" * (probe.INBOUND_RAW_HEADER_MAX_BYTES + 1)},
+                request=request,
+            )
+        )
+    )
+    request = httpx.Request(
+        "POST",
+        "https://generativelanguage.googleapis.com/v1alpha/models/"
+        "gemini-3.5-flash:generateContent",
+        content=b"{}",
+    )
+    with pytest.raises(probe.ProbeResponseInvalid):
+        inbound.handle_request(request)
+
+
+def test_real_openhands_completion_uses_injected_gemini_transport(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_MODE", "PRODUCTION")
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    from solstone.think.providers import openhands
+
+    captured: dict[str, Any] = {}
+    nonce = "nonce-for-provider"
+    real_build = openhands._build_generate_llm
+    real_call_kwargs = openhands._generate_call_kwargs
+
+    def capture_build(*args, **kwargs):
+        captured["build_kwargs"] = dict(kwargs)
+        return real_build(*args, **kwargs)
+
+    def capture_call_kwargs(*args, **kwargs):
+        result = real_call_kwargs(*args, **kwargs)
+        captured["call_kwargs"] = dict(result)
+        return result
+
+    monkeypatch.setattr(openhands, "_build_generate_llm", capture_build)
+    monkeypatch.setattr(openhands, "_generate_call_kwargs", capture_call_kwargs)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": json.dumps({"nonce": nonce})}],
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 3,
+                    "candidatesTokenCount": 2,
+                    "totalTokenCount": 5,
+                },
+                "modelVersion": "gemini-3.5-flash",
+            },
+            request=request,
+        )
+
+    transport = probe.GeminiSingleRequestTransport(httpx.MockTransport(handler))
+
+    result = child._run_completion(
+        api_key="dummy-google-key",
+        nonce=nonce,
+        timeout_s=30,
+        transport=transport,
+    )
+
+    request = captured["request"]
+    body = captured["body"]
+    assert result["result"] == "ok"
+    assert transport.request_count == 1
+    assert request.method == "POST"
+    assert request.url.host == "generativelanguage.googleapis.com"
+    assert request.url.path == "/v1alpha/models/gemini-3.5-flash:generateContent"
+    assert request.headers["x-goog-api-key"] == "dummy-google-key"
+    assert captured["build_kwargs"]["max_output_tokens"] == 512
+    assert captured["build_kwargs"]["thinking_budget"] == 0
+    assert captured["build_kwargs"]["num_retries"] == 0
+    assert captured["build_kwargs"]["timeout_s"] == 30
+    assert captured["call_kwargs"]["temperature"] == 0
+    assert captured["call_kwargs"]["thinking"] == {
+        "type": "disabled",
+        "budget_tokens": 0,
+    }
+    assert body["generationConfig"]["temperature"] == 0
+    assert body["generationConfig"]["max_output_tokens"] == 512
+    assert body["generationConfig"]["response_json_schema"]["properties"] == {
+        "nonce": {"type": "string"}
+    }
+    assert body["contents"][0]["parts"][0]["text"] == probe.scout_prompt(nonce)
