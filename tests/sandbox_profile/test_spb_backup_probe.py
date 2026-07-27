@@ -40,6 +40,7 @@ SPB_REASON_VOCABULARY = {
     probe_contract.REASON_INTERNAL_ERROR,
 }
 
+SNAPSHOT_ID = "5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d5a1d"
 CANARIES = (
     "broker-token",
     "ACCESS-SECRET",
@@ -49,8 +50,30 @@ CANARIES = (
     "sandbox-bucket",
     "sandbox-prefix",
     "acct-backup",
-    "snapshot-secret-id",
+    SNAPSHOT_ID,
 )
+HUMAN_INIT_STDOUT = """created restic repository 00000000 at local:/tmp/spb-restic-proof
+
+Please note that knowledge of your password is required to access
+the repository. Losing your password means that your data is
+irrecoverably lost.
+"""
+HUMAN_BACKUP_STDOUT = """using parent snapshot 00000000
+
+Files:           1 new,     0 changed,     0 unmodified
+Dirs:            1 new,     0 changed,     0 unmodified
+Added to the repository: 1.000 KiB
+
+processed 1 files, 1.000 KiB in 0:00
+snapshot 00000000 saved
+"""
+HUMAN_LS_STDOUT = """/spb
+/spb/source.bin
+"""
+HUMAN_RESTORE_STDOUT = """restoring <snapshot> to /tmp/spb-restore
+
+Summary: Restored 2 files/dirs (1.000 KiB) in 0:00
+"""
 
 
 class FakeClock:
@@ -173,7 +196,7 @@ def _creds_with_expiry(clock: FakeClock, expires_at: str) -> HostedCredentials:
     )
 
 
-def _records(*records: dict[str, object]) -> str:
+def _records(*records: object) -> str:
     return "\n".join(json.dumps(record) for record in records) + "\n"
 
 
@@ -209,6 +232,7 @@ def _capture_child_surface(
             for key, value in backend_env.items()
         },
         "repository": _scrub_text(kwargs.get("repository", ""), child_secret_values),
+        "json": kwargs.get("json"),
         "stdin_bytes": kwargs.get("stdin_bytes") or b"",
         "scrub_values": tuple(
             _scrub_text(value, child_secret_values) for value in scrub_values
@@ -216,13 +240,41 @@ def _capture_child_surface(
     }
 
 
-def _summary_record(snapshot_id: object = "snapshot-secret-id") -> dict[str, object]:
-    return {"message_type": "summary", "snapshot_id": snapshot_id}
+def _captured_command(capture: dict[str, object]) -> str:
+    argv = capture["argv"]
+    assert isinstance(argv, tuple)
+    return next(token for token in ("init", "backup", "ls", "restore") if token in argv)
+
+
+def _summary_record(
+    snapshot_id: object = SNAPSHOT_ID,
+    **overrides: object,
+) -> dict[str, object]:
+    record = {
+        "message_type": "summary",
+        "total_files_processed": 1,
+        "total_bytes_processed": probe.FIXTURE_LENGTH,
+        "snapshot_id": snapshot_id,
+    }
+    record.update(overrides)
+    return record
+
+
+def _restore_summary_record(**overrides: object) -> dict[str, object]:
+    record = {
+        "message_type": "summary",
+        "total_files": 2,
+        "files_restored": 2,
+        "total_bytes": probe.FIXTURE_LENGTH,
+        "bytes_restored": probe.FIXTURE_LENGTH,
+    }
+    record.update(overrides)
+    return record
 
 
 def _ls_records(
     *,
-    snapshot_id: str = "snapshot-secret-id",
+    snapshot_id: str = SNAPSHOT_ID,
     paths: object | None = None,
     file_node: dict[str, object] | None = None,
     extra: tuple[dict[str, object], ...] = (),
@@ -232,6 +284,7 @@ def _ls_records(
     if file_node is None:
         file_node = {
             "message_type": "node",
+            "struct_type": "node",
             "path": probe.LOGICAL_SOURCE_PATH,
             "type": "file",
             "size": probe.FIXTURE_LENGTH,
@@ -239,13 +292,41 @@ def _ls_records(
     return (
         {
             "message_type": "snapshot",
+            "struct_type": "snapshot",
             "id": snapshot_id,
             "paths": paths,
         },
-        {"message_type": "node", "path": "/spb", "type": "dir"},
+        {"message_type": "node", "struct_type": "node", "path": "/spb", "type": "dir"},
         file_node,
         *extra,
     )
+
+
+def _restic_command(args: list[str]) -> str:
+    return next(token for token in ("init", "backup", "ls", "restore") if token in args)
+
+
+def _assert_child_contract(
+    args: list[str],
+    kwargs: dict[str, Any],
+    *,
+    command: str,
+    require_json: bool | None = None,
+) -> None:
+    assert "--no-cache" in args
+    assert kwargs["process_group"] is True
+    assert kwargs["timeout"] == probe.RESTIC_CHILD_TIMEOUT_S
+    assert kwargs["password"]
+    if command == "init":
+        assert kwargs.get("json") is False
+    elif require_json is True:
+        assert kwargs.get("json") is True
+    if command == "backup":
+        assert kwargs["stdin_bytes"] == probe.SPB_SYNTHETIC_FIXTURE_BYTES
+
+
+def _json_mode(kwargs: dict[str, Any]) -> bool:
+    return kwargs.get("json") is True
 
 
 def _fake_restic(
@@ -255,52 +336,32 @@ def _fake_restic(
     captures: list[dict[str, object]] | None = None,
 ):
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = next(
-            token for token in ("init", "backup", "ls", "restore") if token in args
-        )
+        command = _restic_command(args)
         if captures is not None:
             captures.append(_capture_child_surface(args, kwargs))
         events.append(command)
-        assert kwargs["process_group"] is True
-        assert kwargs["timeout"] == probe.RESTIC_CHILD_TIMEOUT_S
-        assert kwargs["password"]
+        _assert_child_contract(args, kwargs, command=command)
         if command == "init":
-            return ResticResult(0, "", "", None, tuple(args))
+            return ResticResult(0, HUMAN_INIT_STDOUT, "", None, tuple(args))
         if command == "backup":
-            assert kwargs["stdin_bytes"] == probe.SPB_SYNTHETIC_FIXTURE_BYTES
-            stdout = _records(
-                {
-                    "message_type": "summary",
-                    "snapshot_id": "snapshot-secret-id",
-                }
+            stdout = (
+                _records(_summary_record())
+                if _json_mode(kwargs)
+                else HUMAN_BACKUP_STDOUT
             )
             return ResticResult(0, stdout, "", None, tuple(args))
         if command == "ls":
-            stdout = _records(
-                {
-                    "message_type": "snapshot",
-                    "id": "snapshot-secret-id",
-                    "paths": [probe.LOGICAL_SOURCE_PATH],
-                },
-                {"message_type": "node", "path": "/spb", "type": "dir"},
-                {
-                    "message_type": "node",
-                    "path": probe.LOGICAL_SOURCE_PATH,
-                    "type": "file",
-                    "size": probe.FIXTURE_LENGTH,
-                },
-            )
+            stdout = _records(*_ls_records()) if _json_mode(kwargs) else HUMAN_LS_STDOUT
             return ResticResult(0, stdout, "", None, tuple(args))
         target = Path(args[args.index("--target") + 1])
         (target / "spb").mkdir(parents=True)
         (target / "spb" / "source.bin").write_bytes(probe.SPB_SYNTHETIC_FIXTURE_BYTES)
         if restore_mutator is not None:
             restore_mutator(target)
-        stdout = _records(
-            {
-                "message_type": "summary",
-                "bytes_restored": probe.FIXTURE_LENGTH,
-            }
+        stdout = (
+            _records(_restore_summary_record())
+            if _json_mode(kwargs)
+            else HUMAN_RESTORE_STDOUT
         )
         return ResticResult(0, stdout, "", None, tuple(args))
 
@@ -348,14 +409,18 @@ def _install_phase_restic(
     success = _fake_restic(events, captures=captures)
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = next(
-            token for token in ("init", "backup", "ls", "restore") if token in args
-        )
+        command = _restic_command(args)
         if command != phase:
             return success(args, **kwargs)
         if captures is not None:
             captures.append(_capture_child_surface(args, kwargs))
         events.append(command)
+        _assert_child_contract(
+            args,
+            kwargs,
+            command=command,
+            require_json=command != "init",
+        )
         if mutate_before_return is not None:
             mutate_before_return()
         return ResticResult(
@@ -378,12 +443,11 @@ def _install_ls_records(
     success = _fake_restic(events)
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        command = next(
-            token for token in ("init", "backup", "ls", "restore") if token in args
-        )
+        command = _restic_command(args)
         if command != "ls":
             return success(args, **kwargs)
         events.append("ls")
+        _assert_child_contract(args, kwargs, command="ls", require_json=True)
         return ResticResult(0, stdout, "", None, tuple(args))
 
     monkeypatch.setattr(probe, "run_restic", fake_run_restic)
@@ -450,6 +514,16 @@ def test_spb_success_uses_five_fresh_fetches_and_four_checks(
         "fetch",
         "restore",
     ]
+    assert len(captures) == 4
+    captures_by_command = {_captured_command(capture): capture for capture in captures}
+    assert captures_by_command["init"]["json"] is False
+    assert captures_by_command["backup"]["json"] is True
+    assert captures_by_command["ls"]["json"] is True
+    assert captures_by_command["restore"]["json"] is True
+    for capture in captures:
+        argv = capture["argv"]
+        assert isinstance(argv, tuple)
+        assert "--no-cache" in argv
     assert (attempt_dir / "spb" / "source.bin").exists()
     _assert_canaries_absent(repr(outcome))
     _assert_canaries_absent(caplog.text)
@@ -975,12 +1049,45 @@ def test_init_nonzero_and_timeout_map_to_expected_reason(
     ("stdout", "reason"),
     [
         ("", probe_contract.REASON_RESPONSE_INVALID),
+        (_records([]), probe_contract.REASON_RESPONSE_INVALID),
         (_records({"message_type": "summary"}), probe_contract.REASON_RESPONSE_INVALID),
         (_records(_summary_record("")), probe_contract.REASON_RESPONSE_INVALID),
         (
-            _records(_summary_record("snapshot-secret-id")),
+            _records(_summary_record(total_files_processed=True)),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_summary_record(total_bytes_processed=probe.FIXTURE_LENGTH + 1)),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(_summary_record(SNAPSHOT_ID.upper())),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records({"message_type": "verbose_status"}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_summary_record(), {"message_type": "status"}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_summary_record(SNAPSHOT_ID)),
             probe_contract.REASON_REMOTE_REJECTED,
         ),
+    ],
+    ids=[
+        "empty_stdout",
+        "non_object_record",
+        "summary_missing_required_fields",
+        "empty_snapshot_id",
+        "bool_total_files_processed",
+        "wrong_total_bytes_processed",
+        "uppercase_snapshot_id",
+        "verbose_status_record",
+        "record_after_summary",
+        "remote_rejected_preempts_stdout_validation",
     ],
 )
 def test_backup_failure_shapes_map_to_expected_reason(
@@ -1026,7 +1133,7 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         phase="backup",
         result=ResticResult(
             0,
-            _records(_summary_record("snapshot-secret-id")),
+            _records(_summary_record(SNAPSHOT_ID)),
             "",
             None,
             ("restic", "backup"),
@@ -1044,10 +1151,29 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
 
 
 @pytest.mark.parametrize(
-    ("stdout", "reason"),
+    ("stdout_source", "reason"),
     [
+        (_records([]), probe_contract.REASON_RESPONSE_INVALID),
         (
             _records(*_ls_records(snapshot_id="wrong-id")),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                {
+                    "message_type": "snapshot",
+                    "struct_type": "node",
+                    "id": SNAPSHOT_ID,
+                    "paths": [probe.LOGICAL_SOURCE_PATH],
+                },
+                {"message_type": "node", "path": "/spb", "type": "dir"},
+                {
+                    "message_type": "node",
+                    "path": probe.LOGICAL_SOURCE_PATH,
+                    "type": "file",
+                    "size": probe.FIXTURE_LENGTH,
+                },
+            ),
             probe_contract.REASON_RESPONSE_INVALID,
         ),
         (
@@ -1055,7 +1181,7 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
                 *_ls_records(),
                 {
                     "message_type": "snapshot",
-                    "id": "snapshot-secret-id",
+                    "id": SNAPSHOT_ID,
                     "paths": [probe.LOGICAL_SOURCE_PATH],
                 },
             ),
@@ -1063,6 +1189,20 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         ),
         (
             _records(*_ls_records(paths=["/wrong"])),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    file_node={
+                        "message_type": "node",
+                        "struct_type": "snapshot",
+                        "path": probe.LOGICAL_SOURCE_PATH,
+                        "type": "file",
+                        "size": probe.FIXTURE_LENGTH,
+                    }
+                )
+            ),
             probe_contract.REASON_RESPONSE_INVALID,
         ),
         (
@@ -1085,6 +1225,18 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
                         "message_type": "node",
                         "path": probe.LOGICAL_SOURCE_PATH,
                         "type": "file",
+                    }
+                )
+            ),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(
+                *_ls_records(
+                    file_node={
+                        "message_type": "node",
+                        "path": probe.LOGICAL_SOURCE_PATH,
+                        "type": "file",
                         "size": probe.FIXTURE_LENGTH + 1,
                     }
                 )
@@ -1095,12 +1247,12 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
             _records(
                 {
                     "message_type": "snapshot",
-                    "id": "snapshot-secret-id",
+                    "id": SNAPSHOT_ID,
                     "paths": [probe.LOGICAL_SOURCE_PATH],
                 },
                 {"message_type": "node", "path": "/spb", "type": "dir"},
             ),
-            probe_contract.REASON_RESPONSE_INVALID,
+            probe_contract.REASON_CONTENT_MISMATCH,
         ),
         (
             _records(
@@ -1113,11 +1265,11 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
             probe_contract.REASON_CONTENT_MISMATCH,
         ),
         (
-            _records(
+            lambda attempt_dir: _records(
                 *_ls_records(
                     file_node={
                         "message_type": "node",
-                        "path": str(Path("/tmp") / "attempt" / "spb" / "source.bin"),
+                        "path": str(attempt_dir / "spb" / "source.bin"),
                         "type": "file",
                         "size": probe.FIXTURE_LENGTH,
                     }
@@ -1129,7 +1281,7 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
             _records(
                 {
                     "message_type": "snapshot",
-                    "id": "snapshot-secret-id",
+                    "id": SNAPSHOT_ID,
                     "paths": [probe.LOGICAL_SOURCE_PATH],
                 },
                 {"message_type": "unknown"},
@@ -1151,27 +1303,76 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
         ),
         (
             '{"message_type":"snapshot","message_type":"snapshot",'
-            '"id":"snapshot-secret-id","paths":["/spb/source.bin"]}\n',
+            f'"id":"{SNAPSHOT_ID}","paths":["/spb/source.bin"]}}\n',
             probe_contract.REASON_RESPONSE_INVALID,
         ),
+    ],
+    ids=[
+        "non_object_record",
+        "wrong_snapshot_id",
+        "snapshot_struct_type_mismatch",
+        "duplicate_snapshot_record",
+        "paths_mismatch",
+        "node_struct_type_mismatch",
+        "bool_file_size",
+        "missing_file_size",
+        "wrong_file_size",
+        "missing_file_node",
+        "extra_dir_node",
+        "physical_source_path_node",
+        "unknown_record_kind",
+        "error_record_kind",
+        "duplicate_message_type_key",
     ],
 )
 def test_ls_strictness_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    stdout: str,
+    stdout_source: str | Callable[[Path], str],
     reason: str,
 ) -> None:
     journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
     _install_ready_tools(monkeypatch)
     clock = _install_clock(monkeypatch)
     events: list[str] = []
+    stdout = stdout_source(attempt_dir) if callable(stdout_source) else stdout_source
     _install_success_fakes(monkeypatch, clock, events)
     _install_ls_records(monkeypatch, events, stdout=stdout)
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
 
     _assert_failed(outcome, reason, checks=probe.PRIMITIVE_CHECKS[:2])
+
+
+def test_ls_accepts_permuted_records_without_struct_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    events: list[str] = []
+    stdout = _records(
+        {
+            "message_type": "node",
+            "path": probe.LOGICAL_SOURCE_PATH,
+            "type": "file",
+            "size": probe.FIXTURE_LENGTH,
+        },
+        {
+            "message_type": "snapshot",
+            "id": SNAPSHOT_ID,
+            "paths": [probe.LOGICAL_SOURCE_PATH],
+        },
+        {"message_type": "node", "path": "/spb", "type": "dir"},
+    )
+    _install_success_fakes(monkeypatch, clock, events)
+    _install_ls_records(monkeypatch, events, stdout=stdout)
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    assert outcome["state"] == probe_contract.PROOF_STATE_PASSED
+    _assert_outcome_contract(outcome)
 
 
 @pytest.mark.parametrize(
@@ -1196,6 +1397,12 @@ def test_ls_strictness_failures(
             lambda target: os.mkfifo(target / "spb" / "fifo"),
             probe_contract.REASON_CONTENT_MISMATCH,
         ),
+    ],
+    ids=[
+        "remote_rejected",
+        "extra_restored_file",
+        "restored_symlink",
+        "restored_fifo",
     ],
 )
 def test_restore_failures(
@@ -1229,6 +1436,72 @@ def test_restore_failures(
             "run_restic",
             _fake_restic(events, restore_mutator=mutator),
         )
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    _assert_failed(outcome, reason, checks=probe.PRIMITIVE_CHECKS[:3])
+
+
+@pytest.mark.parametrize(
+    ("stdout", "reason"),
+    [
+        ("", probe_contract.REASON_RESPONSE_INVALID),
+        (_records({"message_type": "summary"}), probe_contract.REASON_RESPONSE_INVALID),
+        (
+            _records(_restore_summary_record(total_files=True)),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_restore_summary_record(total_files=1)),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records(_restore_summary_record(bytes_restored=probe.FIXTURE_LENGTH + 1)),
+            probe_contract.REASON_CONTENT_MISMATCH,
+        ),
+        (
+            _records({"message_type": "verbose_status"}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            _records(_restore_summary_record(), {"message_type": "status"}),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
+            '{"message_type":"summary","message_type":"summary",'
+            '"total_files":2,"files_restored":2,'
+            '"total_bytes":1024,"bytes_restored":1024}\n',
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+    ],
+    ids=[
+        "empty_stdout",
+        "summary_missing_required_fields",
+        "bool_total_files",
+        "wrong_total_files",
+        "wrong_bytes_restored",
+        "verbose_status_record",
+        "record_after_summary",
+        "duplicate_message_type_key",
+    ],
+)
+def test_restore_json_strictness_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    reason: str,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    events: list[str] = []
+    _install_success_fakes(monkeypatch, clock, events)
+    _install_phase_restic(
+        monkeypatch,
+        events,
+        phase="restore",
+        result=ResticResult(0, stdout, "", None, ("restic", "restore")),
+    )
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
 

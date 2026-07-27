@@ -543,8 +543,7 @@ def _prove_prefix_empty(preflight: _Preflight, credentials: HostedCredentials) -
 
 
 def _run_init(preflight: _Preflight, credentials: HostedCredentials) -> None:
-    result = _run_restic_phase(preflight, credentials, ["init"])
-    _check_restic_result(result, expect_json=False)
+    _run_restic_phase(preflight, credentials, ["init"], json=False)
 
 
 def _run_backup(preflight: _Preflight, credentials: HostedCredentials) -> str:
@@ -552,14 +551,11 @@ def _run_backup(preflight: _Preflight, credentials: HostedCredentials) -> str:
         preflight,
         credentials,
         ["backup", "--stdin", "--stdin-filename", LOGICAL_SOURCE_PATH],
+        json=True,
         stdin_bytes=SPB_SYNTHETIC_FIXTURE_BYTES,
     )
-    _check_restic_result(result, expect_json=True)
     records = _parse_json_records(result.stdout)
-    snapshot_id = _summary_snapshot_id(records)
-    if snapshot_id is None:
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-    return snapshot_id
+    return _validate_backup_records(records)
 
 
 def _run_ls(
@@ -571,9 +567,9 @@ def _run_ls(
         preflight,
         credentials,
         ["ls", "--long", snapshot_id],
+        json=True,
         scrub_values=(snapshot_id,),
     )
-    _check_restic_result(result, expect_json=True)
     records = _parse_json_records(result.stdout)
     _validate_ls_records(records, snapshot_id, preflight)
 
@@ -587,9 +583,9 @@ def _run_restore(
         preflight,
         credentials,
         ["restore", snapshot_id, "--target", str(preflight.restore_target)],
+        json=True,
         scrub_values=(snapshot_id,),
     )
-    _check_restic_result(result, expect_json=True)
     _validate_restore_records(_parse_json_records(result.stdout))
 
 
@@ -598,6 +594,7 @@ def _run_restic_phase(
     credentials: HostedCredentials,
     args: list[str],
     *,
+    json: bool,
     stdin_bytes: bytes | None = None,
     scrub_values: tuple[str, ...] = (),
 ) -> ResticResult:
@@ -612,6 +609,7 @@ def _run_restic_phase(
             password=preflight.daily_key,
             restic_path=preflight.restic_path,
             backend_env=session.backend_env,
+            json=json,
             timeout=RESTIC_CHILD_TIMEOUT_S,
             process_group=True,
             stdin_bytes=stdin_bytes,
@@ -623,11 +621,12 @@ def _run_restic_phase(
             terminate_grace_s=TERM_GRACE_S,
             kill_grace_s=KILL_GRACE_S,
         )
+    _check_restic_result(result, expect_json=json)
     return result
 
 
 def _session_args(session: HostedResticSession, args: list[str]) -> list[str]:
-    return [*session.global_options, *args]
+    return ["--no-cache", *session.global_options, *args]
 
 
 def _check_restic_result(result: ResticResult, *, expect_json: bool) -> None:
@@ -656,13 +655,69 @@ def _parse_json_records(text: str) -> list[object]:
     return records
 
 
-def _summary_snapshot_id(records: list[object]) -> str | None:
-    for record in reversed(records):
-        if not isinstance(record, dict) or record.get("message_type") != "summary":
+def _validate_record(record: object) -> dict[str, object]:
+    if not isinstance(record, dict):
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    return record
+
+
+def _validate_message_type(record: dict[str, object]) -> str:
+    message_type = record.get("message_type")
+    if not isinstance(message_type, str):
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    if "struct_type" not in record:
+        return message_type
+    struct_type = record.get("struct_type")
+    if not isinstance(struct_type, str) or struct_type != message_type:
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    return message_type
+
+
+def _validate_terminal_summary_records(records: list[object]) -> dict[str, object]:
+    summary: dict[str, object] | None = None
+    summary_seen = False
+    for raw_record in records:
+        record = _validate_record(raw_record)
+        message_type = _validate_message_type(record)
+        if summary_seen:
+            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+        if message_type == "status":
             continue
-        snapshot_id = record.get("snapshot_id")
-        return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
-    return None
+        if message_type != "summary":
+            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+        if summary is not None:
+            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+        summary = record
+        summary_seen = True
+    if summary is None:
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    return summary
+
+
+def _require_exact_int(
+    record: dict[str, object],
+    field: str,
+    expected: int,
+) -> None:
+    value = record.get(field)
+    if type(value) is not int:
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    if value != expected:
+        raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
+
+
+def _is_lowercase_hex_id(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _validate_backup_records(records: list[object]) -> str:
+    summary = _validate_terminal_summary_records(records)
+    _require_exact_int(summary, "total_files_processed", 1)
+    _require_exact_int(summary, "total_bytes_processed", FIXTURE_LENGTH)
+    snapshot_id = summary.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not _is_lowercase_hex_id(snapshot_id):
+        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    return snapshot_id
 
 
 def _validate_ls_records(
@@ -670,25 +725,26 @@ def _validate_ls_records(
     snapshot_id: str,
     preflight: _Preflight,
 ) -> None:
-    snapshot_records = [
-        record
-        for record in records
-        if isinstance(record, dict) and record.get("message_type") == "snapshot"
-    ]
-    if len(snapshot_records) != 1:
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-    snapshot = snapshot_records[0]
-    if snapshot.get("id") != snapshot_id or snapshot.get("paths") != [
-        LOGICAL_SOURCE_PATH
-    ]:
-        raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-
-    file_seen = False
-    for record in records:
-        if not isinstance(record, dict):
-            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-        message_type = record.get("message_type")
+    snapshot_count = 0
+    node_counts = {
+        ("/spb", "dir"): 0,
+        (LOGICAL_SOURCE_PATH, "file"): 0,
+    }
+    for raw_record in records:
+        record = _validate_record(raw_record)
+        message_type = _validate_message_type(record)
         if message_type == "snapshot":
+            snapshot_count += 1
+            snapshot_record_id = record.get("id")
+            if not isinstance(snapshot_record_id, str):
+                raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+            if snapshot_record_id != snapshot_id:
+                raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
+            paths = record.get("paths")
+            if not isinstance(paths, list):
+                raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+            if paths != [LOGICAL_SOURCE_PATH]:
+                raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
             continue
         if message_type != "node":
             raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
@@ -698,36 +754,27 @@ def _validate_ls_records(
             raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
         if _is_physical_source_path(path, preflight):
             raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
-        if node_type == "dir":
-            if path != "/spb":
-                raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
+        node_key = (path, node_type)
+        if node_key == (LOGICAL_SOURCE_PATH, "file"):
+            _require_exact_int(record, "size", FIXTURE_LENGTH)
+            node_counts[node_key] += 1
             continue
-        if node_type != "file":
-            raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
-        if path != LOGICAL_SOURCE_PATH:
-            raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
-        size = record.get("size")
-        if type(size) is not int:
-            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-        if size != FIXTURE_LENGTH:
-            raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
-        file_seen = True
-    if not file_seen:
+        if node_key == ("/spb", "dir"):
+            node_counts[node_key] += 1
+            continue
+        raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
+    if snapshot_count != 1:
         raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+    if any(count != 1 for count in node_counts.values()):
+        raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
 
 
 def _validate_restore_records(records: list[object]) -> None:
-    summaries = [
-        record
-        for record in records
-        if isinstance(record, dict) and record.get("message_type") == "summary"
-    ]
-    if not summaries:
-        return
-    summary = summaries[-1]
-    restored = summary.get("bytes_restored")
-    if type(restored) is int and restored != FIXTURE_LENGTH:
-        raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
+    summary = _validate_terminal_summary_records(records)
+    _require_exact_int(summary, "total_files", 2)
+    _require_exact_int(summary, "files_restored", 2)
+    _require_exact_int(summary, "total_bytes", FIXTURE_LENGTH)
+    _require_exact_int(summary, "bytes_restored", FIXTURE_LENGTH)
 
 
 def _verify_restore_tree(preflight: _Preflight) -> None:
