@@ -361,6 +361,7 @@ Native sol client design records:
 - `docs/design/native-sol-client/08-link-join-design.md`
 - `docs/design/native-sol-client/09-link-serve-prep.md`
 - `docs/design/native-sol-client/09-link-serve-design.md` (hold decision; no implementation landed)
+- `docs/design/native-sol-client/10-resident-command-lane-design.md`
 
 ## Dual Paths And Shims
 
