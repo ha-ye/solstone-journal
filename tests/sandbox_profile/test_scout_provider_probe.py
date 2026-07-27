@@ -271,7 +271,7 @@ def test_parent_success_uses_contained_env_and_imports_no_openhands(
     before_config = (journal / "config" / "journal.json").read_bytes()
     captured: dict[str, Any] = {}
     monkeypatch.setattr(probe, "_spawn_child", _spawn_code(_ok_child_code(), captured))
-    monkeypatch.setattr(probe, "_new_nonce", lambda: "nonce-secret")
+    monkeypatch.setattr(probe, "_new_nonce", lambda: CANARY_NONCE)
 
     outcome = probe.prove_scout_provider(
         journal,
@@ -314,19 +314,8 @@ def test_parent_success_uses_contained_env_and_imports_no_openhands(
     ):
         assert forbidden not in captured["env"]
     assert list(attempt.iterdir()) == []
-    for canary in (
-        "fake-google-key",
-        "x-goog-api-key",
-        "nonce-secret",
-        "dispatch-token",
-        "acct-scout",
-        "gemini-3.5-flash",
-        "gemini",
-        "generativelanguage.googleapis.com",
-        probe.SCOUT_PROOF_PRIVATE_ROOT_NAME,
-    ):
-        assert canary not in repr(outcome)
-        assert canary not in caplog.text
+    _assert_canaries_absent(repr(outcome))
+    _assert_canaries_absent(caplog.text)
 
 
 @pytest.mark.parametrize(

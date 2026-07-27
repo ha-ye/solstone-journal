@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import shutil
 import signal
@@ -34,8 +33,6 @@ from solstone.think.sandbox_profile import (
     probe_contract,
 )
 from solstone.think.sandbox_profile.json_codec import reject_duplicate_keys
-
-log = logging.getLogger(__name__)
 
 FRAME_PROTOCOL_VERSION = 1
 

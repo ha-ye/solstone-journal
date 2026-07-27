@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import sys
 import warnings
@@ -33,8 +32,6 @@ from solstone.think.sandbox_profile.scout_provider_probe import (
     encode_frame,
     scout_prompt,
 )
-
-log = logging.getLogger(__name__)
 
 
 def main() -> int:
