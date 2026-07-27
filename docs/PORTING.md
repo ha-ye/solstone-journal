@@ -359,6 +359,8 @@ Native sol client design records:
 - `docs/design/native-sol-client/06-cutover-design.md`
 - `docs/design/native-sol-client/07-notify-contract-design.md`
 - `docs/design/native-sol-client/08-link-join-design.md`
+- `docs/design/native-sol-client/09-link-serve-prep.md`
+- `docs/design/native-sol-client/09-link-serve-design.md` (hold decision; no implementation landed)
 
 ## Dual Paths And Shims
 
