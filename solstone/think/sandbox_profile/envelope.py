@@ -36,6 +36,7 @@ RESIDUAL_CODES = frozenset(
         "intent_finalize_missing",
         "unmanaged_existing_state",
         "scout_block_missing",
+        "scout_account_id_mismatch",
         "scout_key_fingerprint_mismatch",
         "unrelated_manual_key_preserved",
         "spl_identity_missing",

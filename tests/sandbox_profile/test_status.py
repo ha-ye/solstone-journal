@@ -105,6 +105,42 @@ def test_status_reconciles_scout_key_fingerprint(tmp_path, monkeypatch) -> None:
     _assert_degraded_residual(status, "scout", "scout_key_fingerprint_mismatch")
 
 
+def test_status_reconciles_scout_account_id(tmp_path, monkeypatch) -> None:
+    journal = sandbox_journal(tmp_path, monkeypatch)
+    prepare_ok(journal)
+    result = invoke(
+        ["apply", "scout", "--json"], input_text=json.dumps(scout_payload())
+    )
+    assert result.exit_code == 0
+    config_path = journal / "config" / "journal.json"
+    config = read_json(config_path)
+    config["services"]["scout"]["account_id"] = "acct-mismatch"
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    status = invoke(["status", "--json"])
+
+    _assert_degraded_residual(status, "scout", "scout_account_id_mismatch")
+
+
+def test_status_refuses_legacy_scout_intent_without_account_id(
+    tmp_path, monkeypatch
+) -> None:
+    journal = sandbox_journal(tmp_path, monkeypatch)
+    prepare_ok(journal)
+    result = invoke(
+        ["apply", "scout", "--json"], input_text=json.dumps(scout_payload())
+    )
+    assert result.exit_code == 0
+    intent_path = journal / "health" / "sandbox-profile" / "intent.json"
+    payload = read_json(intent_path)
+    payload["observed_at_apply"]["scout"].pop("account_id")
+    intent_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    status = invoke(["status", "--json"])
+
+    _assert_degraded_residual(status, "scout", "scout_account_id_mismatch")
+
+
 def test_status_reconciles_spl_identity(tmp_path, monkeypatch) -> None:
     journal = sandbox_journal(tmp_path, monkeypatch)
     prepare_ok(journal)

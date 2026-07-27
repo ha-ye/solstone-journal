@@ -36,8 +36,13 @@ def test_local_apply_capabilities_compose_existing_owner_functions(
     assert spb.exit_code == 0
     assert spp.exit_code == 0
     config = read_json(journal / "config" / "journal.json")
+    intent_payload = read_json(journal / "health" / "sandbox-profile" / "intent.json")
     assert config["env"]["GOOGLE_API_KEY"] == "fake-google-key"
     assert config["services"]["scout"]["key_fingerprint_sha256"]
+    assert (
+        intent_payload["observed_at_apply"]["scout"]["account_id"]
+        == config["services"]["scout"]["account_id"]
+    )
     assert config["backup"]["mode"] == "operated"
     assert config["backup"]["enabled"] is True
     assert (

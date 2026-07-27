@@ -292,6 +292,21 @@ def _scout_status(
                 envelope.CAP_DEGRADED,
                 "scout_key_fingerprint_mismatch",
             )
+        live_account_id = block.get("account_id")
+        recorded_account_id = _observed_string(
+            intent_payload, manifest.CAPABILITY_SCOUT, "account_id"
+        )
+        if (
+            not isinstance(live_account_id, str)
+            or not live_account_id
+            or recorded_account_id is None
+            or live_account_id != recorded_account_id
+        ):
+            return _cap(
+                manifest.CAPABILITY_SCOUT,
+                envelope.CAP_DEGRADED,
+                "scout_account_id_mismatch",
+            )
         return _cap(manifest.CAPABILITY_SCOUT, envelope.CAP_READY)
     if _is_disabled_intent(state) or state in {None, intent.INTENT_PREPARED}:
         return _cap(manifest.CAPABILITY_SCOUT, envelope.CAP_NOT_APPLIED)
@@ -526,7 +541,10 @@ def apply_capability(
             observed={
                 "key_fingerprint_sha256": observed.get("key_fingerprint_sha256")
                 if isinstance(observed, dict)
-                else None
+                else None,
+                "account_id": observed.get("account_id")
+                if isinstance(observed, dict)
+                else None,
             },
         )
     elif capability == manifest.CAPABILITY_SPL:
