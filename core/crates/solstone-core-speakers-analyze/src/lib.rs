@@ -24,7 +24,10 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 use solstone_core_speakers::diarization::{
     DiarizationError, FrameLogProbs, MIN_INTERVAL_S, SentenceTiming, SpeakerInterval,
-    assign_sentences, cluster_embeddings, find_intervals,
+    assign_sentences, cluster_embeddings as cluster_diarization_embeddings, find_intervals,
+};
+use solstone_core_speakers::discovery::{
+    DiscoveryClusteringError, cluster_embeddings as cluster_discovery_embeddings,
 };
 use solstone_core_speakers::{
     PYANNOTE_CLASS_COUNT, PYANNOTE_DIARIZE_STRIDE_S, SpeakerEvidence, SpeakerFeatureError,
@@ -40,15 +43,21 @@ use solstone_core_speakers_onnx::{
 pub const REQUEST_SCHEMA: &str = "solstone-speaker-analyze-request-v1";
 pub const RESPONSE_SCHEMA: &str = "solstone-speaker-analyze-response-v1";
 pub const ERROR_SCHEMA: &str = "solstone-speaker-analyze-error-v1";
-pub const USAGE: &str = "Usage: solstone-core-speakers-analyze < request.json > response.json";
+pub const DISCOVERY_CLUSTER_REQUEST_SCHEMA: &str = "solstone-speaker-discovery-cluster-request-v1";
+pub const DISCOVERY_CLUSTER_RESPONSE_SCHEMA: &str =
+    "solstone-speaker-discovery-cluster-response-v1";
+pub const USAGE: &str = "Usage: solstone-core-speakers-analyze < request.json > response.json\n       solstone-core-speakers-analyze discovery-cluster < request.json > response.json";
 
 const PAYLOAD_FORMAT: &str = "raw-f32le-row-major-v1";
 const DTYPE_F32LE: &str = "float32-le";
 const ENCODER: &str = "wespeaker-resnet34-256";
+const DISCOVERY_CLUSTER_COMMAND: &str = "discovery-cluster";
+const DISCOVERY_CLUSTER_ALGORITHM: &str = "hdbscan-eom-euclidean-f64-prim-mst";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Run,
+    DiscoveryCluster,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,29 +78,77 @@ impl fmt::Display for UsageError {
 impl Error for UsageError {}
 
 pub fn evaluate_args(args: &[OsString]) -> Result<Command, UsageError> {
-    if let Some(argument) = args.first() {
-        return Err(UsageError::UnexpectedArgument {
+    match args {
+        [] => Ok(Command::Run),
+        [argument] if argument == DISCOVERY_CLUSTER_COMMAND => Ok(Command::DiscoveryCluster),
+        [argument, ..] => Err(UsageError::UnexpectedArgument {
             argument: argument.to_string_lossy().into_owned(),
-        });
+        }),
     }
-    Ok(Command::Run)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalyzeError {
-    MalformedRequest { detail: String },
-    UnknownSchema { schema: String },
-    AudioUnreadable { path: String, detail: String },
-    AudioInvalid { path: String, detail: String },
-    UnsupportedSampleRate { expected: u32, actual: u32 },
-    AudioNonFinite { path: String, index: usize },
-    ModelUnreadable { field: &'static str, path: String },
-    ModelInvalid { field: &'static str, detail: String },
-    ModelIoMismatch { field: &'static str, detail: String },
-    ProviderUnavailable { detail: String },
-    OnnxRuntime { detail: String },
-    OutputUnwritable { path: String, detail: String },
-    Internal { detail: String },
+    MalformedRequest {
+        detail: String,
+    },
+    UnknownSchema {
+        schema: String,
+    },
+    AudioUnreadable {
+        path: String,
+        detail: String,
+    },
+    AudioInvalid {
+        path: String,
+        detail: String,
+    },
+    UnsupportedSampleRate {
+        expected: u32,
+        actual: u32,
+    },
+    AudioNonFinite {
+        path: String,
+        index: usize,
+    },
+    PayloadUnreadable {
+        path: String,
+        detail: String,
+    },
+    PayloadInvalid {
+        path: String,
+        detail: String,
+    },
+    PayloadNonFinite {
+        path: String,
+        row: usize,
+        col: usize,
+    },
+    ModelUnreadable {
+        field: &'static str,
+        path: String,
+    },
+    ModelInvalid {
+        field: &'static str,
+        detail: String,
+    },
+    ModelIoMismatch {
+        field: &'static str,
+        detail: String,
+    },
+    ProviderUnavailable {
+        detail: String,
+    },
+    OnnxRuntime {
+        detail: String,
+    },
+    OutputUnwritable {
+        path: String,
+        detail: String,
+    },
+    Internal {
+        detail: String,
+    },
 }
 
 impl AnalyzeError {
@@ -103,6 +160,9 @@ impl AnalyzeError {
             Self::AudioInvalid { .. } => "audio-invalid",
             Self::UnsupportedSampleRate { .. } => "unsupported-sample-rate",
             Self::AudioNonFinite { .. } => "audio-non-finite",
+            Self::PayloadUnreadable { .. } => "payload-unreadable",
+            Self::PayloadInvalid { .. } => "payload-invalid",
+            Self::PayloadNonFinite { .. } => "payload-non-finite",
             Self::ModelUnreadable { .. } => "model-unreadable",
             Self::ModelInvalid { .. } => "model-invalid",
             Self::ModelIoMismatch { .. } => "model-io-mismatch",
@@ -120,6 +180,9 @@ impl AnalyzeError {
             | Self::AudioInvalid { .. }
             | Self::UnsupportedSampleRate { .. }
             | Self::AudioNonFinite { .. }
+            | Self::PayloadUnreadable { .. }
+            | Self::PayloadInvalid { .. }
+            | Self::PayloadNonFinite { .. }
             | Self::ModelUnreadable { .. }
             | Self::ModelInvalid { .. }
             | Self::ModelIoMismatch { .. } => 69,
@@ -147,6 +210,15 @@ impl AnalyzeError {
             }
             Self::AudioNonFinite { path, index } => {
                 format!("audio path {path:?} contains non-finite sample at index {index}")
+            }
+            Self::PayloadUnreadable { path, detail } => {
+                format!("payload path {path:?} is unreadable: {detail}")
+            }
+            Self::PayloadInvalid { path, detail } => {
+                format!("payload path {path:?} is not raw little-endian f32 row-major: {detail}")
+            }
+            Self::PayloadNonFinite { path, row, col } => {
+                format!("payload path {path:?} contains non-finite value at row={row} col={col}")
             }
             Self::ModelUnreadable { field, path } => {
                 format!(
@@ -197,6 +269,17 @@ pub fn error_line_for_analyze_error(error: &AnalyzeError) -> String {
 }
 
 pub fn run_request(input: &str) -> Result<Value, AnalyzeError> {
+    run_command_request(Command::Run, input)
+}
+
+pub fn run_command_request(command: Command, input: &str) -> Result<Value, AnalyzeError> {
+    match command {
+        Command::Run => run_analyze_request(input),
+        Command::DiscoveryCluster => run_discovery_cluster_request(input),
+    }
+}
+
+fn run_analyze_request(input: &str) -> Result<Value, AnalyzeError> {
     let request = parse_request(input)?;
     analyze_request(&request)
 }
@@ -212,6 +295,16 @@ struct Request {
     interval_embedding_payload_f32le_path: Option<String>,
     statement_spans: Vec<StatementSpan>,
     diarization_spans: Vec<StatementSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryClusterRequest {
+    embeddings_f32le_path: String,
+    rows: usize,
+    cols: usize,
+    byte_count: usize,
+    min_cluster_size: usize,
+    min_samples: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +491,47 @@ fn analyze_request(request: &Request) -> Result<Value, AnalyzeError> {
     Ok(response)
 }
 
+fn run_discovery_cluster_request(input: &str) -> Result<Value, AnalyzeError> {
+    let request = parse_discovery_cluster_request(input)?;
+    let embeddings = read_embedding_payload_f32le(&request)?;
+    let labels = cluster_discovery_embeddings(
+        &embeddings,
+        request.rows,
+        request.cols,
+        request.min_cluster_size,
+        request.min_samples,
+    )
+    .map_err(|error| map_discovery_clustering_error(&request.embeddings_f32le_path, error))?;
+    Ok(discovery_cluster_response_value(&request, &labels))
+}
+
+fn discovery_cluster_response_value(
+    request: &DiscoveryClusterRequest,
+    labels: &[Option<usize>],
+) -> Value {
+    let noise_count = labels.iter().filter(|label| label.is_none()).count();
+    let cluster_count = labels
+        .iter()
+        .filter_map(|label| *label)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let labels = labels
+        .iter()
+        .map(|label| label.map_or(-1_i64, |label| label as i64))
+        .collect::<Vec<_>>();
+    json!({
+        "schema": DISCOVERY_CLUSTER_RESPONSE_SCHEMA,
+        "labels": labels,
+        "cluster_count": cluster_count,
+        "noise_count": noise_count,
+        "parameters": {
+            "min_cluster_size": request.min_cluster_size,
+            "min_samples": request.min_samples,
+        },
+        "algorithm": DISCOVERY_CLUSTER_ALGORITHM,
+    })
+}
+
 fn statement_audio_buffer_for_request(request: &Request) -> StatementAudioBuffer {
     if request.reduced_audio_f32le_path.is_some() {
         StatementAudioBuffer::Reduced
@@ -459,6 +593,39 @@ fn parse_request(input: &str) -> Result<Request, AnalyzeError> {
     })
 }
 
+fn parse_discovery_cluster_request(input: &str) -> Result<DiscoveryClusterRequest, AnalyzeError> {
+    let value: Value =
+        serde_json::from_str(input).map_err(|error| AnalyzeError::MalformedRequest {
+            detail: format!("request body is not valid JSON: {error}"),
+        })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| malformed("request body must be a JSON object"))?;
+    let schema = required_string(object, "schema")?;
+    if schema != DISCOVERY_CLUSTER_REQUEST_SCHEMA {
+        return Err(AnalyzeError::UnknownSchema {
+            schema: schema.to_string(),
+        });
+    }
+
+    let embeddings_f32le_path = required_string(object, "embeddings_f32le_path")?.to_string();
+    let (rows, cols) = required_shape(object, "shape")?;
+    let byte_count = checked_payload_byte_count(rows, cols)?;
+    require_literal(object, "payload_format", PAYLOAD_FORMAT)?;
+    require_literal(object, "dtype", DTYPE_F32LE)?;
+    let min_cluster_size = required_usize_i64(object, "min_cluster_size")?;
+    let min_samples = required_usize_i64(object, "min_samples")?;
+
+    Ok(DiscoveryClusterRequest {
+        embeddings_f32le_path,
+        rows,
+        cols,
+        byte_count,
+        min_cluster_size,
+        min_samples,
+    })
+}
+
 fn required_object<'a>(
     object: &'a Map<String, Value>,
     field: &'static str,
@@ -500,6 +667,76 @@ fn required_u32(object: &Map<String, Value>, field: &'static str) -> Result<u32,
         .and_then(Value::as_u64)
         .ok_or_else(|| malformed(format!("{field} must be an integer")))?;
     u32::try_from(value).map_err(|_error| malformed(format!("{field} is out of range for u32")))
+}
+
+fn required_usize_i64(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<usize, AnalyzeError> {
+    let value = object
+        .get(field)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed(format!("{field} must be an i64 integer")))?;
+    if value < 0 {
+        return Err(malformed(format!("{field} must be non-negative")));
+    }
+    usize::try_from(value).map_err(|_error| malformed(format!("{field} is out of range for usize")))
+}
+
+fn required_shape(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<(usize, usize), AnalyzeError> {
+    let shape = object
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| malformed(format!("{field} must be [rows, cols]")))?;
+    if shape.len() != 2 {
+        return Err(malformed(format!(
+            "{field} must contain exactly two integers"
+        )));
+    }
+    let rows = usize_from_i64_value(&shape[0], "shape[0]")?;
+    let cols = usize_from_i64_value(&shape[1], "shape[1]")?;
+    if cols == 0 {
+        return Err(malformed("shape[1] must be at least 1"));
+    }
+    Ok((rows, cols))
+}
+
+fn usize_from_i64_value(value: &Value, field: &'static str) -> Result<usize, AnalyzeError> {
+    let value = value
+        .as_i64()
+        .ok_or_else(|| malformed(format!("{field} must be an i64 integer")))?;
+    if value < 0 {
+        return Err(malformed(format!("{field} must be non-negative")));
+    }
+    usize::try_from(value).map_err(|_error| malformed(format!("{field} is out of range for usize")))
+}
+
+fn checked_payload_byte_count(rows: usize, cols: usize) -> Result<usize, AnalyzeError> {
+    let values = rows
+        .checked_mul(cols)
+        .ok_or_else(|| malformed(format!("shape overflow: rows={rows} cols={cols}")))?;
+    values
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            malformed(format!(
+                "payload byte count overflow: rows={rows} cols={cols}"
+            ))
+        })
+}
+
+fn require_literal(
+    object: &Map<String, Value>,
+    field: &'static str,
+    expected: &'static str,
+) -> Result<(), AnalyzeError> {
+    let actual = required_string(object, field)?;
+    if actual != expected {
+        return Err(malformed(format!("{field} must be {expected:?}")));
+    }
+    Ok(())
 }
 
 fn parse_spans(
@@ -648,6 +885,68 @@ fn read_audio_f32le(path: &str) -> Result<Vec<f32>, AnalyzeError> {
     Ok(audio)
 }
 
+fn read_embedding_payload_f32le(
+    request: &DiscoveryClusterRequest,
+) -> Result<Vec<f32>, AnalyzeError> {
+    let metadata = fs::metadata(&request.embeddings_f32le_path).map_err(|error| {
+        AnalyzeError::PayloadUnreadable {
+            path: request.embeddings_f32le_path.clone(),
+            detail: error.to_string(),
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(AnalyzeError::PayloadUnreadable {
+            path: request.embeddings_f32le_path.clone(),
+            detail: "path is not a regular file".to_string(),
+        });
+    }
+    let actual_len = metadata.len();
+    let expected_len = request.byte_count as u64;
+    if actual_len != expected_len {
+        return Err(AnalyzeError::PayloadInvalid {
+            path: request.embeddings_f32le_path.clone(),
+            detail: format!("byte length {actual_len} does not match expected {expected_len}"),
+        });
+    }
+
+    let mut file = fs::File::open(&request.embeddings_f32le_path).map_err(|error| {
+        AnalyzeError::PayloadUnreadable {
+            path: request.embeddings_f32le_path.clone(),
+            detail: error.to_string(),
+        }
+    })?;
+    let mut bytes = Vec::with_capacity(request.byte_count);
+    file.read_to_end(&mut bytes)
+        .map_err(|error| AnalyzeError::PayloadUnreadable {
+            path: request.embeddings_f32le_path.clone(),
+            detail: error.to_string(),
+        })?;
+    if bytes.len() != request.byte_count {
+        return Err(AnalyzeError::PayloadInvalid {
+            path: request.embeddings_f32le_path.clone(),
+            detail: format!(
+                "byte length {} changed after metadata check; expected {}",
+                bytes.len(),
+                request.byte_count
+            ),
+        });
+    }
+
+    let mut values = Vec::with_capacity(request.rows * request.cols);
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let value = f32::from_le_bytes(chunk.try_into().expect("four bytes"));
+        if !value.is_finite() {
+            return Err(AnalyzeError::PayloadNonFinite {
+                path: request.embeddings_f32le_path.clone(),
+                row: index / request.cols,
+                col: index % request.cols,
+            });
+        }
+        values.push(value);
+    }
+    Ok(values)
+}
+
 fn preflight_model_path(field: &'static str, path: &str) -> Result<(), AnalyzeError> {
     let metadata = fs::metadata(path).map_err(|_error| AnalyzeError::ModelUnreadable {
         field,
@@ -751,7 +1050,7 @@ fn diarization_with_interval_embeddings(
     interval_payload_path: Option<&str>,
 ) -> Result<(Value, Option<PayloadWrite>), AnalyzeError> {
     let rows = valid_intervals.len();
-    let cluster = cluster_embeddings(
+    let cluster = cluster_diarization_embeddings(
         interval_embedding_values,
         rows,
         WESPEAKER_EMBEDDING_SIZE,
@@ -956,6 +1255,35 @@ fn map_diarization_error(error: DiarizationError) -> AnalyzeError {
     }
 }
 
+fn map_discovery_clustering_error(path: &str, error: DiscoveryClusteringError) -> AnalyzeError {
+    match error {
+        DiscoveryClusteringError::InvalidMinClusterSize { .. }
+        | DiscoveryClusteringError::InvalidMinSamples { .. }
+        | DiscoveryClusteringError::MinSamplesExceedsRows { .. }
+        | DiscoveryClusteringError::NonUnitEmbeddingRow { .. } => AnalyzeError::PayloadInvalid {
+            path: path.to_string(),
+            detail: error.to_string(),
+        },
+        DiscoveryClusteringError::NonFiniteCoordinate { row, col } => {
+            AnalyzeError::PayloadNonFinite {
+                path: path.to_string(),
+                row,
+                col,
+            }
+        }
+        DiscoveryClusteringError::ZeroColumns
+        | DiscoveryClusteringError::ShapeOverflow { .. }
+        | DiscoveryClusteringError::ShapeMismatch { .. }
+        | DiscoveryClusteringError::HdbscanEmptyDataset
+        | DiscoveryClusteringError::HdbscanWrongDimension { .. }
+        | DiscoveryClusteringError::HdbscanNonFiniteCoordinate { .. }
+        | DiscoveryClusteringError::HdbscanOutputLength { .. }
+        | DiscoveryClusteringError::HdbscanInvalidLabel { .. } => AnalyzeError::Internal {
+            detail: error.to_string(),
+        },
+    }
+}
+
 fn map_open_onnx_error(field: &'static str, error: SpeakerOnnxError) -> AnalyzeError {
     match error {
         // Reserved under the current fixed provider plan:
@@ -1042,6 +1370,18 @@ mod tests {
         })
     }
 
+    fn base_discovery_cluster_request(path: &str, rows: usize, cols: usize) -> Value {
+        json!({
+            "schema": DISCOVERY_CLUSTER_REQUEST_SCHEMA,
+            "embeddings_f32le_path": path,
+            "payload_format": PAYLOAD_FORMAT,
+            "dtype": DTYPE_F32LE,
+            "shape": [rows as i64, cols as i64],
+            "min_cluster_size": 3,
+            "min_samples": 2,
+        })
+    }
+
     fn request_string(value: Value) -> String {
         serde_json::to_string(&value).expect("request JSON")
     }
@@ -1097,7 +1437,17 @@ mod tests {
     }
 
     #[test]
-    fn argv_rejects_any_argument_as_usage() {
+    fn argv_accepts_discovery_cluster_subcommand() {
+        assert_eq!(
+            evaluate_args(&[OsString::from(DISCOVERY_CLUSTER_COMMAND)]),
+            Ok(Command::DiscoveryCluster)
+        );
+    }
+
+    #[test]
+    fn argv_rejects_unknown_argument_as_usage() {
+        // Bare invocation is still Command::Run and no existing caller passes
+        // argv today, so accepting the new discovery-cluster token is additive.
         let error = evaluate_args(&[OsString::from("--help")]).unwrap_err();
         let line = error_line_for_usage(&error);
 
@@ -1114,6 +1464,105 @@ mod tests {
 
         assert_eq!(error.reason(), "unknown-schema");
         assert_eq!(error.exit_code(), 64);
+    }
+
+    #[test]
+    fn discovery_cluster_unknown_schema_is_rejected() {
+        let dir = TestDir::new();
+        let mut request = base_discovery_cluster_request(&dir.path("embeddings.f32"), 0, 2);
+        request["schema"] = json!("solstone-speaker-discovery-cluster-request-v2");
+
+        let error =
+            run_command_request(Command::DiscoveryCluster, &request_string(request)).unwrap_err();
+
+        assert_eq!(error.reason(), "unknown-schema");
+        assert_eq!(error.exit_code(), 64);
+    }
+
+    #[test]
+    fn discovery_cluster_missing_payload_path_reports_payload_unreadable() {
+        let dir = TestDir::new();
+        let request = base_discovery_cluster_request(&dir.path("missing.f32"), 6, 2);
+
+        let error =
+            run_command_request(Command::DiscoveryCluster, &request_string(request)).unwrap_err();
+
+        assert_eq!(error.reason(), "payload-unreadable");
+        assert_eq!(error.exit_code(), 69);
+    }
+
+    #[test]
+    fn discovery_cluster_byte_length_mismatch_reports_payload_invalid() {
+        let dir = TestDir::new();
+        let path = dir.path("embeddings.f32");
+        write_f32le(&path, &[0.0_f32, 1.0]);
+        let request = base_discovery_cluster_request(&path, 2, 2);
+
+        let error =
+            run_command_request(Command::DiscoveryCluster, &request_string(request)).unwrap_err();
+
+        assert_eq!(error.reason(), "payload-invalid");
+        assert_eq!(error.exit_code(), 69);
+    }
+
+    #[test]
+    fn discovery_cluster_happy_path_returns_labels_and_counts() {
+        let dir = TestDir::new();
+        let path = dir.path("embeddings.f32");
+        write_f32le(
+            &path,
+            &unit_rows_2d(&[
+                (1.0, 0.0),
+                (1.0, 0.03),
+                (1.0, -0.03),
+                (-1.0, 0.0),
+                (-1.0, 0.03),
+                (-1.0, -0.03),
+            ]),
+        );
+        let request = base_discovery_cluster_request(&path, 6, 2);
+
+        let response = run_command_request(Command::DiscoveryCluster, &request_string(request))
+            .expect("response");
+
+        assert_eq!(response["schema"], DISCOVERY_CLUSTER_RESPONSE_SCHEMA);
+        assert_eq!(response["labels"], json!([0, 0, 0, 1, 1, 1]));
+        assert_eq!(response["cluster_count"], 2);
+        assert_eq!(response["noise_count"], 0);
+        assert_eq!(response["parameters"]["min_cluster_size"], 3);
+        assert_eq!(response["parameters"]["min_samples"], 2);
+        assert_eq!(response["algorithm"], DISCOVERY_CLUSTER_ALGORITHM);
+    }
+
+    #[test]
+    fn discovery_cluster_path_does_not_preflight_models() {
+        let dir = TestDir::new();
+        let path = dir.path("embeddings.f32");
+        write_f32le(
+            &path,
+            &unit_rows_2d(&[
+                (1.0, 0.0),
+                (1.0, 0.03),
+                (1.0, -0.03),
+                (-1.0, 0.0),
+                (-1.0, 0.03),
+                (-1.0, -0.03),
+            ]),
+        );
+        let mut request = base_discovery_cluster_request(&path, 6, 2);
+        request["models"] = json!({
+            "pyannote_segmentation_onnx_path": dir.path("absent-pyannote.onnx"),
+            "wespeaker_onnx_path": dir.path("absent-wespeaker.onnx"),
+        });
+
+        // lib.rs:651-668 preflights model paths for the analyze path. These
+        // intentionally absent model paths prove the cluster path does not route
+        // through that preflight despite the ONNX crate import at module scope.
+        let response = run_command_request(Command::DiscoveryCluster, &request_string(request))
+            .expect("response");
+
+        assert_eq!(response["schema"], DISCOVERY_CLUSTER_RESPONSE_SCHEMA);
+        assert_eq!(response["labels"], json!([0, 0, 0, 1, 1, 1]));
     }
 
     #[test]
@@ -1534,5 +1983,15 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         fs::write(path, bytes).expect("write audio");
+    }
+
+    fn unit_rows_2d(points: &[(f32, f32)]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(points.len() * 2);
+        for (x, y) in points {
+            let norm = (x * x + y * y).sqrt();
+            out.push(*x / norm);
+            out.push(*y / norm);
+        }
+        out
     }
 }

@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt;
 
 pub mod diarization;
+pub mod discovery;
 
 pub use filterbank::{
     WESPEAKER_EMBEDDING_SIZE, WESPEAKER_FFT_SIZE, WESPEAKER_FRAME_LENGTH_SAMPLES,

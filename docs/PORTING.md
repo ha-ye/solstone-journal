@@ -26,7 +26,9 @@ adapter, not for the indexer logic. The eventual iOS path is to link the system
 `libsqlite3` that iOS ships instead of bundling SQLite, then return the store
 crate to the iOS gate.
 
-`solstone-core-speakers` stays in the iOS canary because it is pure Rust DSP.
+`solstone-core-speakers` stays in the iOS canary because its DSP and discovery
+clustering graph remains Rust-only; the `hdbscan`/`kdtree` clustering crates add
+no C/C++ build steps or native linkage.
 `solstone-core-speakers-analyze` and `solstone-core-speakers-onnx` are excluded:
 the analyzer transitively depends on the ONNX Runtime host native-runtime
 adapter, which is not mobile-ready subsystem logic.
@@ -250,6 +252,12 @@ writes its report under the harness work directory unless `--report` is supplied
 `tests/verify_speaker_differential.py` runs the local speaker-pipeline
 differential harness and writes/compares versioned `.npz` result bundles for
 Python-to-port parity checks.
+
+`tests/verify_speaker_discovery_clustering_differential.py` runs the
+unknown-speaker discovery clustering differential, feeding an `.npz` embedding
+matrix to sklearn and the native analyzer `discovery-cluster` subcommand while
+separating noise-boundary flips from cluster-to-cluster structural moves.
+
 `tests/verify_speaker_verdict.py` consumes those recorded bundles without
 rerunning speaker models, adding decision-flip replay for clustering,
 owner-claim, and acoustic-tier outcomes plus DER scoring against

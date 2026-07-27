@@ -6,7 +6,8 @@ use std::io::{self, Read};
 use std::process;
 
 use solstone_core_speakers_analyze::{
-    error_json_line, error_line_for_analyze_error, error_line_for_usage, evaluate_args, run_request,
+    error_json_line, error_line_for_analyze_error, error_line_for_usage, evaluate_args,
+    run_command_request,
 };
 
 const EXIT_USAGE: i32 = 64;
@@ -15,10 +16,13 @@ const EXIT_TEMPFAIL: i32 = 75;
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if let Err(error) = evaluate_args(&args) {
-        eprintln!("{}", error_line_for_usage(&error));
-        process::exit(EXIT_USAGE);
-    }
+    let command = match evaluate_args(&args) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("{}", error_line_for_usage(&error));
+            process::exit(EXIT_USAGE);
+        }
+    };
 
     let mut input = String::new();
     if let Err(error) = io::stdin().read_to_string(&mut input) {
@@ -29,7 +33,7 @@ fn main() {
         process::exit(EXIT_TEMPFAIL);
     }
 
-    match run_request(&input) {
+    match run_command_request(command, &input) {
         Ok(response) => {
             println!(
                 "{}",
