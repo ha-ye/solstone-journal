@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+//! Native one-record speaker analysis command contract.
+//!
+//! Scalar and vector response fields such as `statement_ids`, `durations_s`,
+//! `encoder`, `evidence.*`, `pyannote.window_stats`, and `diarization.*` map
+//! directly onto the differential bundle vocabulary in
+//! `tests/verify_speaker_differential.py:82-118`.
+//!
+//! Matrix-valued bundle fields (`statement_embeddings.embeddings` and
+//! `diarization.interval_embeddings`) are represented as payload descriptors
+//! because the v1 contract keeps binary matrices out of stdout. A bundle emitter
+//! loads the named payload using the reported shape, dtype, and row id/index
+//! lists; this difference is structural rather than a field-name oversight.
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
@@ -419,6 +432,14 @@ fn parse_request(input: &str) -> Result<Request, AnalyzeError> {
     let pyannote_segmentation_onnx_path =
         required_string(models, "pyannote_segmentation_onnx_path")?.to_string();
     let wespeaker_onnx_path = required_string(models, "wespeaker_onnx_path")?.to_string();
+    ensure_payload_paths_do_not_collide(
+        &full_audio_f32le_path,
+        reduced_audio_f32le_path.as_deref(),
+        &pyannote_segmentation_onnx_path,
+        &wespeaker_onnx_path,
+        &output_payload_f32le_path,
+        interval_embedding_payload_f32le_path.as_deref(),
+    )?;
     let statement_embedding = required_object(object, "statement_embedding")?;
     let diarization = required_object(object, "diarization")?;
     let statement_spans = parse_spans(statement_embedding, "statement_embedding.spans")?;
@@ -535,6 +556,59 @@ fn ensure_span_parity(
         }
     }
     Ok(())
+}
+
+fn ensure_payload_paths_do_not_collide(
+    full_audio_f32le_path: &str,
+    reduced_audio_f32le_path: Option<&str>,
+    pyannote_segmentation_onnx_path: &str,
+    wespeaker_onnx_path: &str,
+    output_payload_f32le_path: &str,
+    interval_embedding_payload_f32le_path: Option<&str>,
+) -> Result<(), AnalyzeError> {
+    let input_paths = [
+        ("full_audio_f32le_path", Some(full_audio_f32le_path)),
+        ("reduced_audio_f32le_path", reduced_audio_f32le_path),
+        (
+            "models.pyannote_segmentation_onnx_path",
+            Some(pyannote_segmentation_onnx_path),
+        ),
+        ("models.wespeaker_onnx_path", Some(wespeaker_onnx_path)),
+    ];
+    for (payload_field, payload_path) in [
+        ("output_payload_f32le_path", Some(output_payload_f32le_path)),
+        (
+            "interval_embedding_payload_f32le_path",
+            interval_embedding_payload_f32le_path,
+        ),
+    ] {
+        let Some(payload_path) = payload_path else {
+            continue;
+        };
+        for (input_field, input_path) in input_paths {
+            let Some(input_path) = input_path else {
+                continue;
+            };
+            if Path::new(payload_path) == Path::new(input_path) {
+                return Err(payload_path_collision(payload_field, input_field));
+            }
+        }
+    }
+    if let Some(interval_embedding_payload_f32le_path) = interval_embedding_payload_f32le_path
+        && Path::new(output_payload_f32le_path) == Path::new(interval_embedding_payload_f32le_path)
+    {
+        return Err(payload_path_collision(
+            "output_payload_f32le_path",
+            "interval_embedding_payload_f32le_path",
+        ));
+    }
+    Ok(())
+}
+
+fn payload_path_collision(left_field: &'static str, right_field: &'static str) -> AnalyzeError {
+    malformed(format!(
+        "{left_field} must not equal {right_field}; payload writes happen after analysis and would overwrite that path"
+    ))
 }
 
 fn malformed(detail: impl Into<String>) -> AnalyzeError {
@@ -884,6 +958,9 @@ fn map_diarization_error(error: DiarizationError) -> AnalyzeError {
 
 fn map_open_onnx_error(field: &'static str, error: SpeakerOnnxError) -> AnalyzeError {
     match error {
+        // Reserved under the current fixed provider plan:
+        // default_speaker_execution_providers(PlatformDescriptor::current()) never
+        // requests CoreML on non-Apple, the only production ProviderUnavailable path.
         SpeakerOnnxError::ProviderUnavailable { .. } | SpeakerOnnxError::EmptyProviderPlan => {
             AnalyzeError::ProviderUnavailable {
                 detail: error.to_string(),
@@ -908,6 +985,9 @@ fn map_open_onnx_error(field: &'static str, error: SpeakerOnnxError) -> AnalyzeE
 
 fn map_runtime_onnx_error(operation: &'static str, error: SpeakerOnnxError) -> AnalyzeError {
     match error {
+        // Reserved under the current fixed provider plan:
+        // default_speaker_execution_providers(PlatformDescriptor::current()) never
+        // requests CoreML on non-Apple, the only production ProviderUnavailable path.
         SpeakerOnnxError::ProviderUnavailable { .. } | SpeakerOnnxError::EmptyProviderPlan => {
             AnalyzeError::ProviderUnavailable {
                 detail: error.to_string(),
@@ -1034,6 +1114,45 @@ mod tests {
 
         assert_eq!(error.reason(), "unknown-schema");
         assert_eq!(error.exit_code(), 64);
+    }
+
+    #[test]
+    fn payload_paths_may_not_collide_with_each_other() {
+        let mut request = base_request();
+        request["interval_embedding_payload_f32le_path"] = json!("/tmp/statements.f32");
+
+        let error = parse_request(&request_string(request)).unwrap_err();
+
+        assert_eq!(error.reason(), "malformed-request");
+        assert_eq!(error.exit_code(), 64);
+        let detail = error.detail();
+        assert!(detail.contains("output_payload_f32le_path"));
+        assert!(detail.contains("interval_embedding_payload_f32le_path"));
+    }
+
+    #[test]
+    fn payload_path_may_not_collide_with_an_input_path() {
+        let mut audio_collision = base_request();
+        audio_collision["output_payload_f32le_path"] = json!("/tmp/full.f32");
+
+        let error = parse_request(&request_string(audio_collision)).unwrap_err();
+
+        assert_eq!(error.reason(), "malformed-request");
+        assert_eq!(error.exit_code(), 64);
+        let detail = error.detail();
+        assert!(detail.contains("output_payload_f32le_path"));
+        assert!(detail.contains("full_audio_f32le_path"));
+
+        let mut model_collision = base_request();
+        model_collision["interval_embedding_payload_f32le_path"] = json!("/models/wespeaker.onnx");
+
+        let error = parse_request(&request_string(model_collision)).unwrap_err();
+
+        assert_eq!(error.reason(), "malformed-request");
+        assert_eq!(error.exit_code(), 64);
+        let detail = error.detail();
+        assert!(detail.contains("interval_embedding_payload_f32le_path"));
+        assert!(detail.contains("models.wespeaker_onnx_path"));
     }
 
     #[test]
