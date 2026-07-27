@@ -1194,7 +1194,6 @@ def test_pre_nvattest_v1_consumers_fail_loudly_by_version(
                 entry["name"]
                 for entry in driver._evidence_report_inventory(
                     report.evidence_dir,
-                    schema_version=schema_version,
                     schema=schema,
                 )
             }
@@ -1202,14 +1201,12 @@ def test_pre_nvattest_v1_consumers_fail_loudly_by_version(
         "nvattest_report_inventory": capture(
             lambda: driver._nvattest_report_inventory(
                 report.evidence_dir,
-                schema_version=schema_version,
                 schema=schema,
             )
         ),
         "support_report_inventory": capture(
             lambda: driver._support_report_inventory(
                 report.evidence_dir,
-                schema_version=schema_version,
                 schema=schema,
             )
         ),

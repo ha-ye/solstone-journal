@@ -4111,10 +4111,8 @@ def _payload_report_inventory(release_dir: Path) -> list[dict[str, Any]]:
 def _evidence_report_inventory(
     evidence_dir: Path,
     *,
-    schema_version: int,
     schema: RetainedLedgerSchema,
 ) -> list[dict[str, Any]]:
-    _ = schema_version
     entries = [
         _inventory_entry(evidence_dir / "ledger.json", name="ledger.json"),
     ]
@@ -4149,10 +4147,8 @@ def _proof_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
 def _nvattest_report_inventory(
     evidence_dir: Path,
     *,
-    schema_version: int,
     schema: RetainedLedgerSchema,
 ) -> dict[str, dict[str, Any]]:
-    _ = schema_version
     if not retained_ledger_schema_declares_nvattest(schema):
         return {}
     nvattest_dir = evidence_dir / "nvattest"
@@ -4165,10 +4161,8 @@ def _nvattest_report_inventory(
 def _support_report_inventory(
     evidence_dir: Path,
     *,
-    schema_version: int,
     schema: RetainedLedgerSchema,
 ) -> list[dict[str, Any]]:
-    _ = schema_version
     if not retained_ledger_schema_declares_nvattest(schema):
         return []
     support_dir = evidence_dir / "support"
@@ -4211,7 +4205,6 @@ def format_report(report: CandidateReport) -> str:
         "payload_inventory": _payload_report_inventory(report.release_dir),
         "evidence_inventory": _evidence_report_inventory(
             report.evidence_dir,
-            schema_version=schema_version,
             schema=schema,
         ),
         "proof_inventory": _proof_report_inventory(report.evidence_dir),
@@ -4230,12 +4223,10 @@ def format_report(report: CandidateReport) -> str:
     if retained_ledger_schema_declares_nvattest(schema):
         payload["nvattest_inventory"] = _nvattest_report_inventory(
             report.evidence_dir,
-            schema_version=schema_version,
             schema=schema,
         )
         payload["support_inventory"] = _support_report_inventory(
             report.evidence_dir,
-            schema_version=schema_version,
             schema=schema,
         )
     return canonical_json_bytes(payload).decode("utf-8")
@@ -4623,7 +4614,7 @@ def run_recover(
         ) from None
     except LedgerError as exc:
         raise DriverError(exc.failures) from None
-    schema_version, schema = _resolve_driver_retained_ledger_schema(ledger)
+    _, schema = _resolve_driver_retained_ledger_schema(ledger)
     selector_failures: list[Failure] = []
     if ledger.get("version") != version:
         selector_failures.append(
