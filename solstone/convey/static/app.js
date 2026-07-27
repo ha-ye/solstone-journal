@@ -108,6 +108,7 @@
       facetPillsContainer.setAttribute('aria-hidden', 'true');
       facetPillsContainer.removeAttribute('role');
       facetPillsContainer.removeAttribute('aria-label');
+      updateFacetScrollAffordance();
       return;
     } else if (activeFacets.length === 0) {
       facetPillsContainer.removeAttribute('aria-hidden');
@@ -140,6 +141,7 @@
 
       emptyState.appendChild(createBtn);
       facetPillsContainer.appendChild(emptyState);
+      updateFacetScrollAffordance();
       return;
     } else {
       facetPillsContainer.setAttribute('role', 'toolbar');
@@ -264,6 +266,8 @@
         badgeSvc._render(name);
       }
     }
+
+    updateFacetScrollAffordance();
   }
 
   // Update selection styles without re-rendering
@@ -714,6 +718,14 @@
     const { scrollTop, scrollHeight, clientHeight } = menuItems;
     menuItems.classList.toggle('scroll-shadow-top', scrollTop > 0);
     menuItems.classList.toggle('scroll-shadow-bottom', scrollTop + clientHeight < scrollHeight - 1);
+  }
+
+  // Fade the facet strip's trailing edge while there is more of the row to scroll to.
+  function updateFacetScrollAffordance() {
+    const container = document.querySelector('.facet-bar .facet-pills-container');
+    if (!container) return;
+    const { scrollLeft, scrollWidth, clientWidth } = container;
+    container.classList.toggle('scroll-fade-end', scrollLeft + clientWidth < scrollWidth - 1);
   }
 
   // Persist sidebar state to localStorage
@@ -1176,6 +1188,14 @@
       menuItemsScroll.addEventListener('scroll', updateScrollShadows, { passive: true });
       window.addEventListener('resize', updateScrollShadows);
       updateScrollShadows();
+    }
+
+    // Facet strip horizontal fade listeners
+    const facetPillsScroll = document.querySelector('.facet-bar .facet-pills-container');
+    if (facetPillsScroll) {
+      facetPillsScroll.addEventListener('scroll', updateFacetScrollAffordance, { passive: true });
+      window.addEventListener('resize', updateFacetScrollAffordance);
+      updateFacetScrollAffordance();
     }
 
     // App ordering via drag-and-drop

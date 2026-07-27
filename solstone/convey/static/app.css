@@ -709,6 +709,23 @@ body:has(.status-pane.visible) .facet-bar::after {
     content: "";
     flex: 0 0 8px;
   }
+
+  /* The row scrolls (pills keep content width, above). While there is more of it to the
+     right, fade the trailing edge so a clipped pill reads as "there is more" instead of as
+     the status mark covering it. A mask, not a gradient cover: the ground here is
+     .facet-bar's --facet-bg tint composited over --paper, so no cover colour can match it,
+     while a mask fades to whatever is actually behind. */
+  .facet-bar .facet-pills-container.scroll-fade-end {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+  }
+
+  /* Never let the fade sit over a keyboard focus ring (WCAG 2.4.11). Arrowing along the
+     toolbar parks the focused pill flush against the trailing edge. */
+  .facet-bar .facet-pills-container.scroll-fade-end:focus-within {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
 }
 
 /* Menu Bar (left sidebar) */

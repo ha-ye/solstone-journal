@@ -136,11 +136,27 @@ function applyFacetTheme() {{}}
 function applyPillStyle() {{}}
 function selectFacet() {{}}
 function openFacetCreateModal() {{}}
+function updateFacetScrollAffordance() {{}}
 
 {fn}
 
 {body}
 """
+
+
+def test_mobile_facet_pills_anchor_remains_comment_free():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    mobile_anchor = (
+        "@media (max-width: 768px) {\n"
+        "  .facet-bar .facet-pills-container {\n"
+        "    overflow-x: auto;"
+    )
+
+    assert mobile_anchor in css, (
+        "mobile facet-pills anchor was not found; comment placement above or "
+        "inside the overflow-x rule is the likely cause"
+    )
 
 
 def test_mobile_facet_pills_overflow_override_follows_base_rule():
@@ -240,6 +256,68 @@ def test_mobile_facet_chrome_compacts_without_shrinking_touch_targets():
     assert "min-inline-size: 44px;" in pill_rule
     assert 'content: "";' in trailing_space_rule
     assert "flex: 0 0 8px;" in trailing_space_rule
+
+
+def test_mobile_facet_scroll_fade_rules_are_mobile_only_and_exact():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    mobile_anchor = (
+        "@media (max-width: 768px) {\n"
+        "  .facet-bar .facet-pills-container {\n"
+        "    overflow-x: auto;"
+    )
+    mobile_index = css.find(mobile_anchor)
+    assert mobile_index != -1, (
+        "mobile facet-pills block was not found; comment placement above or "
+        "inside the overflow-x rule is the likely cause"
+    )
+
+    depth = 0
+    mobile_close = -1
+    for index in range(mobile_index, len(css)):
+        char = css[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                mobile_close = index
+                break
+
+    assert mobile_close != -1, "mobile facet-pills block is not closed"
+    fade_index, fade_rule = _rule_block(
+        css, ".facet-bar .facet-pills-container.scroll-fade-end", mobile_index
+    )
+    focus_index, focus_rule = _rule_block(
+        css,
+        ".facet-bar .facet-pills-container.scroll-fade-end:focus-within",
+        mobile_index,
+    )
+    _, base_rule = _rule_block(css, ".facet-bar .facet-pills-container")
+
+    assert mobile_index < fade_index < mobile_close, (
+        "scroll-fade-end rule should live inside the mobile facet-pills block"
+    )
+    assert mobile_index < focus_index < mobile_close, (
+        "scroll-fade-end focus rule should live inside the mobile facet-pills block"
+    )
+    assert (
+        "\n    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);\n"
+        in fade_rule
+    ), "scroll-fade-end rule is missing the exact prefixed trailing mask"
+    assert (
+        "\n    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);\n"
+        in fade_rule
+    ), "scroll-fade-end rule is missing the exact trailing mask"
+    assert "\n    -webkit-mask-image: none;\n" in focus_rule, (
+        "scroll-fade-end focus rule should remove the prefixed mask"
+    )
+    assert "\n    mask-image: none;\n" in focus_rule, (
+        "scroll-fade-end focus rule should remove the mask"
+    )
+    assert "mask-image" not in base_rule, (
+        "base facet-pills container rule should not mask desktop layout"
+    )
 
 
 def test_mobile_facet_pill_flex_shrink_override_wins_by_specificity():
@@ -391,6 +469,94 @@ def test_unselected_pill_reset_and_color_setters_unchanged():
     assert "pill.style.background = '';" in fn
     assert "pill.style.color = '';" in fn
     assert "pill.style.borderColor = '';" in fn
+
+
+def test_update_facet_scroll_affordance_toggles_trailing_fade():
+    fn = _function_body(
+        Path("solstone/convey/static/app.js").read_text(encoding="utf-8"),
+        "updateFacetScrollAffordance",
+    )
+    assert fn.count("{") == fn.count("}"), (
+        "updateFacetScrollAffordance extraction is truncated"
+    )
+
+    _run_node(
+        f"""
+function assert(condition, message) {{ if (!condition) throw new Error(message); }}
+
+let container = null;
+let toggleCalls = [];
+
+const document = {{
+  querySelector(selector) {{
+    assert(
+      selector === '.facet-bar .facet-pills-container',
+      'updateFacetScrollAffordance should query the qualified facet-pills selector'
+    );
+    return container;
+  }},
+}};
+
+{fn}
+
+function setContainer(scrollLeft, clientWidth, scrollWidth) {{
+  toggleCalls = [];
+  container = {{
+    scrollLeft,
+    clientWidth,
+    scrollWidth,
+    classList: {{
+      toggle(name, enabled) {{
+        toggleCalls.push({{name, enabled: Boolean(enabled)}});
+      }},
+    }},
+  }};
+}}
+
+function drive(scrollLeft, clientWidth, scrollWidth, expected, label) {{
+  setContainer(scrollLeft, clientWidth, scrollWidth);
+  updateFacetScrollAffordance();
+  assert(toggleCalls.length === 1, label + ': expected one classList.toggle call');
+  assert(
+    toggleCalls[0].name === 'scroll-fade-end',
+    label + ': expected scroll-fade-end to be toggled'
+  );
+  assert(
+    toggleCalls[0].enabled === expected,
+    label + ': expected scroll-fade-end toggle to be ' + expected
+  );
+}}
+
+drive(0, 246, 439, true, 'overflowing');
+drive(193, 246, 439, false, 'scrolled to end');
+drive(0, 246, 246, false, 'not overflowing');
+drive(0, 246, 246.4, false, 'sub-pixel tolerance');
+
+container = null;
+toggleCalls = [];
+updateFacetScrollAffordance();
+assert(toggleCalls.length === 0, 'missing facet-pills container should return without toggling');
+"""
+    )
+
+
+def test_facet_scroll_affordance_wiring_remains_registered():
+    app_js = Path("solstone/convey/static/app.js").read_text(encoding="utf-8")
+    render_fn = _function_body(app_js, "renderFacetChooser")
+
+    assert (
+        "facetPillsScroll.addEventListener('scroll', updateFacetScrollAffordance, { passive: true });"
+        in app_js
+    ), "facet strip should register a passive scroll listener for the fade affordance"
+    assert (
+        "window.addEventListener('resize', updateFacetScrollAffordance);" in app_js
+    ), "facet strip should recompute the fade affordance on resize"
+    assert "updateFacetScrollAffordance();" in render_fn, (
+        "renderFacetChooser should recompute the fade affordance after rendering"
+    )
+    assert render_fn.count("updateFacetScrollAffordance();") == 3, (
+        "renderFacetChooser should recompute on all three container-bearing exits"
+    )
 
 
 def test_render_facet_chooser_disabled_returns_without_pills():
