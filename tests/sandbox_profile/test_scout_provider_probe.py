@@ -7,10 +7,10 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +104,69 @@ def _assert_attempt_empty(attempt: Path) -> None:
     assert list(attempt.iterdir()) == []
 
 
+def _assert_canaries_absent(text: str) -> None:
+    for canary in CANARIES:
+        assert canary not in text
+
+
+def _assert_outcome_canaries_absent(outcome: dict[str, object]) -> None:
+    _assert_canaries_absent(json.dumps(outcome, sort_keys=True, default=str))
+
+
+def _assert_child_env_canary_clean(env: dict[str, str]) -> None:
+    expected = {
+        "HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "LITELLM_MODE",
+        "LITELLM_LOCAL_MODEL_COST_MAP",
+    }
+    assert set(env) == expected
+    for key, value in env.items():
+        _assert_canaries_absent(key)
+        _assert_canaries_absent(value)
+    for forbidden in (
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "GEMINI_API_BASE",
+        "GOOGLE_API_KEY",
+    ):
+        assert forbidden not in env
+    assert not any(key.endswith(("_PROXY", "_proxy")) for key in env)
+
+
+def _assert_child_stdin_asymmetry(frame: bytes) -> None:
+    assert CANARY_KEY.encode("utf-8") in frame
+    assert CANARY_NONCE.encode("utf-8") in frame
+    assert CANARY_DISPATCH_TOKEN.encode("utf-8") not in frame
+    assert CANARY_ACCOUNT_ID.encode("utf-8") not in frame
+    assert CANARY_KEY_FINGERPRINT.encode("utf-8") not in frame
+
+
+def _assert_proof_path_names_canary_clean(captured: dict[str, Any]) -> None:
+    paths = [Path(captured["cwd"]), Path(captured["cwd"]).parent]
+    paths.extend(Path(value) for value in captured["env"].values())
+    for path in paths:
+        _assert_canaries_absent(path.name)
+        _assert_canaries_absent(str(path))
+
+
+def _assert_surviving_attempt_files_canary_clean(attempt: Path) -> None:
+    # The applied Scout key retained in journal/config/journal.json is sanctioned.
+    # This sweep is scoped to proof-created attempt state only.
+    for path in attempt.rglob("*"):
+        _assert_canaries_absent(path.name)
+        _assert_canaries_absent(str(path))
+        if path.is_file():
+            data = path.read_bytes()
+            for canary in CANARIES:
+                assert canary.encode("utf-8") not in data
+
+
 def _forbid_spawn(_containment: probe.ScoutContainment):
     raise AssertionError("Scout provider proof spawned a child")
 
@@ -154,6 +217,23 @@ def _sleep_child_code() -> str:
     return """
 import time
 time.sleep(60)
+"""
+
+
+def _silent_child_code() -> str:
+    return """
+import sys
+sys.stdin.buffer.read()
+"""
+
+
+def _oversize_stdout_child_code() -> str:
+    length = probe.STDOUT_FRAME_MAX_BYTES + 1
+    return f"""
+import sys
+sys.stdin.buffer.read()
+sys.stdout.buffer.write({length}.to_bytes(4, "big") + b"x" * {length})
+sys.stdout.buffer.flush()
 """
 
 
@@ -249,6 +329,179 @@ def test_parent_success_uses_contained_env_and_imports_no_openhands(
         assert canary not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_scout_block",
+        "missing_recorded_account_id",
+        "mismatched_account_id",
+        "mismatched_key_fingerprint_sha256",
+        "empty_key",
+        "missing_key",
+    ],
+)
+def test_parent_refuses_unowned_scout_without_spawning(
+    tmp_path,
+    monkeypatch,
+    case: str,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    config_path = journal / "config" / "journal.json"
+    intent_path = journal / "health" / "sandbox-profile" / "intent.json"
+    config = read_json(config_path)
+    intent_payload = read_json(intent_path)
+
+    if case == "missing_scout_block":
+        config["services"].pop("scout", None)
+        _write_json(config_path, config)
+    elif case == "missing_recorded_account_id":
+        intent_payload["observed_at_apply"]["scout"].pop("account_id", None)
+        _write_json(intent_path, intent_payload)
+    elif case == "mismatched_account_id":
+        config["services"]["scout"]["account_id"] = "acct-other"
+        _write_json(config_path, config)
+    elif case == "mismatched_key_fingerprint_sha256":
+        intent_payload["observed_at_apply"]["scout"]["key_fingerprint_sha256"] = (
+            "0" * 64
+        )
+        _write_json(intent_path, intent_payload)
+    elif case == "empty_key":
+        config["env"]["GOOGLE_API_KEY"] = ""
+        _write_json(config_path, config)
+    elif case == "missing_key":
+        config["env"].pop("GOOGLE_API_KEY", None)
+        _write_json(config_path, config)
+    else:  # pragma: no cover - parametrization guard
+        raise AssertionError(case)
+
+    snapshot = _snapshot(journal)
+    monkeypatch.setattr(probe, "_spawn_child", _forbid_spawn)
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert outcome["reason"] == probe_contract.REASON_CAPABILITY_NOT_READY
+    assert outcome["checks"] == probe.SCOUT_CHECKS[:0]
+    _assert_snapshot_unchanged(journal, snapshot)
+    _assert_attempt_empty(attempt)
+
+
+def test_parent_cancels_before_contact_without_spawning(tmp_path, monkeypatch) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    snapshot = _snapshot(journal)
+    monkeypatch.setattr(probe, "_spawn_child", _forbid_spawn)
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: True,
+    )
+
+    assert outcome["reason"] == probe_contract.REASON_CANCELLED
+    assert outcome["checks"] == probe.SCOUT_CHECKS[:0]
+    _assert_snapshot_unchanged(journal, snapshot)
+    _assert_attempt_empty(attempt)
+
+
+def test_parent_cancellation_after_earned_facts_preserves_prefix(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    snapshot = _snapshot(journal)
+    nonce = "earned-cancel-nonce"
+    monkeypatch.setattr(probe, "_new_nonce", lambda: nonce)
+    monkeypatch.setattr(probe, "_spawn_child", lambda _containment: object())
+
+    def drive(_proc, _frame, _deadline, _work_budget, _cancel_requested):
+        return probe._ChildDriveResult(
+            _child_frame(
+                {
+                    "protocol_version": 1,
+                    "result": "ok",
+                    "nonce_sha256": hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
+                    "finish_reason": "stop",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+            None,
+        )
+
+    calls = {"count": 0}
+
+    def cancel_requested() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 1
+
+    monkeypatch.setattr(probe, "_drive_child", drive)
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=cancel_requested,
+    )
+
+    assert outcome["reason"] == probe_contract.REASON_CANCELLED
+    assert outcome["checks"] == probe.SCOUT_CHECKS[:]
+    _assert_snapshot_unchanged(journal, snapshot)
+    _assert_attempt_empty(attempt)
+
+
+def test_parent_cleanup_unverified_overrides_post_fact_cancellation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    snapshot = _snapshot(journal)
+    nonce = "cleanup-cancel-nonce"
+    monkeypatch.setattr(probe, "_new_nonce", lambda: nonce)
+    monkeypatch.setattr(probe, "_spawn_child", lambda _containment: object())
+
+    def drive(_proc, _frame, _deadline, _work_budget, _cancel_requested):
+        return probe._ChildDriveResult(
+            _child_frame(
+                {
+                    "protocol_version": 1,
+                    "result": "ok",
+                    "nonce_sha256": hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
+                    "finish_reason": "stop",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+            None,
+        )
+
+    calls = {"cancel": 0, "cleanup": 0}
+
+    def cancel_requested() -> bool:
+        calls["cancel"] += 1
+        return calls["cancel"] > 1
+
+    real_cleanup = probe._cleanup_path_absent
+
+    def cleanup(path: Path, deadline: float) -> bool:
+        calls["cleanup"] += 1
+        cleaned = real_cleanup(path, deadline)
+        return cleaned and calls["cleanup"] != 2
+
+    monkeypatch.setattr(probe, "_drive_child", drive)
+    monkeypatch.setattr(probe, "_cleanup_path_absent", cleanup)
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=cancel_requested,
+    )
+
+    assert outcome["reason"] == probe_contract.REASON_CLEANUP_UNVERIFIED
+    assert outcome["checks"] == probe.SCOUT_CHECKS[:]
+    _assert_snapshot_unchanged(journal, snapshot)
+    _assert_attempt_empty(attempt)
+
+
 def test_parent_cleanup_unverified_overrides_success(tmp_path, monkeypatch) -> None:
     journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(probe, "_spawn_child", _spawn_code(_ok_child_code(), {}))
@@ -269,6 +522,217 @@ def test_parent_cleanup_unverified_overrides_success(tmp_path, monkeypatch) -> N
     assert outcome["state"] == probe_contract.PROOF_STATE_FAILED
     assert outcome["reason"] == probe_contract.REASON_CLEANUP_UNVERIFIED
     assert outcome["checks"] == probe_contract.PROOF_CHECKS["scout"]
+
+
+def test_parent_canaries_absent_from_debug_logs_argv_and_outcomes(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    config_path = journal / "config" / "journal.json"
+    outcomes: list[dict[str, object]] = []
+    caplog.clear()
+
+    with caplog.at_level(logging.DEBUG):
+        monkeypatch.setattr(probe, "_spawn_child", _spawn_code(_ok_child_code(), {}))
+        monkeypatch.setattr(probe, "_new_nonce", lambda: CANARY_NONCE)
+        outcomes.append(
+            probe.prove_scout_provider(
+                journal,
+                attempt_dir=attempt,
+                cancel_requested=lambda: False,
+            )
+        )
+
+        monkeypatch.setattr(
+            probe,
+            "_spawn_child",
+            _spawn_code("import sys\nsys.stdout.buffer.write(b'bad-frame')\n", {}),
+        )
+        outcomes.append(
+            probe.prove_scout_provider(
+                journal,
+                attempt_dir=attempt,
+                cancel_requested=lambda: False,
+            )
+        )
+
+        config = read_json(config_path)
+        config["env"]["GOOGLE_API_KEY"] = ""
+        _write_json(config_path, config)
+        monkeypatch.setattr(probe, "_spawn_child", _forbid_spawn)
+        outcomes.append(
+            probe.prove_scout_provider(
+                journal,
+                attempt_dir=attempt,
+                cancel_requested=lambda: False,
+            )
+        )
+
+    assert outcomes[0]["state"] == probe_contract.PROOF_STATE_PASSED
+    assert outcomes[1]["state"] == probe_contract.PROOF_STATE_FAILED
+    assert outcomes[2]["reason"] == probe_contract.REASON_CAPABILITY_NOT_READY
+    _assert_canaries_absent(caplog.text)
+    _assert_canaries_absent(" ".join(sys.argv))
+    for outcome in outcomes:
+        _assert_outcome_canaries_absent(outcome)
+
+
+def test_primitive_exceptions_are_canary_clean() -> None:
+    exceptions: list[BaseException] = []
+
+    with pytest.raises(probe.ScoutProbeError) as excinfo:
+        probe.decode_frame(b"", cap=probe.STDIN_FRAME_MAX_BYTES)
+    exceptions.append(excinfo.value)
+
+    transport = probe.GeminiSingleRequestTransport()
+    with pytest.raises(probe.ProbeInternalError) as excinfo:
+        transport.handle_request(
+            httpx.Request(
+                "GET",
+                CANARY_REQUEST_URL,
+                headers={"x-goog-api-key": CANARY_KEY},
+                content=CANARY_MODEL_OUTPUT.encode("utf-8"),
+            )
+        )
+    exceptions.append(excinfo.value)
+    transport.close()
+
+    inbound = probe.GeminiSingleRequestTransport(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"x-test": "x" * (probe.INBOUND_RAW_HEADER_MAX_BYTES + 1)},
+                request=request,
+            )
+        )
+    )
+    with pytest.raises(probe.ProbeResponseInvalid) as excinfo:
+        inbound.handle_request(
+            httpx.Request(
+                "POST",
+                CANARY_REQUEST_URL,
+                headers={"x-goog-api-key": CANARY_KEY},
+                content=b"{}",
+            )
+        )
+    exceptions.append(excinfo.value)
+    inbound.close()
+
+    for exc in exceptions:
+        assert exc.__cause__ is None
+        _assert_canaries_absent(str(exc))
+        _assert_canaries_absent(repr(exc))
+
+
+def test_parent_canaries_absent_from_child_env_stdin_paths_and_attempt_files(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    config_path = journal / "config" / "journal.json"
+    real_drive_child = probe._drive_child
+    pass_capture: dict[str, Any] = {}
+    failure_capture: dict[str, Any] = {}
+
+    def capture_drive(captured: dict[str, Any]):
+        def drive(proc, frame, deadline, work_budget, cancel_requested):
+            captured["stdin"] = frame
+            return real_drive_child(
+                proc,
+                frame,
+                deadline,
+                work_budget,
+                cancel_requested,
+            )
+
+        return drive
+
+    monkeypatch.setattr(probe, "_new_nonce", lambda: CANARY_NONCE)
+    monkeypatch.setattr(
+        probe, "_spawn_child", _spawn_code(_ok_child_code(), pass_capture)
+    )
+    monkeypatch.setattr(probe, "_drive_child", capture_drive(pass_capture))
+    pass_outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert pass_outcome["state"] == probe_contract.PROOF_STATE_PASSED
+    _assert_child_env_canary_clean(pass_capture["env"])
+    _assert_child_stdin_asymmetry(pass_capture["stdin"])
+    _assert_proof_path_names_canary_clean(pass_capture)
+    _assert_surviving_attempt_files_canary_clean(attempt)
+
+    monkeypatch.setattr(
+        probe,
+        "_spawn_child",
+        _spawn_code(
+            "import sys\nsys.stdout.buffer.write(b'bad-frame')\n", failure_capture
+        ),
+    )
+    monkeypatch.setattr(probe, "_drive_child", capture_drive(failure_capture))
+    failure_outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert failure_outcome["state"] == probe_contract.PROOF_STATE_FAILED
+    _assert_child_env_canary_clean(failure_capture["env"])
+    _assert_child_stdin_asymmetry(failure_capture["stdin"])
+    _assert_proof_path_names_canary_clean(failure_capture)
+    _assert_surviving_attempt_files_canary_clean(attempt)
+
+    config = read_json(config_path)
+    config["env"]["GOOGLE_API_KEY"] = ""
+    _write_json(config_path, config)
+    monkeypatch.setattr(probe, "_spawn_child", _forbid_spawn)
+    refusal_outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert refusal_outcome["reason"] == probe_contract.REASON_CAPABILITY_NOT_READY
+    _assert_surviving_attempt_files_canary_clean(attempt)
+
+
+def test_deadline_reserves_fit_absolute_bound() -> None:
+    assert (
+        probe.WORK_CUTOFF_S
+        + probe.TERM_GRACE_S
+        + probe.KILL_GRACE_S
+        + probe.ABSENCE_GRACE_S
+        <= probe.ABSOLUTE_DEADLINE_S
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        _silent_child_code(),
+        _oversize_stdout_child_code(),
+    ],
+)
+def test_parent_frame_failures_return_stable_reason_and_leave_attempt_empty(
+    tmp_path,
+    monkeypatch,
+    code: str,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(probe, "_spawn_child", _spawn_code(code, {}))
+
+    outcome = probe.prove_scout_provider(
+        journal,
+        attempt_dir=attempt,
+        cancel_requested=lambda: False,
+    )
+
+    assert outcome["reason"] == probe_contract.REASON_INTERNAL_ERROR
+    _assert_attempt_empty(attempt)
 
 
 def test_parent_timeout_reaps_process_group(tmp_path, monkeypatch) -> None:
@@ -448,31 +912,47 @@ def _child_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
 
 def _run_real_child(tmp_path: Path, data: bytes) -> dict[str, Any]:
     env, cwd = _child_env(tmp_path)
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "solstone.think.sandbox_profile.scout_provider_child"],
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        close_fds=True,
-        pass_fds=(),
-        start_new_session=True,
-    )
-    stdout, stderr = proc.communicate(data, timeout=10)
-    assert proc.returncode == 0, stderr
-    assert stderr == b""
-    return probe.decode_frame(stdout, cap=probe.STDOUT_FRAME_MAX_BYTES)
+    root = cwd.parent
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "solstone.think.sandbox_profile.scout_provider_child",
+            ],
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(data, timeout=10)
+        assert proc.returncode == 0, stderr
+        assert stderr == b""
+        return probe.decode_frame(stdout, cap=probe.STDOUT_FRAME_MAX_BYTES)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        assert not root.exists()
 
 
 def test_real_child_rejects_malformed_duplicate_and_oversize_frames(tmp_path) -> None:
-    malformed = b"\x00\x00\x00\x10{}"
+    malformed_payload = b"{"
+    malformed = len(malformed_payload).to_bytes(4, "big") + malformed_payload
+    truncated_payload = b"{}"
+    truncated = (len(truncated_payload) + 1).to_bytes(4, "big") + truncated_payload
     duplicate_payload = b'{"protocol_version":1,"protocol_version":1}'
     duplicate = len(duplicate_payload).to_bytes(4, "big") + duplicate_payload
     oversize = b"x" * (probe.STDIN_FRAME_MAX_BYTES + 5)
 
     assert (
         _run_real_child(tmp_path, malformed)["result"]
+        == probe_contract.REASON_INTERNAL_ERROR
+    )
+    assert (
+        _run_real_child(tmp_path, truncated)["result"]
         == probe_contract.REASON_INTERNAL_ERROR
     )
     assert (
