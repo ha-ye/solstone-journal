@@ -88,6 +88,10 @@
   line-height: 1.7;
 }
 
+.news-index .surface-state-desc {
+  line-height: 1.5;
+}
+
 .news-body blockquote {
   margin: 1.5rem 0;
   padding-left: 1rem;
@@ -446,14 +450,21 @@
         </ul>
         ${copy.populated_next_footer ? `<p class="news-next-footer">${escapeHtml(copy.populated_next_footer)}</p>` : ''}
       `
-      : `
+      : (window.SurfaceState
+        ? window.SurfaceState.empty({
+            icon: window.ConveyIcons.svg('mailbox'),
+            heading: copy.empty_next,
+            desc: copy.empty_body,
+            action: `<p class="surface-state-desc">${escapeHtml(copy.empty_until_then)}</p><a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.sample_link_label)}</a>`
+          })
+        : `
         <div class="news-empty-state">
           <p class="news-empty-body">${escapeHtml(copy.empty_body)}</p>
           <p class="news-empty-next">${escapeHtml(copy.empty_next)}</p>
           <p class="news-empty-until-then">${escapeHtml(copy.empty_until_then)}</p>
           <p class="news-empty-sample"><a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.sample_link_label)}</a></p>
         </div>
-      `;
+      `);
     content.innerHTML = `
       <header class="news-header">
         <div>
@@ -477,11 +488,16 @@
     const copy = payload.copy || {};
     const newsletters = payload.newsletters || [];
     const bodyHtml = payload.empty
-      ? `
+      ? (window.SurfaceState
+        ? window.SurfaceState.empty({
+            icon: window.ConveyIcons.svg('mailbox'),
+            desc: copy.empty_body
+          })
+        : `
         <div class="news-empty-state">
           <p class="news-empty-body">${escapeHtml(copy.empty_body)}</p>
         </div>
-      `
+      `)
       : `
         <ul class="news-index-list">
           ${newsletters.map((item) => `

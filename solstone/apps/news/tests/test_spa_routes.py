@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from solstone.convey import create_app
 APP_ROOT = Path(__file__).resolve().parents[1]
 ROUTES_PATH = APP_ROOT / "routes.py"
 WORKSPACE_PATH = APP_ROOT / "workspace.html"
+CONVEY_ICONS_JS = APP_ROOT.parents[1] / "convey" / "static" / "convey_icons.js"
 
 
 @pytest.fixture
@@ -355,6 +357,49 @@ def test_news_workspace_day_render_source_hooks():
     assert "copy.empty_body" in day_slice
     assert "copy.title" not in day_slice
     assert "copy.empty_title" not in day_slice
+
+
+def test_news_workspace_index_empty_uses_surface_state_slots():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    render_index = _function_source(source, "renderIndex")
+    empty_call = render_index[
+        render_index.index("window.SurfaceState.empty(") : render_index.index(
+            "        : `",
+            render_index.index("window.SurfaceState.empty("),
+        )
+    ]
+
+    assert "window.SurfaceState.empty(" in render_index
+    assert ": (window.SurfaceState" in render_index
+    assert re.search(r"heading:\s*copy\.empty_next\b", render_index)
+    assert re.search(r"desc:\s*copy\.empty_body\b", render_index)
+    assert "copy.empty_until_then" in render_index
+    assert "copy.sample_url" in render_index
+    assert "copy.sample_link_label" in render_index
+    assert "escapeHtml(copy.empty_next)" not in empty_call
+    assert "escapeHtml(copy.empty_body)" not in empty_call
+    assert '<a href="${escapeHtml(copy.sample_url)}"' in empty_call
+
+
+def test_news_workspace_day_empty_uses_surface_state_desc_slot():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    render_day = _function_source(source, "renderDay")
+    empty_call = render_day[
+        render_day.index("window.SurfaceState.empty(") : render_day.index(
+            "        : `",
+            render_day.index("window.SurfaceState.empty("),
+        )
+    ]
+
+    assert "window.SurfaceState.empty(" in render_day
+    assert "? (window.SurfaceState" in render_day
+    assert re.search(r"desc:\s*copy\.empty_body\b", render_day)
+    assert "escapeHtml(copy.empty_body)" not in empty_call
+    assert "escapeHtml(copy.empty_next)" not in empty_call
+
+
+def test_news_workspace_empty_state_icon_is_registered():
+    assert '"mailbox":' in CONVEY_ICONS_JS.read_text(encoding="utf-8")
 
 
 def test_news_workspace_detail_empty_source_hooks():

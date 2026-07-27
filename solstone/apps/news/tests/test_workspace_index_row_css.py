@@ -16,6 +16,10 @@ def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
     return index, css[index : close + 1]
 
 
+def _class_specificity(selector: str) -> int:
+    return selector.count(".")
+
+
 def _media_block(css: str, anchor: str) -> tuple[int, str]:
     start = css.find(anchor)
     assert start != -1, f"{anchor} block was not found"
@@ -98,6 +102,23 @@ def test_news_index_row_text_rules_prevent_wrapping_and_allow_facet_truncation()
     assert "text-overflow: ellipsis;" in facet_rule
     assert "white-space: nowrap;" in facet_rule
     assert "white-space: nowrap;" in day_rule
+
+
+def test_news_surface_state_desc_line_height_overrides_grouped_body_rule():
+    css = WORKSPACE_PATH.read_text(encoding="utf-8")
+
+    grouped_index, grouped_rule = _rule_block(css, ".news-index li")
+    override_index, override_rule = _rule_block(
+        css,
+        ".news-index .surface-state-desc",
+    )
+
+    assert _class_specificity(".news-index .surface-state-desc") > _class_specificity(
+        ".news-index p"
+    )
+    assert "line-height: 1.5;" in override_rule
+    assert "line-height: 1.7;" in grouped_rule
+    assert override_index > grouped_index
 
 
 def test_news_index_mobile_layout_uses_two_columns_with_explicit_placements():
