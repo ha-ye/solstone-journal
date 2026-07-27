@@ -147,12 +147,12 @@ Override default icon, label, and other app settings.
 **Common fields:**
 - `icon` - Emoji icon for menu bar (default: "📦")
 - `label` - Display label in menu (default: title-cased app name)
-- `facets` - Enable facet integration (default: true)
+- `facets` - Enable facet integration (default: true). Accepts either an object (`{"disabled": true}`) or a bare boolean (`false` disables, `true` enables)
 - `date_nav` - Show date navigation bar (default: false)
 - `app_bar` - Show the universal chat bar (default: true)
 - `allow_future_dates` - Allow clicking future dates in month picker (default: false)
 
-**When to disable facets:** Set `"facets": false` for apps that don't use facet-based organization (e.g., system settings, dev tools).
+**When to disable facets:** Set `"facets": false` (or `"facets": {"disabled": true}`, the form most in-tree apps use) for apps that don't use facet-based organization (e.g., system settings, dev tools).
 
 **Static shell:** Every app serves `convey/static/shell.html` at `/app/{name}/`
 and its `workspace.html` bytes at `/app/{name}/workspace`. Keep
@@ -640,7 +640,9 @@ Apps can access and control facet selection through a uniform API:
 
 **See implementation:** `solstone/convey/static/app.js` - Facet switching logic and event dispatch
 
-**Disabled mode:** On apps with `facets.disabled: true`, the facet bar is visible but inert — pills render without interactivity or tab stops. The container is marked `aria-hidden="true"` so screen readers skip it. The bar remains visually present as always-visible chrome.
+**Disabled mode:** On apps with facets disabled, `renderFacetChooser()` empties the pill container, marks it `aria-hidden="true"`, and returns **before building any pills**. A disabled app therefore renders **zero** `.facet-pill` elements — the row has nothing focusable and nothing to read. The bar itself remains as always-visible chrome.
+
+> Do not restore the older description of this mode ("the bar is visible but inert — pills render without interactivity or tab stops"). That described a defect, not the design: the disabled branch used to fall through into the shared pill-construction code and populate live, interactive pills into a container already marked hidden from assistive tech. The early return is the fix. The `.facet-bar.facets-disabled .facet-pill` rule still in `app.css` is a leftover of that era and cannot match anything.
 
 ### WebSocket Events (Client-Side)
 
