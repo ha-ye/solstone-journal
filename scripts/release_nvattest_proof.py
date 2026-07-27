@@ -1718,15 +1718,15 @@ def _normalize_receipt_text(
     cache_root: Path,
     site_roots: Sequence[Path],
 ) -> str:
-    normalized = value
     prefixes = _normalization_prefixes(env_root, candidate_dir, cache_root, site_roots)
-    for raw, sentinel in sorted(
-        prefixes,
-        key=lambda item: len(item[0]),
-        reverse=True,
-    ):
-        normalized = normalized.replace(raw, sentinel)
-    return normalized
+    prefix_spellings = dict(
+        sorted(prefixes, key=lambda item: len(item[0]), reverse=True)
+    )
+    escaped_prefixes = "|".join(re.escape(raw) for raw in prefix_spellings)
+    # The lookahead allowlist fails closed: unknown following characters leave the
+    # absolute path in place so public-evidence validation rejects loudly.
+    pattern = re.compile(f"(?:{escaped_prefixes})(?=[/\\s\"'),:;]|$)")
+    return pattern.sub(lambda match: prefix_spellings[match.group(0)], value)
 
 
 def _normalize_receipt_path(

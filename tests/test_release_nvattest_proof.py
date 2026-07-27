@@ -164,6 +164,42 @@ def test_synthetic_run_writes_canonical_public_receipt_for_target(
     ]
 
 
+def test_command_text_normalization_fails_closed_on_prefix_collision() -> None:
+    env_root = Path("/tmp/abc")
+    candidate_dir = Path("/tmp/candidate")
+    cache_root = env_root / "journal" / "cache" / "providers" / "nvattest"
+    collision = "/tmp/abcdef/x"
+    child_path = "/tmp/abc/bin/python"
+    result = proof.CommandResult(
+        argv=(child_path,),
+        exit_code=0,
+        stdout=f"normalized {child_path}\nleaked {collision}",
+        stderr=f"leaked {collision}",
+        env=SCRUBBED_COMMAND_ENV,
+    )
+
+    payload = proof._command_payload(
+        result,
+        env_root=env_root,
+        candidate_dir=candidate_dir,
+        cache_root=cache_root,
+        site_roots=(),
+    )
+
+    assert payload["argv"] == [f"{proof.ENVROOT}/bin/python"]
+    assert f"{proof.ENVROOT}/bin/python" in payload["stdout"]
+    assert "ENVROOTdef" not in payload["stdout"]
+    assert collision in payload["stdout"]
+    assert collision in payload["stderr"]
+    assert {
+        failure.error
+        for failure in validate_public_evidence_tree("nvattest_proof", payload)
+    } == {
+        "nvattest_proof.stderr contains disallowed content",
+        "nvattest_proof.stdout contains disallowed content",
+    }
+
+
 @pytest.mark.parametrize(
     ("label", "mutate"),
     [
