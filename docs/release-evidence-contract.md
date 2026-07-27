@@ -2,7 +2,7 @@
 
 Scope: the retained candidate ledger at `target/release-evidence/<version>/ledger.json`,
 written and validated by `scripts/release_ledger.py`. Read this before changing
-the ledger's top-level shape.
+the ledger's registered shape.
 
 ## Why this doc exists
 
@@ -18,50 +18,62 @@ ledger key that neither could carry, so both had to be published from worktrees
 checked out at their own release tags. Nothing about either candidate had
 changed; the reader had.
 
-## The contract is a single symbol
+## The contract is a versioned registry
 
-`TOP_LEVEL_KEYS` in `scripts/release_ledger.py` is one frozenset used in two
-directions:
+`LEDGER_SCHEMA_REGISTRY` in `scripts/release_ledger.py` owns the retained ledger
+shape by `schema_version`. Each registered version declares one whole shape:
+the top-level key set plus the `models`, `nvattest`, and `policy_run` sub-key
+sets.
 
-- the writer asserts its own output equals it (`ledger top-level key set drifted`)
-- the reader asserts a retained ledger equals it (`retained ledger top-level key
-  set is invalid`)
+- the writer stamps `CURRENT_LEDGER_SCHEMA_VERSION` and asserts its own output
+  equals that version's registry entry (`ledger top-level key set drifted`)
+- the reader resolves the retained ledger's `schema_version`, then asserts the
+  retained top-level and sub-key sets against that version's registry entry
+- the reader also checks that the resolved version declares every top-level key
+  required by the current consumer path
 
 Both checks are strict set equality, so a missing key and an unexpected extra key
 both fail closed.
 
-The consequence is the trap. Writer and reader always move in the same commit, so
-any change to the key set is self-consistent by construction and the test suite
-stays green. **The only thing such a change can break is a candidate retained
-before it — and the suite holds none, because fixtures are regenerated from the
-current writer.** A green `make ci` is not evidence of retained-candidate
-compatibility, and no existing check will tell you otherwise.
+The old trap was that writer and reader moved in the same commit, so any key-set
+change was self-consistent by construction. **The only thing such a change broke
+was a candidate retained before it.** That is now guarded in two places: a test
+asserts each registered version's declared shape against a literal enumeration,
+and a committed frozen fixture proves current code still accepts a real retained
+version-1 ledger. A green `make ci` is still not evidence that a specific
+retained candidate on disk is publishable: the guards catch edits to registered
+shapes and frozen fixtures, but they do not revalidate retained bytes that are
+not committed as fixtures.
 
 The same applies to the sub-key sets validated the same way — `models`,
 `nvattest`, and `policy_run`. The top level is where this first bit, but adding a
 required sub-key breaks already-cut candidates identically. Everything below
 covers the whole shape, not just the top level.
 
-## `schema_version` is not a compatibility mechanism today
+## `schema_version` is dispatched, not a free escape hatch
 
-`schema_version` is a member of `TOP_LEVEL_KEYS` and the writer emits the literal
-`1`. Nothing in this repository branches on it: every occurrence across the
-release scripts either writes `1` or asserts equality with `1`. It records a
-version, it does not negotiate one.
+`CURRENT_LEDGER_SCHEMA_VERSION` is `1`, and version `1` is the only product
+schema registered today. The reader branches on `schema_version` now, but that
+does not make a bump a free escape hatch: a new value must be registered, tested,
+and tolerated intentionally while the old version stays registered.
 
 So bumping it is its own coordinated change across every reader that pins the
-value, not a free escape hatch. Grep for `schema_version` before assuming a bump
-is local.
+retained-ledger schema value. Grep for `schema_version` before assuming a bump is
+local. The receipt validators in `scripts/release_install_smoke.py`,
+`scripts/record_macos_native_wheel.py`, and `scripts/release_nvattest_proof.py`
+pin their own artifact schemas, not the retained ledger's schema, and do not
+move automatically merely because the retained ledger schema moves.
 
-## Changing the top-level shape
+## Changing the registered shape
 
-Adding or removing a `TOP_LEVEL_KEYS` member is a **breaking change to
-already-retained candidates**, not an additive one. Pick one of these and state
-which in the change description:
+Adding or removing a registered retained-ledger shape member is a **breaking
+change to already-retained candidates**, not an additive one. Pick one of these
+and state which in the change description:
 
-1. **Version and tolerate.** Bump `schema_version` and make the reader accept the
-   previous version, treating the new key or keys as absent. Every receipt
-   validator that pins the old value must move in the same change.
+1. **Version and tolerate.** Append a new registered `schema_version`, bump the
+   writer to stamp it, and make the reader accept the previous version, treating
+   the new key or keys as absent. Every validator that pins the retained-ledger
+   schema value must move in the same change.
 2. **Declare the break.** State that candidates retained before the change can no
    longer be published and must be re-cut. This is only defensible when no
    unpublished retained candidate exists — enumerate `target/release-evidence/`
@@ -96,6 +108,12 @@ shape against a literal enumeration in the test. That fires on the shape edit
 itself rather than on a fixture's bytes, so it can name the correct alternative —
 append a new version and keep the old one registered — at the moment of the
 mistake.
+
+The fixture test has three distinct alarms. A shape-literal failure means a
+registered version's declared shape changed; append a new version and keep the
+old one registered. A digest failure means the frozen bytes changed; restore the
+fixture instead of regenerating it. A validator failure means current code now
+rejects a ledger it previously accepted; use option 1 or option 2 above.
 
 When option 1 is taken, that frozen fixture is the regression test. When option 2
 is taken, replace it in the same change and say why.
