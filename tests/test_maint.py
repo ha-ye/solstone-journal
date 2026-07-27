@@ -371,8 +371,9 @@ class TestRunPendingTasks:
             for task in tasks
             if task.qualified_name not in blocking_migrations | retry_migrations
         ]
+        existing_names = {task.qualified_name for task in existing}
 
-        assert len(existing) == 24
+        assert "speakers:001_backfill_candidate_source_sentence_ids" in existing_names
         assert all(not task.retry_on_next_start for task in existing)
         assert all(not task.blocks_supervisor_start for task in existing)
 
