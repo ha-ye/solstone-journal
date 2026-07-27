@@ -199,6 +199,44 @@ def test_mobile_facet_pills_block_prevents_pill_compression_below_content_width(
     assert "flex-shrink: 0;" in pill_rule
 
 
+def test_mobile_facet_chrome_compacts_without_shrinking_touch_targets():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    mobile_anchor = (
+        "@media (max-width: 768px) {\n"
+        "  .facet-bar .facet-pills-container {\n"
+        "    overflow-x: auto;"
+    )
+    mobile_index = css.find(mobile_anchor)
+    assert mobile_index != -1, "mobile facet chrome density block was not found"
+
+    depth = 0
+    mobile_close = -1
+    for index in range(mobile_index, len(css)):
+        char = css[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                mobile_close = index
+                break
+
+    assert mobile_close != -1, "mobile facet chrome density block is not closed"
+    mobile_block = css[mobile_index : mobile_close + 1]
+    _, bar_rule = _rule_block(mobile_block, ".facet-bar")
+    _, container_rule = _rule_block(mobile_block, ".facet-bar .facet-pills-container")
+    _, pill_rule = _rule_block(
+        mobile_block, ".facet-bar .facet-pills-container .facet-pill"
+    )
+
+    assert "padding-inline: 8px;" in bar_rule
+    assert "gap: 8px;" in bar_rule
+    assert "gap: 8px;" in container_rule
+    assert "padding-inline: 6px;" in pill_rule
+    assert "min-inline-size: 44px;" in pill_rule
+
+
 def test_mobile_facet_pill_flex_shrink_override_wins_by_specificity():
     css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
 
