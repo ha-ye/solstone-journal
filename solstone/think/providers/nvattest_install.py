@@ -41,7 +41,6 @@ from solstone.think.utils import get_journal
 SPP_NVATTEST_DIR_ENV = "SPP_NVATTEST_DIR"
 SIDECAR_NAME = ".nvattest-install.json"
 SIDECAR_SCHEMA_VERSION = 1
-CA_BUNDLE_RELATIVE_PATH = Path("share") / "ca" / "ca-bundle.pem"
 ENSURE_LOCK_TIMEOUT_S = 0.1
 ENSURE_LOCK_POLL_INTERVAL_S = 0.02
 DOWNLOADS_DIR_NAME = ".downloads"
@@ -50,7 +49,13 @@ INSTALL_LOCK_SIDECAR_NAME = ".install.lock"
 HOUSEKEEPING_NAMES = frozenset(
     {DOWNLOADS_DIR_NAME, EXTRACT_DIR_NAME, INSTALL_LOCK_SIDECAR_NAME}
 )
-PAYLOAD_TOP_LEVEL = ("bin", "lib", "share", "LICENSE")
+PayloadTopLevelKind = Literal["directory", "file"]
+PAYLOAD_TOP_LEVEL: tuple[tuple[str, PayloadTopLevelKind], ...] = (
+    ("bin", "directory"),
+    ("lib", "directory"),
+    ("share", "directory"),
+    ("LICENSE", "file"),
+)
 EXECUTABLE_MASK = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 
 NvattestEnsureStatus = Literal[
@@ -194,7 +199,7 @@ def install_nvattest(
         return root
 
     archive = _archive_path(entry, journal_path)
-    extract_dir = root / EXTRACT_DIR_NAME
+    extract_dir = _housekeeping_path(root, EXTRACT_DIR_NAME)
     raw_dir = extract_dir / "raw"
     payload_dir = extract_dir / "payload"
     try:
@@ -267,7 +272,9 @@ def _archive_path(
     entry: NvattestTargetEntry,
     journal_path: str | Path | None = None,
 ) -> Path:
-    return cache_root(journal_path) / DOWNLOADS_DIR_NAME / entry.artifact.name
+    return _housekeeping_path(cache_root(journal_path), DOWNLOADS_DIR_NAME) / (
+        entry.artifact.name
+    )
 
 
 def _install_lock_path(journal_path: str | Path | None = None) -> Path:
@@ -275,7 +282,10 @@ def _install_lock_path(journal_path: str | Path | None = None) -> Path:
 
 
 def _install_lock_is_held(journal_path: str | Path | None = None) -> bool:
-    lock_path = _install_lock_path(journal_path).parent / INSTALL_LOCK_SIDECAR_NAME
+    lock_path = _housekeeping_path(
+        _install_lock_path(journal_path).parent,
+        INSTALL_LOCK_SIDECAR_NAME,
+    )
     try:
         fd = os.open(lock_path, os.O_RDONLY)
     except FileNotFoundError:
@@ -336,6 +346,16 @@ def _tmp_path(dest: Path) -> Path:
     return dest.with_name(f"{dest.name}.tmp")
 
 
+def _housekeeping_path(root: Path, name: str) -> Path:
+    if name not in HOUSEKEEPING_NAMES:
+        raise AssertionError(f"unknown nvattest housekeeping path: {name}")
+    return root / name
+
+
+def _payload_top_level_names() -> tuple[str, ...]:
+    return tuple(name for name, _kind in PAYLOAD_TOP_LEVEL)
+
+
 def _download_file(
     url: str,
     dest: Path,
@@ -379,29 +399,29 @@ def _safe_extract_nvattest_tarball(tarball: Path, dest: Path) -> None:
 
 
 def _find_extracted_root(extract_dir: Path, entry: NvattestTargetEntry) -> Path:
-    candidates = [extract_dir]
-    candidates.extend(
-        path.parent.parent
-        for path in extract_dir.rglob("nvattest")
-        if path.is_file() and path.parent.name == "bin"
+    if _is_payload_root(extract_dir, entry):
+        return extract_dir
+
+    entries = sorted(extract_dir.iterdir(), key=lambda item: item.name)
+    if len(entries) == 1 and _is_payload_root(entries[0], entry):
+        return entries[0]
+
+    raise NvattestInstallError(
+        "archive_layout_invalid",
+        "expected a flat nvattest payload or exactly one wrapper directory",
     )
-    valid: list[Path] = []
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        try:
-            _payload_member_facts(candidate, entry)
-        except NvattestInstallError:
-            continue
-        valid.append(candidate)
-    if len(valid) != 1:
-        raise NvattestInstallError(
-            "archive_layout_invalid",
-            f"expected exactly one extracted nvattest payload, found {len(valid)}",
-        )
-    return valid[0]
+
+
+def _is_payload_root(path: Path, entry: NvattestTargetEntry) -> bool:
+    if path.is_symlink() or not path.is_dir():
+        return False
+    if {child.name for child in path.iterdir()} != set(_payload_top_level_names()):
+        return False
+    try:
+        _payload_member_facts(path, entry)
+    except NvattestInstallError:
+        return False
+    return True
 
 
 def _materialize_payload_tree(
@@ -411,12 +431,12 @@ def _materialize_payload_tree(
 ) -> None:
     shutil.rmtree(payload_dir, ignore_errors=True)
     payload_dir.mkdir(parents=True, exist_ok=True)
-    for name in PAYLOAD_TOP_LEVEL:
+    for name, kind in PAYLOAD_TOP_LEVEL:
         src = source / name
         dst = payload_dir / name
-        if src.is_dir():
+        if kind == "directory" and not src.is_symlink() and src.is_dir():
             shutil.copytree(src, dst, symlinks=True)
-        elif src.is_file():
+        elif kind == "file" and not src.is_symlink() and src.is_file():
             shutil.copy2(src, dst)
         else:
             raise NvattestInstallError(
@@ -439,9 +459,8 @@ def _payload_member_facts(
     expected_dirs = _expected_payload_dirs(entry)
     observed_dirs: set[str] = set()
     observed: dict[str, dict[str, Any]] = {}
-    for top_level in ("bin", "lib", "share"):
+    for top_level in _payload_top_level_names():
         _scan_payload_path(root / top_level, root, observed, observed_dirs)
-    _scan_payload_path(root / "LICENSE", root, observed, observed_dirs)
 
     extra_dirs = observed_dirs - expected_dirs
     if extra_dirs:
@@ -532,22 +551,22 @@ def _scan_payload_path(
 
 def _promote_payload_tree(payload_dir: Path, root: Path, sidecar_json: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    aside = root / EXTRACT_DIR_NAME / "aside"
+    aside = _housekeeping_path(root, EXTRACT_DIR_NAME) / "aside"
     shutil.rmtree(aside, ignore_errors=True)
     aside.mkdir(parents=True, exist_ok=True)
     moved_old: list[str] = []
     installed_new: list[str] = []
     committed = False
     try:
-        for name in PAYLOAD_TOP_LEVEL:
+        for name in _payload_top_level_names():
             target = root / name
             if target.exists() or target.is_symlink():
                 shutil.move(str(target), str(aside / name))
                 moved_old.append(name)
-        for name in PAYLOAD_TOP_LEVEL:
+        for name in _payload_top_level_names():
             shutil.move(str(payload_dir / name), str(root / name))
             installed_new.append(name)
-        sidecar_tmp = root / EXTRACT_DIR_NAME / "sidecar.tmp"
+        sidecar_tmp = _housekeeping_path(root, EXTRACT_DIR_NAME) / "sidecar.tmp"
         sidecar_tmp.write_text(sidecar_json, encoding="utf-8")
         sidecar_tmp.replace(root / SIDECAR_NAME)
         committed = True

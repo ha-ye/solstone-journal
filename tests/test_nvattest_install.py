@@ -26,7 +26,6 @@ from solstone.think.providers.nvattest_authority import (
     authority_entry,
 )
 
-PAYLOAD_TOP_LEVEL = ("bin", "lib", "share", "LICENSE")
 SIDECAR_KEYS = {
     "artifact",
     "schema_version",
@@ -260,11 +259,16 @@ def test_housekeeping_changes_do_not_affect_fingerprint_and_foreign_paths_surviv
         root, fixture.entry
     )
 
-    (root / ".downloads").mkdir(exist_ok=True)
-    (root / ".downloads" / "note").write_text("housekeeping\n", encoding="utf-8")
-    (root / ".extract").mkdir(exist_ok=True)
-    (root / ".extract" / "note").write_text("housekeeping\n", encoding="utf-8")
-    (root / ".install.lock").write_text("housekeeping\n", encoding="utf-8")
+    downloads = _housekeeping_path(root, nvattest_install.DOWNLOADS_DIR_NAME)
+    downloads.mkdir(exist_ok=True)
+    (downloads / "note").write_text("housekeeping\n", encoding="utf-8")
+    extract = _housekeeping_path(root, nvattest_install.EXTRACT_DIR_NAME)
+    extract.mkdir(exist_ok=True)
+    (extract / "note").write_text("housekeeping\n", encoding="utf-8")
+    _housekeeping_path(root, nvattest_install.INSTALL_LOCK_SIDECAR_NAME).write_text(
+        "housekeeping\n",
+        encoding="utf-8",
+    )
     foreign = root / "operator-note.txt"
     foreign.write_text("keep me\n", encoding="utf-8")
 
@@ -301,7 +305,10 @@ def test_readiness_is_pure_read_on_not_ready_cache(tmp_path: Path) -> None:
     )
 
     assert _snapshot_tree(root) == before
-    assert not (root / ".install.lock").exists()
+    assert not _housekeeping_path(
+        root,
+        nvattest_install.INSTALL_LOCK_SIDECAR_NAME,
+    ).exists()
 
 
 @pytest.mark.parametrize(
@@ -386,6 +393,16 @@ def test_failed_install_never_accepts_mixed_tree_and_preserves_prior_ready_paylo
             lambda tmp_path, entry: _duplicate_wrapped_archive(tmp_path, entry),
             "archive_layout_invalid",
         ),
+        # Defense-in-depth: production bytes are pinned before extraction; a
+        # syntactically wrapped archive still has to be closed over the payload.
+        (
+            "wrapped layout extra sibling defense in depth",
+            lambda tmp_path, entry: _wrapped_archive_with_extra_sibling(
+                tmp_path,
+                entry,
+            ),
+            "archive_layout_invalid",
+        ),
         (
             "invalid flat layout",
             lambda tmp_path, entry: _invalid_flat_archive(tmp_path, entry),
@@ -436,9 +453,12 @@ def test_typed_failures_clean_partial_state_and_leave_prior_ready_install_unchan
 
     assert exc_info.value.reason_code == reason_code
     assert _snapshot_install(root) == before
-    assert not (root / ".extract").exists()
-    assert not (root / ".downloads" / failing.entry.artifact.name).exists()
-    assert not (root / ".downloads" / f"{failing.entry.artifact.name}.tmp").exists()
+    extract = _housekeeping_path(root, nvattest_install.EXTRACT_DIR_NAME)
+    downloads = _housekeeping_path(root, nvattest_install.DOWNLOADS_DIR_NAME)
+    archive = downloads / failing.entry.artifact.name
+    assert not extract.exists()
+    assert not archive.exists()
+    assert not nvattest_install._tmp_path(archive).exists()
     assert nvattest_install.nvattest_cache_ready(
         journal_path=tmp_path,
         entry=ready.entry,
@@ -595,6 +615,7 @@ def _write_payload_tarball(
     label: str,
     omitted: set[str],
     executable_overrides: dict[str, bool],
+    extra_files: dict[str, bytes] | None = None,
 ) -> None:
     with tarfile.open(archive_path, "w:xz") as archive:
         for root in roots:
@@ -622,6 +643,8 @@ def _write_payload_tarball(
                     _member_content(member.relpath, label),
                     mode=0o755 if executable else 0o644,
                 )
+        for name, data in sorted((extra_files or {}).items()):
+            _add_file(archive, name, data, mode=0o644)
 
 
 def _payload_dirs(entry: NvattestTargetEntry, omitted: set[str]) -> set[str]:
@@ -683,6 +706,26 @@ def _duplicate_wrapped_archive(
         label="duplicate",
         omitted=set(),
         executable_overrides={},
+    )
+    return FixtureArchive(
+        archive_path=archive_path,
+        entry=_fixture_entry(tmp_path, entry, archive_path=archive_path),
+    )
+
+
+def _wrapped_archive_with_extra_sibling(
+    tmp_path: Path,
+    entry: NvattestTargetEntry,
+) -> FixtureArchive:
+    archive_path = tmp_path / f"wrapped-extra-sibling-{entry.key}.tar.xz"
+    _write_payload_tarball(
+        archive_path,
+        entry,
+        roots=("payload",),
+        label="wrapped-extra-sibling",
+        omitted=set(),
+        executable_overrides={},
+        extra_files={"operator-note.txt": b"extra sibling\n"},
     )
     return FixtureArchive(
         archive_path=archive_path,
@@ -810,7 +853,7 @@ def _inject_failure(
 
 def _assert_payload_layout(root: Path, entry: NvattestTargetEntry) -> None:
     assert {path.name for path in root.iterdir()} >= {
-        *PAYLOAD_TOP_LEVEL,
+        *_payload_top_level_names(),
         nvattest_install.SIDECAR_NAME,
     }
     observed = {
@@ -849,12 +892,21 @@ def _assert_sidecar_binding(root: Path, entry: NvattestTargetEntry) -> None:
 
 
 def _snapshot_install(root: Path) -> dict[str, tuple[object, ...]]:
-    paths = [root / name for name in PAYLOAD_TOP_LEVEL]
+    paths = [root / name for name in _payload_top_level_names()]
     paths.append(root / nvattest_install.SIDECAR_NAME)
     snapshot: dict[str, tuple[object, ...]] = {}
     for path in paths:
         _snapshot_path(path, root, snapshot)
     return snapshot
+
+
+def _payload_top_level_names() -> tuple[str, ...]:
+    return tuple(name for name, _kind in nvattest_install.PAYLOAD_TOP_LEVEL)
+
+
+def _housekeeping_path(root: Path, name: str) -> Path:
+    assert name in nvattest_install.HOUSEKEEPING_NAMES
+    return root / name
 
 
 def _snapshot_tree(root: Path) -> dict[str, tuple[object, ...]]:
