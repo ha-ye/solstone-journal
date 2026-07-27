@@ -572,7 +572,6 @@ def test_tokens_load_token_data_threads_day_under_node(tokens_env):
             """
 window.apiJson = async function(url) {
   urls.push(url);
-  if (url.includes('/api/daily')) return {items: []};
   return {items: []};
 };
 function renderGlance(data, dailyRows) {
@@ -619,7 +618,7 @@ async function run() {
   assert(nullDailyUrl && !nullDailyUrl.includes('day='), 'daily omits null day');
 }
 run().catch((err) => {
-  console.log(err && err.stack ? err.stack : err);
+  process.stdout.write((err && err.stack ? err.stack : String(err)) + '\\n');
   process.exit(1);
 });
 """,

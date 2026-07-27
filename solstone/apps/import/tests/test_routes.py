@@ -244,10 +244,13 @@ def test_import_list_source_display_matches_current_metadata(client):
     response = client.get("/app/import/api/list")
 
     assert response.status_code == 200
+    checked = 0
     for row in response.get_json()["imports"]:
         source_type = row.get("source_type")
         if source_type in expected:
+            checked += 1
             assert row["source_display"] == expected[source_type]
+    assert checked >= 2
 
 
 def test_import_list_preserves_display_for_unknown_source_types(client):
