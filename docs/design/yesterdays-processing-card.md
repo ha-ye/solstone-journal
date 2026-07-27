@@ -212,7 +212,7 @@ Fallback behavior inside Option A:
 
 ## 4. Q3 — `knowledge_graph.md` mtime false-negative edge case
 
-> **Retired 2026-07-02 (H1 lode):** the knowledge-graph freshness signal was removed from the Home card; its producer talent was deleted 2026-04-18. The text below is kept for historical context only.
+> **Retired 2026-07-02 (H1 cleanup):** the knowledge-graph freshness signal was removed from the Home card; its producer talent was deleted 2026-04-18. The text below is kept for historical context only.
 
 Use the relaxed rule:
 
@@ -283,7 +283,7 @@ Behavior:
 Open issue:
 
 - I could not recover the exact first-week copy from the checked-in repo or local journal/task artifacts.
-- The implementation should use the scope’s verbatim wording once Jer confirms it.
+- The implementation should use the scope’s verbatim wording once the operator confirms it.
 
 Interim design assumption:
 
@@ -369,24 +369,24 @@ Fixture minimization rule:
 4. Add the card toggle helper, but no new refresh wiring.
 5. Add focused tests and minimal fixtures.
 
-## Review gate — decisions for jer
+## Review gate — decisions for the operator
 
 - **Q2 denominator choice:** Recommend **Option A**. Match failed newsletter attempts by exact think-log agent name `facet_newsletter`; count successes from `facets/*/news/{yesterday}.md`.
 - **Q3 knowledge-graph freshness rule:** Recommend **fresh when `mtime >= start_of_yesterday_local`**. This intentionally counts overnight-after-midnight completions as fresh.
-- **First-week framing copy:** Exact scope text was not recoverable from checked-in artifacts I could search. Need Jer to confirm the verbatim copy before implementation.
+- **First-week framing copy:** Exact scope text was not recoverable from checked-in artifacts I could search. Need operator confirmation of the verbatim copy before implementation.
 
-## Gate answers (VPE, 2026-04-17)
+## Gate answers (reviewer, 2026-04-17)
 
 All three gate items resolved. Proceed to `implement` stage.
 
 - **Q2 denominator:** Go with **Option A** as recommended. Successes from `facets/*/news/{yesterday}.md`. Failures from think-log `talent.fail` where `name == "facet_newsletter"` and `facet` is present. When current pipeline emits no `facet_newsletter` fails (which is the common case today), `M == N` and the `N of M` sentence degenerates into a simple `N` — that's fine, honest, and forward-compatible for when we start logging newsletter failures under that exact key. Use the sparse fallback "I didn't produce any facet newsletters." when both are zero.
 - **Q3 knowledge-graph freshness:** Use the **relaxed rule**: fresh when `knowledge_graph.md` exists and `st_mtime >= start_of_yesterday_local`. Overnight-after-midnight completions count. Use local time boundaries. Don't use birth/ctime.
-- **First-week framing copy (verbatim):** The exact copy IS in the scope (top-level note) and in the approved CPO spec. Use this text, unchanged, when `journal_age_days <= 7` and `mode != "sparse"`:
+- **First-week framing copy (verbatim):** The exact copy IS in the scope (top-level note) and in the approved product spec. Use this text, unchanged, when `journal_age_days <= 7` and `mode != "sparse"`:
 
   > Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:
 
   Render as one `<p class="pulse-yesterday-framing">` at the top of the expanded body. Omit entirely in sparse mode.
 
-Also confirming by reference (no change to spec): the mockup copy for the other states lives in the scope and in `cpo/specs/in-flight/yesterdays-processing-card.md`. Match those strings where they appear verbatim; don't paraphrase owner-facing language.
+Also confirming by reference (no change to spec): the mockup copy for the other states lives in the scope and in the approved product spec. Match those strings where they appear verbatim; don't paraphrase owner-facing language.
 
-Proceed with the implementation sequence already in the design doc. Run `make test` before `hop processed`.
+Proceed with the implementation sequence already in the design doc. Run `make test` before handing off the implementation.

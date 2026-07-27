@@ -11,7 +11,7 @@ Settings -> Providers will move from three install renderers (`bundledProviders`
 
 Decision: keep the existing `bundled` map and add peer top-level `local` and extended `mlx` card-state dicts. Do not fold all five into a new server-side `install` or `providers_install` dict.
 
-Rationale: before the cogitate-baseline lode, `routes.py:872-895` returned bundled provider state for `anthropic`, `openai`, and `openhands`, and `workspace.html:5138-5139` consumed that field. Keeping `bundled` avoided changing the then-locked bundled contract shape while allowing the unified renderer to build one client-side map:
+Rationale: before the cogitate-baseline change, `routes.py:872-895` returned bundled provider state for `anthropic`, `openai`, and `openhands`, and `workspace.html:5138-5139` consumed that field. Keeping `bundled` avoided changing the then-locked bundled contract shape while allowing the unified renderer to build one client-side map:
 
 - `anthropic`, `openai`, `openhands` from `data.bundled`.
 - `local` from `data.local`.
@@ -175,7 +175,7 @@ Decision:
 - MLX pre-install uses `mlx.active_model`, defaulting to `QWEN_35_9B` (`routes.py:876-879`, `workspace.html:5684-5686`).
 - Local pre-install uses `LOCAL_FLASH`. If the local picker is visible and the owner has selected another model, use that picker value; before any local selection, the picker is not visible and `getSelectedLocalModel()` falls back to `LOCAL_FLASH` (`workspace.html:5689-5691`).
 
-Do not add persisted local active-model state in this lode. That would be a selection-model change, while the spec says renderer consolidation only.
+Do not add persisted local active-model state in this change. That would be a selection-model change, while the spec says renderer consolidation only.
 
 ## D7. Test Coverage Matrix
 
@@ -202,7 +202,7 @@ Makefile:
 
 | File | Change |
 |---|---|
-| `docs/design/providers-panel-consolidation.md` | New design gate document for this lode. Markdown does not need SPDX per `AGENTS.md` section 8/9. |
+| `docs/design/providers-panel-consolidation.md` | New design gate document for this change. Markdown does not need SPDX per `AGENTS.md` section 8/9. |
 | `solstone/apps/settings/routes.py` | Extend `GET /api/providers` (`routes.py:772-901`) with `local_model` handling plus top-level `local` and extended `mlx` install-state dicts. Do not touch contract-layer producers. |
 | `solstone/apps/settings/workspace.html` | Replace three renderer regions: CSS around `workspace.html:947-1075`, markup around `workspace.html:2424-2503`, bundled renderer/action/poll around `workspace.html:5365-5660`, local/mlx poll/progress renderers around `workspace.html:5708-6125`, and dropdown handlers around `workspace.html:6406-6479`. |
 | `solstone/apps/settings/tests/test_workspace_html.py` | Rewrite structural assertions that currently require `mlxBootstrapRegion`/`localBootstrapRegion` and old bootstrap calls (`test_workspace_html.py:96-194`). |
@@ -223,8 +223,8 @@ Use the requested three-commit split:
 
 This split keeps the locked contract untouched and avoids compatibility shims or deprecated aliases.
 
-## D10. Open Questions for Jer
+## D10. Open Questions for the Operator
 
 - Should the visual smoke cover only static render/retired DOM ids, or also exercise auto-fire by selecting `local`/`mlx` and observing the card enter an in-flight state?
 - Should unified cards keep the current bundled metadata line that says `CLI: installed/not installed` (`workspace.html:5500-5508`), especially for `openhands`, or should the card limit itself to the spec fields: label, install badge, optional bytes, key pill, primary action, overflow?
-- For local/mlx host-blocked cases, current UI synthesizes a failed/disabled retry state from availability (`workspace.html:5748-5756`, `workspace.html:5955-5963`). Should the unified card preserve that blocked visual state, or is action-time error reporting enough for this consolidation lode?
+- For local/mlx host-blocked cases, current UI synthesizes a failed/disabled retry state from availability (`workspace.html:5748-5756`, `workspace.html:5955-5963`). Should the unified card preserve that blocked visual state, or is action-time error reporting enough for this consolidation change?

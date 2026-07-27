@@ -1,13 +1,13 @@
-# Sol-Initiated Chat Lode 2 Design
+# Sol-Initiated Chat Phase 2 Design
 
 ## Overview
 
-This lode adds the consumer-side surface for sol-initiated chat requests. Lode 1
+This change adds the consumer-side surface for sol-initiated chat requests. Phase 1
 already added the stream contract and producer primitive in
 `solstone/convey/sol_initiated/` plus the four chat-stream kinds in
 `solstone/convey/chat_stream.py`.
 
-Lode 2 consumes those stream facts in three places:
+Phase 2 consumes those stream facts in three places:
 
 - the universal chat bar in `solstone/convey/templates/app.html`
 - the `/app/chat` page in `solstone/apps/chat/routes.py` and
@@ -18,10 +18,10 @@ Lode 2 consumes those stream facts in three places:
 The relevant existing anchors are:
 
 - `solstone/convey/chat_stream.py:47-59`: `_VALID_KINDS` already includes all
-  four lode-1 kinds.
+  four phase-1 kinds.
 - `solstone/convey/chat_stream.py:61-66`: `_TRIGGER_KINDS` includes only
-  `sol_chat_request`, matching the lode-1 design and not the broader wording in
-  this lode's scope.
+  `sol_chat_request`, matching the phase-1 design and not the broader wording in
+  this change's scope.
 - `solstone/convey/chat_stream.py:173-197`: `read_chat_events()` returns events
   in ascending timestamp order by sorting `(ts, segment, line)`.
 - `solstone/convey/templates/app.html:137-745`: the chat-bar IIFE owns chat-bar
@@ -43,17 +43,17 @@ The relevant existing anchors are:
   and expose it in `/app/observer/api/list`.
 - Add an observer-side helper that normalizes the four sol-initiated chat kinds
   from either Callosum frames or chronicle stream events.
-- Keep lode-1 producer policy, stream kind validation, and trigger semantics
+- Keep phase-1 producer policy, stream kind validation, and trigger semantics
   unchanged.
 
 ## Non-goals
 
 - No changes to `chat_stream._VALID_KINDS`.
 - No changes to `chat_stream._TRIGGER_KINDS`.
-- No changes to lode-1 policy checks, dedupe rules, rate limits, settings, or
+- No changes to phase-1 policy checks, dedupe rules, rate limits, settings, or
   `sol call chat start`.
 - No producer intelligence that decides when to start a chat.
-- No lode-3 surfaces beyond the universal chat bar, `/app/chat`, `/app/observer`,
+- No phase-3 surfaces beyond the universal chat bar, `/app/chat`, `/app/observer`,
   and observer-side filtering helper.
 - No persisted observer metadata writes for `last_chat_request_at`.
 - No migration of existing chat streams or observer records.
@@ -141,11 +141,11 @@ HTML. `solstone/apps/chat/workspace.html:207-215` drops all four sol-initiated
 kinds in its live allowlist today, and the server partial
 `solstone/apps/chat/_chat_event.html:1-45` has no branch for them.
 
-Idempotency trade-off: lode-1 dedupe releases on `owner_chat_open` by request id,
+Idempotency trade-off: phase-1 dedupe releases on `owner_chat_open` by request id,
 and repeated opens are idempotent because dropping an already-absent pending
 request is a no-op. Repeated reloads therefore append repeated
 `owner_chat_open` events, which is acceptable — each page load is an engagement
-signal. No suppression logic in Lode 2.
+signal. No suppression logic in Phase 2.
 
 ### D4. Backend context surfaced to chat-bar
 
@@ -254,7 +254,7 @@ Return:
 
 Boundary validation should be light: this helper is a filter/normalizer, not a
 stream validator. It should return `None` for nonmatching frames and normalize
-missing optional text to empty strings or `None` according to the lode-1 stream
+missing optional text to empty strings or `None` according to the phase-1 stream
 contract.
 
 ### D7. Shared JS constants module
@@ -500,7 +500,7 @@ Add or extend:
 
 ## Open Trade-offs
 
-- The lode scope wording says `_TRIGGER_KINDS` lists all four kinds. Prep verified
+- The scope wording says `_TRIGGER_KINDS` lists all four kinds. Prep verified
   `solstone/convey/chat_stream.py:61-66` includes only `sol_chat_request` among
   the new kinds. This design does not modify `_TRIGGER_KINDS`.
 - `owner_chat_open` releases dedupe by request id; repeated opens remain
@@ -511,7 +511,7 @@ Add or extend:
   `_chat_event.html` emits no body for sol-initiated kinds. D1 only needs the
   anchor, not visible transcript content.
 - `last_chat_request_at` resets on convey restart. Persisting it is intentionally
-  rejected for Lode 2.
+  rejected for Phase 2.
 - `_broadcast_to_sse_clients()` sends every event to every subscriber. Updating
   per `subscriber.key_prefix` is correct because every subscriber saw the
   sol-ping frame.
@@ -523,11 +523,11 @@ Add or extend:
 
 ## Out-of-scope Reminders
 
-- Do not change lode-1 stream field order.
+- Do not change phase-1 stream field order.
 - Do not add new chat-stream kinds.
 - Do not make `owner_chat_open` a trigger kind.
 - Do not change `start_chat()` policy order or dedupe semantics.
 - Do not persist bridge delivery state into observer records.
 - Do not add observer client network behavior beyond the filter helper.
-- Do not add lode-3 surfaces or mobile/push delivery.
+- Do not add phase-3 surfaces or mobile/push delivery.
 - Do not migrate existing chat history.

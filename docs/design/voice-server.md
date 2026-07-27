@@ -309,7 +309,7 @@ Brain refresh lifecycle:
 - `BRAIN_REFRESH_MAX_AGE_SECONDS = 6 * 3600`.
 - Startup only prepares the runtime loop and app state; the first voice session or explicit refresh starts the brain.
 - `POST /api/voice/session` queues a refresh when the current instruction is older than the threshold, but does not wait for it.
-- `POST /api/voice/refresh-brain` forces a refresh and waits up to 30 seconds because it exists for explicit founder/debug use.
+- `POST /api/voice/refresh-brain` forces a refresh and waits up to 30 seconds because it exists for explicit operator/debug use.
 
 ## 8. Config surface
 
@@ -417,11 +417,11 @@ Journal-data rule:
 - No fake journal abstraction is introduced.
 - Mutation tests use `journal_copy` so shared fixture files remain unchanged (`tests/conftest.py:61-68`).
 
-## 12. Open questions / deviations for Jer's approval (gate list)
+## 12. Open questions / deviations for operator approval (gate list)
 
 - Brain-not-ready behavior: this design treats the bridge contract and acceptance list as canonical and returns HTTP 503 from `/api/voice/session` after a 10-second wait, instead of using the older static fallback instruction path from the scope prose.
 - Routing location: this design uses a root-level `solstone/convey/voice.py` blueprint, not `solstone/apps/voice/`, because the feature is a root API and the app shell assumes `/app/<name>` plus `workspace.html`.
-- Briefing source path: `solstone.think.briefing.load_briefing(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.json` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 lode.)
+- Briefing source path: `solstone.think.briefing.load_briefing(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.json` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 cleanup.)
 - Commitments resolution mapping: this design maps `done|sent|signed|deferred -> as_state="closed"` and `dropped -> as_state="dropped"` because `think.surfaces.ledger.close(...)` only accepts `closed|dropped`.
 - OpenAI key sourcing: this design uses `config.voice.openai_api_key` in `journal/config/journal.json` first, then `OPENAI_API_KEY`, and does not add `journal/config/openai.json`.
 - `ask_sol` clause: this design removes it from the brain init prompt and does not add a 10th tool to the manifest.

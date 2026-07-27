@@ -700,11 +700,11 @@ All requested baseline commands passed on this tree.
 
 | Command | Result | One-line tail |
 |---|---|---|
-| `hop check -- make check-rust-test` | pass, exit 0 | `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s` |
-| `hop check -- make check-native-sol-inventory` | pass, exit 0 | `core/crates/solstone-core-sol-client/src/generated/inventory.rs is current` |
-| `hop check -- make check-native-sol-conformance` | pass, exit 0 | `native sol conformance ok` |
-| `hop check -- make check-openapi` | pass, exit 0 | `observer-client-contract: pass for docs/openapi/observer-client-contract` |
-| `hop check -- make test-only TEST=tests/native_sol/` | pass, exit 0 | `104 passed in 2.02s` |
+| `make check-rust-test` | pass, exit 0 | `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s` |
+| `make check-native-sol-inventory` | pass, exit 0 | `core/crates/solstone-core-sol-client/src/generated/inventory.rs is current` |
+| `make check-native-sol-conformance` | pass, exit 0 | `native sol conformance ok` |
+| `make check-openapi` | pass, exit 0 | `observer-client-contract: pass for docs/openapi/observer-client-contract` |
+| `make test-only TEST=tests/native_sol/` | pass, exit 0 | `104 passed in 2.02s` |
 
 Post-baseline git status shows only this new doc as untracked; no tracked
 product, oracle, or generated files changed.

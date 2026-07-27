@@ -68,7 +68,7 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `solstone/think/facets.py:907` | `facets/<name>/` directory | `delete_facet()` | facet path resolves under `journal/facets`, with existing-facet checks before delete | yes (`solstone/think/facets.py:899-906`) | no | `⚠️` | audited write-owner delete path; deferred rather than expanded in this lode |
+| `solstone/think/facets.py:907` | `facets/<name>/` directory | `delete_facet()` | facet path resolves under `journal/facets`, with existing-facet checks before delete | yes (`solstone/think/facets.py:899-906`) | no | `⚠️` | audited write-owner delete path; deferred rather than expanded in this design |
 
 ## think/identity
 
@@ -154,6 +154,6 @@ Out of scope for this sweep; keep visible because it is a destructive journal-do
 - `solstone/apps/entities/call.py:179` — audited write-owner move path; defer to a broader entities deletion parity pass.
 - `solstone/think/facets.py:907` — audited write-owner delete path; not a named gap for this sweep.
 - `solstone/think/entities/journal.py:369,375` — production route coverage exists, but helper-local parity remains deferred.
-- `solstone/think/entities/merge.py:520,536,697,702` — audited, commit-gated merge workflow; too broad for this lode.
+- `solstone/think/entities/merge.py:520,536,697,702` — audited, commit-gated merge workflow; too broad for this change.
 - `solstone/think/tools/call.py:402` — audited facet-merge flow; broader merge semantics make it a defer.
 - No `❌` rows remain after B1 and B2 in this sweep.

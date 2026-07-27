@@ -42,7 +42,7 @@ Also make these minimal edits:
 - `journal_default.json`: add the top-level `backup` schema.
 
 No CLI, UI, scheduler, execution loop, backup command, or sol-pbc service contact
-is in this lode.
+is in this change.
 
 ## Durable contracts
 
@@ -92,7 +92,7 @@ Alphabet import validation:
   the constant from `keys.py` cannot create a cycle.
 - The same think-to-apps edge already exists in
   `solstone/think/link/join_cli.py:49`.
-- Factoring one constant into a new think module would broaden the lode.
+- Factoring one constant into a new think module would broaden this change.
 
 ### Backup config
 

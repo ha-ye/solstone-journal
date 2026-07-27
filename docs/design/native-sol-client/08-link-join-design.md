@@ -55,7 +55,7 @@ Dispatch shape:
 
 - `core/crates/solstone-core-sol-client-cli/src/lib.rs` adds
   `LinkDispatchSeams` and `dispatch_sol_link_with_seams`.
-- This lode does not flip top-level `sol link` routing. `sol link join --help`
+- This change does not flip top-level `sol link` routing. `sol link join --help`
   still reaches Python compatibility until a later cutover connects the native
   dispatcher.
 - The native command receives `journal_root` as an explicit dispatch parameter.
@@ -200,7 +200,7 @@ The native command owns credential layout and byte formatting:
 
 `std::fs::rename` can replace an existing empty directory on Unix, so the
 explicit destination precheck remains load-bearing. A race after the precheck is
-the same known Python limitation; no cross-process lock is added in this lode.
+the same known Python limitation; no cross-process lock is added in this change.
 
 ## D6. Gate Plumbing
 
@@ -317,16 +317,16 @@ once, `pair_over_relay(` appears exactly once, and the source contains no
 
 ## D10. Release Proof
 
-This lode does not connect the new crate to the shipping `solstone-core` binary,
+This change does not connect the new crate to the shipping `solstone-core` binary,
 but cutover will make it part of the desktop `sol link` path. The `ring`
 dependency therefore creates a real native dependency release-proof obligation
-for that cutover lode across the three desktop release targets:
+for the cutover change across the three desktop release targets:
 
 - `x86_64-unknown-linux-musl`
 - `aarch64-unknown-linux-musl`
 - `aarch64-apple-darwin`
 
-This proof belongs to the cutover lode; it is not waived by the iOS exclusion.
+This proof belongs to the cutover change; it is not waived by the iOS exclusion.
 
 ## D11. File Manifest
 
@@ -364,7 +364,7 @@ Implementation-stage edits:
 - Existing native command test modules that construct `CommandContext` directly
   receive `link_pairing: None` and `journal_root: None`.
 
-No Python product deletion is part of this lode. `join_cli.py` remains while
+No Python product deletion is part of this change. `join_cli.py` remains while
 top-level `sol link` help and non-joined link verbs continue through
 compatibility.
 

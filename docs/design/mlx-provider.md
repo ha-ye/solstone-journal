@@ -25,9 +25,9 @@ Implementation note: the module must expose the same public provider functions a
 
 ## D3. `build_provider_status` branch
 
-Decision: do not add a `build_provider_status` branch for `mlx` in this lode.
+Decision: do not add a `build_provider_status` branch for `mlx` in this change.
 
-Justification: the default branch in `solstone/think/providers/__init__.py` marks providers with an empty `env_key` as `configured=False` and `generate_ready=False`. This under-reports readiness on healthy Apple hosts, but it is quiet and not visibly broken. The Settings UI and status lode is the explicit next lode and owns accurate platform/package readiness.
+Justification: the default branch in `solstone/think/providers/__init__.py` marks providers with an empty `env_key` as `configured=False` and `generate_ready=False`. This under-reports readiness on healthy Apple hosts, but it is quiet and not visibly broken. The Settings UI and status work is the explicit next change and owns accurate platform/package readiness.
 
 Implementation note: `PROVIDER_METADATA["mlx"]["env_key"]` should be `""`. Avoid adding platform checks or package checks to `build_provider_status` here.
 
@@ -139,7 +139,7 @@ Implementation note: import `mlx_vlm` and `huggingface_hub` only inside function
 
 Decision: export the provider public surface and bootstrap-facing constants/errors.
 
-Justification: other provider modules expose their expected public functions through `__all__`, and the bootstrap lode will need access to MLX availability and snapshot details.
+Justification: other provider modules expose their expected public functions through `__all__`, and the bootstrap change will need access to MLX availability and snapshot details.
 
 Implementation note: include at minimum `run_generate`, `run_agenerate`, `run_cogitate`, `list_models`, `validate_key`, `is_mlx_available`, `ModelSnapshotMissingError`, `MLX_MODEL_REPO`, `MLX_MODEL_REVISION`, and `QWEN_35_9B` if re-imported from `models.py`.
 
@@ -179,7 +179,7 @@ Implementation note: add them near existing AI provider dependencies. Use versio
 
 Decision: match the existing provider `run_cogitate(config, on_event=None)` signature and raise immediately.
 
-Justification: `solstone/think/talents.py` calls providers through the shared `run_cogitate` interface. MLX does not support tool-using cogitate agents in this lode.
+Justification: `solstone/think/talents.py` calls providers through the shared `run_cogitate` interface. MLX does not support tool-using cogitate agents in this change.
 
 Implementation note: raise `RuntimeError` with the message: `MLX provider does not support cogitate in v1 — it is vision/generate-only. Configure a cloud provider for cogitate agents.` The required substrings are `vision` and `v1`.
 

@@ -1,4 +1,4 @@
-# Native `sol` Client Spine + VPE-Pinned Lead Slice Design
+# Native `sol` Client Spine + Reviewer-Pinned Lead Slice Design
 
 This design builds on:
 
@@ -6,7 +6,7 @@ This design builds on:
 - `docs/design/native-sol-client/01-oracle-repro.md`
 - `docs/PORTING.md`
 
-No installed `sol` entry point changes in this lode. The native surface is built and verified, but Python remains the owner default.
+No installed `sol` entry point changes in this change. The native surface is built and verified, but Python remains the owner default.
 
 ## 1. Crate Topology, App Ownership, Generated Aggregate
 
@@ -56,11 +56,11 @@ The compatibility dispatcher is generated from the same aggregate. It may classi
 
 Use `ureq` 3.3.0 with `default-features = false` as the mature maintained synchronous HTTP client/parser for loopback HTTP. It passed the required implementation diligence gates with the new client crate still included in the iOS library graph:
 
-- `hop check -- make check-rust-deny`: pass (`bans ok, licenses ok, sources ok`; license-allowance warnings pre-existing style).
-- `hop check -- make check-rust-msrv`: pass on Rust 1.95.0.
-- `hop check -- make check-rust-ios`: pass with `solstone-core-sol-client` included.
-- `hop check -- make check-rust-fmt`: pass.
-- `hop check -- make check-rust-clippy`: pass.
+- `make check-rust-deny`: pass (`bans ok, licenses ok, sources ok`; license-allowance warnings pre-existing style).
+- `make check-rust-msrv`: pass on Rust 1.95.0.
+- `make check-rust-ios`: pass with `solstone-core-sol-client` included.
+- `make check-rust-fmt`: pass.
+- `make check-rust-clippy`: pass.
 
 ### Justification
 
@@ -251,7 +251,7 @@ Required fixtures:
 | `health.pipeline.server_invalid_day` | Direct route returns `invalid_day`. |
 | `health.pipeline.failure` | Direct route returns `health_report_failed`. |
 
-This is the only permitted Python behavior delta in the lode.
+This is the only permitted Python behavior delta in this design.
 
 ## 7. Static Checks + `install-checks` Wiring
 

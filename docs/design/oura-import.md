@@ -258,7 +258,7 @@ Oura sync applies the validated raw-retention decision from `PreSaveGateDecision
 
 ## 9. Amendments — 2026-07-07 (token relocation + glucose/cardio lane)
 
-Upstream ruling (Jer, project owner, 2026-07-07): *"the journal is the one
+Upstream ruling (project owner, 2026-07-07): *"the journal is the one
 trusted store, so device OAuth tokens live there alongside everything else
 rather than machine-local. no carve-out for device tokens."* This restores
 §5's original token boundary and lands with the following changes, in one

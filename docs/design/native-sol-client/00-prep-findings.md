@@ -1,24 +1,24 @@
 # Native `sol` Client Prep Findings
 
-## 1. VPE Frozen-Input Availability (P0)
+## 1. Reviewer Frozen-Input Availability (P0)
 
 ### Decision Verdict
 
 | Frozen input | Required pin / shape | Search result | Verdict |
 |---|---:|---|---|
-| `sol-call-grammar-v1` grammar oracle | 174 entries; canonical length 113,106 bytes; SHA-256 prefix `c61078f0...dd117` | No artifact, ref, blob, tag, note, stash, branch, working-tree file, or `~/.hopper/` file found by the exact searches below. | **OPEN BLOCKER: missing.** |
+| `sol-call-grammar-v1` grammar oracle | 174 entries; canonical length 113,106 bytes; SHA-256 prefix `c61078f0...dd117` | No artifact, ref, blob, tag, note, stash, branch, working-tree file, or local agent-tooling state file found by the exact searches below. | **OPEN BLOCKER: missing.** |
 | 20-file Python-oracle tree digest | SHA-256 `1d14f01a819f2f44bfe229603aa38861cda3460ff1ca66b9593a33b6172a772d` | No explicit manifest found. Plausible 20-file sets did not reproduce the pin. | **OPEN BLOCKER: unreproducible.** |
-| Parity corpus | argv/help/stdout/stderr/exit/request-shape vectors plus permitted normalizations | No target corpus found. Existing parity material is unrelated ad hoc test/fixture material, not the requested fixed VPE corpus. | **OPEN BLOCKER: missing.** |
+| Parity corpus | argv/help/stdout/stderr/exit/request-shape vectors plus permitted normalizations | No target corpus found. Existing parity material is unrelated ad hoc test/fixture material, not the requested fixed reviewer corpus. | **OPEN BLOCKER: missing.** |
 
 ### Search Evidence
 
 | Scope | Commands / recipe | Result |
 |---|---|---|
-| Git refs | `git branch --all --verbose --no-abbrev`; `git tag --list`; `git notes list`; `git stash list`; `git log --all --grep=...`; `git log --all --name-status -- '*grammar*' '*parity*' '*oracle*' '*corpus*' '*native-sol*' '*vpe*'` | No target artifact hits. `git notes list` and `git stash list` were empty. |
+| Git refs | Ref, tag, note, stash, and log searches across all refs for the grammar, parity, oracle, corpus, and native-sol needles, including name-status history searches. | No target artifact hits. `git notes list` and `git stash list` were empty. |
 | Exact all-ref greps | `git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/stash refs/notes | xargs ... git grep -n -I -F <needle>` for `sol-call-grammar-v1`, `c61078f0`, full `1d14...a772d`, and `request-shape` | No output. |
-| Named branches | `git merge-base --is-ancestor hopper-yhtv3ubz-grammar-prep main`; `git log main..hopper-yhtv3ubz-grammar-prep`; same for `vpe/finding1-recovery-ui` | Both branches are ancestors of `main`; no unique commits. |
-| Working tree | `git ls-files | rg 'grammar|parity|oracle|corpus|native-sol|vpe|request-shape|openapi|contract'`; `rg -n -S --glob '!.git/**' --glob '!.venv/**' --glob '!core/target/**' <needles>`; `find . ...` excluding `.git`, `.venv`, `core/target` | Only unrelated files such as existing markdown parity fixtures and normal contract/openapi files. |
-| Hopper storage | `rg -n -S <needles> ~/.hopper`; `find ~/.hopper -iname '*sol-call-grammar*' -o -iname '*grammar*oracle*' -o -iname '*parity*corpus*' -o -iname '*request*shape*' -o -iname '*native-sol*' -o -iname '*vpe*'` | No output. |
+| Named prep branches | Checked whether two named prep branches were already ancestors of main, then inspected each branch for commits not on main. | Both branches are ancestors of `main`; no unique commits. |
+| Working tree | Tracked-file listing filtered by the same needles, plus recursive content and filename searches of the working tree excluding `.git`, `.venv`, and `core/target`. | Only unrelated files such as existing markdown parity fixtures and normal contract/openapi files. |
+| Local agent-tooling state | Recursive content and filename searches of the local agent-tooling state directory for the same needles. | No output. |
 | Unreachable Git objects | `git fsck --full --no-reflogs --unreachable`, then exact grep across unreachable blobs for the same needles | No target hits. |
 
 ### 20-File Digest Reconstruction
@@ -30,7 +30,7 @@
 | Brute force | Fixed likely base: `solstone/think/convey_client.py`, `solstone/think/utils.py`, `solstone/think/service.py`, `solstone/apps/activities/call.py`, `solstone/apps/support/call.py`, `solstone/think/tools/health.py`, `solstone/think/pipeline_health.py`, `solstone/think/chat_cli.py`, `solstone/think/call.py`; chose 11 from 18 plausible production dependencies; checked 31,824 combinations. | No match in raw sorted `git ls-tree` format. Closest arbitrary prefix: `1d14714d5545f5e9f1817fe5ecf0be17df0f16e3172d201a886205bd5bea5f28`. |
 | Brute-force serialization variants | Same 31,824 combinations across six recipes: raw sorted `git ls-tree`, path-sorted `git ls-tree`, `path sha`, `sha path`, sha-only, path-only. | No match. |
 
-**Decision question:** VPE's frozen inputs are **not present** and the 20-file digest is **not reproducible to pin** from plausible current-tree candidates. Because the oracle canonical serialization is nowhere specified and the digest cannot be reproduced, this is an **OPEN BLOCKER** for senior escalation.
+**Decision question:** The reviewer's frozen inputs are **not present** and the 20-file digest is **not reproducible to pin** from plausible current-tree candidates. Because the oracle canonical serialization is nowhere specified and the digest cannot be reproduced, this is an **OPEN BLOCKER** for senior escalation.
 
 ## 2. Grammar-Oracle Format Reconnaissance (P1)
 
@@ -253,25 +253,25 @@ Shared support behavior: support CLI uses `ConveyClient(require_service=False)`;
 
 ## 7. Test Baseline Results (H)
 
-All requested gates were run through `hop check -- <cmd>` on the untouched tree.
+All requested gates were run on the untouched tree.
 
 | Command | Result | One-line tail / note |
 |---|---:|---|
-| `hop check -- make check-rust-fmt` | PASS | `hop check: \`make check-rust-fmt\` exited 0` |
-| `hop check -- make check-rust-clippy` | PASS | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 6.34s` |
-| `hop check -- make check-rust-test` | PASS | Doc-tests complete; unit output included `63 passed` and `17 passed`; `hop check` exit 0. |
-| `hop check -- make check-rust-msrv` | PASS | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 5.95s` |
-| `hop check -- make check-rust-deny` | PASS | `bans ok, licenses ok, sources ok`; emitted existing unmatched-license allowance warnings for `BSD-2-Clause`, `ISC`, `Unicode-3.0`, `Unicode-DFS-2016`. |
-| `hop check -- make check-openapi` | PASS | `observer-client-contract: pass for docs/openapi/observer-client-contract` |
-| `hop check -- make check-contract` | PASS | `.venv/bin/python -m solstone.think.contract_cli build --check`; `hop check` exit 0. |
+| `make check-rust-fmt` | PASS | `make check-rust-fmt` exited 0 |
+| `make check-rust-clippy` | PASS | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 6.34s` |
+| `make check-rust-test` | PASS | Doc-tests complete; unit output included `63 passed` and `17 passed`; exit 0. |
+| `make check-rust-msrv` | PASS | `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 5.95s` |
+| `make check-rust-deny` | PASS | `bans ok, licenses ok, sources ok`; emitted existing unmatched-license allowance warnings for `BSD-2-Clause`, `ISC`, `Unicode-3.0`, `Unicode-DFS-2016`. |
+| `make check-openapi` | PASS | `observer-client-contract: pass for docs/openapi/observer-client-contract` |
+| `make check-contract` | PASS | `.venv/bin/python -m solstone.think.contract_cli build --check`; exit 0. |
 
 ## 8. Open Design Questions
 
 | Question | Why it remains open |
 |---|---|
-| What is the canonical serialization format for `sol-call-grammar-v1`? | The pinned grammar artifact and parity corpus were not found, and no format spec was found in refs, worktree, unreachable blobs, or `~/.hopper/`. |
+| What is the canonical serialization format for `sol-call-grammar-v1`? | The pinned grammar artifact and parity corpus were not found, and no format spec was found in refs, worktree, unreachable blobs, or the local agent-tooling state directory. |
 | What exact 20 Python files define the frozen oracle digest? | The explicit manifest is not present. Plausible manifests and serializations did not reproduce `1d14f01a819f2f44bfe229603aa38861cda3460ff1ca66b9593a33b6172a772d`. |
 | Is `health pipeline` in or out of the native HTTP-client lead slice? | It is listed in the lead inventory, but current Python is a local non-HTTP wrapper around `pipeline_health`; only 20 of the 21 lead `sol call` leaves emit HTTP. |
-| Should the native client use the existing OpenAPI DSL or a new grammar fixture as the source of truth? | Contract infrastructure exists and already covers chat/root, but activities/support/health fragments do not exist yet; VPE grammar oracle format is missing. |
+| Should the native client use the existing OpenAPI DSL or a new grammar fixture as the source of truth? | Contract infrastructure exists and already covers chat/root, but activities/support/health fragments do not exist yet; the reviewer's grammar oracle format is missing. |
 | Should native request-shape parity include support dry-run draft capture and local diagnostics fallback? | Current Python behavior sends dormant draft-capture requests during dry runs and locally spawns `git rev-parse` during unreachable `diagnose`; both are byte-visible behavior in the fixed slice. |
 | Which Rust HTTP client is allowed? | No HTTP dependency exists today; deny policy is crates.io-only, license restricted, pyo3/cpython banned, and iOS is in the dependency graph. |

@@ -1,6 +1,6 @@
 # observer-over-pl
 
-> **⚠️ SUPERSEDED — historical design doc.** This describes a now-shipped lode
+> **⚠️ SUPERSEDED — historical design doc.** This describes a now-shipped change
 > whose implementation diverged from the design below. Do not treat the code
 > references here as current. Current reality:
 > - There is **no `ObserverClient` class** (deleted 2026-05-30). PL observer
@@ -21,7 +21,7 @@
 
 ## Summary
 
-This lode adds a paired-link (`pl`) transport path to the observer client while
+This change adds a paired-link (`pl`) transport path to the observer client while
 keeping the existing bearer-key HTTP (`dl`) path unchanged. The server-side
 observer routes will resolve identity from `g.identity.fingerprint` for PL
 requests and from bearer/url keys for DL requests. Observer record writes stay
@@ -270,11 +270,11 @@ Chosen: PL mode requires `observe.observer.spl_relay_url`. There is no fallback
 to a hardcoded relay URL.
 
 Rationale: the scope says the relay URL must come from `peer.json.relay_url` or
-`observe.observer.spl_relay_url`, but Lode A intentionally omitted `relay_url`
+`observe.observer.spl_relay_url`, but Phase A intentionally omitted `relay_url`
 from `peer.json`. The actual bundle writer records only `label`, `paired_at`,
 `instance_id`, `home_label`, `fingerprint`, `local_endpoints`, and `role`
 (`solstone/think/link/join_cli.py:120-134`). Therefore the only valid relay URL
-source in this lode is config. The hardcoded default in
+source in this change is config. The hardcoded default in
 `solstone/think/link/paths.py:33-36` is for the home link service, not observer
 client PL dialing.
 
@@ -300,13 +300,13 @@ Startup validation in `ObserverClient.__init__()`:
 - `pair_mode=pl` plus any missing required file raises.
 - `pair_mode=dl` keeps today’s behavior unchanged.
 
-Required bundle files are the Lode A set: `private.pem`, `cert.pem`, `chain.pem`,
+Required bundle files are the Phase A set: `private.pem`, `cert.pem`, `chain.pem`,
 `home_attestation.jwt`, and `peer.json` (`solstone/think/link/bundle.py`).
 The bundle path is `$XDG_CONFIG_HOME/solstone-observer/spl/<label>/` or
 `~/.config/solstone-observer/spl/<label>/`
 (`solstone/think/link/observer_paths.py`).
 
-Implementation deviation: Lode A's `peer.json.fingerprint` is the CA fingerprint,
+Implementation deviation: Phase A's `peer.json.fingerprint` is the CA fingerprint,
 not the client certificate fingerprint that Convey stamps into `g.identity`.
 `ObserverClient` therefore derives `ClientIdentity.fingerprint` from `cert.pem`
 using `cert_fingerprint()` instead of trusting `peer.json.fingerprint`.
@@ -528,7 +528,7 @@ observe:
 
 Validation failures are startup errors from `ObserverClient.__init__()`, not
 silent fallbacks. There is no hardcoded relay fallback and no `peer.json.relay_url`
-fallback in this lode.
+fallback in this change.
 
 ## Implementation Phasing
 

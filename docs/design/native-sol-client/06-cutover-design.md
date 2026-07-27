@@ -397,7 +397,7 @@ Acceptance criterion 19 needs a fixture test for the removal guard:
   callers of `parse_time_range` and `timefhuman` outside the known removal set.
 - The fixture test creates a synthetic production caller and asserts the checker
   returns `RETAIN` with a blocker message naming the caller. That prevents the
-  lode from deleting the dependency if a new caller appears between design and
+  change from deleting the dependency if a new caller appears between design and
   implementation.
 
 ## File-Level Change List

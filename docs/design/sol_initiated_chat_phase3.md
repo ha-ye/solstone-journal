@@ -1,8 +1,8 @@
-# Sol-Initiated Chat Lode 3 Design
+# Sol-Initiated Chat Phase 3 Design
 
 ## Goals
 
-This lode makes sol-initiated chat visible, configurable, and deliverable:
+This change makes sol-initiated chat visible, configurable, and deliverable:
 
 - expose `sol_voice` controls in settings through a dedicated API and UI
 - make self-mute clear markers per category
@@ -11,7 +11,7 @@ This lode makes sol-initiated chat visible, configurable, and deliverable:
 - deliver sol chat requests to iOS as APNs alerts
 - send silent APNs lifecycle updates when the owner opens or dismisses a request
 
-The lode builds on the lode 1 event contract. The existing chat-stream events
+This change builds on the phase 1 event contract. The existing chat-stream events
 remain the source of truth. No new chat-stream event kinds are introduced here.
 
 ## Scope
@@ -38,7 +38,7 @@ Out of scope:
 
 ## Constants Discipline
 
-All lode-3 literals that are part of the sol-initiated UI contract live in
+All phase-3 literals that are part of the sol-initiated UI contract live in
 `solstone/convey/sol_initiated/copy.py`. This includes strings rendered by
 Jinja templates, strings shared by settings UI code, and the APNs category
 literal.
@@ -87,7 +87,7 @@ Policy behavior:
 Second-order consequences:
 
 - existing journals with the scalar field drop that clear-marker on first load
-- this is acceptable because lode 1 just shipped and no users rely on the scalar
+- this is acceptable because phase 1 just shipped and no users rely on the scalar
 - no compatibility alias or fallback reader should be added, per the clean-break
   invariant
 - fixtures in `tests/test_sol_initiated_policy.py` and
@@ -100,7 +100,7 @@ Second-order consequences:
 Chosen option: dedicated `GET/PUT /api/sol_voice`.
 
 `solstone/apps/settings/routes.py:update_config()` only supports flat section
-writes plus the transcribe-specific nested backend exception. Lode 3 needs
+writes plus the transcribe-specific nested backend exception. Phase 3 needs
 dynamic category keys, nested mute-window settings, nested notification settings,
 and a debug toggle. A dedicated endpoint matches existing complex settings
 surfaces such as providers, generators, vision, observe, sync, and storage.
@@ -211,7 +211,7 @@ Second-order consequences:
   reply
 - if the page loads after the request but before the reply, SSR remains
   authoritative for existing events; implementation may optionally initialize
-  the pointer by walking DOM, but this is not required for lode 3
+  the pointer by walking DOM, but this is not required for phase 3
 
 ## D5: APNs Silent-Push Transport
 
@@ -293,7 +293,7 @@ Second-order consequences:
 Group 1 - constants + design doc + test allowlist:
 
 - NEW `docs/design/sol_initiated_chat_phase3.md` (this doc)
-- EDIT `solstone/convey/sol_initiated/copy.py`: add lode-3 constants for every Jinja-rendered string in the new chat origin-tag UI, settings section, and provenance toggle. Enumerate them in the design doc.
+- EDIT `solstone/convey/sol_initiated/copy.py`: add phase-3 constants for every Jinja-rendered string in the new chat origin-tag UI, settings section, and provenance toggle. Enumerate them in the design doc.
 - EDIT `tests/test_sol_initiated_constants_locked.py`: add `docs/design/sol_initiated_chat_phase3.md` to ALLOWED_PATHS.
 
 Group 2 - settings schema rename:
@@ -399,7 +399,7 @@ Run, in order:
 - `make ci`
 - `make verify-api`
 
-`make verify-api` is required because this lode adds new settings endpoints.
+`make verify-api` is required because this change adds new settings endpoints.
 
 ## Risks And Open Questions
 

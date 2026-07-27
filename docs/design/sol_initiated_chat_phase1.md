@@ -1,12 +1,12 @@
-# Sol-Initiated Chat Lode 1 Design
+# Sol-Initiated Chat Phase 1 Design
 
 ## Scope
-This lode adds the producer-side primitive for sol-initiated chat starts:
+This change adds the producer-side primitive for sol-initiated chat starts:
 `sol call chat start`, four new chat-stream event kinds, prompt-context support
 for the new trigger, and a six-step policy gauntlet. It does not build the UI
 or any producer intelligence that decides when to call the primitive.
 
-The LOCKED identifiers in the senior contract are source of truth. Field order
+The LOCKED identifiers in the locked contract are source of truth. Field order
 for new chat-stream kinds must be preserved exactly.
 
 ## Event Contract
@@ -37,7 +37,7 @@ policy auditable:
 - `start.py`: `StartChatResult`, request-id minting, validation, policy orchestration, supersede, and the locked critical section.
 
 `nudge_log.py` and `events.py` are small but worth keeping because they are
-public integration points for later lodes and isolate cross-package details.
+public integration points for later changes and isolate cross-package details.
 
 ## Constants Discipline
 All new spec literals live in `solstone/convey/sol_initiated/copy.py`.
@@ -49,13 +49,13 @@ The locking-discipline grep test should exempt only:
 - the test file that enforces this discipline
 
 `SOLSTONE_SOL_CHAT_REQUEST` is a guard literal only. No runtime environment
-variable by that name should exist in this lode, and no settings override should
+variable by that name should exist in this change, and no settings override should
 read from the environment. The grep target exists to catch accidental leakage
 or ad hoc env-driven bypasses.
 
 ## Categories
 
-Use the LOCKED 6-tuple from the senior contract:
+Use the LOCKED 6-tuple from the locked contract:
 
 ```python
 CATEGORIES = ("briefing", "pattern", "commitment", "error", "arrival", "notice")
@@ -273,8 +273,8 @@ line when `message` is present. Skip indexing for `sol_chat_request_superseded`,
 those events.
 
 `reflection_ready` is already a valid chat-stream kind but currently raises in
-the formatter. That is an existing bug and out of scope for this lode unless a
-test in this lode exposes chunk deletion from mixed files.
+the formatter. That is an existing bug and out of scope here unless a
+test in this change exposes chunk deletion from mixed files.
 
 ## Tests
 

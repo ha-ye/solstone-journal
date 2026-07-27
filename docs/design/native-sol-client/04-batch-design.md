@@ -280,7 +280,7 @@ Add operations to existing fragments:
 | import journal-source routes | `solstone.apps.import.contract` |
 | chat start | `solstone.convey.chat_contract` |
 
-`chat start` should not create a second `/api/chat/*` fragment unless Jer wants
+`chat start` should not create a second `/api/chat/*` fragment unless the operator wants
 contract ownership to follow CLI ownership instead of route ownership; the
 current contract module already owns the `/api/chat` route family.
 

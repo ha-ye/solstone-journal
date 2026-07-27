@@ -15,7 +15,7 @@ transactional reset. It does not implement the changes.
   `rusqlite::Transaction<'_>` derefs to `Connection`.
 - Treat `index_entity_search` as the fifth logical replacement unit. It has the
   same defect shape as file and edge replacement: destructive deletes, then many
-  inserts, then watermark writes, all currently independent autocommits. Jer
+  inserts, then watermark writes, all currently independent autocommits. The operator
   approved this D0 scope at the gate, and the native implementation now ships
   it.
 - Fold segment aggregate rebuilds into the per-file transaction in
@@ -132,7 +132,7 @@ Files A and B in segment S, with B failing after A commits:
   simplicity.
 
 Because `SegmentAggregate` lives in `solstone-core-indexer`, which is covered by
-the iOS gate, implementation must run `make check-rust-ios` through `hop check`.
+the iOS gate, implementation must run `make check-rust-ios`.
 
 ## Reset Design
 
@@ -339,7 +339,7 @@ Rewrite only the verified section 3.6 list.
 
 ## Validation Plan
 
-Use focused checks first, all through `hop check`:
+Use focused checks first:
 - `cargo test --manifest-path core/Cargo.toml -p solstone-core-indexer-store`
 - `cargo test --manifest-path core/Cargo.toml -p solstone-core`
 - `make check-rust-ios`
