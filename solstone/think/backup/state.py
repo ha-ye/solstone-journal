@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from solstone.think.backup.destination import Destination
@@ -146,8 +147,12 @@ def get_backup_config() -> dict[str, Any]:
     return merge_backup_config(config)
 
 
-def get_daily_key() -> str | None:
-    daily_key = get_backup_config()["daily_key"]
+def get_daily_key(journal_path: str | Path | None = None) -> str | None:
+    if journal_path is None:
+        config = get_backup_config()
+    else:
+        config = merge_backup_config(read_journal_config(journal_path))
+    daily_key = config["daily_key"]
     return daily_key if isinstance(daily_key, str) and daily_key else None
 
 

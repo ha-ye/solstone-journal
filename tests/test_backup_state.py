@@ -85,6 +85,31 @@ def test_get_daily_key_returns_only_daily_key(
     assert state.get_daily_key() == "daily-secret"
 
 
+def test_get_daily_key_can_read_path_explicit_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient = tmp_path / "ambient"
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(ambient))
+    _write_config(
+        ambient,
+        {"backup": {"daily_key": "ambient-daily", "recovery_key": "ambient-recovery"}},
+    )
+    _write_config(
+        explicit,
+        {
+            "backup": {
+                "daily_key": "explicit-daily",
+                "recovery_key": "explicit-recovery",
+            }
+        },
+    )
+
+    assert state.get_daily_key(explicit) == "explicit-daily"
+    assert state.get_daily_key() == "ambient-daily"
+
+
 def test_merge_backup_config_applies_defaults_to_raw_config() -> None:
     config = state.merge_backup_config(
         {

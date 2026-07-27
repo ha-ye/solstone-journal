@@ -147,7 +147,13 @@ def _sentinel_ready(
     return sha256 if isinstance(sha256, str) and sha256 else None
 
 
-def _restic_version_ok(binary_path: Path) -> bool:
+def _restic_version_ok(
+    binary_path: Path,
+    *,
+    timeout: float | None = None,
+) -> bool:
+    if timeout is not None:
+        return _restic_version_ok_bounded(binary_path, timeout=timeout)
     try:
         result = subprocess.run(
             [str(binary_path), "version"],
@@ -204,7 +210,11 @@ def _verify_binary(binary_path: Path, expected_sha256: str) -> bool:
     return actual_sha256 == expected_sha256
 
 
-def check_restic_ready(tool_dir: Path | None = None) -> Path | None:
+def check_restic_ready(
+    tool_dir: Path | None = None,
+    *,
+    version_timeout: float | None = None,
+) -> Path | None:
     os_name, arch = _platform_info()
     resolved_tool_dir = tool_dir if tool_dir is not None else _tool_dir(os_name)
     binary_path = _binary_path(resolved_tool_dir)
@@ -216,7 +226,10 @@ def check_restic_ready(tool_dir: Path | None = None) -> Path | None:
     )
     if expected_sha256 is None:
         return None
-    if not _restic_version_ok(binary_path):
+    if version_timeout is None:
+        if not _restic_version_ok(binary_path):
+            return None
+    elif not _restic_version_ok(binary_path, timeout=version_timeout):
         return None
     if not _verify_binary(binary_path, expected_sha256):
         return None
@@ -228,7 +241,7 @@ def inspect_restic_ready(
     *,
     version_timeout: float = 5.0,
 ) -> tuple[Path | None, str | None]:
-    ready_path = check_restic_ready(tool_dir)
+    ready_path = check_restic_ready(tool_dir, version_timeout=version_timeout)
     if ready_path is not None:
         return ready_path, None
 

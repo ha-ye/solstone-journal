@@ -36,6 +36,8 @@ from solstone.think.backup.runner import (
 )
 from solstone.think.sandbox_profile import (
     capabilities,
+    envelope,
+    intent,
     json_codec,
     probe_contract,
 )
@@ -126,7 +128,6 @@ class _FixtureIdentity:
 
 @dataclass(frozen=True)
 class _Preflight:
-    journal: Path
     attempt_dir: Path
     spb_root: Path
     restore_target: Path
@@ -294,9 +295,9 @@ def _preflight(journal: Path, attempt_dir: Path) -> _Preflight:
     if rclone_path is None:
         raise _SpbProbeError(probe_contract.REASON_CAPABILITY_NOT_READY) from None
     binding = _load_binding(journal)
-    if not _spb_backup_config_ready():
+    if not _spb_capability_ready(journal):
         raise _SpbProbeError(probe_contract.REASON_CAPABILITY_NOT_READY) from None
-    daily_key = state.get_daily_key()
+    daily_key = state.get_daily_key(journal)
     if daily_key is None:
         raise _SpbProbeError(probe_contract.REASON_CAPABILITY_NOT_READY) from None
     proof_binding = _proof_binding(binding, resolved_attempt.name)
@@ -315,7 +316,6 @@ def _preflight(journal: Path, attempt_dir: Path) -> _Preflight:
         restore_target=restore_target,
     )
     return _Preflight(
-        journal=journal,
         attempt_dir=resolved_attempt,
         spb_root=spb_root,
         restore_target=restore_target,
@@ -374,9 +374,13 @@ def _cleanup_path_absent(path: Path, deadline: float) -> bool:
     return False
 
 
-def _spb_backup_config_ready() -> bool:
-    config = state.get_backup_config()
-    return config.get("mode") == "operated" and config.get("enabled") is True
+def _spb_capability_ready(journal: Path) -> bool:
+    try:
+        config = capabilities._read_config(journal)
+        cap = capabilities._spb_status(journal, config, intent.load_intent(journal))
+    except (OSError, ValueError, intent.IntentError):
+        return False
+    return cap.state == envelope.CAP_READY
 
 
 def _load_binding(journal: Path) -> HostedBinding:
@@ -414,9 +418,10 @@ def _proof_binding(binding: HostedBinding, attempt_id: str) -> HostedBinding:
 
 
 def _prefix_segments(prefix: str) -> tuple[str, ...]:
-    if not prefix or prefix.startswith("/") or prefix.endswith("/"):
+    normalized = prefix[:-1] if prefix.endswith("/") else prefix
+    if not normalized or normalized.startswith("/"):
         raise _SpbProbeError(probe_contract.REASON_CAPABILITY_NOT_READY) from None
-    segments = tuple(prefix.split("/"))
+    segments = tuple(normalized.split("/"))
     if any(segment in {"", ".", ".."} or "\x00" in segment for segment in segments):
         raise _SpbProbeError(probe_contract.REASON_CAPABILITY_NOT_READY) from None
     return segments
@@ -428,7 +433,8 @@ def _create_fixture(path: Path) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         fd = os.open(path, flags, 0o600)
         try:
-            os.write(fd, SPB_SYNTHETIC_FIXTURE_BYTES)
+            if os.write(fd, SPB_SYNTHETIC_FIXTURE_BYTES) != FIXTURE_LENGTH:
+                raise _SpbProbeInternalError() from None
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -450,6 +456,7 @@ def _fixture_identity(path: Path) -> _FixtureIdentity:
         stat.S_ISLNK(stat_result.st_mode)
         or not stat.S_ISREG(stat_result.st_mode)
         or stat_result.st_nlink != 1
+        or stat_result.st_size != FIXTURE_LENGTH
     ):
         raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
     try:
@@ -501,7 +508,8 @@ def _parse_expires_at(value: str) -> datetime:
 
 
 def _require_lease(receipt: _CredentialReceipt, required_s: float) -> None:
-    if receipt.lease_remaining_s <= required_s:
+    elapsed = max(0.0, _clock.monotonic() - receipt.received_monotonic)
+    if receipt.lease_remaining_s - elapsed <= required_s:
         raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
 
 
@@ -563,6 +571,7 @@ def _run_ls(
         preflight,
         credentials,
         ["ls", "--long", snapshot_id],
+        scrub_values=(snapshot_id,),
     )
     _check_restic_result(result, expect_json=True)
     records = _parse_json_records(result.stdout)
@@ -676,8 +685,13 @@ def _validate_ls_records(
 
     file_seen = False
     for record in records:
-        if not isinstance(record, dict) or record.get("message_type") != "node":
+        if not isinstance(record, dict):
+            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
+        message_type = record.get("message_type")
+        if message_type == "snapshot":
             continue
+        if message_type != "node":
+            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
         path = record.get("path")
         node_type = record.get("type")
         if not isinstance(path, str) or not isinstance(node_type, str):
@@ -695,7 +709,7 @@ def _validate_ls_records(
         size = record.get("size")
         if type(size) is not int:
             raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-        if size != preflight.fixture.length:
+        if size != FIXTURE_LENGTH:
             raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None
         file_seen = True
     if not file_seen:
@@ -752,6 +766,7 @@ def _verify_restore_tree(preflight: _Preflight) -> None:
     identity = _fixture_identity(restored)
     if (
         identity.length != preflight.fixture.length
+        or identity.length != FIXTURE_LENGTH
         or identity.digest != preflight.fixture.digest
     ):
         raise _SpbProbeError(probe_contract.REASON_CONTENT_MISMATCH) from None

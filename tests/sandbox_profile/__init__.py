@@ -219,7 +219,7 @@ def spb_payload(journal: Path, *, instance_id: str | None = None) -> dict[str, s
         "account_id": "acct-backup",
         "instance_id": instance_id or str(state["instance_id"]),
         "bucket": "sandbox-bucket",
-        "prefix": "sandbox-prefix",
+        "prefix": "sandbox-prefix/",
         "broker_token": "broker-token",
     }
 

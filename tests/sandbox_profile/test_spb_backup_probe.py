@@ -13,7 +13,11 @@ from typing import Any
 
 import pytest
 
-from solstone.think.backup.hosted import HostedCredentials, HostedCredsUnavailable
+from solstone.think.backup.hosted import (
+    HostedBinding,
+    HostedCredentials,
+    HostedCredsUnavailable,
+)
 from solstone.think.backup.runner import ResticResult
 from solstone.think.sandbox_profile import probe_contract
 from solstone.think.sandbox_profile import spb_backup_probe as probe
@@ -173,6 +177,45 @@ def _records(*records: dict[str, object]) -> str:
     return "\n".join(json.dumps(record) for record in records) + "\n"
 
 
+def _scrub_text(value: object, secrets: tuple[str, ...]) -> str:
+    text = str(value)
+    for secret in secrets:
+        if secret:
+            text = "[redacted]".join(text.split(secret))
+    return text
+
+
+def _capture_child_surface(
+    args: list[str],
+    kwargs: dict[str, Any],
+) -> dict[str, object]:
+    backend_env = kwargs.get("backend_env") or {}
+    assert isinstance(backend_env, dict)
+    scrub_values = tuple(str(value) for value in kwargs.get("scrub_values", ()))
+    child_secret_values = tuple(
+        str(value)
+        for value in (
+            kwargs.get("password"),
+            kwargs.get("repository"),
+            *backend_env.values(),
+            *scrub_values,
+        )
+        if value
+    )
+    return {
+        "argv": tuple(_scrub_text(token, child_secret_values) for token in args),
+        "backend_env": {
+            key: _scrub_text(value, child_secret_values)
+            for key, value in backend_env.items()
+        },
+        "repository": _scrub_text(kwargs.get("repository", ""), child_secret_values),
+        "stdin_bytes": kwargs.get("stdin_bytes") or b"",
+        "scrub_values": tuple(
+            _scrub_text(value, child_secret_values) for value in scrub_values
+        ),
+    }
+
+
 def _summary_record(snapshot_id: object = "snapshot-secret-id") -> dict[str, object]:
     return {"message_type": "summary", "snapshot_id": snapshot_id}
 
@@ -209,11 +252,14 @@ def _fake_restic(
     events: list[str],
     *,
     restore_mutator: Callable[[Path], None] | None = None,
+    captures: list[dict[str, object]] | None = None,
 ):
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
         command = next(
             token for token in ("init", "backup", "ls", "restore") if token in args
         )
+        if captures is not None:
+            captures.append(_capture_child_surface(args, kwargs))
         events.append(command)
         assert kwargs["process_group"] is True
         assert kwargs["timeout"] == probe.RESTIC_CHILD_TIMEOUT_S
@@ -297,8 +343,9 @@ def _install_phase_restic(
     phase: str,
     result: ResticResult,
     mutate_before_return: Callable[[], None] | None = None,
+    captures: list[dict[str, object]] | None = None,
 ) -> None:
-    success = _fake_restic(events)
+    success = _fake_restic(events, captures=captures)
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
         command = next(
@@ -306,6 +353,8 @@ def _install_phase_restic(
         )
         if command != phase:
             return success(args, **kwargs)
+        if captures is not None:
+            captures.append(_capture_child_surface(args, kwargs))
         events.append(command)
         if mutate_before_return is not None:
             mutate_before_return()
@@ -346,6 +395,7 @@ def _install_success_fakes(
     events: list[str],
     *,
     restore_mutator: Callable[[Path], None] | None = None,
+    captures: list[dict[str, object]] | None = None,
 ) -> None:
     def fetch(_binding, *, scope: str) -> HostedCredentials:
         assert scope == "operated"
@@ -361,7 +411,7 @@ def _install_success_fakes(
     monkeypatch.setattr(
         probe,
         "run_restic",
-        _fake_restic(events, restore_mutator=restore_mutator),
+        _fake_restic(events, restore_mutator=restore_mutator, captures=captures),
     )
 
 
@@ -378,7 +428,8 @@ def test_spb_success_uses_five_fresh_fetches_and_four_checks(
     _install_ready_tools(monkeypatch)
     clock = _install_clock(monkeypatch)
     events: list[str] = []
-    _install_success_fakes(monkeypatch, clock, events)
+    captures: list[dict[str, object]] = []
+    _install_success_fakes(monkeypatch, clock, events, captures=captures)
     caplog.set_level(logging.DEBUG)
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
@@ -402,6 +453,7 @@ def test_spb_success_uses_five_fresh_fetches_and_four_checks(
     assert (attempt_dir / "spb" / "source.bin").exists()
     _assert_canaries_absent(repr(outcome))
     _assert_canaries_absent(caplog.text)
+    _assert_canaries_absent(repr(captures))
     _assert_surviving_attempt_files_canary_clean(attempt_dir)
 
 
@@ -448,6 +500,27 @@ def test_local_refusal_has_no_broker_or_spawn(
     _assert_failed(outcome, probe_contract.REASON_CAPABILITY_NOT_READY)
 
 
+def test_partial_fixture_write_is_internal_error_before_contact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+
+    def partial_write(_fd: int, data: bytes) -> int:
+        assert len(data) == probe.FIXTURE_LENGTH
+        return probe.FIXTURE_LENGTH - 1
+
+    monkeypatch.setattr(probe.os, "write", partial_write)
+    monkeypatch.setattr(probe, "fetch_hosted_credentials", _forbid_contact)
+    monkeypatch.setattr(probe.s3_wipe, "list_prefix_contents", _forbid_contact)
+    monkeypatch.setattr(probe, "run_restic", _forbid_contact)
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    _assert_failed(outcome, probe_contract.REASON_INTERNAL_ERROR)
+
+
 def test_recovery_key_path_is_structurally_unreachable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,7 +529,8 @@ def test_recovery_key_path_is_structurally_unreachable(
     _install_ready_tools(monkeypatch)
     clock = _install_clock(monkeypatch)
     events: list[str] = []
-    _install_success_fakes(monkeypatch, clock, events)
+    captures: list[dict[str, object]] = []
+    _install_success_fakes(monkeypatch, clock, events, captures=captures)
 
     import solstone.think.backup.repo as repo
 
@@ -521,6 +595,83 @@ def test_inspector_surface_is_exact(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "state": "unavailable",
         "reason": "restic_missing",
     }
+
+
+@pytest.mark.parametrize("prefix", ["users/acct/inst", "users/acct/inst/"])
+def test_proof_binding_normalizes_optional_trailing_slash(prefix: str) -> None:
+    binding = HostedBinding(
+        broker_endpoint="https://broker.example.invalid",
+        account_id="acct",
+        instance_id="inst",
+        bucket="bucket",
+        prefix=prefix,
+        broker_token="broker-token",
+    )
+
+    proof_binding = probe._proof_binding(binding, ATTEMPT_ID)
+
+    assert proof_binding.prefix == f"users/acct/inst/proofs/{ATTEMPT_ID}/"
+
+
+def test_spb_capability_mismatch_refuses_before_contact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    payload_path = journal / "backup" / "hosted" / "binding.json"
+    payload = json.loads(payload_path.read_text("utf-8"))
+    payload["instance_id"] = "99999999-9999-4999-8999-999999999999"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    _install_ready_tools(monkeypatch)
+    monkeypatch.setattr(probe, "fetch_hosted_credentials", _forbid_contact)
+    monkeypatch.setattr(probe.s3_wipe, "list_prefix_contents", _forbid_contact)
+    monkeypatch.setattr(probe, "run_restic", _forbid_contact)
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    _assert_failed(outcome, probe_contract.REASON_CAPABILITY_NOT_READY)
+
+
+def test_daily_key_comes_from_passed_journal_not_ambient_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    daily_key = probe.state.get_daily_key(journal)
+    assert daily_key is not None
+    ambient = tmp_path / "ambient-journal"
+    (ambient / "config").mkdir(parents=True)
+    (ambient / "config" / "journal.json").write_text(
+        json.dumps(
+            {
+                "backup": {
+                    "enabled": True,
+                    "mode": "operated",
+                    "daily_key": "ambient-daily-key",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(ambient))
+    _install_ready_tools(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    events: list[str] = []
+    passwords: list[str] = []
+    _install_success_fakes(monkeypatch, clock, events)
+    success = _fake_restic(events)
+
+    def run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        passwords.append(kwargs["password"])
+        return success(args, **kwargs)
+
+    monkeypatch.setattr(probe, "run_restic", run_restic)
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    assert outcome["state"] == probe_contract.PROOF_STATE_PASSED
+    assert set(passwords) == {daily_key}
+    assert "ambient-daily-key" not in passwords
 
 
 @pytest.mark.parametrize(
@@ -660,6 +811,46 @@ def test_lease_remaining_above_seventy_five_proceeds_to_spawn(
     assert "init" in events
 
 
+def test_elapsed_monotonic_time_reduces_lease_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, attempt_dir = _ready_journal(tmp_path, monkeypatch)
+    _install_ready_tools(monkeypatch)
+    clock = SequencedClock(
+        [
+            1000.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            1002.0,
+            1002.0,
+        ]
+    )
+    monkeypatch.setattr(probe, "_clock", clock)
+    events: list[str] = []
+    _install_sequenced_creds(
+        monkeypatch,
+        clock,
+        events,
+        [
+            "2026-01-01T00:10:00Z",
+            "2026-01-01T00:01:16Z",
+        ],
+    )
+    _install_empty_listing(monkeypatch, events)
+    monkeypatch.setattr(probe, "run_restic", _forbid_contact)
+
+    outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
+
+    _assert_failed(outcome, probe_contract.REASON_RESPONSE_INVALID)
+    assert events == ["fetch", "list", "fetch"]
+
+
 @pytest.mark.parametrize(
     ("keys", "uploads"),
     [
@@ -766,7 +957,8 @@ def test_init_nonzero_and_timeout_map_to_expected_reason(
     _install_ready_tools(monkeypatch)
     clock = _install_clock(monkeypatch)
     events: list[str] = []
-    _install_success_fakes(monkeypatch, clock, events)
+    captures: list[dict[str, object]] = []
+    _install_success_fakes(monkeypatch, clock, events, captures=captures)
     _install_phase_restic(monkeypatch, events, phase="init", result=result)
 
     outcome = probe.prove_spb_backup(journal, attempt_dir=attempt_dir)
@@ -945,6 +1137,19 @@ def test_fixture_mutation_between_backup_checks_is_content_mismatch(
             probe_contract.REASON_RESPONSE_INVALID,
         ),
         (
+            _records(
+                *_ls_records(
+                    extra=(
+                        {
+                            "message_type": "error",
+                            "message": "unexpected restic record",
+                        },
+                    )
+                )
+            ),
+            probe_contract.REASON_RESPONSE_INVALID,
+        ),
+        (
             '{"message_type":"snapshot","message_type":"snapshot",'
             '"id":"snapshot-secret-id","paths":["/spb/source.bin"]}\n',
             probe_contract.REASON_RESPONSE_INVALID,
@@ -1112,13 +1317,15 @@ def test_canaries_absent_across_success_timeout_and_error_paths(
     _install_ready_tools(monkeypatch)
     clock = _install_clock(monkeypatch)
     events: list[str] = []
-    _install_success_fakes(monkeypatch, clock, events)
+    captures: list[dict[str, object]] = []
+    _install_success_fakes(monkeypatch, clock, events, captures=captures)
     if mode == "timeout":
         _install_phase_restic(
             monkeypatch,
             events,
             phase="init",
             result=ResticResult(124, "", "timeout", None, ("restic", "init")),
+            captures=captures,
         )
     elif mode == "error":
 
@@ -1138,4 +1345,5 @@ def test_canaries_absent_across_success_timeout_and_error_paths(
     _assert_outcome_contract(outcome)
     _assert_canaries_absent(repr(outcome))
     _assert_canaries_absent(caplog.text)
+    _assert_canaries_absent(repr(captures))
     _assert_surviving_attempt_files_canary_clean(attempt_dir)
