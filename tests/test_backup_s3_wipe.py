@@ -12,8 +12,6 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
-
 from solstone.think.backup import s3_wipe
 
 ENDPOINT = "https://r2.example"
@@ -31,7 +29,6 @@ class RequestRecord:
     url: str
     headers: dict[str, str]
     body: bytes
-    timeout: float
 
 
 class FakeResponse:
@@ -65,7 +62,6 @@ class FakeOpener:
                 url=request.full_url,
                 headers={key.lower(): value for key, value in request.header_items()},
                 body=request.data or b"",
-                timeout=timeout,
             )
         )
         if not self.items:
@@ -194,78 +190,6 @@ def test_populated_prefix_deletes_objects_then_aborts_uploads() -> None:
     assert "delete=" in opener.records[1].url
     assert "Content-md5".lower() in opener.records[1].headers
     assert "uploadId=upload-1" in opener.records[4].url
-
-
-def test_wipe_prefix_lists_uploads_only_after_object_deletes() -> None:
-    opener = FakeOpener(
-        [
-            FakeResponse(200, _list_objects([f"{PREFIX}object"])),
-            FakeResponse(200, _delete_result()),
-            FakeResponse(200, _list_uploads([(f"{PREFIX}multipart", "upload-1")])),
-            FakeResponse(204),
-        ]
-    )
-
-    result = _wipe(opener)
-
-    assert result == s3_wipe.WipeResult("ok", None)
-    assert [record.method for record in opener.records] == [
-        "GET",
-        "POST",
-        "GET",
-        "DELETE",
-    ]
-    assert "delete=" in opener.records[1].url
-    assert "uploads=" in opener.records[2].url
-
-
-def test_list_prefix_contents_reads_objects_and_uploads_without_mutation() -> None:
-    opener = FakeOpener(
-        [
-            FakeResponse(
-                200,
-                _list_objects([f"{PREFIX}a"], truncated=True, token="next"),
-            ),
-            FakeResponse(200, _list_objects([f"{PREFIX}b"])),
-            FakeResponse(
-                200,
-                _list_uploads([(f"{PREFIX}upload", "upload-1")]),
-            ),
-        ]
-    )
-
-    keys, uploads = s3_wipe.list_prefix_contents(
-        endpoint=ENDPOINT,
-        bucket=BUCKET,
-        prefix=PREFIX,
-        access_key_id=ACCESS_KEY,
-        secret_access_key=SECRET_KEY,
-        session_token=SESSION_TOKEN,
-        opener=opener,
-        timeout=7,
-        budget_s=30,
-    )
-
-    assert keys == (f"{PREFIX}a", f"{PREFIX}b")
-    assert uploads == ((f"{PREFIX}upload", "upload-1"),)
-    assert [record.method for record in opener.records] == ["GET", "GET", "GET"]
-    assert all(record.timeout <= 7 for record in opener.records)
-
-
-def test_list_prefix_contents_propagates_ambiguous_pagination() -> None:
-    opener = FakeOpener([FakeResponse(200, _list_objects([], truncated=True))])
-
-    with pytest.raises(Exception, match="failed"):
-        s3_wipe.list_prefix_contents(
-            endpoint=ENDPOINT,
-            bucket=BUCKET,
-            prefix=PREFIX,
-            access_key_id=ACCESS_KEY,
-            secret_access_key=SECRET_KEY,
-            session_token=SESSION_TOKEN,
-            opener=opener,
-            timeout=1,
-        )
 
 
 def test_list_objects_paginates_with_continuation_token() -> None:

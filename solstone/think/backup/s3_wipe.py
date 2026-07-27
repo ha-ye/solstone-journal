@@ -11,7 +11,6 @@ import hmac
 import logging
 import socket
 import ssl
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -204,8 +203,6 @@ class _S3Client:
         region: str,
         opener: Callable[..., object],
         timeout: float,
-        deadline_monotonic: float | None = None,
-        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         parsed = urllib.parse.urlparse(endpoint.rstrip("/"))
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -218,16 +215,6 @@ class _S3Client:
         self.region = region
         self.opener = opener
         self.timeout = timeout
-        self.deadline_monotonic = deadline_monotonic
-        self.monotonic = monotonic
-
-    def _request_timeout(self) -> float:
-        if self.deadline_monotonic is None:
-            return self.timeout
-        remaining = self.deadline_monotonic - self.monotonic()
-        if remaining <= 0:
-            raise _WipeFailure("timeout")
-        return min(self.timeout, remaining)
 
     def request(
         self,
@@ -279,7 +266,7 @@ class _S3Client:
             method=method,
         )
         try:
-            with self.opener(request, timeout=self._request_timeout()) as response:
+            with self.opener(request, timeout=self.timeout) as response:
                 status = int(getattr(response, "status", response.getcode()))
                 raw_body = response.read()
         except urllib.error.HTTPError as exc:
@@ -373,40 +360,6 @@ class _S3Client:
         )
 
 
-def list_prefix_contents(
-    *,
-    endpoint: str,
-    bucket: str,
-    prefix: str,
-    access_key_id: str,
-    secret_access_key: str,
-    session_token: str,
-    region: str = "auto",
-    opener: Callable[..., object] = urllib.request.urlopen,
-    timeout: float = S3_WIPE_TIMEOUT_SECONDS,
-    budget_s: float | None = None,
-) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    deadline_monotonic = None
-    if budget_s is not None:
-        deadline_monotonic = time.monotonic() + budget_s
-    client = _S3Client(
-        endpoint=endpoint,
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
-        session_token=session_token,
-        region=region,
-        opener=opener,
-        timeout=timeout,
-        deadline_monotonic=deadline_monotonic,
-    )
-    keys = tuple(client.list_objects(bucket=bucket, prefix=prefix))
-    uploads = tuple(
-        (upload.key, upload.upload_id)
-        for upload in client.list_uploads(bucket=bucket, prefix=prefix)
-    )
-    return keys, uploads
-
-
 def wipe_prefix(
     *,
     endpoint: str,
@@ -450,6 +403,5 @@ def wipe_prefix(
 __all__ = [
     "S3_WIPE_TIMEOUT_SECONDS",
     "WipeResult",
-    "list_prefix_contents",
     "wipe_prefix",
 ]

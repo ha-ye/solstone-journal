@@ -153,10 +153,7 @@ repository string.
 
 ## Restic invocation model
 
-`run_restic` remains the ordinary restic invocation path in source code.
-SPB proof runs use `run_restic_json_records` for `backup --stdin`, `ls --long`, and `restore`; `init` remains human mode on `run_restic`.
-Their JSON proof contract is closed over record kinds/cardinality but open to extra fields inside accepted records.
-SPB proof runs also pass `--no-cache`, avoiding a restic cache under the operator's home during the proof.
+`run_restic` remains the only restic invocation path in source code.
 
 Runner extension:
 
@@ -306,9 +303,6 @@ Logging, if any, is limited to returncode and reason code.
 
 - `run_restic(..., pass_fds: tuple[int, ...] = ()) -> ResticResult`
   Existing behavior with optional FD inheritance for pipe-backed password files.
-- `run_restic_json_records(...) -> ResticJsonRecordsResult`
-  Strict-UTF-8 JSON Lines from raw child stdout before diagnostic redaction,
-  zero-exit/cleanup-verified only, returned through one-shot opaque records.
 
 Read/write naming:
 

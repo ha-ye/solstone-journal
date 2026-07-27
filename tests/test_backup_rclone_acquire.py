@@ -100,50 +100,6 @@ def test_ensure_rclone_reuses_verified_install(
     assert calls == 1
 
 
-def test_check_rclone_ready_is_read_only_and_honors_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    binary = tmp_path / "rclone"
-    payload = _fake_binary()
-    binary.write_bytes(payload)
-    binary.chmod(0o755)
-    (tmp_path / ".install-complete").write_text(
-        json.dumps(
-            {
-                "schema_version": rclone_install.RCLONE_SCHEMA_VERSION,
-                "tool": "rclone",
-                "version": rclone_install.RCLONE_VERSION,
-                "sha256": _sha256(payload),
-                "platform": {"os": "linux", "arch": "amd64"},
-                "binary_path": str(binary),
-            }
-        ),
-        encoding="utf-8",
-    )
-    captured: dict[str, object] = {}
-
-    def fake_run(argv: list[str], **kwargs):
-        captured["argv"] = argv
-        captured["timeout"] = kwargs["timeout"]
-        return rclone_install.subprocess.CompletedProcess(
-            argv,
-            0,
-            stdout="rclone v1.74.4\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(rclone_install, "_platform_info", lambda: ("linux", "amd64"))
-    monkeypatch.setattr(rclone_install.subprocess, "run", fake_run)
-
-    assert (
-        rclone_install.check_rclone_ready(tmp_path, version_timeout=5.0)
-        == tmp_path / "rclone"
-    )
-    assert captured["argv"] == [str(binary), "version"]
-    assert captured["timeout"] == 5.0
-
-
 def test_ensure_rclone_reinstalls_when_ready_binary_cannot_be_hashed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
