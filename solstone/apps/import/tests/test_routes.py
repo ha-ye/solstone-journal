@@ -161,6 +161,15 @@ def client(tmp_path, monkeypatch):
     return app.test_client()
 
 
+def _seed_imported_json(journal: Path, timestamp: str, payload: dict) -> None:
+    import_dir = journal / "imports" / timestamp
+    import_dir.mkdir(parents=True, exist_ok=True)
+    (import_dir / "imported.json").write_text(
+        json.dumps(payload) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_import_index_serves_injected_spa_shell(client):
     response = client.get("/app/import/")
 
@@ -210,6 +219,69 @@ def test_import_sources_emit_icon_svg_not_emoji(client):
     assert "emoji" not in by_name["quick"]
     assert by_name["quick"]["icon"] == "zap"
     assert "<svg" in by_name["quick"]["icon_svg"]
+
+
+def test_import_list_source_display_matches_current_metadata(client):
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    journal = Path(import_routes.state.journal_root)
+    _seed_imported_json(
+        journal,
+        "20260101_100000",
+        {"source_type": "claude", "source_display": "Claude Chat"},
+    )
+    _seed_imported_json(
+        journal,
+        "20260101_110000",
+        {"source_type": "ics", "source_display": "Calendar"},
+    )
+    expected = {
+        source["name"]: source["display_name"]
+        for source in import_routes.SOURCE_METADATA
+    }
+
+    response = client.get("/app/import/api/list")
+
+    assert response.status_code == 200
+    for row in response.get_json()["imports"]:
+        source_type = row.get("source_type")
+        if source_type in expected:
+            assert row["source_display"] == expected[source_type]
+
+
+def test_import_list_preserves_display_for_unknown_source_types(client):
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    journal = Path(import_routes.state.journal_root)
+    _seed_imported_json(
+        journal,
+        "20260101_100000",
+        {"source_type": "claude", "source_display": "Claude Chat"},
+    )
+    _seed_imported_json(
+        journal,
+        "20260101_110000",
+        {
+            "source_type": "not_a_real_source",
+            "source_display": "Some Recorded Name",
+        },
+    )
+    _seed_imported_json(
+        journal,
+        "20260101_120000",
+        {"source_display": "Recorded Only"},
+    )
+
+    response = client.get("/app/import/api/list")
+
+    assert response.status_code == 200
+    by_timestamp = {row["timestamp"]: row for row in response.get_json()["imports"]}
+    assert by_timestamp["20260101_100000"]["source_display"] == "Claude"
+    assert by_timestamp["20260101_110000"]["source_display"] == "Some Recorded Name"
+    assert by_timestamp["20260101_120000"]["source_type"] is None
+    assert by_timestamp["20260101_120000"]["source_display"] == "Recorded Only"
 
 
 def test_import_workspace_detail_static_wiring_and_deleted_tabs():

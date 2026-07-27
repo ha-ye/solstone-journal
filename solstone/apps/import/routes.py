@@ -210,6 +210,14 @@ SOURCE_METADATA = [
 ]
 
 
+def _source_display_name(source_type: str | None) -> str | None:
+    """Return the current display name for a known source type, else None."""
+    if not source_type:
+        return None
+    entry = next((s for s in SOURCE_METADATA if s["name"] == source_type), None)
+    return entry["display_name"] if entry else None
+
+
 def _source_metadata_payload(source: dict[str, Any]) -> dict[str, Any]:
     payload = dict(source)
     payload["icon_svg"] = lucide_svg(source["icon"])
@@ -811,6 +819,9 @@ def import_list() -> Any:
             journal_root=Path(state.journal_root),
             timestamp=timestamp,
         )
+        display_name = _source_display_name(import_data.get("source_type"))
+        if display_name:
+            import_data["source_display"] = display_name
 
         # Calculate status based on processing state
         # Default status
