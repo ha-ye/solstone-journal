@@ -7,6 +7,7 @@ import bz2
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,46 @@ def test_ensure_restic_reuses_ready_sentinel_without_downloading(
 
     assert install.ensure_restic(tool_dir=tmp_path) == installed
     assert calls == 0
+
+
+def test_check_restic_ready_timeout_returns_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    payload = b"fake restic binary"
+    asset = _make_bz2(payload)
+    filename = "restic_0.19.0_linux_amd64.bz2"
+    _patch_linux_amd64(monkeypatch)
+    monkeypatch.delenv(readiness.RESTIC_BUNDLE_ENV, raising=False)
+    monkeypatch.setitem(readiness.RESTIC_BZ2_SHA256, filename, _sha256(asset))
+    monkeypatch.setattr(install, "_fetch_url", lambda url, *, timeout: asset)
+    installed = install.ensure_restic(tool_dir=tmp_path)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def timeout_run(args: list[str], **kwargs: object) -> None:
+        calls.append((args, kwargs))
+        timeout = kwargs.get("timeout")
+        assert timeout == 10
+        raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+
+    monkeypatch.setattr(readiness.subprocess, "run", timeout_run)
+    caplog.set_level("WARNING", logger="solstone.backup.readiness")
+
+    assert readiness.check_restic_ready(tool_dir=tmp_path) is None
+
+    assert calls == [
+        (
+            [str(installed), "version"],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": 10,
+            },
+        )
+    ]
+    assert "restic version probe timed out" in caplog.text
 
 
 @pytest.mark.parametrize(

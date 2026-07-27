@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("solstone.backup.readiness")
 
 RESTIC_VERSION = "0.19.0"
 RESTIC_SCHEMA_VERSION = 1
@@ -153,7 +156,11 @@ def _restic_version_ok(binary_path: Path) -> bool:
             check=False,
             capture_output=True,
             text=True,
+            timeout=10,
         )
+    except subprocess.TimeoutExpired:
+        logger.warning("restic version probe timed out: %s", binary_path)
+        return False
     except OSError:
         return False
     return result.returncode == 0 and f"restic {RESTIC_VERSION}" in result.stdout
