@@ -11,6 +11,7 @@ import json
 import os
 import zipfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,43 +35,62 @@ from scripts.release_nvattest_proof import CHALLENGE_RE
 from scripts.release_nvattest_support import validate_support_declarations
 from scripts.release_public_evidence import validate_public_evidence_tree
 
-TOP_LEVEL_KEYS = frozenset(
-    (
-        "schema_version",
-        "kind",
-        "product",
-        "version",
-        "source_commit",
-        "candidate",
-        "models",
-        "core_lock_sha256",
-        "rust_targets",
-        "tool_evidence",
-        "native_members",
-        "dependency_policy",
-        "policy_run",
-        "native_summary",
-        "proofs",
-        "nvattest",
-        "redaction",
+RELEASE_EVIDENCE_CONTRACT_DOC = "docs/release-evidence-contract.md"
+CURRENT_LEDGER_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class RetainedLedgerSchema:
+    top_level_keys: frozenset[str]
+    models_keys: frozenset[str]
+    nvattest_keys: frozenset[str]
+    policy_run_keys: frozenset[str]
+
+
+LEDGER_SCHEMA_REGISTRY: dict[int, RetainedLedgerSchema] = {
+    1: RetainedLedgerSchema(
+        top_level_keys=frozenset(
+            (
+                "schema_version",
+                "kind",
+                "product",
+                "version",
+                "source_commit",
+                "candidate",
+                "models",
+                "core_lock_sha256",
+                "rust_targets",
+                "tool_evidence",
+                "native_members",
+                "dependency_policy",
+                "policy_run",
+                "native_summary",
+                "proofs",
+                "nvattest",
+                "redaction",
+            )
+        ),
+        models_keys=frozenset(("decision", "package_version")),
+        nvattest_keys=frozenset(
+            ("challenge", "authority_sha256", "authority", "support_distributions")
+        ),
+        policy_run_keys=frozenset(
+            (
+                "advisory_source_id",
+                "db_snapshot_basename",
+                "db_commit",
+                "db_archive_sha256",
+                "advisory_count",
+                "advisory_acquired_at",
+                "db_commit_timestamp",
+                "policy_checked_at",
+                "result",
+            )
+        ),
     )
-)
-MODELS_KEYS = frozenset(("decision", "package_version"))
-NVATTEST_KEYS = frozenset(
-    ("challenge", "authority_sha256", "authority", "support_distributions")
-)
-POLICY_RUN_KEYS = frozenset(
-    (
-        "advisory_source_id",
-        "db_snapshot_basename",
-        "db_commit",
-        "db_archive_sha256",
-        "advisory_count",
-        "advisory_acquired_at",
-        "db_commit_timestamp",
-        "policy_checked_at",
-        "result",
-    )
+}
+RETAINED_LEDGER_CONSUMER_TOP_LEVEL_KEYS = frozenset(
+    ("candidate", "core_lock_sha256", "models")
 )
 
 
@@ -82,6 +102,110 @@ class LedgerError(RuntimeError):
 
 def _failure(error: str, *, expected: str, actual: str, repair: str) -> Failure:
     return Failure(error=error, expected=expected, actual=actual, repair=repair)
+
+
+def _registered_schema_versions() -> str:
+    return ", ".join(str(version) for version in sorted(LEDGER_SCHEMA_REGISTRY))
+
+
+def _registered_ledger_schema(version: int) -> RetainedLedgerSchema:
+    try:
+        return LEDGER_SCHEMA_REGISTRY[version]
+    except KeyError as exc:
+        raise AssertionError(
+            f"ledger schema_version {version} is not registered"
+        ) from exc
+
+
+def _current_writer_schema() -> RetainedLedgerSchema:
+    return _registered_ledger_schema(CURRENT_LEDGER_SCHEMA_VERSION)
+
+
+def _resolve_retained_ledger_schema(
+    payload: Mapping[str, Any],
+) -> tuple[int | None, RetainedLedgerSchema | None, list[Failure]]:
+    if "schema_version" not in payload:
+        return (
+            None,
+            None,
+            [
+                _failure(
+                    "retained ledger schema_version is missing",
+                    expected="positive integer schema_version",
+                    actual="<missing>",
+                    repair=(
+                        "restore the retained ledger schema_version; see "
+                        f"{RELEASE_EVIDENCE_CONTRACT_DOC}"
+                    ),
+                )
+            ],
+        )
+
+    version = payload["schema_version"]
+    if type(version) is not int or version <= 0:
+        return (
+            None,
+            None,
+            [
+                _failure(
+                    f"retained ledger schema_version is malformed: {version!r}",
+                    expected="positive integer schema_version",
+                    actual=repr(version),
+                    repair=(
+                        "set schema_version to a registered positive integer; see "
+                        f"{RELEASE_EVIDENCE_CONTRACT_DOC}"
+                    ),
+                )
+            ],
+        )
+
+    schema = LEDGER_SCHEMA_REGISTRY.get(version)
+    if schema is None:
+        registered = _registered_schema_versions()
+        return (
+            version,
+            None,
+            [
+                _failure(
+                    f"retained ledger schema_version {version} is not registered",
+                    expected=f"registered schema_version values: {registered}",
+                    actual=str(version),
+                    repair=(
+                        "append a registered schema version or recover with the "
+                        f"release-bound reader; see {RELEASE_EVIDENCE_CONTRACT_DOC}"
+                    ),
+                )
+            ],
+        )
+
+    missing_consumer_keys = sorted(
+        RETAINED_LEDGER_CONSUMER_TOP_LEVEL_KEYS - schema.top_level_keys
+    )
+    if missing_consumer_keys:
+        missing = ", ".join(missing_consumer_keys)
+        return (
+            version,
+            schema,
+            [
+                _failure(
+                    (
+                        f"retained ledger schema_version {version} omits current "
+                        f"consumer top-level key {missing}; see "
+                        f"{RELEASE_EVIDENCE_CONTRACT_DOC}"
+                    ),
+                    expected=(
+                        f"schema_version {version} top-level keys include {missing}"
+                    ),
+                    actual=(f"schema_version {version} top-level keys omit {missing}"),
+                    repair=(
+                        "append a schema version or update the declared consumer "
+                        f"requirements; see {RELEASE_EVIDENCE_CONTRACT_DOC}"
+                    ),
+                )
+            ],
+        )
+
+    return version, schema, []
 
 
 def _candidate_files(release_dir: Path) -> list[dict[str, Any]]:
@@ -137,6 +261,7 @@ def _validate_tool_evidence(
 
 
 def _policy_run_payload(policy_run: PolicyRun) -> dict[str, Any]:
+    schema = _current_writer_schema()
     payload = {
         "advisory_source_id": policy_run.advisory_source_id,
         "db_snapshot_basename": policy_run.db_snapshot_basename,
@@ -148,7 +273,7 @@ def _policy_run_payload(policy_run: PolicyRun) -> dict[str, Any]:
         "policy_checked_at": policy_run.policy_checked_at,
         "result": policy_run.result,
     }
-    if set(payload) != POLICY_RUN_KEYS:
+    if set(payload) != schema.policy_run_keys:
         raise AssertionError("policy run payload key set drifted")
     failures = validate_snapshot_identity(
         "ledger.policy_run",
@@ -256,8 +381,14 @@ def validate_native_members(value: Any) -> list[Failure]:
     return failures
 
 
-def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Failure]:
+def validate_models_payload(
+    value: Any,
+    candidate: Any | None = None,
+    *,
+    schema: RetainedLedgerSchema | None = None,
+) -> list[Failure]:
     failures: list[Failure] = []
+    resolved_schema = schema or _current_writer_schema()
     if not isinstance(value, Mapping):
         return [
             _failure(
@@ -267,11 +398,11 @@ def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Fa
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
-    if set(value) != MODELS_KEYS:
+    if set(value) != resolved_schema.models_keys:
         failures.append(
             _failure(
                 "retained ledger models key set is invalid",
-                expected=", ".join(sorted(MODELS_KEYS)),
+                expected=", ".join(sorted(resolved_schema.models_keys)),
                 actual=", ".join(sorted(str(key) for key in value)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -338,8 +469,11 @@ def _canonical_nvattest_authority_bytes(payload: Mapping[str, Any]) -> bytes:
     return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def validate_nvattest_payload(value: Any) -> list[Failure]:
+def validate_nvattest_payload(
+    value: Any, *, schema: RetainedLedgerSchema | None = None
+) -> list[Failure]:
     failures: list[Failure] = []
+    resolved_schema = schema or _current_writer_schema()
     if not isinstance(value, Mapping):
         return [
             _failure(
@@ -349,11 +483,11 @@ def validate_nvattest_payload(value: Any) -> list[Failure]:
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         ]
-    if set(value) != NVATTEST_KEYS:
+    if set(value) != resolved_schema.nvattest_keys:
         failures.append(
             _failure(
                 "retained ledger nvattest key set is invalid",
-                expected=", ".join(sorted(NVATTEST_KEYS)),
+                expected=", ".join(sorted(resolved_schema.nvattest_keys)),
                 actual=", ".join(sorted(str(key) for key in value)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -415,11 +549,17 @@ def validate_nvattest_payload(value: Any) -> list[Failure]:
 
 def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
     failures: list[Failure] = []
-    if set(payload) != TOP_LEVEL_KEYS:
+    _version, schema, schema_failures = _resolve_retained_ledger_schema(payload)
+    if schema_failures:
+        return schema_failures
+    if schema is None:
+        raise AssertionError("retained ledger schema resolution returned no schema")
+
+    if set(payload) != schema.top_level_keys:
         failures.append(
             _failure(
                 "retained ledger top-level key set is invalid",
-                expected=", ".join(sorted(TOP_LEVEL_KEYS)),
+                expected=", ".join(sorted(schema.top_level_keys)),
                 actual=", ".join(sorted(str(key) for key in payload)) or "<empty>",
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
@@ -435,11 +575,11 @@ def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
             )
         )
     else:
-        if set(policy_run) != POLICY_RUN_KEYS:
+        if set(policy_run) != schema.policy_run_keys:
             failures.append(
                 _failure(
                     "retained ledger policy_run key set is invalid",
-                    expected=", ".join(sorted(POLICY_RUN_KEYS)),
+                    expected=", ".join(sorted(schema.policy_run_keys)),
                     actual=", ".join(sorted(str(key) for key in policy_run))
                     or "<empty>",
                     repair="python3 scripts/check_rust_release_manifest.py",
@@ -465,9 +605,11 @@ def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
             )
         )
     failures.extend(
-        validate_models_payload(payload.get("models"), payload.get("candidate"))
+        validate_models_payload(
+            payload.get("models"), payload.get("candidate"), schema=schema
+        )
     )
-    failures.extend(validate_nvattest_payload(payload.get("nvattest")))
+    failures.extend(validate_nvattest_payload(payload.get("nvattest"), schema=schema))
     failures.extend(validate_native_members(payload.get("native_members")))
     failures.extend(validate_public_evidence_tree("ledger", payload))
     return failures
@@ -869,6 +1011,8 @@ def build_ledger(
     nvattest: Mapping[str, Any],
 ) -> dict[str, Any]:
     failures: list[Failure] = []
+    schema_version = CURRENT_LEDGER_SCHEMA_VERSION
+    schema = _registered_ledger_schema(schema_version)
     if not SOURCE_COMMIT_RE.fullmatch(source_commit):
         failures.append(
             _failure(
@@ -904,14 +1048,14 @@ def build_ledger(
     except LedgerError as exc:
         failures.extend(exc.failures)
         native_members = {}
-    failures.extend(validate_models_payload(models, candidate))
-    failures.extend(validate_nvattest_payload(nvattest))
+    failures.extend(validate_models_payload(models, candidate, schema=schema))
+    failures.extend(validate_nvattest_payload(nvattest, schema=schema))
     failures.extend(_validate_tool_evidence(tool_evidence))
     if failures:
         raise LedgerError(failures)
 
     ledger: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "kind": "solstone-release-ledger",
         "product": "solstone",
         "version": version,
@@ -938,7 +1082,7 @@ def build_ledger(
         },
         "redaction": {"validator": "recursive-key-value-public-evidence"},
     }
-    if set(ledger) != TOP_LEVEL_KEYS:
+    if set(ledger) != schema.top_level_keys:
         raise AssertionError("ledger top-level key set drifted")
     public_failures = validate_public_evidence_tree("ledger", ledger)
     if public_failures:
