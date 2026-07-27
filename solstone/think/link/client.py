@@ -17,7 +17,7 @@ import logging
 import secrets
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import requests
 import websockets
@@ -60,6 +60,9 @@ from solstone.convey.secure_listener.framing import (
     validate_flags,
 )
 from solstone.think.link.tls import TlsError as _TlsError
+
+if TYPE_CHECKING:
+    import httpx
 
 LOG = logging.getLogger(__name__)
 _CONNECT_TIMEOUT_SECONDS = 15
@@ -720,33 +723,42 @@ class TunnelSession:
 class Client:
     @staticmethod
     def enroll_device(relay_url: str, identity: ClientIdentity) -> EnrolledDevice:
-        endpoint = f"{relay_url.rstrip('/')}/enroll/device"
+        endpoint = _enroll_device_endpoint(relay_url)
         LOG.info("client %s: enrolling device token", identity.fingerprint)
-        payload = _post_json(
-            endpoint,
-            {
-                "instance_id": identity.home_instance_id,
-                "client_cert": identity.client_cert_pem,
-                "home_attestation": identity.home_attestation,
-            },
-        )
-        device_token = _required_str(payload, "device_token")
+        payload = _post_json(endpoint, _enroll_device_payload(identity))
+        enrolled = _enrolled_device_from_payload(identity, payload)
         LOG.info("client %s: enroll complete", identity.fingerprint)
-        return EnrolledDevice(device_token=device_token, identity=identity)
+        return enrolled
+
+    @staticmethod
+    async def enroll_device_async(
+        relay_url: str,
+        identity: ClientIdentity,
+        *,
+        timeout: float = _HTTP_TIMEOUT_SECONDS,
+    ) -> EnrolledDevice:
+        import httpx
+
+        endpoint = _enroll_device_endpoint(relay_url)
+        LOG.info("client %s: enrolling device token", identity.fingerprint)
+        http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        try:
+            payload = await _post_json_async(
+                http_client,
+                endpoint,
+                _enroll_device_payload(identity),
+                timeout=timeout,
+            )
+        finally:
+            await http_client.aclose()
+        enrolled = _enrolled_device_from_payload(identity, payload)
+        LOG.info("client %s: enroll complete", identity.fingerprint)
+        return enrolled
 
     @staticmethod
     async def dial(relay_url: str, enrolled: EnrolledDevice) -> TunnelSession:
         identity = enrolled.identity
-        url = (
-            _to_ws(relay_url.rstrip("/"))
-            + "/session/dial?"
-            + urllib.parse.urlencode(
-                {
-                    "instance": identity.home_instance_id,
-                    "token": enrolled.device_token,
-                }
-            )
-        )
+        url = _relay_dial_url(relay_url, enrolled)
         LOG.info("client %s: dialing %s", identity.fingerprint, _redact_url(url))
         ws = await websockets.connect(url, max_size=None)
         return await _open_tunnel_session(_WsEncryptedTransport(ws), identity)
@@ -1014,6 +1026,46 @@ def _post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
     return parsed
 
 
+async def _post_json_async(
+    http_client: "httpx.AsyncClient",
+    url: str,
+    payload: dict[str, object],
+    *,
+    timeout: float,
+) -> dict[str, object]:
+    import httpx
+
+    response = await http_client.post(url, json=payload, timeout=httpx.Timeout(timeout))
+    if not 200 <= response.status_code < 300:
+        raise RuntimeError(
+            f"POST {url} failed: HTTP {response.status_code}: {response.text}"
+        )
+    parsed = response.json()
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"unexpected JSON response from {url}")
+    return parsed
+
+
+def _enroll_device_endpoint(relay_url: str) -> str:
+    return f"{relay_url.rstrip('/')}/enroll/device"
+
+
+def _enroll_device_payload(identity: ClientIdentity) -> dict[str, object]:
+    return {
+        "instance_id": identity.home_instance_id,
+        "client_cert": identity.client_cert_pem,
+        "home_attestation": identity.home_attestation,
+    }
+
+
+def _enrolled_device_from_payload(
+    identity: ClientIdentity,
+    payload: dict[str, object],
+) -> EnrolledDevice:
+    device_token = _required_str(payload, "device_token")
+    return EnrolledDevice(device_token=device_token, identity=identity)
+
+
 def _required_str(payload: dict[str, object], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
@@ -1038,6 +1090,20 @@ def _to_ws(url: str) -> str:
     if url.startswith("http://"):
         return "ws://" + url[len("http://") :]
     return url
+
+
+def _relay_dial_url(relay_url: str, enrolled: EnrolledDevice) -> str:
+    identity = enrolled.identity
+    return (
+        _to_ws(relay_url.rstrip("/"))
+        + "/session/dial?"
+        + urllib.parse.urlencode(
+            {
+                "instance": identity.home_instance_id,
+                "token": enrolled.device_token,
+            }
+        )
+    )
 
 
 def _redact_url(url: str) -> str:

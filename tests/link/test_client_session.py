@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 from collections.abc import Callable
 
+import httpx
 import pytest
 
 from solstone.convey.secure_listener.framing import (
@@ -162,6 +163,134 @@ def _session(
         keepalive_interval=keepalive_interval,
         keepalive_timeout=keepalive_timeout,
     )
+
+
+def _identity() -> client.ClientIdentity:
+    return client.ClientIdentity(
+        private_key_pem="private",
+        client_cert_pem="cert",
+        ca_chain_pem="chain",
+        fingerprint="sha256:fingerprint",
+        home_instance_id="instance",
+        home_label="home",
+        home_attestation="attestation",
+    )
+
+
+def test_enroll_device_uses_shared_payload_and_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+        calls.append((url, payload))
+        return {"device_token": "tok"}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    enrolled = client.Client.enroll_device("https://relay.test/", _identity())
+
+    assert enrolled.device_token == "tok"
+    assert enrolled.identity is not None
+    assert calls == [
+        (
+            "https://relay.test/enroll/device",
+            {
+                "instance_id": "instance",
+                "client_cert": "cert",
+                "home_attestation": "attestation",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_enroll_device_async_posts_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[FakeAsyncClient] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: object) -> None:
+            self.timeout = timeout
+            self.posts: list[tuple[str, dict[str, object], object]] = []
+            self.closed = False
+            clients.append(self)
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            timeout: object,
+        ) -> object:
+            self.posts.append((url, json, timeout))
+            return FakeResponse(200, {"device_token": "async-token"})
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: object) -> None:
+            self.status_code = status_code
+            self.text = "body"
+            self._payload = payload
+
+        def json(self) -> object:
+            return self._payload
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    enrolled = await client.Client.enroll_device_async(
+        "https://relay.test",
+        _identity(),
+        timeout=3.0,
+    )
+
+    assert enrolled.device_token == "async-token"
+    assert len(clients) == 1
+    assert clients[0].closed is True
+    assert clients[0].posts[0][0] == "https://relay.test/enroll/device"
+    assert clients[0].posts[0][1]["home_attestation"] == "attestation"
+
+
+@pytest.mark.asyncio
+async def test_enroll_device_async_closes_on_validator_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[object] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: object) -> None:
+            self.closed = False
+            clients.append(self)
+
+        async def post(
+            self,
+            _url: str,
+            *,
+            json: dict[str, object],
+            timeout: object,
+        ) -> object:
+            return FakeResponse()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class FakeResponse:
+        status_code = 200
+        text = "body"
+
+        def json(self) -> object:
+            return {}
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(RuntimeError, match="missing string field"):
+        await client.Client.enroll_device_async("https://relay.test", _identity())
+
+    assert len(clients) == 1
+    assert getattr(clients[0], "closed") is True
 
 
 def _probing_body_source(probe: list[int]) -> client.BodySource:
