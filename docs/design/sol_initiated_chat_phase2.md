@@ -356,7 +356,7 @@ read-only CLI or template paths.
 
 New files:
 
-- `docs/design/sol_initiated_chat_lode2.md`: this design.
+- `docs/design/sol_initiated_chat_phase2.md`: this design.
 - `solstone/convey/sol_initiated/state.py`: read-only latest-unread request
   helper shared by `apps.py` and `/app/chat`.
 - `solstone/convey/static/sol_initiated_constants.js`: browser constants for the

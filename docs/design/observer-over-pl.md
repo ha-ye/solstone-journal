@@ -416,7 +416,7 @@ Net-new:
 | file | purpose |
 |---|---|
 | `solstone/think/link/client.py` | Lifted PL client/tunnel helpers from `tests/link/client.py`. |
-| `docs/design/lodes/observer-over-pl.md` | This design. |
+| `docs/design/observer-over-pl.md` | This design. |
 | `tests/link/test_dialer_unit.py` | Unit tests for LAN/relay race and failure aggregation. |
 | `tests/integration/test_observer_over_pl_e2e.py` | Authored PL observer end-to-end integration test. |
 

@@ -21,9 +21,9 @@ LOCKED_LITERALS = (
 )
 
 ALLOWED_PATHS = {
-    Path("docs/design/sol_initiated_chat_lode1.md"),
-    Path("docs/design/sol_initiated_chat_lode2.md"),
-    Path("docs/design/sol_initiated_chat_lode3.md"),
+    Path("docs/design/sol_initiated_chat_phase1.md"),
+    Path("docs/design/sol_initiated_chat_phase2.md"),
+    Path("docs/design/sol_initiated_chat_phase3.md"),
     Path("docs/design/openapi-client-contract.md"),
     Path("solstone/convey/README.md"),
     Path("solstone/convey/chat_contract.py"),

@@ -292,9 +292,9 @@ Second-order consequences:
 
 Group 1 - constants + design doc + test allowlist:
 
-- NEW `docs/design/sol_initiated_chat_lode3.md` (this doc)
+- NEW `docs/design/sol_initiated_chat_phase3.md` (this doc)
 - EDIT `solstone/convey/sol_initiated/copy.py`: add lode-3 constants for every Jinja-rendered string in the new chat origin-tag UI, settings section, and provenance toggle. Enumerate them in the design doc.
-- EDIT `tests/test_sol_initiated_constants_locked.py`: add `docs/design/sol_initiated_chat_lode3.md` to ALLOWED_PATHS.
+- EDIT `tests/test_sol_initiated_constants_locked.py`: add `docs/design/sol_initiated_chat_phase3.md` to ALLOWED_PATHS.
 
 Group 2 - settings schema rename:
 
