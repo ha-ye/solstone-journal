@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -13,6 +14,7 @@ import scripts.check_release_preflight as preflight
 import scripts.check_rust_release_manifest as checker
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
+from scripts.build_nvattest_authority import render_nvattest_authority_json
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.check_wheel_contents import (
     CORE_SCRIPT_NAMES,
@@ -21,6 +23,7 @@ from scripts.check_wheel_contents import (
     SPEAKERS_ANALYZE_TARGETS,
 )
 from scripts.release_advisory_policy import PolicyRun
+from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
 
 SOURCE_COMMIT = "a" * 40
 MALFORMED_DB_COMMIT_CASES = (
@@ -233,6 +236,25 @@ def _models(decision: str = "exclude") -> dict[str, str]:
     return {"decision": decision, "package_version": "1.0.0"}
 
 
+def _nvattest(challenge: str | None = None) -> dict[str, object]:
+    authority_bytes = render_nvattest_authority_json().encode("utf-8")
+    return {
+        "authority": json.loads(authority_bytes.decode("utf-8")),
+        "authority_sha256": hashlib.sha256(authority_bytes).hexdigest(),
+        "challenge": challenge or hashlib.sha256(b"challenge").hexdigest(),
+        "support_distributions": [
+            {
+                "bytes": len(name.encode("utf-8")),
+                "filename": f"{name.replace('-', '_')}-0.0.{index}-py3-none-any.whl",
+                "name": name,
+                "sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                "version": f"0.0.{index}",
+            }
+            for index, name in enumerate(sorted(SUPPORT_DISTRIBUTION_NAMES), start=1)
+        ],
+    }
+
+
 def _ledger_path(root: Path) -> Path:
     return ledger.write_ledger(
         evidence_root=root / "target" / "release-evidence",
@@ -244,6 +266,7 @@ def _ledger_path(root: Path) -> Path:
         policy_run=_policy(),
         native_records=_native_records(),
         models=_models(),
+        nvattest=_nvattest(),
     )
 
 
@@ -264,6 +287,7 @@ def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:
         policy_run=_policy(),
         native_records=_native_records(),
         models=_models(),
+        nvattest=_nvattest(),
     )
     second = ledger.write_ledger(
         evidence_root=tmp_path / "two" / "target" / "release-evidence",
@@ -275,6 +299,7 @@ def test_ledger_is_byte_deterministic_for_fixed_inputs(tmp_path: Path) -> None:
         policy_run=_policy(),
         native_records=_native_records(),
         models=_models(),
+        nvattest=_nvattest(),
     )
 
     assert first.read_bytes() == second.read_bytes()
@@ -291,6 +316,7 @@ def test_ledger_key_set_excludes_transport_and_bundle_state(tmp_path: Path) -> N
         policy_run=_policy(),
         native_records=_native_records(),
         models=_models(),
+        nvattest=_nvattest(),
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     text = path.read_text(encoding="utf-8")
@@ -326,6 +352,7 @@ def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> Non
             policy_run=_policy(),
             native_records=records,
             models=_models(),
+            nvattest=_nvattest(),
         )
 
     records = _native_records()
@@ -340,6 +367,7 @@ def test_ledger_rejects_raw_signer_team_and_uuid_evidence(tmp_path: Path) -> Non
             policy_run=_policy(),
             native_records=records,
             models=_models(),
+            nvattest=_nvattest(),
         )
 
 
@@ -354,6 +382,7 @@ def test_ledger_requires_exactly_three_native_records(tmp_path: Path) -> None:
             policy_run=_policy(),
             native_records=_native_records()[:1],
             models=_models(),
+            nvattest=_nvattest(),
         )
 
     assert exc.value.failures[0].error == "macOS native record set is incomplete"
@@ -375,6 +404,7 @@ def test_ledger_requires_full_tool_cohort_per_lane(tmp_path: Path, lane: str) ->
             policy_run=_policy(),
             native_records=_native_records(),
             models=_models(),
+            nvattest=_nvattest(),
         )
 
     assert any("tool" in failure.error for failure in exc.value.failures)

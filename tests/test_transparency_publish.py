@@ -119,11 +119,13 @@ def _candidate(
         encoding="utf-8",
     )
     proof_hashes: dict[str, str] = {}
+    nvattest_hashes: dict[str, str] = {}
     for target in PROOF_TARGETS:
         proof = {"target": target, "version": proof_version or version}
         path = evidence_dir / "proofs" / f"{target}.json"
         path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
         proof_hashes[target] = _sha(path)[0]
+        nvattest_hashes[target] = "0" * 64
     return CandidateReport(
         heading="retained-candidate-valid",
         version=version,
@@ -133,6 +135,7 @@ def _candidate(
         candidate_digest="b" * 64,
         ledger_sha256=_sha(evidence_dir / "ledger.json")[0],
         proof_sha256=proof_hashes,
+        nvattest_sha256=nvattest_hashes,
         bundle_digest="c" * 64,
     )
 

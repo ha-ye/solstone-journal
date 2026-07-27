@@ -14,7 +14,7 @@ import sys
 import tarfile
 import tomllib
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -33,6 +33,7 @@ from scripts.check_wheel_contents import (
     core_wheel_script_members,
 )
 from scripts.release_build_host import BuildHostResult, SourceBundle
+from scripts.release_nvattest_proof import CHALLENGE_RE
 from scripts.transparency_core import collect_candidate_parts, snapshot_candidate
 from tests.helpers.release_candidate_fixtures import (
     LOCK_SHA,
@@ -521,6 +522,25 @@ def _assert_dist_preflight_failure(
     assert exc.value.failures[0].repair == "bash scripts/release.sh --candidate"
 
 
+def _differing_payload_paths(
+    first: object,
+    second: object,
+    path: tuple[str, ...] = (),
+) -> set[tuple[str, ...]]:
+    if isinstance(first, Mapping) and isinstance(second, Mapping):
+        keys = set(first) | set(second)
+        return {
+            diff
+            for key in keys
+            for diff in _differing_payload_paths(
+                first.get(key),
+                second.get(key),
+                (*path, str(key)),
+            )
+        }
+    return set() if first == second else {path}
+
+
 def test_fake_all_host_candidate_and_recovery_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -542,11 +562,16 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
         / f".{checker._current_version()}.source.bundle"
     ).exists()
     assert first.candidate_digest == second.candidate_digest
-    assert first.bundle_digest == second.bundle_digest
-    assert (
-        first.evidence_dir.joinpath("ledger.json").read_bytes()
-        == second.evidence_dir.joinpath("ledger.json").read_bytes()
-    )
+    first_ledger = json.loads(first.evidence_dir.joinpath("ledger.json").read_text())
+    second_ledger = json.loads(second.evidence_dir.joinpath("ledger.json").read_text())
+    assert _differing_payload_paths(first_ledger, second_ledger) == {
+        ("nvattest", "challenge")
+    }
+    first_challenge = first_ledger["nvattest"]["challenge"]
+    second_challenge = second_ledger["nvattest"]["challenge"]
+    assert CHALLENGE_RE.fullmatch(first_challenge)
+    assert CHALLENGE_RE.fullmatch(second_challenge)
+    assert first_challenge != second_challenge
     assert sorted(path.name for path in first.release_dir.iterdir()) == sorted(
         path.name for path in second.release_dir.iterdir()
     )
@@ -644,16 +669,16 @@ def test_candidate_pair_promote_rejects_publication_prerequisite_in_staging(
     root = _repo(tmp_path)
     base_services = _services(root)
 
-    def run_install_proof(**kwargs: Any) -> Path:
-        output_path = base_services.run_install_proof(**kwargs)
-        evidence_staging = output_path.parents[1]
+    def run_target_proofs(**kwargs: Any) -> Any:
+        target_proofs = base_services.run_target_proofs(**kwargs)
+        evidence_staging = target_proofs.install.parents[1]
         write_core_unsupported_tombstone_record(
             evidence_staging,
             checker._current_version(),
         )
-        return output_path
+        return target_proofs
 
-    services = replace(base_services, run_install_proof=run_install_proof)
+    services = replace(base_services, run_target_proofs=run_target_proofs)
 
     with pytest.raises(driver.DriverError) as exc:
         driver.run_candidate(root, _env(), services)
@@ -940,6 +965,7 @@ def test_recovery_identity_is_invariant_across_absent_and_present_prerequisite(
         "candidate_digest",
         "ledger_sha256",
         "proof_sha256",
+        "nvattest_sha256",
         "bundle_digest",
         "payload_files",
     ):
@@ -948,6 +974,8 @@ def test_recovery_identity_is_invariant_across_absent_and_present_prerequisite(
         "payload_inventory",
         "evidence_inventory",
         "proof_inventory",
+        "nvattest_inventory",
+        "support_inventory",
     ):
         assert absent_payload[key] == present_payload[key]
     assert absent_payload.pop("publication_prerequisite_inventory") == []
@@ -1117,6 +1145,8 @@ def test_machine_report_is_canonical_sorted_and_not_publication_authorization(
         )
         for target, entry in payload["proof_inventory"].items():
             assert entry["sha256"] == payload["proof_sha256"][target]
+        for target, entry in payload["nvattest_inventory"].items():
+            assert entry["sha256"] == payload["nvattest_sha256"][target]
 
 
 def test_candidate_cleanup_receives_release_zig_cache_root(tmp_path: Path) -> None:

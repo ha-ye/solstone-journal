@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 
 import scripts.release_digest as digest
+from scripts.check_rust_release_manifest import canonical_json_bytes
 
 
 def test_candidate_digest_uses_basename_sorted_two_space_lf_stream(tmp_path) -> None:
@@ -50,13 +51,31 @@ def test_bundle_digest_excludes_self_hash_and_is_canonical() -> None:
         "linux-x86_64-musl": "3" * 64,
         "linux-aarch64-musl": "2" * 64,
     }
+    nvattest_hashes = {
+        "macos-arm64": "7" * 64,
+        "linux-x86_64-musl": "6" * 64,
+        "linux-aarch64-musl": "5" * 64,
+    }
+    expected_payload = {
+        "candidate_digest": candidate,
+        "ledger_sha256": ledger,
+        "nvattest_sha256": {
+            target: nvattest_hashes[target] for target in sorted(nvattest_hashes)
+        },
+        "proof_sha256": {
+            target: proof_hashes[target] for target in sorted(proof_hashes)
+        },
+    }
+    expected = hashlib.sha256(canonical_json_bytes(expected_payload)).hexdigest()
 
-    assert digest.bundle_digest(candidate, ledger, proof_hashes) == (
-        "ccce5e9d1a416579b9a07c3e00a60acfd24e78d7fc38fd75f8a16962d27a1021"
+    assert (
+        digest.bundle_digest(candidate, ledger, proof_hashes, nvattest_hashes)
+        == expected
     )
 
     with_extra_self_hash = dict(proof_hashes)
     with_extra_self_hash["bundle_digest"] = "5" * 64
-    assert digest.bundle_digest(candidate, ledger, with_extra_self_hash) != (
-        "ccce5e9d1a416579b9a07c3e00a60acfd24e78d7fc38fd75f8a16962d27a1021"
+    assert (
+        digest.bundle_digest(candidate, ledger, with_extra_self_hash, nvattest_hashes)
+        != expected
     )

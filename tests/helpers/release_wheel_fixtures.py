@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import struct
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import scripts.check_wheel_contents as checker
+from scripts.build_nvattest_authority import render_nvattest_authority_json
 from solstone.think.probe import (
     SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
 )
@@ -26,7 +28,7 @@ SPEAKERS_ANALYZE_DEFAULT_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
 
 ELF_HEADER_SIZE = 64
 ELF_PROGRAM_HEADER_SIZE = 56
-NVATTEST_AUTHORITY_BYTES = b'{"schema_version":1}\n'
+NVATTEST_AUTHORITY_BYTES = render_nvattest_authority_json().encode("utf-8")
 ROOT_LAUNCHER_BYTES = {
     name: f"#!/bin/sh\necho fixture {name}\n".encode("utf-8")
     for name in checker.ROOT_LAUNCHER_NAMES
@@ -49,6 +51,27 @@ def _write_member(
     info = zipfile.ZipInfo(name)
     info.external_attr = mode << 16
     wheel.writestr(info, content)
+
+
+def write_support_wheel(path: Path, *, name: str, version: str) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    distribution = re.sub(r"[-.]+", "_", name)
+    wheel_path = path / f"{distribution}-{version}-py3-none-any.whl"
+    dist_info = f"{distribution}-{version}.dist-info"
+    members = {
+        f"{dist_info}/METADATA": f"Name: {name}\nVersion: {version}\n".encode("utf-8"),
+        f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\n",
+    }
+    rows = [
+        f"{member},{record_hash(content)},{len(content)}"
+        for member, content in members.items()
+    ]
+    rows.append(f"{dist_info}/RECORD,,")
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        for member, content in members.items():
+            _write_member(wheel, member, content)
+        _write_member(wheel, f"{dist_info}/RECORD", "\n".join(rows).encode("utf-8"))
+    return wheel_path
 
 
 def minimal_elf(

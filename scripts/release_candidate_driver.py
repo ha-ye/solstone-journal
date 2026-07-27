@@ -7,14 +7,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import tomllib
+import urllib.request
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +49,7 @@ from scripts.check_rust_release_manifest import (
 from scripts.check_wheel_contents import (
     EXPECTED_MODEL_SHA256,
     MAX_BASE_WHEEL_BYTES,
+    NVATTEST_AUTHORITY_MEMBER,
     check_dist,
 )
 from scripts.normalize_maturin_sdist import (
@@ -72,6 +77,7 @@ from scripts.release_install_smoke import (
     RETAINED_PROOF_REPAIR,
     InstallProofError,
     _expected_install_members,
+    _select_names_for_target,
     candidate_file_entries,
     target_install_paths_from_ledger,
     validate_install_proof_bytes,
@@ -82,10 +88,26 @@ from scripts.release_ledger import (
     validate_native_members_against_release_dir,
     write_ledger,
 )
+from scripts.release_nvattest_proof import (
+    CHALLENGE_RE,
+    SUPPORT_DISTRIBUTION_NAMES,
+    NvattestProofError,
+    support_distribution_entries,
+    validate_nvattest_proof_bytes,
+)
+from scripts.release_nvattest_support import (
+    SupportLockEntry,
+    SupportLockError,
+    read_support_lock_entries,
+    support_declarations_from_lock,
+    validate_support_declarations,
+    verify_support_wheels_against_lock,
+)
 from scripts.release_proof_host import (
     ProofHostError,
+    TargetProofPaths,
     proof_channels_from_env,
-    run_install_proof_with_channels,
+    run_target_proofs_with_channels,
 )
 from scripts.release_public_evidence import validate_public_evidence_tree
 from scripts.release_tool_pins import (
@@ -146,6 +168,7 @@ class CandidateReport:
     candidate_digest: str
     ledger_sha256: str
     proof_sha256: Mapping[str, str]
+    nvattest_sha256: Mapping[str, str]
     bundle_digest: str
 
 
@@ -170,7 +193,9 @@ class CandidateServices:
     create_source_bundle: Callable[[Path, str, Path], SourceBundle]
     build_host: Callable[[SourceBundle, str, Path], BuildHostResult]
     cleanup_transients: Callable[[Sequence[Path]], None]
-    run_install_proof: Callable[..., Path]
+    challenge_factory: Callable[[], str]
+    materialize_support_wheels: Callable[[Path], Sequence[Path]]
+    run_target_proofs: Callable[..., TargetProofPaths]
     transaction_hook: Callable[[str], None]
 
 
@@ -1010,6 +1035,39 @@ def _default_cleanup_transients(paths: Sequence[Path]) -> None:
             ) from None
 
 
+def _default_materialize_support_wheels(destination: Path) -> tuple[Path, ...]:
+    try:
+        root = destination.parents[3]
+    except IndexError:
+        raise DriverError(
+            [
+                _failure(
+                    "nvattest support materialization failed",
+                    expected="evidence support directory under release checkout",
+                    actual=destination.name,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        ) from None
+    try:
+        entries = read_support_lock_entries(root / "uv.lock")
+    except SupportLockError as exc:
+        raise DriverError(_driver_failures_from_support_error(exc)) from None
+    destination.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for entry in entries:
+        output_path = destination / entry.filename
+        temp_path = output_path.with_name(f".{output_path.name}.tmp")
+        try:
+            with urllib.request.urlopen(entry.url, timeout=30) as response:
+                temp_path.write_bytes(response.read())
+            os.rename(temp_path, output_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        paths.append(output_path)
+    return tuple(paths)
+
+
 def default_services(env: Mapping[str, str] | None = None) -> CandidateServices:
     build_host = (
         _default_build_host_from_env(env) if env is not None else _missing_build_host
@@ -1028,7 +1086,9 @@ def default_services(env: Mapping[str, str] | None = None) -> CandidateServices:
         create_source_bundle=_default_create_source_bundle,
         build_host=build_host,
         cleanup_transients=_default_cleanup_transients,
-        run_install_proof=proof_runner,
+        challenge_factory=lambda: secrets.token_hex(32),
+        materialize_support_wheels=_default_materialize_support_wheels,
+        run_target_proofs=proof_runner,
         transaction_hook=lambda _point: None,
     )
 
@@ -1048,22 +1108,24 @@ def _missing_build_host(
     )
 
 
-def _default_proof_hosts_from_env(env: Mapping[str, str]) -> Callable[..., Path]:
+def _default_proof_hosts_from_env(
+    env: Mapping[str, str],
+) -> Callable[..., TargetProofPaths]:
     try:
         channels = proof_channels_from_env(env)
     except ProofHostError as exc:
         raise DriverError(exc.failures) from None
 
-    def proof_runner(**kwargs: Any) -> Path:
+    def proof_runner(**kwargs: Any) -> TargetProofPaths:
         try:
-            return run_install_proof_with_channels(channels, **kwargs)
+            return run_target_proofs_with_channels(channels, **kwargs)
         except ProofHostError as exc:
             raise DriverError(exc.failures) from None
 
     return proof_runner
 
 
-def _missing_proof_host(**_kwargs: Any) -> Path:
+def _missing_proof_host(**_kwargs: Any) -> TargetProofPaths:
     raise DriverError(
         [
             _failure(
@@ -1990,6 +2052,393 @@ def _safe_retained_basename(value: Any) -> bool:
     )
 
 
+def _canonical_nvattest_authority_bytes(payload: Mapping[str, Any]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _driver_failures_from_support_error(exc: SupportLockError) -> list[Failure]:
+    return [
+        _failure(
+            failure.error,
+            expected=failure.expected,
+            actual=failure.actual,
+            repair=failure.repair,
+        )
+        for failure in exc.failures
+    ]
+
+
+def _driver_failures_from_nvattest_error(exc: NvattestProofError) -> list[Failure]:
+    return [
+        _failure(
+            failure.error,
+            expected=failure.expected,
+            actual=failure.actual,
+            repair=failure.repair,
+        )
+        for failure in exc.failures
+    ]
+
+
+def _validate_nvattest_challenge(value: str) -> list[Failure]:
+    if CHALLENGE_RE.fullmatch(value):
+        return []
+    return [
+        _failure(
+            "nvattest challenge is invalid",
+            expected="64 lowercase hexadecimal characters",
+            actual=repr(value),
+            repair="bash scripts/release.sh --candidate",
+        )
+    ]
+
+
+def _support_destination_failures(
+    support_dir: Path,
+    paths: Sequence[Path],
+    expected_entries: Sequence[SupportLockEntry],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    expected_names = {entry.filename for entry in expected_entries}
+    try:
+        support_root = support_dir.resolve()
+    except OSError:
+        support_root = support_dir
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            path.resolve().relative_to(support_root)
+        except (OSError, ValueError):
+            failures.append(
+                _failure(
+                    "nvattest support materialization escaped destination",
+                    expected="support wheel path under evidence support directory",
+                    actual=path.name,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+    try:
+        support_entries = {path.name: path for path in support_dir.iterdir()}
+    except FileNotFoundError:
+        return [
+            _failure(
+                "nvattest support inventory is not exact",
+                expected=", ".join(sorted(expected_names)),
+                actual="<missing>",
+                repair="bash scripts/release.sh --candidate",
+            )
+        ]
+    if set(support_entries) != expected_names:
+        failures.append(
+            _failure(
+                "nvattest support inventory is not exact",
+                expected=", ".join(sorted(expected_names)),
+                actual=", ".join(sorted(support_entries)) or "<empty>",
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
+    for name, path in sorted(support_entries.items()):
+        try:
+            entry = path.lstat()
+        except OSError as exc:
+            failures.append(
+                _failure(
+                    "nvattest support wheel could not be inspected",
+                    expected=f"regular support wheel {name}",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+            continue
+        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode):
+            failures.append(
+                _failure(
+                    "nvattest support wheel is not a regular file",
+                    expected=f"regular support wheel {name}",
+                    actual="non-regular",
+                    repair="bash scripts/release.sh --candidate",
+                )
+            )
+    return failures
+
+
+def _materialize_verified_support_wheels(
+    *,
+    root: Path,
+    support_dir: Path,
+    services: CandidateServices,
+) -> tuple[tuple[dict[str, object], ...], tuple[Path, ...]]:
+    try:
+        expected_entries = read_support_lock_entries(root / "uv.lock")
+        expected_support = support_declarations_from_lock(expected_entries)
+    except SupportLockError as exc:
+        raise DriverError(_driver_failures_from_support_error(exc)) from None
+    try:
+        materialized = tuple(
+            Path(path) for path in services.materialize_support_wheels(support_dir)
+        )
+    except Exception as exc:
+        raise DriverError(
+            [
+                _failure(
+                    "nvattest support materialization failed",
+                    expected="support wheels materialized into evidence support directory",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        ) from None
+    materialization_failures = _support_destination_failures(
+        support_dir, materialized, expected_entries
+    )
+    if materialization_failures:
+        raise DriverError(materialization_failures)
+    support_paths = tuple(
+        path.resolve()
+        for path in sorted(support_dir.iterdir(), key=lambda path: path.name)
+    )
+    try:
+        observed = verify_support_wheels_against_lock(support_paths, expected_entries)
+    except SupportLockError as exc:
+        raise DriverError(_driver_failures_from_support_error(exc)) from None
+    if observed != expected_support:
+        raise DriverError(
+            [
+                _failure(
+                    "nvattest support declaration is not bound to release lock",
+                    expected=repr(expected_support),
+                    actual=repr(observed),
+                    repair="bash scripts/release.sh --candidate",
+                )
+            ]
+        )
+    return expected_support, support_paths
+
+
+def _root_wheel_name_for_target(
+    target: str,
+    names: Sequence[str],
+) -> tuple[str | None, list[Failure]]:
+    selected = _select_names_for_target(target, names)
+    root_wheels = [name for name in selected if name.startswith("solstone-")]
+    if len(root_wheels) == 1:
+        return root_wheels[0], []
+    return None, [
+        _failure(
+            "candidate nvattest root wheel selection is invalid",
+            expected=f"exactly one retained root wheel for {target}",
+            actual=", ".join(root_wheels) or "<empty>",
+            repair="bash scripts/release.sh --recover",
+        )
+    ]
+
+
+def _extract_nvattest_authority_bytes(
+    release_dir: Path,
+    names: Sequence[str],
+) -> tuple[bytes | None, list[Failure]]:
+    failures: list[Failure] = []
+    by_target: dict[str, bytes] = {}
+    for target in PROOF_TARGETS:
+        root_name, target_failures = _root_wheel_name_for_target(target, names)
+        failures.extend(target_failures)
+        if root_name is None:
+            continue
+        wheel_path = release_dir / root_name
+        try:
+            with zipfile.ZipFile(wheel_path) as wheel:
+                by_target[target] = wheel.read(NVATTEST_AUTHORITY_MEMBER)
+        except KeyError:
+            failures.append(
+                _failure(
+                    "candidate nvattest authority member is missing",
+                    expected=f"{root_name}:{NVATTEST_AUTHORITY_MEMBER}",
+                    actual="<missing>",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        except (OSError, zipfile.BadZipFile) as exc:
+            failures.append(
+                _failure(
+                    "candidate nvattest authority member could not be read",
+                    expected=f"readable {NVATTEST_AUTHORITY_MEMBER}",
+                    actual=type(exc).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+    distinct = {bytes_value for bytes_value in by_target.values()}
+    if len(distinct) > 1:
+        failures.append(
+            _failure(
+                "candidate nvattest authority members differ by target",
+                expected="byte-identical authority member in every root wheel",
+                actual=", ".join(sorted(by_target)),
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    return (next(iter(distinct)) if len(distinct) == 1 else None), failures
+
+
+def _candidate_names_from_dir(release_dir: Path) -> tuple[str, ...]:
+    return tuple(sorted(path.name for path in release_dir.iterdir() if path.is_file()))
+
+
+def _nvattest_ledger_payload(
+    *,
+    challenge: str,
+    authority_bytes: bytes,
+    support_distributions: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    failures = _validate_nvattest_challenge(challenge)
+    try:
+        authority = json.loads(authority_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        failures.append(
+            _failure(
+                "candidate nvattest authority member is not valid JSON",
+                expected="canonical authority JSON object",
+                actual=str(exc),
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
+        authority = {}
+    if not isinstance(authority, Mapping):
+        failures.append(
+            _failure(
+                "candidate nvattest authority member is not an object",
+                expected="canonical authority JSON object",
+                actual=type(authority).__name__,
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
+        authority = {}
+    elif _canonical_nvattest_authority_bytes(authority) != authority_bytes:
+        failures.append(
+            _failure(
+                "candidate nvattest authority member is not canonical",
+                expected="canonical sorted authority JSON bytes",
+                actual="authority bytes differ",
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
+    if failures:
+        raise DriverError(failures)
+    return {
+        "authority": dict(authority),
+        "authority_sha256": hashlib.sha256(authority_bytes).hexdigest(),
+        "challenge": challenge,
+        "support_distributions": [dict(entry) for entry in support_distributions],
+    }
+
+
+def _retained_support_binding_failures(
+    *,
+    evidence_dir: Path,
+    ledger: Mapping[str, Any],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    nvattest = ledger.get("nvattest")
+    if not isinstance(nvattest, Mapping):
+        return [
+            _failure(
+                "retained ledger nvattest binding is invalid",
+                expected="nvattest object",
+                actual=type(nvattest).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    support_distributions = nvattest.get("support_distributions")
+    declaration_failures = validate_support_declarations(
+        support_distributions,
+        repair="bash scripts/release.sh --recover",
+    )
+    if declaration_failures:
+        return declaration_failures
+    assert isinstance(support_distributions, Sequence)
+    expected = [
+        dict(entry) for entry in support_distributions if isinstance(entry, Mapping)
+    ]
+    expected_names = {str(entry["filename"]) for entry in expected}
+    support_dir = evidence_dir / "support"
+    actual_paths = {path.name: path for path in support_dir.iterdir()}
+    if set(actual_paths) != expected_names:
+        failures.append(
+            _failure(
+                "retained nvattest support inventory disagrees with ledger",
+                expected=", ".join(sorted(expected_names)),
+                actual=", ".join(sorted(actual_paths)) or "<empty>",
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+    support_paths = tuple(
+        actual_paths[name].resolve()
+        for name in sorted(set(actual_paths) & expected_names)
+    )
+    if support_paths:
+        try:
+            observed = support_distribution_entries(support_paths)
+        except NvattestProofError as exc:
+            failures.extend(_driver_failures_from_nvattest_error(exc))
+            observed = []
+        if observed != expected:
+            failures.append(
+                _failure(
+                    "retained nvattest support bytes disagree with ledger",
+                    expected=repr(expected),
+                    actual=repr(observed),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+    return failures
+
+
+def _retained_authority_binding(
+    *,
+    release_dir: Path,
+    ledger: Mapping[str, Any],
+) -> tuple[bytes | None, list[Failure]]:
+    names, name_failures = _ledger_candidate_file_names(ledger)
+    if name_failures:
+        return None, name_failures
+    authority_bytes, failures = _extract_nvattest_authority_bytes(
+        release_dir, sorted(names)
+    )
+    nvattest = ledger.get("nvattest")
+    if not isinstance(nvattest, Mapping):
+        failures.append(
+            _failure(
+                "retained ledger nvattest binding is invalid",
+                expected="nvattest object",
+                actual=type(nvattest).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        )
+        return authority_bytes, failures
+    authority = nvattest.get("authority")
+    authority_sha256 = nvattest.get("authority_sha256")
+    if isinstance(authority, Mapping) and authority_bytes is not None:
+        canonical = _canonical_nvattest_authority_bytes(authority)
+        if canonical != authority_bytes:
+            failures.append(
+                _failure(
+                    "retained nvattest authority disagrees with candidate wheels",
+                    expected="ledger authority canonical bytes match retained root wheels",
+                    actual="authority bytes differ",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        if hashlib.sha256(authority_bytes).hexdigest() != authority_sha256:
+            failures.append(
+                _failure(
+                    "retained nvattest authority digest disagrees with candidate wheels",
+                    expected=str(authority_sha256),
+                    actual=hashlib.sha256(authority_bytes).hexdigest(),
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+    return authority_bytes, failures
+
+
 def _ledger_candidate_file_names(
     ledger: Mapping[str, Any],
 ) -> tuple[frozenset[str], list[Failure]]:
@@ -2456,7 +2905,7 @@ def _validate_evidence_inventory(
         return [
             _failure(
                 "release evidence directory is missing",
-                expected="ledger.json and proofs directory",
+                expected="ledger.json, proofs, nvattest, and support",
                 actual="missing",
                 repair="bash scripts/release.sh --recover",
             )
@@ -2471,9 +2920,9 @@ def _validate_evidence_inventory(
             )
         ]
     entries = {path.name: path for path in evidence_dir.iterdir()}
-    required_entries = {"ledger.json", "proofs"}
+    required_entries = {"ledger.json", "proofs", "nvattest", "support"}
     accepted_entries = set(required_entries)
-    expected_inventory = "ledger.json, proofs"
+    expected_inventory = "ledger.json, nvattest, proofs, support"
     if publication_prerequisite_version is not None:
         accepted_entries.add(CORE_UNSUPPORTED_TOMBSTONE_RECORD)
         expected_inventory = (
@@ -2502,41 +2951,125 @@ def _validate_evidence_inventory(
                 )
             )
     proofs_dir = entries.get("proofs")
-    if proofs_dir is None:
-        return failures
-    proofs_entry = proofs_dir.lstat()
-    if stat.S_ISLNK(proofs_entry.st_mode) or not stat.S_ISDIR(proofs_entry.st_mode):
-        failures.append(
-            _failure(
-                "release proofs entry is not an owned directory",
-                expected="non-symlink proofs directory",
-                actual="non-directory",
-                repair="bash scripts/release.sh --recover",
-            )
-        )
-        return failures
-    proof_entries = {path.name: path for path in proofs_dir.iterdir()}
-    expected_proofs = {f"{target}.json" for target in PROOF_TARGETS}
-    if set(proof_entries) != expected_proofs:
-        failures.append(
-            _failure(
-                "release proof inventory is not exact",
-                expected=", ".join(sorted(expected_proofs)),
-                actual=", ".join(sorted(proof_entries)) or "<empty>",
-                repair="bash scripts/release.sh --recover",
-            )
-        )
-    for proof_name, proof_path in sorted(proof_entries.items()):
-        proof_entry = proof_path.lstat()
-        if not stat.S_ISREG(proof_entry.st_mode):
+    if proofs_dir is not None:
+        proofs_entry = proofs_dir.lstat()
+        if stat.S_ISLNK(proofs_entry.st_mode) or not stat.S_ISDIR(proofs_entry.st_mode):
             failures.append(
                 _failure(
-                    "release proof is not a regular file",
-                    expected=f"regular proof file {proof_name}",
-                    actual="non-regular",
+                    "release proofs entry is not an owned directory",
+                    expected="non-symlink proofs directory",
+                    actual="non-directory",
                     repair="bash scripts/release.sh --recover",
                 )
             )
+        else:
+            proof_entries = {path.name: path for path in proofs_dir.iterdir()}
+            expected_proofs = {f"{target}.json" for target in PROOF_TARGETS}
+            if set(proof_entries) != expected_proofs:
+                failures.append(
+                    _failure(
+                        "release proof inventory is not exact",
+                        expected=", ".join(sorted(expected_proofs)),
+                        actual=", ".join(sorted(proof_entries)) or "<empty>",
+                        repair="bash scripts/release.sh --recover",
+                    )
+                )
+            for proof_name, proof_path in sorted(proof_entries.items()):
+                proof_entry = proof_path.lstat()
+                if not stat.S_ISREG(proof_entry.st_mode):
+                    failures.append(
+                        _failure(
+                            "release proof is not a regular file",
+                            expected=f"regular proof file {proof_name}",
+                            actual="non-regular",
+                            repair="bash scripts/release.sh --recover",
+                        )
+                    )
+    nvattest_dir = entries.get("nvattest")
+    if nvattest_dir is not None:
+        nvattest_entry = nvattest_dir.lstat()
+        if stat.S_ISLNK(nvattest_entry.st_mode) or not stat.S_ISDIR(
+            nvattest_entry.st_mode
+        ):
+            failures.append(
+                _failure(
+                    "release nvattest entry is not an owned directory",
+                    expected="non-symlink nvattest directory",
+                    actual="non-directory",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        else:
+            nvattest_entries = {path.name: path for path in nvattest_dir.iterdir()}
+            expected_nvattest = {f"{target}.json" for target in PROOF_TARGETS}
+            if set(nvattest_entries) != expected_nvattest:
+                failures.append(
+                    _failure(
+                        "release nvattest inventory is not exact",
+                        expected=", ".join(sorted(expected_nvattest)),
+                        actual=", ".join(sorted(nvattest_entries)) or "<empty>",
+                        repair="bash scripts/release.sh --recover",
+                    )
+                )
+            for receipt_name, receipt_path in sorted(nvattest_entries.items()):
+                receipt_entry = receipt_path.lstat()
+                if not stat.S_ISREG(receipt_entry.st_mode):
+                    failures.append(
+                        _failure(
+                            "release nvattest receipt is not a regular file",
+                            expected=f"regular nvattest receipt {receipt_name}",
+                            actual="non-regular",
+                            repair="bash scripts/release.sh --recover",
+                        )
+                    )
+    support_dir = entries.get("support")
+    if support_dir is not None:
+        support_entry = support_dir.lstat()
+        if stat.S_ISLNK(support_entry.st_mode) or not stat.S_ISDIR(
+            support_entry.st_mode
+        ):
+            failures.append(
+                _failure(
+                    "release support entry is not an owned directory",
+                    expected="non-symlink support directory",
+                    actual="non-directory",
+                    repair="bash scripts/release.sh --recover",
+                )
+            )
+        else:
+            support_entries = {path.name: path for path in support_dir.iterdir()}
+            if len(support_entries) != len(SUPPORT_DISTRIBUTION_NAMES):
+                failures.append(
+                    _failure(
+                        "release support inventory is not structurally exact",
+                        expected=(
+                            f"{len(SUPPORT_DISTRIBUTION_NAMES)} retained support wheels"
+                        ),
+                        actual=str(len(support_entries)),
+                        repair="bash scripts/release.sh --recover",
+                    )
+                )
+            for wheel_name, wheel_path in sorted(support_entries.items()):
+                wheel_entry = wheel_path.lstat()
+                if (
+                    stat.S_ISLNK(wheel_entry.st_mode)
+                    or not stat.S_ISREG(wheel_entry.st_mode)
+                    or not wheel_name.endswith(".whl")
+                ):
+                    actual = (
+                        "non-.whl"
+                        if stat.S_ISREG(wheel_entry.st_mode)
+                        and not wheel_name.endswith(".whl")
+                        else "non-file"
+                    )
+                    failures.append(
+                        _failure(
+                            "release support wheel is not a regular wheel file",
+                            expected=f"regular .whl support file {wheel_name}",
+                            actual=actual,
+                            repair="bash scripts/release.sh --recover",
+                        )
+                    )
     prerequisite_path = entries.get(CORE_UNSUPPORTED_TOMBSTONE_RECORD)
     if publication_prerequisite_version is not None and prerequisite_path is not None:
         failures.extend(
@@ -2871,8 +3404,16 @@ def _validate_deep_ledger_binding(
     )
     failures.extend(native_member_failures)
     failures.extend(_validate_native_summary(release_dir, ledger))
+    authority_bytes, authority_failures = _retained_authority_binding(
+        release_dir=release_dir,
+        ledger=ledger,
+    )
+    failures.extend(authority_failures)
+    failures.extend(
+        _retained_support_binding_failures(evidence_dir=evidence_dir, ledger=ledger)
+    )
+    _ = authority_bytes
     failures.extend(validate_public_evidence_tree("ledger", ledger))
-    _ = evidence_dir
     return failures
 
 
@@ -3018,6 +3559,89 @@ def _proof_hashes(
     return hashes
 
 
+def _nvattest_hashes(
+    nvattest_dir: Path,
+    *,
+    ledger: Mapping[str, Any],
+    digest: str,
+    ledger_sha256: str,
+    release_dir: Path,
+    version: str,
+) -> dict[str, str]:
+    authority_bytes, authority_failures = _retained_authority_binding(
+        release_dir=release_dir,
+        ledger=ledger,
+    )
+    if authority_failures or authority_bytes is None:
+        raise DriverError(authority_failures)
+    nvattest = ledger.get("nvattest")
+    if not isinstance(nvattest, Mapping):
+        raise DriverError(
+            [
+                _failure(
+                    "retained ledger nvattest binding is invalid",
+                    expected="nvattest object",
+                    actual=type(nvattest).__name__,
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        )
+    support_distributions = nvattest.get("support_distributions")
+    support_failures = validate_support_declarations(
+        support_distributions,
+        repair="bash scripts/release.sh --recover",
+    )
+    if support_failures:
+        raise DriverError(support_failures)
+    hashes: dict[str, str] = {}
+    for target in PROOF_TARGETS:
+        path = nvattest_dir / f"{target}.json"
+        if not path.is_file() or path.is_symlink():
+            raise DriverError(
+                [
+                    _failure(
+                        "release nvattest receipt is missing",
+                        expected=f"{target} nvattest receipt",
+                        actual="missing",
+                        repair="bash scripts/release.sh --recover",
+                    )
+                ]
+            )
+        data = path.read_bytes()
+        failures = validate_nvattest_proof_bytes(
+            data,
+            expected_challenge=str(nvattest.get("challenge")),
+            target=target,
+            version=version,
+            source_commit=str(ledger.get("source_commit")),
+            core_lock_sha256=str(ledger.get("core_lock_sha256")),
+            candidate_digest=digest,
+            ledger_sha256=ledger_sha256,
+            canonical_authority_bytes=authority_bytes,
+            expected_support_distributions=support_distributions,  # type: ignore[arg-type]
+        )
+        if failures:
+            raise DriverError(failures)
+        hashes[target] = file_sha256_size(path)[0]
+    extras = sorted(
+        path.name
+        for path in nvattest_dir.glob("*.json")
+        if path.stem not in PROOF_TARGETS
+    )
+    if extras:
+        raise DriverError(
+            [
+                _failure(
+                    "release nvattest set has extra targets",
+                    expected=", ".join(PROOF_TARGETS),
+                    actual=", ".join(extras),
+                    repair="bash scripts/release.sh --recover",
+                )
+            ]
+        )
+    return hashes
+
+
 def _report(
     *,
     heading: str,
@@ -3096,6 +3720,14 @@ def _report(
         release_dir=release_dir,
         version=version,
     )
+    nvattest_hashes = _nvattest_hashes(
+        evidence_dir / "nvattest",
+        ledger=ledger,
+        digest=digest,
+        ledger_sha256=ledger_sha256,
+        release_dir=release_dir,
+        version=version,
+    )
     return CandidateReport(
         heading=heading,
         version=version,
@@ -3105,7 +3737,13 @@ def _report(
         candidate_digest=digest,
         ledger_sha256=ledger_sha256,
         proof_sha256=proof_hashes,
-        bundle_digest=bundle_digest(digest, ledger_sha256, proof_hashes),
+        nvattest_sha256=nvattest_hashes,
+        bundle_digest=bundle_digest(
+            digest,
+            ledger_sha256,
+            proof_hashes,
+            nvattest_hashes,
+        ),
     )
 
 
@@ -3131,7 +3769,17 @@ def _evidence_report_inventory(evidence_dir: Path) -> list[dict[str, Any]]:
         _inventory_entry(path, name=f"proofs/{path.name}")
         for path in sorted(proofs_dir.iterdir(), key=lambda item: item.name)
     )
-    return entries
+    nvattest_dir = evidence_dir / "nvattest"
+    entries.extend(
+        _inventory_entry(path, name=f"nvattest/{path.name}")
+        for path in sorted(nvattest_dir.iterdir(), key=lambda item: item.name)
+    )
+    support_dir = evidence_dir / "support"
+    entries.extend(
+        _inventory_entry(path, name=f"support/{path.name}")
+        for path in sorted(support_dir.iterdir(), key=lambda item: item.name)
+    )
+    return sorted(entries, key=lambda item: item["name"])
 
 
 def _proof_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
@@ -3140,6 +3788,22 @@ def _proof_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
         target: _inventory_entry(proofs_dir / f"{target}.json", name=f"{target}.json")
         for target in sorted(PROOF_TARGETS)
     }
+
+
+def _nvattest_report_inventory(evidence_dir: Path) -> dict[str, dict[str, Any]]:
+    nvattest_dir = evidence_dir / "nvattest"
+    return {
+        target: _inventory_entry(nvattest_dir / f"{target}.json", name=f"{target}.json")
+        for target in sorted(PROOF_TARGETS)
+    }
+
+
+def _support_report_inventory(evidence_dir: Path) -> list[dict[str, Any]]:
+    support_dir = evidence_dir / "support"
+    return [
+        _inventory_entry(path, name=path.name)
+        for path in sorted(support_dir.iterdir(), key=lambda item: item.name)
+    ]
 
 
 def _publication_prerequisite_report_inventory(
@@ -3169,9 +3833,15 @@ def format_report(report: CandidateReport) -> str:
         "payload_inventory": _payload_report_inventory(report.release_dir),
         "evidence_inventory": _evidence_report_inventory(report.evidence_dir),
         "proof_inventory": _proof_report_inventory(report.evidence_dir),
+        "nvattest_inventory": _nvattest_report_inventory(report.evidence_dir),
+        "support_inventory": _support_report_inventory(report.evidence_dir),
         "proof_sha256": {
             target: report.proof_sha256[target]
             for target in sorted(report.proof_sha256)
+        },
+        "nvattest_sha256": {
+            target: report.nvattest_sha256[target]
+            for target in sorted(report.nvattest_sha256)
         },
         "publication_prerequisite_inventory": (
             _publication_prerequisite_report_inventory(report.evidence_dir)
@@ -3380,6 +4050,26 @@ def run_candidate(
             source_commit=expected_commit,
             core_lock_sha256=expected_lock,
         )
+        support_distributions, support_paths = _materialize_verified_support_wheels(
+            root=root,
+            support_dir=evidence_staging / "support",
+            services=svc,
+        )
+        challenge = svc.challenge_factory()
+        challenge_failures = _validate_nvattest_challenge(challenge)
+        if challenge_failures:
+            raise DriverError(challenge_failures)
+        authority_bytes, authority_failures = _extract_nvattest_authority_bytes(
+            release_dir,
+            _candidate_names_from_dir(release_dir),
+        )
+        if authority_failures or authority_bytes is None:
+            raise DriverError(authority_failures)
+        nvattest_payload = _nvattest_ledger_payload(
+            challenge=challenge,
+            authority_bytes=authority_bytes,
+            support_distributions=support_distributions,
+        )
         ledger_path = write_ledger(
             evidence_root=evidence_root,
             version=version,
@@ -3395,6 +4085,7 @@ def run_candidate(
                 "decision": models_decision,
                 "package_version": models_package_version,
             },
+            nvattest=nvattest_payload,
             output_dir=evidence_staging,
         )
         ledger_sha256 = file_sha256_size(ledger_path)[0]
@@ -3404,7 +4095,7 @@ def run_candidate(
         )
         proofs_dir = evidence_staging / "proofs"
         for target in PROOF_TARGETS:
-            proof_paths[target] = svc.run_install_proof(
+            target_proofs = svc.run_target_proofs(
                 target=target,
                 version=version,
                 source_commit=expected_commit,
@@ -3414,8 +4105,15 @@ def run_candidate(
                 candidate_dir=release_dir,
                 candidate_paths=candidate_paths,
                 ledger_payload=ledger_payload,
+                challenge=challenge,
+                support_wheel_paths=support_paths,
+                canonical_authority_bytes=authority_bytes,
                 output_path=proofs_dir / f"{target}.json",
+                nvattest_output_path=(
+                    evidence_staging / "nvattest" / f"{target}.json"
+                ),
             )
+            proof_paths[target] = target_proofs.install
         failures = validate_public_evidence_tree("ledger", ledger_payload)
         if failures:
             raise DriverError(failures)

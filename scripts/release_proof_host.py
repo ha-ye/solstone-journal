@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -47,6 +48,7 @@ TARGET_ENV_KEYS: Mapping[str, str] = {
     "linux-aarch64-musl": "RELEASE_PROOF_HOST_LINUX_AARCH64_MUSL_CHANNEL",
     "macos-arm64": "RELEASE_PROOF_HOST_MACOS_ARM64_CHANNEL",
 }
+# `authority` is a descriptor (sha256 + bytes); `authority_file` is the staged relative path.
 REQUEST_KEYS = frozenset(
     (
         "schema_version",
@@ -58,16 +60,44 @@ REQUEST_KEYS = frozenset(
         "ledger_sha256",
         "core_lock_sha256",
         "candidate_files",
+        "support_files",
+        "authority",
+        "challenge",
         "paths",
         "expected_host",
     )
 )
 REQUEST_FILE_KEYS = frozenset(("basename", "bytes", "sha256", "path"))
-REQUEST_PATH_KEYS = frozenset(("candidate_dir", "ledger", "response", "proof"))
+REQUEST_AUTHORITY_KEYS = frozenset(("sha256", "bytes"))
+REQUEST_PATH_KEYS = frozenset(
+    (
+        "candidate_dir",
+        "support_dir",
+        "authority_file",
+        "ledger",
+        "response",
+        "install_proof",
+        "nvattest_proof",
+    )
+)
 REQUEST_HOST_KEYS = frozenset(("os", "arch"))
-RESPONSE_KEYS = frozenset(("schema_version", "cohort_id", "attestation", "proof"))
+RESPONSE_KEYS = frozenset(
+    (
+        "schema_version",
+        "cohort_id",
+        "attestation",
+        "install_proof",
+        "nvattest_proof",
+    )
+)
 ATTESTATION_KEYS = frozenset(("os", "arch", "candidate_digest", "ledger_sha256"))
 PROOF_FILE_KEYS = frozenset(("path", "sha256", "bytes"))
+
+
+@dataclass(frozen=True)
+class TargetProofPaths:
+    install: Path
+    nvattest: Path
 
 
 @dataclass(frozen=True)
@@ -80,7 +110,7 @@ class DirectoryIdentity:
 
 
 class ProofHostChannel(Protocol):
-    def run_install_proof(
+    def run_target_proofs(
         self,
         *,
         target: str,
@@ -92,8 +122,12 @@ class ProofHostChannel(Protocol):
         candidate_dir: Path,
         candidate_paths: Sequence[Path],
         ledger_payload: Mapping[str, Any],
+        challenge: str,
+        support_wheel_paths: Sequence[Path],
+        canonical_authority_bytes: bytes,
         output_path: Path,
-    ) -> Path: ...
+        nvattest_output_path: Path,
+    ) -> TargetProofPaths: ...
 
 
 class ProofHostError(RuntimeError):
@@ -280,6 +314,32 @@ def _validate_regular_file(path: Path, *, label: str) -> None:
     )
 
 
+def _request_file_entries(
+    paths: Sequence[Path],
+    *,
+    directory: str,
+) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for path in paths:
+        sha256, byte_count = file_sha256_size(path)
+        entries.append(
+            {
+                "basename": path.name,
+                "bytes": byte_count,
+                "sha256": sha256,
+                "path": f"{directory}/{path.name}",
+            }
+        )
+    return entries
+
+
+def _authority_descriptor(data: bytes) -> dict[str, object]:
+    return {
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def _validate_fresh_directory_path(path: Path, *, label: str) -> None:
     try:
         path.lstat()
@@ -323,7 +383,10 @@ def _validate_scalars(
     core_lock_sha256: str,
     candidate_digest: str,
     ledger_sha256: str,
+    challenge: str,
 ) -> None:
+    from scripts.release_nvattest_proof import CHALLENGE_RE
+
     failures: list[Failure] = []
     if target not in TARGET_POLICY:
         failures.append(
@@ -357,6 +420,15 @@ def _validate_scalars(
                     repair="bash scripts/release.sh --candidate",
                 )
             )
+    if not CHALLENGE_RE.fullmatch(challenge):
+        failures.append(
+            _failure(
+                "proof-host nvattest challenge is invalid",
+                expected="64 lowercase hexadecimal characters",
+                actual=challenge,
+                repair="bash scripts/release.sh --candidate",
+            )
+        )
     if failures:
         raise ProofHostError(failures)
 
@@ -532,6 +604,61 @@ class ExternalProofHostChannel:
                 )
         return ProofHostError(failures) if failures else None
 
+    def _copy_verified_files(
+        self,
+        paths: Sequence[Path],
+        *,
+        destination_dir: Path,
+        request_directory: str,
+        label: str,
+        identities: Sequence[DirectoryIdentity | None],
+    ) -> list[dict[str, object]]:
+        seen: set[str] = set()
+        for path in paths:
+            if _safe_basename(path.name) is None:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            f"proof-host {label} filename is unsafe",
+                            expected=f"safe {label} basename",
+                            actual=path.name,
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            if path.name in seen:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            f"proof-host {label} filename is duplicated",
+                            expected=f"unique {label} basenames",
+                            actual=path.name,
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            seen.add(path.name)
+            _validate_regular_file(path, label=label)
+            source_sha256, source_bytes = file_sha256_size(path)
+            _validate_directory_identities(identities)
+            self._file_copier(path, destination_dir / path.name)
+            _validate_directory_identities(identities)
+            _validate_regular_file(destination_dir / path.name, label=f"request {label}")
+            copied_sha256, copied_bytes = file_sha256_size(destination_dir / path.name)
+            _validate_directory_identities(identities)
+            if copied_sha256 != source_sha256 or copied_bytes != source_bytes:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            f"proof-host copied {label} changed bytes",
+                            expected=f"{source_sha256}/{source_bytes}",
+                            actual=f"{copied_sha256}/{copied_bytes}",
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+        return _request_file_entries(paths, directory=request_directory)
+
     def _request_payload(
         self,
         *,
@@ -543,6 +670,9 @@ class ExternalProofHostChannel:
         candidate_digest: str,
         ledger_sha256: str,
         install_paths: Sequence[Path],
+        challenge: str,
+        support_wheel_paths: Sequence[Path],
+        canonical_authority_bytes: bytes,
     ) -> dict[str, object]:
         os_name, arch = TARGET_POLICY[target]
         files = [
@@ -552,6 +682,8 @@ class ExternalProofHostChannel:
             }
             for entry in candidate_file_entries(install_paths)
         ]
+        support_files = _request_file_entries(support_wheel_paths, directory="support")
+        authority = _authority_descriptor(canonical_authority_bytes)
         payload: dict[str, object] = {
             "schema_version": 1,
             "cohort_id": cohort_id,
@@ -562,11 +694,17 @@ class ExternalProofHostChannel:
             "ledger_sha256": ledger_sha256,
             "core_lock_sha256": core_lock_sha256,
             "candidate_files": files,
+            "support_files": support_files,
+            "authority": authority,
+            "challenge": challenge,
             "paths": {
                 "candidate_dir": "candidate",
+                "support_dir": "support",
+                "authority_file": "authority/nvattest_authority_v1.json",
                 "ledger": "ledger.json",
                 "response": "response.json",
-                "proof": "output/proof.json",
+                "install_proof": "output/install-proof.json",
+                "nvattest_proof": "output/nvattest-proof.json",
             },
             "expected_host": {"os": os_name, "arch": arch},
         }
@@ -575,6 +713,11 @@ class ExternalProofHostChannel:
         for entry in files:
             if set(entry) != REQUEST_FILE_KEYS:
                 raise AssertionError("proof-host request file key set drifted")
+        for entry in support_files:
+            if set(entry) != REQUEST_FILE_KEYS:
+                raise AssertionError("proof-host request support file key set drifted")
+        if set(authority) != REQUEST_AUTHORITY_KEYS:
+            raise AssertionError("proof-host request authority key set drifted")
         if set(payload["paths"]) != REQUEST_PATH_KEYS:  # type: ignore[arg-type]
             raise AssertionError("proof-host request path key set drifted")
         if set(payload["expected_host"]) != REQUEST_HOST_KEYS:  # type: ignore[arg-type]
@@ -653,28 +796,31 @@ class ExternalProofHostChannel:
         ]
         if failures:
             raise ProofHostError(failures)
-        proof = payload.get("proof")
-        if not isinstance(proof, Mapping):
-            raise ProofHostError(
-                [
-                    _failure(
-                        "proof-host response proof descriptor is invalid",
-                        expected="proof file descriptor",
-                        actual=type(proof).__name__,
-                        repair="bash scripts/release.sh --candidate",
-                    )
-                ]
+        descriptors: dict[str, Mapping[str, object]] = {}
+        for key in ("install_proof", "nvattest_proof"):
+            descriptor = payload.get(key)
+            if not isinstance(descriptor, Mapping):
+                raise ProofHostError(
+                    [
+                        _failure(
+                            f"proof-host response {key} descriptor is invalid",
+                            expected="proof file descriptor",
+                            actual=type(descriptor).__name__,
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            failures = _key_set_failures(
+                f"proof-host response {key} descriptor",
+                descriptor,
+                PROOF_FILE_KEYS,
             )
-        failures = _key_set_failures(
-            "proof-host response proof descriptor",
-            proof,
-            PROOF_FILE_KEYS,
-        )
-        if failures:
-            raise ProofHostError(failures)
-        return proof
+            if failures:
+                raise ProofHostError(failures)
+            descriptors[key] = descriptor
+        return descriptors
 
-    def run_install_proof(
+    def run_target_proofs(
         self,
         *,
         target: str,
@@ -686,8 +832,12 @@ class ExternalProofHostChannel:
         candidate_dir: Path,
         candidate_paths: Sequence[Path],
         ledger_payload: Mapping[str, Any],
+        challenge: str,
+        support_wheel_paths: Sequence[Path],
+        canonical_authority_bytes: bytes,
         output_path: Path,
-    ) -> Path:
+        nvattest_output_path: Path,
+    ) -> TargetProofPaths:
         if target != self._target:
             raise ProofHostError(
                 [
@@ -706,90 +856,110 @@ class ExternalProofHostChannel:
             core_lock_sha256=core_lock_sha256,
             candidate_digest=candidate_digest,
             ledger_sha256=ledger_sha256,
+            challenge=challenge,
         )
         install_paths = target_install_paths_from_ledger(
             ledger_payload,
             target=target,
             candidate_dir=candidate_dir,
         )
+        from scripts.release_nvattest_proof import (
+            support_distribution_entries,
+            validate_nvattest_proof_bytes,
+        )
+
+        support_distributions = support_distribution_entries(support_wheel_paths)
         cohort_id = self._cohort_id_factory()
         _validate_cohort_id(cohort_id)
         request_dir = output_path.parent / f".{target}.proof-request-{cohort_id}"
         request_candidate_dir = request_dir / "candidate"
+        request_support_dir = request_dir / "support"
+        request_authority_dir = request_dir / "authority"
         request_output_dir = request_dir / "output"
         response_path = request_dir / "response.json"
         request_path = request_dir / "request.json"
-        proof_path = request_dir / "output" / "proof.json"
+        authority_path = request_authority_dir / "nvattest_authority_v1.json"
+        install_proof_path = request_output_dir / "install-proof.json"
+        nvattest_proof_path = request_output_dir / "nvattest-proof.json"
         request_identity: DirectoryIdentity | None = None
         candidate_identity: DirectoryIdentity | None = None
+        support_identity: DirectoryIdentity | None = None
+        authority_identity: DirectoryIdentity | None = None
         output_identity: DirectoryIdentity | None = None
         remote_started = False
         primary: ProofHostError | None = None
         completed = False
         try:
             _validate_fresh_directory_path(request_dir, label="request")
-            if output_path.exists() or output_path.is_symlink():
-                raise ProofHostError(
-                    [
-                        _failure(
-                            "proof-host output proof already exists",
-                            expected="fresh proof output path",
-                            actual=output_path.name,
-                            repair="bash scripts/release.sh --candidate",
-                        )
-                    ]
-                )
+            for proof_output in (output_path, nvattest_output_path):
+                if proof_output.exists() or proof_output.is_symlink():
+                    raise ProofHostError(
+                        [
+                            _failure(
+                                "proof-host output proof already exists",
+                                expected="fresh proof output path",
+                                actual=proof_output.name,
+                                repair="bash scripts/release.sh --candidate",
+                            )
+                        ]
+                    )
             request_candidate_dir.mkdir(parents=True)
+            request_support_dir.mkdir()
+            request_authority_dir.mkdir()
             request_output_dir.mkdir()
             request_identity = _capture_directory_identity(request_dir, label="request")
             candidate_identity = _capture_directory_identity(
                 request_candidate_dir, label="candidate"
             )
+            support_identity = _capture_directory_identity(
+                request_support_dir, label="support"
+            )
+            authority_identity = _capture_directory_identity(
+                request_authority_dir, label="authority"
+            )
             output_identity = _capture_directory_identity(
                 request_output_dir, label="output"
             )
-            for path in install_paths:
-                if _safe_basename(path.name) is None:
-                    raise ProofHostError(
-                        [
-                            _failure(
-                                "proof-host candidate filename is unsafe",
-                                expected="safe candidate wheel basename",
-                                actual=path.name,
-                                repair="bash scripts/release.sh --candidate",
-                            )
-                        ]
-                    )
-                _validate_regular_file(path, label="candidate wheel")
-                source_sha256, source_bytes = file_sha256_size(path)
-                _validate_directory_identities(
-                    (request_identity, candidate_identity, output_identity)
+            identities = (
+                request_identity,
+                candidate_identity,
+                support_identity,
+                authority_identity,
+                output_identity,
+            )
+            self._copy_verified_files(
+                install_paths,
+                destination_dir=request_candidate_dir,
+                request_directory="candidate",
+                label="candidate wheel",
+                identities=identities,
+            )
+            self._copy_verified_files(
+                support_wheel_paths,
+                destination_dir=request_support_dir,
+                request_directory="support",
+                label="support wheel",
+                identities=identities,
+            )
+            _validate_directory_identities(identities)
+            authority_path.write_bytes(canonical_authority_bytes)
+            _validate_directory_identities(identities)
+            _validate_regular_file(authority_path, label="request authority file")
+            authority_sha256, authority_bytes = file_sha256_size(authority_path)
+            if _authority_descriptor(canonical_authority_bytes) != {
+                "sha256": authority_sha256,
+                "bytes": authority_bytes,
+            }:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host staged authority changed bytes",
+                            expected="canonical authority descriptor",
+                            actual=f"{authority_sha256}/{authority_bytes}",
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
                 )
-                self._file_copier(path, request_candidate_dir / path.name)
-                _validate_directory_identities(
-                    (request_identity, candidate_identity, output_identity)
-                )
-                _validate_regular_file(
-                    request_candidate_dir / path.name,
-                    label="request candidate wheel",
-                )
-                copied_sha256, copied_bytes = file_sha256_size(
-                    request_candidate_dir / path.name
-                )
-                _validate_directory_identities(
-                    (request_identity, candidate_identity, output_identity)
-                )
-                if copied_sha256 != source_sha256 or copied_bytes != source_bytes:
-                    raise ProofHostError(
-                        [
-                            _failure(
-                                "proof-host copied candidate wheel changed bytes",
-                                expected=f"{source_sha256}/{source_bytes}",
-                                actual=f"{copied_sha256}/{copied_bytes}",
-                                repair="bash scripts/release.sh --candidate",
-                            )
-                        ]
-                    )
             (request_dir / "ledger.json").write_bytes(
                 canonical_json_bytes(ledger_payload)
             )
@@ -802,6 +972,9 @@ class ExternalProofHostChannel:
                 candidate_digest=candidate_digest,
                 ledger_sha256=ledger_sha256,
                 install_paths=install_paths,
+                challenge=challenge,
+                support_wheel_paths=support_wheel_paths,
+                canonical_authority_bytes=canonical_authority_bytes,
             )
             request_path.write_bytes(canonical_json_bytes(request_payload))
             public_failures = validate_public_evidence_tree(
@@ -829,66 +1002,99 @@ class ExternalProofHostChannel:
                         )
                     ]
                 )
-            _validate_directory_identities(
-                (request_identity, candidate_identity, output_identity)
-            )
+            _validate_directory_identities(identities)
             _validate_regular_file(response_path, label="response")
             response = _json_object(response_path)
-            proof_descriptor = self._validate_response(
+            proof_descriptors = self._validate_response(
                 response,
                 cohort_id=cohort_id,
                 target=target,
                 candidate_digest=candidate_digest,
                 ledger_sha256=ledger_sha256,
             )
-            proof_name = proof_descriptor.get("path")
-            if proof_name != "output/proof.json":
+            install_descriptor = proof_descriptors["install_proof"]
+            nvattest_descriptor = proof_descriptors["nvattest_proof"]
+            install_proof_name = install_descriptor.get("path")
+            if install_proof_name != "output/install-proof.json":
                 raise ProofHostError(
                     [
                         _failure(
-                            "proof-host proof path is invalid",
-                            expected="output/proof.json",
-                            actual=repr(proof_name),
+                            "proof-host install proof path is invalid",
+                            expected="output/install-proof.json",
+                            actual=repr(install_proof_name),
                             repair="bash scripts/release.sh --candidate",
                         )
                     ]
                 )
-            _validate_directory_identities(
-                (request_identity, candidate_identity, output_identity)
-            )
-            _validate_regular_file(proof_path, label="proof")
-            proof_sha256, proof_bytes_count = file_sha256_size(proof_path)
-            if proof_descriptor.get("sha256") != proof_sha256:
+            nvattest_proof_name = nvattest_descriptor.get("path")
+            if nvattest_proof_name != "output/nvattest-proof.json":
                 raise ProofHostError(
                     [
                         _failure(
-                            "proof-host proof SHA-256 is wrong",
-                            expected=proof_sha256,
-                            actual=repr(proof_descriptor.get("sha256")),
+                            "proof-host nvattest proof path is invalid",
+                            expected="output/nvattest-proof.json",
+                            actual=repr(nvattest_proof_name),
                             repair="bash scripts/release.sh --candidate",
                         )
                     ]
                 )
-            if proof_descriptor.get("bytes") != proof_bytes_count:
+            _validate_directory_identities(identities)
+            _validate_regular_file(install_proof_path, label="install proof")
+            _validate_regular_file(nvattest_proof_path, label="nvattest proof")
+            install_sha256, install_bytes_count = file_sha256_size(install_proof_path)
+            if install_descriptor.get("sha256") != install_sha256:
                 raise ProofHostError(
                     [
                         _failure(
-                            "proof-host proof byte count is wrong",
-                            expected=str(proof_bytes_count),
-                            actual=repr(proof_descriptor.get("bytes")),
+                            "proof-host install proof SHA-256 is wrong",
+                            expected=install_sha256,
+                            actual=repr(install_descriptor.get("sha256")),
                             repair="bash scripts/release.sh --candidate",
                         )
                     ]
                 )
-            _validate_directory_identities(
-                (request_identity, candidate_identity, output_identity)
+            if install_descriptor.get("bytes") != install_bytes_count:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host install proof byte count is wrong",
+                            expected=str(install_bytes_count),
+                            actual=repr(install_descriptor.get("bytes")),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            nvattest_sha256, nvattest_bytes_count = file_sha256_size(
+                nvattest_proof_path
             )
-            proof_bytes = proof_path.read_bytes()
-            _validate_directory_identities(
-                (request_identity, candidate_identity, output_identity)
-            )
+            if nvattest_descriptor.get("sha256") != nvattest_sha256:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host nvattest proof SHA-256 is wrong",
+                            expected=nvattest_sha256,
+                            actual=repr(nvattest_descriptor.get("sha256")),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            if nvattest_descriptor.get("bytes") != nvattest_bytes_count:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host nvattest proof byte count is wrong",
+                            expected=str(nvattest_bytes_count),
+                            actual=repr(nvattest_descriptor.get("bytes")),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
+            _validate_directory_identities(identities)
+            install_proof_bytes = install_proof_path.read_bytes()
+            nvattest_proof_bytes = nvattest_proof_path.read_bytes()
+            _validate_directory_identities(identities)
             proof_failures = validate_install_proof_bytes(
-                proof_bytes,
+                install_proof_bytes,
                 target=target,
                 version=version,
                 source_commit=source_commit,
@@ -900,15 +1106,33 @@ class ExternalProofHostChannel:
             )
             if proof_failures:
                 raise ProofHostError(proof_failures)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = output_path.with_name(f".{output_path.name}.tmp")
-            try:
-                temp_path.write_bytes(proof_bytes)
-                os.rename(temp_path, output_path)
-            finally:
-                temp_path.unlink(missing_ok=True)
+            nvattest_failures = validate_nvattest_proof_bytes(
+                nvattest_proof_bytes,
+                expected_challenge=challenge,
+                target=target,
+                version=version,
+                source_commit=source_commit,
+                core_lock_sha256=core_lock_sha256,
+                candidate_digest=candidate_digest,
+                ledger_sha256=ledger_sha256,
+                canonical_authority_bytes=canonical_authority_bytes,
+                expected_support_distributions=support_distributions,
+            )
+            if nvattest_failures:
+                raise ProofHostError(nvattest_failures)
+            for final_path, proof_bytes in (
+                (output_path, install_proof_bytes),
+                (nvattest_output_path, nvattest_proof_bytes),
+            ):
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = final_path.with_name(f".{final_path.name}.tmp")
+                try:
+                    temp_path.write_bytes(proof_bytes)
+                    os.rename(temp_path, final_path)
+                finally:
+                    temp_path.unlink(missing_ok=True)
             completed = True
-            return output_path
+            return TargetProofPaths(install=output_path, nvattest=nvattest_output_path)
         except BaseException as exc:
             if isinstance(exc, ProofHostError):
                 primary = exc
@@ -937,6 +1161,8 @@ class ExternalProofHostChannel:
             local_cleanup = self._cleanup_local(
                 (
                     (request_candidate_dir, candidate_identity),
+                    (request_support_dir, support_identity),
+                    (request_authority_dir, authority_identity),
                     (request_output_dir, output_identity),
                     (request_dir, request_identity),
                 )
@@ -961,10 +1187,10 @@ def proof_channels_from_env(
     }
 
 
-def run_install_proof_with_channels(
+def run_target_proofs_with_channels(
     channels: Mapping[str, ProofHostChannel],
     **kwargs: Any,
-) -> Path:
+) -> TargetProofPaths:
     target = str(kwargs.get("target", ""))
     channel = channels.get(target)
     if channel is None:
@@ -978,4 +1204,4 @@ def run_install_proof_with_channels(
                 )
             ]
         )
-    return channel.run_install_proof(**kwargs)
+    return channel.run_target_proofs(**kwargs)

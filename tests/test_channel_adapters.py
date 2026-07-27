@@ -26,7 +26,12 @@ from scripts.release_tool_pins import (
     MACOS_SWIFT_FLATTENED_BANNER,
     UV_MACOS_FIXTURE_BANNER,
 )
-from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
+from tests.helpers import release_candidate_fixtures as candidate_fixtures
+from tests.helpers.release_wheel_fixtures import (
+    NVATTEST_AUTHORITY_BYTES,
+    ROOT_LAUNCHER_BYTES,
+    record_hash,
+)
 
 
 def _completed(
@@ -178,8 +183,12 @@ def _write_build_request(tmp_path: Path) -> tuple[Path, build_rail.SourceBundle,
 def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     request_dir = tmp_path / "proof-request"
     candidate_dir = request_dir / "candidate"
+    support_dir = request_dir / "support"
+    authority_dir = request_dir / "authority"
     output_dir = request_dir / "output"
     candidate_dir.mkdir(parents=True)
+    support_dir.mkdir()
+    authority_dir.mkdir()
     output_dir.mkdir()
     for name in (
         "solstone-1.0.0-py3-none-any.whl",
@@ -216,6 +225,12 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
         target="linux-x86_64-musl",
         candidate_dir=candidate_dir,
     )
+    support_paths = candidate_fixtures._write_fixture_support_wheels(  # noqa: SLF001
+        support_dir
+    )
+    (authority_dir / "nvattest_authority_v1.json").write_bytes(
+        NVATTEST_AUTHORITY_BYTES
+    )
     channel = proof_rail.ExternalProofHostChannel(
         "linux-x86_64-musl",
         ["adapter"],
@@ -229,6 +244,9 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
         candidate_digest=digest,
         ledger_sha256=ledger_sha,
         install_paths=install_paths,
+        challenge="e" * 64,
+        support_wheel_paths=support_paths,
+        canonical_authority_bytes=NVATTEST_AUTHORITY_BYTES,
     )
     request_path = request_dir / "request.json"
     request_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -437,7 +455,8 @@ def test_proof_request_response_round_trip_through_rail_parser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request_path, request_payload, ledger = _write_proof_request(tmp_path)
-    proof_path = request_path.parent / "output" / "proof.json"
+    proof_path = request_path.parent / request_payload["paths"]["install_proof"]
+    nvattest_path = request_path.parent / request_payload["paths"]["nvattest_proof"]
 
     def fake_runner(argv, **kwargs):
         if argv == ["uname", "-s"]:
@@ -450,9 +469,25 @@ def test_proof_request_response_round_trip_through_rail_parser(
                 request_payload=request_payload,
                 ledger=ledger,
             )
+            nvattest_path.write_bytes(b"nvattest proof\n")
             sha256, byte_count = common.sha256_size(proof_path)
+            nvattest_sha256, nvattest_byte_count = common.sha256_size(nvattest_path)
             return _completed(
-                f'{proof_host.PROOF_TOKEN} {{"bytes": {byte_count}, "sha256": "{sha256}"}}\n'
+                f"{proof_host.PROOF_TOKEN} "
+                + json.dumps(
+                    {
+                        "install_proof": {
+                            "bytes": byte_count,
+                            "sha256": sha256,
+                        },
+                        "nvattest_proof": {
+                            "bytes": nvattest_byte_count,
+                            "sha256": nvattest_sha256,
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
             )
         raise AssertionError(argv)
 
@@ -462,14 +497,15 @@ def test_proof_request_response_round_trip_through_rail_parser(
 
     response = json.loads((request_path.parent / "response.json").read_text())
     channel = proof_rail.ExternalProofHostChannel("linux-x86_64-musl", ["adapter"])
-    proof_descriptor = channel._validate_response(
+    proof_descriptors = channel._validate_response(
         response,
         cohort_id="cohort",
         target="linux-x86_64-musl",
         candidate_digest=request_payload["candidate_digest"],
         ledger_sha256=request_payload["ledger_sha256"],
     )
-    assert proof_descriptor["path"] == "output/proof.json"
+    assert proof_descriptors["install_proof"]["path"] == "output/install-proof.json"
+    assert proof_descriptors["nvattest_proof"]["path"] == "output/nvattest-proof.json"
     proof_failures = smoke.validate_install_proof_bytes(
         proof_path.read_bytes(),
         target=request_payload["target"],

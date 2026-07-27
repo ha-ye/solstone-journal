@@ -30,6 +30,8 @@ from scripts.check_wheel_contents import (
 from scripts.release_advisory_policy import PolicyRun, validate_snapshot_identity
 from scripts.release_digest import candidate_digest, file_sha256_size
 from scripts.release_install_smoke import CANDIDATE, PROOF_TARGETS
+from scripts.release_nvattest_proof import CHALLENGE_RE
+from scripts.release_nvattest_support import validate_support_declarations
 from scripts.release_public_evidence import validate_public_evidence_tree
 
 TOP_LEVEL_KEYS = frozenset(
@@ -49,10 +51,14 @@ TOP_LEVEL_KEYS = frozenset(
         "policy_run",
         "native_summary",
         "proofs",
+        "nvattest",
         "redaction",
     )
 )
 MODELS_KEYS = frozenset(("decision", "package_version"))
+NVATTEST_KEYS = frozenset(
+    ("challenge", "authority_sha256", "authority", "support_distributions")
+)
 POLICY_RUN_KEYS = frozenset(
     (
         "advisory_source_id",
@@ -328,6 +334,85 @@ def validate_models_payload(value: Any, candidate: Any | None = None) -> list[Fa
     return failures
 
 
+def _canonical_nvattest_authority_bytes(payload: Mapping[str, Any]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def validate_nvattest_payload(value: Any) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(value, Mapping):
+        return [
+            _failure(
+                "retained ledger nvattest binding is invalid",
+                expected="nvattest object",
+                actual=type(value).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        ]
+    if set(value) != NVATTEST_KEYS:
+        failures.append(
+            _failure(
+                "retained ledger nvattest key set is invalid",
+                expected=", ".join(sorted(NVATTEST_KEYS)),
+                actual=", ".join(sorted(str(key) for key in value)) or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    challenge = value.get("challenge")
+    if not isinstance(challenge, str) or not CHALLENGE_RE.fullmatch(challenge):
+        failures.append(
+            _failure(
+                "retained ledger nvattest challenge is invalid",
+                expected="64 lowercase hexadecimal characters",
+                actual=repr(challenge),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    authority_sha256 = value.get("authority_sha256")
+    if not isinstance(authority_sha256, str) or not SHA256_RE.fullmatch(
+        authority_sha256
+    ):
+        failures.append(
+            _failure(
+                "retained ledger nvattest authority_sha256 is invalid",
+                expected="lowercase SHA-256",
+                actual=repr(authority_sha256),
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    authority = value.get("authority")
+    if not isinstance(authority, Mapping):
+        failures.append(
+            _failure(
+                "retained ledger nvattest authority is invalid",
+                expected="parsed authority JSON object",
+                actual=type(authority).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    elif isinstance(authority_sha256, str) and SHA256_RE.fullmatch(authority_sha256):
+        digest = hashlib.sha256(
+            _canonical_nvattest_authority_bytes(authority)
+        ).hexdigest()
+        if digest != authority_sha256:
+            failures.append(
+                _failure(
+                    "retained ledger nvattest authority digest is invalid",
+                    expected=authority_sha256,
+                    actual=digest,
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+    failures.extend(
+        validate_support_declarations(
+            value.get("support_distributions"),
+            repair="python3 scripts/check_rust_release_manifest.py",
+        )
+    )
+    failures.extend(validate_public_evidence_tree("ledger.nvattest", value))
+    return failures
+
+
 def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
     failures: list[Failure] = []
     if set(payload) != TOP_LEVEL_KEYS:
@@ -382,6 +467,7 @@ def validate_retained_ledger(payload: Mapping[str, Any]) -> list[Failure]:
     failures.extend(
         validate_models_payload(payload.get("models"), payload.get("candidate"))
     )
+    failures.extend(validate_nvattest_payload(payload.get("nvattest")))
     failures.extend(validate_native_members(payload.get("native_members")))
     failures.extend(validate_public_evidence_tree("ledger", payload))
     return failures
@@ -780,6 +866,7 @@ def build_ledger(
     policy_run: PolicyRun,
     native_records: Sequence[Mapping[str, Any]],
     models: Mapping[str, str],
+    nvattest: Mapping[str, Any],
 ) -> dict[str, Any]:
     failures: list[Failure] = []
     if not SOURCE_COMMIT_RE.fullmatch(source_commit):
@@ -818,6 +905,7 @@ def build_ledger(
         failures.extend(exc.failures)
         native_members = {}
     failures.extend(validate_models_payload(models, candidate))
+    failures.extend(validate_nvattest_payload(nvattest))
     failures.extend(_validate_tool_evidence(tool_evidence))
     if failures:
         raise LedgerError(failures)
@@ -840,6 +928,14 @@ def build_ledger(
         "policy_run": _policy_run_payload(policy_run),
         "native_summary": native_summary,
         "proofs": {"expected_targets": list(PROOF_TARGETS)},
+        "nvattest": {
+            "authority": nvattest["authority"],
+            "authority_sha256": nvattest["authority_sha256"],
+            "challenge": nvattest["challenge"],
+            "support_distributions": [
+                dict(entry) for entry in nvattest["support_distributions"]
+            ],
+        },
         "redaction": {"validator": "recursive-key-value-public-evidence"},
     }
     if set(ledger) != TOP_LEVEL_KEYS:
@@ -861,6 +957,7 @@ def write_ledger(
     policy_run: PolicyRun,
     native_records: Sequence[Mapping[str, Any]],
     models: Mapping[str, str],
+    nvattest: Mapping[str, Any],
     output_dir: Path | None = None,
 ) -> Path:
     ledger = build_ledger(
@@ -872,6 +969,7 @@ def write_ledger(
         policy_run=policy_run,
         native_records=native_records,
         models=models,
+        nvattest=nvattest,
     )
     resolved_output_dir = output_dir or (evidence_root / version)
     resolved_output_dir.mkdir(parents=True, exist_ok=True)

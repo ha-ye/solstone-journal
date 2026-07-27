@@ -20,6 +20,7 @@ from typing import Any, Literal
 import scripts.check_rust_release_manifest as checker
 import scripts.record_macos_native_wheel as native
 import scripts.release_candidate_driver as driver
+import scripts.release_nvattest_proof as nvattest_proof
 import scripts.release_tool_pins as pins
 from scripts.check_wheel_contents import (
     CORE_REQUIRED_SDIST_MEMBERS,
@@ -44,9 +45,17 @@ from scripts.release_install_smoke import (
     target_install_paths_from_ledger,
     write_install_proof,
 )
+from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
+from scripts.release_nvattest_support import read_support_lock_entries
+from scripts.release_proof_host import TARGET_POLICY, TargetProofPaths
 from solstone.think.probe import (
     SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
 )
+from solstone.think.providers.nvattest_authority import (
+    authority_payload,
+    nvattest_target_key,
+)
+from solstone.think.providers.nvattest_install import SIDECAR_SCHEMA_VERSION
 
 SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
     ("linux", "x86_64")
@@ -61,6 +70,7 @@ from tests.helpers.release_wheel_fixtures import (
     write_core_wheel,
     write_platform_base_wheel,
     write_speakers_analyze_wheel,
+    write_support_wheel,
 )
 
 SOURCE_COMMIT = "a" * 40
@@ -112,6 +122,7 @@ def repo(tmp_path: Path) -> Path:
         '[project]\nname = "solstone-journal-models"\nversion = "1.0.0"\n',
         encoding="utf-8",
     )
+    _write_fixture_support_lock(root)
     return root
 
 
@@ -140,6 +151,41 @@ def _policy() -> PolicyRun:
         policy_checked_at="2026-07-20T12:00:00Z",
         result="pass",
     )
+
+
+def _support_version(index: int) -> str:
+    return f"0.0.{index}"
+
+
+def _write_fixture_support_wheels(path: Path) -> tuple[Path, ...]:
+    return tuple(
+        write_support_wheel(path, name=name, version=_support_version(index))
+        for index, name in enumerate(sorted(SUPPORT_DISTRIBUTION_NAMES), start=1)
+    )
+
+
+def _write_fixture_support_lock(root: Path) -> None:
+    wheels = _write_fixture_support_wheels(root / "fixture-support-lock")
+    by_name = {wheel.name.split("-", 1)[0].replace("_", "-"): wheel for wheel in wheels}
+    blocks = ["version = 1\n"]
+    for index, name in enumerate(sorted(SUPPORT_DISTRIBUTION_NAMES), start=1):
+        wheel = by_name[name]
+        sha256, size = driver.file_sha256_size(wheel)
+        blocks.extend(
+            [
+                "[[package]]\n",
+                f'name = "{name}"\n',
+                f'version = "{_support_version(index)}"\n',
+                "wheels = [\n",
+                "  { "
+                f'url = "wheels/{wheel.name}", '
+                f'hash = "sha256:{sha256}", '
+                f"size = {size} "
+                "},\n",
+                "]\n\n",
+            ]
+        )
+    (root / "uv.lock").write_text("".join(blocks), encoding="utf-8")
 
 
 def _wheel_metadata(name: str) -> tuple[str, str]:
@@ -508,6 +554,259 @@ def _proof_observation(
     )
 
 
+def _nvattest_target_key(target: str) -> str:
+    policy_os, policy_arch = TARGET_POLICY[target]
+    target_key = nvattest_target_key(policy_os.lower(), policy_arch)
+    assert target_key is not None
+    return target_key
+
+
+def _nvattest_authority_target(target: str) -> Mapping[str, Any]:
+    target_key = _nvattest_target_key(target)
+    targets = authority_payload()["targets"]
+    return targets[target_key]
+
+
+def _nvattest_fixture_path(name: str) -> Path:
+    return Path(__file__).resolve().parents[1] / "fixtures" / "nvattest" / name
+
+
+def _nvattest_member_facts(
+    authority_target: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "content_sha256": (
+                hashlib.sha256(str(member["relpath"]).encode("utf-8")).hexdigest()
+                if member["kind"] == "regular"
+                else None
+            ),
+            "executable": member["executable"],
+            "kind": member["kind"],
+            "relpath": member["relpath"],
+            "symlink_target": member["symlink_target"],
+        }
+        for member in sorted(
+            authority_target["inventory"],
+            key=lambda item: item["relpath"],
+        )
+    ]
+
+
+def _nvattest_driver_payload(
+    *,
+    target: str,
+    env_root: Path,
+    journal_path: Path,
+    canonical_authority_bytes: bytes,
+) -> dict[str, Any]:
+    target_key = _nvattest_target_key(target)
+    authority_target = _nvattest_authority_target(target)
+    site_root = env_root / "lib" / "python3.13" / "site-packages"
+    authority_path = (
+        site_root / "solstone" / "think" / "providers" / "nvattest_authority_v1.json"
+    )
+    cache_root = journal_path / "cache" / "providers" / "nvattest"
+    sidecar_path = cache_root / ".nvattest-install.json"
+    fingerprint = hashlib.sha256(target_key.encode("utf-8")).hexdigest()
+    sidecar = {
+        "artifact": dict(authority_target["artifact"]),
+        "schema_version": SIDECAR_SCHEMA_VERSION,
+        "target_key": target_key,
+        "tree_fingerprint_sha256": fingerprint,
+        "version": authority_target["source"]["version"],
+    }
+    sidecar_bytes = checker.canonical_json_bytes(sidecar)
+    return {
+        "authority_module_file": str(
+            site_root / "solstone" / "think" / "providers" / "nvattest_authority.py"
+        ),
+        "authority_origin": str(
+            site_root / "solstone" / "think" / "providers" / "nvattest_authority.py"
+        ),
+        "authority_path": str(authority_path),
+        "authority_sha256": hashlib.sha256(canonical_authority_bytes).hexdigest(),
+        "authority_size_bytes": len(canonical_authority_bytes),
+        "cache_root": str(cache_root),
+        "dist_info": [
+            {
+                "dist_info_path": str(
+                    site_root / f"solstone-{checker._current_version()}.dist-info"
+                ),
+                "name": "solstone",
+                "version": checker._current_version(),
+            }
+        ],
+        "journal_path": str(journal_path),
+        "members": _nvattest_member_facts(authority_target),
+        "module_file": str(
+            site_root / "solstone" / "think" / "providers" / "nvattest_install.py"
+        ),
+        "module_origin": str(
+            site_root / "solstone" / "think" / "providers" / "nvattest_install.py"
+        ),
+        "sidecar": sidecar,
+        "sidecar_path": str(sidecar_path),
+        "sidecar_sha256": hashlib.sha256(sidecar_bytes).hexdigest(),
+        "sidecar_size_bytes": len(sidecar_bytes),
+        "site_packages": [str(site_root)],
+        "solstone_journal_present": False,
+        "spp_nvattest_dir_present": False,
+        "tree_fingerprint_sha256": fingerprint,
+    }
+
+
+def _nvattest_command_result(
+    argv: Sequence[str],
+    *,
+    stdout: str = "",
+    exit_code: int = 0,
+) -> CommandResult:
+    return CommandResult(
+        argv=tuple(argv),
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr="",
+        env=SCRUBBED_COMMAND_ENV,
+    )
+
+
+def _nvattest_services(
+    *,
+    root: Path,
+    target: str,
+    candidate_paths: Sequence[Path],
+    support_paths: Sequence[Path],
+    canonical_authority_bytes: bytes,
+) -> nvattest_proof.NvattestProofServices:
+    env_root = root / "nvattest-env" / target
+    policy_os, policy_arch = TARGET_POLICY[target]
+    authority_target = _nvattest_authority_target(target)
+    expected_distribution_output = "".join(
+        f"{entry['name']}=={entry['version']}\n"
+        for entry in expected_distribution_entries(candidate_paths)
+    )
+
+    def create_environment(_target: str) -> Path:
+        (env_root / "bin").mkdir(parents=True, exist_ok=True)
+        python = env_root / "bin" / "python"
+        python.write_text(
+            f"#!/bin/sh\ncat <<'EOF'\n{expected_distribution_output}EOF\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
+        return env_root
+
+    def install_wheels(
+        env_python: Path,
+        candidate_wheels: Sequence[Path],
+        support_wheels: Sequence[Path],
+    ) -> CommandResult:
+        assert tuple(candidate_wheels) == tuple(candidate_paths)
+        assert tuple(support_wheels) == tuple(support_paths)
+        site_root = env_root / "lib" / "python3.13" / "site-packages"
+        authority_path = (
+            site_root
+            / "solstone"
+            / "think"
+            / "providers"
+            / "nvattest_authority_v1.json"
+        )
+        authority_path.parent.mkdir(parents=True, exist_ok=True)
+        authority_path.write_bytes(canonical_authority_bytes)
+        (site_root / f"solstone-{checker._current_version()}.dist-info").mkdir(
+            parents=True, exist_ok=True
+        )
+        return _nvattest_command_result(
+            (
+                str(env_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--no-deps",
+                *(str(path) for path in candidate_wheels),
+                *(str(path) for path in support_wheels),
+            ),
+            stdout="installed",
+        )
+
+    def fetch(label: str, url: str, dest: Path) -> nvattest_proof.FetchObservation:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if label == "archive":
+            artifact = authority_target["artifact"]
+            dest.write_bytes(b"fixture archive bytes are not retained\n")
+            return nvattest_proof.FetchObservation(
+                label=label,
+                url=url,
+                path=dest,
+                sha256=str(artifact["sha256"]),
+                size_bytes=int(artifact["size_bytes"]),
+            )
+        source = _nvattest_fixture_path(
+            str(authority_target["companion_manifest"]["name"])
+        )
+        shutil.copy2(source, dest)
+        sha256, size_bytes = driver.file_sha256_size(dest)
+        return nvattest_proof.FetchObservation(
+            label=label, url=url, path=dest, sha256=sha256, size_bytes=size_bytes
+        )
+
+    def run_package_install(
+        env_python: Path,
+        driver_path: Path,
+        target_key: str,
+        journal_path: Path,
+    ) -> nvattest_proof.DriverObservation:
+        assert target_key == _nvattest_target_key(target)
+        payload = _nvattest_driver_payload(
+            target=target,
+            env_root=env_root,
+            journal_path=journal_path,
+            canonical_authority_bytes=canonical_authority_bytes,
+        )
+        return nvattest_proof.DriverObservation(
+            command=_nvattest_command_result(
+                (
+                    str(env_python),
+                    str(driver_path),
+                    "--target-key",
+                    target_key,
+                    "--journal-path",
+                    str(journal_path),
+                ),
+                stdout=json.dumps(payload, sort_keys=True),
+            ),
+            payload=payload,
+        )
+
+    def run_smoke(nvattest_bin: Path) -> CommandResult:
+        return _nvattest_command_result((str(nvattest_bin), "--help"), stdout="usage\n")
+
+    return nvattest_proof.NvattestProofServices(
+        create_environment=create_environment,
+        install_wheels=install_wheels,
+        fetch=fetch,
+        run_package_install=run_package_install,
+        integrity_recheck=lambda _journal, _target_key, _fetches, driver_observation: {
+            "members": driver_observation.payload["members"],
+            "sidecar": driver_observation.payload["sidecar"],
+            "sidecar_path": driver_observation.payload["sidecar_path"],
+            "sidecar_sha256": driver_observation.payload["sidecar_sha256"],
+            "sidecar_size_bytes": driver_observation.payload["sidecar_size_bytes"],
+            "tree_fingerprint_sha256": driver_observation.payload[
+                "tree_fingerprint_sha256"
+            ],
+        },
+        run_smoke=run_smoke,
+        clock=lambda: datetime(2026, 7, 20, 12, 35, tzinfo=UTC),
+        cleanup=lambda path: shutil.rmtree(path),
+        observe_host=lambda: nvattest_proof.HostObservation(
+            os=policy_os, arch=policy_arch
+        ),
+    )
+
+
 def services(
     root: Path, *, native_mutation: str | None = None
 ) -> driver.CandidateServices:
@@ -568,7 +867,14 @@ def services(
         assert commit == SOURCE_COMMIT
         return write_macos_host_outputs(output_dir, mutate=native_mutation)
 
-    def run_proof(**kwargs: Any) -> Path:
+    def materialize_support_wheels(destination: Path) -> tuple[Path, ...]:
+        entries = read_support_lock_entries(root / "uv.lock")
+        return tuple(
+            write_support_wheel(destination, name=entry.name, version=entry.version)
+            for entry in entries
+        )
+
+    def run_target_proofs(**kwargs: Any) -> TargetProofPaths:
         output_path = Path(kwargs["output_path"])
         target = str(kwargs["target"])
         install_paths = target_install_paths_from_ledger(
@@ -576,8 +882,19 @@ def services(
             target=target,
             candidate_dir=Path(kwargs["candidate_dir"]),
         )
+        install_excluded_keys = {
+            "canonical_authority_bytes",
+            "challenge",
+            "nvattest_output_path",
+            "output_path",
+            "support_wheel_paths",
+        }
         proof = build_install_proof(
-            **{key: value for key, value in kwargs.items() if key != "output_path"},
+            **{
+                key: value
+                for key, value in kwargs.items()
+                if key not in install_excluded_keys
+            },
             observation=_proof_observation(
                 target,
                 env_root=root / "env" / target,
@@ -587,7 +904,7 @@ def services(
             ),
             recorded_at=datetime(2026, 7, 20, 12, 30, tzinfo=UTC),
         )
-        return write_install_proof(
+        install_receipt = write_install_proof(
             output_path,
             proof,
             target=target,
@@ -599,6 +916,32 @@ def services(
             candidate_dir=Path(kwargs["candidate_dir"]),
             ledger_payload=kwargs["ledger_payload"],
         )
+        evidence_staging = output_path.parents[1]
+        support_paths = tuple(
+            sorted((evidence_staging / "support").iterdir(), key=lambda path: path.name)
+        )
+        nvattest_receipt = nvattest_proof.run_nvattest_proof(
+            target=target,
+            version=str(kwargs["version"]),
+            source_commit=str(kwargs["source_commit"]),
+            core_lock_sha256=str(kwargs["core_lock_sha256"]),
+            candidate_digest=str(kwargs["candidate_digest"]),
+            ledger_sha256=str(kwargs["ledger_sha256"]),
+            challenge=str(kwargs["ledger_payload"]["nvattest"]["challenge"]),
+            candidate_dir=Path(kwargs["candidate_dir"]),
+            candidate_paths=install_paths,
+            support_wheel_paths=support_paths,
+            output_path=Path(kwargs["nvattest_output_path"]),
+            services=_nvattest_services(
+                root=root,
+                target=target,
+                candidate_paths=install_paths,
+                support_paths=support_paths,
+                canonical_authority_bytes=NVATTEST_AUTHORITY_BYTES,
+            ),
+            canonical_authority_bytes=NVATTEST_AUTHORITY_BYTES,
+        )
+        return TargetProofPaths(install=install_receipt, nvattest=nvattest_receipt)
 
     def cleanup(paths: Sequence[Path]) -> None:
         for path in paths:
@@ -621,7 +964,9 @@ def services(
         create_source_bundle=create_source_bundle,
         build_host=build_host,
         cleanup_transients=cleanup,
-        run_install_proof=run_proof,
+        challenge_factory=lambda: hashlib.sha256(str(root).encode("utf-8")).hexdigest(),
+        materialize_support_wheels=materialize_support_wheels,
+        run_target_proofs=run_target_proofs,
         transaction_hook=lambda _point: None,
     )
 

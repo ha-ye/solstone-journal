@@ -42,10 +42,15 @@ def bundle_digest(
     candidate_digest: str,
     ledger_sha256: str,
     proof_sha256_by_target: Mapping[str, str],
+    nvattest_sha256_by_target: Mapping[str, str],
 ) -> str:
     payload = {
         "candidate_digest": candidate_digest,
         "ledger_sha256": ledger_sha256,
+        "nvattest_sha256": {
+            target: nvattest_sha256_by_target[target]
+            for target in sorted(nvattest_sha256_by_target)
+        },
         "proof_sha256": {
             target: proof_sha256_by_target[target]
             for target in sorted(proof_sha256_by_target)

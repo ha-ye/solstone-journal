@@ -11,6 +11,7 @@ import shlex
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -47,14 +48,19 @@ if sys.version_info < (3, 11):
     raise SystemExit(7)
 sys.path.insert(0, {clone_root!r})
 from scripts.release_digest import file_sha256_size
-from scripts.release_install_smoke import run_install_proof
+from scripts.release_install_smoke import run_install_proof as run_install_smoke_proof
+from scripts.release_nvattest_proof import run_nvattest_proof
 reqdir = Path({reqdir!r})
 req = json.loads((reqdir / "request.json").read_text())
 ledger = json.loads((reqdir / "ledger.json").read_text())
-candidate_dir = reqdir / "candidate"
+candidate_dir = reqdir / req["paths"]["candidate_dir"]
+support_dir = reqdir / req["paths"]["support_dir"]
+authority_path = reqdir / req["paths"]["authority_file"]
 candidate_paths = [candidate_dir / f["basename"] for f in req["candidate_files"]]
-proof_path = reqdir / "output" / "proof.json"
-run_install_proof(
+support_paths = [support_dir / f["basename"] for f in req["support_files"]]
+install_proof_path = reqdir / req["paths"]["install_proof"]
+nvattest_proof_path = reqdir / req["paths"]["nvattest_proof"]
+run_install_smoke_proof(
     target=req["target"],
     version=req["version"],
     source_commit=req["source_commit"],
@@ -64,14 +70,33 @@ run_install_proof(
     candidate_dir=candidate_dir,
     candidate_paths=candidate_paths,
     ledger_payload=ledger,
-    output_path=proof_path,
+    output_path=install_proof_path,
 )
-proof_sha256, proof_bytes = file_sha256_size(proof_path)
-print("PROOF_OK " + json.dumps({{"sha256": proof_sha256, "bytes": proof_bytes}}, sort_keys=True))
+run_nvattest_proof(
+    target=req["target"],
+    version=req["version"],
+    source_commit=req["source_commit"],
+    core_lock_sha256=req["core_lock_sha256"],
+    candidate_digest=req["candidate_digest"],
+    ledger_sha256=req["ledger_sha256"],
+    challenge=req["challenge"],
+    candidate_dir=candidate_dir,
+    candidate_paths=candidate_paths,
+    support_wheel_paths=support_paths,
+    output_path=nvattest_proof_path,
+    canonical_authority_bytes=authority_path.read_bytes(),
+)
+def descriptor(path):
+    sha256, byte_count = file_sha256_size(path)
+    return {{"sha256": sha256, "bytes": byte_count}}
+print("PROOF_OK " + json.dumps({{
+    "install_proof": descriptor(install_proof_path),
+    "nvattest_proof": descriptor(nvattest_proof_path),
+}}, sort_keys=True))
 """
 
 
-def _proof_status(stdout: str) -> tuple[str, int]:
+def _proof_status(stdout: str) -> dict[str, dict[str, Any]]:
     for line in stdout.splitlines():
         if not line.startswith(f"{PROOF_TOKEN} "):
             continue
@@ -80,11 +105,19 @@ def _proof_status(stdout: str) -> tuple[str, int]:
         except json.JSONDecodeError:
             break
         if isinstance(payload, dict):
-            sha256 = payload.get("sha256")
-            byte_count = payload.get("bytes")
-            if isinstance(sha256, str) and isinstance(byte_count, int):
-                return sha256, byte_count
-    die("proof run did not report proof digest/size", detail=stdout)
+            descriptors: dict[str, dict[str, Any]] = {}
+            for key in ("install_proof", "nvattest_proof"):
+                descriptor = payload.get(key)
+                if not isinstance(descriptor, dict):
+                    break
+                sha256 = descriptor.get("sha256")
+                byte_count = descriptor.get("bytes")
+                if not isinstance(sha256, str) or not isinstance(byte_count, int):
+                    break
+                descriptors[key] = {"sha256": sha256, "bytes": byte_count}
+            if set(descriptors) == {"install_proof", "nvattest_proof"}:
+                return descriptors
+    die("proof run did not report proof digests/sizes", detail=stdout)
 
 
 def _verify_host(target: str, lane: LaneConfig) -> None:
@@ -107,8 +140,11 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
     request_dir = request_path.resolve().parent
     ledger_path = request_dir / req["paths"]["ledger"]
     candidate_dir = request_dir / req["paths"]["candidate_dir"]
-    out_proof = request_dir / req["paths"]["proof"]
-    out_proof.parent.mkdir(parents=True, exist_ok=True)
+    support_dir = request_dir / req["paths"]["support_dir"]
+    authority_file = request_dir / req["paths"]["authority_file"]
+    out_install_proof = request_dir / req["paths"]["install_proof"]
+    out_nvattest_proof = request_dir / req["paths"]["nvattest_proof"]
+    out_install_proof.parent.mkdir(parents=True, exist_ok=True)
 
     _verify_host(target, lane)
 
@@ -119,7 +155,7 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
         }
         result = run([sys.executable, "-c", harness], check=False, env=clean_env)
         require_success_token(result, PROOF_TOKEN, "local proof run")
-        expected_sha256, expected_bytes = _proof_status(result.stdout or "")
+        proof_status = _proof_status(result.stdout or "")
     else:
         work = _remote_work(lane, cohort)
         rreq = f"{work}/reqdir"
@@ -128,7 +164,8 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
         ssh_run(
             lane,
             f"set -e; rm -rf {quoted_work}; "
-            f"mkdir -p {quoted_rreq}/candidate {quoted_rreq}/output {quoted_work}/clone",
+            f"mkdir -p {quoted_rreq}/candidate {quoted_rreq}/support "
+            f"{quoted_rreq}/authority {quoted_rreq}/output {quoted_work}/clone",
         )
         fd, bundle_name = tempfile.mkstemp(
             prefix=f"proof-src-{cohort}-",
@@ -147,6 +184,10 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
         for candidate in req["candidate_files"]:
             name = candidate["basename"]
             scp_to(lane, candidate_dir / name, f"{rreq}/candidate/{name}")
+        for support in req["support_files"]:
+            name = support["basename"]
+            scp_to(lane, support_dir / name, f"{rreq}/support/{name}")
+        scp_to(lane, authority_file, f"{rreq}/{req['paths']['authority_file']}")
         harness = _harness(f"{work}/clone", rreq)
         hpath = f"{work}/harness.py"
         ssh_run(
@@ -156,15 +197,20 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
             lane, f"{shlex.quote(lane.remote_python)} {shlex.quote(hpath)}", check=False
         )
         require_success_token(result, PROOF_TOKEN, f"remote proof run on {target}")
-        expected_sha256, expected_bytes = _proof_status(result.stdout or "")
-        scp_from(lane, f"{rreq}/output/proof.json", out_proof)
+        proof_status = _proof_status(result.stdout or "")
+        scp_from(lane, f"{rreq}/{req['paths']['install_proof']}", out_install_proof)
+        scp_from(lane, f"{rreq}/{req['paths']['nvattest_proof']}", out_nvattest_proof)
 
-    verify_retrieved_file(
-        out_proof,
-        expected_sha256=expected_sha256,
-        expected_bytes=expected_bytes,
-        label="proof.json",
-    )
+    for key, path, label in (
+        ("install_proof", out_install_proof, "install-proof.json"),
+        ("nvattest_proof", out_nvattest_proof, "nvattest-proof.json"),
+    ):
+        verify_retrieved_file(
+            path,
+            expected_sha256=str(proof_status[key]["sha256"]),
+            expected_bytes=int(proof_status[key]["bytes"]),
+            label=label,
+        )
     exp_os, exp_arch = TARGET_POLICY[target]
     response = {
         "schema_version": 1,
@@ -175,10 +221,15 @@ def prove(target: str, lane: LaneConfig, request_path: Path) -> None:
             "candidate_digest": req["candidate_digest"],
             "ledger_sha256": req["ledger_sha256"],
         },
-        "proof": {
-            "path": req["paths"]["proof"],
-            "sha256": expected_sha256,
-            "bytes": expected_bytes,
+        "install_proof": {
+            "path": req["paths"]["install_proof"],
+            "sha256": proof_status["install_proof"]["sha256"],
+            "bytes": proof_status["install_proof"]["bytes"],
+        },
+        "nvattest_proof": {
+            "path": req["paths"]["nvattest_proof"],
+            "sha256": proof_status["nvattest_proof"]["sha256"],
+            "bytes": proof_status["nvattest_proof"]["bytes"],
         },
     }
     write_json(request_dir / req["paths"]["response"], response)

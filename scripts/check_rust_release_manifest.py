@@ -2378,6 +2378,8 @@ def run_fixtures_mode() -> list[Failure]:
                 target_install_paths_from_ledger,
                 write_install_proof,
             )
+            from scripts.build_nvattest_authority import render_nvattest_authority_json
+            from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
             from scripts.release_ledger import read_retained_ledger, write_ledger
         except ImportError as exc:
             return [
@@ -2408,6 +2410,26 @@ def run_fixtures_mode() -> list[Failure]:
             policy_checked_at="2026-07-20T12:00:00Z",
             result="pass",
         )
+        authority_bytes = render_nvattest_authority_json().encode("utf-8")
+        nvattest = {
+            "authority": json.loads(authority_bytes.decode("utf-8")),
+            "authority_sha256": hashlib.sha256(authority_bytes).hexdigest(),
+            "challenge": hashlib.sha256(b"fixture challenge").hexdigest(),
+            "support_distributions": [
+                {
+                    "bytes": len(name.encode("utf-8")),
+                    "filename": (
+                        f"{name.replace('-', '_')}-0.0.{index}-py3-none-any.whl"
+                    ),
+                    "name": name,
+                    "sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                    "version": f"0.0.{index}",
+                }
+                for index, name in enumerate(
+                    sorted(SUPPORT_DISTRIBUTION_NAMES), start=1
+                )
+            ],
+        }
         fixture_root_wheel = next(
             name
             for name in expected_package_names(include_models=False)
@@ -2553,6 +2575,7 @@ def run_fixtures_mode() -> list[Failure]:
                         if name.endswith(".tar.gz")
                     ),
                 },
+                nvattest=nvattest,
             )
             ledger_payload = read_retained_ledger(ledger_path)
             ledger_sha256 = file_sha256_size(ledger_path)[0]

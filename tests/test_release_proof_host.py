@@ -17,15 +17,22 @@ import pytest
 
 import scripts.check_rust_release_manifest as checker
 import scripts.release_install_smoke as smoke
+import scripts.release_nvattest_proof as nvattest_proof
 import scripts.release_proof_host as proof_host
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_digest import candidate_digest
-from tests.helpers.release_wheel_fixtures import ROOT_LAUNCHER_BYTES, record_hash
+from tests.helpers import release_candidate_fixtures as candidate_fixtures
+from tests.helpers.release_wheel_fixtures import (
+    NVATTEST_AUTHORITY_BYTES,
+    ROOT_LAUNCHER_BYTES,
+    record_hash,
+)
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
 LEDGER_SHA = "c" * 64
 COHORT = "d" * 32
+CHALLENGE = "e" * 64
 
 
 def _wheel_metadata(name: str) -> tuple[str, str]:
@@ -90,6 +97,12 @@ def _candidate(tmp_path: Path) -> Path:
         ):
             _write_metadata_wheel(candidate / name)
     return candidate
+
+
+def _support_wheels(root: Path) -> tuple[Path, ...]:
+    return candidate_fixtures._write_fixture_support_wheels(  # noqa: SLF001
+        root / "support-wheels"
+    )
 
 
 def _file_entry(path: Path) -> dict[str, Any]:
@@ -286,9 +299,18 @@ def _runner(
         request = json.loads((cwd / "request.json").read_text(encoding="utf-8"))
         assert request["target"] == target
         assert request["paths"]["candidate_dir"] == "candidate"
+        assert request["paths"]["support_dir"] == "support"
+        assert (
+            request["paths"]["authority_file"]
+            == "authority/nvattest_authority_v1.json"
+        )
         assert all(
             str(entry["path"]).startswith("candidate/")
             for entry in request["candidate_files"]
+        )
+        assert all(
+            str(entry["path"]).startswith("support/")
+            for entry in request["support_files"]
         )
         proof_bytes = _proof_bytes(
             target=target,
@@ -298,8 +320,47 @@ def _runner(
             mutate_proof=proof_mutation,
             mutate_observation=observation_mutation,
         )
-        proof_path = cwd / "output" / "proof.json"
-        proof_path.write_bytes(proof_bytes)
+        install_proof_path = cwd / request["paths"]["install_proof"]
+        install_proof_path.write_bytes(proof_bytes)
+        request_candidate_dir = cwd / request["paths"]["candidate_dir"]
+        request_support_dir = cwd / request["paths"]["support_dir"]
+        candidate_paths = [
+            request_candidate_dir / entry["basename"]
+            for entry in request["candidate_files"]
+        ]
+        support_paths = [
+            request_support_dir / entry["basename"]
+            for entry in request["support_files"]
+        ]
+        authority_bytes = (cwd / request["paths"]["authority_file"]).read_bytes()
+        nvattest_proof_path = cwd / request["paths"]["nvattest_proof"]
+        nvattest_proof.run_nvattest_proof(
+            target=target,
+            version=version,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=ledger["candidate"]["candidate_digest"],
+            ledger_sha256=LEDGER_SHA,
+            challenge=request["challenge"],
+            candidate_dir=request_candidate_dir,
+            candidate_paths=candidate_paths,
+            support_wheel_paths=support_paths,
+            output_path=nvattest_proof_path,
+            services=candidate_fixtures._nvattest_services(  # noqa: SLF001
+                root=cwd,
+                target=target,
+                candidate_paths=candidate_paths,
+                support_paths=support_paths,
+                canonical_authority_bytes=authority_bytes,
+            ),
+            canonical_authority_bytes=authority_bytes,
+        )
+        install_descriptor = {
+            "path": request["paths"]["install_proof"],
+            "sha256": hashlib.sha256(proof_bytes).hexdigest(),
+            "bytes": len(proof_bytes),
+        }
+        nvattest_bytes = nvattest_proof_path.read_bytes()
         response: dict[str, Any] = {
             "schema_version": 1,
             "cohort_id": request["cohort_id"],
@@ -309,10 +370,11 @@ def _runner(
                 "candidate_digest": ledger["candidate"]["candidate_digest"],
                 "ledger_sha256": LEDGER_SHA,
             },
-            "proof": {
-                "path": "output/proof.json",
-                "sha256": hashlib.sha256(proof_bytes).hexdigest(),
-                "bytes": len(proof_bytes),
+            "install_proof": install_descriptor,
+            "nvattest_proof": {
+                "path": request["paths"]["nvattest_proof"],
+                "sha256": hashlib.sha256(nvattest_bytes).hexdigest(),
+                "bytes": len(nvattest_bytes),
             },
         }
         if response_mutation is not None:
@@ -340,6 +402,32 @@ def _channel(
     )
 
 
+def _target_proof_kwargs(
+    *,
+    target: str,
+    candidate: Path,
+    ledger: Mapping[str, Any],
+    output_path: Path,
+) -> dict[str, Any]:
+    nvattest_output_path = output_path.parent / "nvattest" / f"{target}.json"
+    return {
+        "target": target,
+        "version": "1.0.0",
+        "source_commit": SOURCE_COMMIT,
+        "core_lock_sha256": CORE_LOCK,
+        "candidate_digest": ledger["candidate"]["candidate_digest"],
+        "ledger_sha256": LEDGER_SHA,
+        "candidate_dir": candidate,
+        "candidate_paths": tuple(candidate.iterdir()),
+        "ledger_payload": ledger,
+        "challenge": CHALLENGE,
+        "support_wheel_paths": _support_wheels(output_path.parent),
+        "canonical_authority_bytes": NVATTEST_AUTHORITY_BYTES,
+        "output_path": output_path,
+        "nvattest_output_path": nvattest_output_path,
+    }
+
+
 def test_proof_host_transfers_target_install_set_and_accepts_valid_proof(
     tmp_path: Path,
 ) -> None:
@@ -353,21 +441,22 @@ def test_proof_host_transfers_target_install_set_and_accepts_valid_proof(
         _runner(target=target, candidate=candidate, ledger=ledger, calls=calls),
     )
 
-    result = channel.run_install_proof(
-        target=target,
-        version="1.0.0",
-        source_commit=SOURCE_COMMIT,
-        core_lock_sha256=CORE_LOCK,
-        candidate_digest=ledger["candidate"]["candidate_digest"],
-        ledger_sha256=LEDGER_SHA,
-        candidate_dir=candidate,
-        candidate_paths=tuple(candidate.iterdir()),
-        ledger_payload=ledger,
-        output_path=output,
+    result = channel.run_target_proofs(
+        **_target_proof_kwargs(
+            target=target,
+            candidate=candidate,
+            ledger=ledger,
+            output_path=output,
+        )
     )
 
-    assert result == output
+    expected_nvattest = output.parent / "nvattest" / f"{target}.json"
+    assert result == proof_host.TargetProofPaths(
+        install=output,
+        nvattest=expected_nvattest,
+    )
     payload = json.loads(output.read_text(encoding="utf-8"))
+    assert expected_nvattest.is_file()
     expected_paths = smoke.target_install_paths_from_ledger(
         ledger,
         target=target,
@@ -403,17 +492,13 @@ def test_proof_host_rejects_candidate_copy_mutation_before_adapter(
     )
 
     with pytest.raises(proof_host.ProofHostError) as exc:
-        channel.run_install_proof(
-            target=target,
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / "proofs" / f"{target}.json",
+        channel.run_target_proofs(
+            **_target_proof_kwargs(
+                target=target,
+                candidate=candidate,
+                ledger=ledger,
+                output_path=tmp_path / "proofs" / f"{target}.json",
+            )
         )
 
     assert (
@@ -441,8 +526,8 @@ def test_missing_proof_host_channel_fails_closed() -> None:
             "proof-host response attestation key set is invalid",
         ),
         (
-            lambda response: response["proof"].pop("bytes"),
-            "proof-host response proof descriptor key set is invalid",
+            lambda response: response["install_proof"].pop("bytes"),
+            "proof-host response install_proof descriptor key set is invalid",
         ),
         (
             lambda response: response["attestation"].__setitem__("os", "Darwin"),
@@ -475,17 +560,13 @@ def test_proof_host_rejects_closed_schema_and_attestation_mutations(
     )
 
     with pytest.raises(proof_host.ProofHostError) as exc:
-        channel.run_install_proof(
-            target=target,
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / "proof.json",
+        channel.run_target_proofs(
+            **_target_proof_kwargs(
+                target=target,
+                candidate=candidate,
+                ledger=ledger,
+                output_path=tmp_path / "proof.json",
+            )
         )
 
     assert any(failure.error == error for failure in exc.value.failures)
@@ -564,17 +645,13 @@ def test_proof_host_rejects_semantic_proof_mutations(
     )
 
     with pytest.raises(proof_host.ProofHostError) as exc:
-        channel.run_install_proof(
-            target=target,
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / "proof.json",
+        channel.run_target_proofs(
+            **_target_proof_kwargs(
+                target=target,
+                candidate=candidate,
+                ledger=ledger,
+                output_path=tmp_path / "proof.json",
+            )
         )
 
     assert any(failure.error == error for failure in exc.value.failures)
@@ -589,17 +666,16 @@ def test_proof_host_rejects_channel_target_swap(tmp_path: Path) -> None:
     )
 
     with pytest.raises(proof_host.ProofHostError) as exc:
-        channel.run_install_proof(
-            target="linux-aarch64-musl",
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / "proof.json",
+        channel.run_target_proofs(
+            **{
+                **_target_proof_kwargs(
+                    target="linux-aarch64-musl",
+                    candidate=candidate,
+                    ledger=ledger,
+                    output_path=tmp_path / "proof.json",
+                ),
+                "target": "linux-aarch64-musl",
+            }
         )
 
     assert exc.value.failures[0].error == "proof-host channel target mismatch"
@@ -626,17 +702,13 @@ def test_proof_host_cleanup_runs_for_baseexception(
     )
 
     with pytest.raises(proof_host.ProofHostError) as raised:
-        channel.run_install_proof(
-            target=target,
-            version="1.0.0",
-            source_commit=SOURCE_COMMIT,
-            core_lock_sha256=CORE_LOCK,
-            candidate_digest=ledger["candidate"]["candidate_digest"],
-            ledger_sha256=LEDGER_SHA,
-            candidate_dir=candidate,
-            candidate_paths=tuple(candidate.iterdir()),
-            ledger_payload=ledger,
-            output_path=tmp_path / "proof.json",
+        channel.run_target_proofs(
+            **_target_proof_kwargs(
+                target=target,
+                candidate=candidate,
+                ledger=ledger,
+                output_path=tmp_path / "proof.json",
+            )
         )
 
     assert any(
