@@ -818,7 +818,7 @@ async def _drive_client_handshake(
             if outbound:
                 await transport.send(outbound)
             pending_plaintext.extend(plaintext)
-    except Exception:
+    except BaseException:
         await transport.close()
         raise
     return pending_plaintext

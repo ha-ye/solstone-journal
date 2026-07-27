@@ -177,6 +177,28 @@ def _identity() -> client.ClientIdentity:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", (asyncio.CancelledError, Exception))
+async def test_drive_client_handshake_closes_transport_when_inner_await_raises(
+    pass_through_tls: None,
+    exc_type: type[BaseException],
+) -> None:
+    transport = FakeTransport()
+
+    async def failing_recv() -> bytes | None:
+        raise exc_type("recv failed")
+
+    transport.recv = failing_recv
+
+    with pytest.raises(exc_type):
+        await client._drive_client_handshake(
+            transport,
+            client._TlsClientState(conn=object()),
+        )
+
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
 async def test_open_tunnel_session_closes_partial_session_when_pending_feed_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
