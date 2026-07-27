@@ -18,7 +18,6 @@ import httpx
 import pytest
 
 from solstone.think.sandbox_profile import probe_contract
-from solstone.think.sandbox_profile import scout_provider_child as child
 from solstone.think.sandbox_profile import scout_provider_probe as probe
 from tests.sandbox_profile import (
     invoke,
@@ -72,16 +71,15 @@ def _ready_scout_journal(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     return journal, write_attempt_dir(journal)
 
 
-def _clear_provider_modules() -> None:
-    for name in list(sys.modules):
-        if name == "openhands" or name.startswith("openhands."):
-            del sys.modules[name]
-        if name == "litellm" or name.startswith("litellm."):
-            del sys.modules[name]
-
-
+# The pristine-parent absence invariant — that proving Scout pulls no provider
+# module into the calling interpreter — is only meaningful when that interpreter
+# started pristine, which a shared pytest worker never is. Deleting the modules to
+# manufacture that precondition corrupted every later test in the worker: a
+# re-import rebuilds openhands' classes, so pydantic then rejects a live ``LLM`` as
+# not an ``LLM``. The invariant is proved at full strength in a dedicated
+# subprocess instead (see ``test_pristine_parent_imports_no_provider_modules``);
+# in-process checks stay scoped to state this process legitimately owns.
 def _snapshot(journal: Path) -> tuple[dict[str, str], bytes]:
-    _clear_provider_modules()
     return dict(os.environ), (journal / "config" / "journal.json").read_bytes()
 
 
@@ -92,12 +90,6 @@ def _assert_snapshot_unchanged(
     before_env, before_config = snapshot
     assert dict(os.environ) == before_env
     assert (journal / "config" / "journal.json").read_bytes() == before_config
-    assert not any(
-        name == "openhands" or name.startswith("openhands.") for name in sys.modules
-    )
-    assert not any(
-        name == "litellm" or name.startswith("litellm.") for name in sys.modules
-    )
 
 
 def _assert_attempt_empty(attempt: Path) -> None:
@@ -258,14 +250,7 @@ def _spawn_code(code: str, captured: dict[str, Any]):
     return spawn
 
 
-def test_parent_success_uses_contained_env_and_imports_no_openhands(
-    tmp_path, monkeypatch, caplog
-) -> None:
-    for name in list(sys.modules):
-        if name == "openhands" or name.startswith("openhands."):
-            del sys.modules[name]
-        if name == "litellm" or name.startswith("litellm."):
-            del sys.modules[name]
+def test_parent_success_uses_contained_env(tmp_path, monkeypatch, caplog) -> None:
     journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
     before_env = dict(os.environ)
     before_config = (journal / "config" / "journal.json").read_bytes()
@@ -284,12 +269,6 @@ def test_parent_success_uses_contained_env_and_imports_no_openhands(
     assert outcome["checks"] == probe_contract.PROOF_CHECKS["scout"]
     assert dict(os.environ) == before_env
     assert (journal / "config" / "journal.json").read_bytes() == before_config
-    assert not any(
-        name == "openhands" or name.startswith("openhands.") for name in sys.modules
-    )
-    assert not any(
-        name == "litellm" or name.startswith("litellm.") for name in sys.modules
-    )
     assert set(captured["env"]) == {
         "HOME",
         "TMPDIR",
@@ -1012,82 +991,388 @@ def test_transport_maps_response_caps_and_outbound_caps() -> None:
         inbound.handle_request(request)
 
 
-def test_real_openhands_completion_uses_injected_gemini_transport(monkeypatch) -> None:
-    monkeypatch.setenv("LITELLM_MODE", "PRODUCTION")
-    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    from solstone.think.providers import openhands
+# Isolated-subprocess proofs.
+#
+# Two claims can only be proved honestly in an interpreter this suite does not
+# share. The absence claim needs a pristine module table as its precondition; the
+# transport claim deliberately imports openhands and pins LiteLLM's import-time
+# mode, which would then outlive the test in a shared worker. Both run in a child
+# built from a constructed environment, with bounded output and a bounded
+# deadline, and both leave the parent's module set, class identities, and
+# environment untouched. Neither contacts a provider: the absence driver never
+# imports one, and the transport driver answers itself from a mock transport.
 
-    captured: dict[str, Any] = {}
-    nonce = "nonce-for-provider"
-    real_build = openhands._build_generate_llm
-    real_call_kwargs = openhands._generate_call_kwargs
+PROOF_SUBPROCESS_TIMEOUT_S = 300.0
+PROOF_SUBPROCESS_STDOUT_MAX_BYTES = 64 * 1024
+PROOF_SUBPROCESS_STDERR_REPORT_BYTES = 4096
 
-    def capture_build(*args, **kwargs):
-        captured["build_kwargs"] = dict(kwargs)
-        return real_build(*args, **kwargs)
+_PROVIDER_ABSENCE_DRIVER = """
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-    def capture_call_kwargs(*args, **kwargs):
-        result = real_call_kwargs(*args, **kwargs)
-        captured["call_kwargs"] = dict(result)
-        return result
 
-    monkeypatch.setattr(openhands, "_build_generate_llm", capture_build)
-    monkeypatch.setattr(openhands, "_generate_call_kwargs", capture_call_kwargs)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["request"] = request
-        captured["body"] = json.loads(request.content.decode("utf-8"))
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [
-                    {
-                        "content": {
-                            "role": "model",
-                            "parts": [{"text": json.dumps({"nonce": nonce})}],
-                        },
-                        "finishReason": "STOP",
-                    }
-                ],
-                "usageMetadata": {
-                    "promptTokenCount": 3,
-                    "candidatesTokenCount": 2,
-                    "totalTokenCount": 5,
-                },
-                "modelVersion": "gemini-3.5-flash",
-            },
-            request=request,
-        )
-
-    transport = probe.GeminiSingleRequestTransport(httpx.MockTransport(handler))
-
-    result = child._run_completion(
-        api_key="dummy-google-key",
-        nonce=nonce,
-        timeout_s=30,
-        transport=transport,
+def provider_modules():
+    return sorted(
+        name
+        for name in sys.modules
+        if name == "openhands"
+        or name.startswith("openhands.")
+        or name == "litellm"
+        or name.startswith("litellm.")
     )
 
-    request = captured["request"]
-    body = captured["body"]
-    assert result["result"] == "ok"
-    assert transport.request_count == 1
-    assert request.method == "POST"
-    assert request.url.host == "generativelanguage.googleapis.com"
-    assert request.url.path == "/v1alpha/models/gemini-3.5-flash:generateContent"
-    assert request.headers["x-goog-api-key"] == "dummy-google-key"
-    assert captured["build_kwargs"]["max_output_tokens"] == 512
-    assert captured["build_kwargs"]["thinking_budget"] == 0
-    assert captured["build_kwargs"]["num_retries"] == 0
-    assert captured["build_kwargs"]["timeout_s"] == 30
-    assert captured["call_kwargs"]["temperature"] == 0
-    assert captured["call_kwargs"]["thinking"] == {
-        "type": "disabled",
-        "budget_tokens": 0,
+
+request = json.loads(sys.stdin.read())
+verdict = {"before_import": provider_modules()}
+
+from solstone.think.sandbox_profile import scout_provider_probe as probe
+
+verdict["after_import"] = provider_modules()
+
+journal = Path(request["journal"])
+attempt = Path(request["attempt"])
+scenario = request["scenario"]
+config_path = journal / "config" / "journal.json"
+before_env = dict(os.environ)
+before_config = config_path.read_bytes()
+
+if scenario == "success":
+    child_code = request["child_code"]
+
+    def spawn(containment):
+        return subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            cwd=containment.cwd,
+            env=containment.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+
+    probe._spawn_child = spawn
+    probe._new_nonce = lambda: request["nonce"]
+    cancelled = False
+else:
+
+    def spawn(_containment):
+        raise AssertionError("Scout provider proof spawned a child")
+
+    probe._spawn_child = spawn
+    cancelled = scenario == "cancel_before_contact"
+
+outcome = probe.prove_scout_provider(
+    journal,
+    attempt_dir=attempt,
+    cancel_requested=lambda: cancelled,
+)
+
+verdict["after_proof"] = provider_modules()
+verdict["state"] = outcome["state"]
+verdict["reason"] = outcome["reason"]
+verdict["checks"] = list(outcome["checks"])
+verdict["env_unchanged"] = dict(os.environ) == before_env
+verdict["config_unchanged"] = config_path.read_bytes() == before_config
+verdict["attempt_empty"] = list(attempt.iterdir()) == []
+sys.stdout.write(json.dumps(verdict))
+sys.stdout.flush()
+"""
+
+_OPENHANDS_TRANSPORT_DRIVER = """
+import json
+import os
+import sys
+
+import httpx
+
+from solstone.think.providers import openhands
+from solstone.think.sandbox_profile import scout_provider_child as child
+from solstone.think.sandbox_profile import scout_provider_probe as probe
+
+request_payload = json.loads(sys.stdin.read())
+nonce = request_payload["nonce"]
+
+captured = {}
+real_build = openhands._build_generate_llm
+real_call_kwargs = openhands._generate_call_kwargs
+
+
+def capture_build(*args, **kwargs):
+    captured["build_kwargs"] = dict(kwargs)
+    return real_build(*args, **kwargs)
+
+
+def capture_call_kwargs(*args, **kwargs):
+    result = real_call_kwargs(*args, **kwargs)
+    captured["call_kwargs"] = dict(result)
+    return result
+
+
+openhands._build_generate_llm = capture_build
+openhands._generate_call_kwargs = capture_call_kwargs
+
+
+def handler(request):
+    captured["request"] = request
+    captured["body"] = json.loads(request.content.decode("utf-8"))
+    return httpx.Response(
+        200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": json.dumps({"nonce": nonce})}],
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 5,
+            },
+            "modelVersion": "gemini-3.5-flash",
+        },
+        request=request,
+    )
+
+
+transport = probe.GeminiSingleRequestTransport(httpx.MockTransport(handler))
+result = child._run_completion(
+    api_key=request_payload["api_key"],
+    nonce=nonce,
+    timeout_s=request_payload["timeout_s"],
+    transport=transport,
+)
+
+sent = captured["request"]
+body = captured["body"]
+build_kwargs = captured["build_kwargs"]
+call_kwargs = captured["call_kwargs"]
+generation_config = body["generationConfig"]
+verdict = {
+    "result": result["result"],
+    "request_count": transport.request_count,
+    "method": sent.method,
+    "host": sent.url.host,
+    "path": sent.url.path,
+    "api_key_header": sent.headers.get("x-goog-api-key"),
+    "build_max_output_tokens": build_kwargs["max_output_tokens"],
+    "build_thinking_budget": build_kwargs["thinking_budget"],
+    "build_num_retries": build_kwargs["num_retries"],
+    "build_timeout_s": build_kwargs["timeout_s"],
+    "call_temperature": call_kwargs["temperature"],
+    "call_thinking": call_kwargs["thinking"],
+    "body_temperature": generation_config["temperature"],
+    "body_max_output_tokens": generation_config["max_output_tokens"],
+    "body_schema_properties": generation_config["response_json_schema"]["properties"],
+    "body_prompt": body["contents"][0]["parts"][0]["text"],
+    "litellm_mode": os.environ.get("LITELLM_MODE"),
+}
+sys.stdout.write(json.dumps(verdict))
+sys.stdout.flush()
+"""
+
+
+def _provider_module_table() -> dict[str, Any]:
+    """Live provider modules by name, kept as objects so identity is comparable."""
+    return {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name == "openhands"
+        or name.startswith("openhands.")
+        or name == "litellm"
+        or name.startswith("litellm.")
     }
-    assert body["generationConfig"]["temperature"] == 0
-    assert body["generationConfig"]["max_output_tokens"] == 512
-    assert body["generationConfig"]["response_json_schema"]["properties"] == {
-        "nonce": {"type": "string"}
+
+
+def _isolated_env(
+    tmp_path: Path, extra: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Build a child environment from nothing, rooted entirely inside tmp_path."""
+    root = tmp_path / "driver-env"
+    paths = {
+        "HOME": root / "home",
+        "TMPDIR": root / "tmp",
+        "XDG_CACHE_HOME": root / "cache",
+        "XDG_CONFIG_HOME": root / "config",
+        "XDG_DATA_HOME": root / "data",
+        "XDG_STATE_HOME": root / "state",
     }
-    assert body["contents"][0]["parts"][0]["text"] == probe.scout_prompt(nonce)
+    for path in paths.values():
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    env = {key: str(value) for key, value in paths.items()}
+    env.update(extra or {})
+    return env
+
+
+def _run_proof_subprocess(
+    driver: str,
+    payload: dict[str, Any],
+    *,
+    env: dict[str, str],
+) -> tuple[dict[str, Any], str]:
+    before = _provider_module_table()
+    before_env = dict(os.environ)
+    proc = subprocess.run(
+        [sys.executable, "-c", driver],
+        input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=PROOF_SUBPROCESS_TIMEOUT_S,
+        env=env,
+        check=False,
+    )
+    stderr_tail = proc.stderr[-PROOF_SUBPROCESS_STDERR_REPORT_BYTES:].decode(
+        "utf-8", "replace"
+    )
+    assert proc.returncode == 0, stderr_tail
+    assert len(proc.stdout) <= PROOF_SUBPROCESS_STDOUT_MAX_BYTES
+    # The parent must come back exactly as it went in: same module objects, not
+    # merely the same names, and the same environment.
+    assert _provider_module_table() == before
+    assert dict(os.environ) == before_env
+    return json.loads(proc.stdout.decode("utf-8")), stderr_tail
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize(
+    ("scenario", "expected_state", "expected_reason"),
+    [
+        ("success", probe_contract.PROOF_STATE_PASSED, None),
+        (
+            "refuse",
+            probe_contract.PROOF_STATE_FAILED,
+            probe_contract.REASON_CAPABILITY_NOT_READY,
+        ),
+        (
+            "cancel_before_contact",
+            probe_contract.PROOF_STATE_FAILED,
+            probe_contract.REASON_CANCELLED,
+        ),
+    ],
+)
+def test_pristine_parent_imports_no_provider_modules(
+    tmp_path,
+    monkeypatch,
+    scenario: str,
+    expected_state: str,
+    expected_reason: str | None,
+) -> None:
+    journal, attempt = _ready_scout_journal(tmp_path, monkeypatch)
+    if scenario == "refuse":
+        config_path = journal / "config" / "journal.json"
+        config = read_json(config_path)
+        config["services"]["scout"]["account_id"] = "acct-other"
+        _write_json(config_path, config)
+
+    verdict, stderr_tail = _run_proof_subprocess(
+        _PROVIDER_ABSENCE_DRIVER,
+        {
+            "journal": str(journal),
+            "attempt": str(attempt),
+            "scenario": scenario,
+            "nonce": CANARY_NONCE,
+            "child_code": _ok_child_code(),
+        },
+        env=_isolated_env(tmp_path),
+    )
+
+    # The precondition a shared worker cannot offer, asserted rather than assumed.
+    assert verdict["before_import"] == []
+    # Full strength: nothing present, not merely nothing new.
+    assert verdict["after_import"] == []
+    assert verdict["after_proof"] == []
+    assert verdict["state"] == expected_state
+    assert verdict["reason"] == expected_reason
+    assert verdict["env_unchanged"] is True
+    assert verdict["config_unchanged"] is True
+    assert verdict["attempt_empty"] is True
+    if scenario == "success":
+        assert verdict["checks"] == list(probe_contract.PROOF_CHECKS["scout"])
+    else:
+        assert verdict["checks"] == []
+    _assert_canaries_absent(stderr_tail)
+
+
+@pytest.mark.timeout(600)
+def test_real_openhands_completion_uses_injected_gemini_transport(tmp_path) -> None:
+    nonce = "nonce-for-provider"
+    api_key = "dummy-google-key"
+    verdict, _stderr = _run_proof_subprocess(
+        _OPENHANDS_TRANSPORT_DRIVER,
+        {"nonce": nonce, "api_key": api_key, "timeout_s": 30},
+        # Set in the child's environment rather than the parent's: LiteLLM reads
+        # both at import time, and PRODUCTION plus the bundled cost map are what
+        # keep this offline (no GEMINI_API_BASE redirect, no cost-map fetch).
+        env=_isolated_env(
+            tmp_path,
+            {"LITELLM_MODE": "PRODUCTION", "LITELLM_LOCAL_MODEL_COST_MAP": "True"},
+        ),
+    )
+
+    assert verdict["result"] == "ok"
+    assert verdict["request_count"] == 1
+    assert verdict["method"] == "POST"
+    assert verdict["host"] == "generativelanguage.googleapis.com"
+    assert verdict["path"] == "/v1alpha/models/gemini-3.5-flash:generateContent"
+    assert verdict["api_key_header"] == api_key
+    assert verdict["litellm_mode"] == "PRODUCTION"
+    assert verdict["build_max_output_tokens"] == 512
+    assert verdict["build_thinking_budget"] == 0
+    assert verdict["build_num_retries"] == 0
+    assert verdict["build_timeout_s"] == 30
+    assert verdict["call_temperature"] == 0
+    assert verdict["call_thinking"] == {"type": "disabled", "budget_tokens": 0}
+    assert verdict["body_temperature"] == 0
+    assert verdict["body_max_output_tokens"] == 512
+    assert verdict["body_schema_properties"] == {"nonce": {"type": "string"}}
+    assert verdict["body_prompt"] == probe.scout_prompt(nonce)
+
+
+@pytest.mark.timeout(600)
+def test_scout_proof_leaves_openhands_shape_tests_passing(tmp_path) -> None:
+    """Deterministic guard for the isolation defect these subprocesses fixed.
+
+    Deleting provider modules from the shared interpreter used to pass this
+    file's own tests while reddening whichever worker inherited the corrupted
+    module table. Ordering is the whole point, so pin it: run this entire file
+    first, then the suites that broke. Scoping the run to the whole file rather
+    than a couple of tests is deliberate — it is what catches an in-process
+    ``sys.modules`` deletion reintroduced anywhere in it. Only this test is
+    deselected, since it is what spawns the nested run.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    scout = "tests/sandbox_profile/test_scout_provider_probe.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            scout,
+            "--deselect",
+            f"{scout}::{test_scout_proof_leaves_openhands_shape_tests_passing.__name__}",
+            "tests/test_openhands_sdk_shape.py",
+            "tests/test_cogitate_local_condenser.py",
+            "-q",
+            "-p",
+            "no:randomly",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        timeout=PROOF_SUBPROCESS_TIMEOUT_S,
+        env=_isolated_env(
+            tmp_path,
+            {"SOLSTONE_JOURNAL": str(repo_root / "tests" / "fixtures" / "journal")},
+        ),
+        check=False,
+    )
+    tail = proc.stdout[-PROOF_SUBPROCESS_STDERR_REPORT_BYTES:].decode(
+        "utf-8", "replace"
+    )
+    assert proc.returncode == 0, tail
