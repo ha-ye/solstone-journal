@@ -33,9 +33,12 @@ The invariants are:
  10. Each leaf has metadata-only setuptools config, a workspace source for
      `solstone`, the expected package name, and the root version.
  11. uv workspace members/sources are exactly the two journal leaves plus
-     models plus core; `solstone-journal-host` is absent.
+     models plus core plus the speakers analyze helper; `solstone-journal-host`
+     is absent.
  12. `[tool.uv].override-dependencies` contains both tombstone pins.
  13. The Makefile no longer uses root journal extra spellings.
+ 14. The speakers analyze helper is a workspace-only maturin bin leaf with
+     staged wheel data and no Python dependency surface.
 """
 
 import sys
@@ -101,13 +104,29 @@ WORKSPACE_MEMBERS = [
     "packages/solstone-journal-cuda",
     "packages/solstone-journal-models",
     "packages/solstone-core",
+    "packages/solstone-core-speakers-analyze",
 ]
 WORKSPACE_SOURCES = {
     "solstone-journal",
     "solstone-journal-cuda",
     "solstone-journal-models",
     "solstone-core",
+    "solstone-core-speakers-analyze",
 }
+SPEAKERS_ANALYZE_CACHE_KEYS = [
+    {"file": "pyproject.toml"},
+    {"file": "wheel-data/**"},
+    {"file": "../../scripts/stage_speakers_analyze_runtime.py"},
+    {"file": "../../core/Cargo.toml"},
+    {"file": "../../core/Cargo.lock"},
+    {"file": "../../core/crates/solstone-core-speakers/Cargo.toml"},
+    {"file": "../../core/crates/solstone-core-speakers/**/*.rs"},
+    {"file": "../../core/crates/solstone-core-speakers-onnx/Cargo.toml"},
+    {"file": "../../core/crates/solstone-core-speakers-onnx/**/*.rs"},
+    {"file": "../../core/crates/solstone-core-speakers-analyze/Cargo.toml"},
+    {"file": "../../core/crates/solstone-core-speakers-analyze/build.rs"},
+    {"file": "../../core/crates/solstone-core-speakers-analyze/**/*.rs"},
+]
 
 
 def _names(reqs: list[str]) -> set[str]:
@@ -281,6 +300,70 @@ def _check_core_leaf(
         errors.append("core leaf [tool.maturin].strip must be true")
 
 
+def _check_speakers_analyze_leaf(
+    *,
+    data: dict,
+    root_version: str | None,
+    errors: list[str],
+) -> None:
+    project = data.get("project", {})
+    build_system = data.get("build-system", {})
+    tool = data.get("tool", {})
+    maturin = tool.get("maturin", {})
+    uv = tool.get("uv", {})
+
+    if project.get("name") != "solstone-core-speakers-analyze":
+        errors.append(
+            "speakers analyze leaf [project].name must be "
+            "'solstone-core-speakers-analyze'"
+        )
+    if project.get("version") != root_version:
+        errors.append(
+            "speakers analyze leaf [project].version must match root version "
+            f"{root_version}; found {project.get('version')!r}"
+        )
+    if project.get("dependencies", []) != []:
+        errors.append("speakers analyze leaf must not define [project].dependencies")
+    if project.get("scripts", {}) != {}:
+        errors.append("speakers analyze leaf must not define [project.scripts]")
+    if build_system.get("build-backend") != "maturin":
+        errors.append(
+            "speakers analyze leaf [build-system].build-backend must be 'maturin'"
+        )
+    requires = build_system.get("requires", [])
+    expected_requires = ["maturin==1.14.1"]
+    if requires != expected_requires:
+        errors.append(
+            "speakers analyze leaf [build-system].requires mismatch\n"
+            f"  expected: {expected_requires!r}\n"
+            f"  actual: {requires!r}\n"
+            "  repair command: edit "
+            "packages/solstone-core-speakers-analyze/pyproject.toml to "
+            'requires = ["maturin==1.14.1"]'
+        )
+    if maturin.get("bindings") != "bin":
+        errors.append("speakers analyze leaf [tool.maturin].bindings must be 'bin'")
+    if (
+        maturin.get("manifest-path")
+        != "../../core/crates/solstone-core-speakers-analyze/Cargo.toml"
+    ):
+        errors.append(
+            "speakers analyze leaf [tool.maturin].manifest-path must be "
+            "'../../core/crates/solstone-core-speakers-analyze/Cargo.toml'"
+        )
+    if maturin.get("profile") != "release":
+        errors.append("speakers analyze leaf [tool.maturin].profile must be 'release'")
+    if maturin.get("strip") is not True:
+        errors.append("speakers analyze leaf [tool.maturin].strip must be true")
+    if maturin.get("data") != "wheel-data":
+        errors.append("speakers analyze leaf [tool.maturin].data must be 'wheel-data'")
+    if uv.get("cache-keys") != SPEAKERS_ANALYZE_CACHE_KEYS:
+        errors.append(
+            "speakers analyze leaf [tool.uv].cache-keys must match the "
+            "declared native build inputs"
+        )
+
+
 def main(root: Path | None = None) -> int:
     root = Path(root) if root is not None else Path(__file__).resolve().parent.parent
     pyproject = root / "pyproject.toml"
@@ -288,6 +371,9 @@ def main(root: Path | None = None) -> int:
     cuda_pyproject = root / "packages" / "solstone-journal-cuda" / "pyproject.toml"
     models_pyproject = root / "packages" / "solstone-journal-models" / "pyproject.toml"
     core_pyproject = root / "packages" / "solstone-core" / "pyproject.toml"
+    speakers_analyze_pyproject = (
+        root / "packages" / "solstone-core-speakers-analyze" / "pyproject.toml"
+    )
     makefile = root / "Makefile"
     errors: list[str] = []
 
@@ -296,6 +382,7 @@ def main(root: Path | None = None) -> int:
     cuda_data = _read_toml(cuda_pyproject, root, errors)
     models_data = _read_toml(models_pyproject, root, errors)
     core_data = _read_toml(core_pyproject, root, errors)
+    speakers_analyze_data = _read_toml(speakers_analyze_pyproject, root, errors)
 
     project = data.get("project", {})
     root_version = project.get("version")
@@ -428,6 +515,11 @@ def main(root: Path | None = None) -> int:
         errors=errors,
     )
     _check_core_leaf(data=core_data, root_version=root_version, errors=errors)
+    _check_speakers_analyze_leaf(
+        data=speakers_analyze_data,
+        root_version=root_version,
+        errors=errors,
+    )
 
     # 5. CPU leaf runtime split.
     missing_cpu_runtime = sorted(CPU_ONNXRUNTIME_DEPS - set(cpu_deps))

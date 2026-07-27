@@ -109,6 +109,29 @@ SOLSTONE_CORE_PLATFORM_TAGS: dict[CorePlatform, str] = {
     for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
 }
 
+SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS: tuple[CorePlatform, ...] = (
+    ("linux", "x86_64"),
+    ("linux", "aarch64"),
+    ("darwin", "arm64"),
+)
+
+
+def _solstone_core_speakers_analyze_platform_tag(
+    platform_tuple: CorePlatform,
+) -> str:
+    system, machine = platform_tuple
+    if system == "darwin":
+        # Derived from the measured ONNX Runtime 1.25.0 dylib minos=14.0.0.
+        # Its match with solstone-core's literal tag is coincidental.
+        return f"macosx_14_0_{machine}"
+    return f"manylinux_2_27_{machine}"
+
+
+SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS: dict[CorePlatform, str] = {
+    platform_tuple: _solstone_core_speakers_analyze_platform_tag(platform_tuple)
+    for platform_tuple in SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+}
+
 
 def platform_tag() -> Platform:
     if sys.platform == "darwin":

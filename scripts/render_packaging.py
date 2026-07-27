@@ -77,6 +77,10 @@ def _core_leaf_path(root: Path) -> Path:
     return root / "packages" / "solstone-core" / "pyproject.toml"
 
 
+def _speakers_analyze_leaf_path(root: Path) -> Path:
+    return root / "packages" / "solstone-core-speakers-analyze" / "pyproject.toml"
+
+
 def _core_unsupported_tombstone_path(root: Path) -> Path:
     return (
         root / "scripts" / "solstone-core-unsupported-platform-tombstone" / "setup.py"
@@ -107,6 +111,21 @@ def _rewrite_core_leaf(text: str, version: str) -> str:
     if "solstone[journal-host]==" in text:
         raise PackagingRenderError(
             "core leaf pyproject must not contain a solstone[journal-host]== pin"
+        )
+    return text
+
+
+def _rewrite_speakers_analyze_leaf(text: str, version: str) -> str:
+    text, version_count = VERSION_RE.subn(f'version = "{version}"', text)
+    if version_count != 1:
+        raise PackagingRenderError(
+            "speakers analyze leaf pyproject must contain exactly one "
+            f"[project].version line; found {version_count}"
+        )
+    if "solstone[journal-host]==" in text:
+        raise PackagingRenderError(
+            "speakers analyze leaf pyproject must not contain a "
+            "solstone[journal-host]== pin"
         )
     return text
 
@@ -351,6 +370,9 @@ def render(root: Path = ROOT) -> dict[Path, str]:
         root / "pyproject.toml": root_text,
         _core_leaf_path(root): _rewrite_core_leaf(
             _core_leaf_path(root).read_text(encoding="utf-8"), version
+        ),
+        _speakers_analyze_leaf_path(root): _rewrite_speakers_analyze_leaf(
+            _speakers_analyze_leaf_path(root).read_text(encoding="utf-8"), version
         ),
         _core_unsupported_tombstone_path(root): _rewrite_tombstone_setup(
             _core_unsupported_tombstone_path(root).read_text(encoding="utf-8"),

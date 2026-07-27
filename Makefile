@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors sandbox-probe-contract check-sandbox-probe-contract build-native-sol-grammar-oracle check-native-sol-grammar-oracle build-native-sol-root-contract check-native-sol-root-contract check-core-sdist-compile-inputs build-native-sol-journal-host-commands check-native-sol-journal-host-commands build-journal-access-rejection-inventory check-journal-access-rejection-inventory check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors sandbox-probe-contract check-sandbox-probe-contract build-native-sol-grammar-oracle check-native-sol-grammar-oracle build-native-sol-root-contract check-native-sol-root-contract check-core-sdist-compile-inputs build-native-sol-journal-host-commands check-native-sol-journal-host-commands build-journal-access-rejection-inventory check-journal-access-rejection-inventory check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-speakers-analyze-linux wheel-speakers-analyze-linux-x86_64 wheel-speakers-analyze-linux-aarch64 wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -28,6 +28,11 @@ RUST_MANIFEST := core/Cargo.toml
 IOS_TARGET := aarch64-apple-ios
 REQUIRE_CARGO := command -v cargo >/dev/null 2>&1 || { echo "cargo is required for Rust checks; install cargo and retry" >&2; exit 1; }
 REQUIRE_RUSTUP := command -v rustup >/dev/null 2>&1 || { echo "rustup is required for the iOS gate; install rustup and retry" >&2; exit 1; }
+# Prep measured, rather than merely anticipated, that a host GNU cargo build of
+# solstone-core-speakers-analyze reaches GLIBC_2.34. These zig-GNU maturin args
+# are therefore the checked-in developer path for the helper's GLIBC_2.27 floor.
+SPEAKERS_ANALYZE_LINUX_X86_64_MATURIN_ARGS := --locked --zig --compatibility manylinux_2_27 --auditwheel skip --target x86_64-unknown-linux-gnu
+SPEAKERS_ANALYZE_LINUX_AARCH64_MATURIN_ARGS := --locked --zig --compatibility manylinux_2_27 --auditwheel skip --target aarch64-unknown-linux-gnu
 # Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
@@ -159,6 +164,18 @@ preflight:
 
 render-packaging:
 	python3 scripts/render_packaging.py
+
+wheel-speakers-analyze-linux: wheel-speakers-analyze-linux-x86_64
+
+wheel-speakers-analyze-linux-x86_64:
+	python3 scripts/stage_speakers_analyze_runtime.py --target linux-x86_64
+	rm -f dist/solstone_core_speakers_analyze-*.whl
+	ORT_PREFER_DYNAMIC_LINK=true ORT_LIB_PATH="$(CURDIR)/target/speakers-analyze-runtime-link/linux-x86_64" MATURIN_PEP517_ARGS="$(SPEAKERS_ANALYZE_LINUX_X86_64_MATURIN_ARGS)" $(UV) build --package solstone-core-speakers-analyze --wheel
+
+wheel-speakers-analyze-linux-aarch64:
+	python3 scripts/stage_speakers_analyze_runtime.py --target linux-aarch64
+	rm -f dist/solstone_core_speakers_analyze-*.whl
+	ORT_PREFER_DYNAMIC_LINK=true ORT_LIB_PATH="$(CURDIR)/target/speakers-analyze-runtime-link/linux-aarch64" MATURIN_PEP517_ARGS="$(SPEAKERS_ANALYZE_LINUX_AARCH64_MATURIN_ARGS)" $(UV) build --package solstone-core-speakers-analyze --wheel
 
 check-rust-fmt:
 	@$(REQUIRE_CARGO)
@@ -379,6 +396,30 @@ wheel-macos: parakeet-helper
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
 	python3 -m scripts.record_macos_native_wheel --role core --wheel "$$CORE_MAC_WHEEL" --signing-facts "$$CORE_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-core.json
+	@echo "==> staging macosx_14_0_arm64 solstone-core-speakers-analyze runtime"
+	python3 scripts/stage_speakers_analyze_runtime.py --target macos-arm64
+	@echo "==> building macosx_14_0_arm64 solstone-core-speakers-analyze wheel"
+	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core-speakers-analyze --wheel
+	@echo "==> signing and notarizing solstone-core-speakers-analyze and bundled ONNX Runtime dylib"
+	@SPEAKERS_MAC_WHEEL=$$(ls dist/solstone_core_speakers_analyze-*-macosx_14_0_arm64.whl); \
+	SPEAKERS_FACTS=$$(mktemp); \
+	SPEAKERS_TMP=$$(mktemp -d); \
+	trap 'rm -rf "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS"' EXIT; \
+	python3 -m zipfile -e "$$SPEAKERS_MAC_WHEEL" "$$SPEAKERS_TMP"; \
+	SPEAKERS_BINARY=$$(find "$$SPEAKERS_TMP" -path "*.data/scripts/solstone-core-speakers-analyze" -type f -print -quit); \
+	test -n "$$SPEAKERS_BINARY" || { echo "missing solstone-core-speakers-analyze binary in $$SPEAKERS_MAC_WHEEL" >&2; exit 1; }; \
+	echo "==> signing and notarizing solstone-core-speakers-analyze"; \
+	./scripts/sign-and-notarize-helper.sh "$$SPEAKERS_BINARY" > "$$SPEAKERS_TMP/solstone-core-speakers-analyze.signing-facts.json"; \
+	ONNXRUNTIME_DYLIB=$$(find "$$SPEAKERS_TMP" -path "*.data/data/lib/solstone-core-speakers-analyze/libonnxruntime.1.25.0.dylib" -type f -print -quit); \
+	test -n "$$ONNXRUNTIME_DYLIB" || { echo "missing libonnxruntime.1.25.0.dylib in $$SPEAKERS_MAC_WHEEL" >&2; exit 1; }; \
+	echo "==> signing and notarizing libonnxruntime.1.25.0.dylib"; \
+	./scripts/sign-and-notarize-helper.sh "$$ONNXRUNTIME_DYLIB" > "$$SPEAKERS_TMP/libonnxruntime.1.25.0.dylib.signing-facts.json"; \
+	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core-speakers-analyze", "libonnxruntime.1.25.0.dylib"); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS"; \
+	python3 scripts/repack_wheel_record.py "$$SPEAKERS_TMP" "$$SPEAKERS_MAC_WHEEL"; \
+	SOURCE_COMMIT=$$(git rev-parse HEAD); \
+	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
+	python3 -m scripts.record_macos_native_wheel --role speakers-analyze --wheel "$$SPEAKERS_MAC_WHEEL" --signing-facts "$$SPEAKERS_FACTS" --source-commit "$$SOURCE_COMMIT" --core-lock-sha256 "$$CORE_LOCK_SHA256" --out dist/macos-native-speakers-analyze.json; \
+	rm -rf packages/solstone-core-speakers-analyze/wheel-data
 else
 wheel-macos:
 	@echo "wheel-macos: only supported on Darwin/arm64 (got $(shell uname -s)/$(shell uname -m))" >&2

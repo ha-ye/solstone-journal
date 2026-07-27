@@ -217,13 +217,14 @@ override-dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models", "packages/solstone-core"]
+members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models", "packages/solstone-core", "packages/solstone-core-speakers-analyze"]
 
 [tool.uv.sources]
 solstone-journal = {workspace = true}
 solstone-journal-cuda = {workspace = true}
 solstone-journal-models = {workspace = true}
 solstone-core = {workspace = true}
+solstone-core-speakers-analyze = {workspace = true}
 
 # Development tools configuration
 [tool.ruff]
