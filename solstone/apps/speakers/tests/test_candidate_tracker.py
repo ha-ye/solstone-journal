@@ -18,6 +18,8 @@ from solstone.apps.speakers.candidate_tracker import (
     candidate_source_anchors,
     canonical_candidate_anchor,
     encode_source_key,
+    source_segment_anchor,
+    source_segment_sentence_ids,
 )
 from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_DURATION_S,
@@ -120,6 +122,21 @@ def _write_labeled_segment(
         np.savez_compressed(seg_dir / f"{source}.npz", **npz_payload)
         (seg_dir / f"{source}.flac").write_bytes(b"")
     return chronicle_dir
+
+
+def _rewrite_integer_speaker_labels(
+    seg_dir: Path,
+    source: str,
+    by_sentence_id: dict[int, int],
+) -> None:
+    jsonl_path = seg_dir / f"{source}.jsonl"
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    rewritten = [lines[0]]
+    for sentence_id, line in enumerate(lines[1:], start=1):
+        row = json.loads(line)
+        row["speaker"] = by_sentence_id[sentence_id]
+        rewritten.append(json.dumps(row))
+    jsonl_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
 
 
 def _voiceprint_count(entity_dir: Path) -> int:
@@ -241,6 +258,7 @@ def test_solo_segment_admits_with_trimmed_count_zero(speakers_env, tmp_path):
             "source": "mic_audio",
             "cluster_label": SOLO_CLUSTER_LABEL,
             "trimmed_count": 0,
+            "sentence_ids": [1, 2, 3],
         }
     ]
 
@@ -478,6 +496,7 @@ def test_pool_persist_reload_round_trip(speakers_env, tmp_path):
             "stream": STREAM,
             "source": "mic_audio",
             "cluster_label": 1,
+            "sentence_ids": [1, 2, 3],
         }
     ]
 
@@ -1234,6 +1253,114 @@ def test_process_segment_idempotent_for_same_source_segment(speakers_env, tmp_pa
     assert candidate.n_segments == 1
     assert candidate.n_intervals == 3
     assert candidate.total_duration_s == 15.0
+
+
+def test_process_segment_persists_membership_without_changing_source_key(
+    speakers_env,
+    tmp_path,
+):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {7: np.stack([base] * 3)},
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    candidate = _only_candidate(tracker)
+    source_segment = candidate.source_segments[0]
+    anchor_with_membership = source_segment_anchor(source_segment)
+    source_without_membership = dict(source_segment)
+    source_without_membership.pop("sentence_ids")
+
+    assert source_segment["sentence_ids"] == [1, 2, 3]
+    assert source_segment_anchor(source_without_membership) == anchor_with_membership
+
+
+def test_backfill_source_sentence_ids_recovers_legacy_membership(
+    speakers_env,
+    tmp_path,
+):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {7: np.stack([base] * 3)},
+    )
+    tracker = _seed_tracker(
+        tmp_path / "speaker_candidates.json",
+        [
+            _profile(
+                1,
+                base,
+                source_segments=[
+                    {
+                        "day": "20260101",
+                        "segment_key": "090000_300",
+                        "stream": STREAM,
+                        "source": "mic_audio",
+                        "cluster_label": 7,
+                    },
+                    {
+                        "day": "20260102",
+                        "segment_key": "missing_300",
+                        "stream": STREAM,
+                        "source": "mic_audio",
+                        "cluster_label": 7,
+                    },
+                ],
+            )
+        ],
+    )
+    assert seg_dir.exists()
+
+    result = tracker.backfill_source_sentence_ids()
+
+    tracker.load()
+    candidate = _only_candidate(tracker)
+    assert result == {"updated": 1, "unresolved": 1, "already_present": 0}
+    assert source_segment_sentence_ids(candidate.source_segments[0]) == [1, 2, 3]
+    assert source_segment_sentence_ids(candidate.source_segments[1]) is None
+
+
+def test_retroactive_confirm_relocates_members_from_stored_sentence_ids(
+    speakers_env,
+    tmp_path,
+):
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Alice Test")
+    base = _unit([0.0, 1.0, 0.0])
+    trap = _unit([0.0, 0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {
+            1: np.stack([base] * 3),
+            2: np.stack([trap] * 3),
+        },
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+    _rewrite_integer_speaker_labels(
+        seg_dir,
+        "mic_audio",
+        {1: 9, 2: 9, 3: 9, 4: 1, 5: 1, 6: 1},
+    )
+
+    plan = tracker.plan_retroactive_confirm(base, "alice_test")
+
+    assert [entry["key"]["sentence_id"] for entry in plan.voiceprints_to_add] == [
+        1,
+        2,
+        3,
+    ]
 
 
 def test_identify_cluster_triggers_retroactive_confirm(speakers_env):

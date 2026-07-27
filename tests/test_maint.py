@@ -372,7 +372,7 @@ class TestRunPendingTasks:
             if task.qualified_name not in blocking_migrations | retry_migrations
         ]
 
-        assert len(existing) == 23
+        assert len(existing) == 24
         assert all(not task.retry_on_next_start for task in existing)
         assert all(not task.blocks_supervisor_start for task in existing)
 

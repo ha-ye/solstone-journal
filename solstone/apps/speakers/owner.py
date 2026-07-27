@@ -1072,9 +1072,9 @@ def _expand_owner_candidate(
     """Expand one candidate pool profile into usable owner bootstrap rows."""
     import numpy as np
 
-    from solstone.apps.speakers.attribution import _load_integer_speaker_labels
     from solstone.apps.speakers.candidate_tracker import (
         SOLO_CLUSTER_LABEL,
+        source_segment_sentence_ids,
         trim_solo_cluster_rows,
     )
 
@@ -1083,7 +1083,6 @@ def _expand_owner_candidate(
     embeddings_cache: dict[
         Path, tuple[np.ndarray, np.ndarray, np.ndarray | None] | None
     ] = {}
-    labels_cache: dict[tuple[Path, str], dict[int, int]] = {}
     fallback_cache: dict[Path, dict[int, float | None]] = {}
     overlap_cache: dict[Path, float] = {}
     skipped: dict[str, int] = {}
@@ -1137,22 +1136,10 @@ def _expand_owner_candidate(
         statement_index = {
             int(statement_id): idx for idx, statement_id in enumerate(statement_ids)
         }
-        if cluster_label == SOLO_CLUSTER_LABEL:
-            sentence_ids = sorted(int(statement_id) for statement_id in statement_ids)
-        else:
-            labels_key = (seg_dir, source)
-            integer_labels = labels_cache.setdefault(
-                labels_key,
-                _load_integer_speaker_labels(seg_dir, source),
-            )
-            if not integer_labels:
-                skip("missing_integer_labels")
-                continue
-            sentence_ids = [
-                sid
-                for sid, label in sorted(integer_labels.items())
-                if int(label) == cluster_label
-            ]
+        sentence_ids = source_segment_sentence_ids(source_segment)
+        if sentence_ids is None:
+            skip("missing_source_sentence_ids")
+            continue
         fallback_durations = (
             {}
             if durations_data is not None

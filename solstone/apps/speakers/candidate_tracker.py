@@ -267,6 +267,9 @@ def _retroactive_voiceprint_metadata(
 
 
 def _source_key(source_segment: dict[str, Any]) -> tuple[str, str, str, str, int]:
+    # Source identity deliberately stays independent from persisted membership.
+    # If re-analysis renumbers the same acoustic partition, dedupe can still add
+    # a second source key; that is a separate follow-up from safe re-location.
     return (
         str(source_segment["day"]),
         str(source_segment["segment_key"]),
@@ -284,6 +287,58 @@ def encode_source_key(source_key: tuple[str, str, str, str, int]) -> str:
 def source_segment_anchor(source_segment: dict[str, Any]) -> str:
     """Return the stable anchor for one source segment."""
     return encode_source_key(_source_key(source_segment))
+
+
+def source_segment_sentence_ids(source_segment: dict[str, Any]) -> list[int] | None:
+    """Return persisted member sentence ids, or None for legacy/unresolved records."""
+    raw = source_segment.get("sentence_ids")
+    if not isinstance(raw, list):
+        return None
+    sentence_ids: list[int] = []
+    for item in raw:
+        if isinstance(item, bool):
+            return None
+        try:
+            sentence_ids.append(int(item))
+        except (TypeError, ValueError):
+            return None
+    return sorted(set(sentence_ids))
+
+
+def recover_source_segment_sentence_ids(
+    source_segment: dict[str, Any],
+) -> list[int] | None:
+    """Recover legacy source membership from current on-disk NPZ and labels."""
+    try:
+        day = str(source_segment["day"])
+        segment_key = str(source_segment["segment_key"])
+        stream = str(source_segment["stream"])
+        source = str(source_segment["source"])
+        cluster_label = int(source_segment["cluster_label"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    seg_dir = segment_path(day, segment_key, stream, create=False)
+    if not seg_dir.exists():
+        return None
+    load_embeddings_file, _normalize_embedding = _routes_helpers()
+    emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
+    if emb_data is None:
+        return None
+    _embeddings, statement_ids, _durations_s = emb_data
+    available_ids = {int(sid) for sid in statement_ids}
+    if cluster_label == SOLO_CLUSTER_LABEL:
+        return sorted(available_ids)
+
+    integer_labels = _load_integer_speaker_labels(seg_dir, source)
+    if not integer_labels:
+        return None
+    recovered = [
+        int(sid)
+        for sid, label in sorted(integer_labels.items())
+        if int(label) == cluster_label and int(sid) in available_ids
+    ]
+    return recovered or None
 
 
 def candidate_source_anchors(candidate: CandidateProfile) -> set[str]:
@@ -384,6 +439,32 @@ class CandidateTracker:
         with hold_lock(self.store_path):
             self.load()
             return self.load_all_candidates()
+
+    def backfill_source_sentence_ids(self) -> dict[str, int]:
+        """Backfill persisted member ids on legacy source segments."""
+        updated = 0
+        unresolved = 0
+        already_present = 0
+        with hold_lock(self.store_path):
+            self.load()
+            for candidate in self._candidates.values():
+                for source_segment in candidate.source_segments:
+                    if source_segment_sentence_ids(source_segment) is not None:
+                        already_present += 1
+                        continue
+                    recovered = recover_source_segment_sentence_ids(source_segment)
+                    if recovered is None:
+                        unresolved += 1
+                        continue
+                    source_segment["sentence_ids"] = recovered
+                    updated += 1
+            if updated:
+                self._write()
+        return {
+            "updated": updated,
+            "unresolved": unresolved,
+            "already_present": already_present,
+        }
 
     def _new_id(self) -> int:
         cand_id = self._next_id
@@ -674,7 +755,7 @@ class CandidateTracker:
             if source_key in existing_source_keys:
                 continue
 
-            cluster_rows: list[tuple[np.ndarray, float]] = []
+            cluster_rows: list[tuple[int, np.ndarray, float]] = []
             for sid in sentence_ids:
                 idx = sid_to_idx.get(sid)
                 if idx is None:
@@ -687,7 +768,7 @@ class CandidateTracker:
                     if durations_s is not None and idx < len(durations_s)
                     else 0.0
                 )
-                cluster_rows.append((normalized, duration_s))
+                cluster_rows.append((int(sid), normalized, duration_s))
 
             if not cluster_rows:
                 continue
@@ -695,15 +776,15 @@ class CandidateTracker:
             if cluster_label == SOLO_CLUSTER_LABEL:
                 cluster_rows, centroid, trimmed_count = trim_solo_cluster_rows(
                     cluster_rows,
-                    embedding_for_row=lambda row: row[0],
+                    embedding_for_row=lambda row: row[1],
                     normalize_embedding=normalize_embedding,
                 )
                 if centroid is None or not cluster_rows:
                     continue
-                stacked = np.stack([embedding for embedding, _ in cluster_rows])
+                stacked = np.stack([embedding for _sid, embedding, _ in cluster_rows])
                 source_segment["trimmed_count"] = trimmed_count
             else:
-                stacked = np.stack([embedding for embedding, _ in cluster_rows])
+                stacked = np.stack([embedding for _sid, embedding, _ in cluster_rows])
                 centroid = normalize_embedding(np.mean(stacked, axis=0))
                 if centroid is None:
                     continue
@@ -712,8 +793,11 @@ class CandidateTracker:
             if spread >= STABILITY_THRESHOLD:
                 continue
 
+            source_segment["sentence_ids"] = sorted(
+                sid for sid, _embedding, _ in cluster_rows
+            )
             n_intervals = len(cluster_rows)
-            duration_s = sum(duration for _, duration in cluster_rows)
+            duration_s = sum(duration for _sid, _embedding, duration in cluster_rows)
             best_id, best_score = self._best_match(centroid)
             if best_id is not None and best_score >= MERGE_THRESHOLD:
                 pre_intervals = self._candidates[best_id].n_intervals
@@ -878,7 +962,6 @@ class CandidateTracker:
             segment_key = str(source_segment["segment_key"])
             stream = str(source_segment["stream"])
             source = str(source_segment["source"])
-            cluster_label = int(source_segment["cluster_label"])
 
             seg_dir = segment_path(day, segment_key, stream, create=False)
             if not seg_dir.exists():
@@ -890,15 +973,9 @@ class CandidateTracker:
                 continue
             embeddings, statement_ids, _durations_s = emb_data
             sid_to_idx = {int(sid): index for index, sid in enumerate(statement_ids)}
-            if cluster_label == SOLO_CLUSTER_LABEL:
-                sentence_ids = sorted(int(sid) for sid in statement_ids)
-            else:
-                integer_labels = _load_integer_speaker_labels(seg_dir, source)
-                sentence_ids = [
-                    sid
-                    for sid, label in sorted(integer_labels.items())
-                    if int(label) == cluster_label
-                ]
+            sentence_ids = source_segment_sentence_ids(source_segment)
+            if sentence_ids is None:
+                continue
 
             for sid in sentence_ids:
                 idx = sid_to_idx.get(int(sid))

@@ -275,6 +275,21 @@ def _write_labeled_segment(
     return chronicle_dir
 
 
+def _rewrite_integer_speaker_labels(
+    seg_dir: Path,
+    source: str,
+    by_sentence_id: dict[int, int],
+) -> None:
+    jsonl_path = seg_dir / f"{source}.jsonl"
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    rewritten = [lines[0]]
+    for sentence_id, line in enumerate(lines[1:], start=1):
+        row = json.loads(line)
+        row["speaker"] = by_sentence_id[sentence_id]
+        rewritten.append(json.dumps(row))
+    jsonl_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+
 def _source_segment(
     day: str,
     segment_key: str,
@@ -282,14 +297,18 @@ def _source_segment(
     stream: str,
     source: str = "mic_audio",
     cluster_label: int = 1,
+    sentence_ids: list[int] | None = None,
 ) -> dict[str, object]:
-    return {
+    source_segment: dict[str, object] = {
         "day": day,
         "stream": stream,
         "segment_key": segment_key,
         "source": source,
         "cluster_label": cluster_label,
     }
+    if sentence_ids is not None:
+        source_segment["sentence_ids"] = sentence_ids
+    return source_segment
 
 
 def _candidate_record(
@@ -304,13 +323,19 @@ def _candidate_record(
 ) -> dict[str, object]:
     centroid = np.zeros(256, dtype=np.float32)
     centroid[0] = 1.0
+    migrated_source_segments = []
+    for source_segment in source_segments:
+        row = dict(source_segment)
+        if "sentence_ids" not in row:
+            row["sentence_ids"] = list(range(1, int(n_intervals) + 1))
+        migrated_source_segments.append(row)
     return {
         "cand_id": cand_id,
         "centroid": centroid.astype(float).tolist(),
         "n_segments": n_segments if n_segments is not None else len(source_segments),
         "n_intervals": n_intervals,
         "total_duration_s": total_duration_s,
-        "source_segments": source_segments,
+        "source_segments": migrated_source_segments,
         "confirmed_entity": confirmed_entity,
         "status": status,
     }
@@ -890,6 +915,76 @@ def test_expand_owner_candidate_mixes_solo_and_diarizer_sources(speakers_env, tm
         ("20240101", "mic", "091000_300", "mic_audio"),
     }
     assert all("cluster_label" not in record for record in expansion.provenance)
+
+
+def test_expand_owner_candidate_relocates_members_from_stored_sentence_ids(
+    speakers_env,
+    tmp_path,
+):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.owner import _expand_owner_candidate
+
+    env = speakers_env()
+    base = _owner_embeddings(3, np.random.default_rng(1))
+    trap = _other_cluster_embeddings(3)
+    seg_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: base, 2: trap},
+        stream="mic",
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20240101", "090000_300", "mic", "mic_audio", seg_dir)
+    candidate = tracker.load_all_candidates()[0]
+    _rewrite_integer_speaker_labels(
+        seg_dir,
+        "mic_audio",
+        {1: 9, 2: 9, 3: 9, 4: 1, 5: 1, 6: 1},
+    )
+
+    expansion = _expand_owner_candidate(candidate)
+
+    assert [record["sentence_id"] for record in expansion.provenance] == [1, 2, 3]
+
+
+def test_expand_owner_candidate_skips_legacy_sources_without_sentence_ids(
+    speakers_env,
+):
+    from solstone.apps.speakers.candidate_tracker import CandidateProfile
+    from solstone.apps.speakers.owner import _expand_owner_candidate
+
+    env = speakers_env()
+    base = _owner_embeddings(3, np.random.default_rng(1))
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: base},
+        stream="mic",
+    )
+    candidate = CandidateProfile(
+        cand_id=1,
+        centroid=base[0],
+        n_segments=1,
+        n_intervals=3,
+        total_duration_s=15.0,
+        source_segments=[
+            {
+                "day": "20240101",
+                "stream": "mic",
+                "segment_key": "090000_300",
+                "source": "mic_audio",
+                "cluster_label": 1,
+            }
+        ],
+    )
+
+    expansion = _expand_owner_candidate(candidate)
+
+    assert expansion.embeddings.shape == (0, 0)
+    assert expansion.provenance == []
+    assert expansion.skipped["missing_source_sentence_ids"] == 1
 
 
 def test_owner_candidate_samples_use_registered_audio_extension(speakers_env):
