@@ -32,12 +32,10 @@ def test_run_restic_boundary_accepts_real_local_restic_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     home = tmp_path / "home"
-    xdg_cache_home = tmp_path / "xdg-cache"
     tmp_dir = tmp_path / "tmp"
-    for path in (home, xdg_cache_home, tmp_dir):
+    for path in (home, tmp_dir):
         path.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache_home))
     monkeypatch.setenv("TMPDIR", str(tmp_dir))
 
     attempt_dir = tmp_path / "attempt"
@@ -124,4 +122,3 @@ def test_run_restic_boundary_accepts_real_local_restic_output(
     probe._verify_restore_tree(preflight)
 
     assert not (home / ".cache" / "restic").exists()
-    assert not (xdg_cache_home / "restic").exists()

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import json
+import json as json_module
 import os
 import shutil
 import stat
@@ -648,9 +648,12 @@ def _parse_json_records(text: str) -> list[object]:
     try:
         for line in lines:
             records.append(
-                json.loads(line, object_pairs_hook=json_codec.reject_duplicate_keys)
+                json_module.loads(
+                    line,
+                    object_pairs_hook=json_codec.reject_duplicate_keys,
+                )
             )
-    except (json.JSONDecodeError, ValueError):
+    except (json_module.JSONDecodeError, ValueError):
         raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
     return records
 
@@ -675,20 +678,16 @@ def _validate_message_type(record: dict[str, object]) -> str:
 
 def _validate_terminal_summary_records(records: list[object]) -> dict[str, object]:
     summary: dict[str, object] | None = None
-    summary_seen = False
     for raw_record in records:
         record = _validate_record(raw_record)
         message_type = _validate_message_type(record)
-        if summary_seen:
+        if summary is not None:
             raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
         if message_type == "status":
             continue
         if message_type != "summary":
             raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
-        if summary is not None:
-            raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
         summary = record
-        summary_seen = True
     if summary is None:
         raise _SpbProbeError(probe_contract.REASON_RESPONSE_INVALID) from None
     return summary
