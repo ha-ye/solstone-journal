@@ -161,6 +161,7 @@ gathers target evidence through configured build/proof-host channels,
 pair-promotes payload and evidence, and prints canonical local readiness JSON.
 This is candidate evidence only, not publication authorization. Advisory acquisition
 is a separate operator operation documented in `scripts/release_advisory_policy.py`.
+If retained `dist/release-candidate/<version>` or `target/release-evidence/<version>` bytes already exist, `--candidate` refuses before cleanup unless the operator sets `RELEASE_CANDIDATE_DISCARD_RETAINED=<version>` for an unpublished version or `RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=<version>+<tag>` for a tagged version; undeterminable retained state is not authorizable.
 
 Every candidate attempt generates a fresh proof challenge and requires, for each
 configured native target, a challenge-bound nvattest receipt alongside the

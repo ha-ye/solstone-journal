@@ -93,6 +93,40 @@ copied in. Historical validation is release-bound by design: the schema,
 exception set, and asset classifier that apply are the ones current at the
 manifest's `source_commit`, not the ones on the default branch today.
 
+## `--candidate` refuses before discarding retained bytes
+
+`bash scripts/release.sh --candidate` is allowed to refresh raw build outputs,
+but retained release bytes are protected in two tiers before `run_candidate`
+reaches cleanup.
+
+If neither `dist/release-candidate/<version>` nor
+`target/release-evidence/<version>` exists, the guard returns without a tag
+lookup. That preserves the normal no-retained-byte path, keeps fixture roots
+that are not git repositories out of git, and keeps entrypoint bootstrap tests
+from touching the sentinel `git` shim when there is nothing to protect.
+
+If either retained path exists and `v<version>` is absent, the soft tier refuses
+unless `RELEASE_CANDIDATE_DISCARD_RETAINED=<version>` is set. This says the
+operator is discarding retained bytes for an unpublished candidate.
+
+If either retained path exists and `v<version>` is present, the hard tier refuses
+unless `RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=<version>+<tag>` is set, for
+example `RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=1.0.17+v1.0.17`. The hard
+authorization also satisfies the soft tier because it is strictly stronger;
+requiring both would add friction without safety gain. The soft authorization
+does not satisfy the hard tier.
+
+The values are intentionally different shapes. The hard tier cannot be reached
+by copying the soft value and editing from memory. Both names use `DISCARD`
+because authorizing the run permits deletion of retained bytes; `REPLACE` would
+be less honest about the outcome.
+
+If a discard authorization is set for a version other than the working-tree
+version, `--candidate` refuses. If retained-path inspection or tag lookup is
+undeterminable, `--candidate` refuses and neither authorization can clear it. An
+operator cannot meaningfully authorize destroying bytes the driver cannot
+enumerate; fix the unreadable path or broken git state first.
+
 ## The test that makes this visible
 
 Keep at least one **frozen** retained ledger fixture per registered
