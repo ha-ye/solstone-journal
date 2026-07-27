@@ -4074,7 +4074,6 @@ def run_candidate(
     evidence_root = root / "target" / "release-evidence"
     evidence_dir = evidence_root / version
     evidence_staging = evidence_root / f"{version}.staging"
-    proof_paths: dict[str, Path] = {}
 
     def post_promote_hook(release_dir: Path) -> None:
         _validate_candidate_wheel_contents(
@@ -4132,7 +4131,7 @@ def run_candidate(
         )
         proofs_dir = evidence_staging / "proofs"
         for target in PROOF_TARGETS:
-            target_proofs = svc.run_target_proofs(
+            svc.run_target_proofs(
                 target=target,
                 version=version,
                 source_commit=expected_commit,
@@ -4148,7 +4147,6 @@ def run_candidate(
                 output_path=proofs_dir / f"{target}.json",
                 nvattest_output_path=(evidence_staging / "nvattest" / f"{target}.json"),
             )
-            proof_paths[target] = target_proofs.install
         failures = validate_public_evidence_tree("ledger", ledger_payload)
         if failures:
             raise DriverError(failures)
@@ -4199,7 +4197,6 @@ def run_candidate(
     except BaseException as exc:
         cleanup_failures = _cleanup_owned_cohorts((ready_path, evidence_dir))
         raise _aggregate_finalization_error(exc, cleanup_failures) from None
-    _ = proof_paths
     return report
 
 

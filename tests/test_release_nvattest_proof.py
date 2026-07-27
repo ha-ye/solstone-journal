@@ -19,8 +19,8 @@ import pytest
 import scripts.release_nvattest_proof as proof
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_install_smoke import SCRUBBED_COMMAND_ENV
-from scripts.release_proof_host import TARGET_POLICY
 from scripts.release_public_evidence import validate_public_evidence_tree
+from scripts.release_target_policy import TARGET_POLICY
 from solstone.think.providers.nvattest_authority import (
     TARGET_KEYS,
     NvattestTargetKey,

@@ -49,8 +49,8 @@ from scripts.release_install_smoke import (
     candidate_file_entries,
     expected_distribution_entries,
 )
-from scripts.release_proof_host import TARGET_POLICY
 from scripts.release_public_evidence import validate_public_evidence_tree
+from scripts.release_target_policy import TARGET_POLICY
 from solstone.think.providers.nvattest_authority import (
     NvattestTargetKey,
     authority_payload,

@@ -30,8 +30,8 @@ from scripts.channel_adapters.adapter_common import (  # noqa: E402
 from scripts.check_release_preflight import (  # noqa: E402
     expected_presign_lane_tool_evidence,
 )
-from scripts.release_proof_host import TARGET_ENV_KEYS  # noqa: E402
 from scripts.release_public_evidence import validate_public_evidence_tree  # noqa: E402
+from scripts.release_target_policy import TARGET_ENV_KEYS  # noqa: E402
 from scripts.release_tool_pins import (  # noqa: E402
     HOST_VARIANT_TOOL_KEYS,
     parse_host_variant_tool_banner,

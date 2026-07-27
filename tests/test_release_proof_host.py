@@ -21,6 +21,7 @@ import scripts.release_nvattest_proof as nvattest_proof
 import scripts.release_proof_host as proof_host
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_digest import candidate_digest
+from scripts.release_target_policy import TARGET_POLICY
 from tests.helpers import release_candidate_fixtures as candidate_fixtures
 from tests.helpers.release_wheel_fixtures import (
     NVATTEST_AUTHORITY_BYTES,
@@ -364,8 +365,8 @@ def _runner(
             "schema_version": 1,
             "cohort_id": request["cohort_id"],
             "attestation": {
-                "os": proof_host.TARGET_POLICY[target][0],
-                "arch": proof_host.TARGET_POLICY[target][1],
+                "os": TARGET_POLICY[target][0],
+                "arch": TARGET_POLICY[target][1],
                 "candidate_digest": ledger["candidate"]["candidate_digest"],
                 "ledger_sha256": LEDGER_SHA,
             },

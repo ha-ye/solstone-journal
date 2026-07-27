@@ -30,7 +30,7 @@ from scripts.channel_adapters.adapter_common import (  # noqa: E402
     verify_retrieved_file,
     write_json,
 )
-from scripts.release_proof_host import TARGET_ENV_KEYS, TARGET_POLICY  # noqa: E402
+from scripts.release_target_policy import TARGET_ENV_KEYS, TARGET_POLICY  # noqa: E402
 
 PROOF_TOKEN = "PROOF_OK"
 

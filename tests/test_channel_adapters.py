@@ -21,6 +21,7 @@ from scripts.channel_adapters import adapter_common as common
 from scripts.channel_adapters import build_host_macos, proof_host
 from scripts.check_release_preflight import expected_presign_lane_tool_evidence
 from scripts.release_digest import candidate_digest
+from scripts.release_target_policy import TARGET_ENV_KEYS
 from scripts.release_tool_pins import (
     HOST_VARIANT_TOOL_KEYS,
     MACOS_SWIFT_FLATTENED_BANNER,
@@ -699,4 +700,4 @@ def test_target_env_keys_coupling() -> None:
         "macos-arm64",
     }
 
-    assert config_targets == set(proof_rail.TARGET_ENV_KEYS)
+    assert config_targets == set(TARGET_ENV_KEYS)

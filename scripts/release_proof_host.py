@@ -32,22 +32,18 @@ from scripts.release_install_smoke import (
     target_install_paths_from_ledger,
     validate_install_proof_bytes,
 )
+from scripts.release_nvattest_proof import (
+    CHALLENGE_RE,
+    support_distribution_entries,
+    validate_nvattest_proof_bytes,
+)
 from scripts.release_public_evidence import validate_public_evidence_tree
+from scripts.release_target_policy import TARGET_ENV_KEYS, TARGET_POLICY
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 IdFactory = Callable[[], str]
 FileCopier = Callable[[Path, Path], object]
 
-TARGET_POLICY: Mapping[str, tuple[str, str]] = {
-    "linux-x86_64-musl": ("Linux", "x86_64"),
-    "linux-aarch64-musl": ("Linux", "aarch64"),
-    "macos-arm64": ("Darwin", "arm64"),
-}
-TARGET_ENV_KEYS: Mapping[str, str] = {
-    "linux-x86_64-musl": "RELEASE_PROOF_HOST_LINUX_X86_64_MUSL_CHANNEL",
-    "linux-aarch64-musl": "RELEASE_PROOF_HOST_LINUX_AARCH64_MUSL_CHANNEL",
-    "macos-arm64": "RELEASE_PROOF_HOST_MACOS_ARM64_CHANNEL",
-}
 # `authority` is a descriptor (sha256 + bytes); `authority_file` is the staged relative path.
 REQUEST_KEYS = frozenset(
     (
@@ -385,8 +381,6 @@ def _validate_scalars(
     ledger_sha256: str,
     challenge: str,
 ) -> None:
-    from scripts.release_nvattest_proof import CHALLENGE_RE
-
     failures: list[Failure] = []
     if target not in TARGET_POLICY:
         failures.append(
@@ -865,11 +859,6 @@ class ExternalProofHostChannel:
             target=target,
             candidate_dir=candidate_dir,
         )
-        from scripts.release_nvattest_proof import (
-            support_distribution_entries,
-            validate_nvattest_proof_bytes,
-        )
-
         support_distributions = support_distribution_entries(support_wheel_paths)
         cohort_id = self._cohort_id_factory()
         _validate_cohort_id(cohort_id)

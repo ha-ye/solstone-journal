@@ -47,7 +47,8 @@ from scripts.release_install_smoke import (
 )
 from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
 from scripts.release_nvattest_support import read_support_lock_entries
-from scripts.release_proof_host import TARGET_POLICY, TargetProofPaths
+from scripts.release_proof_host import TargetProofPaths
+from scripts.release_target_policy import TARGET_POLICY
 from solstone.think.probe import (
     SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
 )
