@@ -37,6 +37,11 @@ before it — and the suite holds none, because fixtures are regenerated from th
 current writer.** A green `make ci` is not evidence of retained-candidate
 compatibility, and no existing check will tell you otherwise.
 
+The same applies to the sub-key sets validated the same way — `models`,
+`nvattest`, and `policy_run`. The top level is where this first bit, but adding a
+required sub-key breaks already-cut candidates identically. Everything below
+covers the whole shape, not just the top level.
+
 ## `schema_version` is not a compatibility mechanism today
 
 `schema_version` is a member of `TOP_LEVEL_KEYS` and the writer emits the literal
@@ -76,10 +81,21 @@ manifest's `source_commit`, not the ones on the default branch today.
 
 ## The test that makes this visible
 
-Keep at least one **frozen** retained ledger fixture: committed bytes captured
-before the current key set, never regenerated, which the reader must still
-accept. A fixture produced by the current writer cannot fail this way, so it
-proves nothing here.
+Keep at least one **frozen** retained ledger fixture per registered
+`schema_version`: committed bytes that the reader must still accept, and that are
+never regenerated.
+
+Provenance is not what makes a fixture work — freezing is. A fixture produced by
+today's writer becomes a pre-change artifact the moment anyone edits the shape,
+which is exactly when you need it. What defeats it is regenerating it to make a
+failing test pass, so pin its digest and treat any change to those bytes as a
+reviewable event rather than a mechanical fixup.
+
+The stronger guard sits next to it: assert each registered version's declared
+shape against a literal enumeration in the test. That fires on the shape edit
+itself rather than on a fixture's bytes, so it can name the correct alternative —
+append a new version and keep the old one registered — at the moment of the
+mistake.
 
 When option 1 is taken, that frozen fixture is the regression test. When option 2
 is taken, replace it in the same change and say why.
