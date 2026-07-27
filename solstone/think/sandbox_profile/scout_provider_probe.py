@@ -314,6 +314,12 @@ def prove_scout_provider(
                             nonce=nonce,
                             start=start,
                         )
+                        if cancel_requested():
+                            outcome = _failed(
+                                probe_contract.REASON_CANCELLED,
+                                checks,
+                                _duration_ms(start),
+                            )
     except ScoutProbeError as exc:
         outcome = _failed(exc.reason, checks, _duration_ms(start))
     except (OSError, ValueError, TypeError):
