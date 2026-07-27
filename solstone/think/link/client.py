@@ -792,8 +792,13 @@ async def _open_pairing_session(transport: EncryptedTransport) -> TunnelSession:
     tls = _new_tls_client(_build_no_cert_client_ctx())
     pending_plaintext = await _drive_client_handshake(transport, tls)
     session = TunnelSession(transport=transport, tls=tls)
-    if pending_plaintext:
-        await session._mux.feed(bytes(pending_plaintext))
+    try:
+        if pending_plaintext:
+            await session._mux.feed(bytes(pending_plaintext))
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await session.close()
+        raise
     return session
 
 

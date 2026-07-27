@@ -231,6 +231,54 @@ async def test_open_tunnel_session_closes_partial_session_when_pending_feed_fail
     assert after_tasks <= before_tasks
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", (RuntimeError, asyncio.CancelledError))
+async def test_open_pairing_session_reaps_constructed_session_when_pending_feed_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_type: type[BaseException],
+) -> None:
+    transport = FakeTransport()
+    current = asyncio.current_task()
+
+    def live_tasks() -> set[asyncio.Task[object]]:
+        return {
+            task
+            for task in asyncio.all_tasks()
+            if task is not current and not task.done()
+        }
+
+    before_tasks = live_tasks()
+    during_tasks: set[asyncio.Task[object]] | None = None
+
+    monkeypatch.setattr(client, "_build_no_cert_client_ctx", lambda: object())
+    monkeypatch.setattr(client, "_new_tls_client", lambda _ctx: object())
+
+    async def fake_handshake(_transport: object, _tls: object) -> bytearray:
+        return bytearray(b"pending")
+
+    async def failing_feed(self, _plaintext: bytes) -> None:
+        nonlocal during_tasks
+        during_tasks = live_tasks()
+        raise exc_type("pending feed failed")
+
+    monkeypatch.setattr(client, "_drive_client_handshake", fake_handshake)
+    monkeypatch.setattr(client._DialerMultiplexer, "feed", failing_feed)
+
+    with pytest.raises(exc_type):
+        await client._open_pairing_session(transport)
+
+    assert during_tasks is not None
+    new_tasks = during_tasks - before_tasks
+    assert len(new_tasks) == 2
+    assert {task.get_name() for task in new_tasks} == {
+        "link-pair",
+        "link-pair-keepalive",
+    }
+
+    await asyncio.sleep(0)
+    assert live_tasks() == before_tasks
+
+
 def _probing_body_source(probe: list[int]) -> client.BodySource:
     chunk_count = (INITIAL_WINDOW // RECOMMENDED_CHUNK) * 4
 
