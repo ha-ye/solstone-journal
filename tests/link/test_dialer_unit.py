@@ -175,6 +175,36 @@ async def test_all_fail_error_names_every_attempt(monkeypatch) -> None:
     assert "relay failed" in message
 
 
+@pytest.mark.asyncio
+async def test_relay_enrollment_runs_off_event_loop_thread(monkeypatch) -> None:
+    identity = _identity(endpoints=())
+    loop_thread = threading.get_ident()
+    enroll_thread: int | None = None
+    enrolled = EnrolledDevice(device_token="token", identity=identity)
+    session = object()
+
+    def enroll_device(
+        relay_url: str, enrolled_identity: ClientIdentity
+    ) -> EnrolledDevice:
+        nonlocal enroll_thread
+        enroll_thread = threading.get_ident()
+        assert relay_url == "https://relay.test"
+        assert enrolled_identity is identity
+        return enrolled
+
+    async def dial(relay_url: str, dial_enrolled: EnrolledDevice) -> object:
+        assert relay_url == "https://relay.test"
+        assert dial_enrolled is enrolled
+        return session
+
+    monkeypatch.setattr(dialer.Client, "enroll_device", staticmethod(enroll_device))
+    monkeypatch.setattr(dialer.Client, "dial", staticmethod(dial))
+
+    assert await dialer.open_tunnel(identity, "https://relay.test/") is session
+    assert enroll_thread is not None
+    assert enroll_thread != loop_thread
+
+
 def test_cached_session_drops_on_stream_reset(monkeypatch) -> None:
     class ResetSession(_ManagedSession):
         async def request(self, *_args, **_kwargs):

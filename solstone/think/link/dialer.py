@@ -130,7 +130,7 @@ async def _dial_relay(
     identity: ClientIdentity,
     deadline: float | None = None,
 ) -> TunnelSession:
-    enrolled = client.enroll_device(relay_url, identity)
+    enrolled = await asyncio.to_thread(client.enroll_device, relay_url, identity)
     return await _with_deadline(client.dial(relay_url, enrolled), deadline)
 
 
