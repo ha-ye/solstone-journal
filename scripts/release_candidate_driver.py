@@ -198,8 +198,6 @@ class TagLookup:
 @dataclass(frozen=True)
 class RetainedCandidatePresence:
     root: Path
-    release_dir: Path
-    evidence_dir: Path
     present_paths: tuple[Path, ...]
     absent_paths: tuple[Path, ...]
     failures: tuple[Failure, ...]
@@ -457,8 +455,6 @@ def _retained_candidate_presence(root: Path, version: str) -> RetainedCandidateP
             present.append(path)
     return RetainedCandidatePresence(
         root=root,
-        release_dir=release_dir,
-        evidence_dir=evidence_dir,
         present_paths=tuple(present),
         absent_paths=tuple(absent),
         failures=tuple(failures),
@@ -486,11 +482,12 @@ def _authorization_mismatch_failure(
             f"set {RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}={version} "
             f"or unset {RELEASE_CANDIDATE_DISCARD_RETAINED_ENV}"
         )
+    stated_version_display = stated_version or "<missing>"
     return _failure(
         "release candidate discard authorization names a different version",
         expected=f"{variable}=<version> matching working-tree version {version}",
         actual=(
-            f"{variable}={value}; authorization version {stated_version}; "
+            f"{variable}={value}; authorization version {stated_version_display}; "
             f"working-tree version {version}"
         ),
         repair=repair,
@@ -527,7 +524,8 @@ def _retained_candidate_authorization_failures(
     env: Mapping[str, str],
     version: str,
 ) -> list[Failure]:
-    if tag_lookup.state == "undeterminable":
+    state = tag_lookup.state
+    if state == "undeterminable":
         detail = tag_lookup.detail or "git rev-parse exit unknown"
         return [
             _undeterminable_retained_state_failure(
@@ -542,7 +540,7 @@ def _retained_candidate_authorization_failures(
     hard_authorized = (
         env.get(RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV, "") == hard_value
     )
-    if tag_lookup.state == "present":
+    if state == "present":
         if hard_authorized:
             return []
         commit = tag_lookup.commit or "<missing>"
@@ -563,6 +561,13 @@ def _retained_candidate_authorization_failures(
                     f"{RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV}={version}+v{version} "
                     f"to discard retained payload/evidence for published tag v{version}"
                 ),
+            )
+        ]
+    if state != "absent":
+        return [
+            _undeterminable_retained_state_failure(
+                version,
+                f"tag lookup for v{version} returned unrecognized state {state!r}",
             )
         ]
     soft_authorized = env.get(RELEASE_CANDIDATE_DISCARD_RETAINED_ENV, "") == version
