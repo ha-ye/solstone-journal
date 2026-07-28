@@ -290,6 +290,7 @@ def _write_valid_install_proof(
         request_payload["target"],
         candidate_dir=candidate_dir,
         install_paths=install_paths,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     assert expected_failures == []
     proof = smoke.build_install_proof(

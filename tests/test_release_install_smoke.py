@@ -1166,3 +1166,77 @@ def _symlink_member_observation(
     members = [dict(member) for member in observation.installed_members]
     members[0]["symlink"] = False
     return replace(observation, installed_members=tuple(members))
+
+
+# --- retained install-proof schema versioning -------------------------------
+#
+# Regression cover for the 2026-07-27 defect: `solstone-core-speakers-analyze`
+# became a required executable AFTER 1.0.17 was cut, and the validator measured
+# every retained proof against today's set. That made `release.sh --recover
+# 1.0.17` fail on a published release whose receipt digests are already in the
+# transparency chain. The expected set must come from the version the producer
+# DECLARED, never from the artifact under validation.
+
+RETAINED_1_0_17_PROOFS = (
+    Path(__file__).parent
+    / "fixtures"
+    / "release_evidence"
+    / "retained-1.0.17"
+    / "proofs"
+)
+
+
+def test_v1_expects_the_pre_speakers_analyze_executable_set() -> None:
+    assert smoke._expected_smoke_names("linux-x86_64-musl", 1) == {
+        "sol",
+        "solstone",
+        "solstone-core",
+    }
+
+
+def test_v2_adds_speakers_analyze_on_its_real_inference_target() -> None:
+    assert smoke._expected_smoke_names("linux-x86_64-musl", 2) == {
+        "sol",
+        "solstone",
+        "solstone-core",
+        "solstone-core-speakers-analyze",
+    }
+    # distinct from v1 -- identical sets would pass whether or not the gate is wired
+    assert smoke._expected_smoke_names(
+        "linux-x86_64-musl", 1
+    ) != smoke._expected_smoke_names("linux-x86_64-musl", 2)
+
+
+def test_speakers_analyze_stays_off_non_inference_targets_at_every_version() -> None:
+    for version in sorted(smoke.REGISTERED_PROOF_SCHEMA_VERSIONS):
+        assert "solstone-core-speakers-analyze" not in smoke._expected_smoke_names(
+            "macos-arm64", version
+        )
+
+
+def test_the_real_retained_1_0_17_proof_declares_v1_and_matches_its_own_set() -> None:
+    """The frozen bytes are what shipped; a writer-generated fixture cannot prove this."""
+    import json
+
+    proof = json.loads((RETAINED_1_0_17_PROOFS / "linux-x86_64-musl.json").read_bytes())
+    resolved, failures = smoke._proof_schema_version(proof)
+    assert failures == []
+    assert resolved == 1
+    assert set(proof["smoke"]) == smoke._expected_smoke_names(proof["target"], resolved)
+
+
+def test_unregistered_and_missing_schema_versions_fail_closed_and_loudly() -> None:
+    for payload in ({"schema_version": 99}, {"schema_version": "2"}, {}):
+        resolved, failures = smoke._proof_schema_version(payload)
+        assert resolved is None
+        assert len(failures) == 1
+        assert "schema_version is not registered" in failures[0].error
+        # the message names what IS registered, so the repair is obvious
+        assert "1" in failures[0].expected and "2" in failures[0].expected
+
+
+def test_the_writer_emits_the_current_registered_version() -> None:
+    assert smoke.CURRENT_PROOF_SCHEMA_VERSION in smoke.REGISTERED_PROOF_SCHEMA_VERSIONS
+    assert (
+        smoke.CURRENT_PROOF_SCHEMA_VERSION >= smoke.SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION
+    )

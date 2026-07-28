@@ -2364,6 +2364,7 @@ def run_fixtures_mode() -> list[Failure]:
             from scripts.release_digest import candidate_digest, file_sha256_size
             from scripts.release_install_smoke import (
                 CORE_SMOKE_STDOUT,
+                CURRENT_PROOF_SCHEMA_VERSION,
                 INSTALL_SCRIPT_NAMES,
                 PROOF_TARGETS,
                 SCRUBBED_COMMAND_ENV,
@@ -2596,6 +2597,7 @@ def run_fixtures_mode() -> list[Failure]:
                     target,
                     candidate_dir=ready,
                     install_paths=install_paths,
+                    schema_version=CURRENT_PROOF_SCHEMA_VERSION,
                 )
                 if expected_member_failures:
                     return expected_member_failures

@@ -178,6 +178,7 @@ def _observation(
         target,
         candidate_dir=candidate,
         install_paths=install_paths,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     assert expected_failures == []
     members = [

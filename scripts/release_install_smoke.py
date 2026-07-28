@@ -81,6 +81,15 @@ SPEAKERS_ANALYZE_SCRIPT_NAME = SPEAKERS_ANALYZE_SCRIPT_NAMES[0]
 SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS = frozenset(("linux-x86_64-musl",))
 SPEAKERS_ANALYZE_RESPONSE_SCHEMA = "solstone-speaker-analyze-response-v1"
 SPEAKERS_ANALYZE_REQUEST_SCHEMA = "solstone-speaker-analyze-request-v1"
+# Retained install proofs are re-validated by --recover and gate publication, so the
+# executable set a proof is measured against must come from the version the producer
+# DECLARED, never from the artifact under validation -- deriving it from the candidate
+# would let a genuinely missing wheel make the validator expect less and pass.
+# v1: releases cut before the speakers-analyze helper shipped as its own wheel.
+# v2: adds solstone-core-speakers-analyze on its real-inference target.
+CURRENT_PROOF_SCHEMA_VERSION = 2
+REGISTERED_PROOF_SCHEMA_VERSIONS = frozenset((1, 2))
+SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION = 2
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
 RETAINED_PROOF_REPAIR = (
@@ -715,6 +724,7 @@ def _expected_install_members(
     *,
     candidate_dir: Path,
     install_paths: Sequence[Path] | None = None,
+    schema_version: int,
 ) -> tuple[Mapping[str, Mapping[str, Any]], list[Failure]]:
     members = dict(_expected_native_members(ledger_payload, target))
     failures: list[Failure] = []
@@ -753,7 +763,7 @@ def _expected_install_members(
             continue
         members[name] = member
     speakers_wheels = _speakers_analyze_wheel_paths(install_paths)
-    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if _expects_speakers_analyze(target, schema_version):
         if len(speakers_wheels) != 1:
             failures.append(
                 _failure(
@@ -832,9 +842,32 @@ def _env_failures(label: str, env: Mapping[str, str]) -> list[Failure]:
     return failures
 
 
-def _expected_smoke_names(target: str) -> set[str]:
+def _expects_speakers_analyze(target: str, schema_version: int) -> bool:
+    return (
+        target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS
+        and schema_version >= SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION
+    )
+
+
+def _proof_schema_version(proof: Mapping[str, Any]) -> tuple[int | None, list[Failure]]:
+    """Resolve a retained proof's declared schema version, failing closed."""
+    declared = proof.get("schema_version")
+    if declared in REGISTERED_PROOF_SCHEMA_VERSIONS:
+        return int(declared), []
+    registered = ", ".join(str(v) for v in sorted(REGISTERED_PROOF_SCHEMA_VERSIONS))
+    return None, [
+        _failure(
+            "install proof schema_version is not registered",
+            expected=f"registered schema_version values: {registered}",
+            actual=repr(declared),
+            repair="python3 scripts/check_rust_release_manifest.py",
+        )
+    ]
+
+
+def _expected_smoke_names(target: str, schema_version: int) -> set[str]:
     names = set(INSTALL_SCRIPT_NAMES)
-    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if _expects_speakers_analyze(target, schema_version):
         names.add(SPEAKERS_ANALYZE_SCRIPT_NAME)
     return names
 
@@ -1055,6 +1088,7 @@ def _validate_observation(
         target,
         candidate_dir=candidate_dir,
         install_paths=install_paths,
+        schema_version=CURRENT_PROOF_SCHEMA_VERSION,
     )
     failures.extend(member_failures)
     if not expected_members:
@@ -1153,7 +1187,7 @@ def _validate_observation(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    expected_smoke_names = _expected_smoke_names(target)
+    expected_smoke_names = _expected_smoke_names(target, CURRENT_PROOF_SCHEMA_VERSION)
     if set(observation.smoke) != expected_smoke_names:
         failures.append(
             _failure(
@@ -1294,6 +1328,7 @@ def build_install_proof(
         target,
         candidate_dir=candidate_dir,
         install_paths=install_paths,
+        schema_version=CURRENT_PROOF_SCHEMA_VERSION,
     )
     if expected_install_failures:
         raise InstallProofError(expected_install_failures)
@@ -1323,7 +1358,7 @@ def build_install_proof(
             }
         )
     proof: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": CURRENT_PROOF_SCHEMA_VERSION,
         "kind": PROOF_KIND,
         "target": target,
         "version": version,
@@ -1542,6 +1577,9 @@ def _validate_proof_semantics(
     candidate_dir: Path,
 ) -> list[Failure]:
     failures: list[Failure] = []
+    schema_version, version_failures = _proof_schema_version(proof)
+    if schema_version is None:
+        return version_failures
     try:
         install_paths = target_install_paths_from_ledger(
             ledger_payload,
@@ -1617,6 +1655,7 @@ def _validate_proof_semantics(
         target,
         candidate_dir=candidate_dir,
         install_paths=install_paths,
+        schema_version=schema_version,
     )
     failures.extend(member_failures)
     proof_members = proof.get("installed_members", [])
@@ -1681,7 +1720,7 @@ def _validate_proof_semantics(
             )
     smoke = proof.get("smoke")
     smoke_items = smoke if isinstance(smoke, Mapping) else {}
-    expected_smoke_names = _expected_smoke_names(target)
+    expected_smoke_names = _expected_smoke_names(target, schema_version)
     if set(smoke_items) != expected_smoke_names:
         failures.append(
             _failure(
@@ -1806,6 +1845,9 @@ def validate_install_proof(
     ledger_payload: Mapping[str, Any],
 ) -> list[Failure]:
     failures: list[Failure] = []
+    schema_version, version_failures = _proof_schema_version(proof)
+    if schema_version is None:
+        return version_failures
     if set(proof) != TOP_LEVEL_KEYS:
         failures.append(
             _failure(
@@ -2116,7 +2158,7 @@ def validate_install_proof(
                     )
                 )
     smoke = proof.get("smoke")
-    expected_smoke_names = _expected_smoke_names(target)
+    expected_smoke_names = _expected_smoke_names(target, schema_version)
     if not isinstance(smoke, Mapping) or set(smoke) != expected_smoke_names:
         failures.append(
             _failure(
