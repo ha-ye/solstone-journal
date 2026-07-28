@@ -16,8 +16,15 @@ from typing import Any
 import pytest
 
 from solstone.think.link import client as link_client
-from solstone.think.link import join_cli
 from solstone.think.link.window import window_open
+from tests.link import certless_helpers
+from tests.link.certless_helpers import (
+    DirectPairCandidate,
+    DirectPairRequest,
+    PairResponse,
+    build_csr,
+    framed_target,
+)
 from tests.link.secure_listener_harness import SecureListenerHarness
 
 
@@ -34,7 +41,7 @@ class _PendingDrain:
 
 
 def _pair_material(label: str) -> tuple[object, dict[str, str]]:
-    private_key, _private_key_pem, csr_pem = join_cli._build_csr(label)
+    private_key, _private_key_pem, csr_pem = build_csr(label)
     return private_key, {"csr": csr_pem, "device_label": label}
 
 
@@ -43,10 +50,10 @@ def _pair_body(label: str) -> dict[str, str]:
     return body
 
 
-def _direct_request_from_url(url: str, ca_fp: str) -> join_cli.DirectPairRequest:
-    host, port, path = join_cli._framed_target(url)
-    return join_cli.DirectPairRequest(
-        candidates=(join_cli.DirectPairCandidate(ipaddress.IPv4Address(host), port),),
+def _direct_request_from_url(url: str, ca_fp: str) -> DirectPairRequest:
+    host, port, path = framed_target(url)
+    return DirectPairRequest(
+        candidates=(DirectPairCandidate(ipaddress.IPv4Address(host), port),),
         path=path,
         ca_fingerprint_pin=ca_fp,
     )
@@ -110,18 +117,18 @@ async def _post_pair_with_payload_capture(
     body: dict[str, str],
     private_key: object,
     ca_fp: str,
-) -> tuple[join_cli.PairResponse, dict[str, Any]]:
+) -> tuple[PairResponse, dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
-    real_parse = join_cli._parse_pair_response
+    real_parse = certless_helpers.parse_pair_response
 
-    def capture(payload: Any) -> join_cli.PairResponse:
+    def capture(payload: Any) -> PairResponse:
         if isinstance(payload, dict):
             payloads.append(payload)
         return real_parse(payload)
 
-    monkeypatch.setattr(join_cli, "_parse_pair_response", capture)
+    monkeypatch.setattr(certless_helpers, "parse_pair_response", capture)
     response = await asyncio.to_thread(
-        join_cli._post_pair_framed,
+        certless_helpers.post_pair_framed,
         _direct_request_from_url(url, ca_fp),
         body,
         private_key,
@@ -132,7 +139,7 @@ async def _post_pair_with_payload_capture(
 
 def _assert_complete_pair_response(
     harness: SecureListenerHarness,
-    response: join_cli.PairResponse,
+    response: PairResponse,
     payload: dict[str, Any],
 ) -> None:
     assert response.client_cert
@@ -356,9 +363,7 @@ async def test_stop_returns_promptly_with_pair_response_in_flight(
         listener_loop=asyncio.get_running_loop(),
         gate_when=lambda: not window_open(),
     )
-    client_task: asyncio.Task[tuple[join_cli.PairResponse, dict[str, Any]]] | None = (
-        None
-    )
+    client_task: asyncio.Task[tuple[PairResponse, dict[str, Any]]] | None = None
     try:
         harness.seed_nonce(nonce, label)
         private_key, body = _pair_material(label)

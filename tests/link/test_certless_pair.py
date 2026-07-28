@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from solstone.think.link.auth import AuthorizedClients
-from solstone.think.link.join_cli import _build_csr
 from solstone.think.link.nonces import NonceStore
 from solstone.think.link.paths import authorized_clients_path, nonces_path
 from tests.link.certless_helpers import (
+    build_csr,
     certless_identity,
     dispatch_request,
     make_convey_app,
@@ -32,7 +32,7 @@ async def test_certless_pair_request_executes_handler_and_authorizes_client(
     nonce = "0123456789abcdef"
     device_label = "pytest certless phone"
     NonceStore(nonces_path()).add(nonce, device_label)
-    _private_key, _private_key_pem, csr_pem = _build_csr(device_label)
+    _private_key, _private_key_pem, csr_pem = build_csr(device_label)
     body = json.dumps(
         {
             "nonce": nonce,

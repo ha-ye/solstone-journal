@@ -15,7 +15,7 @@ SERVICE_COMMANDS = SERVICE_SENTINELS + tuple(
         journal_host.EXPECTED_SERVICE_COMMANDS_COUNT - len(SERVICE_SENTINELS)
     )
 )
-UNIVERSAL_COMMANDS = ("check", "contract", "doctor", "link")
+UNIVERSAL_COMMANDS = ("check", "contract", "doctor")
 SERVICE_ALIASES = ("down", "up")
 SERVICE_SURFACE_COUNT = journal_host.EXPECTED_SERVICE_COMMANDS_COUNT + len(
     SERVICE_ALIASES
@@ -181,7 +181,6 @@ def test_duplicate_service_command_preserves_old_count_but_is_rejected() -> None
             '    "check": Command("module.check", "universal"),',
             '    "contract": Command("module.contract", "universal"),',
             '    "doctor": Command("module.doctor", "universal"),',
-            '    "link": Command("module.link", "universal"),',
             "}",
             "",
             "ALIASES = {",
@@ -383,7 +382,6 @@ def test_production_registry_extracts_expected_partitions() -> None:
         "doctor",
         "check",
         "contract",
-        "link",
     }
     assert partitions.universal_aliases == ()
 
@@ -453,7 +451,7 @@ def test_service_aliases_report_reclassified_alias(alias: str) -> None:
     )
 
 
-@pytest.mark.parametrize("command", ["doctor", "check", "contract", "link"])
+@pytest.mark.parametrize("command", ["doctor", "check", "contract"])
 def test_universal_commands_reject_missing_expected_command(command: str) -> None:
     commands = _base_commands()
     del commands[command]

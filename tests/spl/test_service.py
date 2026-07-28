@@ -11,9 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import link as link_module
 from solstone.think import sol_cli
-from solstone.think.link import cli as link_cli
 from solstone.think.link.paths import service_token_path
 from solstone.think.spl import service
 
@@ -280,11 +278,3 @@ def test_dispatch_surfaces_for_journal_spl_and_sol_link(
         "argv": ["journal spl"],
     }
     assert titles == ["journal:spl"]
-
-    module_path, preset_args, surface = sol_cli.resolve_command("link")
-    assert (module_path, preset_args, surface) == (
-        "solstone.think.link",
-        [],
-        "universal",
-    )
-    assert link_module.main is link_cli.main

@@ -26,8 +26,8 @@ from solstone.think.link.client import (
     _drive_tls_client,
     _new_tls_client,
 )
-from solstone.think.link.join_cli import _build_csr
 from solstone.think.link.tls import TlsError as ClientTlsError
+from tests.link.certless_helpers import build_csr
 
 
 def test_strict_context_rejects_no_cert(tmp_path: Path) -> None:
@@ -51,7 +51,7 @@ def test_relaxed_context_accepts_no_cert_with_none_fingerprint(tmp_path: Path) -
 
 def test_relaxed_context_keeps_allowlisted_cert_fingerprint(tmp_path: Path) -> None:
     ca, server_cert, server_key, authorized = _server_material(tmp_path)
-    _private_key, private_key_bytes, csr_pem = _build_csr("pytest phone")
+    _private_key, private_key_bytes, csr_pem = build_csr("pytest phone")
     private_key_pem = private_key_bytes.decode("ascii")
     client_cert_pem, fingerprint = sign_csr(ca, csr_pem, "pytest phone")
     authorized.add(fingerprint, "pytest phone", "inst-1")
@@ -77,7 +77,7 @@ def test_relaxed_context_keeps_allowlisted_cert_fingerprint(tmp_path: Path) -> N
 
 def test_relaxed_context_rejects_unauthorized_cert(tmp_path: Path) -> None:
     ca, server_cert, server_key, authorized = _server_material(tmp_path)
-    _private_key, private_key_bytes, csr_pem = _build_csr("pytest stranger")
+    _private_key, private_key_bytes, csr_pem = build_csr("pytest stranger")
     private_key_pem = private_key_bytes.decode("ascii")
     client_cert_pem, fingerprint = sign_csr(ca, csr_pem, "pytest stranger")
     server_ctx = build_relaxed_server_context(ca, server_cert, server_key, authorized)

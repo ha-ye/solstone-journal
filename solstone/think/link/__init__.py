@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Caller-side link commands and shared pairing/runtime helpers.
+"""Shared private-link pairing/runtime helpers.
 
-`sol link` dispatches caller-side commands such as `join` and `serve`. The
-supervised home-side spl rendezvous daemon lives in `solstone.think.spl` and
-runs as `journal spl`.
+Public caller-side `sol link` commands are native. This package still owns
+home-side and shared link state, pairing, tunnel, and runtime helpers used by
+Convey, observe, and SPL.
 """
 
 __version__ = "0.1.0"
-
-from .cli import main  # noqa: E402 — re-exported so `sol link` can import it
-
-__all__ = ["main"]
