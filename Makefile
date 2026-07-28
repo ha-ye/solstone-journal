@@ -833,6 +833,9 @@ check-journal-resolution-vectors: .installed
 nvattest-authority:
 	$(VENV_BIN)/python scripts/build_nvattest_authority.py
 
+nvattest-payload-facts:
+	$(VENV_BIN)/python scripts/build_nvattest_payload_facts.py
+
 check-nvattest-authority: .installed
 	$(VENV_BIN)/python scripts/build_nvattest_authority.py --check
 

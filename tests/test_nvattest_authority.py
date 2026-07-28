@@ -23,6 +23,13 @@ MIRROR_PATH = (
     REPO_ROOT / "solstone" / "think" / "providers" / "nvattest_authority_v1.json"
 )
 INSTALL_PATH = REPO_ROOT / "solstone" / "think" / "providers" / "nvattest_install.py"
+PAYLOAD_FACTS_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "nvattest"
+PAYLOAD_FACTS_SCHEMA_VERSION = 1
+PAYLOAD_FACTS_REPAIR = (
+    "correct solstone/think/providers/nvattest_authority.py and run "
+    "make nvattest-authority if the authority is wrong; otherwise run "
+    "make nvattest-payload-facts if the derived fixture is stale"
+)
 LEGACY_NVIDIA_SHA256 = (
     "3f10da6fca794b7e3025c6645447947ec8bc45bcfde5b5b1d23241c7115630db"
 )
@@ -84,6 +91,22 @@ def _payload() -> dict:
 def _assert_rejected(payload: dict) -> None:
     with pytest.raises(ValueError):
         nvattest_authority.validate_authority_payload(payload)
+
+
+def _payload_facts_fixture_path(artifact_name: str) -> Path:
+    return (
+        PAYLOAD_FACTS_FIXTURE_DIR
+        / f"{artifact_name.removesuffix('.tar.xz')}.executable-bits.json"
+    )
+
+
+def _drift_failure(error: str, *, expected: str, actual: str) -> str:
+    return (
+        f"ERROR: {error}\n"
+        f"  expected: {expected}\n"
+        f"  actual: {actual}\n"
+        f"  repair command: {PAYLOAD_FACTS_REPAIR}"
+    )
 
 
 def test_authority_payload_contains_exact_operator_literals() -> None:
@@ -175,6 +198,60 @@ def test_authority_payload_contains_exact_inventories() -> None:
     assert payload["targets"]["linux-x86_64"]["inventory"] == linux_inventory
     assert payload["targets"]["linux-aarch64"]["inventory"] == linux_inventory
     assert payload["targets"]["macos-arm64"]["inventory"] == macos_inventory
+
+
+def test_payload_executable_bit_fixtures_match_authority() -> None:
+    """Executable-bit fixtures cover only mode drift.
+
+    Member set, kind, and link targets for the production archives are covered by
+    tests/test_release_nvattest_proof.py::test_production_companion_manifests_match_authority_and_validate.
+    """
+
+    payload = nvattest_authority.authority_payload()
+    for target_key, target in payload["targets"].items():
+        artifact = target["artifact"]
+        fixture_path = _payload_facts_fixture_path(str(artifact["name"]))
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        inventory = target["inventory"]
+        expected_executable = {
+            str(member["relpath"]): member["executable"] for member in inventory
+        }
+
+        assert fixture.get("schema_version") == PAYLOAD_FACTS_SCHEMA_VERSION, (
+            _drift_failure(
+                f"nvattest executable-bit fixture schema drift for {target_key}",
+                expected=str(PAYLOAD_FACTS_SCHEMA_VERSION),
+                actual=repr(fixture.get("schema_version")),
+            )
+        )
+        assert fixture.get("target") == target_key, _drift_failure(
+            f"nvattest executable-bit fixture target drift for {target_key}",
+            expected=target_key,
+            actual=repr(fixture.get("target")),
+        )
+        assert fixture.get("archive_sha256") == artifact["sha256"], _drift_failure(
+            f"nvattest executable-bit fixture archive drift for {target_key}",
+            expected=str(artifact["sha256"]),
+            actual=repr(fixture.get("archive_sha256")),
+        )
+        executable = fixture.get("executable")
+        assert isinstance(executable, dict), _drift_failure(
+            f"nvattest executable-bit fixture payload is invalid for {target_key}",
+            expected="executable object",
+            actual=type(executable).__name__,
+        )
+        assert set(executable) == set(expected_executable), _drift_failure(
+            f"nvattest executable-bit fixture member set drift for {target_key}",
+            expected=", ".join(sorted(expected_executable)),
+            actual=", ".join(sorted(executable)) or "<empty>",
+        )
+        for relpath, expected in sorted(expected_executable.items()):
+            actual = executable[relpath]
+            assert actual == expected, _drift_failure(
+                f"nvattest executable bit drift for {target_key} {relpath}",
+                expected=repr(expected),
+                actual=repr(actual),
+            )
 
 
 def test_authority_json_matches_constants() -> None:
