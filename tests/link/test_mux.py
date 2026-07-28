@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -1496,15 +1498,25 @@ async def test_write_rechecks_closed_before_clearing_teardown_wake() -> None:
 async def test_credit_stall_deadline_is_per_stall_and_window_resets_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.5)
+    deadline_seconds = 0.25
+    stall_delay_seconds = deadline_seconds / 3
+    payload = b"abcdefghij"
+    expected_stalls = len(payload) - 1
+    monkeypatch.setattr(
+        mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", deadline_seconds
+    )
     sent_bytes: list[bytes] = []
-    data_events = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    reset_frames: list[Frame] = []
+    data_events = [asyncio.Event() for _ in payload]
+    write_task: asyncio.Task[None] | None = None
 
     async def send(data: bytes) -> None:
         for frame in _decode_frames([data]):
             if frame.flags & FLAG_DATA:
                 sent_bytes.append(frame.payload)
                 data_events[len(sent_bytes) - 1].set()
+            elif frame.flags & FLAG_RESET:
+                reset_frames.append(frame)
 
     async def handler(*_: object) -> None:
         await asyncio.Event().wait()
@@ -1515,17 +1527,39 @@ async def test_credit_stall_deadline_is_per_stall_and_window_resets_clock(
         state = mux._streams[1]
         state.send_credit = 1
         writer = StreamWriter(mux, state)
-        write_task = asyncio.create_task(writer.write(b"abc"))
+        started = time.monotonic()
+        write_task = asyncio.create_task(writer.write(payload))
 
-        await asyncio.wait_for(data_events[0].wait(), timeout=1.0)
-        await mux.feed(build_window(1, 1).encode())
-        await asyncio.wait_for(data_events[1].wait(), timeout=1.0)
-        await mux.feed(build_window(1, 1).encode())
-        await asyncio.wait_for(data_events[2].wait(), timeout=1.0)
+        stall_count = 0
+        stall_durations: list[float] = []
+        # Nine stalls at D/3 each make total elapsed time exceed 3*D. A lifetime
+        # deadline would fire, while the per-stall deadline should not because
+        # every individual WINDOW grant arrives comfortably before D.
+        for index in range(expected_stalls):
+            await asyncio.wait_for(data_events[index].wait(), timeout=1.0)
+            assert state.send_credit == 0
+            assert not write_task.done()
+            stall_count += 1
+            stall_started = time.monotonic()
+            await asyncio.sleep(stall_delay_seconds)
+            stall_durations.append(time.monotonic() - stall_started)
+            await mux.feed(build_window(1, 1).encode())
+
+        await asyncio.wait_for(data_events[-1].wait(), timeout=1.0)
         await asyncio.wait_for(write_task, timeout=1.0)
+        elapsed = time.monotonic() - started
 
-        assert b"".join(sent_bytes) == b"abc"
+        assert b"".join(sent_bytes) == payload
+        assert stall_count == expected_stalls
+        assert elapsed >= 3 * deadline_seconds
+        assert max(stall_durations) < deadline_seconds
+        assert reset_frames == []
     finally:
+        if write_task is not None:
+            if not write_task.done():
+                write_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, ConnectionError):
+                await write_task
         await mux.close()
 
 
@@ -1642,6 +1676,39 @@ async def test_receive_window_credit_returns_after_head_and_body_consumption(
         await mux.close()
         assert mux._window_tasks == set()
         await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+
+
+@pytest.mark.asyncio
+async def test_window_task_completion_logs_emit_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def send(_: bytes) -> None:
+        return
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    finished = asyncio.Event()
+
+    async def fail_window() -> None:
+        raise RuntimeError("window send failed")
+
+    def finish(task: asyncio.Task[None]) -> None:
+        mux._finish_window_task(task)
+        finished.set()
+
+    task = asyncio.create_task(fail_window(), name="link-window-test")
+    mux._window_tasks.add(task)
+    task.add_done_callback(finish)
+
+    with caplog.at_level(logging.ERROR, logger="convey.secure_listener.mux"):
+        await asyncio.wait_for(finished.wait(), timeout=1.0)
+
+    assert task not in mux._window_tasks
+    assert "secure listener WINDOW grant task failed" in caplog.text
+    assert "window send failed" in caplog.text
+    await mux.close()
 
 
 @pytest.mark.asyncio

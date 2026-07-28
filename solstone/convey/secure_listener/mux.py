@@ -20,6 +20,7 @@ STREAM_LIMIT_EXCEEDED.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -79,6 +80,8 @@ RESET_CTX_APP_CANCELLATION: Final[str] = "app_cancellation"
 RESET_CTX_BODY_DISCARD_CANCELLATION: Final[str] = "body_discard_cancellation"
 RESET_CTX_SEND_CREDIT_STARVATION: Final[str] = "send_credit_starvation"
 STREAM_CREDIT_STALL_TIMEOUT_SECONDS: Final[float] = 120.0
+
+log = logging.getLogger("convey.secure_listener.mux")
 
 _REASON_NAMES: Final[dict[int, str]] = {
     RESET_PROTOCOL_ERROR: "protocol_error",
@@ -447,7 +450,18 @@ class Multiplexer:
             name=f"link-window-{state.stream_id}",
         )
         self._window_tasks.add(task)
-        task.add_done_callback(self._window_tasks.discard)
+        task.add_done_callback(self._finish_window_task)
+
+    def _finish_window_task(self, task: asyncio.Task[None]) -> None:
+        self._window_tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            log.error(
+                "secure listener WINDOW grant task failed",
+                exc_info=(type(exception), exception, exception.__traceback__),
+            )
 
     def _valid_peer_stream_id(self, stream_id: int) -> bool:
         if stream_id == 0:
