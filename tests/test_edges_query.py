@@ -119,6 +119,12 @@ def _row(
     }
 
 
+def _write_entity_record(journal: Path, entity_id: str, content: str) -> None:
+    entity_dir = journal / "entities" / entity_id
+    entity_dir.mkdir(parents=True, exist_ok=True)
+    (entity_dir / "entity.json").write_text(content, encoding="utf-8")
+
+
 def _table_hashes(journal: Path) -> dict[str, str]:
     conn = _direct_conn(journal)
     try:
@@ -1128,7 +1134,13 @@ def test_network_overview_shape_totals_kinds_entities_and_filter(edges_journal):
     )
 
     decayed_co = 2 * _half_life_decay(90)
-    assert overview["filters"]["facet"] == "overview"
+    assert overview["filters"] == {
+        "kinds": None,
+        "facet": "overview",
+        "day_from": None,
+        "day_to": None,
+    }
+    assert overview["limit"] == 2
     assert overview["totals"] == {"edges": 2, "entities": 3}
     assert overview["kinds"]["spoke-with"] == {"count": 1, "weighted": 4.0}
     assert overview["kinds"]["co-present"]["count"] == 1
@@ -1137,8 +1149,103 @@ def test_network_overview_shape_totals_kinds_entities_and_filter(edges_journal):
         "edge_overview_a",
         "edge_overview_b",
     ]
-    assert overview["entities"][0]["score"] == pytest.approx(4 + decayed_co)
-    assert overview["entities"][1]["score"] == pytest.approx(4.0)
+    assert len(overview["entities"]) == 2
+    first, second = overview["entities"]
+    assert first["name"] == "Overview A"
+    assert first["type"] is None
+    assert first["score"] == pytest.approx(4 + decayed_co)
+    assert first["count"] == 2
+    assert first["evidence_class"] == "mixed"
+    assert first["kinds"]["spoke-with"] == {"count": 1, "weighted": 4.0}
+    assert first["kinds"]["co-present"]["count"] == 1
+    assert first["kinds"]["co-present"]["weighted"] == pytest.approx(decayed_co)
+    assert first["first_seen"] == "20260301"
+    assert first["last_seen"] == "20260530"
+    assert second["name"] == "Overview B"
+    assert second["type"] is None
+    assert second["score"] == pytest.approx(4.0)
+    assert second["count"] == 1
+    assert second["evidence_class"] == "semantic"
+    assert second["kinds"] == {"spoke-with": {"count": 1, "weighted": 4.0}}
+    assert second["first_seen"] == "20260530"
+    assert second["last_seen"] == "20260530"
+
+
+def test_network_overview_includes_known_canonical_type(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_alice",
+                "edge_type_known_peer",
+                "works-with",
+                "type/known.jsonl",
+                facet="type-known",
+            ),
+        ],
+    )
+
+    overview = load_network_overview(facet="type-known", reference_day="20260530")
+    by_id = {row["entity_id"]: row for row in overview["entities"]}
+
+    assert by_id["edge_alice"]["type"] == "Person"
+
+
+def test_network_overview_preserves_custom_canonical_type(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _write_entity_record(
+        edges_journal,
+        "edge_custom_type",
+        '{"id":"edge_custom_type","name":"Custom Type","type":"Entity 1"}\n',
+    )
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_custom_type",
+                "edge_custom_peer",
+                "works-with",
+                "type/custom.jsonl",
+                facet="type-custom",
+            ),
+        ],
+    )
+
+    overview = load_network_overview(facet="type-custom", reference_day="20260530")
+    by_id = {row["entity_id"]: row for row in overview["entities"]}
+
+    assert by_id["edge_custom_type"]["type"] == "Entity 1"
+
+
+def test_network_overview_type_is_null_for_malformed_entity_record(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _write_entity_record(edges_journal, "edge_bad_type", "{not json\n")
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_bad_type",
+                "edge_bad_type_peer",
+                "works-with",
+                "type/malformed.jsonl",
+                facet="type-malformed",
+                src_name="Malformed Entity",
+                dst_name="Peer Entity",
+            ),
+        ],
+    )
+
+    overview = load_network_overview(
+        facet="type-malformed",
+        reference_day="20260530",
+        limit=1,
+    )
+
+    assert overview["entities"][0]["entity_id"] == "edge_bad_type"
+    assert overview["entities"][0]["name"] == "Malformed Entity"
+    assert overview["entities"][0]["type"] is None
+    assert overview["entities"][0]["score"] == pytest.approx(4.0)
 
 
 def test_read_apis_are_query_only_and_content_stable(edges_journal, monkeypatch):

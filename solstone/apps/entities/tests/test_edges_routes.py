@@ -91,6 +91,7 @@ def test_overview_route_returns_evidence_class_per_entity(indexed_client):
     data = response.get_json()
     assert response.status_code == 200
     assert data["entities"]
+    assert all("type" in entity for entity in data["entities"])
     assert all(
         entity["evidence_class"] in {"attendance", "semantic", "mixed"}
         for entity in data["entities"]

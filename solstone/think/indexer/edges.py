@@ -22,7 +22,10 @@ from solstone.think.edge_sources import (
     edge_source_patterns,
     get_edge_source,
 )
-from solstone.think.entities.journal import load_all_journal_entities
+from solstone.think.entities.journal import (
+    load_all_journal_entities,
+    load_journal_entity,
+)
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
 from solstone.think.formatters import discover_files, extract_path_metadata, load_jsonl
@@ -931,6 +934,7 @@ GROUP BY entity_id, kind, day
                 {
                     "entity_id": entity_id,
                     "name": names.get(entity_id),
+                    "type": None,
                     "score": 0.0,
                     "count": 0,
                     "first_seen": None,
@@ -960,6 +964,12 @@ GROUP BY entity_id, kind, day
             entities.values(),
             key=lambda item: (-item["score"], item["entity_id"]),
         )
+        limited_entities = ordered_entities[:limit]
+        for row in limited_entities:
+            entity_id = row["entity_id"]
+            record = load_journal_entity(entity_id)
+            raw = record.get("type") if record is not None else None
+            row["type"] = raw if isinstance(raw, str) else None
         return {
             "reference_day": ref_day,
             "filters": filters,
@@ -969,7 +979,7 @@ GROUP BY entity_id, kind, day
                 "entities": len(ordered_entities),
             },
             "kinds": global_kinds,
-            "entities": ordered_entities[:limit],
+            "entities": limited_entities,
         }
     finally:
         conn.close()

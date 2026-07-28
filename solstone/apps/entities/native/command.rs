@@ -1614,14 +1614,22 @@ fn render_overview(body: &Value) -> CommandOutput {
         lines.push(format!("Kinds: {kinds}"));
     }
     for (index, entity) in entities.iter().enumerate() {
-        let mut parts = vec![
-            display_entity(entity.get("entity_id"), entity.get("name")),
-            format!(
-                "score={:.2}",
-                float_value(entity.get("score")).unwrap_or(0.0)
-            ),
-            format!("count={}", int_value(entity.get("count")).unwrap_or(0)),
-        ];
+        let mut parts = vec![display_entity(entity.get("entity_id"), entity.get("name"))];
+        if let Some(entity_type) = entity
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("type={entity_type}"));
+        }
+        parts.push(format!(
+            "score={:.2}",
+            float_value(entity.get("score")).unwrap_or(0.0)
+        ));
+        parts.push(format!(
+            "count={}",
+            int_value(entity.get("count")).unwrap_or(0)
+        ));
         let kinds = format_kinds(entity.get("kinds"));
         if !kinds.is_empty() {
             parts.push(format!("kinds={kinds}"));
