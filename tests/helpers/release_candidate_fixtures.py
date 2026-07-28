@@ -688,9 +688,9 @@ def _nvattest_services(
     env_root = root / "nvattest-env" / target
     policy_os, policy_arch = TARGET_POLICY[target]
     authority_target = _nvattest_authority_target(target)
-    expected_distribution_output = "".join(
-        f"{entry['name']}=={entry['version']}\n"
-        for entry in expected_distribution_entries(candidate_paths)
+    expected_candidate_wheels = nvattest_proof.candidate_wheel_entries(candidate_paths)
+    expected_support_distributions = (
+        nvattest_proof.support_distribution_entries_with_metadata(support_paths)
     )
 
     def count(name: str) -> None:
@@ -701,10 +701,7 @@ def _nvattest_services(
         count("nvattest_create_environment")
         (env_root / "bin").mkdir(parents=True, exist_ok=True)
         python = env_root / "bin" / "python"
-        python.write_text(
-            f"#!/bin/sh\ncat <<'EOF'\n{expected_distribution_output}EOF\n",
-            encoding="utf-8",
-        )
+        python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         python.chmod(0o755)
         return env_root
 
@@ -820,6 +817,22 @@ def _nvattest_services(
             ],
         }
 
+    def observe_installed_distributions(
+        _env_python: Path,
+    ) -> Sequence[Mapping[str, Any]]:
+        count("nvattest_observe_installed_distributions")
+        return [
+            {
+                "metadata_sha256": entry["metadata_sha256"],
+                "name": entry["name"],
+                "version": entry["version"],
+            }
+            for entry in (
+                *expected_candidate_wheels,
+                *expected_support_distributions,
+            )
+        ]
+
     def clock() -> datetime:
         count("nvattest_clock")
         return datetime(2026, 7, 20, 12, 35, tzinfo=UTC)
@@ -837,6 +850,7 @@ def _nvattest_services(
         install_wheels=install_wheels,
         fetch=fetch,
         run_package_install=run_package_install,
+        observe_installed_distributions=observe_installed_distributions,
         integrity_recheck=integrity_recheck,
         run_smoke=run_smoke,
         clock=clock,

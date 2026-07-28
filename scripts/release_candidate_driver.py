@@ -101,7 +101,9 @@ from scripts.release_nvattest_proof import (
     CHALLENGE_RE,
     SUPPORT_DISTRIBUTION_NAMES,
     NvattestProofError,
+    candidate_wheel_entries,
     support_distribution_entries,
+    support_distribution_entries_with_metadata,
     validate_nvattest_proof_bytes,
 )
 from scripts.release_nvattest_support import (
@@ -2821,6 +2823,19 @@ def _validate_retained_nvattest_binding(
         raise DriverError(failures)
 
     assert isinstance(support_distributions, Sequence)
+    expected_support_distributions: Sequence[Mapping[str, Any]] = ()
+    support_closure_inputs_ready = True
+    try:
+        expected_support_distributions = support_distribution_entries_with_metadata(
+            tuple(
+                (evidence_dir / "support" / str(entry["filename"])).resolve()
+                for entry in support_distributions
+                if isinstance(entry, Mapping)
+            )
+        )
+    except NvattestProofError as exc:
+        failures.extend(_driver_failures_from_nvattest_error(exc))
+        support_closure_inputs_ready = False
     hashes: dict[str, str] = {}
     for target in PROOF_TARGETS:
         path = evidence_dir / "nvattest" / f"{target}.json"
@@ -2835,20 +2850,35 @@ def _validate_retained_nvattest_binding(
             )
             continue
         data = path.read_bytes()
-        failures.extend(
-            validate_nvattest_proof_bytes(
-                data,
-                expected_challenge=challenge if isinstance(challenge, str) else "",
-                target=target,
-                version=version,
-                source_commit=str(ledger.get("source_commit")),
-                core_lock_sha256=str(ledger.get("core_lock_sha256")),
-                candidate_digest=digest,
-                ledger_sha256=ledger_sha256,
-                canonical_authority_bytes=authority_bytes,
-                expected_support_distributions=support_distributions,  # type: ignore[arg-type]
+        expected_candidate_wheels: Sequence[Mapping[str, Any]] = ()
+        candidate_closure_inputs_ready = True
+        try:
+            expected_candidate_wheels = candidate_wheel_entries(
+                target_install_paths_from_ledger(
+                    ledger,
+                    target=target,
+                    candidate_dir=release_dir,
+                )
             )
-        )
+        except NvattestProofError as exc:
+            failures.extend(_driver_failures_from_nvattest_error(exc))
+            candidate_closure_inputs_ready = False
+        if support_closure_inputs_ready and candidate_closure_inputs_ready:
+            failures.extend(
+                validate_nvattest_proof_bytes(
+                    data,
+                    expected_challenge=challenge if isinstance(challenge, str) else "",
+                    target=target,
+                    version=version,
+                    source_commit=str(ledger.get("source_commit")),
+                    core_lock_sha256=str(ledger.get("core_lock_sha256")),
+                    candidate_digest=digest,
+                    ledger_sha256=ledger_sha256,
+                    canonical_authority_bytes=authority_bytes,
+                    expected_candidate_wheels=expected_candidate_wheels,
+                    expected_support_distributions=expected_support_distributions,
+                )
+            )
         try:
             receipt = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):

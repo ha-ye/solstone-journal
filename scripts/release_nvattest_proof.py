@@ -45,9 +45,7 @@ from scripts.release_install_smoke import (
     _forbidden_command_tokens,
     _format_utc,
     _run_command,
-    _solstone_distributions,
     candidate_file_entries,
-    expected_distribution_entries,
 )
 from scripts.release_public_evidence import validate_public_evidence_tree
 from scripts.release_target_policy import TARGET_POLICY
@@ -80,7 +78,6 @@ NVATTEST_TOP_LEVEL_KEYS = frozenset(
         "archive_fetch",
         "cache_install",
         "candidate_digest",
-        "candidate_distributions",
         "challenge",
         "companion_manifest",
         "core_lock_sha256",
@@ -113,6 +110,14 @@ SUPPORT_DISTRIBUTION_NAMES = frozenset(
         "typing-extensions",
     )
 )
+SUPPORT_DISTRIBUTION_KEYS = frozenset(
+    ("bytes", "filename", "name", "sha256", "version")
+)
+SUPPORT_EXPECTED_KEYS = SUPPORT_DISTRIBUTION_KEYS | frozenset(("metadata_sha256",))
+CANDIDATE_CLOSURE_KEYS = frozenset(
+    ("metadata_sha256", "name", "version", "wheel", "wheel_bytes", "wheel_sha256")
+)
+SUPPORT_CLOSURE_KEYS = frozenset(("metadata_sha256", "name", "version", "wheel"))
 
 
 @dataclass(frozen=True)
@@ -143,7 +148,7 @@ class NvattestProofObservation:
     cache_root: Path
     host: HostObservation
     install: CommandResult
-    candidate_distributions: tuple[Mapping[str, str], ...]
+    installed_closure: Mapping[str, Any]
     archive_fetch: FetchObservation
     manifest_fetch: FetchObservation
     installed_authority_path: Path
@@ -165,6 +170,7 @@ class NvattestProofServices:
         [Path, Path, str, Path],
         DriverObservation,
     ]
+    observe_installed_distributions: Callable[[Path], Sequence[Mapping[str, Any]]]
     integrity_recheck: Callable[
         [Path, str, Sequence[FetchObservation], DriverObservation],
         Mapping[str, Any],
@@ -361,6 +367,74 @@ def _default_run_package_install(
     return DriverObservation(command=result, payload=payload)
 
 
+def _default_observe_installed_distributions(
+    env_python: Path,
+) -> Sequence[Mapping[str, Any]]:
+    script = r"""
+from __future__ import annotations
+
+import hashlib
+import importlib.metadata
+import json
+from pathlib import Path
+
+entries = []
+for dist in importlib.metadata.distributions():
+    raw_path = getattr(dist, "_path", None)
+    if raw_path is None:
+        continue
+    metadata_path = Path(str(raw_path)) / "METADATA"
+    try:
+        metadata_bytes = metadata_path.read_bytes()
+    except OSError:
+        continue
+    entries.append(
+        {
+            "metadata_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
+            "name": dist.metadata.get("Name", ""),
+            "version": dist.version,
+        }
+    )
+print(json.dumps(entries, sort_keys=True))
+"""
+    result = _run_command((str(env_python), "-c", script))
+    if result.exit_code != 0:
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest installed distribution metadata query failed",
+                    expected="metadata query exit code 0",
+                    actual=_command_failure_detail(result),
+                )
+            ]
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest installed distribution metadata query emitted invalid JSON",
+                    expected="JSON list of distribution metadata facts",
+                    actual=str(exc),
+                )
+            ]
+        ) from exc
+    if not isinstance(payload, list) or not all(
+        isinstance(entry, Mapping) for entry in payload
+    ):
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest installed distribution metadata query payload is invalid",
+                    expected="JSON list of objects",
+                    actual=repr(payload),
+                )
+            ]
+        )
+    return cast(Sequence[Mapping[str, Any]], payload)
+
+
 def _default_integrity_recheck(
     journal_path: Path,
     target_key: str,
@@ -412,6 +486,7 @@ def default_services() -> NvattestProofServices:
         install_wheels=_default_install_wheels,
         fetch=_default_fetch,
         run_package_install=_default_run_package_install,
+        observe_installed_distributions=_default_observe_installed_distributions,
         integrity_recheck=_default_integrity_recheck,
         run_smoke=_default_run_smoke,
         clock=_utc_now,
@@ -642,7 +717,7 @@ def _support_wheel_entries_with_paths(
     entries: list[tuple[dict[str, Any], Path]] = []
     seen: set[str] = set()
     for raw_path in paths:
-        path = Path(raw_path)
+        path = Path(raw_path).resolve()
         if not path.is_absolute() or not path.is_file() or path.suffix != ".whl":
             failures.append(
                 _failure(
@@ -652,7 +727,7 @@ def _support_wheel_entries_with_paths(
                 )
             )
             continue
-        metadata = _wheel_distribution_metadata(path)
+        metadata = _wheel_metadata_facts(path)
         if metadata is None:
             failures.append(
                 _failure(
@@ -678,6 +753,7 @@ def _support_wheel_entries_with_paths(
                 {
                     "bytes": size_bytes,
                     "filename": path.name,
+                    "metadata_sha256": metadata["metadata_sha256"],
                     "name": name,
                     "sha256": sha256,
                     "version": metadata["version"],
@@ -702,12 +778,22 @@ def _support_wheel_entries_with_paths(
 
 
 def support_distribution_entries(paths: Sequence[Path]) -> list[dict[str, Any]]:
+    return [
+        _support_declaration_entry(entry)
+        for entry, _path in _support_wheel_entries_with_paths(paths)
+    ]
+
+
+def support_distribution_entries_with_metadata(
+    paths: Sequence[Path],
+) -> list[dict[str, Any]]:
     return [dict(entry) for entry, _path in _support_wheel_entries_with_paths(paths)]
 
 
-def _wheel_distribution_metadata(path: Path) -> Mapping[str, str] | None:
+def _wheel_metadata_facts(path: Path) -> Mapping[str, str] | None:
+    resolved = Path(path).resolve()
     try:
-        with zipfile.ZipFile(path) as wheel:
+        with zipfile.ZipFile(resolved) as wheel:
             metadata_names = sorted(
                 name
                 for name in wheel.namelist()
@@ -715,7 +801,8 @@ def _wheel_distribution_metadata(path: Path) -> Mapping[str, str] | None:
             )
             if len(metadata_names) != 1:
                 return None
-            metadata = wheel.read(metadata_names[0]).decode("utf-8")
+            metadata_bytes = wheel.read(metadata_names[0])
+            metadata = metadata_bytes.decode("utf-8")
     except (OSError, UnicodeDecodeError, zipfile.BadZipFile):
         return None
     fields: dict[str, str] = {}
@@ -723,11 +810,216 @@ def _wheel_distribution_metadata(path: Path) -> Mapping[str, str] | None:
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
-        if key in {"Name", "Version"}:
+        if key in {"Name", "Version"} and key not in fields:
             fields[key] = value.strip()
-    if set(fields) != {"Name", "Version"}:
+    if not fields.get("Name") or not fields.get("Version"):
         return None
-    return {"name": fields["Name"], "version": fields["Version"]}
+    return {
+        "metadata_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
+        "name": fields["Name"],
+        "version": fields["Version"],
+    }
+
+
+def _support_declaration_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: entry[key] for key in sorted(SUPPORT_DISTRIBUTION_KEYS)}
+
+
+def candidate_wheel_entries(paths: Sequence[Path]) -> list[dict[str, Any]]:
+    failures: list[Failure] = []
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_path in sorted((Path(path) for path in paths), key=lambda item: item.name):
+        path = raw_path.resolve()
+        if not path.is_file() or path.suffix != ".whl":
+            failures.append(
+                _failure(
+                    "nvattest candidate wheel path is invalid",
+                    expected="local wheel file path",
+                    actual=str(raw_path),
+                )
+            )
+            continue
+        if path.name in seen:
+            failures.append(
+                _failure(
+                    "nvattest candidate wheel basename is duplicated",
+                    expected="unique candidate wheel basenames",
+                    actual=path.name,
+                )
+            )
+            continue
+        seen.add(path.name)
+        metadata = _wheel_metadata_facts(path)
+        if metadata is None:
+            failures.append(
+                _failure(
+                    "nvattest candidate wheel metadata is invalid",
+                    expected="one readable dist-info/METADATA with Name and Version",
+                    actual=path.name,
+                )
+            )
+            continue
+        sha256, size_bytes = file_sha256_size(path)
+        entries.append(
+            {
+                "metadata_sha256": metadata["metadata_sha256"],
+                "name": _normalize_distribution_name(metadata["name"]),
+                "version": metadata["version"],
+                "wheel": f"{CANDIDATE}/{path.name}",
+                "wheel_bytes": size_bytes,
+                "wheel_sha256": sha256,
+            }
+        )
+    if failures:
+        raise NvattestProofError(failures)
+    return sorted(
+        entries, key=lambda item: (item["name"], item["version"], item["wheel"])
+    )
+
+
+def _expected_installed_closure(
+    *,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "candidate": [
+            {
+                "metadata_sha256": entry["metadata_sha256"],
+                "name": entry["name"],
+                "version": entry["version"],
+                "wheel": entry["wheel"],
+                "wheel_bytes": entry["wheel_bytes"],
+                "wheel_sha256": entry["wheel_sha256"],
+            }
+            for entry in sorted(
+                expected_candidate_wheels,
+                key=lambda item: (item["name"], item["version"], item["wheel"]),
+            )
+        ],
+        "support": [
+            {
+                "metadata_sha256": entry["metadata_sha256"],
+                "name": entry["name"],
+                "version": entry["version"],
+                "wheel": f"{SUPPORT}/{entry['filename']}",
+            }
+            for entry in sorted(
+                expected_support_distributions,
+                key=lambda item: (item["name"], item["version"], item["filename"]),
+            )
+        ],
+    }
+
+
+def _installed_closure_payload(
+    observed_distributions: Sequence[Mapping[str, Any]],
+    *,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    failures: list[Failure] = []
+    expected_by_name: dict[str, Mapping[str, Any]] = {}
+    for entry in (*expected_candidate_wheels, *expected_support_distributions):
+        name = str(entry.get("name", ""))
+        if name in expected_by_name:
+            failures.append(
+                _failure(
+                    "nvattest installed closure expected distribution is duplicated",
+                    expected="unique expected candidate and support distribution names",
+                    actual=name,
+                )
+            )
+        expected_by_name[name] = entry
+
+    observed_by_name: dict[str, Mapping[str, Any]] = {}
+    for entry in observed_distributions:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "metadata_sha256",
+            "name",
+            "version",
+        }:
+            failures.append(
+                _failure(
+                    "nvattest installed distribution observation is invalid",
+                    expected="metadata_sha256, name, version",
+                    actual=repr(entry),
+                )
+            )
+            continue
+        raw_name = entry.get("name")
+        version = entry.get("version")
+        metadata_sha256 = entry.get("metadata_sha256")
+        if (
+            not isinstance(raw_name, str)
+            or not raw_name
+            or not isinstance(version, str)
+            or not version
+            or not isinstance(metadata_sha256, str)
+            or not SHA256_RE.fullmatch(metadata_sha256)
+        ):
+            failures.append(
+                _failure(
+                    "nvattest installed distribution observation scalar is invalid",
+                    expected="non-empty name/version and lowercase SHA-256 metadata digest",
+                    actual=repr(entry),
+                )
+            )
+            continue
+        name = _normalize_distribution_name(raw_name)
+        relevant = name in SUPPORT_DISTRIBUTION_NAMES or name.startswith("solstone")
+        if name not in expected_by_name:
+            if relevant:
+                failures.append(
+                    _failure(
+                        "nvattest installed closure contains unexpected distribution",
+                        expected=", ".join(sorted(expected_by_name)),
+                        actual=name,
+                    )
+                )
+            continue
+        if name in observed_by_name:
+            failures.append(
+                _failure(
+                    "nvattest installed closure distribution is duplicated",
+                    expected="one installed distribution per expected name",
+                    actual=name,
+                )
+            )
+            continue
+        observed_by_name[name] = {
+            "metadata_sha256": metadata_sha256,
+            "name": name,
+            "version": version,
+        }
+
+    for name, expected in sorted(expected_by_name.items()):
+        observed = observed_by_name.get(name)
+        if observed is None:
+            failures.append(
+                _failure(
+                    "nvattest installed closure is missing distribution",
+                    expected=name,
+                    actual="<missing>",
+                )
+            )
+            continue
+        for key in ("version", "metadata_sha256"):
+            if observed.get(key) != expected.get(key):
+                failures.append(
+                    _failure(
+                        f"nvattest installed closure {name} {key} is not bound to wheel",
+                        expected=str(expected.get(key)),
+                        actual=str(observed.get(key)),
+                    )
+                )
+    if failures:
+        raise NvattestProofError(failures)
+    return _expected_installed_closure(
+        expected_candidate_wheels=expected_candidate_wheels,
+        expected_support_distributions=expected_support_distributions,
+    )
 
 
 def _normalize_distribution_name(value: str) -> str:
@@ -740,7 +1032,9 @@ def _validate_support_declaration(
     expected_support_distributions: Sequence[Mapping[str, Any]],
 ) -> list[Failure]:
     failures: list[Failure] = []
-    expected = [dict(entry) for entry in expected_support_distributions]
+    expected = [
+        _support_declaration_entry(entry) for entry in expected_support_distributions
+    ]
     if not isinstance(value, list):
         return [
             _failure(
@@ -758,7 +1052,7 @@ def _validate_support_declaration(
                 actual=repr(value),
             )
         )
-    required_keys = {"bytes", "filename", "name", "sha256", "version"}
+    required_keys = SUPPORT_DISTRIBUTION_KEYS
     for entry in actual:
         if set(entry) != required_keys:
             failures.append(
@@ -1041,7 +1335,8 @@ def build_nvattest_proof(
     challenge: str,
     candidate_dir: Path,
     candidate_paths: Sequence[Path],
-    support_distributions: Sequence[Mapping[str, Any]],
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
     observation: NvattestProofObservation,
     recorded_at: datetime,
     canonical_authority_bytes: bytes | None = None,
@@ -1085,7 +1380,8 @@ def build_nvattest_proof(
             observation,
             target_key=target_key,
             candidate_paths=candidate_paths,
-            support_distributions=support_distributions,
+            expected_candidate_wheels=expected_candidate_wheels,
+            expected_support_distributions=expected_support_distributions,
             authority_target=authority_target,
             canonical_authority_bytes=canonical_bytes,
         )
@@ -1104,6 +1400,7 @@ def build_nvattest_proof(
         },
         "cache_install": {
             "cache_root": NVATTEST_CACHE_ROOT,
+            "installed_closure": dict(observation.installed_closure),
             "journal_path": _normalize_receipt_path(
                 observation.journal_path,
                 env_root=env_root,
@@ -1118,7 +1415,7 @@ def build_nvattest_proof(
                 cache_root=cache,
                 site_roots=site_roots,
             ),
-            "wheel_install_command": _command_payload(
+            "wheel_install_command": _command_identity_payload(
                 observation.install,
                 env_root=env_root,
                 candidate_dir=candidate_dir,
@@ -1127,13 +1424,6 @@ def build_nvattest_proof(
             ),
         },
         "candidate_digest": candidate_digest,
-        "candidate_distributions": [
-            dict(entry)
-            for entry in sorted(
-                observation.candidate_distributions,
-                key=lambda item: (item["name"], item["version"]),
-            )
-        ],
         "challenge": challenge,
         "companion_manifest": {
             "member_count": 7,
@@ -1212,7 +1502,10 @@ def build_nvattest_proof(
             site_roots=site_roots,
         ),
         "source_commit": source_commit,
-        "support_distributions": [dict(entry) for entry in support_distributions],
+        "support_distributions": [
+            _support_declaration_entry(entry)
+            for entry in expected_support_distributions
+        ],
         "target": target,
         "version": version,
     }
@@ -1232,7 +1525,8 @@ def build_nvattest_proof(
         ledger_sha256=ledger_sha256,
         canonical_authority_payload=canonical_payload,
         canonical_authority_sha256=hashlib.sha256(canonical_bytes).hexdigest(),
-        expected_support_distributions=support_distributions,
+        expected_candidate_wheels=expected_candidate_wheels,
+        expected_support_distributions=expected_support_distributions,
     )
     if validation_failures:
         raise NvattestProofError(validation_failures)
@@ -1303,7 +1597,8 @@ def _validate_observation(
     *,
     target_key: str,
     candidate_paths: Sequence[Path],
-    support_distributions: Sequence[Mapping[str, Any]],
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
     authority_target: Mapping[str, Any],
     canonical_authority_bytes: bytes,
 ) -> list[Failure]:
@@ -1319,26 +1614,10 @@ def _validate_observation(
                 actual=", ".join(sorted(candidate_basenames)),
             )
         )
-    expected_candidate_distributions = {
-        (entry["name"], entry["version"])
-        for entry in expected_distribution_entries(candidate_paths)
-    }
-    observed_candidate_distributions = {
-        (entry["name"], entry["version"])
-        for entry in observation.candidate_distributions
-    }
-    if observed_candidate_distributions != expected_candidate_distributions:
-        failures.append(
-            _failure(
-                "nvattest candidate distribution set is invalid",
-                expected=repr(sorted(expected_candidate_distributions)),
-                actual=repr(sorted(observed_candidate_distributions)),
-            )
-        )
     failures.extend(
-        _validate_command_payload(
+        _validate_install_command_payload(
             "wheel install",
-            _command_payload(
+            _command_identity_payload(
                 observation.install,
                 env_root=observation.env_root,
                 candidate_dir=Path("/candidate"),
@@ -1346,6 +1625,17 @@ def _validate_observation(
                 site_roots=(),
             ),
             expected_env=SCRUBBED_COMMAND_ENV,
+        )
+    )
+    failures.extend(
+        _validate_installed_closure(
+            observation.installed_closure,
+            expected_candidate_wheels=expected_candidate_wheels,
+            expected_support_distributions=expected_support_distributions,
+            support_distributions=[
+                _support_declaration_entry(entry)
+                for entry in expected_support_distributions
+            ],
         )
     )
     installed_authority_sha = hashlib.sha256(
@@ -1409,8 +1699,11 @@ def _validate_observation(
     )
     failures.extend(
         _validate_support_declaration(
-            list(support_distributions),
-            expected_support_distributions=support_distributions,
+            [
+                _support_declaration_entry(entry)
+                for entry in expected_support_distributions
+            ],
+            expected_support_distributions=expected_support_distributions,
         )
     )
     failures.extend(
@@ -1733,7 +2026,7 @@ def _integrity_payload(
     }
 
 
-def _command_payload(
+def _command_identity_payload(
     result: CommandResult,
     *,
     env_root: Path,
@@ -1763,6 +2056,25 @@ def _command_payload(
             for key, value in result.env.items()
         },
         "exit_code": result.exit_code,
+    }
+
+
+def _command_payload(
+    result: CommandResult,
+    *,
+    env_root: Path,
+    candidate_dir: Path,
+    cache_root: Path,
+    site_roots: Sequence[Path],
+) -> dict[str, Any]:
+    return {
+        **_command_identity_payload(
+            result,
+            env_root=env_root,
+            candidate_dir=candidate_dir,
+            cache_root=cache_root,
+            site_roots=site_roots,
+        ),
         "stderr": _normalize_receipt_text(
             result.stderr,
             env_root=env_root,
@@ -1868,6 +2180,57 @@ def _validate_command_payload(
                 actual=repr(value),
             )
         ]
+    failures.extend(
+        _validate_command_identity_fields(label, value, expected_env=expected_env)
+    )
+    for stream in ("stdout", "stderr"):
+        if not isinstance(value.get(stream), str):
+            failures.append(
+                _failure(
+                    f"nvattest proof {label} {stream} is invalid",
+                    expected="string",
+                    actual=repr(value.get(stream)),
+                )
+            )
+    return failures
+
+
+def _validate_install_command_payload(
+    label: str,
+    value: Any,
+    *,
+    expected_env: Mapping[str, str],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(value, Mapping) or set(value) != {"argv", "env", "exit_code"}:
+        return [
+            _failure(
+                f"nvattest proof {label} command payload is invalid",
+                expected="argv, env, exit_code",
+                actual=repr(value),
+            )
+        ]
+    failures.extend(
+        _validate_command_identity_fields(label, value, expected_env=expected_env)
+    )
+    if value.get("exit_code") != 0:
+        failures.append(
+            _failure(
+                f"nvattest proof {label} exit code is invalid",
+                expected="0",
+                actual=repr(value.get("exit_code")),
+            )
+        )
+    return failures
+
+
+def _validate_command_identity_fields(
+    label: str,
+    value: Mapping[str, Any],
+    *,
+    expected_env: Mapping[str, str],
+) -> list[Failure]:
+    failures: list[Failure] = []
     argv = value.get("argv")
     if not isinstance(argv, list) or not all(isinstance(token, str) for token in argv):
         failures.append(
@@ -1912,15 +2275,6 @@ def _validate_command_payload(
                 actual=repr(value.get("exit_code")),
             )
         )
-    for stream in ("stdout", "stderr"):
-        if not isinstance(value.get(stream), str):
-            failures.append(
-                _failure(
-                    f"nvattest proof {label} {stream} is invalid",
-                    expected="string",
-                    actual=repr(value.get(stream)),
-                )
-            )
     return failures
 
 
@@ -1935,6 +2289,7 @@ def validate_nvattest_proof_bytes(
     candidate_digest: str,
     ledger_sha256: str,
     canonical_authority_bytes: bytes,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
     expected_support_distributions: Sequence[Mapping[str, Any]],
 ) -> list[Failure]:
     try:
@@ -1988,6 +2343,7 @@ def validate_nvattest_proof_bytes(
             canonical_authority_sha256=hashlib.sha256(
                 canonical_authority_bytes
             ).hexdigest(),
+            expected_candidate_wheels=expected_candidate_wheels,
             expected_support_distributions=expected_support_distributions,
         )
     )
@@ -2006,6 +2362,7 @@ def validate_nvattest_proof(
     ledger_sha256: str,
     canonical_authority_payload: Mapping[str, Any],
     canonical_authority_sha256: str,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
     expected_support_distributions: Sequence[Mapping[str, Any]],
 ) -> list[Failure]:
     failures: list[Failure] = []
@@ -2080,13 +2437,11 @@ def validate_nvattest_proof(
             expected_support_distributions=expected_support_distributions,
         )
     )
-    failures.extend(
-        _validate_candidate_distributions(proof.get("candidate_distributions"))
-    )
     failures.extend(_validate_installed_package(proof.get("installed_package")))
     cache_install = proof.get("cache_install")
     if not isinstance(cache_install, Mapping) or set(cache_install) != {
         "cache_root",
+        "installed_closure",
         "journal_path",
         "package_driver_command",
         "wheel_install_command",
@@ -2095,8 +2450,8 @@ def validate_nvattest_proof(
             _failure(
                 "nvattest proof cache install section is invalid",
                 expected=(
-                    "cache_root, journal_path, package_driver_command, "
-                    "wheel_install_command"
+                    "cache_root, installed_closure, journal_path, "
+                    "package_driver_command, wheel_install_command"
                 ),
                 actual=repr(cache_install),
             )
@@ -2130,10 +2485,18 @@ def validate_nvattest_proof(
             )
         )
         failures.extend(
-            _validate_command_payload(
+            _validate_install_command_payload(
                 "wheel install",
                 cache_install.get("wheel_install_command"),
                 expected_env=SCRUBBED_COMMAND_ENV,
+            )
+        )
+        failures.extend(
+            _validate_installed_closure(
+                cache_install.get("installed_closure"),
+                expected_candidate_wheels=expected_candidate_wheels,
+                expected_support_distributions=expected_support_distributions,
+                support_distributions=proof.get("support_distributions"),
             )
         )
         failures.extend(
@@ -2153,64 +2516,192 @@ def validate_nvattest_proof(
     return failures
 
 
-def _validate_candidate_distributions(value: Any) -> list[Failure]:
+def _validate_installed_closure(
+    value: Any,
+    *,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
+    support_distributions: Any,
+) -> list[Failure]:
     failures: list[Failure] = []
-    if not isinstance(value, list):
+    expected_failures = _validate_expected_closure_inputs(
+        expected_candidate_wheels=expected_candidate_wheels,
+        expected_support_distributions=expected_support_distributions,
+    )
+    if expected_failures:
+        return expected_failures
+    if not isinstance(value, Mapping) or set(value) != {"candidate", "support"}:
         return [
             _failure(
-                "nvattest proof candidate distributions are invalid",
-                expected="list of Solstone distribution entries",
-                actual=type(value).__name__,
+                "nvattest proof installed closure section is invalid",
+                expected="candidate, support",
+                actual=repr(value),
             )
         ]
-    seen: set[tuple[str, str]] = set()
-    valid_entries: list[Mapping[str, Any]] = []
-    for entry in value:
-        if not isinstance(entry, Mapping) or set(entry) != {"name", "version"}:
-            failures.append(
-                _failure(
-                    "nvattest proof candidate distribution entry is invalid",
-                    expected="name, version",
-                    actual=repr(entry),
-                )
+    expected = _expected_installed_closure(
+        expected_candidate_wheels=expected_candidate_wheels,
+        expected_support_distributions=expected_support_distributions,
+    )
+    candidate = value.get("candidate")
+    support = value.get("support")
+    candidate_entries: list[Mapping[str, Any]] = []
+    support_entries: list[Mapping[str, Any]] = []
+    if not isinstance(candidate, list):
+        failures.append(
+            _failure(
+                "nvattest proof installed closure candidate set is invalid",
+                expected="list of candidate wheel closure entries",
+                actual=type(candidate).__name__,
             )
-            continue
-        valid_entries.append(entry)
-        name = entry.get("name")
-        version = entry.get("version")
+        )
+    else:
+        for entry in candidate:
+            if not isinstance(entry, Mapping) or set(entry) != CANDIDATE_CLOSURE_KEYS:
+                failures.append(
+                    _failure(
+                        "nvattest proof installed closure candidate entry is invalid",
+                        expected=", ".join(sorted(CANDIDATE_CLOSURE_KEYS)),
+                        actual=repr(entry),
+                    )
+                )
+                continue
+            candidate_entries.append(entry)
         if (
-            not isinstance(name, str)
-            or not name.lower().replace("_", "-").startswith("solstone")
-            or not isinstance(version, str)
-            or not version
+            len(candidate_entries) == len(candidate)
+            and candidate != expected["candidate"]
         ):
             failures.append(
                 _failure(
-                    "nvattest proof candidate distribution scalar is invalid",
-                    expected="Solstone-prefixed name and non-empty version",
-                    actual=repr(entry),
+                    "nvattest proof installed closure candidate set is not bound to wheels",
+                    expected=repr(expected["candidate"]),
+                    actual=repr(candidate),
+                )
+            )
+    if not isinstance(support, list):
+        failures.append(
+            _failure(
+                "nvattest proof installed closure support set is invalid",
+                expected="list of support wheel closure entries",
+                actual=type(support).__name__,
+            )
+        )
+    else:
+        for entry in support:
+            if not isinstance(entry, Mapping) or set(entry) != SUPPORT_CLOSURE_KEYS:
+                failures.append(
+                    _failure(
+                        "nvattest proof installed closure support entry is invalid",
+                        expected=", ".join(sorted(SUPPORT_CLOSURE_KEYS)),
+                        actual=repr(entry),
+                    )
+                )
+                continue
+            support_entries.append(entry)
+        if len(support_entries) == len(support) and support != expected["support"]:
+            failures.append(
+                _failure(
+                    "nvattest proof installed closure support set is not bound to wheels",
+                    expected=repr(expected["support"]),
+                    actual=repr(support),
+                )
+            )
+    failures.extend(
+        _validate_installed_closure_support_join(
+            support_entries,
+            support_distributions=support_distributions,
+        )
+    )
+    return failures
+
+
+def _validate_expected_closure_inputs(
+    *,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
+    expected_support_distributions: Sequence[Mapping[str, Any]],
+) -> list[Failure]:
+    failures: list[Failure] = []
+    for label, entries, required_keys in (
+        ("candidate", expected_candidate_wheels, CANDIDATE_CLOSURE_KEYS),
+        ("support", expected_support_distributions, SUPPORT_EXPECTED_KEYS),
+    ):
+        if not isinstance(entries, Sequence):
+            failures.append(
+                _failure(
+                    f"nvattest expected {label} closure inputs are invalid",
+                    expected="sequence of wheel facts",
+                    actual=type(entries).__name__,
                 )
             )
             continue
-        pair = (name, version)
-        if pair in seen:
+        for entry in entries:
+            if not isinstance(entry, Mapping) or set(entry) != required_keys:
+                failures.append(
+                    _failure(
+                        f"nvattest expected {label} closure entry is invalid",
+                        expected=", ".join(sorted(required_keys)),
+                        actual=repr(entry),
+                    )
+                )
+    return failures
+
+
+def _validate_installed_closure_support_join(
+    support_entries: Sequence[Mapping[str, Any]],
+    *,
+    support_distributions: Any,
+) -> list[Failure]:
+    failures: list[Failure] = []
+    if not isinstance(support_distributions, list):
+        return failures
+    support_by_wheel: dict[str, Mapping[str, Any]] = {}
+    for entry in support_distributions:
+        if not isinstance(entry, Mapping) or set(entry) != SUPPORT_DISTRIBUTION_KEYS:
+            continue
+        wheel = f"{SUPPORT}/{entry['filename']}"
+        if wheel in support_by_wheel:
             failures.append(
                 _failure(
-                    "nvattest proof candidate distribution is duplicated",
-                    expected="unique Solstone distribution entries",
-                    actual=f"{name}=={version}",
+                    "nvattest proof installed closure support declaration is duplicated",
+                    expected="one support declaration per wheel filename",
+                    actual=wheel,
                 )
             )
-        seen.add(pair)
-    canonical = sorted(valid_entries, key=lambda item: (item["name"], item["version"]))
-    if len(valid_entries) == len(value) and value != canonical:
-        failures.append(
-            _failure(
-                "nvattest proof candidate distributions are not canonical",
-                expected="sorted by name and version",
-                actual=repr(value),
+            continue
+        support_by_wheel[wheel] = entry
+    seen: set[str] = set()
+    for entry in support_entries:
+        wheel = entry.get("wheel")
+        if not isinstance(wheel, str):
+            continue
+        declaration = support_by_wheel.get(wheel)
+        if declaration is None:
+            failures.append(
+                _failure(
+                    "nvattest proof installed closure support wheel is undeclared",
+                    expected=", ".join(sorted(support_by_wheel)),
+                    actual=wheel,
+                )
             )
-        )
+            continue
+        if wheel in seen:
+            failures.append(
+                _failure(
+                    "nvattest proof installed closure support wheel is duplicated",
+                    expected="one closure entry per declared support wheel",
+                    actual=wheel,
+                )
+            )
+        seen.add(wheel)
+        if entry.get("name") != declaration.get("name") or entry.get(
+            "version"
+        ) != declaration.get("version"):
+            failures.append(
+                _failure(
+                    "nvattest proof installed closure support entry disagrees with declaration",
+                    expected=f"{declaration.get('name')}=={declaration.get('version')}",
+                    actual=f"{entry.get('name')}=={entry.get('version')}",
+                )
+            )
     return failures
 
 
@@ -2549,6 +3040,7 @@ def write_nvattest_proof(
     candidate_digest: str,
     ledger_sha256: str,
     canonical_authority_bytes: bytes,
+    expected_candidate_wheels: Sequence[Mapping[str, Any]],
     expected_support_distributions: Sequence[Mapping[str, Any]],
 ) -> Path:
     failures = validate_nvattest_proof_bytes(
@@ -2561,6 +3053,7 @@ def write_nvattest_proof(
         candidate_digest=candidate_digest,
         ledger_sha256=ledger_sha256,
         canonical_authority_bytes=canonical_authority_bytes,
+        expected_candidate_wheels=expected_candidate_wheels,
         expected_support_distributions=expected_support_distributions,
     )
     if failures:
@@ -2586,6 +3079,7 @@ def write_nvattest_proof(
         candidate_digest=candidate_digest,
         ledger_sha256=ledger_sha256,
         canonical_authority_bytes=canonical_authority_bytes,
+        expected_candidate_wheels=expected_candidate_wheels,
         expected_support_distributions=expected_support_distributions,
     )
     if readback_failures:
@@ -2613,7 +3107,10 @@ def run_nvattest_proof(
     canonical_bytes = canonical_authority_bytes or _canonical_authority_bytes()
     host = resolved.observe_host()
     target_key = _target_key_from_policy(target, host)
-    support_distributions = support_distribution_entries(support_wheel_paths)
+    expected_candidate_wheels = candidate_wheel_entries(candidate_paths)
+    expected_support_distributions = support_distribution_entries_with_metadata(
+        support_wheel_paths
+    )
     canonical_payload = _load_canonical_authority(canonical_bytes)
     authority_target = _authority_target(canonical_payload, target_key)
     artifact = _section(authority_target, "artifact")
@@ -2637,7 +3134,18 @@ def run_nvattest_proof(
                 support_wheel_paths,
             ),
         )
-        candidate_distributions = _solstone_distributions(env_python)
+        observed_distributions = _call_stage(
+            "installed-closure",
+            lambda: resolved.observe_installed_distributions(env_python),
+        )
+        installed_closure = _call_stage(
+            "installed-closure",
+            lambda: _installed_closure_payload(
+                observed_distributions,
+                expected_candidate_wheels=expected_candidate_wheels,
+                expected_support_distributions=expected_support_distributions,
+            ),
+        )
         authority_path, authority_bytes = _call_stage(
             "wheel-install",
             lambda: _read_installed_authority(env_root),
@@ -2690,7 +3198,7 @@ def run_nvattest_proof(
             cache_root=cache,
             host=host,
             install=install_result,
-            candidate_distributions=candidate_distributions,
+            installed_closure=installed_closure,
             archive_fetch=archive_fetch,
             manifest_fetch=manifest_fetch,
             installed_authority_path=authority_path,
@@ -2709,7 +3217,8 @@ def run_nvattest_proof(
             challenge=challenge,
             candidate_dir=candidate_dir,
             candidate_paths=candidate_paths,
-            support_distributions=support_distributions,
+            expected_candidate_wheels=expected_candidate_wheels,
+            expected_support_distributions=expected_support_distributions,
             observation=observation,
             recorded_at=resolved.clock(),
             canonical_authority_bytes=canonical_bytes,
@@ -2727,7 +3236,8 @@ def run_nvattest_proof(
                 candidate_digest=candidate_digest,
                 ledger_sha256=ledger_sha256,
                 canonical_authority_bytes=canonical_bytes,
-                expected_support_distributions=support_distributions,
+                expected_candidate_wheels=expected_candidate_wheels,
+                expected_support_distributions=expected_support_distributions,
             ),
         )
     except NvattestProofError as exc:

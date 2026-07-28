@@ -34,7 +34,9 @@ from scripts.release_install_smoke import (
 )
 from scripts.release_nvattest_proof import (
     CHALLENGE_RE,
-    support_distribution_entries,
+    NvattestProofError,
+    candidate_wheel_entries,
+    support_distribution_entries_with_metadata,
     validate_nvattest_proof_bytes,
 )
 from scripts.release_public_evidence import validate_public_evidence_tree
@@ -859,7 +861,6 @@ class ExternalProofHostChannel:
             target=target,
             candidate_dir=candidate_dir,
         )
-        support_distributions = support_distribution_entries(support_wheel_paths)
         cohort_id = self._cohort_id_factory()
         _validate_cohort_id(cohort_id)
         request_dir = output_path.parent / f".{target}.proof-request-{cohort_id}"
@@ -1097,6 +1098,26 @@ class ExternalProofHostChannel:
             )
             if proof_failures:
                 raise ProofHostError(proof_failures)
+            try:
+                expected_candidate_wheels = candidate_wheel_entries(
+                    target_install_paths_from_ledger(
+                        ledger_payload,
+                        target=target,
+                        candidate_dir=request_candidate_dir,
+                    )
+                )
+                expected_support_distributions = (
+                    support_distribution_entries_with_metadata(
+                        tuple(
+                            sorted(
+                                request_support_dir.iterdir(),
+                                key=lambda path: path.name,
+                            )
+                        )
+                    )
+                )
+            except NvattestProofError as exc:
+                raise ProofHostError(exc.failures) from exc
             nvattest_failures = validate_nvattest_proof_bytes(
                 nvattest_proof_bytes,
                 expected_challenge=challenge,
@@ -1107,7 +1128,8 @@ class ExternalProofHostChannel:
                 candidate_digest=candidate_digest,
                 ledger_sha256=ledger_sha256,
                 canonical_authority_bytes=canonical_authority_bytes,
-                expected_support_distributions=support_distributions,
+                expected_candidate_wheels=expected_candidate_wheels,
+                expected_support_distributions=expected_support_distributions,
             )
             if nvattest_failures:
                 raise ProofHostError(nvattest_failures)

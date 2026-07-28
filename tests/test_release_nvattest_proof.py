@@ -19,7 +19,10 @@ import pytest
 
 import scripts.release_nvattest_proof as proof
 import solstone.think.providers.nvattest_authority as nvattest_authority
-from scripts.check_rust_release_manifest import canonical_json_bytes
+from scripts.check_rust_release_manifest import (
+    canonical_json_bytes,
+    validate_public_evidence_text,
+)
 from scripts.release_install_smoke import SCRUBBED_COMMAND_ENV
 from scripts.release_public_evidence import validate_public_evidence_tree
 from scripts.release_target_policy import TARGET_POLICY
@@ -63,6 +66,14 @@ SUPPORT_VERSIONS = {
     "sniffio": "1.3.1",
     "typing-extensions": "4.15.0",
 }
+PIP_ANCESTOR_STDOUT = """Processing ./wheels/nested/pip_render_probe-0.1.0-py3-none-any.whl
+Installing collected packages: pip-render-probe
+Successfully installed pip-render-probe-0.1.0
+"""
+PIP_UNRELATED_STDOUT = """Processing /tmp/claude-1000/-home-jer--hopper-worktrees-4yw4uak3/a9c8603b-3fbf-4c99-8870-f7c8eb731d22/scratchpad/wheels/nested/pip_render_probe-0.1.0-py3-none-any.whl
+Installing collected packages: pip-render-probe
+Successfully installed pip-render-probe-0.1.0
+"""
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,8 @@ class SyntheticCase:
     candidate_dir: Path
     candidate_paths: tuple[Path, ...]
     support_paths: tuple[Path, ...]
+    expected_candidate_wheels: list[dict[str, Any]]
+    expected_support_distributions: list[dict[str, Any]]
     support_distributions: list[dict[str, Any]]
     archive_path: Path
     manifest_path: Path
@@ -158,7 +171,8 @@ def test_synthetic_run_writes_canonical_public_receipt_for_target(
             candidate_digest=CANDIDATE_DIGEST,
             ledger_sha256=LEDGER_SHA,
             canonical_authority_bytes=case.canonical_authority_bytes,
-            expected_support_distributions=case.support_distributions,
+            expected_candidate_wheels=case.expected_candidate_wheels,
+            expected_support_distributions=case.expected_support_distributions,
         )
         == []
     )
@@ -179,6 +193,162 @@ def test_synthetic_run_writes_canonical_public_receipt_for_target(
     assert payload["cache_install"]["wheel_install_command"]["argv"][-8:] == [
         f"{proof.SUPPORT}/{entry['filename']}" for entry in case.support_distributions
     ]
+    assert set(payload["cache_install"]["wheel_install_command"]) == {
+        "argv",
+        "env",
+        "exit_code",
+    }
+    assert payload["cache_install"]["installed_closure"] == {
+        "candidate": case.expected_candidate_wheels,
+        "support": [
+            {
+                "metadata_sha256": entry["metadata_sha256"],
+                "name": entry["name"],
+                "version": entry["version"],
+                "wheel": f"{proof.SUPPORT}/{entry['filename']}",
+            }
+            for entry in case.expected_support_distributions
+        ],
+    }
+
+
+def test_wheel_install_evidence_is_cwd_invariant_when_pip_stdout_differs(
+    tmp_path: Path,
+) -> None:
+    case = _synthetic_case(tmp_path, "linux-x86_64")
+    receipt_bytes = []
+
+    for label, install_stdout in (
+        ("ancestor", PIP_ANCESTOR_STDOUT),
+        ("unrelated", PIP_UNRELATED_STDOUT),
+    ):
+        output = tmp_path / f"{label}.json"
+        proof.run_nvattest_proof(
+            target=case.target,
+            version=VERSION,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=CANDIDATE_DIGEST,
+            ledger_sha256=LEDGER_SHA,
+            challenge=CHALLENGE,
+            candidate_dir=case.candidate_dir,
+            candidate_paths=case.candidate_paths,
+            support_wheel_paths=case.support_paths,
+            output_path=output,
+            services=_synthetic_services(
+                case,
+                tmp_path,
+                install_stdout=install_stdout,
+            ),
+            canonical_authority_bytes=case.canonical_authority_bytes,
+        )
+        data = output.read_bytes()
+        receipt_bytes.append(data)
+        assert (
+            validate_public_evidence_text(f"{label}.receipt", data.decode("utf-8"))
+            == []
+        )
+
+    assert receipt_bytes[0] == receipt_bytes[1]
+
+
+def test_installed_closure_derivation_is_cwd_invariant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_case(tmp_path, "linux-x86_64")
+    nested = tmp_path / "nested" / "cwd"
+    nested.mkdir(parents=True)
+    outputs = []
+
+    for cwd in (tmp_path, nested):
+        monkeypatch.chdir(cwd)
+        expected_candidate_wheels = proof.candidate_wheel_entries(case.candidate_paths)
+        expected_support_distributions = (
+            proof.support_distribution_entries_with_metadata(case.support_paths)
+        )
+        closure = proof._installed_closure_payload(
+            _installed_distribution_observations(case),
+            expected_candidate_wheels=expected_candidate_wheels,
+            expected_support_distributions=expected_support_distributions,
+        )
+        outputs.append(canonical_json_bytes(closure))
+
+    assert outputs[0] == outputs[1]
+
+
+def test_installed_closure_rejects_different_candidate_wheel_metadata(
+    tmp_path: Path,
+) -> None:
+    case = _synthetic_case(tmp_path, "linux-x86_64")
+    receipt = _synthetic_receipt(case, tmp_path)
+    replacement_dir = tmp_path / "replacement-candidate"
+    replacement_dir.mkdir()
+    replacement = _write_metadata_wheel(
+        replacement_dir / case.candidate_paths[0].name,
+        name="solstone",
+        version=VERSION,
+        extra_metadata="Summary: different metadata bytes\n",
+    )
+
+    failures = proof.validate_nvattest_proof(
+        receipt,
+        expected_challenge=CHALLENGE,
+        target=case.target,
+        version=VERSION,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=CORE_LOCK,
+        candidate_digest=CANDIDATE_DIGEST,
+        ledger_sha256=LEDGER_SHA,
+        canonical_authority_payload=json.loads(case.canonical_authority_bytes),
+        canonical_authority_sha256=hashlib.sha256(
+            case.canonical_authority_bytes
+        ).hexdigest(),
+        expected_candidate_wheels=proof.candidate_wheel_entries((replacement,)),
+        expected_support_distributions=case.expected_support_distributions,
+    )
+
+    assert any(
+        failure.error
+        == "nvattest proof installed closure candidate set is not bound to wheels"
+        for failure in failures
+    )
+
+
+def test_installed_closure_rejects_missing_support_distribution(tmp_path: Path) -> None:
+    case = _synthetic_case(tmp_path, "linux-x86_64")
+    observed = [
+        entry
+        for entry in _installed_distribution_observations(case)
+        if entry["name"] != "anyio"
+    ]
+
+    with pytest.raises(proof.NvattestProofError) as exc_info:
+        proof.run_nvattest_proof(
+            target=case.target,
+            version=VERSION,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=CANDIDATE_DIGEST,
+            ledger_sha256=LEDGER_SHA,
+            challenge=CHALLENGE,
+            candidate_dir=case.candidate_dir,
+            candidate_paths=case.candidate_paths,
+            support_wheel_paths=case.support_paths,
+            output_path=tmp_path / "missing-support.json",
+            services=_synthetic_services(
+                case,
+                tmp_path,
+                observed_distributions=observed,
+            ),
+            canonical_authority_bytes=case.canonical_authority_bytes,
+        )
+
+    assert any(
+        failure.error == "nvattest installed closure is missing distribution"
+        and failure.expected == "anyio"
+        for failure in exc_info.value.failures
+    )
 
 
 def test_command_text_normalization_fails_closed_on_prefix_collision() -> None:
@@ -347,7 +517,8 @@ def test_validator_rejects_bound_field_mutations(
         canonical_authority_sha256=hashlib.sha256(
             case.canonical_authority_bytes
         ).hexdigest(),
-        expected_support_distributions=case.support_distributions,
+        expected_candidate_wheels=case.expected_candidate_wheels,
+        expected_support_distributions=case.expected_support_distributions,
     )
 
 
@@ -386,7 +557,8 @@ def test_validator_rejects_support_declaration_mutations(
         canonical_authority_sha256=hashlib.sha256(
             case.canonical_authority_bytes
         ).hexdigest(),
-        expected_support_distributions=case.support_distributions,
+        expected_candidate_wheels=case.expected_candidate_wheels,
+        expected_support_distributions=case.expected_support_distributions,
     )
     assert failures
 
@@ -508,6 +680,9 @@ def test_spoofed_or_near_miss_host_fails_before_reach(
         run_package_install=lambda *_args: (
             calls.append("driver") or pytest.fail("driver should not run")
         ),
+        observe_installed_distributions=lambda *_args: pytest.fail(
+            "installed closure should not run"
+        ),
         integrity_recheck=lambda *_args: {},
         run_smoke=lambda _root, _path: pytest.fail("smoke should not run"),
         clock=lambda: RECORDED_AT,
@@ -546,6 +721,12 @@ def test_receipt_validator_names_policy_negative_cases(tmp_path: Path) -> None:
         lambda data: data["cache_install"]["wheel_install_command"]["argv"].append(
             "--index-url"
         ),
+        lambda data: data["cache_install"]["wheel_install_command"].update(
+            {"exit_code": 1}
+        ),
+        lambda data: data["cache_install"]["wheel_install_command"].update(
+            {"stdout": PIP_ANCESTOR_STDOUT}
+        ),
         lambda data: data["installed_package"].update(
             {
                 "module_origin": "/home/jer/source/solstone/think/providers/nvattest_install.py"
@@ -578,7 +759,8 @@ def test_receipt_validator_names_policy_negative_cases(tmp_path: Path) -> None:
             canonical_authority_sha256=hashlib.sha256(
                 case.canonical_authority_bytes
             ).hexdigest(),
-            expected_support_distributions=case.support_distributions,
+            expected_candidate_wheels=case.expected_candidate_wheels,
+            expected_support_distributions=case.expected_support_distributions,
         )
 
 
@@ -616,6 +798,10 @@ def _synthetic_case(tmp_path: Path, target_key: NvattestTargetKey) -> SyntheticC
     support_dir = tmp_path / f"support-{target_key}"
     support_dir.mkdir()
     support_paths = _write_support_wheels(support_dir)
+    expected_candidate_wheels = proof.candidate_wheel_entries(candidate_paths)
+    expected_support_distributions = proof.support_distribution_entries_with_metadata(
+        support_paths
+    )
     support_distributions = proof.support_distribution_entries(support_paths)
 
     entry = authority_entry(target_key)
@@ -652,6 +838,8 @@ def _synthetic_case(tmp_path: Path, target_key: NvattestTargetKey) -> SyntheticC
         candidate_dir=candidate_dir,
         candidate_paths=candidate_paths,
         support_paths=support_paths,
+        expected_candidate_wheels=expected_candidate_wheels,
+        expected_support_distributions=expected_support_distributions,
         support_distributions=support_distributions,
         archive_path=archive_path,
         manifest_path=manifest_path,
@@ -715,9 +903,20 @@ def _synthetic_manifest(
 def _synthetic_services(
     case: SyntheticCase,
     tmp_path: Path,
+    *,
+    install_stdout: str = PIP_ANCESTOR_STDOUT,
+    observed_distributions: Sequence[Mapping[str, Any]] | None = None,
 ) -> proof.NvattestProofServices:
     env_root = tmp_path / f"env-{case.target_key}"
     policy_os, policy_arch = TARGET_POLICY[case.target]
+    installed_observations = tuple(
+        dict(entry)
+        for entry in (
+            observed_distributions
+            if observed_distributions is not None
+            else _installed_distribution_observations(case)
+        )
+    )
 
     def create_environment(_target: str) -> Path:
         (env_root / "bin").mkdir(parents=True)
@@ -754,7 +953,8 @@ def _synthetic_services(
                 "--no-deps",
                 *(str(path) for path in candidate_wheels),
                 *(str(path) for path in case.support_paths),
-            )
+            ),
+            stdout=install_stdout,
         )
 
     def fetch(label: str, url: str, dest: Path) -> proof.FetchObservation:
@@ -800,11 +1000,17 @@ def _synthetic_services(
             env={**SCRUBBED_COMMAND_ENV, **nvattest_library_env(nvattest_root)},
         )
 
+    def observe_installed_distributions(
+        _env_python: Path,
+    ) -> Sequence[Mapping[str, Any]]:
+        return [dict(entry) for entry in installed_observations]
+
     return proof.NvattestProofServices(
         create_environment=create_environment,
         install_wheels=install_wheels,
         fetch=fetch,
         run_package_install=run_package_install,
+        observe_installed_distributions=observe_installed_distributions,
         integrity_recheck=lambda _journal, _target, _fetches, driver: {
             "members": driver.payload["members"],
             "sidecar": driver.payload["sidecar"],
@@ -817,6 +1023,25 @@ def _synthetic_services(
         clock=lambda: RECORDED_AT,
         cleanup=lambda path: shutil.rmtree(path),
         observe_host=lambda: proof.HostObservation(os=policy_os, arch=policy_arch),
+    )
+
+
+def _installed_distribution_observations(
+    case: SyntheticCase,
+) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            {
+                "metadata_sha256": entry["metadata_sha256"],
+                "name": entry["name"],
+                "version": entry["version"],
+            }
+            for entry in (
+                *case.expected_candidate_wheels,
+                *case.expected_support_distributions,
+            )
+        ],
+        key=lambda item: item["name"],
     )
 
 
@@ -912,12 +1137,18 @@ def _write_support_wheels(path: Path) -> tuple[Path, ...]:
     )
 
 
-def _write_metadata_wheel(path: Path, *, name: str, version: str) -> Path:
+def _write_metadata_wheel(
+    path: Path,
+    *,
+    name: str,
+    version: str,
+    extra_metadata: str = "",
+) -> Path:
     dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
     with zipfile.ZipFile(path, "w") as wheel:
         wheel.writestr(
             f"{dist_info}/METADATA",
-            f"Name: {name}\nVersion: {version}\n",
+            f"Name: {name}\nVersion: {version}\n{extra_metadata}",
         )
     return path
 
