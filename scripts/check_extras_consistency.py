@@ -62,10 +62,6 @@ THIN_BASE = {
     "setproctitle",
     "typer",
     "requests",
-    "cryptography>=42,<47",
-    "pyOpenSSL>=24.0",
-    "argon2-cffi",
-    "websockets>=13.0",
     "psutil",
     "userpath>=1.9.2,<2",
 }

@@ -4249,22 +4249,20 @@ name = "solstone"
 version = "1.0.17"
 source = { editable = "." }
 dependencies = [
-    { name = "argon2-cffi" },
-    { name = "cryptography" },
     { name = "psutil" },
-    { name = "pyopenssl" },
     { name = "requests" },
     { name = "setproctitle" },
     { name = "solstone-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "typer" },
     { name = "userpath" },
-    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
 journal-host = [
+    { name = "argon2-cffi" },
     { name = "av" },
     { name = "blessed" },
+    { name = "cryptography" },
     { name = "flask", extra = ["async"] },
     { name = "genai-prices" },
     { name = "h2" },
@@ -4292,6 +4290,7 @@ journal-host = [
     { name = "packaging" },
     { name = "pillow" },
     { name = "pyhpke" },
+    { name = "pyopenssl" },
     { name = "pypdfium2" },
     { name = "python-dotenv" },
     { name = "python-frontmatter" },
@@ -4303,6 +4302,7 @@ journal-host = [
     { name = "tokenizers" },
     { name = "tzlocal" },
     { name = "weasyprint" },
+    { name = "websockets" },
 ]
 pdf = [
     { name = "pillow" },
@@ -4340,10 +4340,10 @@ journal-cuda = [
 
 [package.metadata]
 requires-dist = [
-    { name = "argon2-cffi" },
+    { name = "argon2-cffi", marker = "extra == 'journal-host'" },
     { name = "av", marker = "extra == 'journal-host'" },
     { name = "blessed", marker = "extra == 'journal-host'", specifier = ">=1.20.0" },
-    { name = "cryptography", specifier = ">=42,<47" },
+    { name = "cryptography", marker = "extra == 'journal-host'", specifier = ">=42,<47" },
     { name = "flask", extras = ["async"], marker = "extra == 'journal-host'" },
     { name = "genai-prices", marker = "extra == 'journal-host'" },
     { name = "h2", marker = "extra == 'journal-host'" },
@@ -4373,7 +4373,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'pdf-import'", specifier = ">=11.0.0" },
     { name = "psutil" },
     { name = "pyhpke", marker = "extra == 'journal-host'", specifier = "==0.6.4" },
-    { name = "pyopenssl", specifier = ">=24.0" },
+    { name = "pyopenssl", marker = "extra == 'journal-host'", specifier = ">=24.0" },
     { name = "pypdfium2", marker = "extra == 'pdf-import'", specifier = ">=5.11,<6" },
     { name = "python-dotenv", marker = "extra == 'journal-host'" },
     { name = "python-frontmatter", marker = "extra == 'journal-host'" },
@@ -4398,7 +4398,7 @@ requires-dist = [
     { name = "tzlocal", marker = "extra == 'journal-host'" },
     { name = "userpath", specifier = ">=1.9.2,<2" },
     { name = "weasyprint", marker = "extra == 'pdf-export'", specifier = ">=60.0" },
-    { name = "websockets", specifier = ">=13.0" },
+    { name = "websockets", marker = "extra == 'journal-host'", specifier = ">=13.0" },
 ]
 provides-extras = ["pdf-import", "pdf-export", "pdf", "journal-host", "journal", "journal-cuda"]
 
