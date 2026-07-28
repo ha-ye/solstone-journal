@@ -8,18 +8,19 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ### Added
 
-- `sol link join` and `sol link serve` are now native commands. joining a journal from a pasted pair link, and running the local bridge that carries your `sol` traffic to a journal on another machine, both run without python on the path.
+- `sol link join` and `sol link serve` are now native commands, like `sol` and `solstone` before them. same commands, same pairing, and no python on any path they own.
 
 ### Changed
 
-- `journal link` has been removed. it has no command-line replacement: open the network app in your journal to see paired devices, check link status, and unpair. if you had a script or a note that called `journal link`, it needs the network app instead.
-- installing `solstone` on its own is now much smaller. the base install no longer pulls a compiled cryptography, tls, or websocket stack, because none of the base commands need one. `solstone-journal` and `solstone-journal-cuda` still bring all of it, so installing the journal is unchanged. only a base-only install that reached for those packages directly will notice.
+- `journal link` is gone. listing paired devices, checking a device's status, unpairing one, and seeing what's authorized now live in the network app in your journal, with no command-line equivalent. anything built on `journal link` needs the network app instead.
+- the base install is thinner. `pip install solstone` no longer brings along the compiled cryptography and websocket libraries only the journal needs; they install with `solstone-journal` and `solstone-journal-cuda`, so a journal install is unchanged and pairing works the same way. anything that relied on those libraries being present in a base install needs a journal package now.
 
 ### Fixed
 
-- speaker attribution now keeps each speaker's voice evidence with the right person. when a conversation was clustered again and came out with a different number of speakers, evidence from one speaker could be filed under another named person in your journal. new passes keep the sentences a speaker was built from, so this can no longer happen. older entries saved without them are skipped instead of guessed, and a maintenance pass recovers the ones it can.
-- joining and hosting a link are steadier. a run that failed partway no longer leaves a half-open connection or a stranded pairing attempt behind, and a link that gets refused says so instead of waiting.
-- the journal's web app is easier to read and easier to move around in. dialogs keep the keyboard where you expect it, faint text and status rows meet contrast, the facet strip and charts stop clipping, and the import, support, and network screens show current information.
+- sol thinks through your days more reliably. a run through a local model, confidential processing, or an endpoint you bring could be refused for being too long: the length sol measured before sending came out under what the model itself counted, so sol now leaves room for the difference. a run could also stall on sol retrying a command in a form your journal doesn't accept; sol now gets the working form back instead.
+- the voice evidence in your journal stays with the voice it came from. when your journal grouped a conversation's voices again and came out with a different number of them, statements could shift onto a different voice, either one it was still learning or a person you had already named. a voice now carries the statements it was built from, so this can no longer happen. entries from before this release that carry none are skipped rather than guessed at, and a maintenance pass recovers the ones it can.
+- a day's record of sol's thinking is no longer cleared before its time. those records were aged by the date in their filename while the runs inside them could be from the last day, so a recent one could be removed early. a record is now kept unless everything in it is genuinely past the cutoff, and one that can't be read is kept rather than discarded.
+- the apps in your journal read and behave better. faint text in the health logs, in empty-state messages, and on the body app's main button now has enough contrast to read; the charts in stats no longer overlap their own labels or push the page sideways on a phone; and tokens shows the day you're looking at, where an earlier day used to show today's numbers. Tab stays inside an open dialog instead of jumping out to the browser, the network app's pair dialog closes when you click outside it, and closing a dialog no longer leaves part of the page behind it unresponsive.
 
 ## [1.0.17] - 2026-07-26
 
