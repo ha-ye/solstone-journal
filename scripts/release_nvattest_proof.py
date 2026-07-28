@@ -174,10 +174,25 @@ class NvattestProofServices:
     observe_host: Callable[[], HostObservation]
 
 
+def _render_failure(failure: Failure) -> str:
+    parts = [failure.error]
+    expected = (failure.expected or "").strip()
+    actual = (failure.actual or "").strip()
+    if expected:
+        parts.append(f"expected {expected}")
+    if actual:
+        parts.append(f"actual {actual}")
+    return " | ".join(parts)
+
+
 class NvattestProofError(RuntimeError):
     def __init__(self, failures: Sequence[Failure]):
         self.failures = tuple(failures)
-        super().__init__("; ".join(failure.error for failure in self.failures))
+        # Render expected/actual, not just the error label. Every failure in this
+        # module is constructed with the detail that explains it, and joining only
+        # `error` threw that detail away at the boundary where an operator reads
+        # it -- so a failed proof reported a category and no cause.
+        super().__init__("; ".join(_render_failure(f) for f in self.failures))
 
 
 def _failure(
