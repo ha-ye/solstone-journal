@@ -370,33 +370,118 @@ def _default_run_package_install(
 def _default_observe_installed_distributions(
     env_python: Path,
 ) -> Sequence[Mapping[str, Any]]:
+    support_names = json.dumps(sorted(SUPPORT_DISTRIBUTION_NAMES))
     script = r"""
 from __future__ import annotations
 
 import hashlib
 import importlib.metadata
 import json
+import os
+import re
 from pathlib import Path
 
+SUPPORT_DISTRIBUTION_NAMES = set(__SUPPORT_DISTRIBUTION_NAMES__)
+
+
+def normalize_distribution_name(value):
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def metadata_name(dist):
+    try:
+        return dist.metadata.get("Name", "") or ""
+    except Exception:
+        return ""
+
+
+def dist_info_name(raw_path):
+    if raw_path is None:
+        return ""
+    name = Path(str(raw_path)).name
+    if not name.endswith(".dist-info"):
+        return ""
+    stem = name.removesuffix(".dist-info")
+    parts = stem.rsplit("-", 1)
+    return parts[0] if len(parts) == 2 else stem
+
+
+def distribution_name(dist, raw_path):
+    return metadata_name(dist) or dist_info_name(raw_path)
+
+
+def is_relevant(name):
+    normalized = normalize_distribution_name(name)
+    return normalized in SUPPORT_DISTRIBUTION_NAMES or normalized.startswith("solstone")
+
+
+def metadata_field(metadata, field):
+    prefix = f"{field}:"
+    for line in metadata.splitlines():
+        if line.startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def failure(error, *, expected, actual, repair):
+    failures.append(
+        {
+            "actual": actual,
+            "error": error,
+            "expected": expected,
+            "repair": repair,
+        }
+    )
+
+
 entries = []
+failures = []
+seen = set()
 for dist in importlib.metadata.distributions():
     raw_path = getattr(dist, "_path", None)
+    raw_name = distribution_name(dist, raw_path)
+    name = normalize_distribution_name(raw_name)
     if raw_path is None:
+        if is_relevant(raw_name):
+            failure(
+                "nvattest installed distribution has no resolvable dist-info path",
+                expected=f"resolvable dist-info path for {name}",
+                actual=raw_name or "<unknown>",
+                repair=(
+                    "repair distribution "
+                    f"{name} so it has a resolvable dist-info path"
+                ),
+            )
         continue
+    key = os.path.realpath(str(raw_path))
+    if key in seen:
+        continue
+    seen.add(key)
     metadata_path = Path(str(raw_path)) / "METADATA"
     try:
         metadata_bytes = metadata_path.read_bytes()
-    except OSError:
+        metadata = metadata_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        if is_relevant(raw_name):
+            failure(
+                "nvattest installed distribution dist-info METADATA could not be read",
+                expected=f"readable dist-info METADATA for {name}",
+                actual=f"{metadata_path}: {type(exc).__name__}",
+                repair=(
+                    "repair distribution "
+                    f"{name}'s dist-info METADATA so it can be read"
+                ),
+            )
         continue
     entries.append(
         {
             "metadata_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
-            "name": dist.metadata.get("Name", ""),
-            "version": dist.version,
+            "name": metadata_field(metadata, "Name") or raw_name,
+            "version": metadata_field(metadata, "Version"),
         }
     )
-print(json.dumps(entries, sort_keys=True))
-"""
+print(json.dumps({"entries": entries, "failures": failures}, sort_keys=True))
+""".replace("__SUPPORT_DISTRIBUTION_NAMES__", support_names)
     result = _run_command((str(env_python), "-c", script))
     if result.exit_code != 0:
         raise NvattestProofError(
@@ -415,24 +500,72 @@ print(json.dumps(entries, sort_keys=True))
             [
                 _failure(
                     "nvattest installed distribution metadata query emitted invalid JSON",
-                    expected="JSON list of distribution metadata facts",
+                    expected="JSON object with entries and failures",
                     actual=str(exc),
                 )
             ]
         ) from exc
-    if not isinstance(payload, list) or not all(
-        isinstance(entry, Mapping) for entry in payload
-    ):
+    if not isinstance(payload, Mapping) or set(payload) != {"entries", "failures"}:
         raise NvattestProofError(
             [
                 _failure(
                     "nvattest installed distribution metadata query payload is invalid",
-                    expected="JSON list of objects",
+                    expected="JSON object with entries and failures",
                     actual=repr(payload),
                 )
             ]
         )
-    return cast(Sequence[Mapping[str, Any]], payload)
+    query_failures = payload.get("failures")
+    if not isinstance(query_failures, list) or not all(
+        isinstance(entry, Mapping) for entry in query_failures
+    ):
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest installed distribution metadata query failure set is invalid",
+                    expected="JSON list of failure objects",
+                    actual=repr(query_failures),
+                )
+            ]
+        )
+    failures: list[Failure] = []
+    for entry in query_failures:
+        if set(entry) != {"actual", "error", "expected", "repair"} or not all(
+            isinstance(entry.get(key), str)
+            for key in ("actual", "error", "expected", "repair")
+        ):
+            failures.append(
+                _failure(
+                    "nvattest installed distribution metadata query failure is invalid",
+                    expected="failure object with string actual, error, expected, repair",
+                    actual=repr(entry),
+                )
+            )
+            continue
+        failures.append(
+            _failure(
+                str(entry["error"]),
+                expected=str(entry["expected"]),
+                actual=str(entry["actual"]),
+                repair=str(entry["repair"]),
+            )
+        )
+    if failures:
+        raise NvattestProofError(failures)
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, Mapping) for entry in entries
+    ):
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest installed distribution metadata query entry set is invalid",
+                    expected="JSON list of distribution metadata objects",
+                    actual=repr(entries),
+                )
+            ]
+        )
+    return cast(Sequence[Mapping[str, Any]], entries)
 
 
 def _default_integrity_recheck(
@@ -985,6 +1118,10 @@ def _installed_closure_payload(
                     "nvattest installed closure distribution is duplicated",
                     expected="one installed distribution per expected name",
                     actual=name,
+                    repair=(
+                        "repair the proof environment so it contains one "
+                        f"installed distribution named {name}, then {REPAIR}"
+                    ),
                 )
             )
             continue

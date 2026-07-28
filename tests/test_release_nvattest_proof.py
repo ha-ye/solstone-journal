@@ -6,8 +6,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import platform
+import shlex
 import shutil
+import sys
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -348,6 +351,105 @@ def test_installed_closure_rejects_missing_support_distribution(tmp_path: Path) 
         failure.error == "nvattest installed closure is missing distribution"
         and failure.expected == "anyio"
         for failure in exc_info.value.failures
+    )
+
+
+def test_installed_distribution_observer_dedupes_lib64_dist_info_alias(
+    tmp_path: Path,
+) -> None:
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    dist_info = _write_installed_dist_info(lib, name="solstone", version=VERSION)
+    lib64 = tmp_path / "lib64"
+    lib64.symlink_to(lib, target_is_directory=True)
+
+    observed = proof._default_observe_installed_distributions(
+        _python_with_pythonpath(tmp_path, (lib, lib64))
+    )
+
+    assert [
+        entry
+        for entry in observed
+        if proof._normalize_distribution_name(entry["name"]) == "solstone"
+    ] == [
+        {
+            "metadata_sha256": hashlib.sha256(
+                (dist_info / "METADATA").read_bytes()
+            ).hexdigest(),
+            "name": "solstone",
+            "version": VERSION,
+        }
+    ]
+
+
+def test_installed_closure_rejects_duplicate_distribution_realpaths(
+    tmp_path: Path,
+) -> None:
+    one = tmp_path / "one"
+    two = tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    first = _write_installed_dist_info(one, name="solstone", version=VERSION)
+    _write_installed_dist_info(two, name="solstone", version=VERSION)
+    observed = proof._default_observe_installed_distributions(
+        _python_with_pythonpath(tmp_path, (one, two))
+    )
+
+    with pytest.raises(proof.NvattestProofError) as exc_info:
+        proof._installed_closure_payload(
+            observed,
+            expected_candidate_wheels=(
+                {
+                    "metadata_sha256": hashlib.sha256(
+                        (first / "METADATA").read_bytes()
+                    ).hexdigest(),
+                    "name": "solstone",
+                    "version": VERSION,
+                    "wheel": "CANDIDATE/solstone-1.0.0-py3-none-any.whl",
+                    "wheel_bytes": 1,
+                    "wheel_sha256": "0" * 64,
+                },
+            ),
+            expected_support_distributions=(),
+        )
+
+    duplicate = next(
+        failure
+        for failure in exc_info.value.failures
+        if failure.error == "nvattest installed closure distribution is duplicated"
+    )
+    assert duplicate.actual == "solstone"
+    assert duplicate.repair == (
+        "repair the proof environment so it contains one installed distribution "
+        "named solstone, then regenerate the retained nvattest proof from the "
+        "original release inputs"
+    )
+
+
+def test_installed_distribution_observer_reports_relevant_unreadable_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    _write_installed_dist_info(root, name="solstone", version=VERSION, metadata=False)
+
+    with pytest.raises(proof.NvattestProofError) as exc_info:
+        proof._default_observe_installed_distributions(
+            _python_with_pythonpath(tmp_path, (root,))
+        )
+
+    assert all(
+        failure.error != "nvattest installed closure is missing distribution"
+        for failure in exc_info.value.failures
+    )
+    failure = exc_info.value.failures[0]
+    assert (
+        failure.error
+        == "nvattest installed distribution dist-info METADATA could not be read"
+    )
+    assert failure.expected == "readable dist-info METADATA for solstone"
+    assert failure.repair == (
+        "repair distribution solstone's dist-info METADATA so it can be read"
     )
 
 
@@ -1135,6 +1237,46 @@ def _write_support_wheels(path: Path) -> tuple[Path, ...]:
         )
         for name, version in sorted(SUPPORT_VERSIONS.items())
     )
+
+
+def _python_with_pythonpath(tmp_path: Path, roots: Sequence[Path]) -> Path:
+    wrapper = tmp_path / "python-with-pythonpath"
+    cwd = tmp_path / "python-cwd"
+    cwd.mkdir()
+    pythonpath = os.pathsep.join(str(root) for root in roots)
+    wrapper.write_text(
+        "\n".join(
+            (
+                "#!/bin/sh",
+                f"cd {shlex.quote(str(cwd))}",
+                (
+                    f"PYTHONPATH={shlex.quote(pythonpath)} "
+                    f'exec {shlex.quote(sys.executable)} -S "$@"'
+                ),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _write_installed_dist_info(
+    root: Path,
+    *,
+    name: str,
+    version: str,
+    metadata: bool = True,
+) -> Path:
+    dist_info = root / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_info.mkdir()
+    if metadata:
+        (dist_info / "METADATA").write_text(
+            f"Name: {name}\nVersion: {version}\n",
+            encoding="utf-8",
+        )
+    return dist_info
 
 
 def _write_metadata_wheel(
