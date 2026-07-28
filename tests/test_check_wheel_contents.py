@@ -45,8 +45,14 @@ def _write_member(
     wheel.writestr(info, content)
 
 
-def _patch_speakers_fixture_hashes(monkeypatch) -> None:
-    spec = checker.SPEAKERS_ANALYZE_TARGETS["linux-x86_64"]
+def _patch_speakers_fixture_hashes(
+    monkeypatch,
+    *,
+    target: str = "linux-x86_64",
+    runtime_bytes: bytes = SPEAKERS_LIBRARY,
+    patch_runtime: bool = True,
+) -> None:
+    spec = checker.SPEAKERS_ANALYZE_TARGETS[target]
     notices = (
         replace(
             spec.notices[0],
@@ -57,15 +63,13 @@ def _patch_speakers_fixture_hashes(monkeypatch) -> None:
             sha256=checker.hashlib.sha256(SPEAKERS_THIRD_PARTY_NOTICE).hexdigest(),
         ),
     )
-    monkeypatch.setitem(
-        checker.SPEAKERS_ANALYZE_TARGETS,
-        "linux-x86_64",
-        replace(
-            spec,
-            runtime_sha256=checker.hashlib.sha256(SPEAKERS_LIBRARY).hexdigest(),
-            notices=notices,
-        ),
-    )
+    replacement = replace(spec, notices=notices)
+    if patch_runtime:
+        replacement = replace(
+            replacement,
+            runtime_sha256=checker.hashlib.sha256(runtime_bytes).hexdigest(),
+        )
+    monkeypatch.setitem(checker.SPEAKERS_ANALYZE_TARGETS, target, replacement)
 
 
 def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
@@ -250,6 +254,44 @@ def test_speakers_analyze_wheel_validator_accepts_pinned_layout(
     )
 
     assert checker.check_speakers_analyze_wheel(wheel) == []
+
+
+def test_speakers_analyze_macos_signed_dylib_bytes_are_allowed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(
+        monkeypatch,
+        target="macos-arm64",
+        patch_runtime=False,
+    )
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        tag=checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[("darwin", "arm64")],
+        library=minimal_macho(checker.CPU_TYPE_ARM64),
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    assert checker.check_speakers_analyze_wheel(wheel) == []
+
+
+def test_speakers_analyze_linux_rejects_substituted_runtime_library(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(monkeypatch)
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        library=b"substituted libonnxruntime.so.1 GLIBC_2.27\n",
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "speakers analyze ONNX Runtime library digest mismatch" in error
+        for error in errors
+    )
 
 
 def test_speakers_analyze_wheel_validator_requires_exact_member_set(

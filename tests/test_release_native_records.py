@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -81,8 +82,10 @@ def _speakers_analyze_wheel(
 
 
 def _facts(content: bytes) -> dict:
+    digest = hashlib.sha256(content).hexdigest()
     return {
-        "signed_binary_sha256": hashlib.sha256(content).hexdigest(),
+        "signed_binary_sha256": digest,
+        "unsigned_binary_sha256": digest,
         "signer_pinned": True,
         "team_pinned": True,
         "hardened_runtime": True,
@@ -101,6 +104,15 @@ def _facts_file(tmp_path: Path, facts: dict) -> Path:
     path = tmp_path / "facts.json"
     path.write_text(json.dumps(facts), encoding="utf-8")
     return path
+
+
+def _patch_macos_runtime_pin(monkeypatch: pytest.MonkeyPatch, content: bytes) -> None:
+    spec = native.SPEAKERS_ANALYZE_TARGETS["macos-arm64"]
+    monkeypatch.setitem(
+        native.SPEAKERS_ANALYZE_TARGETS,
+        "macos-arm64",
+        replace(spec, runtime_sha256=hashlib.sha256(content).hexdigest()),
+    )
 
 
 def _core_facts(content: bytes) -> dict:
@@ -133,8 +145,9 @@ def test_native_record_cli_and_makefile_use_package_module() -> None:
 
 
 def test_exactly_three_role_records_are_written_and_not_interchangeable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _patch_macos_runtime_pin(monkeypatch, b"dylib")
     root_wheel = _root_wheel(tmp_path, b"root")
     core_wheel = _core_wheel(tmp_path, b"core")
     speakers_wheel = _speakers_analyze_wheel(
@@ -174,6 +187,7 @@ def test_exactly_three_role_records_are_written_and_not_interchangeable(
         SPEAKERS_ANALYZE_SCRIPT_NAMES[0],
         SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name,
     }
+    assert set(speakers["unsigned_members"]) == set(speakers["members"])
     assert native.validate_macos_native_record(
         root,
         role="core",
@@ -407,6 +421,11 @@ def test_signing_helper_removes_arbitrary_identity_override() -> None:
 def test_signing_helper_records_tool_observations_not_pin_constants() -> None:
     source = Path("scripts/sign-and-notarize-helper.sh").read_text(encoding="utf-8")
 
+    assert 'UNSIGNED_BINARY_SHA256="$(shasum -a 256 "$BINARY"' in source
+    assert source.index("UNSIGNED_BINARY_SHA256=") < source.index(
+        'echo "==> codesigning $BINARY'
+    )
+    assert '"unsigned_binary_sha256": os.environ["UNSIGNED_BINARY_SHA256"]' in source
     assert 'SWIFT_FIRST_LINE="$SWIFT_FIRST_LINE"' in source
     assert '"swift": os.environ["SWIFT_FIRST_LINE"]' in source
     assert 'NOTARYTOOL_OUTPUT="$NOTARYTOOL_OUTPUT"' in source

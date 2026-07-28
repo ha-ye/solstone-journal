@@ -555,6 +555,7 @@ def test_collect_lane_tools_normalizes_macos_observations() -> None:
 def _native_record(role: str) -> dict[str, object]:
     return {
         "role": role,
+        "unsigned_members": {},
         "signing_mode": pins.MACOS_SIGNING_MODE,
         "signing": {
             "signer_pinned": True,

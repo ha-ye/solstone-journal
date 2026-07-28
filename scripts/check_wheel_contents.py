@@ -273,10 +273,20 @@ def _failure(
     )
 
 
-def _core_rebuild_command(platform_tuple: CorePlatform) -> str:
-    if platform_tuple[0] == "linux":
+def _core_rebuild_command(platform_tuple: CorePlatform | None) -> str:
+    if platform_tuple is not None and platform_tuple[0] == "linux":
         return "bash scripts/release.sh --dry-run-linux"
     return "bash scripts/release.sh --candidate"
+
+
+def _speakers_analyze_rebuild_command(platform_tuple: CorePlatform | None) -> str:
+    if platform_tuple is None:
+        return "bash scripts/release.sh --candidate"
+    if platform_tuple[0] == "darwin":
+        return "make wheel-macos"
+    if platform_tuple[1] == "aarch64":
+        return "make wheel-speakers-analyze-linux-aarch64"
+    return "make wheel-speakers-analyze-linux-x86_64"
 
 
 def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
@@ -985,11 +995,7 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     with zipfile.ZipFile(path) as wheel:
         expected_members = _core_expected_members(path)
         names = set(wheel.namelist())
-        repair = (
-            _core_rebuild_command(platform_tuple)
-            if platform_tuple is not None
-            else "bash scripts/release.sh --candidate"
-        )
+        repair = _core_rebuild_command(platform_tuple)
         if names != expected_members:
             errors.append(
                 _failure(
@@ -1192,6 +1198,9 @@ def _check_speakers_analyze_elf_binary(
 
 def check_speakers_analyze_wheel(path: Path) -> list[str]:
     errors: list[str] = []
+    tag = _core_wheel_tag(path)
+    platform_tuple = SPEAKERS_ANALYZE_TAG_PLATFORMS.get(tag)
+    repair = _speakers_analyze_rebuild_command(platform_tuple)
     size = path.stat().st_size
     if size > MAX_SPEAKERS_ANALYZE_WHEEL_BYTES:
         errors.append(
@@ -1200,11 +1209,9 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                 "speakers analyze wheel is too large",
                 expected=f"<= {MAX_SPEAKERS_ANALYZE_WHEEL_BYTES} bytes",
                 actual=str(size),
-                repair="make wheel-speakers-analyze-linux-x86_64",
+                repair=repair,
             )
         )
-    tag = _core_wheel_tag(path)
-    platform_tuple = SPEAKERS_ANALYZE_TAG_PLATFORMS.get(tag)
     if platform_tuple is None:
         errors.append(
             _failure(
@@ -1214,7 +1221,7 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                     sorted(SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS.values())
                 ),
                 actual=tag,
-                repair="make wheel-speakers-analyze-linux-x86_64",
+                repair=repair,
             )
         )
         return errors
@@ -1233,7 +1240,7 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                     "speakers analyze wheel member set is wrong",
                     expected=", ".join(sorted(expected_members)),
                     actual=", ".join(sorted(names)) or "<empty>",
-                    repair="make wheel-speakers-analyze-linux-x86_64",
+                    repair=repair,
                 )
             )
         provider_members = sorted(
@@ -1261,7 +1268,7 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                     "speakers analyze binary member count is wrong",
                     expected=f"exactly one {binary_member}",
                     actual=str(len(binary_infos)),
-                    repair="make wheel-speakers-analyze-linux-x86_64",
+                    repair=repair,
                 )
             )
         else:
@@ -1273,7 +1280,7 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                         "speakers analyze binary is not executable",
                         expected="executable mode bit set",
                         actual=oct(mode),
-                        repair="make wheel-speakers-analyze-linux-x86_64",
+                        repair=repair,
                     )
                 )
 
@@ -1282,7 +1289,11 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
         except KeyError:
             library_content = b""
         actual_library_sha = hashlib.sha256(library_content).hexdigest()
-        if actual_library_sha != spec.runtime_sha256:
+        # macOS signs the bundled dylib after staging, which rewrites the bytes;
+        # the pre-signing digest is unrecoverable from the signed Mach-O. The
+        # upstream ORT pin is therefore carried by
+        # record_macos_native_wheel.validate_macos_native_record instead.
+        if platform_tuple[0] == "linux" and actual_library_sha != spec.runtime_sha256:
             errors.append(
                 _failure(
                     path.name,

@@ -2469,6 +2469,7 @@ def run_fixtures_mode() -> list[Failure]:
                         "bytes": 6,
                     }
                 },
+                "unsigned_members": {"parakeet-helper": "d" * 64},
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",
                 "signing": {
@@ -2499,6 +2500,7 @@ def run_fixtures_mode() -> list[Failure]:
                     }
                     for name in CORE_SCRIPT_NAMES
                 },
+                "unsigned_members": {name: "f" * 64 for name in CORE_SCRIPT_NAMES},
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",
                 "signing": {
@@ -2542,6 +2544,10 @@ def run_fixtures_mode() -> list[Failure]:
                         "sha256": "c" * 64,
                         "bytes": 6,
                     },
+                },
+                "unsigned_members": {
+                    fixture_speakers_analyze_executable: "b" * 64,
+                    fixture_speakers_analyze_dylib: "c" * 64,
                 },
                 "tools": fixture_native_tools("macos-arm64"),
                 "signing_mode": "signed-verified",

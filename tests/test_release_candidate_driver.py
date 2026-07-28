@@ -808,6 +808,37 @@ def _differing_payload_paths(
     return set() if first == second else {path}
 
 
+def _macos_release_dir_from_host_result(
+    tmp_path: Path, host_result: BuildHostResult
+) -> Path:
+    release_dir = tmp_path / "release-dir"
+    release_dir.mkdir()
+    for wheel in host_result.macos_wheels:
+        shutil.copy2(wheel, release_dir / wheel.name)
+    return release_dir
+
+
+def _native_record_payloads(host_result: BuildHostResult) -> list[dict[str, Any]]:
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in host_result.native_records
+    ]
+
+
+def _macos_revalidation_inputs(
+    tmp_path: Path,
+) -> tuple[Path, list[dict[str, Any]]]:
+    host_result = _write_macos_host_outputs(tmp_path / "host")
+    return (
+        _macos_release_dir_from_host_result(tmp_path, host_result),
+        _native_record_payloads(host_result),
+    )
+
+
+def _record_by_role(records: Sequence[dict[str, Any]], role: str) -> dict[str, Any]:
+    return next(record for record in records if record.get("role") == role)
+
+
 def test_fake_all_host_candidate_and_recovery_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -881,6 +912,65 @@ def test_fake_all_host_candidate_and_recovery_are_deterministic(
     recovered = _recover(first_root)
     assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
     assert recovered.bundle_digest == first.bundle_digest
+
+
+def test_revalidate_macos_wheels_accepts_matching_unsigned_speakers_pin(
+    tmp_path: Path,
+) -> None:
+    release_dir, records = _macos_revalidation_inputs(tmp_path)
+
+    driver._revalidate_macos_wheels(
+        release_dir,
+        records,
+        source_commit=SOURCE_COMMIT,
+        core_lock_sha256=LOCK_SHA,
+    )
+
+
+def test_revalidate_macos_wheels_rejects_unsigned_speakers_dylib_pin_mismatch(
+    tmp_path: Path,
+) -> None:
+    release_dir, records = _macos_revalidation_inputs(tmp_path)
+    speakers = _record_by_role(records, "speakers-analyze")
+    dylib_name = wheel_checker.SPEAKERS_ANALYZE_TARGETS[
+        "macos-arm64"
+    ].runtime_staged_name
+    speakers["unsigned_members"][dylib_name] = "0" * 64
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._revalidate_macos_wheels(
+            release_dir,
+            records,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=LOCK_SHA,
+        )
+
+    assert any(
+        failure.error
+        == "macOS speakers-analyze unsigned ONNX Runtime hash does not match staged pin"
+        for failure in exc.value.failures
+    )
+
+
+def test_revalidate_macos_wheels_rejects_unsigned_member_set_mismatch(
+    tmp_path: Path,
+) -> None:
+    release_dir, records = _macos_revalidation_inputs(tmp_path)
+    speakers = _record_by_role(records, "speakers-analyze")
+    speakers["unsigned_members"].pop(wheel_checker.SPEAKERS_ANALYZE_SCRIPT_NAMES[0])
+
+    with pytest.raises(driver.DriverError) as exc:
+        driver._revalidate_macos_wheels(
+            release_dir,
+            records,
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=LOCK_SHA,
+        )
+
+    assert any(
+        failure.error == "macOS native record unsigned member set is wrong"
+        for failure in exc.value.failures
+    )
 
 
 def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(

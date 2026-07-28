@@ -100,6 +100,8 @@ if [ "$NOTARYTOOL_OUTPUT" != "$NOTARYTOOL_PIN" ]; then
     exit 1
 fi
 
+UNSIGNED_BINARY_SHA256="$(shasum -a 256 "$BINARY" | awk '{print $1}')"
+
 echo "==> codesigning $BINARY with repository-pinned identity" >&2
 "$CODESIGN_BIN" --force --options runtime --timestamp \
     --keychain "$NOTARY_KEYCHAIN" \
@@ -154,6 +156,7 @@ SIGNER_PINNED="$SIGNER_PINNED" \
 TEAM_PINNED="$TEAM_PINNED" \
 HARDENED_RUNTIME="$HARDENED_RUNTIME" \
 TRUSTED_TIMESTAMP="$TRUSTED_TIMESTAMP" \
+UNSIGNED_BINARY_SHA256="$UNSIGNED_BINARY_SHA256" \
 NOTARIZATION_STATUS="$NOTARIZATION_STATUS" \
 XCODE_PIN="$XCODE_PIN" \
 SWIFT_FIRST_LINE="$SWIFT_FIRST_LINE" \
@@ -165,6 +168,7 @@ import os
 
 payload = {
     "signed_binary_sha256": os.environ["SIGNED_BINARY_SHA256"],
+    "unsigned_binary_sha256": os.environ["UNSIGNED_BINARY_SHA256"],
     "signer_pinned": os.environ["SIGNER_PINNED"] == "true",
     "team_pinned": os.environ["TEAM_PINNED"] == "true",
     "hardened_runtime": os.environ["HARDENED_RUNTIME"] == "true",

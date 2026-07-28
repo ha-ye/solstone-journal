@@ -13,6 +13,7 @@ import pytest
 
 import scripts.check_release_preflight as preflight
 import scripts.check_rust_release_manifest as checker
+import scripts.release_candidate_driver as driver
 import scripts.release_ledger as ledger
 import scripts.release_tool_pins as pins
 from scripts.build_nvattest_authority import render_nvattest_authority_json
@@ -211,6 +212,7 @@ def _native(role: str, wheel_name: str, member_path: str) -> dict:
         "wheel": {"name": wheel_name, "sha256": "e" * 64, "bytes": 12},
         "member": {"path": member_path, "sha256": "f" * 64, "bytes": 6},
         "members": members,
+        "unsigned_members": {name: "f" * 64 for name in members},
         "tools": {
             "python": pins.PYTHON_MACOS_VERSION,
             "xcode": pins.MACOS_XCODE_PIN,
@@ -364,6 +366,48 @@ def _ledger_path(root: Path) -> Path:
         models=_models(),
         nvattest=_nvattest(),
     )
+
+
+def _contains_key(value: object, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(
+            _contains_key(child, key) for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_key(child, key) for child in value)
+    return False
+
+
+def test_unsigned_members_from_native_records_do_not_reach_retained_surfaces(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate(tmp_path)
+    native_records = _native_records()
+    for record in native_records:
+        record["unsigned_members"] = {
+            name: str(member["sha256"]) for name, member in record["members"].items()
+        }
+
+    payload = ledger.build_ledger(
+        version="1.2.3",
+        source_commit=SOURCE_COMMIT,
+        release_dir=candidate,
+        core_lock_path=_core_lock(tmp_path),
+        tool_evidence=_tool_evidence(),
+        policy_run=_policy(),
+        native_records=native_records,
+        models=_models(),
+        nvattest=_nvattest(),
+    )
+
+    assert not _contains_key(payload, "unsigned_members")
+    assert not any(
+        "unsigned_members" in name
+        for name in driver._expected_payload_file_names(include_models=False)
+    )
+    for wheel_path in candidate.glob("*.whl"):
+        with zipfile.ZipFile(wheel_path) as wheel:
+            assert not any("unsigned_members" in name for name in wheel.namelist())
 
 
 def _fixture_payload() -> dict:

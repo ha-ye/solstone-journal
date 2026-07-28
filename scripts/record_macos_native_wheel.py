@@ -26,7 +26,6 @@ from scripts.check_wheel_contents import (
     PARAKEET_HELPER_MEMBER,
     SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR,
     SPEAKERS_ANALYZE_SCRIPT_NAMES,
-    SPEAKERS_ANALYZE_TARGETS,
     core_wheel_script_members,
 )
 from scripts.release_digest import file_sha256_size
@@ -40,6 +39,7 @@ from scripts.release_tool_pins import (
     PYTHON_MACOS_VERSION,
     tool_value_matches_pin,
 )
+from scripts.stage_speakers_analyze_runtime import TARGETS as SPEAKERS_ANALYZE_TARGETS
 
 NativeRole = Literal["root", "core", "speakers-analyze"]
 
@@ -60,6 +60,7 @@ TOP_LEVEL_KEYS = frozenset(
         "wheel",
         "member",
         "members",
+        "unsigned_members",
         "tools",
         "signing_mode",
         "signing",
@@ -70,7 +71,7 @@ SIGNING_KEYS = frozenset(
     ("signer_pinned", "team_pinned", "hardened_runtime", "trusted_timestamp")
 )
 FACT_KEYS = SIGNING_KEYS | frozenset(
-    ("signed_binary_sha256", "notarization_status", "tools")
+    ("signed_binary_sha256", "unsigned_binary_sha256", "notarization_status", "tools")
 )
 FACT_TOOL_KEYS = frozenset(("xcode", "swift", "codesign", "notarytool"))
 
@@ -105,7 +106,7 @@ def _members_for_role(
         for info in wheel.infolist()
         if info.filename.endswith(f".data/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]}")
     ]
-    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    dylib_name = _speakers_analyze_dylib_name()
     dylib_suffix = (
         f".data/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
     )
@@ -125,7 +126,7 @@ def _expected_member_path(role: NativeRole) -> str:
         return PARAKEET_HELPER_MEMBER
     if role == "core":
         return ", ".join(f".data/scripts/{name}" for name in CORE_SCRIPT_NAMES)
-    dylib_name = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
+    dylib_name = _speakers_analyze_dylib_name()
     return (
         f".data/scripts/{SPEAKERS_ANALYZE_SCRIPT_NAMES[0]} and "
         f".data/{SPEAKERS_ANALYZE_RUNTIME_INSTALL_DIR.as_posix()}/{dylib_name}"
@@ -148,6 +149,10 @@ def _primary_member_name(role: NativeRole) -> str:
     if role == "core":
         return "solstone-core"
     return SPEAKERS_ANALYZE_SCRIPT_NAMES[0]
+
+
+def _speakers_analyze_dylib_name() -> str:
+    return SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_staged_name
 
 
 def _read_members(
@@ -222,16 +227,20 @@ def _validate_facts(facts: Mapping[str, Any]) -> list[Failure]:
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    signed = facts.get("signed_binary_sha256")
-    if not isinstance(signed, str) or not SHA256_RE.fullmatch(signed):
-        failures.append(
-            _failure(
-                "macOS signed binary hash is invalid",
-                expected="lowercase SHA-256",
-                actual=str(signed),
-                repair="python3 scripts/check_rust_release_manifest.py",
+    for key, label in (
+        ("signed_binary_sha256", "signed"),
+        ("unsigned_binary_sha256", "unsigned"),
+    ):
+        digest = facts.get(key)
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            failures.append(
+                _failure(
+                    f"macOS {label} binary hash is invalid",
+                    expected="lowercase SHA-256",
+                    actual=str(digest),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
             )
-        )
     for key in SIGNING_KEYS:
         if facts.get(key) is not True:
             failures.append(
@@ -452,6 +461,10 @@ def build_macos_native_record(
         },
         "member": member_payloads[primary_name],
         "members": {key: member_payloads[key] for key in sorted(member_payloads)},
+        "unsigned_members": {
+            key: facts_by_member[key]["unsigned_binary_sha256"]
+            for key in sorted(member_payloads)
+        },
         "tools": {
             "python": python_version,
             "xcode": tools["xcode"],
@@ -614,6 +627,65 @@ def validate_macos_native_record(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
+    unsigned_members = record.get("unsigned_members")
+    record_members = record.get("members")
+    if not isinstance(unsigned_members, Mapping):
+        failures.append(
+            _failure(
+                "macOS native record unsigned members are invalid",
+                expected="unsigned_members object keyed like members",
+                actual=type(unsigned_members).__name__,
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    elif not isinstance(record_members, Mapping) or set(unsigned_members) != set(
+        record_members
+    ):
+        expected_names = (
+            ", ".join(sorted(str(key) for key in record_members))
+            if isinstance(record_members, Mapping)
+            else "<invalid members>"
+        )
+        failures.append(
+            _failure(
+                "macOS native record unsigned member set is wrong",
+                expected=expected_names,
+                actual=", ".join(sorted(str(key) for key in unsigned_members))
+                or "<empty>",
+                repair="python3 scripts/check_rust_release_manifest.py",
+            )
+        )
+    else:
+        invalid_unsigned = [
+            str(name)
+            for name, digest in unsigned_members.items()
+            if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest)
+        ]
+        if invalid_unsigned:
+            failures.append(
+                _failure(
+                    "macOS native record unsigned member hash is invalid",
+                    expected="lowercase SHA-256 for every unsigned member",
+                    actual=", ".join(sorted(invalid_unsigned)),
+                    repair="python3 scripts/check_rust_release_manifest.py",
+                )
+            )
+        if role == "speakers-analyze":
+            dylib_name = _speakers_analyze_dylib_name()
+            expected_unsigned = SPEAKERS_ANALYZE_TARGETS["macos-arm64"].runtime_sha256
+            actual_unsigned = unsigned_members.get(dylib_name)
+            if actual_unsigned != expected_unsigned:
+                failures.append(
+                    _failure(
+                        (
+                            "macOS speakers-analyze unsigned ONNX Runtime hash "
+                            "does not match staged pin"
+                        ),
+                        expected=expected_unsigned,
+                        actual=str(actual_unsigned),
+                        repair="python3 scripts/stage_speakers_analyze_runtime.py --target macos-arm64",
+                    )
+                )
     failures.extend(validate_public_evidence_tree("macos_native_record", record))
     return failures
 

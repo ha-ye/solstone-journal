@@ -320,8 +320,10 @@ def macos_wheel_names() -> tuple[str, str, str]:
 
 
 def _facts(content: bytes) -> dict[str, Any]:
+    digest = hashlib.sha256(content).hexdigest()
     return {
-        "signed_binary_sha256": hashlib.sha256(content).hexdigest(),
+        "signed_binary_sha256": digest,
+        "unsigned_binary_sha256": digest,
         "signer_pinned": True,
         "team_pinned": True,
         "hardened_runtime": True,
