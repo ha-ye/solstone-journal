@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 import scripts.release_candidate_driver as driver
 from scripts.stage_speakers_analyze_runtime import (
     DEFAULT_LINK_ROOT as STAGE_DEFAULT_LINK_ROOT,
@@ -136,7 +138,18 @@ def _ort_env_keys(env: dict[str, str]) -> set[str]:
     return {key for key in env if key.startswith("ORT_")}
 
 
-def test_release_driver_helper_ort_env_matches_makefile_and_staging() -> None:
+def test_release_driver_helper_ort_env_matches_makefile_and_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_create_zig_cache_dirs(_root: Path) -> tuple[Path, Path]:
+        global_cache = tmp_path / "release-zig-cache" / "zig-global"
+        local_cache = tmp_path / "release-zig-cache" / "zig-local"
+        global_cache.mkdir(parents=True, exist_ok=True)
+        local_cache.mkdir(parents=True, exist_ok=True)
+        return global_cache.resolve(), local_cache.resolve()
+
+    monkeypatch.setattr(driver, "_create_zig_cache_dirs", fake_create_zig_cache_dirs)
+
     makefile = MAKEFILE.read_text(encoding="utf-8")
     recipes = _parse_makefile_helper_recipes(makefile)
     helper_envs = _driver_helper_build_envs(REPO_ROOT)
