@@ -955,6 +955,19 @@ def core_wheel_script_members(wheel: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     )
 
 
+def _core_expected_members(path: Path) -> set[str]:
+    version = _wheel_version_from_name(path, "solstone_core")
+    data_prefix = f"solstone_core-{version}.data"
+    dist_info_prefix = f"solstone_core-{version}.dist-info"
+    return {
+        *(f"{data_prefix}/scripts/{name}" for name in CORE_SCRIPT_NAMES),
+        f"{dist_info_prefix}/METADATA",
+        f"{dist_info_prefix}/WHEEL",
+        f"{dist_info_prefix}/RECORD",
+        f"{dist_info_prefix}/sboms/solstone-core.cyclonedx.json",
+    }
+
+
 def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     errors: list[str] = []
     size = path.stat().st_size
@@ -970,6 +983,23 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
 
     platform_tuple = CORE_TAG_PLATFORMS.get(tag)
     with zipfile.ZipFile(path) as wheel:
+        expected_members = _core_expected_members(path)
+        names = set(wheel.namelist())
+        repair = (
+            _core_rebuild_command(platform_tuple)
+            if platform_tuple is not None
+            else "bash scripts/release.sh --candidate"
+        )
+        if names != expected_members:
+            errors.append(
+                _failure(
+                    path.name,
+                    "solstone-core wheel member set is wrong",
+                    expected=", ".join(sorted(expected_members)),
+                    actual=", ".join(sorted(names)) or "<empty>",
+                    repair=repair,
+                )
+            )
         scripts = core_wheel_script_members(wheel)
         script_names = {Path(info.filename).name for info in scripts}
         if len(scripts) != len(CORE_SCRIPT_NAMES) or script_names != set(

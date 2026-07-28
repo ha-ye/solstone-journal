@@ -145,6 +145,17 @@ def test_core_wheel_validator_rejects_record_drift(tmp_path: Path) -> None:
     assert any("RECORD hash mismatch" in error for error in errors)
 
 
+def test_core_wheel_validator_rejects_extra_root_member(tmp_path: Path) -> None:
+    wheel = write_core_wheel(
+        tmp_path,
+        extra_members={"solstone-core.signing-facts.json": b"{}"},
+    )
+
+    errors = checker.check_core_wheel(wheel, checker.MAX_CORE_WHEEL_BYTES)
+
+    assert any("solstone-core wheel member set is wrong" in error for error in errors)
+
+
 def test_core_wheel_validator_rejects_wrong_binary_format(tmp_path: Path) -> None:
     wheel = write_core_wheel(tmp_path, binary=b"not an elf")
 

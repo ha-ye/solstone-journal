@@ -209,6 +209,7 @@ def write_core_wheel(
     script_names: Sequence[str] | None = None,
     binary: bytes | None = None,
     binaries: Mapping[str, bytes] | None = None,
+    extra_members: Mapping[str, bytes] | None = None,
     version: str = "1.2.3",
 ) -> Path:
     wheel_path = path / f"solstone_core-{version}-py3-none-{tag}.whl"
@@ -229,9 +230,12 @@ def write_core_wheel(
             f"Name: solstone-core\nVersion: {version}\n".encode()
         ),
         f"solstone_core-{version}.dist-info/WHEEL": b"Wheel-Version: 1.0\n",
+        f"solstone_core-{version}.dist-info/sboms/solstone-core.cyclonedx.json": b"{}",
     }
     for script_name in script_names:
         members[script_name] = binaries.get(script_name, binary) if binaries else binary
+    if extra_members:
+        members.update(extra_members)
     rows = [
         f"{name},{record_hash(content)},{len(content)}"
         for name, content in members.items()
