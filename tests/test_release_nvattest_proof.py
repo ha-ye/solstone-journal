@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import platform
 import shutil
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
@@ -17,10 +18,12 @@ from typing import Any
 import pytest
 
 import scripts.release_nvattest_proof as proof
+import solstone.think.providers.nvattest_authority as nvattest_authority
 from scripts.check_rust_release_manifest import canonical_json_bytes
 from scripts.release_install_smoke import SCRUBBED_COMMAND_ENV
 from scripts.release_public_evidence import validate_public_evidence_tree
 from scripts.release_target_policy import TARGET_POLICY
+from solstone.think.providers import nvattest_install
 from solstone.think.providers.nvattest_authority import (
     TARGET_KEYS,
     NvattestTargetKey,
@@ -28,7 +31,14 @@ from solstone.think.providers.nvattest_authority import (
     authority_payload,
 )
 from solstone.think.providers.nvattest_install import SIDECAR_SCHEMA_VERSION
-from tests.helpers.nvattest_fixtures import _write_payload_tarball
+from solstone.think.providers.nvattest_loader import (
+    NVATTEST_LIB_RELPATH,
+    nvattest_library_env,
+)
+from tests.helpers.nvattest_fixtures import (
+    _write_payload_tarball,
+    download_real_archive,
+)
 
 SOURCE_COMMIT = "a" * 40
 CORE_LOCK = "b" * 64
@@ -153,12 +163,19 @@ def test_synthetic_run_writes_canonical_public_receipt_for_target(
         == []
     )
     text = data.decode("utf-8")
+    assert payload["smoke"]["env"]["LD_LIBRARY_PATH"] in text
     for forbidden in ("/tmp", "/private", "/home", "site-packages", str(tmp_path)):
         assert forbidden not in text
     assert payload["smoke"]["argv"] == [
         f"{proof.NVATTEST_CACHE_ROOT}/bin/nvattest",
         "--help",
     ]
+    assert payload["smoke"]["env"] == {
+        **SCRUBBED_COMMAND_ENV,
+        "LD_LIBRARY_PATH": (
+            f"{proof.NVATTEST_CACHE_ROOT}/{NVATTEST_LIB_RELPATH.as_posix()}"
+        ),
+    }
     assert payload["cache_install"]["wheel_install_command"]["argv"][-8:] == [
         f"{proof.SUPPORT}/{entry['filename']}" for entry in case.support_distributions
     ]
@@ -200,6 +217,63 @@ def test_command_text_normalization_fails_closed_on_prefix_collision() -> None:
     }
 
 
+def test_default_run_smoke_uses_payload_library_path_offline(tmp_path: Path) -> None:
+    root = tmp_path / "nvattest"
+    bin_dir = root / "bin"
+    lib_dir = root / "lib"
+    bin_dir.mkdir(parents=True)
+    lib_dir.mkdir()
+    nvattest_bin = bin_dir / "nvattest"
+    nvattest_bin.write_text(
+        "#!/bin/sh\n"
+        f'if [ "${{LD_LIBRARY_PATH:-}}" != "{lib_dir}" ]; then\n'
+        '  echo "error while loading shared libraries: libnvat.so.1: '
+        'cannot open shared object file: No such file or directory" >&2\n'
+        "  exit 127\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    nvattest_bin.chmod(0o755)
+
+    result = proof._default_run_smoke(root, nvattest_bin)
+
+    assert result.exit_code == 0
+    assert result.env == {
+        **SCRUBBED_COMMAND_ENV,
+        "LD_LIBRARY_PATH": str(lib_dir),
+    }
+
+
+@pytest.mark.integration
+def test_default_run_smoke_uses_payload_library_path_for_real_linux_archive(
+    tmp_path: Path,
+) -> None:
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        pytest.skip("real nvattest linux-x86_64 smoke requires linux/x86_64")
+    target_key = "linux-x86_64"
+    entry = authority_entry(target_key)
+    archive = download_real_archive(tmp_path / "downloads", entry)
+    authority_json = json.loads(
+        Path(nvattest_authority.__file__)
+        .with_name("nvattest_authority_v1.json")
+        .read_text(encoding="utf-8")
+    )
+    expected_sha = authority_json["targets"][target_key]["artifact"]["sha256"]
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected_sha
+    raw_dir = tmp_path / "extract"
+    nvattest_install._safe_extract_nvattest_tarball(archive, raw_dir)
+    root = nvattest_install._find_extracted_root(raw_dir, entry)
+
+    result = proof._default_run_smoke(root, root / "bin" / "nvattest")
+
+    assert result.exit_code == 0
+    assert result.env == {
+        **SCRUBBED_COMMAND_ENV,
+        "LD_LIBRARY_PATH": str(root / "lib"),
+    }
+
+
 @pytest.mark.parametrize(
     ("label", "mutate"),
     [
@@ -234,6 +308,17 @@ def test_command_text_normalization_fails_closed_on_prefix_collision() -> None:
         (
             "smoke_argv",
             lambda receipt: receipt["smoke"].update({"argv": ["nvattest", "--help"]}),
+        ),
+        (
+            "smoke_env",
+            lambda receipt: receipt["smoke"].update(
+                {
+                    "env": {
+                        **SCRUBBED_COMMAND_ENV,
+                        "LD_LIBRARY_PATH": "NVATTEST_CACHE_ROOT/not-lib",
+                    }
+                }
+            ),
         ),
         ("smoke_exit", lambda receipt: receipt["smoke"].update({"exit_code": 1})),
     ],
@@ -424,7 +509,7 @@ def test_spoofed_or_near_miss_host_fails_before_reach(
             calls.append("driver") or pytest.fail("driver should not run")
         ),
         integrity_recheck=lambda *_args: {},
-        run_smoke=lambda _path: pytest.fail("smoke should not run"),
+        run_smoke=lambda _root, _path: pytest.fail("smoke should not run"),
         clock=lambda: RECORDED_AT,
         cleanup=lambda _path: calls.append("cleanup"),
         observe_host=lambda: host,
@@ -467,6 +552,14 @@ def test_receipt_validator_names_policy_negative_cases(tmp_path: Path) -> None:
             }
         ),
         lambda data: data["smoke"].update({"argv": ["nvattest", "--help"]}),
+        lambda data: data["smoke"].update(
+            {
+                "env": {
+                    **SCRUBBED_COMMAND_ENV,
+                    "LD_LIBRARY_PATH": "NVATTEST_CACHE_ROOT/not-lib",
+                }
+            }
+        ),
         lambda data: data["support_distributions"].pop(),
     ]
     for mutate in mutations:
@@ -700,8 +793,12 @@ def _synthetic_services(
             payload=payload,
         )
 
-    def run_smoke(nvattest_bin: Path) -> proof.CommandResult:
-        return _command_result((str(nvattest_bin), "--help"), stdout="usage\n")
+    def run_smoke(nvattest_root: Path, nvattest_bin: Path) -> proof.CommandResult:
+        return _command_result(
+            (str(nvattest_bin), "--help"),
+            stdout="usage\n",
+            env={**SCRUBBED_COMMAND_ENV, **nvattest_library_env(nvattest_root)},
+        )
 
     return proof.NvattestProofServices(
         create_environment=create_environment,
@@ -830,13 +927,14 @@ def _command_result(
     *,
     stdout: str = "",
     exit_code: int = 0,
+    env: Mapping[str, str] = SCRUBBED_COMMAND_ENV,
 ) -> proof.CommandResult:
     return proof.CommandResult(
         argv=tuple(argv),
         exit_code=exit_code,
         stdout=stdout,
         stderr="",
-        env=SCRUBBED_COMMAND_ENV,
+        env=env,
     )
 
 

@@ -57,6 +57,7 @@ from solstone.think.providers.nvattest_authority import (
     nvattest_target_key,
 )
 from solstone.think.providers.nvattest_install import SIDECAR_SCHEMA_VERSION
+from solstone.think.providers.nvattest_loader import nvattest_library_env
 
 SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
     ("linux", "x86_64")
@@ -664,13 +665,14 @@ def _nvattest_command_result(
     *,
     stdout: str = "",
     exit_code: int = 0,
+    env: Mapping[str, str] = SCRUBBED_COMMAND_ENV,
 ) -> CommandResult:
     return CommandResult(
         argv=tuple(argv),
         exit_code=exit_code,
         stdout=stdout,
         stderr="",
-        env=SCRUBBED_COMMAND_ENV,
+        env=env,
     )
 
 
@@ -792,9 +794,13 @@ def _nvattest_services(
             payload=payload,
         )
 
-    def run_smoke(nvattest_bin: Path) -> CommandResult:
+    def run_smoke(nvattest_root: Path, nvattest_bin: Path) -> CommandResult:
         count("nvattest_run_smoke")
-        return _nvattest_command_result((str(nvattest_bin), "--help"), stdout="usage\n")
+        return _nvattest_command_result(
+            (str(nvattest_bin), "--help"),
+            stdout="usage\n",
+            env={**SCRUBBED_COMMAND_ENV, **nvattest_library_env(nvattest_root)},
+        )
 
     def integrity_recheck(
         _journal: Path,

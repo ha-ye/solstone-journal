@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import tarfile
-import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -33,6 +32,7 @@ from tests.helpers.nvattest_fixtures import (
     _install_download_from_fixture,
     _raw_download_fixture,
     _write_payload_tarball,
+    download_real_archive,
 )
 
 SIDECAR_KEYS = {
@@ -42,7 +42,6 @@ SIDECAR_KEYS = {
     "tree_fingerprint_sha256",
     "version",
 }
-REAL_ARCHIVE_USER_AGENT = "solstone-nvattest-install-integration/1.0"
 
 
 class DownloadSentinel(RuntimeError):
@@ -104,7 +103,7 @@ def test_real_published_nvattest_archives_match_authority(
     target_key: NvattestTargetKey,
 ) -> None:
     entry = authority_entry(target_key)
-    archive = _download_real_archive(tmp_path / "downloads", entry)
+    archive = download_real_archive(tmp_path / "downloads", entry)
     raw_dir = tmp_path / target_key / "raw"
 
     nvattest_install._safe_extract_nvattest_tarball(archive, raw_dir)
@@ -672,32 +671,6 @@ def _invalid_flat_archive(
         archive_path=archive_path,
         entry=_fixture_entry(tmp_path, entry, archive_path=archive_path),
     )
-
-
-def _download_real_archive(root: Path, entry: NvattestTargetEntry) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    archive = root / entry.artifact.name
-    tmp = archive.with_name(f".{archive.name}.tmp")
-    digest = hashlib.sha256()
-    try:
-        request = urllib.request.Request(
-            entry.artifact.url,
-            headers={"User-Agent": REAL_ARCHIVE_USER_AGENT},
-        )
-        with urllib.request.urlopen(request, timeout=120) as response:
-            with tmp.open("wb") as handle:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-                    handle.write(chunk)
-        actual = digest.hexdigest()
-        assert actual == entry.artifact.sha256
-        tmp.replace(archive)
-        return archive
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def _assert_payload_layout(root: Path, entry: NvattestTargetEntry) -> None:

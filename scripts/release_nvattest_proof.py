@@ -63,6 +63,7 @@ from solstone.think.providers.nvattest_install import (
     SPP_NVATTEST_DIR_ENV,
     cache_root,
 )
+from solstone.think.providers.nvattest_loader import nvattest_library_env
 
 NVATTEST_PROOF_KIND = "solstone-nvattest-compatibility-receipt"
 NVATTEST_CACHE_ROOT = "NVATTEST_CACHE_ROOT"
@@ -168,7 +169,7 @@ class NvattestProofServices:
         [Path, str, Sequence[FetchObservation], DriverObservation],
         Mapping[str, Any],
     ]
-    run_smoke: Callable[[Path], CommandResult]
+    run_smoke: Callable[[Path, Path], CommandResult]
     clock: Callable[[], datetime]
     cleanup: Callable[[Path], None]
     observe_host: Callable[[], HostObservation]
@@ -390,8 +391,19 @@ def _default_integrity_recheck(
     }
 
 
-def _default_run_smoke(nvattest_bin: Path) -> CommandResult:
-    return _run_command((str(nvattest_bin), "--help"))
+def _nvattest_smoke_env(nvattest_root: Path) -> dict[str, str]:
+    return {**SCRUBBED_COMMAND_ENV, **nvattest_library_env(nvattest_root)}
+
+
+def _expected_smoke_env() -> dict[str, str]:
+    return _nvattest_smoke_env(Path(NVATTEST_CACHE_ROOT))
+
+
+def _default_run_smoke(nvattest_root: Path, nvattest_bin: Path) -> CommandResult:
+    return _run_command(
+        (str(nvattest_bin), "--help"),
+        env=_nvattest_smoke_env(nvattest_root),
+    )
 
 
 def default_services() -> NvattestProofServices:
@@ -1333,6 +1345,7 @@ def _validate_observation(
                 cache_root=observation.cache_root,
                 site_roots=(),
             ),
+            expected_env=SCRUBBED_COMMAND_ENV,
         )
     )
     installed_authority_sha = hashlib.sha256(
@@ -1739,7 +1752,16 @@ def _command_payload(
             )
             for token in result.argv
         ],
-        "env": dict(result.env),
+        "env": {
+            key: _normalize_receipt_path(
+                value,
+                env_root=env_root,
+                candidate_dir=candidate_dir,
+                cache_root=cache_root,
+                site_roots=site_roots,
+            )
+            for key, value in result.env.items()
+        },
         "exit_code": result.exit_code,
         "stderr": _normalize_receipt_text(
             result.stderr,
@@ -1825,7 +1847,12 @@ def _normalization_prefixes(
     return tuple(raw)
 
 
-def _validate_command_payload(label: str, value: Any) -> list[Failure]:
+def _validate_command_payload(
+    label: str,
+    value: Any,
+    *,
+    expected_env: Mapping[str, str],
+) -> list[Failure]:
     failures: list[Failure] = []
     if not isinstance(value, Mapping) or set(value) != {
         "argv",
@@ -1870,7 +1897,13 @@ def _validate_command_payload(label: str, value: Any) -> list[Failure]:
             )
         )
     else:
-        failures.extend(_env_failures(f"nvattest proof {label}", env))
+        failures.extend(
+            _env_failures(
+                f"nvattest proof {label}",
+                env,
+                expected=expected_env,
+            )
+        )
     if not isinstance(value.get("exit_code"), int):
         failures.append(
             _failure(
@@ -2093,12 +2126,14 @@ def validate_nvattest_proof(
             _validate_command_payload(
                 "package driver",
                 cache_install.get("package_driver_command"),
+                expected_env=SCRUBBED_COMMAND_ENV,
             )
         )
         failures.extend(
             _validate_command_payload(
                 "wheel install",
                 cache_install.get("wheel_install_command"),
+                expected_env=SCRUBBED_COMMAND_ENV,
             )
         )
         failures.extend(
@@ -2107,7 +2142,13 @@ def validate_nvattest_proof(
                 expected_support_distributions=expected_support_distributions,
             )
         )
-    failures.extend(_validate_command_payload("smoke", proof.get("smoke")))
+    failures.extend(
+        _validate_command_payload(
+            "smoke",
+            proof.get("smoke"),
+            expected_env=_expected_smoke_env(),
+        )
+    )
     failures.extend(validate_public_evidence_tree("nvattest_proof", proof))
     return failures
 
@@ -2469,13 +2510,20 @@ def _validate_authority_bound_sections(
         f"{NVATTEST_CACHE_ROOT}/{_nvattest_bin_relpath(authority_target).as_posix()}",
         "--help",
     ]
+    expected_smoke = {
+        "argv": expected_smoke_argv,
+        "env": _expected_smoke_env(),
+        "exit_code": 0,
+    }
     if not isinstance(smoke, Mapping) or (
-        smoke.get("argv") != expected_smoke_argv or smoke.get("exit_code") != 0
+        smoke.get("argv") != expected_smoke_argv
+        or smoke.get("env") != expected_smoke["env"]
+        or smoke.get("exit_code") != 0
     ):
         failures.append(
             _failure(
                 "nvattest proof smoke command is invalid",
-                expected=repr({"argv": expected_smoke_argv, "exit_code": 0}),
+                expected=repr(expected_smoke),
                 actual=repr(smoke),
             )
         )
@@ -2635,7 +2683,7 @@ def run_nvattest_proof(
             ),
         )
         nvattest_bin = cache / _nvattest_bin_relpath(authority_target)
-        smoke = _call_stage("smoke", lambda: resolved.run_smoke(nvattest_bin))
+        smoke = _call_stage("smoke", lambda: resolved.run_smoke(cache, nvattest_bin))
         observation = NvattestProofObservation(
             env_root=env_root,
             journal_path=journal_path,

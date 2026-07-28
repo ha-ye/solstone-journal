@@ -196,22 +196,26 @@ def _env_bin(env_root: Path, name: str) -> Path:
 
 
 def _run_command(
-    argv: Sequence[str], *, input_text: str | None = None
+    argv: Sequence[str],
+    *,
+    input_text: str | None = None,
+    env: Mapping[str, str] = SCRUBBED_COMMAND_ENV,
 ) -> CommandResult:
+    command_env = dict(env)
     result = subprocess.run(
         list(argv),
         input=input_text,
         capture_output=True,
         text=True,
         check=False,
-        env=dict(SCRUBBED_COMMAND_ENV),
+        env=command_env,
     )
     return CommandResult(
         argv=tuple(argv),
         exit_code=result.returncode,
         stdout=result.stdout.strip(),
         stderr=result.stderr.strip(),
-        env=SCRUBBED_COMMAND_ENV,
+        env=command_env,
     )
 
 
@@ -815,19 +819,25 @@ def _forbidden_command_tokens(argv: Sequence[str]) -> list[str]:
     return forbidden
 
 
-def _env_failures(label: str, env: Mapping[str, str]) -> list[Failure]:
+def _env_failures(
+    label: str,
+    env: Mapping[str, str],
+    *,
+    expected: Mapping[str, str],
+) -> list[Failure]:
     failures: list[Failure] = []
-    if dict(env) != dict(SCRUBBED_COMMAND_ENV):
+    expected_env = dict(expected)
+    if dict(env) != expected_env:
         failures.append(
             _failure(
                 f"{label} command environment is not scrubbed",
-                expected=repr(dict(SCRUBBED_COMMAND_ENV)),
+                expected=repr(expected_env),
                 actual=repr(dict(env)),
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
     for key in env:
-        if key in SCRUBBED_COMMAND_ENV and env[key] == SCRUBBED_COMMAND_ENV[key]:
+        if key in expected_env and env[key] == expected_env[key]:
             continue
         upper = key.upper()
         if any(part in upper for part in FORBIDDEN_ENV_KEY_PARTS):
@@ -1065,7 +1075,13 @@ def _validate_observation(
                 repair="python3 scripts/check_rust_release_manifest.py",
             )
         )
-    failures.extend(_env_failures("install proof install", observation.install.env))
+    failures.extend(
+        _env_failures(
+            "install proof install",
+            observation.install.env,
+            expected=SCRUBBED_COMMAND_ENV,
+        )
+    )
     try:
         expected_distributions = _distribution_entries(
             expected_distribution_entries(install_paths)
@@ -1216,7 +1232,13 @@ def _validate_observation(
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
-        failures.extend(_env_failures("install proof smoke", result.env))
+        failures.extend(
+            _env_failures(
+                "install proof smoke",
+                result.env,
+                expected=SCRUBBED_COMMAND_ENV,
+            )
+        )
         if result.exit_code != 0:
             failures.append(
                 _failure(
@@ -1506,7 +1528,13 @@ def _validate_command_payload(label: str, value: Any) -> list[Failure]:
             )
         )
     else:
-        failures.extend(_env_failures(f"install proof {label}", value["env"]))
+        failures.extend(
+            _env_failures(
+                f"install proof {label}",
+                value["env"],
+                expected=SCRUBBED_COMMAND_ENV,
+            )
+        )
     if not isinstance(value.get("exit_code"), int):
         failures.append(
             _failure(

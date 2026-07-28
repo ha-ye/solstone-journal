@@ -9,6 +9,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from solstone.think.providers.nvattest_loader import (
+    NVATTEST_LIB_RELPATH,
+    nvattest_library_env,
+)
 from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.tlv import SPDM_NONCE_SIZE
 
@@ -26,7 +30,7 @@ def locate_nvattest(nvattest_dir: Path) -> tuple[Path, Path, Path]:
 
     root = nvattest_dir.resolve()
     binary = root / "bin" / "nvattest"
-    lib_dir = root / "lib"
+    lib_dir = root / NVATTEST_LIB_RELPATH
     ca_bundle = root / CA_BUNDLE_RELATIVE_PATH
     if not root.is_dir():
         raise GpuAppraisalError("nvattest_unavailable")
@@ -81,5 +85,6 @@ def build_nvattest_attest_command(
         argv.extend(["--rim-dir", str(rim_dir)])
     argv.extend(["--nonce", owner_nonce.hex()])
     return NvattestCommand(
-        argv=argv, env={**os.environ, "LD_LIBRARY_PATH": str(lib_dir)}
+        argv=argv,
+        env={**os.environ, **nvattest_library_env(lib_dir.parent)},
     )

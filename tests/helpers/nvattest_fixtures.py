@@ -7,6 +7,7 @@ import hashlib
 import io
 import shutil
 import tarfile
+import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from solstone.think.providers.nvattest_authority import (
     NvattestArtifactIdentity,
     NvattestTargetEntry,
 )
+
+REAL_ARCHIVE_USER_AGENT = "solstone-nvattest-install-integration/1.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +129,32 @@ def _raw_download_fixture(
         archive_path=archive_path,
         entry=replace(entry, artifact=artifact),
     )
+
+
+def download_real_archive(root: Path, entry: NvattestTargetEntry) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / entry.artifact.name
+    tmp = archive.with_name(f".{archive.name}.tmp")
+    digest = hashlib.sha256()
+    try:
+        request = urllib.request.Request(
+            entry.artifact.url,
+            headers={"User-Agent": REAL_ARCHIVE_USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            with tmp.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    handle.write(chunk)
+        actual = digest.hexdigest()
+        assert actual == entry.artifact.sha256
+        tmp.replace(archive)
+        return archive
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _inject_failure(

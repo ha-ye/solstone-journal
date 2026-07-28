@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 import solstone.think.services.spp_attest.nvgpu.appraise as appraise_module
+from solstone.think.providers.nvattest_loader import nvattest_library_env
 from solstone.think.services.spp_attest.nvgpu.binary import (
     build_nvattest_attest_command,
 )
@@ -486,6 +487,21 @@ def test_nvattest_command_env_inherits_parent_and_sets_library_path(
     assert command.env["LD_LIBRARY_PATH"] == str(nvattest_dir / "lib")
     assert command.argv[command.argv.index("--ca-bundle") + 1] == str(
         nvattest_dir / "share" / "ca" / "ca-bundle.pem"
+    )
+
+
+def test_nvattest_command_uses_shared_library_env_overlay(tmp_path: Path) -> None:
+    nvattest_dir = _fake_nvattest_dir(tmp_path)
+
+    command = build_nvattest_attest_command(
+        nvattest_dir=nvattest_dir,
+        evidence_file=tmp_path / "evidence.json",
+        owner_nonce=_owner_nonce(),
+    )
+
+    assert (
+        command.env["LD_LIBRARY_PATH"]
+        == nvattest_library_env(nvattest_dir.resolve())["LD_LIBRARY_PATH"]
     )
 
 
