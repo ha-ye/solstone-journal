@@ -265,12 +265,10 @@ pub enum LinkServeTransportErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkServeErrorKind {
     InvalidBundle,
-    InvalidRelayUrl,
     Bind { port: u16, addr_in_use: bool },
     RuntimeUnavailable,
     BridgeCapability,
     Transport(LinkServeTransportErrorKind),
-    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

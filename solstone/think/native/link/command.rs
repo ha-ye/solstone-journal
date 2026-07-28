@@ -820,21 +820,7 @@ fn load_peer_sender_instance_id(journal_root: &Path) -> Option<String> {
 }
 
 fn observer_bundle_dir(label: &str, env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
-    let base = env
-        .get("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || {
-                env.get("HOME")
-                    .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".config"))
-            },
-            |xdg| Some(PathBuf::from(xdg)),
-        );
-    let Some(base) = base else {
-        return Err("Could not resolve home directory for observer credentials.".to_string());
-    };
-    Ok(base.join("solstone-observer").join("spl").join(label))
+    Ok(observer_spl_root(env)?.join(label))
 }
 
 fn validate_instance_id(value: &str) -> Option<String> {
@@ -990,9 +976,6 @@ fn serve_error_text(error: LinkServeError) -> String {
         LinkServeErrorKind::InvalidBundle => {
             "Link credentials are invalid. Run sol link join before sol link serve.".to_string()
         }
-        LinkServeErrorKind::InvalidRelayUrl => {
-            "Relay URL is invalid. Check --relay-url and retry.".to_string()
-        }
         LinkServeErrorKind::Bind { port, addr_in_use } => {
             if addr_in_use {
                 format!(
@@ -1008,9 +991,6 @@ fn serve_error_text(error: LinkServeError) -> String {
         LinkServeErrorKind::BridgeCapability => {
             "Native link bridge setup failed before serving. Retry after reinstalling solstone-core."
                 .to_string()
-        }
-        LinkServeErrorKind::Shutdown => {
-            "Native link serve shutdown failed.".to_string()
         }
         LinkServeErrorKind::Transport(kind) => serve_transport_error_text(kind),
     }

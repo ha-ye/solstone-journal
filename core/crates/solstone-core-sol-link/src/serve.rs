@@ -446,54 +446,7 @@ fn map_bridge_start_error(error: BridgeStartError, port: u16) -> LinkServeError 
 }
 
 fn map_transport_error(error: TransportError) -> LinkServeTransportErrorKind {
-    match error {
-        TransportError::Io(error) => {
-            drop(error);
-            LinkServeTransportErrorKind::Io
-        }
-        TransportError::Tls(message) => {
-            drop(message);
-            LinkServeTransportErrorKind::Tls
-        }
-        TransportError::Crypto(message) => {
-            drop(message);
-            LinkServeTransportErrorKind::Crypto
-        }
-        TransportError::Mux(error) => {
-            drop(error);
-            LinkServeTransportErrorKind::Mux
-        }
-        TransportError::Http(error) => {
-            drop(error);
-            LinkServeTransportErrorKind::Http
-        }
-        TransportError::Json(error) => {
-            drop(error);
-            LinkServeTransportErrorKind::Json
-        }
-        TransportError::PairLink(message) => {
-            drop(message);
-            LinkServeTransportErrorKind::PairLink
-        }
-        TransportError::Pairing(message) => {
-            drop(message);
-            LinkServeTransportErrorKind::Pairing
-        }
-        TransportError::Rejected { status, body } => {
-            drop(body);
-            LinkServeTransportErrorKind::Rejected { status }
-        }
-        TransportError::Relay(error) => LinkServeTransportErrorKind::Relay(map_relay_error(error)),
-        TransportError::RelayControlRejected { endpoint, status } => {
-            LinkServeTransportErrorKind::RelayControlRejected {
-                endpoint: map_relay_control_endpoint(endpoint),
-                status,
-            }
-        }
-        TransportError::NoEndpoint => LinkServeTransportErrorKind::NoEndpoint,
-        TransportError::NotPaired => LinkServeTransportErrorKind::NotPaired,
-        TransportError::LocalOffset => LinkServeTransportErrorKind::LocalOffset,
-    }
+    map_transport_error_ref(&error)
 }
 
 fn map_transport_error_ref(error: &TransportError) -> LinkServeTransportErrorKind {

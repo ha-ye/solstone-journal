@@ -20,7 +20,6 @@ pub enum Outcome {
     Migrated { path: Vec<OsString> },
     Chat { args: Vec<OsString> },
     Import { args: Vec<OsString> },
-    Link { args: Vec<OsString> },
     Notify { args: Vec<OsString> },
     MovedStub { name: OsString },
     Unsupported { args: Vec<OsString> },
@@ -76,20 +75,6 @@ pub fn evaluate_args(args: &[OsString]) -> Outcome {
                     args: rest.to_vec(),
                 },
             )
-        }
-        [command, rest @ ..] if command == OsStr::new("link") => {
-            let path = [String::from("link"), String::from("serve")];
-            if rest.first().is_some_and(|verb| verb == OsStr::new("serve"))
-                && match_generated_resident_surface_path("sol-link", &path).is_some()
-            {
-                Outcome::Link {
-                    args: rest.to_vec(),
-                }
-            } else {
-                Outcome::Unsupported {
-                    args: args.to_vec(),
-                }
-            }
         }
         [command, rest @ ..] if command == OsStr::new("notify") => {
             match_generated_surface_path("sol-notify", &[String::from("notify")]).map_or_else(

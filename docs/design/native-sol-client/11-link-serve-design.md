@@ -19,7 +19,10 @@ No implementation lands in this record.
 
 ## D0. Recommendation
 
-Decision: **ship native `sol link serve` against SPL v0.3.0**.
+Decision: **ship the native `link.serve` authority entry against SPL v0.3.0**.
+It is declared, compiled, inventoried, and parity-covered in this lode, but
+public `sol link` remains the Python compatibility-dispatched path until the
+separate cutover lode flips the command.
 
 All four blockers from `09-link-serve-design.md` D9 are closed:
 
@@ -126,8 +129,7 @@ the real resident handler and return buffered output before the serve loop can
 exist. A second buffered entry point would duplicate command parsing and create
 a cutover landmine where one path must refuse real invocations.
 
-`dispatch_sol_link_with_seams` currently hardcodes `["link", "join"]` at
-`core/crates/solstone-core-sol-client-cli/src/lib.rs:180-181`. Change it to
+`dispatch_sol_link_with_seams` must not hardcode `["link", "join"]`. It should
 derive `["link", "<verb>"]` from argv:
 
 - Accept full argv `["link", "<verb>", ...]`.
@@ -139,23 +141,17 @@ derive `["link", "<verb>"]` from argv:
 Its return type changes from `CommandOutput` to
 `LinkDispatch { Buffered(CommandOutput), Resident { handler: ResidentHandler,
 args: Vec<String> } }`. The dispatcher resolves the path and returns the
-trimmed argv for resident commands; `solstone-core-sol` builds the
-`CommandContext` and calls `run_resident_command`. The `-cli` crate may resolve
-and return a resident outcome, but it must not run the resident loop and must
-not invoke the resident handler in production. `solstone-core-sol` owns the
-runner so it can install the signal mask before the handler runs.
-
-`evaluate_args` and `run_dispatched` in `core/crates/solstone-core-sol` need a
-top-level link outcome. `run_dispatched` should build the `CommandContext` from
-the returned resident argv and return immediately through `run_resident_command`
-when link dispatch returns a resident arm. The `link.serve` refusal cases are
-rendered by `run_resident_command`'s `Err(CommandOutput)` arm, not by the
-`-cli` dispatcher.
+trimmed argv for resident commands. The `-cli` crate may resolve and return a
+resident outcome for parity and seam callers, but it must not run the resident
+loop or invoke the resident handler in production. Public `sol link` production
+dispatch stays on the Python compatibility path in this lode, matching
+`link.join`; the cutover lode owns wiring `solstone-core-sol` to build the
+resident `CommandContext` and call `run_resident_command`.
 
 `core/crates/solstone-core-sol-client-cli/src/bin/resolve_parity_leaves.rs:47`
 must stop hardcoding `"sol-link" => ["link", "join"]`. It should use the same
-argv-derived link path as production dispatch so `link.join` and `link.serve`
-resolve independently.
+argv-derived link-path helper as the link dispatcher so `link.join` and
+`link.serve` resolve independently.
 
 `FINAL_TOP_LEVEL_LINK_TOTAL` moves from `1` to `2` in
 `scripts/build_native_sol_inventory.py:55`; the coverage recheck at
@@ -221,9 +217,9 @@ handle/runtime in the returned session, and block in `serve` until
 `ShutdownSignal::wait()` fires.
 
 `CommandContext` gains `link_serve: Option<&dyn LinkServeRunner>`, mirroring
-`link_pairing`. `LinkDispatchSeams` gains the same field. Production
-`solstone-core-sol` passes `SplLinkServeRunner`; parity/unit tests pass
-`ScriptedLinkServeRunner`.
+`link_pairing`. `LinkDispatchSeams` gains the same field. Parity/unit tests pass
+`ScriptedLinkServeRunner`; the cutover lode will wire production
+`solstone-core-sol` to pass `SplLinkServeRunner`.
 
 Scripted test surface:
 
@@ -286,10 +282,10 @@ Honor `10-resident-command-lane-design.md` D4: the runtime must be built inside
 the resident handler, never while constructing global process seams. Threads
 inherit the creator thread's signal mask, and `run_resident_command` blocks
 SIGINT/SIGTERM before calling the handler at
-`core/crates/solstone-core-sol/src/lib.rs:692-705`. If the Tokio runtime or its
-worker threads are created earlier in `run_dispatched`, they inherit the
-unblocked mask and can observe process signals outside the resident shutdown
-contract.
+`core/crates/solstone-core-sol/src/lib.rs:692-705`. If a future cutover creates
+the Tokio runtime or its worker threads before the resident handler runs, they
+inherit the unblocked mask and can observe process signals outside the resident
+shutdown contract.
 
 Port handling:
 
@@ -569,7 +565,11 @@ AC 3, native implementation and no Python subprocess:
 - `make check-native-sol-no-python-spawn`.
 - `core/crates/solstone-core-sol-client-cli/src/lib.rs` unit test
   `sol_link_dispatch_resolves_join_and_serve_from_full_or_trimmed_argv`, proving
-  production dispatch uses generated native inventory for `link serve`.
+  generated native inventory resolves `link serve` for native parity/seam
+  callers without invoking Python.
+- Production `sol link` remains the Python compatibility-dispatched path until
+  cutover; this lode does not claim no-Python production dispatch for public
+  `sol link serve`.
 
 AC 4, compat boundary untouched:
 
@@ -703,8 +703,9 @@ Sequence:
    `core/deny.toml` source-policy adjustment required by the lock update.
 2. Extend the generated inventory model for `resident = true`, add
    `RESIDENT_HANDLERS`, aggregate accessors, and resident static-slice tests.
-3. Add link-dispatch return enum, top-level link outcome, argv-derived link
-   resolution, and parity resolver changes.
+3. Add link-dispatch return enum, argv-derived link resolution, and parity
+   resolver changes; do not route public `sol link serve` to native production
+   dispatch in this lode.
 4. Add client seam types, `CommandContext.link_serve`, and scripted runner.
 5. Add `link_serve` resident handler: argparse-compatible help/errors, port
    validation, bundle loading, relay resolution, direct enforcement, startup
