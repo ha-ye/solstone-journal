@@ -4,6 +4,23 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.18] - 2026-07-28
+
+### Added
+
+- `sol link join` and `sol link serve` are now native commands. joining a journal from a pasted pair link, and running the local bridge that carries your `sol` traffic to a journal on another machine, both run without python on the path.
+
+### Changed
+
+- `journal link` has been removed. it has no command-line replacement: open the network app in your journal to see paired devices, check link status, and unpair. if you had a script or a note that called `journal link`, it needs the network app instead.
+- installing `solstone` on its own is now much smaller. the base install no longer pulls a compiled cryptography, tls, or websocket stack, because none of the base commands need one. `solstone-journal` and `solstone-journal-cuda` still bring all of it, so installing the journal is unchanged. only a base-only install that reached for those packages directly will notice.
+
+### Fixed
+
+- speaker attribution now keeps each speaker's voice evidence with the right person. when a conversation was clustered again and came out with a different number of speakers, evidence from one speaker could be filed under another named person in your journal. new passes keep the sentences a speaker was built from, so this can no longer happen. older entries saved without them are skipped instead of guessed, and a maintenance pass recovers the ones it can.
+- joining and hosting a link are steadier. a run that failed partway no longer leaves a half-open connection or a stranded pairing attempt behind, and a link that gets refused says so instead of waiting.
+- the journal's web app is easier to read and easier to move around in. dialogs keep the keyboard where you expect it, faint text and status rows meet contrast, the facet strip and charts stop clipping, and the import, support, and network screens show current information.
+
 ## [1.0.17] - 2026-07-26
 
 ### Fixed
