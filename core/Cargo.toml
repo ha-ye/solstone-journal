@@ -49,8 +49,8 @@ rcgen = { version = "0.13", default-features = false, features = ["ring", "pem",
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde_json = { version = "1.0.150", features = ["preserve_order", "float_roundtrip"] }
-spl-core = { git = "https://github.com/solpbc/spl-rust", tag = "v0.1.0" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", tag = "v0.1.0" }
+spl-core = { git = "https://github.com/solpbc/spl-rust", tag = "v0.3.0" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", tag = "v0.3.0" }
 tokio = { version = "1", default-features = false }
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
 unicode-normalization = "0.1.25"
