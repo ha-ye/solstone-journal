@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from solstone.think.probe import (  # noqa: E402
     SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
     solstone_core_marker_pins,
+    solstone_core_speakers_analyze_marker_pins,
     solstone_core_unsupported_platform_pin,
 )
 
@@ -27,12 +28,16 @@ CPU_PYPROJECT = ROOT / "packages" / "solstone-journal" / "pyproject.toml"
 CUDA_PYPROJECT = ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
 CORE_UNSUPPORTED_TOMBSTONE_OVERRIDE_MARKER = "python_version < '3.12'"
+SPEAKERS_ANALYZE_OVERRIDE_MARKER = "python_version < '3.12'"
 HOST_PIN_RE = re.compile(r'(?P<quote>")solstone\[journal-host\]==[^"]+(?P=quote)')
 CORE_PIN_RE = re.compile(
     r'(?P<quote>")solstone-core==[^";]+; (?P<marker>[^"]+)(?P=quote)'
 )
 CORE_UNSUPPORTED_PIN_RE = re.compile(
     r'(?P<quote>")solstone-core-unsupported-platform==[^";]+; (?P<marker>[^"]+)(?P=quote)'
+)
+SPEAKERS_ANALYZE_PIN_RE = re.compile(
+    r'(?P<quote>")solstone-core-speakers-analyze==[^";]+; (?P<marker>[^"]+)(?P=quote)'
 )
 VERSION_RE = re.compile(r'(?m)^version = "[^"]+"')
 TOMBSTONE_VERSION_RE = re.compile(r'(?m)^TOMBSTONE_VERSION = "[^"]+"')
@@ -99,6 +104,12 @@ def _rewrite_leaf(text: str, version: str) -> str:
         raise PackagingRenderError(
             f"leaf pyproject must contain exactly one solstone[journal-host]== pin; found {pin_count}"
         )
+    text = _rewrite_speakers_analyze_pins(
+        text,
+        version,
+        set(solstone_core_speakers_analyze_marker_pins(version)),
+        "leaf pyproject",
+    )
     return text
 
 
@@ -191,6 +202,52 @@ def _rewrite_root_core_unsupported_pin(text: str, version: str) -> str:
             f"exactly {sorted((expected_base, expected_override))}"
         )
     return rewritten
+
+
+def _rewrite_speakers_analyze_pins(
+    text: str,
+    version: str,
+    expected: set[str],
+    context: str,
+) -> str:
+    seen_markers: list[str] = []
+
+    def replacement(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        seen_markers.append(marker)
+        return (
+            f"{match.group('quote')}solstone-core-speakers-analyze=={version}; "
+            f"{marker}{match.group('quote')}"
+        )
+
+    rewritten, pin_count = SPEAKERS_ANALYZE_PIN_RE.subn(replacement, text)
+    if pin_count != len(expected):
+        raise PackagingRenderError(
+            f"{context} must contain exactly {len(expected)} marker-gated "
+            f"solstone-core-speakers-analyze== pin(s); found {pin_count}"
+        )
+    actual = {
+        f"solstone-core-speakers-analyze=={version}; {marker}"
+        for marker in seen_markers
+    }
+    if actual != expected:
+        raise PackagingRenderError(
+            f"{context} solstone-core-speakers-analyze marker pins must be exactly "
+            + ", ".join(sorted(expected))
+        )
+    return rewritten
+
+
+def _rewrite_root_speakers_analyze_override_pin(text: str, version: str) -> str:
+    expected = {
+        f"solstone-core-speakers-analyze=={version}; {SPEAKERS_ANALYZE_OVERRIDE_MARKER}"
+    }
+    return _rewrite_speakers_analyze_pins(
+        text,
+        version,
+        expected,
+        "root [tool.uv].override-dependencies",
+    )
 
 
 def _rewrite_tombstone_setup(text: str, version: str) -> str:
@@ -366,6 +423,7 @@ def render(root: Path = ROOT) -> dict[Path, str]:
     version = _read_version(root_text)
     root_text = _rewrite_root_core_pins(root_text, version)
     root_text = _rewrite_root_core_unsupported_pin(root_text, version)
+    root_text = _rewrite_root_speakers_analyze_override_pin(root_text, version)
     expected = {
         root / "pyproject.toml": root_text,
         _core_leaf_path(root): _rewrite_core_leaf(

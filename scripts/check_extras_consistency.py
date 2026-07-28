@@ -52,6 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution path.
 from solstone.think.features import FEATURES
 from solstone.think.probe import (
     solstone_core_marker_pins,
+    solstone_core_speakers_analyze_marker_pins,
     solstone_core_unsupported_platform_pin,
 )
 
@@ -191,6 +192,27 @@ def _check_core_unsupported_pin(base: list[str], root_version: str | None) -> li
         return [
             "base [project.dependencies] unsupported-platform tombstone pin must be "
             f"{expected}; found {pins[0]}"
+        ]
+    return []
+
+
+def _check_speakers_analyze_pins(
+    *, label: str, deps: list[str], root_version: str | None
+) -> list[str]:
+    pins = sorted(
+        dep for dep in deps if dep.startswith("solstone-core-speakers-analyze==")
+    )
+    expected = sorted(solstone_core_speakers_analyze_marker_pins(root_version or ""))
+    if len(pins) != len(expected):
+        return [
+            f"{label} must contain exactly {len(expected)} marker-gated "
+            "solstone-core-speakers-analyze== pins; found "
+            f"{len(pins)}"
+        ]
+    if root_version is not None and pins != expected:
+        return [
+            f"{label} solstone-core-speakers-analyze marker pins must be exactly "
+            f"{expected}; found {pins}"
         ]
     return []
 
@@ -515,6 +537,16 @@ def main(root: Path | None = None) -> int:
         data=speakers_analyze_data,
         root_version=root_version,
         errors=errors,
+    )
+    errors.extend(
+        _check_speakers_analyze_pins(
+            label="CPU leaf", deps=cpu_deps, root_version=root_version
+        )
+    )
+    errors.extend(
+        _check_speakers_analyze_pins(
+            label="CUDA leaf", deps=cuda_deps, root_version=root_version
+        )
     )
 
     # 5. CPU leaf runtime split.

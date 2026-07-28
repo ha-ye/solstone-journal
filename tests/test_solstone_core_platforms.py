@@ -15,9 +15,11 @@ from solstone.think.probe import (
     SOLSTONE_CORE_PLATFORM_MARKERS,
     SOLSTONE_CORE_PLATFORM_TAGS,
     SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS,
+    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS,
     SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
     SOLSTONE_CORE_UNSUPPORTED_PLATFORM_MARKER,
     is_solstone_core_covered_platform,
+    solstone_core_speakers_analyze_marker_pins,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +48,24 @@ def _unsupported_pin_marker() -> str:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def _root_version() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["project"]["version"]
+
+
+def _leaf_speakers_analyze_pins(package_name: str) -> list[str]:
+    data = tomllib.loads(
+        (ROOT / "packages" / package_name / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    return sorted(
+        dep
+        for dep in data["project"]["dependencies"]
+        if dep.startswith("solstone-core-speakers-analyze==")
+    )
 
 
 def _marker_platform_tuple(marker_text: str) -> tuple[str, str]:
@@ -132,7 +152,27 @@ def test_speakers_analyze_platform_tags_are_probe_declared_once() -> None:
         assert match is not None, tag
         assert (int(match.group(1)), int(match.group(2))) >= (2, 27)
 
-    assert not hasattr(probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS")
+    expected_markers = tuple(
+        probe._solstone_core_platform_marker(platform_tuple)
+        for platform_tuple in SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+    )
+    assert sorted(SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS) == sorted(
+        expected_markers
+    )
+    assert sorted(
+        _marker_platform_tuple(text)
+        for text in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS
+    ) == sorted(SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS)
+    assert solstone_core_speakers_analyze_marker_pins("9.8.7") == tuple(
+        f"solstone-core-speakers-analyze==9.8.7; {marker}"
+        for marker in SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_MARKERS
+    )
     assert not hasattr(
         probe, "SOLSTONE_CORE_SPEAKERS_ANALYZE_UNSUPPORTED_PLATFORM_MARKER"
     )
+
+
+def test_speakers_analyze_leaf_pins_match_probe_covered_platforms() -> None:
+    expected = sorted(solstone_core_speakers_analyze_marker_pins(_root_version()))
+    assert _leaf_speakers_analyze_pins("solstone-journal") == expected
+    assert _leaf_speakers_analyze_pins("solstone-journal-cuda") == expected

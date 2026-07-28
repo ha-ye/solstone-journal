@@ -58,8 +58,9 @@ The ONNX Runtime speaker wrapper is a deliberate exception because it is outside
 the `solstone-core` shipping closure. The `solstone-core` shipping bin depends
 on no speaker ONNX crate, and `scripts/core_compile_inputs.py` walks only that
 shipping closure. `solstone-core-speakers-analyze` is a helper binary outside
-the shipping closure, matching the separate-native-binary shape described
-below. That unreachability is load-bearing, not a convenience: reachability from
+that core binary closure but reachable through the journal leaves, matching the
+separate-native-binary shape described below. That unreachability is
+load-bearing, not a convenience: reachability from
 the shipping bin is an open architecture question, currently believed
 unsatisfiable as-is. The Linux release lanes are
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` via zig, i.e. static

@@ -210,15 +210,18 @@ exclude = ["*.tests", "*.tests.*"]
 build_py = "build_hooks.BuildPyWithoutTests"
 
 [tool.uv]
-# Tombstone dependencies are build-fails-by-design distributions that must NOT
-# resolve during workspace development. This override prunes them from workspace
-# resolution: the marker `python_version < '3.12'` contradicts requires-python =
-# ">=3.12", so uv drops the requirement entirely (uv lock succeeds; no tombstone
-# node lands in uv.lock). [tool.uv] is never published, so end-user wheel
-# METADATA still carries the tombstone pins and fails loudly at install time.
+# Some published dependencies must NOT resolve during workspace development.
+# Tombstones are build-fails-by-design distributions; the speakers-analyze helper
+# is a real workspace member, but its editable build needs ONNX Runtime staging
+# that only the release wheel-build targets produce. The dev/test plane runs the
+# Python speaker path by default, so the dev venv does not need the helper binary.
+# The marker `python_version < '3.12'` contradicts requires-python = ">=3.12", so
+# uv drops each override from the active dev environment. [tool.uv] is never
+# published, so end-user wheel METADATA still carries the real pins.
 override-dependencies = [
     "solstone-journal-host==0.7.0; python_version < '3.12'",
     "solstone-core-unsupported-platform==1.0.18; python_version < '3.12'",
+    "solstone-core-speakers-analyze==1.0.18; python_version < '3.12'",
 ]
 
 [tool.uv.workspace]

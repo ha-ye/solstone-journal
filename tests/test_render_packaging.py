@@ -15,6 +15,7 @@ import pytest
 
 from solstone.think.probe import (
     SOLSTONE_CORE_PLATFORM_MARKERS,
+    solstone_core_speakers_analyze_marker_pins,
     solstone_core_unsupported_platform_pin,
 )
 
@@ -47,9 +48,10 @@ def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> 
 
 def test_live_lock_authorities_match_root_project_version() -> None:
     root = SCRIPT.parents[1]
-    root_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["version"]
+    root_pyproject = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    root_version = root_pyproject["project"]["version"]
 
     cargo_workspace = tomllib.loads(
         (root / "core" / "Cargo.toml").read_text(encoding="utf-8")
@@ -77,7 +79,6 @@ def test_live_lock_authorities_match_root_project_version() -> None:
     uv_workspace_names = {
         "solstone",
         "solstone-core",
-        "solstone-core-speakers-analyze",
         "solstone-journal",
         "solstone-journal-cuda",
     }
@@ -89,12 +90,25 @@ def test_live_lock_authorities_match_root_project_version() -> None:
     assert uv_lock_versions == {
         name: root_version for name in sorted(uv_workspace_names)
     }
+    assert not any(
+        package["name"] == "solstone-core-speakers-analyze"
+        for package in uv_lock["package"]
+    )
     overrides = {
-        override["name"]: override["specifier"]
-        for override in uv_lock["manifest"]["overrides"]
+        override["name"]: override for override in uv_lock["manifest"]["overrides"]
     }
-    assert overrides["solstone-core-unsupported-platform"] == f"=={root_version}"
-    assert overrides["solstone-journal-host"] == "==0.7.0"
+    assert (
+        overrides["solstone-core-unsupported-platform"]["specifier"]
+        == f"=={root_version}"
+    )
+    assert overrides["solstone-journal-host"]["specifier"] == "==0.7.0"
+    helper_override = overrides["solstone-core-speakers-analyze"]
+    assert helper_override["marker"] == "python_full_version < '3.12'"
+    assert helper_override["editable"] == "packages/solstone-core-speakers-analyze"
+    assert (
+        f"solstone-core-speakers-analyze=={root_version}; python_version < '3.12'"
+        in root_pyproject["tool"]["uv"]["override-dependencies"]
+    )
 
 
 def _write(path: Path, text: str) -> None:
@@ -108,6 +122,10 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         for marker in SOLSTONE_CORE_PLATFORM_MARKERS
     )
     unsupported_pin = solstone_core_unsupported_platform_pin("0.0.1")
+    speakers_analyze_pins = "\n".join(
+        f'                "{pin}",'
+        for pin in solstone_core_speakers_analyze_marker_pins("0.0.1")
+    )
     _write(
         tmp_path / "pyproject.toml",
         f"""
@@ -129,6 +147,7 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         [tool.uv]
         override-dependencies = [
             "solstone-core-unsupported-platform==0.0.1; python_version < '3.12'",
+            "solstone-core-speakers-analyze==0.0.1; python_version < '3.12'",
         ]
         """,
     )
@@ -139,7 +158,10 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
             [project]
             name = "{package_name}"
             version = "0.0.1"
-            dependencies = ["solstone[journal-host]==0.0.1"]
+            dependencies = [
+                "solstone[journal-host]==0.0.1",
+{speakers_analyze_pins}
+            ]
             """,
         )
     _write(
@@ -307,6 +329,8 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
         leaf = rendered[root / "packages" / package_name / "pyproject.toml"]
         assert 'version = "2.3.4"' in leaf
         assert '"solstone[journal-host]==2.3.4"' in leaf
+        for pin in solstone_core_speakers_analyze_marker_pins("2.3.4"):
+            assert f'"{pin}"' in leaf
     core_leaf = rendered[root / "packages" / "solstone-core" / "pyproject.toml"]
     assert 'version = "2.3.4"' in core_leaf
     assert "solstone[journal-host]==" not in core_leaf
@@ -321,6 +345,10 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     assert f'"{solstone_core_unsupported_platform_pin("2.3.4")}"' in root_pyproject
     assert (
         '"solstone-core-unsupported-platform==2.3.4; python_version < '
+        "'3.12'\"" in root_pyproject
+    )
+    assert (
+        '"solstone-core-speakers-analyze==2.3.4; python_version < '
         "'3.12'\"" in root_pyproject
     )
     assert '"solstone-journal-models==1.0.0"' in root_pyproject
@@ -355,6 +383,40 @@ def test_render_raises_when_cargo_lock_is_missing_member_block(tmp_path: Path) -
     _write_cargo_lock(root, _cargo_lock_text(cli_block=""))
 
     with pytest.raises(render_packaging.PackagingRenderError, match="missing"):
+        render_packaging.render(root)
+
+
+def test_render_raises_when_leaf_speakers_analyze_pin_is_missing(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_root(tmp_path)
+    leaf_path = root / "packages" / "solstone-journal" / "pyproject.toml"
+    pin = solstone_core_speakers_analyze_marker_pins("0.0.1")[0]
+    line = f'    "{pin}",\n'
+    text = leaf_path.read_text(encoding="utf-8")
+    leaf_path.write_text(text.replace(line, "", 1), encoding="utf-8")
+
+    with pytest.raises(
+        render_packaging.PackagingRenderError,
+        match="speakers-analyze",
+    ):
+        render_packaging.render(root)
+
+
+def test_render_raises_when_leaf_speakers_analyze_pin_is_duplicated(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_root(tmp_path)
+    leaf_path = root / "packages" / "solstone-journal" / "pyproject.toml"
+    pin = solstone_core_speakers_analyze_marker_pins("0.0.1")[0]
+    line = f'    "{pin}",\n'
+    text = leaf_path.read_text(encoding="utf-8")
+    leaf_path.write_text(text.replace(line, line + line, 1), encoding="utf-8")
+
+    with pytest.raises(
+        render_packaging.PackagingRenderError,
+        match="speakers-analyze",
+    ):
         render_packaging.render(root)
 
 
