@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, FixedOffset};
 use serde_json::{Value, json};
 
 use crate::command::{CommandContext, CommandOutput};
@@ -21,6 +22,14 @@ const CONFIDENTIAL_TERMINAL_PHASES: &[&str] = &[
     "repair_needed",
     "early_access",
 ];
+const CONFIDENTIAL_RECHECK_WAIT_SECONDS: f64 = 15.0;
+const CONFIDENTIAL_RECHECK_POLL_INTERVAL_SECONDS: f64 = 5.0;
+const CONFIDENTIAL_RECHECK_TIMEOUT_GUIDANCE: &str = "no new confidential attestation result was observed within the wait; run sol call thinking confidential status.";
+const CONFIDENTIAL_RECHECK_NOT_STARTED_GUIDANCE: &str =
+    "refresh was not started; run sol call thinking confidential status.";
+const CONFIDENTIAL_RECHECK_POST_REFUSED_GUIDANCE: &str =
+    "no accepted refresh to wait for; run sol call thinking confidential status.";
+const CONFIDENTIAL_RECHECK_READ_FAILED_GUIDANCE: &str = "refresh was accepted, but no completed result could be read; run sol call thinking confidential status.";
 
 #[must_use]
 pub fn scout_status(ctx: CommandContext<'_>) -> CommandOutput {
@@ -137,24 +146,62 @@ pub fn confidential_enable(ctx: CommandContext<'_>) -> CommandOutput {
 
 #[must_use]
 pub fn confidential_recheck(ctx: CommandContext<'_>) -> CommandOutput {
-    let response = match post_confidential_action(ctx, "/app/thinking/api/confidential/recheck") {
-        Ok(response) => response,
-        Err(error) => return thinking_error(error),
-    };
-    let state = match get_confidential_state(ctx) {
+    let baseline = match get_confidential_state(ctx) {
         Ok(state) => state,
         Err(error) => return thinking_error(error),
     };
-    let mut payload = json!({
-        "ok": response.get("ok").cloned().unwrap_or(Value::Null),
-        "attestation": state.get("confidential_attestation").cloned().unwrap_or(Value::Null),
-    });
-    if let Some(error) = response.get("error")
-        && let Some(object) = payload.as_object_mut()
-    {
-        object.insert("error".to_string(), error.clone());
+    let baseline_attestation = baseline
+        .get("confidential_attestation")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let baseline_observed_at = parse_attestation_observed_at(&baseline_attestation);
+    let response = match post_confidential_action(ctx, "/app/thinking/api/confidential/recheck") {
+        Ok(response) => response,
+        Err(error) => {
+            return thinking_error_with_guidance(error, CONFIDENTIAL_RECHECK_POST_REFUSED_GUIDANCE);
+        }
+    };
+    let build_payload = |attestation: Value| {
+        let mut payload = json!({
+            "ok": response.get("ok").cloned().unwrap_or(Value::Null),
+            "attestation": attestation,
+        });
+        if let Some(error) = response.get("error")
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert("error".to_string(), error.clone());
+        }
+        payload
+    };
+
+    // Only explicit ok=false means the request was accepted but no refresh was started;
+    // missing/null ok preserves the existing permissive behavior and proceeds to wait.
+    if response.get("ok").and_then(Value::as_bool) == Some(false) {
+        let payload = build_payload(baseline_attestation);
+        return stdout_json_with_guidance(&payload, CONFIDENTIAL_RECHECK_NOT_STARTED_GUIDANCE, 1);
     }
-    stdout_json_value(&payload)
+
+    let (state, outcome) =
+        match poll_confidential_recheck_until_complete(ctx, baseline_observed_at.as_ref()) {
+            Ok(result) => result,
+            Err(error) => {
+                return thinking_error_with_guidance(
+                    error,
+                    CONFIDENTIAL_RECHECK_READ_FAILED_GUIDANCE,
+                );
+            }
+        };
+    let payload = build_payload(
+        state
+            .get("confidential_attestation")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    if outcome == "completed" {
+        stdout_json_value(&payload)
+    } else {
+        stdout_json_with_guidance(&payload, CONFIDENTIAL_RECHECK_TIMEOUT_GUIDANCE, 1)
+    }
 }
 
 #[must_use]
@@ -562,6 +609,58 @@ fn action_error(error: ClientError) -> ClientError {
     error
 }
 
+fn parse_attestation_observed_at(attestation: &Value) -> Option<DateTime<FixedOffset>> {
+    let value = attestation.get("observed_at").and_then(Value::as_str)?;
+    DateTime::parse_from_rfc3339(value).ok()
+}
+
+fn attestation_observed_at_newer(
+    attestation: &Value,
+    baseline: Option<&DateTime<FixedOffset>>,
+) -> bool {
+    let Some(current) = parse_attestation_observed_at(attestation) else {
+        return false;
+    };
+    let Some(baseline) = baseline else {
+        return true;
+    };
+    current > *baseline
+}
+
+fn poll_confidential_recheck_until_complete(
+    ctx: CommandContext<'_>,
+    baseline_observed_at: Option<&DateTime<FixedOffset>>,
+) -> Result<(Value, &'static str), ClientError> {
+    let deadline = monotonic_seconds(ctx) + CONFIDENTIAL_RECHECK_WAIT_SECONDS;
+    let interval = Duration::from_secs_f64(CONFIDENTIAL_RECHECK_POLL_INTERVAL_SECONDS);
+    let mut saw_verifying = false;
+    loop {
+        let state = get_confidential_state(ctx)?;
+        let attestation = state
+            .get("confidential_attestation")
+            .unwrap_or(&Value::Null);
+        let attestation_state = attestation.get("state").and_then(Value::as_str);
+        if attestation_state == Some("verifying") {
+            saw_verifying = true;
+        } else {
+            let known_terminal = matches!(
+                attestation_state,
+                Some("off" | "inactive" | "verified" | "unreachable" | "failed" | "stale")
+            );
+            if (saw_verifying && known_terminal)
+                || (!saw_verifying
+                    && attestation_observed_at_newer(attestation, baseline_observed_at))
+            {
+                return Ok((state, "completed"));
+            }
+        }
+        if monotonic_seconds(ctx) >= deadline {
+            return Ok((state, "timeout"));
+        }
+        sleep(ctx, interval);
+    }
+}
+
 fn poll_scout_until_terminal(
     ctx: CommandContext<'_>,
     wait_seconds: f64,
@@ -844,6 +943,16 @@ fn stdout_json_value(value: &Value) -> CommandOutput {
     CommandOutput::success(format!("{}\n", json_pretty_ascii(value)))
 }
 
+fn stdout_json_with_guidance(value: &Value, guidance: &str, exit: i32) -> CommandOutput {
+    let mut stdout = stdout_json_value(value).stdout;
+    push_line(&mut stdout, guidance);
+    CommandOutput {
+        stdout,
+        stderr: String::new(),
+        exit,
+    }
+}
+
 fn stdout(lines: Vec<String>) -> CommandOutput {
     CommandOutput::success(format!("{}\n", lines.join("\n")))
 }
@@ -857,6 +966,12 @@ fn thinking_error(error: ClientError) -> CommandOutput {
         ClientError::Unreachable { .. } => stderr(SERVICE_DOWN_MESSAGE, 1),
         _ => stderr(error.message(), 1),
     }
+}
+
+fn thinking_error_with_guidance(error: ClientError, guidance: &str) -> CommandOutput {
+    let mut output = thinking_error(error);
+    push_line(&mut output.stderr, guidance);
+    output
 }
 
 fn thinking_error_preserving_stdout(stdout: String, error: ClientError) -> CommandOutput {

@@ -1242,7 +1242,7 @@
       "confirmation": {"enabled": false, "prompts": [], "case_ids": {}},
       "consent": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
       "dry_run": {"enabled": false, "flags": [], "default": "none", "case_ids": {}},
-      "multi_request": {"enabled": true, "request_count": 2, "case_ids": {"post_then_providers": ["thinking-confidential-recheck-success"], "later_boundary_failure": ["thinking-confidential-recheck-boundary-failure"]}}
+      "multi_request": {"enabled": true, "request_count": 6, "case_ids": {"checking_then_completed": ["thinking-confidential-recheck-success"], "newer_observed_at": ["thinking-confidential-recheck-newer-observed-at-success"], "timeout": ["thinking-confidential-recheck-timeout"], "not_started": ["thinking-confidential-recheck-not-started"], "later_boundary_failure": ["thinking-confidential-recheck-boundary-failure"], "post_refused": ["thinking-confidential-recheck-refused"], "baseline_failure": ["thinking-confidential-recheck-baseline-failure"]}}
     },
     "thinking.confidential.status": {
       "path": ["thinking", "confidential", "status"],
