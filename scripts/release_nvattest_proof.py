@@ -228,6 +228,12 @@ def _default_install_wheels(
     return _run_command(argv)
 
 
+# The provider-artifact edge refuses the anonymous Python-urllib User-Agent
+# with HTTP 403. Identify this client explicitly; the value carries no
+# host, path, account, or other private infrastructure detail.
+NVATTEST_PROOF_USER_AGENT = "solstone-release-proof/1.0"
+
+
 def _default_fetch(
     label: Literal["archive", "manifest"],
     url: str,
@@ -238,7 +244,10 @@ def _default_fetch(
     digest = hashlib.sha256()
     size = 0
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": NVATTEST_PROOF_USER_AGENT}
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
             with tmp.open("wb") as handle:
                 while True:
                     chunk = response.read(1024 * 1024)

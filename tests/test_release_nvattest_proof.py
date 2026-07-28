@@ -838,3 +838,41 @@ def _command_result(
         stderr="",
         env=SCRUBBED_COMMAND_ENV,
     )
+
+
+def test_default_fetch_sends_an_explicit_user_agent(tmp_path, monkeypatch):
+    """The artifact edge answers 403 to the anonymous Python-urllib agent.
+
+    Every other test in this module injects a fake fetch, so the real
+    _default_fetch path is the one nothing exercised. Pin the header here.
+    """
+    import io
+    import urllib.request
+
+    captured: dict[str, object] = {}
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return _Response(b"payload-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    dest = tmp_path / "archive.tar.xz"
+    observation = proof._default_fetch("archive", "https://example.invalid/a", dest)
+
+    request = captured["request"]
+    assert isinstance(request, urllib.request.Request)
+    agent = request.get_header("User-agent")
+    assert agent == proof.NVATTEST_PROOF_USER_AGENT
+    assert agent and not agent.lower().startswith("python-urllib")
+    assert dest.read_bytes() == b"payload-bytes"
+    assert observation.size_bytes == len(b"payload-bytes")
