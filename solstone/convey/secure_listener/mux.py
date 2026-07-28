@@ -8,9 +8,10 @@ frames to send back, and each logical stream surfaces as an
 `asyncio.StreamReader`/`StreamWriter` pair that the HTTP app can drive.
 
 Flow-control uses the 1 MiB initial window per the spl framing spec — this
-side grants credit as bytes drain into the app; the peer uses its granted
-credit to send more data. For MVP the default "grant on every drained
-chunk" policy is fine.
+side debits receive credit as bytes are delivered to the stream reader and
+returns credit as the application consumes those bytes. Stream terminalization
+is centralized so reader waiters and send-credit waiters are woken before stream
+state is removed.
 
 Concurrent stream cap: 256 per direction. OPENs beyond cap RESET with
 STREAM_LIMIT_EXCEEDED.
@@ -76,6 +77,8 @@ RESET_CTX_HANDLER_EXCEPTION: Final[str] = "handler_exception"
 RESET_CTX_NO_IDENTITY: Final[str] = "no_identity"
 RESET_CTX_APP_CANCELLATION: Final[str] = "app_cancellation"
 RESET_CTX_BODY_DISCARD_CANCELLATION: Final[str] = "body_discard_cancellation"
+RESET_CTX_SEND_CREDIT_STARVATION: Final[str] = "send_credit_starvation"
+STREAM_CREDIT_STALL_TIMEOUT_SECONDS: Final[float] = 120.0
 
 _REASON_NAMES: Final[dict[int, str]] = {
     RESET_PROTOCOL_ERROR: "protocol_error",
@@ -131,10 +134,31 @@ class StreamWriter:
             raise ConnectionError(f"stream {self._state.stream_id} writer is closed")
         view = memoryview(data)
         while view:
+            if self._state.writer_closed:
+                raise ConnectionError(
+                    f"stream {self._state.stream_id} writer is closed"
+                )
             chunk_len = min(len(view), RECOMMENDED_CHUNK, self._state.send_credit)
             if chunk_len <= 0:
                 self._state.credit_event.clear()
-                await self._state.credit_event.wait()
+                try:
+                    await asyncio.wait_for(
+                        self._state.credit_event.wait(),
+                        timeout=STREAM_CREDIT_STALL_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    if not self._state.writer_closed:
+                        # Withheld credit is ambiguous, not a protocol violation:
+                        # we locally cancel the stream to reclaim service capacity.
+                        await self._mux._emit_reset(
+                            self._state.stream_id,
+                            RESET_CANCEL,
+                            RESET_CTX_SEND_CREDIT_STARVATION,
+                        )
+                        self._mux._close_stream(self._state)
+                    raise ConnectionError(
+                        f"stream {self._state.stream_id} writer is closed"
+                    ) from exc
                 continue
             chunk = bytes(view[:chunk_len])
             view = view[chunk_len:]
@@ -153,8 +177,10 @@ class StreamWriter:
         self._state.writer_closed = True
         self._state.reader_closed = True
         await self._mux._emit_reset(self._state.stream_id, reason, context)
-        self._state.reader.feed_eof()
-        self._mux._forget(self._state.stream_id)
+        self._mux._close_stream(self._state)
+
+    def report_recv_consumed(self, n: int) -> None:
+        self._mux._report_recv_consumed(self._state, n)
 
     def begin_drain(self, context: str) -> None:
         if self._state.reader_closed:
@@ -181,6 +207,7 @@ class Multiplexer:
         self._is_listener = is_listener
         self._on_reset = on_reset
         self._streams: dict[int, _StreamState] = {}
+        self._window_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
         self._next_local_id = 2 if is_listener else 1
 
@@ -203,11 +230,18 @@ class Multiplexer:
             return
         self._closed = True
         for state in list(self._streams.values()):
-            state.reader.feed_eof()
-            state.writer_closed = True
             if state.task and not state.task.done():
                 state.task.cancel()
-        self._streams.clear()
+            self._close_stream(state)
+        if self._window_tasks:
+            # WINDOW emissions are owned by the mux; after `_closed` is set,
+            # any task that reaches `_emit` would no-op, and cancellation keeps
+            # close from leaving background tasks dangling.
+            window_tasks = list(self._window_tasks)
+            for task in window_tasks:
+                task.cancel()
+            await asyncio.gather(*window_tasks, return_exceptions=True)
+            self._window_tasks.clear()
 
     async def _dispatch(self, frame: Frame) -> None:
         if frame.stream_id == 0:
@@ -269,7 +303,7 @@ class Multiplexer:
         maybe_state = self._streams.get(frame.stream_id)
         if maybe_state is None:
             # An unknown id means we hold no state for this stream: the common
-            # case is that both directions closed and `_forget` dropped it while
+            # case is that both directions closed and `_close_stream` dropped it while
             # the peer's CLOSE/RESET was still in flight. CLOSE and RESET are
             # terminal — they ask us to tear down a stream that is already gone,
             # so there is nothing to tear down and nothing to protect. DATA or
@@ -299,20 +333,14 @@ class Multiplexer:
             else:
                 state.reader.feed_data(frame.payload)
                 state.recv_credit -= len(frame.payload)
-                state.unacked_recv += len(frame.payload)
-                if state.unacked_recv >= INITIAL_WINDOW // 2:
-                    grant = state.unacked_recv
-                    state.recv_credit += grant
-                    state.unacked_recv = 0
-                    await self._emit(build_window(frame.stream_id, grant))
         if frame.flags & FLAG_CLOSE:
             state.reader.feed_eof()
             state.reader_closed = True
             if state.draining:
-                self._forget(frame.stream_id)
+                self._close_stream(state)
                 return
             if state.writer_closed:
-                self._forget(frame.stream_id)
+                self._close_stream(state)
         if state.draining and (frame.flags & FLAG_DATA) and state.recv_credit == 0:
             await self._emit_reset(
                 frame.stream_id,
@@ -347,7 +375,6 @@ class Multiplexer:
                 _ = parse_reset_reason(frame)
             except ProtocolError:
                 pass
-            state.reader.feed_eof()
             self._terminate(state)
 
     async def _dispatch_control(self, frame: Frame) -> None:
@@ -389,20 +416,38 @@ class Multiplexer:
                     except Exception:
                         pass
                 if not state.draining:
-                    self._forget(stream_id)
+                    self._close_stream(state)
 
         state.task = asyncio.create_task(runner(), name=f"link-stream-{stream_id}")
         return state
 
     def _terminate(self, state: _StreamState) -> None:
-        state.writer_closed = True
-        state.reader_closed = True
         if state.task and not state.task.done():
             state.task.cancel()
-        self._forget(state.stream_id)
+        self._close_stream(state)
 
-    def _forget(self, stream_id: int) -> None:
-        self._streams.pop(stream_id, None)
+    def _close_stream(self, state: _StreamState) -> None:
+        state.writer_closed = True
+        state.reader_closed = True
+        state.reader.feed_eof()
+        state.credit_event.set()
+        self._streams.pop(state.stream_id, None)
+
+    def _report_recv_consumed(self, state: _StreamState, n: int) -> None:
+        if n <= 0 or state.reader_closed:
+            return
+        state.unacked_recv += n
+        if state.unacked_recv < INITIAL_WINDOW // 2:
+            return
+        grant = state.unacked_recv
+        state.recv_credit += grant
+        state.unacked_recv = 0
+        task = asyncio.create_task(
+            self._emit(build_window(state.stream_id, grant)),
+            name=f"link-window-{state.stream_id}",
+        )
+        self._window_tasks.add(task)
+        task.add_done_callback(self._window_tasks.discard)
 
     def _valid_peer_stream_id(self, stream_id: int) -> bool:
         if stream_id == 0:
@@ -419,7 +464,11 @@ class Multiplexer:
         await self._send_frame(encoded)
 
     def _fire_diag(self, stream_id: int, reason: int, context: str) -> None:
-        if self._closed or self._on_reset is None:
+        if self._on_reset is None:
+            return
+        if self._closed and context != RESET_CTX_SEND_CREDIT_STARVATION:
+            # After tunnel close, only the fixed starvation context is allowed
+            # through; fatal close still must not produce per-stream diag storms.
             return
         diag = ResetDiagnostic(
             stream_id=stream_id,
@@ -434,6 +483,7 @@ class Multiplexer:
 
     async def _emit_reset(self, stream_id: int, reason: int, context: str) -> None:
         if self._closed:
+            self._fire_diag(stream_id, reason, context)
             return
         await self._emit(build_reset(stream_id, reason))
         self._fire_diag(stream_id, reason, context)

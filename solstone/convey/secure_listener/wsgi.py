@@ -29,6 +29,8 @@ _HEAD_LIMIT = 64 * 1024
 _BODY_METHODS = {"POST", "PUT", "PATCH"}
 _NO_BODY_STATUSES = {204, 304}
 _DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
+WSGI_SEND_BRIDGE_POLL_SECONDS: Final[float] = 0.5
+WSGI_INPUT_READ_TIMEOUT_SECONDS: Final[float] = 120.0
 # The cert-less pairing tunnel admits EXACTLY these endpoints (canonical +
 # the /app/link legacy alias). Never relax to a suffix/substring match — that
 # would admit pair_start and widen the tunnel.
@@ -127,6 +129,7 @@ class ParsedRequest:
     headers: list[tuple[str, str]]
     content_length: int | None
     transfer_encoding: str | None
+    head_bytes: int
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,7 @@ async def parse_http_head(stream_reader: asyncio.StreamReader) -> ParsedRequest:
         headers=headers,
         content_length=content_length,
         transfer_encoding=transfer_encoding,
+        head_bytes=len(raw),
     )
 
 
@@ -203,10 +207,14 @@ class MuxWSGIInput:
         stream_reader: asyncio.StreamReader,
         loop: asyncio.AbstractEventLoop,
         content_length: int | None,
+        disconnect_event: threading.Event,
+        report_recv_consumed: Callable[[int], None],
     ) -> None:
         self._stream_reader = stream_reader
         self._loop = loop
         self._remaining = content_length or 0
+        self._disconnect_event = disconnect_event
+        self._report_recv_consumed = report_recv_consumed
 
     @property
     def remaining(self) -> int:
@@ -219,12 +227,24 @@ class MuxWSGIInput:
             size = self._remaining
         if size <= 0:
             return b""
+        if self._disconnect_event.is_set():
+            raise _WsgiClientDisconnected
         future = asyncio.run_coroutine_threadsafe(
             self._stream_reader.read(size),
             self._loop,
         )
-        chunk = future.result()
+        try:
+            chunk = future.result(timeout=WSGI_INPUT_READ_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            future.cancel()
+            self._disconnect_event.set()
+            raise _WsgiClientDisconnected from exc
+        except (CancelledError, ConnectionError, RuntimeError) as exc:
+            self._disconnect_event.set()
+            raise _WsgiClientDisconnected from exc
         self._remaining -= len(chunk)
+        if chunk:
+            self._report_recv_consumed(len(chunk))
         return chunk
 
     def readline(self, size: int = -1) -> bytes:
@@ -276,6 +296,7 @@ async def dispatch_stream(
             context=RESET_CTX_BODY_DISCARD_CANCELLATION,
         )
         return DispatchResult(endpoint=None, status=400)
+    stream_writer.report_recv_consumed(request.head_bytes)
 
     transfer_encoding = (request.transfer_encoding or "").lower()
     if transfer_encoding:
@@ -335,12 +356,17 @@ async def dispatch_stream(
             return DispatchResult(endpoint=endpoint, status=403)
 
     disconnect_event = threading.Event()
+
+    def report_recv_consumed(n: int) -> None:
+        loop.call_soon_threadsafe(stream_writer.report_recv_consumed, n)
+
     environ = build_environ(
         request,
         identity,
         stream_reader,
         loop,
         disconnect_event,
+        report_recv_consumed,
         path_info,
     )
     future = loop.run_in_executor(
@@ -386,6 +412,7 @@ def build_environ(
     stream_reader: asyncio.StreamReader,
     loop: asyncio.AbstractEventLoop,
     disconnect_event: threading.Event,
+    report_recv_consumed: Callable[[int], None],
     path_info: str,
 ) -> dict[str, Any]:
     environ: dict[str, Any] = {
@@ -397,7 +424,13 @@ def build_environ(
         "SERVER_PORT": "7657",
         "SERVER_PROTOCOL": "HTTP/1.1",
         "wsgi.version": (1, 0),
-        "wsgi.input": MuxWSGIInput(stream_reader, loop, request.content_length),
+        "wsgi.input": MuxWSGIInput(
+            stream_reader,
+            loop,
+            request.content_length,
+            disconnect_event,
+            report_recv_consumed,
+        ),
         "wsgi.errors": sys.stderr,
         "wsgi.url_scheme": "https",
         "wsgi.multithread": True,
@@ -474,13 +507,27 @@ def _run_wsgi(
             raise _WsgiClientDisconnected
         try:
             future = asyncio.run_coroutine_threadsafe(stream_writer.write(data), loop)
-            future.result()
+            while True:
+                try:
+                    future.result(timeout=WSGI_SEND_BRIDGE_POLL_SECONDS)
+                    return
+                except TimeoutError:
+                    if future.done():
+                        future.result()
+                        return
+                    if not disconnect_event.is_set():
+                        continue
+                    future.cancel()
+                    raise ConnectionError(
+                        f"stream {stream_writer.stream_id} writer is closed"
+                    )
         except (
             BrokenPipeError,
             CancelledError,
             ConnectionError,
             ConnectionResetError,
             RuntimeError,
+            TimeoutError,
         ) as exc:
             disconnect_event.set()
             raise _WsgiClientDisconnected from exc
@@ -547,12 +594,16 @@ def _run_wsgi(
                 write(chunk)
             except _WsgiClientDisconnected:
                 break
+        if disconnect_event.is_set() and not state["headers_sent"]:
+            return 499
         if not disconnect_event.is_set():
             ensure_head()
             if state["chunked"] and state["body_allowed"]:
                 send(b"0\r\n\r\n")
             future = asyncio.run_coroutine_threadsafe(stream_writer.close(), loop)
             future.result()
+    except _WsgiClientDisconnected:
+        return 499
     finally:
         disconnect_event.set()
         if response_iter is not None and hasattr(response_iter, "close"):

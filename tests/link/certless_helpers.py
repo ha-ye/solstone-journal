@@ -90,6 +90,7 @@ class FakeStreamWriter:
         self.reset_reason: int | None = None
         self.reset_context: str | None = None
         self.drain_context: str | None = None
+        self.recv_consumed = 0
 
     async def write(self, data: bytes) -> None:
         self.data.extend(data)
@@ -105,6 +106,9 @@ class FakeStreamWriter:
 
     def begin_drain(self, context: str) -> None:
         self.drain_context = context
+
+    def report_recv_consumed(self, n: int) -> None:
+        self.recv_consumed += n
 
 
 def build_csr(label: str) -> tuple[ec.EllipticCurvePrivateKey, bytes, str]:
