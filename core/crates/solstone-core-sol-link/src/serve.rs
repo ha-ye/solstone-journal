@@ -61,7 +61,22 @@ impl ServeStarter {
         &self,
         request: LinkServeRequest,
     ) -> Result<Box<dyn LinkServeSession>, LinkServeError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // Must be multi-threaded: `LinkServeSession::serve` parks the calling
+        // thread in a blocking `ShutdownSignal::wait()` for the process's whole
+        // lifetime, and never re-enters the runtime until shutdown. A
+        // current-thread runtime only polls spawned tasks while some thread is
+        // inside `block_on`, so the bridge's accept loop — spawned by
+        // `journal_bridge::start` below — would never run. The listener would
+        // still bind (the kernel completes handshakes from the backlog), so the
+        // port looks healthy while every request hangs and returns zero bytes.
+        //
+        // The worker count is pinned rather than left to default: this proxy
+        // carries one person's loopback traffic over a single carrier, and the
+        // default spawns one worker per core (33 threads on a large host). The
+        // work is entirely async I/O, so two workers is ample — one can block
+        // briefly on a task without stalling the accept loop.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|_| LinkServeError::new(LinkServeErrorKind::RuntimeUnavailable))?;
@@ -556,7 +571,8 @@ fn serve_failure_detail(kind: &LinkServeTransportErrorKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+    use std::sync::Condvar;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -1097,5 +1113,161 @@ mod tests {
             server.await.expect("server task");
             handle.shutdown_and_wait().await;
         });
+    }
+
+    struct GateShutdown {
+        released: Mutex<bool>,
+        gate: Condvar,
+    }
+
+    impl GateShutdown {
+        fn new() -> Self {
+            Self {
+                released: Mutex::new(false),
+                gate: Condvar::new(),
+            }
+        }
+
+        fn release(&self) {
+            *self.released.lock().expect("shutdown lock") = true;
+            self.gate.notify_all();
+        }
+    }
+
+    impl ShutdownSignal for GateShutdown {
+        fn wait(&self) {
+            let mut released = self.released.lock().expect("shutdown lock");
+            while !*released {
+                released = self.gate.wait(released).expect("shutdown wait");
+            }
+        }
+    }
+
+    /// Issue one HTTP/1.1 GET over loopback and read the whole response.
+    ///
+    /// Returns `None` when the peer accepts the connection but never answers —
+    /// the exact shape of the regression below, which must not be reported as a
+    /// hang or a panic.
+    fn loopback_get(port: u16, target: &str) -> Option<String> {
+        use std::io::{Read as _, Write as _};
+
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        stream
+            .write_all(
+                format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .ok()?;
+
+        let mut raw = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    raw.extend_from_slice(&chunk[..read]);
+                    if body_is_complete(&raw) {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if raw.is_empty() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&raw).into_owned())
+    }
+
+    /// True once `raw` holds a full header block plus its declared body.
+    fn body_is_complete(raw: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(raw);
+        let Some(header_end) = text.find("\r\n\r\n") else {
+            return false;
+        };
+        let declared = text[..header_end].lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())?
+        });
+        declared.is_some_and(|length| raw.len() >= header_end + 4 + length)
+    }
+
+    fn resident_serve_request(port: u16) -> LinkServeRequest {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("client key");
+        let params = CertificateParams::new(vec!["client.test".to_string()]).expect("client params");
+        let cert = params.self_signed(&key).expect("client cert");
+        LinkServeRequest {
+            label: "laptop".to_string(),
+            port,
+            direct: true,
+            relay_origin: None,
+            bundle: LinkServeBundle {
+                private_key_pem: key.serialize_pem(),
+                client_cert_pem: cert.pem(),
+                ca_chain_pem: vec![ca_pem()],
+                home_attestation: "attestation.jwt".to_string(),
+                instance_id: "home-instance".to_string(),
+                home_label: "Home".to_string(),
+                endpoints: vec![LinkServeEndpoint {
+                    host: "127.0.0.1".to_string(),
+                    port: unused_loopback_port(),
+                }],
+                local_endpoints: json!([{"ip": "127.0.0.1", "port": 7657}]),
+            },
+        }
+    }
+
+    #[test]
+    fn resident_serve_answers_the_local_status_route_while_on_duty() {
+        // Regression: `start` spawns the bridge accept loop onto its runtime and
+        // `serve` then parks the calling thread in a blocking `ShutdownSignal::wait`
+        // for the process's whole lifetime. On a current-thread runtime nothing
+        // polls that accept loop until shutdown, so the listener binds — the kernel
+        // completes handshakes from the backlog, so the port looks healthy — while
+        // every request hangs and returns zero bytes.
+        //
+        // This must drive the real session lifecycle: `serve` on its own thread and
+        // a genuine loopback request. Every other test here drives the bridge under
+        // its own `block_on`, which keeps the runtime driven and hides this
+        // entirely. No journal, relay, or peer is involved: the status route is
+        // answered locally and never forwarded upstream.
+        let port = unused_loopback_port();
+        let session = SplLinkServeRunner
+            .start(resident_serve_request(port))
+            .expect("serve session starts");
+        assert_eq!(session.bound_port(), port);
+
+        let shutdown = Arc::new(GateShutdown::new());
+        let serve_shutdown = Arc::clone(&shutdown);
+        let resident = std::thread::spawn(move || session.serve(serve_shutdown.as_ref()));
+
+        let response = loopback_get(port, STATUS_PATH);
+        shutdown.release();
+        resident
+            .join()
+            .expect("resident thread")
+            .expect("clean shutdown");
+
+        let response = response.expect(
+            "status route returned no bytes — the bridge accept loop is not being polled while \
+             the resident command is on duty",
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "unexpected status response: {response}"
+        );
+        // `manager_alive` is how `status_body` surfaces the bridge's
+        // `listener_active`; true here proves the listener is genuinely on duty
+        // and not merely bound.
+        assert!(
+            response.contains("\"manager_alive\":true"),
+            "status payload should report an active listener: {response}"
+        );
     }
 }

@@ -15,7 +15,14 @@ serde_json = { workspace = true }
 solstone-core-sol-client = { workspace = true }
 spl-core = { workspace = true }
 spl-transport = { workspace = true }
-tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] }
+tokio = { workspace = true, features = [
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "time",
+    "io-util",
+    "sync",
+] }
 
 [dev-dependencies]
 rcgen = { workspace = true }
