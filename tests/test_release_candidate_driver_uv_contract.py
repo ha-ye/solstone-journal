@@ -59,7 +59,7 @@ def _uv_banner(uv: str) -> str:
 
 def _driver_uv_argvs() -> Iterable[tuple[str, ...]]:
     for include_models in (True, False):
-        for argv, _maturin_args in driver._expected_local_build_commands(
+        for argv, _maturin_args, _ort_target in driver._expected_local_build_commands(
             include_models=include_models,
             version=driver._project_version(Path.cwd()),
         ):

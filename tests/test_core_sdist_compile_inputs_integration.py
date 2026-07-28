@@ -161,7 +161,7 @@ def _build_wheel(tmp_path: Path, name: str, sdist: Path) -> _BuildResult:
 
 
 def _build_env(root: Path, target_dir: Path, maturin_args: str) -> dict[str, str]:
-    env = _scrubbed_build_env(root, maturin_args)
+    env = _scrubbed_build_env(root, maturin_args, None)
     # The rail builds inside the checkout and inherits rust-toolchain.toml;
     # this isolated harness does not. Pin that toolchain explicitly, keep Cargo
     # offline, and use a fresh non-incremental target dir so no cached artifact

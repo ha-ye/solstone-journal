@@ -61,6 +61,7 @@ def test_scrubbed_build_env_makes_zig_cache_resolution_explicit(
     env = driver._scrubbed_build_env(
         tmp_path,
         driver.CORE_X86_64_MATURIN_ARGS,
+        None,
     )
     cache_root = tmp_path / "target" / "release-zig-cache"
     expected_global = (cache_root / "zig-global").resolve()
@@ -92,6 +93,7 @@ def test_scrubbed_build_env_without_zig_cache_keys_fails_zig_resolution(
     env = driver._scrubbed_build_env(
         tmp_path,
         driver.CORE_X86_64_MATURIN_ARGS,
+        None,
     )
     stripped_env = {
         key: value for key, value in env.items() if not key.startswith("ZIG_")

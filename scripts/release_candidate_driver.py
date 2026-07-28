@@ -127,6 +127,11 @@ from scripts.release_tool_pins import (
     RUSTC_RELEASE_PIN,
     fixture_lane_tool_evidence,
 )
+from scripts.stage_speakers_analyze_runtime import (
+    DEFAULT_LINK_ROOT as SPEAKERS_ANALYZE_DEFAULT_LINK_ROOT,
+)
+from scripts.stage_speakers_analyze_runtime import ROOT as SPEAKERS_ANALYZE_STAGE_ROOT
+from scripts.stage_speakers_analyze_runtime import TARGETS as SPEAKERS_ANALYZE_TARGETS
 from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -160,6 +165,9 @@ ROOT_WORKSPACE_PACKAGE = "solstone"
 MODELS_WORKSPACE_PACKAGE = "solstone-journal-models"
 CORE_WORKSPACE_PACKAGE = "solstone-core"
 SPEAKERS_ANALYZE_WORKSPACE_PACKAGE = "solstone-core-speakers-analyze"
+SPEAKERS_ANALYZE_LINK_ROOT_RELATIVE = SPEAKERS_ANALYZE_DEFAULT_LINK_ROOT.relative_to(
+    SPEAKERS_ANALYZE_STAGE_ROOT
+)
 RESERVED_CANDIDATE_DIRNAME = "release-candidate"
 RELEASE_CANDIDATE_DISCARD_RETAINED_ENV = "RELEASE_CANDIDATE_DISCARD_RETAINED"
 RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG_ENV = "RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG"
@@ -1004,10 +1012,17 @@ def _create_zig_cache_dirs(root: Path) -> tuple[Path, Path]:
     return global_cache.resolve(), local_cache.resolve()
 
 
-def _scrubbed_build_env(root: Path, maturin_args: str) -> dict[str, str]:
+def _scrubbed_build_env(
+    root: Path, maturin_args: str, ort_target: str | None
+) -> dict[str, str]:
     zig_global_cache, zig_local_cache = _create_zig_cache_dirs(root)
     # Local release builds use a narrow env, not a fully synthetic HOME. Keys:
     # - MATURIN_PEP517_ARGS: gives the PEP517 backend the locked Linux args.
+    # - ORT_LIB_PATH: gives only speakers-analyze helper wheel builds the staged
+    #   target-specific ONNX Runtime link directory for the target being built.
+    # - ORT_PREFER_DYNAMIC_LINK: paired with ORT_LIB_PATH so the helper links to
+    #   the staged shared library. It is target-scoped because core/musl builds
+    #   do not bundle that runtime and must stay ORT-free.
     # - PATH: the only ambient value copied, solely for tool discovery.
     # - PYTHONNOUSERSITE: keeps Python from importing user-site packages.
     # - ZIG_GLOBAL_CACHE_DIR: required by Zig 0.16.0 without HOME/XDG appdata.
@@ -1023,13 +1038,26 @@ def _scrubbed_build_env(root: Path, maturin_args: str) -> dict[str, str]:
     # network-dependent re-resolution in probes: crates.io index plus 77 .crate
     # downloads and a 113M cargo cache per candidate, weakening --locked offline
     # determinism.
-    return {
+    env = {
         "MATURIN_PEP517_ARGS": maturin_args,
         "PATH": os.environ.get("PATH", ""),
         "PYTHONNOUSERSITE": "1",
         "ZIG_GLOBAL_CACHE_DIR": str(zig_global_cache),
         "ZIG_LOCAL_CACHE_DIR": str(zig_local_cache),
     }
+    if ort_target is not None:
+        if ort_target not in SPEAKERS_ANALYZE_TARGETS:
+            valid = ", ".join(sorted(SPEAKERS_ANALYZE_TARGETS))
+            raise ValueError(
+                f"unknown speakers-analyze ORT target {ort_target!r}; "
+                f"expected one of: {valid}"
+            )
+        spec = SPEAKERS_ANALYZE_TARGETS[ort_target]
+        env["ORT_LIB_PATH"] = str(
+            (root / SPEAKERS_ANALYZE_LINK_ROOT_RELATIVE / spec.key).resolve()
+        )
+        env["ORT_PREFER_DYNAMIC_LINK"] = "true"
+    return env
 
 
 def _expected_local_build_packages(*, include_models: bool) -> tuple[str, ...]:
@@ -1041,34 +1069,40 @@ def _expected_local_build_packages(*, include_models: bool) -> tuple[str, ...]:
 
 def _expected_local_build_commands(
     *, include_models: bool, version: str
-) -> tuple[tuple[tuple[str, ...], str], ...]:
-    render_check = (("python3", "scripts/render_packaging.py", "--check"), "")
+) -> tuple[tuple[tuple[str, ...], str, str | None], ...]:
+    render_check = (("python3", "scripts/render_packaging.py", "--check"), "", None)
     package_builds = tuple(
-        (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS)
+        (("uv", "build", "--package", package), CORE_X86_64_MATURIN_ARGS, None)
         for package in _expected_local_build_packages(include_models=include_models)
         if package not in {CORE_WORKSPACE_PACKAGE, SPEAKERS_ANALYZE_WORKSPACE_PACKAGE}
     )
     core_sdist = (
         ("uv", "build", "--package", CORE_WORKSPACE_PACKAGE, "--sdist"),
         "",
+        None,
     )
     core_sdist_path = f"dist/solstone_core-{version}.tar.gz"
     x86_64_core = (
         ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
         CORE_X86_64_MATURIN_ARGS,
+        None,
     )
     aarch64_core = (
         ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
         CORE_AARCH64_MATURIN_ARGS,
+        None,
     )
+    x86_64_helper_target = "linux-x86_64"
+    aarch64_helper_target = "linux-aarch64"
     x86_64_helper_stage = (
         (
             "python3",
             "scripts/stage_speakers_analyze_runtime.py",
             "--target",
-            "linux-x86_64",
+            x86_64_helper_target,
         ),
         "",
+        None,
     )
     x86_64_helper = (
         (
@@ -1079,15 +1113,17 @@ def _expected_local_build_commands(
             "--wheel",
         ),
         SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS,
+        x86_64_helper_target,
     )
     aarch64_helper_stage = (
         (
             "python3",
             "scripts/stage_speakers_analyze_runtime.py",
             "--target",
-            "linux-aarch64",
+            aarch64_helper_target,
         ),
         "",
+        None,
     )
     aarch64_helper = (
         (
@@ -1098,6 +1134,7 @@ def _expected_local_build_commands(
             "--wheel",
         ),
         SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS,
+        aarch64_helper_target,
     )
     return (
         render_check,
@@ -1144,11 +1181,11 @@ def _default_build_local_dist(
         "--sdist",
     )
     core_sdist = root / "dist" / f"solstone_core-{version}.tar.gz"
-    for argv, maturin_args in _expected_local_build_commands(
+    for argv, maturin_args, ort_target in _expected_local_build_commands(
         include_models=include_models,
         version=version,
     ):
-        env = _scrubbed_build_env(root, maturin_args)
+        env = _scrubbed_build_env(root, maturin_args, ort_target)
         _run_stdout(
             runner,
             list(argv),

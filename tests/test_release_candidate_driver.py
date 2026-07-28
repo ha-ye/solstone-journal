@@ -293,15 +293,24 @@ def _assert_no_ready_cohort(root: Path) -> None:
     assert not evidence_staging.exists()
 
 
-def _expected_scrubbed_env(root: Path, maturin_args: str) -> dict[str, str]:
+def _expected_scrubbed_env(
+    root: Path, maturin_args: str, ort_target: str | None
+) -> dict[str, str]:
     cache_root = root / "target" / "release-zig-cache"
-    return {
+    env = {
         "MATURIN_PEP517_ARGS": maturin_args,
         "PATH": os.environ["PATH"],
         "PYTHONNOUSERSITE": "1",
         "ZIG_GLOBAL_CACHE_DIR": str((cache_root / "zig-global").resolve()),
         "ZIG_LOCAL_CACHE_DIR": str((cache_root / "zig-local").resolve()),
     }
+    if ort_target is not None:
+        spec = driver.SPEAKERS_ANALYZE_TARGETS[ort_target]
+        env["ORT_LIB_PATH"] = str(
+            (root / driver.SPEAKERS_ANALYZE_LINK_ROOT_RELATIVE / spec.key).resolve()
+        )
+        env["ORT_PREFER_DYNAMIC_LINK"] = "true"
+    return env
 
 
 @dataclass(frozen=True)
@@ -2700,21 +2709,29 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
 
     driver._default_build_local_dist(tmp_path, include_models=False, runner=runner)
 
-    expected_x86_env = _expected_scrubbed_env(tmp_path, driver.CORE_X86_64_MATURIN_ARGS)
-    expected_aarch64_env = _expected_scrubbed_env(
-        tmp_path, driver.CORE_AARCH64_MATURIN_ARGS
+    expected_x86_env = _expected_scrubbed_env(
+        tmp_path, driver.CORE_X86_64_MATURIN_ARGS, None
     )
+    expected_aarch64_env = _expected_scrubbed_env(
+        tmp_path, driver.CORE_AARCH64_MATURIN_ARGS, None
+    )
+    expected_helper_x86_target = "linux-x86_64"
+    expected_helper_aarch64_target = "linux-aarch64"
     expected_helper_x86_env = _expected_scrubbed_env(
-        tmp_path, driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS
+        tmp_path,
+        driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS,
+        expected_helper_x86_target,
     )
     expected_helper_aarch64_env = _expected_scrubbed_env(
-        tmp_path, driver.SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS
+        tmp_path,
+        driver.SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS,
+        expected_helper_aarch64_target,
     )
     core_sdist_path = f"dist/solstone_core-{checker._current_version()}.tar.gz"
     assert calls == [
         (
             ("python3", "scripts/render_packaging.py", "--check"),
-            _expected_scrubbed_env(tmp_path, ""),
+            _expected_scrubbed_env(tmp_path, "", None),
         ),
         (
             ("uv", "build", "--package", "solstone"),
@@ -2730,7 +2747,7 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         ),
         (
             ("uv", "build", "--package", "solstone-core", "--sdist"),
-            _expected_scrubbed_env(tmp_path, ""),
+            _expected_scrubbed_env(tmp_path, "", None),
         ),
         (
             ("uv", "build", core_sdist_path, "--wheel", "--out-dir", "dist"),
@@ -2745,9 +2762,9 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
                 "python3",
                 "scripts/stage_speakers_analyze_runtime.py",
                 "--target",
-                "linux-x86_64",
+                expected_helper_x86_target,
             ),
-            _expected_scrubbed_env(tmp_path, ""),
+            _expected_scrubbed_env(tmp_path, "", None),
         ),
         (
             (
@@ -2764,9 +2781,9 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
                 "python3",
                 "scripts/stage_speakers_analyze_runtime.py",
                 "--target",
-                "linux-aarch64",
+                expected_helper_aarch64_target,
             ),
-            _expected_scrubbed_env(tmp_path, ""),
+            _expected_scrubbed_env(tmp_path, "", None),
         ),
         (
             (
@@ -2792,6 +2809,17 @@ def test_default_build_local_dist_uses_exact_linux_contract_and_scrubbed_env(
         driver.SPEAKERS_ANALYZE_AARCH64_MATURIN_ARGS,
     ]
     assert all("AMBIENT_RELEASE_TOKEN" not in env for _argv, env in calls)
+    helper_build_argv = (
+        "uv",
+        "build",
+        "--package",
+        driver.SPEAKERS_ANALYZE_WORKSPACE_PACKAGE,
+        "--wheel",
+    )
+    assert all(
+        not any(key.startswith("ORT_") for key in env) or argv == helper_build_argv
+        for argv, env in calls
+    )
     for _argv, env in calls:
         assert Path(env["ZIG_GLOBAL_CACHE_DIR"]).is_relative_to(tmp_path)
         assert Path(env["ZIG_LOCAL_CACHE_DIR"]).is_relative_to(tmp_path)
@@ -2808,7 +2836,7 @@ def test_scrubbed_build_env_reports_uncreatable_zig_cache_root(
     cache_root.write_text("not a directory", encoding="utf-8")
 
     with pytest.raises(driver.DriverError) as exc:
-        driver._scrubbed_build_env(tmp_path, driver.CORE_X86_64_MATURIN_ARGS)
+        driver._scrubbed_build_env(tmp_path, driver.CORE_X86_64_MATURIN_ARGS, None)
 
     assert exc.value.failures[0].error == (
         "release Zig cache directory could not be created"
@@ -2817,6 +2845,15 @@ def test_scrubbed_build_env_reports_uncreatable_zig_cache_root(
         "writable Zig cache directories under target/release-zig-cache"
     )
     assert "NotADirectoryError" in exc.value.failures[0].actual
+
+
+def test_scrubbed_build_env_rejects_unknown_ort_target(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown speakers-analyze ORT target"):
+        driver._scrubbed_build_env(
+            tmp_path,
+            driver.SPEAKERS_ANALYZE_X86_64_MATURIN_ARGS,
+            "not-a-target",
+        )
 
 
 def test_default_build_local_dist_honors_include_models_build_selection(
