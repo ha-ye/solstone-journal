@@ -20,18 +20,27 @@ use solstone_core_journal::{
     resolve_journal_path,
 };
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
-use solstone_core_sol_client::port::read_convey_port;
+use solstone_core_sol_client::port::{DEFAULT_CONVEY_PORT, read_convey_port};
 use solstone_core_sol_client::resident::{ResidentHandler, ShutdownSignal};
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ChatInput, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, NotificationSink, NotificationSinkError, ProcessOutput, ProcessSpawner,
+    HttpTransport, LinkJoinPairingSeam, LinkServeRunner, NotificationSink, NotificationSinkError,
+    ProcessOutput, ProcessSpawner,
+};
+#[cfg(target_os = "ios")]
+use solstone_core_sol_client::seam::{
+    LinkJoinDirectRequest, LinkJoinPairingError, LinkJoinPairingErrorKind, LinkJoinRelayRequest,
+    LinkServeError, LinkServeErrorKind,
 };
 use solstone_core_sol_client::sse::SseDecoder;
 use solstone_core_sol_client::transport::UreqHttpTransport;
 use solstone_core_sol_client_cli::{
-    DispatchSeams, Outcome, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    dispatch_sol_import_with_seams, dispatch_sol_notify_with_seams, evaluate_args, help,
+    DispatchSeams, LinkDispatch, LinkDispatchSeams, Outcome, dispatch_sol_call_with_seams,
+    dispatch_sol_chat_with_seams, dispatch_sol_import_with_seams, dispatch_sol_link_with_seams,
+    dispatch_sol_notify_with_seams, evaluate_args, help,
 };
+#[cfg(not(target_os = "ios"))]
+use solstone_core_sol_link::{SplLinkJoinPairingSeam, SplLinkServeRunner};
 
 mod generated;
 mod skills;
@@ -51,7 +60,7 @@ const COMPAT_SENTINEL_ARMED: &str = "armed";
 const COMPAT_ARGV0_MARKER_PREFIX: &str = "__solstone_native_argv0=";
 const COMPAT_RECURSION_ERROR: &str =
     "sol: compatibility dispatch recursion detected. Reinstall solstone and solstone-core.";
-const TOP_LEVEL_COMPAT_COMMANDS: &[&str] = &["doctor", "check", "link"];
+const TOP_LEVEL_COMPAT_COMMANDS: &[&str] = &["doctor", "check"];
 
 pub fn run(public_argv0: &str, args: Vec<OsString>) -> ExitCode {
     run_with_stdin_provider(public_argv0, args, &RealStdinProvider)
@@ -91,6 +100,9 @@ fn run_with_stdin_provider(
         }
         [command, rest @ ..] if command == OsStr::new("import") => {
             run_top_level_native(public_argv0, &args, "import", rest, stdin_provider)
+        }
+        [command, rest @ ..] if command == OsStr::new("link") => {
+            run_top_level_link(&args, rest, stdin_provider)
         }
         [command, rest @ ..] if command == OsStr::new("notify") => {
             run_top_level_native(public_argv0, &args, "notify", rest, stdin_provider)
@@ -336,6 +348,108 @@ fn run_top_level_native(
     run_dispatched(public_argv0, all_args, command_args, stdin_provider)
 }
 
+fn run_top_level_link(
+    all_args: &[OsString],
+    command_args: &[OsString],
+    stdin_provider: &dyn StdinProvider,
+) -> ExitCode {
+    let args = match os_strings_to_strings(command_args) {
+        Some(args) => args,
+        None => return render_output(usage_error_output()),
+    };
+    if let Some(output) = help::render_link_help(&args) {
+        return render_output(output);
+    }
+    let dispatch_args = match os_strings_to_strings(all_args) {
+        Some(args) => args,
+        None => return render_output(usage_error_output()),
+    };
+    let today = Local::now().format("%Y%m%d").to_string();
+    let journal_root = resolve_process_journal_path().ok().map(|line| line.path);
+    let port = journal_root
+        .as_ref()
+        .map_or(DEFAULT_CONVEY_PORT, read_convey_port);
+    let transport = UreqHttpTransport::new(port);
+    let env = env::vars().collect::<BTreeMap<_, _>>();
+    let stdin = match stdin_provider.read_if_piped() {
+        Ok(Some(value)) => value,
+        Ok(None) => String::new(),
+        Err(error) => {
+            eprintln!("native sol stdin read failed: {error}");
+            return ExitCode::from(EXIT_TEMPFAIL);
+        }
+    };
+    let clock = SystemClock::default();
+    let files = RealFileProvider;
+    let dispatch = dispatch_top_level_link_with_runtime_seams(
+        &dispatch_args,
+        TopLevelLinkRuntime {
+            env: &env,
+            stdin: &stdin,
+            today: &today,
+            transport: &transport,
+            clock: &clock,
+            files: &files,
+            journal_root: journal_root.as_deref(),
+        },
+    );
+    match dispatch {
+        LinkDispatch::Buffered(output) => render_output(output),
+        LinkDispatch::Resident {
+            handler,
+            args: resident_args,
+        } => {
+            let context = CommandContext {
+                args: &resident_args,
+                env: &env,
+                stdin: &stdin,
+                today: &today,
+                transport: &transport,
+                clock: Some(&clock),
+                chat_events: None,
+                files: Some(&files),
+                build_identity: None,
+                client_item_ids: None,
+                notification_sink: None,
+                link_pairing: Some(link_join_pairing_seam()),
+                link_serve: Some(link_serve_runner()),
+                journal_root: journal_root.as_deref(),
+            };
+            run_resident_command(handler, context)
+        }
+    }
+}
+
+struct TopLevelLinkRuntime<'a> {
+    env: &'a BTreeMap<String, String>,
+    stdin: &'a str,
+    today: &'a str,
+    transport: &'a dyn HttpTransport,
+    clock: &'a dyn Clock,
+    files: &'a dyn FileProvider,
+    journal_root: Option<&'a Path>,
+}
+
+fn dispatch_top_level_link_with_runtime_seams(
+    args: &[String],
+    runtime: TopLevelLinkRuntime<'_>,
+) -> LinkDispatch {
+    dispatch_sol_link_with_seams(
+        args,
+        runtime.env,
+        runtime.stdin,
+        runtime.today,
+        LinkDispatchSeams {
+            transport: runtime.transport,
+            clock: Some(runtime.clock),
+            files: Some(runtime.files),
+            link_pairing: Some(link_join_pairing_seam()),
+            link_serve: Some(link_serve_runner()),
+            journal_root: runtime.journal_root,
+        },
+    )
+}
+
 fn plain_path_output(line: &JournalPathLine) -> CommandOutput {
     CommandOutput::success(format!("{}\n", line.path.display()))
 }
@@ -553,6 +667,62 @@ fn run_dispatched(
         Outcome::Unsupported { .. } => unsupported_output(),
     };
     render_output(output)
+}
+
+#[cfg(not(target_os = "ios"))]
+static LINK_JOIN_PAIRING_SEAM: SplLinkJoinPairingSeam = SplLinkJoinPairingSeam;
+#[cfg(not(target_os = "ios"))]
+static LINK_SERVE_RUNNER: SplLinkServeRunner = SplLinkServeRunner;
+#[cfg(target_os = "ios")]
+static LINK_JOIN_PAIRING_SEAM: UnavailableLinkJoinPairingSeam = UnavailableLinkJoinPairingSeam;
+#[cfg(target_os = "ios")]
+static LINK_SERVE_RUNNER: UnavailableLinkServeRunner = UnavailableLinkServeRunner;
+
+fn link_join_pairing_seam() -> &'static dyn LinkJoinPairingSeam {
+    &LINK_JOIN_PAIRING_SEAM
+}
+
+fn link_serve_runner() -> &'static dyn LinkServeRunner {
+    &LINK_SERVE_RUNNER
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Default)]
+struct UnavailableLinkJoinPairingSeam;
+
+#[cfg(target_os = "ios")]
+impl LinkJoinPairingSeam for UnavailableLinkJoinPairingSeam {
+    fn pair_direct(
+        &self,
+        _request: LinkJoinDirectRequest,
+    ) -> Result<solstone_core_sol_client::seam::LinkJoinCredential, LinkJoinPairingError> {
+        Err(LinkJoinPairingError::new(
+            LinkJoinPairingErrorKind::RuntimeUnavailable,
+        ))
+    }
+
+    fn pair_relay(
+        &self,
+        _request: LinkJoinRelayRequest,
+    ) -> Result<solstone_core_sol_client::seam::LinkJoinCredential, LinkJoinPairingError> {
+        Err(LinkJoinPairingError::new(
+            LinkJoinPairingErrorKind::RuntimeUnavailable,
+        ))
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Default)]
+struct UnavailableLinkServeRunner;
+
+#[cfg(target_os = "ios")]
+impl LinkServeRunner for UnavailableLinkServeRunner {
+    fn start(
+        &self,
+        _request: solstone_core_sol_client::seam::LinkServeRequest,
+    ) -> Result<Box<dyn solstone_core_sol_client::seam::LinkServeSession>, LinkServeError> {
+        Err(LinkServeError::new(LinkServeErrorKind::RuntimeUnavailable))
+    }
 }
 
 fn delegate_to_compat(public_argv0: &str, all_args: &[OsString]) -> ExitCode {
@@ -1211,6 +1381,44 @@ mod tests {
         assert!(output.contains("Usage: sol call <app> <verb> [args...]"));
         assert!(output.contains("  activities\n"));
         assert!(output.contains("  journal\n"));
+    }
+
+    #[test]
+    fn production_link_join_dispatch_supplies_pairing_seam() {
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![]);
+        let clock = SystemClock::default();
+        let files = RealFileProvider;
+        let args = ["link", "join", "--code", "not-a-code"]
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>();
+
+        match dispatch_top_level_link_with_runtime_seams(
+            &args,
+            TopLevelLinkRuntime {
+                env: &env,
+                stdin: "",
+                today: "20260727",
+                transport: &transport,
+                clock: &clock,
+                files: &files,
+                journal_root: None,
+            },
+        ) {
+            LinkDispatch::Buffered(output) => {
+                assert_eq!(output.stdout, "");
+                assert_eq!(output.exit, 1);
+                assert!(!output.stderr.contains("Link pairing seam is unavailable"));
+                assert!(
+                    output
+                        .stderr
+                        .contains("Pair code did not match an accepted form")
+                );
+            }
+            LinkDispatch::Resident { .. } => panic!("link join must stay buffered"),
+        }
+        transport.assert_done();
     }
 
     #[test]

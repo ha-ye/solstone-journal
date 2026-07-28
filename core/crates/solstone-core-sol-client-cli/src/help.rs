@@ -88,6 +88,20 @@ pub fn render_sol_call_help(args: &[String]) -> Option<CommandOutput> {
 }
 
 #[must_use]
+pub fn render_link_help(args: &[String]) -> Option<CommandOutput> {
+    if !args.is_empty() && !(args.len() == 1 && is_help(args[0].as_str())) {
+        return None;
+    }
+    let path = vec![String::from("link")];
+    if !is_surface_group("sol-link", &path) {
+        return None;
+    }
+    Some(CommandOutput::success(render_surface_group_help(
+        "sol-link", "sol link", &path,
+    )))
+}
+
+#[must_use]
 pub fn render_top_level_help(command: &str, args: &[String]) -> Option<CommandOutput> {
     if args.len() != 1 || !is_help(args[0].as_str()) {
         return None;
@@ -147,14 +161,19 @@ pub fn render_leaf_help(invocation: &str, entry: &InventoryEntry) -> String {
 
 #[must_use]
 pub fn render_group_help(path: &[String]) -> String {
+    render_surface_group_help("sol-call", &format!("sol call {}", path.join(" ")), path)
+}
+
+#[must_use]
+pub fn render_surface_group_help(surface: &str, invocation: &str, path: &[String]) -> String {
     let mut output = String::new();
     push_line(
         &mut output,
-        &format!("Usage: sol call {} <command> [args...]", path.join(" ")),
+        &format!("Usage: {invocation} <command> [args...]"),
     );
     output.push('\n');
     push_line(&mut output, "Commands:");
-    for child in immediate_children(path) {
+    for child in immediate_children(surface, path) {
         let mut line = format!("  {}", child.name);
         if let Some(help) = child.help {
             line.push_str(&format!("{:width$}{}", "", help, width = child.padding));
@@ -166,12 +185,16 @@ pub fn render_group_help(path: &[String]) -> String {
 
 #[must_use]
 pub fn is_sol_call_group(path: &[String]) -> bool {
-    if path.is_empty() || leaf_for_path("sol-call", path).is_some() {
+    is_surface_group("sol-call", path)
+}
+
+fn is_surface_group(surface: &str, path: &[String]) -> bool {
+    if path.is_empty() || leaf_for_path(surface, path).is_some() {
         return false;
     }
     aggregate::entries()
         .iter()
-        .filter(|entry| entry.surface == "sol-call")
+        .filter(|entry| entry.surface == surface)
         .any(|entry| is_strict_prefix(path, entry.path))
 }
 
@@ -281,11 +304,11 @@ struct Child {
     padding: usize,
 }
 
-fn immediate_children(path: &[String]) -> Vec<Child> {
+fn immediate_children(surface: &str, path: &[String]) -> Vec<Child> {
     let mut names: Vec<String> = Vec::new();
     for entry in aggregate::entries()
         .iter()
-        .filter(|entry| entry.surface == "sol-call")
+        .filter(|entry| entry.surface == surface)
     {
         if entry.path.len() <= path.len() || !path_matches(path, entry.path) {
             continue;
@@ -304,7 +327,7 @@ fn immediate_children(path: &[String]) -> Vec<Child> {
                 .cloned()
                 .chain(std::iter::once(name.clone()))
                 .collect::<Vec<_>>();
-            let help = leaf_for_path("sol-call", &child_path).map(|entry| entry.help);
+            let help = leaf_for_path(surface, &child_path).map(|entry| entry.help);
             Child {
                 padding: max_len.saturating_sub(name.len()) + 2,
                 name,
@@ -395,6 +418,34 @@ mod tests {
     }
 
     #[test]
+    fn link_group_help_is_inventory_driven() {
+        let output = render_link_help(&[]).expect("bare link help");
+
+        assert_eq!(output.stderr, "");
+        assert_eq!(output.exit, 0);
+        assert!(
+            output
+                .stdout
+                .contains("Usage: sol link <command> [args...]")
+        );
+        assert!(output.stdout.contains("  join"));
+        assert!(
+            output
+                .stdout
+                .contains("join a solstone with a short code or pair link")
+        );
+        assert!(output.stdout.contains("  serve"));
+        assert!(
+            output
+                .stdout
+                .contains("serve a paired journal over the local link bridge")
+        );
+
+        let flag_output = render_link_help(&["--help".to_string()]).expect("flagged link help");
+        assert_eq!(flag_output, output);
+    }
+
+    #[test]
     fn every_positive_inventory_leaf_renders_declared_metadata() {
         let mut seen = BTreeSet::new();
         let mut scanned = 0;
@@ -402,7 +453,7 @@ mod tests {
         for entry in aggregate::entries() {
             if !matches!(
                 entry.surface,
-                "sol-call" | "sol-chat" | "sol-import" | "sol-notify"
+                "sol-call" | "sol-chat" | "sol-import" | "sol-link" | "sol-notify"
             ) {
                 continue;
             }
@@ -485,7 +536,7 @@ mod tests {
                 !output.contains("Authority:"),
                 "group help fabricated authority line for {group:?}"
             );
-            for child in immediate_children(&group) {
+            for child in immediate_children("sol-call", &group) {
                 assert!(
                     output.contains(&format!("  {}", child.name)),
                     "missing group child {child:?} in {group:?}"
