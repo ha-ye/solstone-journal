@@ -404,7 +404,7 @@ wheel-macos: parakeet-helper
 	@echo "==> staging $(SPEAKERS_ANALYZE_MACOS_TAG) solstone-core-speakers-analyze runtime"
 	python3 scripts/stage_speakers_analyze_runtime.py --target macos-arm64
 	@echo "==> building $(SPEAKERS_ANALYZE_MACOS_TAG) solstone-core-speakers-analyze wheel"
-	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core-speakers-analyze --wheel
+	MACOSX_DEPLOYMENT_TARGET=14.0 ORT_PREFER_DYNAMIC_LINK=true ORT_LIB_PATH="$(CURDIR)/target/speakers-analyze-runtime-link/macos-arm64" MATURIN_PEP517_ARGS="--locked --target aarch64-apple-darwin" $(UV) build --package solstone-core-speakers-analyze --wheel
 	@echo "==> signing and notarizing solstone-core-speakers-analyze and bundled ONNX Runtime dylib"
 	@SPEAKERS_MAC_WHEEL=$$(ls dist/solstone_core_speakers_analyze-*-$(SPEAKERS_ANALYZE_MACOS_TAG).whl); \
 	SPEAKERS_FACTS=$$(mktemp); \
