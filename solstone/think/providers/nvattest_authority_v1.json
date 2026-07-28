@@ -21,7 +21,7 @@
           "symlink_target": null
         },
         {
-          "executable": false,
+          "executable": true,
           "kind": "regular",
           "relpath": "lib/libnvat.so.1.2.2",
           "symlink_target": null
@@ -84,7 +84,7 @@
           "symlink_target": null
         },
         {
-          "executable": false,
+          "executable": true,
           "kind": "regular",
           "relpath": "lib/libnvat.so.1.2.2",
           "symlink_target": null
@@ -147,7 +147,7 @@
           "symlink_target": null
         },
         {
-          "executable": false,
+          "executable": true,
           "kind": "regular",
           "relpath": "lib/libnvat.1.2.2.dylib",
           "symlink_target": null

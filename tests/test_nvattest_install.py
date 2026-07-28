@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import tarfile
+import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -41,6 +42,7 @@ SIDECAR_KEYS = {
     "tree_fingerprint_sha256",
     "version",
 }
+REAL_ARCHIVE_USER_AGENT = "solstone-nvattest-install-integration/1.0"
 
 
 class DownloadSentinel(RuntimeError):
@@ -93,6 +95,32 @@ def test_install_materializes_authority_layout_and_sidecar_binding(
         journal_path=tmp_path,
         entry=fixture.entry,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("target_key", TARGET_KEYS)
+def test_real_published_nvattest_archives_match_authority(
+    tmp_path: Path,
+    target_key: NvattestTargetKey,
+) -> None:
+    entry = authority_entry(target_key)
+    archive = _download_real_archive(tmp_path / "downloads", entry)
+    raw_dir = tmp_path / target_key / "raw"
+
+    nvattest_install._safe_extract_nvattest_tarball(archive, raw_dir)
+    root = nvattest_install._find_extracted_root(raw_dir, entry)
+
+    assert nvattest_install._is_payload_root(root, entry)
+    assert {
+        fact["relpath"] for fact in nvattest_install._payload_member_facts(root, entry)
+    } == {member.relpath for member in entry.inventory}
+    if target_key == "linux-x86_64":
+        installed = nvattest_install.install_nvattest(
+            force=True,
+            entry=entry,
+            journal_path=tmp_path / "journal-install",
+        )
+        _assert_payload_layout(installed, entry)
 
 
 def test_install_accepts_single_wrapped_authority_payload(
@@ -644,6 +672,32 @@ def _invalid_flat_archive(
         archive_path=archive_path,
         entry=_fixture_entry(tmp_path, entry, archive_path=archive_path),
     )
+
+
+def _download_real_archive(root: Path, entry: NvattestTargetEntry) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / entry.artifact.name
+    tmp = archive.with_name(f".{archive.name}.tmp")
+    digest = hashlib.sha256()
+    try:
+        request = urllib.request.Request(
+            entry.artifact.url,
+            headers={"User-Agent": REAL_ARCHIVE_USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            with tmp.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    handle.write(chunk)
+        actual = digest.hexdigest()
+        assert actual == entry.artifact.sha256
+        tmp.replace(archive)
+        return archive
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _assert_payload_layout(root: Path, entry: NvattestTargetEntry) -> None:

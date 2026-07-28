@@ -66,6 +66,7 @@ from solstone.think.providers.nvattest_install import (
 
 NVATTEST_PROOF_KIND = "solstone-nvattest-compatibility-receipt"
 NVATTEST_CACHE_ROOT = "NVATTEST_CACHE_ROOT"
+NVATTEST_BIN_RELPATH = Path("bin/nvattest")
 SUPPORT = "SUPPORT"
 PYTHON_SITE = "PYTHON_SITE"
 DRIVER = "DRIVER"
@@ -2711,24 +2712,45 @@ def _nvattest_bin_relpath(authority_target: Mapping[str, Any]) -> Path:
                 )
             ]
         )
-    candidates = [
-        str(member["relpath"])
+    expected = (
+        f"exactly one regular executable "
+        f"{NVATTEST_BIN_RELPATH.as_posix()} authority member"
+    )
+    matches = [
+        member
         for member in inventory
         if isinstance(member, Mapping)
-        and member.get("kind") == "regular"
-        and member.get("executable") is True
+        and member.get("relpath") == NVATTEST_BIN_RELPATH.as_posix()
     ]
-    if len(candidates) != 1:
+    if len(matches) != 1:
         raise NvattestProofError(
             [
                 _failure(
                     "nvattest executable inventory member is invalid",
-                    expected="one executable regular authority member",
-                    actual=", ".join(candidates) or "<missing>",
+                    expected=expected,
+                    actual=", ".join(repr(dict(member)) for member in matches)
+                    or "<missing>",
                 )
             ]
         )
-    return Path(candidates[0])
+    member = matches[0]
+    if member.get("kind") != "regular" or member.get("executable") is not True:
+        raise NvattestProofError(
+            [
+                _failure(
+                    "nvattest executable inventory member is invalid",
+                    expected=expected,
+                    actual=repr(
+                        {
+                            "relpath": member.get("relpath"),
+                            "kind": member.get("kind"),
+                            "executable": member.get("executable"),
+                        }
+                    ),
+                )
+            ]
+        )
+    return NVATTEST_BIN_RELPATH
 
 
 def _is_under(path: Path, root: Path) -> bool:

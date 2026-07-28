@@ -113,7 +113,7 @@ def test_authority_payload_contains_exact_inventories() -> None:
             "symlink_target": None,
         },
         {
-            "executable": False,
+            "executable": True,
             "kind": "regular",
             "relpath": "lib/libnvat.so.1.2.2",
             "symlink_target": None,
@@ -152,7 +152,7 @@ def test_authority_payload_contains_exact_inventories() -> None:
     macos_inventory = [
         {**linux_inventory[0]},
         {
-            "executable": False,
+            "executable": True,
             "kind": "regular",
             "relpath": "lib/libnvat.1.2.2.dylib",
             "symlink_target": None,

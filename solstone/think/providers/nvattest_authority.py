@@ -133,7 +133,7 @@ def _manifest(name: str, *, sha256: str) -> NvattestManifestIdentity:
     )
 
 
-def _regular(relpath: str, *, executable: bool = False) -> NvattestInventoryMember:
+def _regular(relpath: str, *, executable: bool) -> NvattestInventoryMember:
     return NvattestInventoryMember(
         kind="regular",
         relpath=relpath,
@@ -154,23 +154,23 @@ def _symlink(relpath: str, target: str) -> NvattestInventoryMember:
 def _linux_inventory() -> tuple[NvattestInventoryMember, ...]:
     return (
         _regular("bin/nvattest", executable=True),
-        _regular("lib/libnvat.so.1.2.2"),
+        _regular("lib/libnvat.so.1.2.2", executable=True),
         _symlink("lib/libnvat.so.1", "libnvat.so.1.2.2"),
         _symlink("lib/libnvat.so", "libnvat.so.1"),
-        _regular("LICENSE"),
-        _regular("share/ca/ca-bundle.pem"),
-        _regular("share/THIRD_PARTY_NOTICES.md"),
+        _regular("LICENSE", executable=False),
+        _regular("share/ca/ca-bundle.pem", executable=False),
+        _regular("share/THIRD_PARTY_NOTICES.md", executable=False),
     )
 
 
 MACOS_INVENTORY: tuple[NvattestInventoryMember, ...] = (
     _regular("bin/nvattest", executable=True),
-    _regular("lib/libnvat.1.2.2.dylib"),
+    _regular("lib/libnvat.1.2.2.dylib", executable=True),
     _symlink("lib/libnvat.1.dylib", "libnvat.1.2.2.dylib"),
     _symlink("lib/libnvat.dylib", "libnvat.1.dylib"),
-    _regular("LICENSE"),
-    _regular("share/ca/ca-bundle.pem"),
-    _regular("share/THIRD_PARTY_NOTICES.md"),
+    _regular("LICENSE", executable=False),
+    _regular("share/ca/ca-bundle.pem", executable=False),
+    _regular("share/THIRD_PARTY_NOTICES.md", executable=False),
 )
 
 LINUX_INVENTORY = _linux_inventory()
