@@ -18,9 +18,13 @@ if you connect a hosted provider, solstone sends — for each task it runs — t
 - it goes **straight from your machine to the provider**. solstone does not proxy model calls through any sol pbc server — ever. sol pbc is never in the middle and never sees the request, the content, or the response.
 - it uses **your key, your account**. you create the key in the provider's own developer console; solstone just stores it locally and uses it. the relationship is between you and the provider.
 
-## what solstone never sends — to sol pbc or anyone
+## what solstone never sends automatically — and what never goes to sol pbc
 
-**what the product collects: nothing extra.** no telemetry, no analytics, no usage tracking, no crash phone-home. there is no sol pbc endpoint in the model path and none anywhere else in the product — this is verifiable in the code.
+**what the product collects: nothing extra.** no telemetry, no analytics, no usage tracking, no crash phone-home. nothing about how you use solstone is reported back to sol pbc — this is verifiable in the code.
+
+**on the two paths above, there is no sol pbc endpoint in the model path.** with a local model nothing leaves your machine; with your own hosted provider the call goes straight from your machine to that provider, and sol pbc never sees or holds it.
+
+**anything involving sol pbc is a service you switch on.** solstone offers optional services sol pbc operates. one of them, confidential processing, is a third way to run sol's thinking: while you have it turned on — and only then — the model path runs on a sol pbc endpoint, verified by attestation before anything is sent, processed in memory, and not retained. these services are off unless you enable them, and each is disclosed on its own terms at the point you turn it on. this page is about the two paths above.
 
 **what the corporation is bound to, irrevocably.** sol pbc cannot sell, license, share, or otherwise hand your data to any third party — and that holds even for aggregate, anonymized, or de-identified data, which most companies carve out and sol pbc explicitly does not. no targeted advertising. no behavioral profiling of you — ever. this is not a setting you have to find and switch off, and not a policy that can be quietly revised: it's an irrevocable covenant in sol pbc's articles of incorporation (Article 8), binding on sol pbc and any successor. it cannot be weakened by a future release, a policy update, an acquirer, or anyone.
 
