@@ -270,6 +270,25 @@ def _default_fetch(
     )
 
 
+def _command_failure_detail(result: CommandResult, *, limit: int = 4000) -> str:
+    """Operator-facing detail for a failed child command.
+
+    Bounded so a runaway child cannot flood the operator's terminal, and it
+    reports both streams rather than picking one: a wrapper that writes a banner
+    to stderr otherwise hides the real error on stdout.
+    """
+
+    parts = [f"exit {result.exit_code}"]
+    for label, stream in (("stderr", result.stderr), ("stdout", result.stdout)):
+        text = (stream or "").strip()
+        if not text:
+            continue
+        if len(text) > limit:
+            text = "..." + text[-limit:]
+        parts.append(f"{label}: {text}")
+    return " | ".join(parts)
+
+
 def _default_run_package_install(
     env_python: Path,
     driver_path: Path,
@@ -287,12 +306,16 @@ def _default_run_package_install(
         )
     )
     if result.exit_code != 0:
+        # The driver's own output is the only description of why it failed, and
+        # this failure is operator-facing: a proof run that raises here writes
+        # no receipt, so nothing scrubbed-evidence-bound consumes this string.
+        # Reporting only the exit code makes a failed proof undiagnosable.
         raise NvattestProofError(
             [
                 _failure(
                     "nvattest package driver failed",
                     expected="driver exit code 0",
-                    actual=str(result.exit_code),
+                    actual=_command_failure_detail(result),
                 )
             ]
         )
