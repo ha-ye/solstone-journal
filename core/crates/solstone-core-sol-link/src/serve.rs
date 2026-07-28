@@ -1158,8 +1158,10 @@ mod tests {
             .expect("read timeout");
         stream
             .write_all(
-                format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
-                    .as_bytes(),
+                format!(
+                    "GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
             )
             .ok()?;
 
@@ -1200,7 +1202,8 @@ mod tests {
 
     fn resident_serve_request(port: u16) -> LinkServeRequest {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("client key");
-        let params = CertificateParams::new(vec!["client.test".to_string()]).expect("client params");
+        let params =
+            CertificateParams::new(vec!["client.test".to_string()]).expect("client params");
         let cert = params.self_signed(&key).expect("client cert");
         LinkServeRequest {
             label: "laptop".to_string(),
