@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 import sqlite3
@@ -13,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from solstone.think.entities.core import entity_slug
 from solstone.think.indexer import edges as edge_index
 from solstone.think.indexer import journal as journal_index
 from solstone.think.indexer.edges import (
@@ -30,6 +32,7 @@ from solstone.think.indexer.journal import (
     get_journal_index,
     scan_journal,
 )
+from solstone.think.utils import get_journal
 from tests._sqlite_assertions import (
     CHUNK_COLUMNS,
     EDGE_FILE_COLUMNS,
@@ -1246,6 +1249,253 @@ def test_network_overview_type_is_null_for_malformed_entity_record(edges_journal
     assert overview["entities"][0]["name"] == "Malformed Entity"
     assert overview["entities"][0]["type"] is None
     assert overview["entities"][0]["score"] == pytest.approx(4.0)
+
+
+def test_entity_id_component_guard_matches_path_semantics():
+    rejected = [
+        "",
+        ".",
+        "..",
+        "/abs",
+        "../x",
+        ".\\x",
+        "..\\x",
+        "D:",
+        "D:outside",
+        "\x00",
+    ]
+    for entity_id in rejected:
+        assert edge_index._is_safe_entity_id_component(entity_id) is False
+
+    long_id = entity_slug("Long Entity Name " * 80)
+    assert len(long_id) == 200
+    assert long_id[-9] == "_"
+    assert all(char in "0123456789abcdef" for char in long_id[-8:])
+
+    accepted = [
+        "edge_entity",
+        "edge_123",
+        long_id,
+        ".leading_dot",
+        "contains spaces",
+        "Imported-ID.\u03a9",
+    ]
+    for entity_id in accepted:
+        assert edge_index._is_safe_entity_id_component(entity_id) is True
+
+    fixture_entity_ids = sorted(
+        path.name for path in (EDGE_FIXTURE / "entities").iterdir() if path.is_dir()
+    )
+    assert fixture_entity_ids
+    assert all(
+        edge_index._is_safe_entity_id_component(entity_id)
+        for entity_id in fixture_entity_ids
+    )
+
+
+def test_network_overview_skips_unsafe_entity_type_lookups(edges_journal, monkeypatch):
+    scan_journal(str(edges_journal), full=True)
+    unsafe_ids = ["/abs", "../x", ".\\x", "..\\x", "D:", "D:outside"]
+    peer_id = "edge_guard_peer"
+    peer_type = "Guard Peer Type"
+    facet = "type-unsafe-guard"
+    _write_entity_record(
+        edges_journal,
+        peer_id,
+        '{"id":"edge_guard_peer","name":"Guard Peer","type":"Guard Peer Type"}\n',
+    )
+    _insert(
+        edges_journal,
+        [
+            _row(
+                entity_id,
+                peer_id,
+                "created",
+                f"type/unsafe-{idx}.jsonl",
+                facet=facet,
+                src_name=f"Unsafe {idx}",
+                dst_name="Guard Peer",
+            )
+            for idx, entity_id in enumerate(unsafe_ids)
+        ],
+    )
+
+    original_loader = edge_index.load_journal_entity
+    calls: list[str] = []
+
+    def spy(entity_id: str):
+        calls.append(entity_id)
+        if entity_id in unsafe_ids:
+            pytest.fail(f"unsafe entity id reached loader: {entity_id!r}")
+        return original_loader(entity_id)
+
+    monkeypatch.setattr(edge_index, "load_journal_entity", spy)
+
+    overview = load_network_overview(
+        facet=facet,
+        reference_day="20260530",
+        limit=len(unsafe_ids) + 1,
+    )
+    by_id = {row["entity_id"]: row for row in overview["entities"]}
+    expected_score = edge_index._kind_weight(
+        "created", 1, "20260530", edge_index._parse_day("20260530")
+    )
+
+    assert set(calls) == {peer_id}
+    assert by_id[peer_id]["type"] == peer_type
+    for idx, entity_id in enumerate(unsafe_ids):
+        row = by_id[entity_id]
+        assert row["entity_id"] == entity_id
+        assert row["name"] == f"Unsafe {idx}"
+        assert row["type"] is None
+        assert row["score"] == pytest.approx(expected_score)
+        assert row["count"] == 1
+        assert row["first_seen"] == "20260530"
+        assert row["last_seen"] == "20260530"
+        assert row["evidence_class"] == "semantic"
+        assert set(row["kinds"]) == {"created"}
+        assert row["kinds"]["created"]["count"] == 1
+        assert row["kinds"]["created"]["weighted"] == pytest.approx(expected_score)
+
+
+def test_network_overview_guard_prevents_traversal_type_read(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    sentinel_type = "Traversal Sentinel Type"
+    escape_dir = edges_journal / "escape_target"
+    escape_dir.mkdir()
+    (escape_dir / "entity.json").write_text(
+        json.dumps(
+            {
+                "id": "escape_target",
+                "name": "Escape Target",
+                "type": sentinel_type,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    unguarded_path = (
+        Path(get_journal()) / "entities" / "../escape_target" / "entity.json"
+    )
+    assert unguarded_path.exists()
+    planted = json.loads(unguarded_path.read_text(encoding="utf-8"))
+    assert planted["type"] == sentinel_type
+
+    peer_id = "edge_traversal_peer"
+    _write_entity_record(
+        edges_journal,
+        peer_id,
+        json.dumps(
+            {
+                "id": peer_id,
+                "name": "Traversal Peer",
+                "type": "Traversal Peer Type",
+            }
+        )
+        + "\n",
+    )
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "../escape_target",
+                peer_id,
+                "created",
+                "type/traversal.jsonl",
+                facet="type-traversal-guard",
+                src_name="Traversal Source",
+                dst_name="Traversal Peer",
+            ),
+        ],
+    )
+
+    overview = load_network_overview(
+        facet="type-traversal-guard",
+        reference_day="20260530",
+        limit=2,
+    )
+    by_id = {row["entity_id"]: row for row in overview["entities"]}
+
+    assert by_id["../escape_target"]["entity_id"] == "../escape_target"
+    assert by_id["../escape_target"]["name"] == "Traversal Source"
+    assert by_id["../escape_target"]["type"] is None
+    assert by_id[peer_id]["type"] == "Traversal Peer Type"
+
+
+def test_network_overview_accepts_canonical_and_import_shaped_type_ids(
+    edges_journal, monkeypatch
+):
+    scan_journal(str(edges_journal), full=True)
+    long_id = entity_slug("Long Entity Name " * 80)
+    controls = {
+        "edge_safe_type": "Underscore Type",
+        "edge_123_type": "Digit Type",
+        long_id: "Long Generated Type",
+        "Imported-ID.\u03a9": "Imported Type",
+    }
+    peer_id = "edge_canonical_peer"
+    _write_entity_record(
+        edges_journal,
+        peer_id,
+        json.dumps(
+            {
+                "id": peer_id,
+                "name": "Canonical Peer",
+                "type": "Canonical Peer Type",
+            }
+        )
+        + "\n",
+    )
+    for entity_id, entity_type in controls.items():
+        _write_entity_record(
+            edges_journal,
+            entity_id,
+            json.dumps(
+                {
+                    "id": entity_id,
+                    "name": entity_id,
+                    "type": entity_type,
+                }
+            )
+            + "\n",
+        )
+    _insert(
+        edges_journal,
+        [
+            _row(
+                entity_id,
+                peer_id,
+                "created",
+                f"type/canonical-{idx}.jsonl",
+                facet="type-safe-controls",
+                src_name=entity_id,
+                dst_name="Canonical Peer",
+            )
+            for idx, entity_id in enumerate(controls)
+        ],
+    )
+
+    original_loader = edge_index.load_journal_entity
+    calls: list[str] = []
+
+    def spy(entity_id: str):
+        calls.append(entity_id)
+        return original_loader(entity_id)
+
+    monkeypatch.setattr(edge_index, "load_journal_entity", spy)
+
+    overview = load_network_overview(
+        facet="type-safe-controls",
+        reference_day="20260530",
+        limit=len(controls) + 1,
+    )
+    by_id = {row["entity_id"]: row for row in overview["entities"]}
+
+    assert set(calls) == {*controls, peer_id}
+    assert by_id[peer_id]["type"] == "Canonical Peer Type"
+    for entity_id, entity_type in controls.items():
+        assert by_id[entity_id]["entity_id"] == entity_id
+        assert by_id[entity_id]["type"] == entity_type
 
 
 def test_read_apis_are_query_only_and_content_stable(edges_journal, monkeypatch):

@@ -842,6 +842,16 @@ FROM edges
         conn.close()
 
 
+def _is_safe_entity_id_component(entity_id: str) -> bool:
+    """Return whether an id is one component under journal/entities/.
+
+    True means the component cannot escape that directory or crash the loader.
+    """
+    if entity_id in {"", ".", ".."}:
+        return False
+    return not any(marker in entity_id for marker in ("/", "\\", ":", "\x00"))
+
+
 def load_network_overview(
     *,
     kinds: Sequence[str] | None = None,
@@ -967,9 +977,10 @@ GROUP BY entity_id, kind, day
         limited_entities = ordered_entities[:limit]
         for row in limited_entities:
             entity_id = row["entity_id"]
-            record = load_journal_entity(entity_id)
-            raw = record.get("type") if record is not None else None
-            row["type"] = raw if isinstance(raw, str) else None
+            if _is_safe_entity_id_component(entity_id):
+                record = load_journal_entity(entity_id)
+                raw = record.get("type") if record is not None else None
+                row["type"] = raw if isinstance(raw, str) else None
         return {
             "reference_day": ref_day,
             "filters": filters,
