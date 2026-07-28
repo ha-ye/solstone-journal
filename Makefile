@@ -387,16 +387,17 @@ wheel-macos: parakeet-helper
 	@echo "==> signing and notarizing solstone-core"
 	@CORE_MAC_WHEEL=$$(ls dist/solstone_core-*-macosx_14_0_arm64.whl); \
 	CORE_FACTS=$$(mktemp); \
+	CORE_FACTS_DIR=$$(mktemp -d); \
 	CORE_TMP=$$(mktemp -d); \
-	trap 'rm -rf "$$CORE_TMP" "$$CORE_FACTS"' EXIT; \
+	trap 'rm -rf "$$CORE_TMP" "$$CORE_FACTS" "$$CORE_FACTS_DIR"' EXIT; \
 	python3 -m zipfile -e "$$CORE_MAC_WHEEL" "$$CORE_TMP"; \
 	for name in solstone-core; do \
 		CORE_BINARY=$$(find "$$CORE_TMP" -path "*.data/scripts/$$name" -type f -print -quit); \
 		test -n "$$CORE_BINARY" || { echo "missing $$name binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
 		echo "==> signing and notarizing $$name"; \
-		./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY" > "$$CORE_TMP/$$name.signing-facts.json"; \
+		./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY" > "$$CORE_FACTS_DIR/$$name.signing-facts.json"; \
 	done; \
-	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core",); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$CORE_TMP" "$$CORE_FACTS"; \
+	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core",); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$CORE_FACTS_DIR" "$$CORE_FACTS"; \
 	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"; \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \
@@ -408,18 +409,19 @@ wheel-macos: parakeet-helper
 	@echo "==> signing and notarizing solstone-core-speakers-analyze and bundled ONNX Runtime dylib"
 	@SPEAKERS_MAC_WHEEL=$$(ls dist/solstone_core_speakers_analyze-*-$(SPEAKERS_ANALYZE_MACOS_TAG).whl); \
 	SPEAKERS_FACTS=$$(mktemp); \
+	SPEAKERS_FACTS_DIR=$$(mktemp -d); \
 	SPEAKERS_TMP=$$(mktemp -d); \
-	trap 'rm -rf "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS"' EXIT; \
+	trap 'rm -rf "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS" "$$SPEAKERS_FACTS_DIR"' EXIT; \
 	python3 -m zipfile -e "$$SPEAKERS_MAC_WHEEL" "$$SPEAKERS_TMP"; \
 	SPEAKERS_BINARY=$$(find "$$SPEAKERS_TMP" -path "*.data/scripts/solstone-core-speakers-analyze" -type f -print -quit); \
 	test -n "$$SPEAKERS_BINARY" || { echo "missing solstone-core-speakers-analyze binary in $$SPEAKERS_MAC_WHEEL" >&2; exit 1; }; \
 	echo "==> signing and notarizing solstone-core-speakers-analyze"; \
-	./scripts/sign-and-notarize-helper.sh "$$SPEAKERS_BINARY" > "$$SPEAKERS_TMP/solstone-core-speakers-analyze.signing-facts.json"; \
+	./scripts/sign-and-notarize-helper.sh "$$SPEAKERS_BINARY" > "$$SPEAKERS_FACTS_DIR/solstone-core-speakers-analyze.signing-facts.json"; \
 	ONNXRUNTIME_DYLIB=$$(find "$$SPEAKERS_TMP" -path "*.data/data/lib/solstone-core-speakers-analyze/libonnxruntime.1.25.0.dylib" -type f -print -quit); \
 	test -n "$$ONNXRUNTIME_DYLIB" || { echo "missing libonnxruntime.1.25.0.dylib in $$SPEAKERS_MAC_WHEEL" >&2; exit 1; }; \
 	echo "==> signing and notarizing libonnxruntime.1.25.0.dylib"; \
-	./scripts/sign-and-notarize-helper.sh "$$ONNXRUNTIME_DYLIB" > "$$SPEAKERS_TMP/libonnxruntime.1.25.0.dylib.signing-facts.json"; \
-	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core-speakers-analyze", "libonnxruntime.1.25.0.dylib"); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$SPEAKERS_TMP" "$$SPEAKERS_FACTS"; \
+	./scripts/sign-and-notarize-helper.sh "$$ONNXRUNTIME_DYLIB" > "$$SPEAKERS_FACTS_DIR/libonnxruntime.1.25.0.dylib.signing-facts.json"; \
+	python3 -c 'import json, sys; from pathlib import Path; root = Path(sys.argv[1]); out = Path(sys.argv[2]); names = ("solstone-core-speakers-analyze", "libonnxruntime.1.25.0.dylib"); payload = {"members": {name: json.loads((root / f"{name}.signing-facts.json").read_text()) for name in names}}; out.write_text(json.dumps(payload, sort_keys=True) + "\n")' "$$SPEAKERS_FACTS_DIR" "$$SPEAKERS_FACTS"; \
 	python3 scripts/repack_wheel_record.py "$$SPEAKERS_TMP" "$$SPEAKERS_MAC_WHEEL"; \
 	SOURCE_COMMIT=$$(git rev-parse HEAD); \
 	CORE_LOCK_SHA256=$$(shasum -a 256 core/Cargo.lock | awk '{print $$1}'); \

@@ -46,6 +46,23 @@ MAKEFILE_BUILD_RE = re.compile(
     r"\$\(UV\) build --package solstone-core-speakers-analyze --wheel$",
     re.MULTILINE,
 )
+MAKEFILE_WHEEL_MACOS_RE = re.compile(
+    r"^wheel-macos: parakeet-helper\n"
+    r"(?P<body>(?:\t[^\n]*\n)+)",
+    re.MULTILINE,
+)
+MACOS_SIGNING_RE = re.compile(
+    r'\./scripts/sign-and-notarize-helper\.sh "\$\$(?P<input>[A-Z0-9_]+)" > '
+    r'"\$\$(?P<dest_var>[A-Z0-9_]+)(?P<suffix>/[^"]+)"'
+)
+MACOS_AGGREGATE_RE = re.compile(
+    r"python3 -c '.*?payload = \{\"members\": .*?' "
+    r'"\$\$(?P<input_dir>[A-Z0-9_]+)" "\$\$(?P<output_file>[A-Z0-9_]+)"',
+)
+MACOS_REPACK_RE = re.compile(
+    r'python3 scripts/repack_wheel_record\.py "\$\$(?P<input_dir>[A-Z0-9_]+)" '
+    r'"\$\$(?P<wheel>[A-Z0-9_]+)"'
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +75,13 @@ class MakefileHelperRecipe:
     lib_path: str
     maturin_var: str
     maturin_args: str
+
+
+@dataclass(frozen=True)
+class MacosSigningLane:
+    prefix: str
+    block: str
+    expected_signing_outputs: int
 
 
 def _maturin_args_by_var(makefile: str) -> dict[str, str]:
@@ -100,6 +124,33 @@ def _parse_makefile_helper_recipes(makefile: str) -> dict[str, MakefileHelperRec
     return recipes
 
 
+def _wheel_macos_body(makefile: str) -> str:
+    match = MAKEFILE_WHEEL_MACOS_RE.search(makefile)
+    assert match is not None, "Makefile missing Darwin/arm64 wheel-macos recipe"
+    return match.group("body")
+
+
+def _macos_shell_block(body: str, prefix: str) -> str:
+    start_match = re.search(rf"^\t@?{prefix}_MAC_WHEEL=", body, re.MULTILINE)
+    assert start_match is not None, f"{prefix} macOS signing lane is missing"
+    next_prefixes = "|".join(name for name in ("CORE", "SPEAKERS") if name != prefix)
+    end_match = re.search(
+        rf"^\t(?:@?{next_prefixes}_MAC_WHEEL=|@echo|python3 scripts/stage_speakers)",
+        body[start_match.end() :],
+        re.MULTILINE,
+    )
+    end = start_match.end() + end_match.start() if end_match is not None else len(body)
+    return body[start_match.start() : end]
+
+
+def _macos_signing_lanes(makefile: str) -> tuple[MacosSigningLane, MacosSigningLane]:
+    body = _wheel_macos_body(makefile)
+    return (
+        MacosSigningLane("CORE", _macos_shell_block(body, "CORE"), 1),
+        MacosSigningLane("SPEAKERS", _macos_shell_block(body, "SPEAKERS"), 2),
+    )
+
+
 def _driver_helper_build_envs(
     root: Path,
 ) -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
@@ -136,6 +187,32 @@ def _driver_helper_build_envs(
 
 def _ort_env_keys(env: dict[str, str]) -> set[str]:
     return {key for key in env if key.startswith("ORT_")}
+
+
+def test_wheel_macos_signing_facts_stay_outside_packed_dirs() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    for lane in _macos_signing_lanes(makefile):
+        facts_dir = f"{lane.prefix}_FACTS_DIR"
+        packed_dir = f"{lane.prefix}_TMP"
+        aggregate_file = f"{lane.prefix}_FACTS"
+
+        assert f"{facts_dir}=$$(mktemp -d)" in lane.block
+        assert f'"$${facts_dir}"' in lane.block
+
+        signing_matches = tuple(MACOS_SIGNING_RE.finditer(lane.block))
+        assert len(signing_matches) == lane.expected_signing_outputs
+        assert {match.group("dest_var") for match in signing_matches} == {facts_dir}
+        assert packed_dir not in {match.group("dest_var") for match in signing_matches}
+
+        aggregate = MACOS_AGGREGATE_RE.search(lane.block)
+        assert aggregate is not None, f"{lane.prefix} lane missing facts aggregation"
+        assert aggregate.group("input_dir") == facts_dir
+        assert aggregate.group("output_file") == aggregate_file
+
+        repack = MACOS_REPACK_RE.search(lane.block)
+        assert repack is not None, f"{lane.prefix} lane missing wheel repack"
+        assert repack.group("input_dir") == packed_dir
 
 
 def test_release_driver_helper_ort_env_matches_makefile_and_staging(
