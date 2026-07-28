@@ -143,11 +143,11 @@ def build_payload_facts(target_key: str, work_dir: Path) -> tuple[Path, str]:
 
 
 def _render_all(work_dir: Path) -> dict[Path, str]:
-    return {
-        path: text
-        for target_key in TARGET_KEYS
-        for path, text in (build_payload_facts(target_key, work_dir),)
-    }
+    outputs: dict[Path, str] = {}
+    for target_key in TARGET_KEYS:
+        path, text = build_payload_facts(target_key, work_dir)
+        outputs[path] = text
+    return outputs
 
 
 def write_outputs() -> None:

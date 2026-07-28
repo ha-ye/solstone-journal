@@ -211,7 +211,36 @@ def test_payload_executable_bit_fixtures_match_authority() -> None:
     for target_key, target in payload["targets"].items():
         artifact = target["artifact"]
         fixture_path = _payload_facts_fixture_path(str(artifact["name"]))
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture_relpath = fixture_path.relative_to(REPO_ROOT).as_posix()
+        fixture_read_failure = None
+        try:
+            fixture_text = fixture_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            fixture_read_failure = _drift_failure(
+                f"missing nvattest executable-bit fixture for {target_key}",
+                expected=fixture_relpath,
+                actual="<missing>",
+            )
+        except OSError as exc:
+            fixture_read_failure = _drift_failure(
+                f"unreadable/invalid nvattest executable-bit fixture for {target_key}",
+                expected=f"readable JSON file at {fixture_relpath}",
+                actual=f"{type(exc).__name__}: {exc}",
+            )
+        if fixture_read_failure is not None:
+            pytest.fail(fixture_read_failure, pytrace=False)
+
+        fixture_parse_failure = None
+        try:
+            fixture = json.loads(fixture_text)
+        except json.JSONDecodeError as exc:
+            fixture_parse_failure = _drift_failure(
+                f"unreadable/invalid nvattest executable-bit fixture for {target_key}",
+                expected=f"valid JSON in {fixture_relpath}",
+                actual=f"{exc.msg} at line {exc.lineno} column {exc.colno}",
+            )
+        if fixture_parse_failure is not None:
+            pytest.fail(fixture_parse_failure, pytrace=False)
         inventory = target["inventory"]
         expected_executable = {
             str(member["relpath"]): member["executable"] for member in inventory
