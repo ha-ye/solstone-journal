@@ -1328,6 +1328,7 @@ mod tests {
             client_item_ids: None,
             notification_sink: None,
             link_pairing: None,
+            link_serve: None,
             journal_root: None,
         });
 

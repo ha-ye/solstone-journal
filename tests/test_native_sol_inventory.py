@@ -54,6 +54,61 @@ def test_inventory_discovery_uses_real_adjacency_without_central_list(
     assert "_private" not in rendered
 
 
+def test_resident_entries_generate_resident_handlers(tmp_path: Path) -> None:
+    native = tmp_path / "solstone" / "think" / "native" / "link"
+    native.mkdir(parents=True)
+    (native / "command.rs").write_text(
+        "// SPDX-License-Identifier: AGPL-3.0-only\n"
+        "// Copyright (c) 2026 sol pbc\n\n"
+        "pub fn link_join() {}\n"
+        "pub fn link_serve() {}\n"
+    )
+    (native / "authority.toml").write_text(
+        'schema = "native-sol-authority-v1"\n'
+        'source = "command.rs"\n\n'
+        "[[entries]]\n"
+        'surface = "sol-link"\n'
+        'path = ["link", "join"]\n'
+        'kind = "top-level"\n'
+        'help = "join"\n'
+        "params = []\n"
+        'operation_id = "link.join"\n'
+        'entry_type = "top-level-link"\n'
+        'handler = "link_join"\n\n'
+        "[[entries]]\n"
+        'surface = "sol-link"\n'
+        'path = ["link", "serve"]\n'
+        'kind = "top-level"\n'
+        'help = "serve"\n'
+        "params = []\n"
+        'operation_id = "link.serve"\n'
+        'entry_type = "top-level-link"\n'
+        'handler = "link_serve"\n'
+        "resident = true\n"
+    )
+
+    entries = inventory.discover(tmp_path)
+    rendered = inventory.render(
+        entries,
+        tmp_path
+        / "core"
+        / "crates"
+        / "solstone-core-sol-client"
+        / "src"
+        / "generated"
+        / "inventory.rs",
+    )
+
+    assert [entry.resident for entry in entries] == [False, True]
+    assert "use crate::resident::ResidentHandler;" in rendered
+    assert "pub const HANDLERS: &[Handler] = &[" in rendered
+    assert "pub const RESIDENT_HANDLERS: &[ResidentHandler] = &[" in rendered
+    assert "solstone_think_native_link_command_rs::link_join," in rendered
+    assert "solstone_think_native_link_command_rs::link_serve," in rendered
+    assert "resident: false," in rendered
+    assert "resident: true," in rendered
+
+
 def entry(
     tmp_path: Path,
     *,
@@ -66,6 +121,7 @@ def entry(
     method: str | None = None,
     route: str | None = None,
     contract_operation_id: str | None = None,
+    resident: bool = False,
 ) -> inventory.AuthorityEntry:
     return inventory.AuthorityEntry(
         authority=tmp_path / authority_name,
@@ -83,6 +139,7 @@ def entry(
         route=route,
         contract_operation_id=contract_operation_id,
         handler="fixture_handler",
+        resident=resident,
     )
 
 

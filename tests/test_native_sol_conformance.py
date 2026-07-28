@@ -39,6 +39,7 @@ def test_native_sol_conformance_self_test_detects_authority_route_mismatch() -> 
             route="/app/activities/api/day/{day}/wrong",
             contract_operation_id="activities.list",
             handler="list",
+            resident=False,
         )
     ]
 

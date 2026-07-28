@@ -173,6 +173,131 @@ pub trait LinkJoinPairingSeam: Send + Sync {
     ) -> Result<LinkJoinCredential, LinkJoinPairingError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkServeEndpoint {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkServeBundle {
+    pub private_key_pem: String,
+    pub client_cert_pem: String,
+    pub ca_chain_pem: Vec<String>,
+    pub home_attestation: String,
+    pub instance_id: String,
+    pub home_label: String,
+    pub endpoints: Vec<LinkServeEndpoint>,
+    pub local_endpoints: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkServeRequest {
+    pub label: String,
+    pub port: u16,
+    pub direct: bool,
+    pub relay_origin: Option<String>,
+    pub bundle: LinkServeBundle,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkServeFailure {
+    pub reason: String,
+    pub detail: String,
+    pub at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkServeStatusSnapshot {
+    pub health: String,
+    pub state: String,
+    pub manager_alive: bool,
+    pub connected_age_seconds: Option<f64>,
+    pub last_connected_at: Option<f64>,
+    pub last_failure: Option<LinkServeFailure>,
+    pub next_retry_at: Option<f64>,
+    pub reconnect_count: u64,
+    pub active_requests: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkServeRelayErrorKind {
+    HomeOffline,
+    Unauthorized,
+    Unpaid,
+    UnknownInstance,
+    PairWindowClosed,
+    Overflow,
+    Abnormal,
+    UpgradeRejected,
+    Stalled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkServeRelayControlEndpoint {
+    EnrollDevice,
+    TokenRefresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkServeTransportErrorKind {
+    Io,
+    Tls,
+    Crypto,
+    Mux,
+    Http,
+    Json,
+    PairLink,
+    Pairing,
+    Rejected {
+        status: u16,
+    },
+    Relay(LinkServeRelayErrorKind),
+    RelayControlRejected {
+        endpoint: LinkServeRelayControlEndpoint,
+        status: u16,
+    },
+    NoEndpoint,
+    NotPaired,
+    LocalOffset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkServeErrorKind {
+    InvalidBundle,
+    InvalidRelayUrl,
+    Bind { port: u16, addr_in_use: bool },
+    RuntimeUnavailable,
+    BridgeCapability,
+    Transport(LinkServeTransportErrorKind),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkServeError {
+    pub kind: LinkServeErrorKind,
+}
+
+impl LinkServeError {
+    #[must_use]
+    pub fn new(kind: LinkServeErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
+pub trait LinkServeSession: Send {
+    fn bound_port(&self) -> u16;
+    fn serve(
+        self: Box<Self>,
+        shutdown: &dyn crate::resident::ShutdownSignal,
+    ) -> Result<(), LinkServeError>;
+}
+
+pub trait LinkServeRunner: Send + Sync {
+    fn start(&self, request: LinkServeRequest)
+    -> Result<Box<dyn LinkServeSession>, LinkServeError>;
+}
+
 pub trait FileProvider {
     fn read(&self, path: &Path) -> IoResult<Vec<u8>>;
     fn read_to_string(&self, path: &Path) -> std::io::Result<String>;
@@ -263,10 +388,39 @@ pub enum RecordedLinkJoinPairingCall {
     Relay(LinkJoinRelayRequest),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpectedLinkServeSession {
+    pub bound_port: u16,
+    pub serve_result: Result<(), LinkServeError>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpectedLinkServeCall {
+    pub expected: LinkServeRequest,
+    pub result: Result<ExpectedLinkServeSession, LinkServeError>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedLinkServeCall {
+    pub request: LinkServeRequest,
+}
+
 #[derive(Debug, Default)]
 pub struct ScriptedLinkJoinPairingSeam {
     calls: Mutex<VecDeque<ExpectedLinkJoinPairingCall>>,
     recorded: Mutex<Vec<RecordedLinkJoinPairingCall>>,
+}
+
+#[derive(Debug, Default)]
+pub struct ScriptedLinkServeRunner {
+    calls: Mutex<VecDeque<ExpectedLinkServeCall>>,
+    recorded: Mutex<Vec<RecordedLinkServeCall>>,
+}
+
+#[derive(Debug)]
+struct ScriptedLinkServeSession {
+    bound_port: u16,
+    serve_result: Result<(), LinkServeError>,
 }
 
 impl ScriptedLinkJoinPairingSeam {
@@ -291,6 +445,67 @@ impl ScriptedLinkJoinPairingSeam {
             .lock()
             .expect("recorded link pairing lock")
             .clone()
+    }
+}
+
+impl ScriptedLinkServeRunner {
+    #[must_use]
+    pub fn new(calls: Vec<ExpectedLinkServeCall>) -> Self {
+        Self {
+            calls: Mutex::new(calls.into()),
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn assert_done(&self) {
+        assert!(
+            self.calls.lock().expect("scripted calls lock").is_empty(),
+            "scripted link serve calls were not exhausted"
+        );
+    }
+
+    #[must_use]
+    pub fn recorded(&self) -> Vec<RecordedLinkServeCall> {
+        self.recorded.lock().expect("link serve calls lock").clone()
+    }
+}
+
+impl LinkServeRunner for ScriptedLinkServeRunner {
+    fn start(
+        &self,
+        request: LinkServeRequest,
+    ) -> Result<Box<dyn LinkServeSession>, LinkServeError> {
+        self.recorded
+            .lock()
+            .expect("link serve calls lock")
+            .push(RecordedLinkServeCall {
+                request: request.clone(),
+            });
+        match self.calls.lock().expect("scripted calls lock").pop_front() {
+            Some(ExpectedLinkServeCall { expected, result }) => {
+                assert_eq!(request, expected);
+                result.map(|session| {
+                    Box::new(ScriptedLinkServeSession {
+                        bound_port: session.bound_port,
+                        serve_result: session.serve_result,
+                    }) as Box<dyn LinkServeSession>
+                })
+            }
+            other => panic!("expected link serve call, got {other:?}"),
+        }
+    }
+}
+
+impl LinkServeSession for ScriptedLinkServeSession {
+    fn bound_port(&self) -> u16 {
+        self.bound_port
+    }
+
+    fn serve(
+        self: Box<Self>,
+        _shutdown: &dyn crate::resident::ShutdownSignal,
+    ) -> Result<(), LinkServeError> {
+        self.serve_result
     }
 }
 

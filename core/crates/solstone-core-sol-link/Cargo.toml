@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] 
 
 [dev-dependencies]
 rcgen = { workspace = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"] }
 
 [lints]
 workspace = true

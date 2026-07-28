@@ -3,6 +3,7 @@
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::generated::inventory;
+use crate::resident::ResidentHandler;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InventoryEntry {
@@ -18,6 +19,7 @@ pub struct InventoryEntry {
     pub route: Option<&'static str>,
     pub contract_operation_id: Option<&'static str>,
     pub handler: &'static str,
+    pub resident: bool,
 }
 
 pub type Handler = for<'a> fn(CommandContext<'a>) -> CommandOutput;
@@ -33,9 +35,44 @@ pub fn handler_bindings() -> &'static [Handler] {
 }
 
 #[must_use]
+pub fn resident_handler_bindings() -> &'static [ResidentHandler] {
+    inventory::RESIDENT_HANDLERS
+}
+
+#[must_use]
 pub fn handler_for(path: &[&str]) -> Option<(&'static InventoryEntry, Handler)> {
-    inventory::ENTRIES
-        .iter()
-        .zip(inventory::HANDLERS.iter().copied())
-        .find(|(entry, _handler)| entry.path == path)
+    let mut handler_index = 0;
+    for entry in inventory::ENTRIES {
+        if entry.resident {
+            continue;
+        }
+        let handler = inventory::HANDLERS
+            .get(handler_index)
+            .copied()
+            .expect("generated buffered handler table must match inventory");
+        handler_index += 1;
+        if entry.path == path {
+            return Some((entry, handler));
+        }
+    }
+    None
+}
+
+#[must_use]
+pub fn resident_handler_for(path: &[&str]) -> Option<(&'static InventoryEntry, ResidentHandler)> {
+    let mut handler_index = 0;
+    for entry in inventory::ENTRIES {
+        if !entry.resident {
+            continue;
+        }
+        let handler = inventory::RESIDENT_HANDLERS
+            .get(handler_index)
+            .copied()
+            .expect("generated resident handler table must match inventory");
+        handler_index += 1;
+        if entry.path == path {
+            return Some((entry, handler));
+        }
+    }
+    None
 }

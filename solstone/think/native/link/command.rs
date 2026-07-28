@@ -13,15 +13,21 @@ use spl_core::pairlink::{PairLinkError, ParsedPairLink};
 
 use crate::command::{CommandContext, CommandOutput};
 use crate::json_format::{json_compact_ascii, json_pretty_ascii};
+use crate::resident::ResidentCommand;
 use crate::seam::{
     LinkJoinCredential, LinkJoinDirectRequest, LinkJoinPairTarget, LinkJoinPairingError,
     LinkJoinPairingErrorKind, LinkJoinRelayControlEndpoint, LinkJoinRelayErrorKind,
-    LinkJoinRelayRequest,
+    LinkJoinRelayRequest, LinkServeBundle, LinkServeEndpoint, LinkServeError, LinkServeErrorKind,
+    LinkServeRequest, LinkServeTransportErrorKind,
 };
 
 const HELP: &str = "usage: sol link join [-h] [--home HOME] --code CODE [--as AS_ROLE]\n                     [--label LABEL]\n\noptions:\n  -h, --help     show this help message and exit\n  --home HOME    Receiver base URL\n  --code CODE    pair-link URL\n  --as AS_ROLE   Optional tag to join as\n  --label LABEL  Local credentials label (defaults to this machine's hostname)\n";
 const USAGE: &str = "usage: sol link join [-h] [--home HOME] --code CODE [--as AS_ROLE]\n                     [--label LABEL]\n";
+const SERVE_HELP: &str = "usage: sol link serve [-h] [--label LABEL] [--port PORT]\n                      [--relay-url RELAY_URL] [--direct]\n\noptions:\n  -h, --help            show this help message and exit\n  --label LABEL         Observer link bundle label\n  --port PORT           Loopback port to serve on (default: 5015)\n  --relay-url RELAY_URL\n                        Override the spl relay URL\n  --direct              PL-direct only: dial the journal over the LAN secure\n                        listener, never the spl relay. Use when the home is\n                        reachable directly (same LAN/VPN) to avoid any relay\n                        dependency.\n";
+const SERVE_USAGE: &str = "usage: sol link serve [-h] [--label LABEL] [--port PORT]\n                      [--relay-url RELAY_URL] [--direct]\n";
 const DEFAULT_CLIENT_LABEL: &str = "linked-system";
+const DEFAULT_SERVE_PORT: u16 = 5015;
+const DEFAULT_RELAY_URL: &str = "https://link.solstone.app";
 const PAIR_LINK_PREFIX: &str = "https://go.solstone.app/p#";
 const LOCAL_ENDPOINTS_MAX_BYTES: usize = 16 * 1024;
 const PEER_STATE_GUIDANCE: &str = "Peer join requires an initialized link identity. Run 'sol call link pair' on this journal first, then retry.\n";
@@ -204,6 +210,77 @@ pub fn link_join(ctx: CommandContext<'_>) -> CommandOutput {
     ))
 }
 
+pub fn link_serve(ctx: CommandContext<'_>) -> Result<ResidentCommand<'_>, CommandOutput> {
+    let parsed = match parse_serve_args(ctx.args) {
+        Ok(parsed) => parsed,
+        Err(error) => return Err(argparse_serve_error(error)),
+    };
+    if parsed.help {
+        return Err(CommandOutput::success(SERVE_HELP));
+    }
+    if let Some(unknown) = parsed.unknown {
+        return Err(argparse_serve_error(format!(
+            "unrecognized arguments: {unknown}"
+        )));
+    }
+    let port = match parsed.port {
+        Some(port) => port,
+        None => DEFAULT_SERVE_PORT,
+    };
+    if port == 0 {
+        return Err(CommandOutput::failure(
+            "--port must be between 1 and 65535\n",
+            2,
+        ));
+    }
+    let selection = match resolve_serve_bundle(parsed.label.as_deref(), ctx.env) {
+        Ok(selection) => selection,
+        Err(error) => return Err(CommandOutput::failure(format!("{error}\n"), 1)),
+    };
+    let relay_origin = if parsed.direct {
+        None
+    } else {
+        Some(resolve_serve_relay_url(
+            parsed.relay_url.as_deref(),
+            ctx.env,
+        ))
+    };
+    let Some(runner) = ctx.link_serve else {
+        return Err(CommandOutput::failure(
+            "Link serve seam is unavailable.\n",
+            1,
+        ));
+    };
+    let request = LinkServeRequest {
+        label: selection.label.clone(),
+        port,
+        direct: parsed.direct,
+        relay_origin,
+        bundle: selection.bundle,
+    };
+    let session = match runner.start(request) {
+        Ok(session) => session,
+        Err(error) => {
+            return Err(CommandOutput::failure(
+                format!("{}\n", serve_error_text(error)),
+                1,
+            ));
+        }
+    };
+    let startup = format!(
+        "forwarding 127.0.0.1:{} -> home {} over pl\n",
+        session.bound_port(),
+        selection.label
+    );
+    Ok(ResidentCommand::new(
+        startup,
+        move |shutdown| match session.serve(shutdown) {
+            Ok(()) => CommandOutput::success(""),
+            Err(error) => CommandOutput::failure(format!("{}\n", serve_error_text(error)), 1),
+        },
+    ))
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ParsedArgs {
     home: Option<String>,
@@ -212,6 +289,21 @@ struct ParsedArgs {
     label: Option<String>,
     help: bool,
     unknown: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ParsedServeArgs {
+    label: Option<String>,
+    port: Option<u16>,
+    relay_url: Option<String>,
+    direct: bool,
+    help: bool,
+    unknown: Option<String>,
+}
+
+struct ServeBundleSelection {
+    label: String,
+    bundle: LinkServeBundle,
 }
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
@@ -249,6 +341,48 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     Ok(parsed)
 }
 
+fn parse_serve_args(args: &[String]) -> Result<ParsedServeArgs, String> {
+    let mut parsed = ParsedServeArgs::default();
+    let mut index = 0;
+    while index < args.len() {
+        let token = &args[index];
+        if token == "-h" || token == "--help" {
+            parsed.help = true;
+        } else if let Some(value) = token.strip_prefix("--label=") {
+            parsed.label = Some(value.to_string());
+        } else if token == "--label" {
+            index += 1;
+            parsed.label = Some(take_value(args, index, "--label")?.to_string());
+        } else if let Some(value) = token.strip_prefix("--port=") {
+            parsed.port = Some(parse_serve_port(value)?);
+        } else if token == "--port" {
+            index += 1;
+            parsed.port = Some(parse_serve_port(take_raw_value(args, index, "--port")?)?);
+        } else if let Some(value) = token.strip_prefix("--relay-url=") {
+            parsed.relay_url = Some(value.to_string());
+        } else if token == "--relay-url" {
+            index += 1;
+            parsed.relay_url = Some(take_value(args, index, "--relay-url")?.to_string());
+        } else if token == "--direct" {
+            parsed.direct = true;
+        } else if parsed.unknown.is_none() {
+            parsed.unknown = Some(token.clone());
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+fn parse_serve_port(value: &str) -> Result<u16, String> {
+    let parsed = value
+        .parse::<i64>()
+        .map_err(|_| format!("argument --port: invalid int value: '{value}'"))?;
+    if !(1..=65535).contains(&parsed) {
+        return Ok(0);
+    }
+    u16::try_from(parsed).map_err(|_| "--port must be between 1 and 65535".to_string())
+}
+
 fn take_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&'a str, String> {
     let Some(value) = args.get(index).map(String::as_str) else {
         return Err(format!("argument {option}: expected one argument"));
@@ -257,6 +391,207 @@ fn take_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&'a 
         return Err(format!("argument {option}: expected one argument"));
     }
     Ok(value)
+}
+
+fn take_raw_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&'a str, String> {
+    let Some(value) = args.get(index).map(String::as_str) else {
+        return Err(format!("argument {option}: expected one argument"));
+    };
+    Ok(value)
+}
+
+fn argparse_serve_error(error: String) -> CommandOutput {
+    CommandOutput::failure(format!("{SERVE_USAGE}sol link serve: error: {error}\n"), 2)
+}
+
+fn resolve_serve_bundle(
+    label: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<ServeBundleSelection, String> {
+    if let Some(label) = label {
+        let bundle_dir = observer_bundle_dir(label, env)?;
+        let bundle = load_serve_bundle(&bundle_dir).map_err(|error| {
+            format!(
+                "invalid link bundle for label '{label}' at {}: {error}. Run `sol link join` to pair this device.",
+                bundle_dir.display()
+            )
+        })?;
+        return Ok(ServeBundleSelection {
+            label: label.to_string(),
+            bundle,
+        });
+    }
+
+    let root = observer_spl_root(env)?;
+    let mut bundles = BTreeMap::new();
+    if root.is_dir() {
+        for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let label = entry.file_name().to_string_lossy().to_string();
+            if let Ok(bundle) = load_serve_bundle(&path) {
+                bundles.insert(label, bundle);
+            }
+        }
+    }
+    if bundles.is_empty() {
+        return Err(format!(
+            "no observer link bundles found under {}. Run `sol link join` to pair this device.",
+            root.display()
+        ));
+    }
+    if bundles.len() > 1 {
+        let labels = bundles.keys().cloned().collect::<Vec<_>>().join(", ");
+        return Err(format!(
+            "multiple observer link bundles found: {labels}. Pass --label to choose one."
+        ));
+    }
+    let (label, bundle) = bundles.into_iter().next().expect("bundle count checked");
+    Ok(ServeBundleSelection { label, bundle })
+}
+
+fn observer_spl_root(env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let base = env
+        .get("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || {
+                env.get("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join(".config"))
+            },
+            |xdg| Some(PathBuf::from(xdg)),
+        );
+    let Some(base) = base else {
+        return Err("Could not resolve home directory for observer credentials.".to_string());
+    };
+    Ok(base.join("solstone-observer").join("spl"))
+}
+
+fn load_serve_bundle(bundle_dir: &Path) -> Result<LinkServeBundle, String> {
+    if !bundle_dir.is_dir() {
+        return Err(format!("PL bundle not found: {}", bundle_dir.display()));
+    }
+    let missing = BUNDLE_FILES
+        .iter()
+        .filter(|name| !bundle_dir.join(name).exists())
+        .map(|name| bundle_dir.join(name).display().to_string())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!("missing PL bundle file: {}", missing.join(", ")));
+    }
+    let private_key_pem = read_bundle_text(bundle_dir, "private.pem")?;
+    let client_cert_pem = read_bundle_text(bundle_dir, "cert.pem")?;
+    let chain_pem = read_bundle_text(bundle_dir, "chain.pem")?;
+    let ca_chain_pem = split_pem_certificates(&chain_pem)?;
+    let home_attestation = read_bundle_text(bundle_dir, "home_attestation.jwt")?;
+    let peer_text = read_bundle_text(bundle_dir, "peer.json")?;
+    let peer: Value = serde_json::from_str(&peer_text)
+        .map_err(|error| format!("invalid peer.json in {}: {error}", bundle_dir.display()))?;
+    let local_endpoints = match peer.get("local_endpoints") {
+        Some(Value::Null) | None => Value::Array(Vec::new()),
+        Some(Value::Array(_)) => peer
+            .get("local_endpoints")
+            .cloned()
+            .expect("local_endpoints presence checked"),
+        Some(_) => return Err("peer.json local_endpoints must be a list".to_string()),
+    };
+    let endpoints = serve_endpoints_from_value(&local_endpoints)?;
+    Ok(LinkServeBundle {
+        private_key_pem,
+        client_cert_pem,
+        ca_chain_pem,
+        home_attestation,
+        instance_id: peer
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        home_label: peer
+            .get("home_label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        endpoints,
+        local_endpoints,
+    })
+}
+
+fn read_bundle_text(bundle_dir: &Path, name: &str) -> Result<String, String> {
+    fs::read_to_string(bundle_dir.join(name)).map_err(|error| error.to_string())
+}
+
+fn split_pem_certificates(chain_pem: &str) -> Result<Vec<String>, String> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let mut certs = Vec::new();
+    let mut rest = chain_pem;
+    while let Some(begin) = rest.find(BEGIN) {
+        let after_begin = &rest[begin..];
+        let Some(end) = after_begin.find(END) else {
+            return Err("chain.pem contains an incomplete certificate".to_string());
+        };
+        let end_index = end + END.len();
+        let mut cert = after_begin[..end_index].to_string();
+        cert.push('\n');
+        certs.push(cert);
+        rest = &after_begin[end_index..];
+    }
+    if certs.is_empty() {
+        return Err("chain.pem contains no certificates".to_string());
+    }
+    Ok(certs)
+}
+
+fn serve_endpoints_from_value(value: &Value) -> Result<Vec<LinkServeEndpoint>, String> {
+    let Value::Array(items) = value else {
+        return Err("peer.json local_endpoints must be a list".to_string());
+    };
+    let mut endpoints = Vec::new();
+    for item in items {
+        let Value::Object(map) = item else {
+            return Err("peer.json local_endpoints entries must be objects".to_string());
+        };
+        let host = map
+            .get("ip")
+            .or_else(|| map.get("host"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if host.is_empty() {
+            return Err("LAN endpoint missing ip".to_string());
+        }
+        let port = match map.get("port") {
+            None | Some(Value::Null) => 7657,
+            Some(Value::Number(number)) => number
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or_else(|| "LAN endpoint has invalid port".to_string())?,
+            Some(Value::String(value)) => value
+                .parse::<u16>()
+                .map_err(|_| "LAN endpoint has invalid port".to_string())?,
+            Some(_) => return Err("LAN endpoint has invalid port".to_string()),
+        };
+        endpoints.push(LinkServeEndpoint { host, port });
+    }
+    Ok(endpoints)
+}
+
+fn resolve_serve_relay_url(value: Option<&str>, env: &BTreeMap<String, String>) -> String {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        return value.trim().trim_end_matches('/').to_string();
+    }
+    if let Some(value) = env
+        .get("SOL_LINK_RELAY_URL")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return value.trim().trim_end_matches('/').to_string();
+    }
+    DEFAULT_RELAY_URL.to_string()
 }
 
 fn argparse_error(error: String) -> CommandOutput {
@@ -650,6 +985,121 @@ fn pairing_error_text(error: LinkJoinPairingError) -> String {
     }
 }
 
+fn serve_error_text(error: LinkServeError) -> String {
+    match error.kind {
+        LinkServeErrorKind::InvalidBundle => {
+            "Link credentials are invalid. Run sol link join before sol link serve.".to_string()
+        }
+        LinkServeErrorKind::InvalidRelayUrl => {
+            "Relay URL is invalid. Check --relay-url and retry.".to_string()
+        }
+        LinkServeErrorKind::Bind { port, addr_in_use } => {
+            if addr_in_use {
+                format!(
+                    "cannot bind 127.0.0.1:{port}: address already in use. Another `sol link serve` or Convey may already be using that port."
+                )
+            } else {
+                format!("cannot bind 127.0.0.1:{port}: bind failed")
+            }
+        }
+        LinkServeErrorKind::RuntimeUnavailable => {
+            "Native link runtime is unavailable. Reinstall solstone-core and retry.".to_string()
+        }
+        LinkServeErrorKind::BridgeCapability => {
+            "Native link bridge setup failed before serving. Retry after reinstalling solstone-core."
+                .to_string()
+        }
+        LinkServeErrorKind::Shutdown => {
+            "Native link serve shutdown failed.".to_string()
+        }
+        LinkServeErrorKind::Transport(kind) => serve_transport_error_text(kind),
+    }
+}
+
+fn serve_transport_error_text(kind: LinkServeTransportErrorKind) -> String {
+    match kind {
+        LinkServeTransportErrorKind::Io => {
+            "Link transport I/O failed while serving. Check that the journal is reachable on LAN/VPN or relay, then retry.".to_string()
+        }
+        LinkServeTransportErrorKind::Tls => {
+            "Secure link handshake failed. Re-run sol link join if the journal certificate or pairing changed.".to_string()
+        }
+        LinkServeTransportErrorKind::Crypto => {
+            "Link credential material is invalid. Re-run sol link join for this observer.".to_string()
+        }
+        LinkServeTransportErrorKind::Mux => {
+            "SPL stream framing failed while serving. Retry; re-pair if it continues.".to_string()
+        }
+        LinkServeTransportErrorKind::Http => {
+            "The journal response over the link could not be parsed. Update both peers or retry.".to_string()
+        }
+        LinkServeTransportErrorKind::Json => {
+            "Relay or bridge JSON could not be parsed. Check the relay URL and retry.".to_string()
+        }
+        LinkServeTransportErrorKind::PairLink => {
+            "Stored pairing data is invalid. Re-run sol link join for this observer.".to_string()
+        }
+        LinkServeTransportErrorKind::Pairing => {
+            "Link credential or relay enrollment failed. Re-run sol link join if retrying does not fix it.".to_string()
+        }
+        LinkServeTransportErrorKind::Rejected { status } => {
+            format!("The paired journal rejected the link request with HTTP {status}.")
+        }
+        LinkServeTransportErrorKind::Relay(error) => serve_relay_error_text(error).to_string(),
+        LinkServeTransportErrorKind::RelayControlRejected { endpoint, status } => {
+            match endpoint {
+                crate::seam::LinkServeRelayControlEndpoint::EnrollDevice => format!(
+                    "Relay enrollment was rejected with HTTP {status}. Re-run sol link join if the bundle attestation is stale."
+                ),
+                crate::seam::LinkServeRelayControlEndpoint::TokenRefresh => format!(
+                    "Relay token refresh was rejected with HTTP {status}. Re-run sol link join for this observer."
+                ),
+            }
+        }
+        LinkServeTransportErrorKind::NoEndpoint => {
+            "No journal endpoint is available. Re-run sol link join or pass --relay-url unless using --direct intentionally.".to_string()
+        }
+        LinkServeTransportErrorKind::NotPaired => {
+            "Link credentials are missing. Run sol link join before sol link serve.".to_string()
+        }
+        LinkServeTransportErrorKind::LocalOffset => {
+            "Local offset lookup failed. Check the system clock and retry.".to_string()
+        }
+    }
+}
+
+fn serve_relay_error_text(error: crate::seam::LinkServeRelayErrorKind) -> &'static str {
+    match error {
+        crate::seam::LinkServeRelayErrorKind::HomeOffline => {
+            "The relay reports the home journal is offline. Start the journal or use --direct on LAN/VPN."
+        }
+        crate::seam::LinkServeRelayErrorKind::Unauthorized => {
+            "The relay rejected this observer token. Re-run sol link join for this observer."
+        }
+        crate::seam::LinkServeRelayErrorKind::Unpaid => {
+            "The relay account is not available. Check relay service/account status or use --direct."
+        }
+        crate::seam::LinkServeRelayErrorKind::UnknownInstance => {
+            "The relay does not know this journal instance. Re-run sol link join."
+        }
+        crate::seam::LinkServeRelayErrorKind::PairWindowClosed => {
+            "The relay pairing window is closed. Re-run sol link join from a fresh code."
+        }
+        crate::seam::LinkServeRelayErrorKind::Overflow => {
+            "The relay is temporarily overloaded. Retry or use --direct on LAN/VPN."
+        }
+        crate::seam::LinkServeRelayErrorKind::Abnormal => {
+            "The relay connection closed abnormally. Retry or use --direct on LAN/VPN."
+        }
+        crate::seam::LinkServeRelayErrorKind::UpgradeRejected => {
+            "The relay rejected the WebSocket upgrade. Check --relay-url and retry."
+        }
+        crate::seam::LinkServeRelayErrorKind::Stalled => {
+            "The relay connection stalled. Retry or use --direct on LAN/VPN."
+        }
+    }
+}
+
 fn relay_control_endpoint_code(endpoint: LinkJoinRelayControlEndpoint) -> &'static str {
     match endpoint {
         LinkJoinRelayControlEndpoint::EnrollDevice => "relay-control-enroll-device",
@@ -878,8 +1328,11 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::resident::ShutdownSignal;
     use crate::seam::{
-        ExpectedLinkJoinPairingCall, FakeClock, ScriptedHttpTransport, ScriptedLinkJoinPairingSeam,
+        ExpectedLinkJoinPairingCall, ExpectedLinkServeCall, ExpectedLinkServeSession, FakeClock,
+        LinkServeRelayControlEndpoint, LinkServeRelayErrorKind, ScriptedHttpTransport,
+        ScriptedLinkJoinPairingSeam, ScriptedLinkServeRunner,
     };
     use serde_json::json;
     use spl_core::crockford;
@@ -899,6 +1352,12 @@ mod tests {
     #[cfg(unix)]
     struct UmaskGuard {
         previous: nix::sys::stat::Mode,
+    }
+
+    struct ImmediateShutdown;
+
+    impl ShutdownSignal for ImmediateShutdown {
+        fn wait(&self) {}
     }
 
     #[cfg(unix)]
@@ -978,7 +1437,33 @@ mod tests {
             client_item_ids: None,
             notification_sink: None,
             link_pairing: Some(seam),
+            link_serve: None,
             journal_root: Some(journal_root),
+        })
+    }
+
+    fn run_serve<'a>(
+        args: &[&str],
+        env: &'a BTreeMap<String, String>,
+        runner: &'a ScriptedLinkServeRunner,
+    ) -> Result<ResidentCommand<'a>, CommandOutput> {
+        let argv = Box::leak(string_args(args).into_boxed_slice());
+        let transport = Box::leak(Box::new(ScriptedHttpTransport::new(vec![])));
+        link_serve(CommandContext {
+            args: argv,
+            env,
+            stdin: "",
+            today: "20260726",
+            transport,
+            clock: None,
+            chat_events: None,
+            files: None,
+            build_identity: None,
+            client_item_ids: None,
+            notification_sink: None,
+            link_pairing: None,
+            link_serve: Some(runner),
+            journal_root: None,
         })
     }
 
@@ -1011,6 +1496,52 @@ mod tests {
                 OBSERVER_PEER_JSON.as_bytes().to_vec(),
             ),
         ])
+    }
+
+    fn serve_bundle(config: &Path, label: &str, local_endpoints: Value) -> LinkServeBundle {
+        const CERT: &str = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n";
+        let bundle_dir = config.join("solstone-observer").join("spl").join(label);
+        fs::create_dir_all(&bundle_dir).expect("serve bundle dir");
+        fs::write(bundle_dir.join("private.pem"), "PRIVATE\n").expect("private key");
+        fs::write(bundle_dir.join("cert.pem"), CERT).expect("client cert");
+        fs::write(bundle_dir.join("chain.pem"), CERT).expect("chain");
+        fs::write(bundle_dir.join("home_attestation.jwt"), "attestation.jwt").expect("attestation");
+        fs::write(
+            bundle_dir.join("peer.json"),
+            json!({
+                "instance_id": "home-instance",
+                "home_label": "Home",
+                "local_endpoints": local_endpoints.clone(),
+            })
+            .to_string(),
+        )
+        .expect("peer json");
+        LinkServeBundle {
+            private_key_pem: "PRIVATE\n".to_string(),
+            client_cert_pem: CERT.to_string(),
+            ca_chain_pem: vec![CERT.to_string()],
+            home_attestation: "attestation.jwt".to_string(),
+            instance_id: "home-instance".to_string(),
+            home_label: "Home".to_string(),
+            endpoints: serve_endpoints_from_value(&local_endpoints).expect("serve endpoints"),
+            local_endpoints,
+        }
+    }
+
+    fn expected_serve_request(
+        label: &str,
+        port: u16,
+        direct: bool,
+        relay_origin: Option<&str>,
+        bundle: LinkServeBundle,
+    ) -> LinkServeRequest {
+        LinkServeRequest {
+            label: label.to_string(),
+            port,
+            direct,
+            relay_origin: relay_origin.map(str::to_string),
+            bundle,
+        }
     }
 
     fn assert_bundle_files_exist(bundle: &Path) {
@@ -1102,6 +1633,283 @@ mod tests {
         assert_eq!(output, CommandOutput::success(HELP));
         assert_eq!(HELP.len(), 349);
         seam.assert_done();
+    }
+
+    #[test]
+    fn serve_help_is_python_byte_exact() {
+        let env = BTreeMap::new();
+        let runner = ScriptedLinkServeRunner::new(vec![]);
+        let output = match run_serve(&["--help"], &env, &runner) {
+            Err(output) => output,
+            Ok(_) => panic!("help must not enter resident serve"),
+        };
+        assert_eq!(output, CommandOutput::success(SERVE_HELP));
+        assert_eq!(SERVE_HELP.len(), 638);
+        assert_eq!(SERVE_USAGE.len(), 114);
+        runner.assert_done();
+    }
+
+    #[test]
+    fn serve_argv_errors_exit_two_before_starting() {
+        let cases = [
+            (
+                vec!["--unknown"],
+                format!("{SERVE_USAGE}sol link serve: error: unrecognized arguments: --unknown\n"),
+            ),
+            (
+                vec!["--label"],
+                format!(
+                    "{SERVE_USAGE}sol link serve: error: argument --label: expected one argument\n"
+                ),
+            ),
+            (
+                vec!["--port", "abc"],
+                format!(
+                    "{SERVE_USAGE}sol link serve: error: argument --port: invalid int value: 'abc'\n"
+                ),
+            ),
+            (
+                vec!["--port", "0"],
+                "--port must be between 1 and 65535\n".to_string(),
+            ),
+        ];
+        for (args, expected_stderr) in cases {
+            let env = BTreeMap::new();
+            let runner = ScriptedLinkServeRunner::new(vec![]);
+            let output = match run_serve(&args, &env, &runner) {
+                Err(output) => output,
+                Ok(_) => panic!("argv error must not enter resident serve"),
+            };
+            assert_eq!(output.stdout, "");
+            assert_eq!(output.stderr, expected_stderr);
+            assert_eq!(output.exit, 2);
+            runner.assert_done();
+        }
+    }
+
+    #[test]
+    fn serve_bundle_resolution_names_sorted_labels_and_supports_single_default() {
+        let temp = temp_dir("serve-bundles");
+        let config = temp.join("config");
+        let env = base_env(&config, &temp.join("home"));
+        let alpha = serve_bundle(
+            &config,
+            "alpha",
+            json!([{"ip": "192.168.1.10", "port": 7657}]),
+        );
+        let beta = serve_bundle(
+            &config,
+            "beta",
+            json!([{"ip": "192.168.1.10", "port": 7657}]),
+        );
+        let runner = ScriptedLinkServeRunner::new(vec![]);
+        let ambiguous = match run_serve(&[], &env, &runner) {
+            Err(output) => output,
+            Ok(_) => panic!("ambiguous bundle must not enter resident serve"),
+        };
+        assert_eq!(
+            ambiguous.stderr,
+            "multiple observer link bundles found: alpha, beta. Pass --label to choose one.\n"
+        );
+        assert_eq!(ambiguous.exit, 1);
+        runner.assert_done();
+
+        let explicit_runner = ScriptedLinkServeRunner::new(vec![ExpectedLinkServeCall {
+            expected: expected_serve_request("beta", 5016, false, Some(DEFAULT_RELAY_URL), beta),
+            result: Ok(ExpectedLinkServeSession {
+                bound_port: 5016,
+                serve_result: Ok(()),
+            }),
+        }]);
+        let explicit = match run_serve(
+            &["--label", "beta", "--port", "5016"],
+            &env,
+            &explicit_runner,
+        ) {
+            Ok(resident) => resident,
+            Err(output) => panic!("explicit bundle failed before resident: {output:?}"),
+        };
+        assert_eq!(
+            explicit.startup(),
+            "forwarding 127.0.0.1:5016 -> home beta over pl\n"
+        );
+        assert_eq!(
+            explicit.serve(&ImmediateShutdown),
+            CommandOutput::success("")
+        );
+        explicit_runner.assert_done();
+
+        fs::remove_dir_all(config.join("solstone-observer").join("spl").join("beta"))
+            .expect("remove beta");
+        let default_runner = ScriptedLinkServeRunner::new(vec![ExpectedLinkServeCall {
+            expected: expected_serve_request(
+                "alpha",
+                DEFAULT_SERVE_PORT,
+                false,
+                Some(DEFAULT_RELAY_URL),
+                alpha,
+            ),
+            result: Ok(ExpectedLinkServeSession {
+                bound_port: DEFAULT_SERVE_PORT,
+                serve_result: Ok(()),
+            }),
+        }]);
+        let defaulted = match run_serve(&[], &env, &default_runner) {
+            Ok(resident) => resident,
+            Err(output) => panic!("single bundle failed before resident: {output:?}"),
+        };
+        assert_eq!(
+            defaulted.startup(),
+            "forwarding 127.0.0.1:5015 -> home alpha over pl\n"
+        );
+        default_runner.assert_done();
+    }
+
+    #[test]
+    fn serve_direct_omits_relay_even_with_poisoned_relay_inputs() {
+        let temp = temp_dir("serve-direct");
+        let config = temp.join("config");
+        let mut env = base_env(&config, &temp.join("home"));
+        env.insert(
+            "SOL_LINK_RELAY_URL".to_string(),
+            "https://poisoned.invalid".to_string(),
+        );
+        let bundle = serve_bundle(
+            &config,
+            "direct",
+            json!([{"ip": "192.168.1.10", "port": 7657}]),
+        );
+        let runner = ScriptedLinkServeRunner::new(vec![ExpectedLinkServeCall {
+            expected: expected_serve_request("direct", 6001, true, None, bundle),
+            result: Ok(ExpectedLinkServeSession {
+                bound_port: 6001,
+                serve_result: Ok(()),
+            }),
+        }]);
+
+        let resident = match run_serve(
+            &[
+                "--label",
+                "direct",
+                "--port",
+                "6001",
+                "--relay-url",
+                "https://also-poisoned.invalid",
+                "--direct",
+            ],
+            &env,
+            &runner,
+        ) {
+            Ok(resident) => resident,
+            Err(output) => panic!("direct serve failed before resident: {output:?}"),
+        };
+
+        assert_eq!(
+            resident.startup(),
+            "forwarding 127.0.0.1:6001 -> home direct over pl\n"
+        );
+        assert_eq!(runner.recorded()[0].request.relay_origin, None);
+        runner.assert_done();
+    }
+
+    #[test]
+    fn serve_non_argv_failures_exit_one() {
+        let temp = temp_dir("serve-failures");
+        let config = temp.join("config");
+        let env = base_env(&config, &temp.join("home"));
+        let bundle = serve_bundle(
+            &config,
+            "laptop",
+            json!([{"ip": "192.168.1.10", "port": 7657}]),
+        );
+        let bind_runner = ScriptedLinkServeRunner::new(vec![ExpectedLinkServeCall {
+            expected: expected_serve_request(
+                "laptop",
+                DEFAULT_SERVE_PORT,
+                false,
+                Some(DEFAULT_RELAY_URL),
+                bundle.clone(),
+            ),
+            result: Err(LinkServeError::new(LinkServeErrorKind::Bind {
+                port: DEFAULT_SERVE_PORT,
+                addr_in_use: true,
+            })),
+        }]);
+        let bind = match run_serve(&["--label", "laptop"], &env, &bind_runner) {
+            Err(output) => output,
+            Ok(_) => panic!("bind failure must not return resident"),
+        };
+        assert_eq!(bind.exit, 1);
+        assert_eq!(
+            bind.stderr,
+            "cannot bind 127.0.0.1:5015: address already in use. Another `sol link serve` or Convey may already be using that port.\n"
+        );
+        bind_runner.assert_done();
+
+        let enroll_runner = ScriptedLinkServeRunner::new(vec![ExpectedLinkServeCall {
+            expected: expected_serve_request(
+                "laptop",
+                DEFAULT_SERVE_PORT,
+                false,
+                Some(DEFAULT_RELAY_URL),
+                bundle,
+            ),
+            result: Err(LinkServeError::new(LinkServeErrorKind::Transport(
+                LinkServeTransportErrorKind::RelayControlRejected {
+                    endpoint: LinkServeRelayControlEndpoint::EnrollDevice,
+                    status: 401,
+                },
+            ))),
+        }]);
+        let enrollment = match run_serve(&["--label", "laptop"], &env, &enroll_runner) {
+            Err(output) => output,
+            Ok(_) => panic!("enrollment failure must not return resident"),
+        };
+        assert_eq!(enrollment.exit, 1);
+        assert_eq!(
+            enrollment.stderr,
+            "Relay enrollment was rejected with HTTP 401. Re-run sol link join if the bundle attestation is stale.\n"
+        );
+        enroll_runner.assert_done();
+    }
+
+    #[test]
+    fn serve_transport_error_text_covers_every_variant_without_secret_leaks() {
+        let kinds = [
+            LinkServeTransportErrorKind::Io,
+            LinkServeTransportErrorKind::Tls,
+            LinkServeTransportErrorKind::Crypto,
+            LinkServeTransportErrorKind::Mux,
+            LinkServeTransportErrorKind::Http,
+            LinkServeTransportErrorKind::Json,
+            LinkServeTransportErrorKind::PairLink,
+            LinkServeTransportErrorKind::Pairing,
+            LinkServeTransportErrorKind::Rejected { status: 403 },
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::HomeOffline),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::Unauthorized),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::Unpaid),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::UnknownInstance),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::PairWindowClosed),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::Overflow),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::Abnormal),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::UpgradeRejected),
+            LinkServeTransportErrorKind::Relay(LinkServeRelayErrorKind::Stalled),
+            LinkServeTransportErrorKind::RelayControlRejected {
+                endpoint: LinkServeRelayControlEndpoint::EnrollDevice,
+                status: 401,
+            },
+            LinkServeTransportErrorKind::RelayControlRejected {
+                endpoint: LinkServeRelayControlEndpoint::TokenRefresh,
+                status: 401,
+            },
+            LinkServeTransportErrorKind::NoEndpoint,
+            LinkServeTransportErrorKind::NotPaired,
+            LinkServeTransportErrorKind::LocalOffset,
+        ];
+        for kind in kinds {
+            let text = serve_transport_error_text(kind);
+            assert_no_secret_substrings(&text);
+        }
     }
 
     #[test]

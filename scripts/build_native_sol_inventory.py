@@ -52,7 +52,7 @@ FINAL_HTTP_TOTAL = 152
 FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
 FINAL_TOP_LEVEL_CHAT_TOTAL = 1
 FINAL_TOP_LEVEL_IMPORT_TOTAL = 1
-FINAL_TOP_LEVEL_LINK_TOTAL = 1
+FINAL_TOP_LEVEL_LINK_TOTAL = 2
 FINAL_TOP_LEVEL_NOTIFY_TOTAL = 1
 FINAL_STUB_COUNTS = {"moved-stub": 2, "local": 1}
 FINAL_HTTP_GROUP_COUNTS = {
@@ -93,6 +93,7 @@ class AuthorityEntry:
     route: str | None
     contract_operation_id: str | None
     handler: str
+    resident: bool
 
 
 def rust_string(value: str) -> str:
@@ -184,6 +185,13 @@ def parse_entry(
         raise ValueError(f"{label}: handler {handler!r} is not a Rust identifier")
     if re.search(rf"\bpub\s+fn\s+{re.escape(handler)}\s*\(", source_text) is None:
         raise ValueError(f"{label}: handler {handler!r} is missing from {source}")
+    resident = raw_entry.get("resident", False)
+    if not isinstance(resident, bool):
+        raise ValueError(f"{label}: resident must be a boolean")
+    if resident and (surface == "sol-call" or kind != "top-level"):
+        raise ValueError(
+            f"{label}: resident entries must be non-sol-call top-level commands"
+        )
 
     method = raw_entry.get("method")
     route = raw_entry.get("route")
@@ -226,6 +234,7 @@ def parse_entry(
         route=route,
         contract_operation_id=contract_operation_id,
         handler=handler,
+        resident=resident,
     )
 
 
@@ -302,6 +311,7 @@ def render(entries: list[AuthorityEntry], output: Path) -> str:
         "// Copyright (c) 2026 sol pbc",
         "",
         "use crate::aggregate::{Handler, InventoryEntry};",
+        "use crate::resident::ResidentHandler;",
         "",
     ]
     seen_modules: set[str] = set()
@@ -335,6 +345,7 @@ def render(entries: list[AuthorityEntry], output: Path) -> str:
                 f"        route: {rust_option(entry.route)},",
                 f"        contract_operation_id: {rust_option(entry.contract_operation_id)},",
                 f"        handler: {rust_string(entry.handler)},",
+                f"        resident: {str(entry.resident).lower()},",
                 "    },",
             ]
         )
@@ -342,6 +353,15 @@ def render(entries: list[AuthorityEntry], output: Path) -> str:
     lines.append("")
     lines.append("pub const HANDLERS: &[Handler] = &[")
     for entry in entries:
+        if entry.resident:
+            continue
+        lines.append(f"    {entry.module}::{entry.handler},")
+    lines.append("];")
+    lines.append("")
+    lines.append("pub const RESIDENT_HANDLERS: &[ResidentHandler] = &[")
+    for entry in entries:
+        if not entry.resident:
+            continue
         lines.append(f"    {entry.module}::{entry.handler},")
     lines.append("];")
     lines.append("")

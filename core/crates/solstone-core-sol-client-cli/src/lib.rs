@@ -7,9 +7,10 @@ use std::path::Path;
 
 use solstone_core_sol_client::aggregate;
 use solstone_core_sol_client::command::{CommandContext, CommandOutput};
+use solstone_core_sol_client::resident::ResidentHandler;
 use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, LinkJoinPairingSeam, NotificationSink,
+    HttpTransport, LinkJoinPairingSeam, LinkServeRunner, NotificationSink,
 };
 
 pub mod help;
@@ -19,6 +20,7 @@ pub enum Outcome {
     Migrated { path: Vec<OsString> },
     Chat { args: Vec<OsString> },
     Import { args: Vec<OsString> },
+    Link { args: Vec<OsString> },
     Notify { args: Vec<OsString> },
     MovedStub { name: OsString },
     Unsupported { args: Vec<OsString> },
@@ -39,7 +41,16 @@ pub struct LinkDispatchSeams<'a> {
     pub clock: Option<&'a dyn Clock>,
     pub files: Option<&'a dyn FileProvider>,
     pub link_pairing: Option<&'a dyn LinkJoinPairingSeam>,
+    pub link_serve: Option<&'a dyn LinkServeRunner>,
     pub journal_root: Option<&'a Path>,
+}
+
+pub enum LinkDispatch {
+    Buffered(CommandOutput),
+    Resident {
+        handler: ResidentHandler,
+        args: Vec<String>,
+    },
 }
 
 #[must_use]
@@ -65,6 +76,20 @@ pub fn evaluate_args(args: &[OsString]) -> Outcome {
                     args: rest.to_vec(),
                 },
             )
+        }
+        [command, rest @ ..] if command == OsStr::new("link") => {
+            let path = [String::from("link"), String::from("serve")];
+            if rest.first().is_some_and(|verb| verb == OsStr::new("serve"))
+                && match_generated_resident_surface_path("sol-link", &path).is_some()
+            {
+                Outcome::Link {
+                    args: rest.to_vec(),
+                }
+            } else {
+                Outcome::Unsupported {
+                    args: args.to_vec(),
+                }
+            }
         }
         [command, rest @ ..] if command == OsStr::new("notify") => {
             match_generated_surface_path("sol-notify", &[String::from("notify")]).map_or_else(
@@ -107,6 +132,7 @@ pub fn dispatch_sol_chat_with_seams(
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
         link_pairing: None,
+        link_serve: None,
         journal_root: None,
     })
 }
@@ -136,6 +162,7 @@ pub fn dispatch_sol_import_with_seams(
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
         link_pairing: None,
+        link_serve: None,
         journal_root: None,
     })
 }
@@ -165,6 +192,7 @@ pub fn dispatch_sol_notify_with_seams(
         client_item_ids: seams.client_item_ids,
         notification_sink: seams.notification_sink,
         link_pairing: None,
+        link_serve: None,
         journal_root: None,
     })
 }
@@ -176,18 +204,26 @@ pub fn dispatch_sol_link_with_seams(
     stdin: &str,
     today: &str,
     seams: LinkDispatchSeams<'_>,
-) -> CommandOutput {
-    let Some((_, handler)) =
-        match_generated_surface_path("sol-link", &[String::from("link"), String::from("join")])
-    else {
-        return CommandOutput::failure("Unsupported native sol command.\n", 64);
+) -> LinkDispatch {
+    let Some((path, remaining)) = link_lookup_path(args) else {
+        return LinkDispatch::Buffered(CommandOutput::failure(
+            "Unsupported native sol command.\n",
+            64,
+        ));
     };
-    let remaining = match args {
-        [command, subcommand, rest @ ..] if command == "link" && subcommand == "join" => rest,
-        [subcommand, rest @ ..] if subcommand == "join" => rest,
-        rest => rest,
+    if let Some((_, handler)) = match_generated_resident_surface_path("sol-link", &path) {
+        return LinkDispatch::Resident {
+            handler,
+            args: remaining.to_vec(),
+        };
+    }
+    let Some((_, handler)) = match_generated_surface_path("sol-link", &path) else {
+        return LinkDispatch::Buffered(CommandOutput::failure(
+            "Unsupported native sol command.\n",
+            64,
+        ));
     };
-    handler(CommandContext {
+    LinkDispatch::Buffered(handler(CommandContext {
         args: remaining,
         env,
         stdin,
@@ -200,8 +236,9 @@ pub fn dispatch_sol_link_with_seams(
         client_item_ids: None,
         notification_sink: None,
         link_pairing: seams.link_pairing,
+        link_serve: seams.link_serve,
         journal_root: seams.journal_root,
-    })
+    }))
 }
 
 fn evaluate_call(args: &[OsString]) -> Outcome {
@@ -273,6 +310,7 @@ pub fn dispatch_sol_call_with_seams(
         client_item_ids: seams.client_item_ids,
         notification_sink: None,
         link_pairing: None,
+        link_serve: None,
         journal_root: None,
     })
 }
@@ -290,7 +328,11 @@ pub fn resolve_surface_leaf(
     if surface == "sol-call" {
         return resolve_sol_call_leaf(args);
     }
-    match_generated_surface_path(surface, args).map(|(entry, _handler)| entry)
+    match_generated_surface_path(surface, args)
+        .map(|(entry, _handler)| entry)
+        .or_else(|| {
+            match_generated_resident_surface_path(surface, args).map(|(entry, _handler)| entry)
+        })
 }
 
 fn match_generated_path(args: &[OsString]) -> Option<(&'static aggregate::InventoryEntry, usize)> {
@@ -339,12 +381,43 @@ fn match_generated_surface_path(
     })
 }
 
+fn match_generated_resident_surface_path(
+    surface: &str,
+    args: &[String],
+) -> Option<(&'static aggregate::InventoryEntry, ResidentHandler)> {
+    let path = args.iter().map(String::as_str).collect::<Vec<_>>();
+    aggregate::resident_handler_for(&path).and_then(|(entry, handler)| {
+        if entry.surface == surface {
+            Some((entry, handler))
+        } else {
+            None
+        }
+    })
+}
+
+fn link_lookup_path(args: &[String]) -> Option<(Vec<String>, &[String])> {
+    match args {
+        [command, verb, rest @ ..] if command == "link" => {
+            Some((vec![String::from("link"), verb.clone()], rest))
+        }
+        [verb, rest @ ..] => Some((vec![String::from("link"), verb.clone()], rest)),
+        [] => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solstone_core_sol_client::seam::{
+        ScriptedHttpTransport, ScriptedLinkJoinPairingSeam, ScriptedLinkServeRunner,
+    };
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    fn string_args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
     }
 
     #[test]
@@ -395,6 +468,47 @@ mod tests {
                 args: args(&["hello"])
             }
         );
+    }
+
+    #[test]
+    fn sol_link_dispatch_resolves_join_and_serve_from_full_or_trimmed_argv() {
+        let env = BTreeMap::new();
+        let transport = ScriptedHttpTransport::new(vec![]);
+        let pairing = ScriptedLinkJoinPairingSeam::new(vec![]);
+        let serve = ScriptedLinkServeRunner::new(vec![]);
+        let seams = || LinkDispatchSeams {
+            transport: &transport,
+            clock: None,
+            files: None,
+            link_pairing: Some(&pairing),
+            link_serve: Some(&serve),
+            journal_root: None,
+        };
+
+        let join_args = string_args(&["link", "join"]);
+        match dispatch_sol_link_with_seams(&join_args, &env, "", "20260726", seams()) {
+            LinkDispatch::Buffered(output) => {
+                assert_eq!(output.exit, 2);
+                assert!(
+                    output
+                        .stderr
+                        .contains("the following arguments are required: --code")
+                );
+            }
+            LinkDispatch::Resident { .. } => panic!("link join must stay buffered"),
+        }
+
+        let full_serve_args = string_args(&["link", "serve", "--help"]);
+        match dispatch_sol_link_with_seams(&full_serve_args, &env, "", "20260726", seams()) {
+            LinkDispatch::Resident { args, .. } => assert_eq!(args, string_args(&["--help"])),
+            LinkDispatch::Buffered(_) => panic!("link serve must resolve as resident"),
+        }
+
+        let trimmed_serve_args = string_args(&["serve", "--help"]);
+        match dispatch_sol_link_with_seams(&trimmed_serve_args, &env, "", "20260726", seams()) {
+            LinkDispatch::Resident { args, .. } => assert_eq!(args, string_args(&["--help"])),
+            LinkDispatch::Buffered(_) => panic!("trimmed link serve must resolve as resident"),
+        }
     }
 
     #[test]

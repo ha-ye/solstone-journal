@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sol pbc
 
 use crate::aggregate::{Handler, InventoryEntry};
+use crate::resident::ResidentHandler;
 
 #[path = "../../../../../solstone/apps/activities/native/command.rs"]
 mod solstone_apps_activities_native_command_rs;
@@ -62,6 +63,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/records"),
         contract_operation_id: Some("activities.list"),
         handler: "list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -76,6 +78,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/record/{span_id}"),
         contract_operation_id: Some("activities.get"),
         handler: "get",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -90,6 +93,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/records"),
         contract_operation_id: Some("activities.create"),
         handler: "create",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -104,6 +108,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/record/{span_id}/update"),
         contract_operation_id: Some("activities.update"),
         handler: "update",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -118,6 +123,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/record/{span_id}/mute"),
         contract_operation_id: Some("activities.mute"),
         handler: "mute",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -132,6 +138,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/activities/api/day/{day}/record/{span_id}/unmute"),
         contract_operation_id: Some("activities.unmute"),
         handler: "unmute",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -146,6 +153,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/awareness/api/state"),
         contract_operation_id: Some("awareness.status"),
         handler: "status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -160,6 +168,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/awareness/api/imports"),
         contract_operation_id: Some("awareness.imports"),
         handler: "imports",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -174,6 +183,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/awareness/api/log"),
         contract_operation_id: Some("awareness.log"),
         handler: "log",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -188,6 +198,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/awareness/api/log"),
         contract_operation_id: Some("awareness.log-read"),
         handler: "log_read",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -202,6 +213,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/body/api/status"),
         contract_operation_id: Some("body.status"),
         handler: "status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -216,6 +228,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/body/api/day/{day}"),
         contract_operation_id: Some("body.day"),
         handler: "day",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -230,6 +243,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/body/api/window"),
         contract_operation_id: Some("body.window"),
         handler: "window",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -244,6 +258,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/chat/start"),
         contract_operation_id: Some("chat.start"),
         handler: "start",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -258,6 +273,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/accept-merge-candidate"),
         contract_operation_id: Some("entities.accept-merge-candidate"),
         handler: "accept_merge_candidate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -272,6 +288,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/aka"),
         contract_operation_id: Some("entities.aka"),
         handler: "aka",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -286,6 +303,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/ambiguities"),
         contract_operation_id: Some("entities.ambiguities"),
         handler: "ambiguities",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -300,6 +318,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/attach"),
         contract_operation_id: Some("entities.attach"),
         handler: "attach",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -314,6 +333,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/detected"),
         contract_operation_id: Some("entities.detect"),
         handler: "detect",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -328,6 +348,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/dismiss-merge-candidate"),
         contract_operation_id: Some("entities.dismiss-merge-candidate"),
         handler: "dismiss_merge_candidate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -342,6 +363,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/journal/entity/{entity_id}/history"),
         contract_operation_id: Some("entities.entity-history"),
         handler: "entity_history",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -356,6 +378,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/history"),
         contract_operation_id: Some("entities.history"),
         handler: "history",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -370,6 +393,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}"),
         contract_operation_id: Some("entities.list"),
         handler: "list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -384,6 +408,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/merge"),
         contract_operation_id: Some("entities.merge"),
         handler: "merge",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -398,6 +423,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/merge-candidates"),
         contract_operation_id: Some("entities.merge-candidates"),
         handler: "merge_candidates",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -412,6 +438,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/move"),
         contract_operation_id: Some("entities.move"),
         handler: "move_entity",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -426,6 +453,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/network"),
         contract_operation_id: Some("entities.network"),
         handler: "network",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -440,6 +468,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/observations"),
         contract_operation_id: Some("entities.observations"),
         handler: "observations",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -454,6 +483,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/observe"),
         contract_operation_id: Some("entities.observe"),
         handler: "observe",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -468,6 +498,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/overview"),
         contract_operation_id: Some("entities.overview"),
         handler: "overview",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -482,6 +513,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/record-merge-candidate"),
         contract_operation_id: Some("entities.record-merge-candidate"),
         handler: "record_merge_candidate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -496,6 +528,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/ambiguities/{ambiguity_id}/resolve"),
         contract_operation_id: Some("entities.resolve-ambiguity"),
         handler: "resolve_ambiguity",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -510,6 +543,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/journal/entity/{entity_id}/restore"),
         contract_operation_id: Some("entities.restore-version"),
         handler: "restore_version",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -524,6 +558,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/search"),
         contract_operation_id: Some("entities.search"),
         handler: "search",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -538,6 +573,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/merge/{merge_id}/undo"),
         contract_operation_id: Some("entities.undo-merge"),
         handler: "undo_merge",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -552,6 +588,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/entities/api/{facet_name}/update-description"),
         contract_operation_id: Some("entities.update"),
         handler: "update",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -566,6 +603,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/curation/api/facet/candidates"),
         contract_operation_id: Some("facets.list-candidates"),
         handler: "list_candidates",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -580,6 +618,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/curation/api/facet/accept"),
         contract_operation_id: Some("facets.accept"),
         handler: "accept",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -594,6 +633,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/curation/api/facet/dismiss"),
         contract_operation_id: Some("facets.dismiss"),
         handler: "dismiss",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -608,6 +648,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/import/api/journal-sources/{name}/staged"),
         contract_operation_id: Some("import.list-staged"),
         handler: "list_staged",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -622,6 +663,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/import/api/journal-sources/{name}/resolve-config"),
         contract_operation_id: Some("import.resolve-config"),
         handler: "resolve_config",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -636,6 +678,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/import/api/journal-sources/{name}/resolve-config-all"),
         contract_operation_id: Some("import.resolve-config-all"),
         handler: "resolve_config_all",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -650,6 +693,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/import/api/journal-sources/{name}/resolve-entity"),
         contract_operation_id: Some("import.resolve-entity"),
         handler: "resolve_entity",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -664,6 +708,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/import/api/journal-sources/{name}/resolve-facet"),
         contract_operation_id: Some("import.resolve-staged-facet"),
         handler: "resolve_staged_facet",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -678,6 +723,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/api/devices"),
         contract_operation_id: Some("link.devices"),
         handler: "authorized_clients",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -692,6 +738,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/api/devices"),
         contract_operation_id: Some("link.devices"),
         handler: "list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -706,6 +753,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "observer_pause",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -720,6 +768,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/pair-start"),
         contract_operation_id: Some("link.pairStart"),
         handler: "pair",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -734,6 +783,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/private-link/disable"),
         contract_operation_id: Some("link.private-link.disable"),
         handler: "private_link_disable",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -748,6 +798,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/private-link/enable"),
         contract_operation_id: Some("link.private-link.setup"),
         handler: "private_link_setup",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -762,6 +813,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/api/private-link"),
         contract_operation_id: Some("link.private-link.status"),
         handler: "private_link_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -776,6 +828,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/api/status"),
         contract_operation_id: Some("link.status"),
         handler: "status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -790,6 +843,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/network/unpair"),
         contract_operation_id: Some("link.unpair"),
         handler: "unpair",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -804,6 +858,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/convey/status"),
         contract_operation_id: Some("settings.convey.status"),
         handler: "convey_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -818,6 +873,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.update"),
         handler: "identity_set",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -832,6 +888,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.get"),
         handler: "identity_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -846,6 +903,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.update"),
         handler: "keys_clear",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -860,6 +918,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.update"),
         handler: "keys_set",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -874,6 +933,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.get"),
         handler: "keys_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -888,6 +948,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/validate-keys"),
         contract_operation_id: Some("settings.keys.validate"),
         handler: "keys_validate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -902,6 +963,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/observe"),
         contract_operation_id: Some("settings.observe.update"),
         handler: "observer_set",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -916,6 +978,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/observe"),
         contract_operation_id: Some("settings.observe.get"),
         handler: "observer_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -930,6 +993,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.update"),
         handler: "processing_set",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -944,6 +1008,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/processing"),
         contract_operation_id: Some("settings.processing.get"),
         handler: "processing_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -958,6 +1023,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.get"),
         handler: "show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -972,6 +1038,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/config"),
         contract_operation_id: Some("settings.config.update"),
         handler: "transcribe_set_backend",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -986,6 +1053,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/settings/api/transcribe"),
         contract_operation_id: Some("settings.transcribe.get"),
         handler: "transcribe_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1000,6 +1068,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/sol/api/set-name"),
         contract_operation_id: Some("sol.set-name"),
         handler: "set_name",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1014,6 +1083,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/sol/api/reset"),
         contract_operation_id: Some("sol.reset"),
         handler: "reset",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1028,6 +1098,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/sol/api/set-owner"),
         contract_operation_id: Some("sol.set-owner"),
         handler: "set_owner",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1042,6 +1113,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/sol/api/sol-init"),
         contract_operation_id: Some("sol.sol-init"),
         handler: "sol_init",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1056,6 +1128,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/attribute-segment"),
         contract_operation_id: Some("speakers.attribute-segment"),
         handler: "attribute_segment",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1070,6 +1143,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/backfill"),
         contract_operation_id: Some("speakers.backfill"),
         handler: "backfill",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1084,6 +1158,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/backfill-last-seen"),
         contract_operation_id: Some("speakers.backfill-last-seen"),
         handler: "backfill_last_seen",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1098,6 +1173,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/bootstrap"),
         contract_operation_id: Some("speakers.bootstrap"),
         handler: "bootstrap",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1112,6 +1188,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/build-from-tags"),
         contract_operation_id: Some("speakers.build-from-tags"),
         handler: "build_from_tags",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1126,6 +1203,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/confirm-cli"),
         contract_operation_id: Some("speakers.confirm-owner"),
         handler: "confirm_owner",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1140,6 +1218,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/correct-attribution"),
         contract_operation_id: Some("speakers.correct"),
         handler: "correct",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1154,6 +1233,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/segments-cli/{day}"),
         contract_operation_id: Some("speakers.day-segments"),
         handler: "day_segments",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1168,6 +1248,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/detect"),
         contract_operation_id: Some("speakers.detect"),
         handler: "detect",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1182,6 +1263,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/scan"),
         contract_operation_id: Some("speakers.discover"),
         handler: "discover",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1196,6 +1278,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/dismiss"),
         contract_operation_id: Some("speakers.dismiss-cluster"),
         handler: "dismiss_cluster",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1210,6 +1293,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/dismissals"),
         contract_operation_id: Some("speakers.dismissals"),
         handler: "dismissals",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1224,6 +1308,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/identify-cli"),
         contract_operation_id: Some("speakers.identify"),
         handler: "identify",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1238,6 +1323,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/identify/operations/{operation_id}"),
         contract_operation_id: Some("speakers.identify-operation"),
         handler: "identify_operation",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1252,6 +1338,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/identify/operations"),
         contract_operation_id: Some("speakers.identify-operations"),
         handler: "identify_operations",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1266,6 +1353,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/identify/undo"),
         contract_operation_id: Some("speakers.identify-undo"),
         handler: "identify_undo",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1280,6 +1368,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/name-variants/keep-separate"),
         contract_operation_id: Some("speakers.keep-separate-list"),
         handler: "keep_separate_list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1294,6 +1383,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/link-import"),
         contract_operation_id: Some("speakers.link-import"),
         handler: "link_import",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1308,6 +1398,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/merge-names"),
         contract_operation_id: Some("speakers.merge-names"),
         handler: "merge_names",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1322,6 +1413,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/ready"),
         contract_operation_id: Some("speakers.owner-ready"),
         handler: "owner_ready",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1336,6 +1428,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/discovery/cluster/{cluster_id}/presence"),
         contract_operation_id: Some("speakers.presence"),
         handler: "presence",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1350,6 +1443,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/propagate-correction"),
         contract_operation_id: Some("speakers.propagate-correction"),
         handler: "propagate_correction",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1364,6 +1458,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/rebuild"),
         contract_operation_id: Some("speakers.rebuild-owner"),
         handler: "rebuild_owner",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1378,6 +1473,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/reject-cli"),
         contract_operation_id: Some("speakers.reject-owner"),
         handler: "reject_owner",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1392,6 +1488,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/resolve-names"),
         contract_operation_id: Some("speakers.resolve-names"),
         handler: "resolve_names",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1406,6 +1503,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/seed-from-imports"),
         contract_operation_id: Some("speakers.seed-from-imports"),
         handler: "seed_from_imports",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1420,6 +1518,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/review-cli/{day}/{stream}/{segment_key}/{source}"),
         contract_operation_id: Some("speakers.sentences"),
         handler: "sentences",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1434,6 +1533,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/status"),
         contract_operation_id: Some("speakers.status"),
         handler: "status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1448,6 +1548,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/suggest"),
         contract_operation_id: Some("speakers.suggest"),
         handler: "suggest",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1462,6 +1563,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/owner/tag-cli"),
         contract_operation_id: Some("speakers.tag-owner"),
         handler: "tag_owner",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1476,6 +1578,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/speakers/api/wipe"),
         contract_operation_id: Some("speakers.wipe"),
         handler: "wipe",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1490,6 +1593,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/register"),
         contract_operation_id: Some("support.register"),
         handler: "register",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1504,6 +1608,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/articles"),
         contract_operation_id: Some("support.search"),
         handler: "search",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1518,6 +1623,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/articles/{slug}"),
         contract_operation_id: Some("support.article"),
         handler: "article",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1532,6 +1638,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/tickets"),
         contract_operation_id: Some("support.create"),
         handler: "create",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1546,6 +1653,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/tickets"),
         contract_operation_id: Some("support.list"),
         handler: "list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1560,6 +1668,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/tickets/{ticket_id}"),
         contract_operation_id: Some("support.show"),
         handler: "show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1574,6 +1683,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/tickets/{ticket_id}/reply"),
         contract_operation_id: Some("support.reply"),
         handler: "reply",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1588,6 +1698,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/tickets/{ticket_id}/attachments"),
         contract_operation_id: Some("support.attach"),
         handler: "attach",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1602,6 +1713,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/feedback"),
         contract_operation_id: Some("support.feedback"),
         handler: "feedback",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1616,6 +1728,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/announcements"),
         contract_operation_id: Some("support.announcements"),
         handler: "announcements",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1630,6 +1743,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/support/api/diagnostics"),
         contract_operation_id: Some("support.diagnose"),
         handler: "diagnose",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1644,6 +1758,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/endpoint"),
         contract_operation_id: Some("thinking.local.endpoint.delete"),
         handler: "clear_local_endpoint",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1658,6 +1773,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/confidential/disable"),
         contract_operation_id: Some("thinking.confidential.disable"),
         handler: "confidential_disable",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1672,6 +1788,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/confidential/enable"),
         contract_operation_id: Some("thinking.confidential.enable"),
         handler: "confidential_enable",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1686,6 +1803,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/confidential/recheck"),
         contract_operation_id: Some("thinking.confidential.recheck"),
         handler: "confidential_recheck",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1700,6 +1818,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/providers"),
         contract_operation_id: Some("thinking.providers.get"),
         handler: "confidential_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1714,6 +1833,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/keys"),
         contract_operation_id: Some("thinking.keys.update"),
         handler: "keys_clear",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1728,6 +1848,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/keys"),
         contract_operation_id: Some("thinking.keys.update"),
         handler: "keys_set",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1742,6 +1863,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/keys"),
         contract_operation_id: Some("thinking.keys.get"),
         handler: "keys_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1756,6 +1878,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/validate-keys"),
         contract_operation_id: Some("thinking.keys.validate"),
         handler: "keys_validate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1770,6 +1893,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/availability"),
         contract_operation_id: Some("thinking.local.availability"),
         handler: "local_availability",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1784,6 +1908,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/bootstrap"),
         contract_operation_id: Some("thinking.local.bootstrap"),
         handler: "local_bootstrap",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1798,6 +1923,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/bootstrap/status"),
         contract_operation_id: Some("thinking.local.bootstrap-status"),
         handler: "local_bootstrap_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1812,6 +1938,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/models"),
         contract_operation_id: Some("thinking.local.models"),
         handler: "local_models",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1826,6 +1953,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/providers/local/status"),
         contract_operation_id: Some("thinking.local.provider-status"),
         handler: "local_readiness",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1840,6 +1968,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/providers/local/status"),
         contract_operation_id: Some("thinking.local.provider-status"),
         handler: "local_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1854,6 +1983,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/providers"),
         contract_operation_id: Some("thinking.providers.update"),
         handler: "providers_set_active",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1868,6 +1998,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/providers"),
         contract_operation_id: Some("thinking.providers.get"),
         handler: "providers_show",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1882,6 +2013,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/scout/check"),
         contract_operation_id: Some("thinking.scout.check"),
         handler: "scout_check",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1896,6 +2028,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/scout/disable"),
         contract_operation_id: Some("thinking.scout.disable"),
         handler: "scout_disable",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1910,6 +2043,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/scout/enable"),
         contract_operation_id: Some("thinking.scout.enable"),
         handler: "scout_enable",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1924,6 +2058,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/scout/refresh"),
         contract_operation_id: Some("thinking.scout.refresh"),
         handler: "scout_refresh",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1938,6 +2073,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/scout"),
         contract_operation_id: Some("thinking.scout.status"),
         handler: "scout_status",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1952,6 +2088,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/thinking/api/local/endpoint"),
         contract_operation_id: Some("thinking.local.endpoint.set"),
         handler: "set_local_endpoint",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1966,6 +2103,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/transcripts/api/read/{day}"),
         contract_operation_id: Some("transcripts.read"),
         handler: "read",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1980,6 +2118,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/transcripts/api/day/{day}"),
         contract_operation_id: Some("transcripts.scan"),
         handler: "scan",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -1994,6 +2133,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/transcripts/api/segments/{day}"),
         contract_operation_id: Some("transcripts.segments"),
         handler: "segments",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2008,6 +2148,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/transcripts/api/segment/{day}/{stream}/{segment_key}"),
         contract_operation_id: Some("transcripts.speakers"),
         handler: "speakers",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2022,6 +2163,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/app/transcripts/api/stats/{month}"),
         contract_operation_id: Some("transcripts.stats"),
         handler: "stats",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-chat",
@@ -2036,6 +2178,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "chat",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-import",
@@ -2050,6 +2193,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "import_top_level",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-link",
@@ -2064,6 +2208,22 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "link_join",
+        resident: false,
+    },
+    InventoryEntry {
+        surface: "sol-link",
+        path: &["link", "serve"],
+        kind: "top-level",
+        help: "serve a paired journal over the local link bridge",
+        authority_path: "solstone/think/native/link/authority.toml",
+        params_json: "[{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"label\",\"nargs\":1,\"options\":[\"--label\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":5015,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"port\",\"nargs\":1,\"options\":[\"--port\"],\"required\":false,\"secondary\":[],\"type\":\"integer\"},{\"count\":false,\"default\":null,\"flag_value\":null,\"hidden\":false,\"is_flag\":false,\"kind\":\"option\",\"multiple\":false,\"name\":\"relay_url\",\"nargs\":1,\"options\":[\"--relay-url\"],\"required\":false,\"secondary\":[],\"type\":\"text\"},{\"count\":false,\"default\":false,\"flag_value\":true,\"hidden\":false,\"is_flag\":true,\"kind\":\"option\",\"multiple\":false,\"name\":\"direct\",\"nargs\":1,\"options\":[\"--direct\"],\"required\":false,\"secondary\":[],\"type\":\"boolean\"}]",
+        entry_type: "top-level-link",
+        operation_id: "link.serve",
+        method: None,
+        route: None,
+        contract_operation_id: None,
+        handler: "link_serve",
+        resident: true,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2078,6 +2238,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "identity",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2092,6 +2253,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "navigate",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-notify",
@@ -2106,6 +2268,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: None,
         contract_operation_id: None,
         handler: "notify",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2120,6 +2283,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/health/summary"),
         contract_operation_id: Some("health.summary"),
         handler: "summary",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2134,6 +2298,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/health/full"),
         contract_operation_id: Some("health.full"),
         handler: "full",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2148,6 +2313,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/health/range"),
         contract_operation_id: Some("health.for_range"),
         handler: "for_range",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2162,6 +2328,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/health/pipeline"),
         contract_operation_id: Some("health.pipeline"),
         handler: "pipeline",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2176,6 +2343,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/ledger"),
         contract_operation_id: Some("ledger.list"),
         handler: "list",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2190,6 +2358,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/ledger/decisions"),
         contract_operation_id: Some("ledger.decisions"),
         handler: "decisions",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2204,6 +2373,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/ledger/{item_id}"),
         contract_operation_id: Some("ledger.get"),
         handler: "get",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2218,6 +2388,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/ledger/{item_id}/close"),
         contract_operation_id: Some("ledger.close"),
         handler: "close",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2232,6 +2403,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/profile/{name}/brief"),
         contract_operation_id: Some("profile.brief"),
         handler: "brief",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2246,6 +2418,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/profile/{name}/cadence"),
         contract_operation_id: Some("profile.cadence"),
         handler: "cadence",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2260,6 +2433,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/profile/{name}"),
         contract_operation_id: Some("profile.full"),
         handler: "full",
+        resident: false,
     },
     InventoryEntry {
         surface: "sol-call",
@@ -2274,6 +2448,7 @@ pub const ENTRIES: &[InventoryEntry] = &[
         route: Some("/api/profiles/active"),
         contract_operation_id: Some("profile.list-active"),
         handler: "list_active",
+        resident: false,
     },
 ];
 
@@ -2438,3 +2613,6 @@ pub const HANDLERS: &[Handler] = &[
     solstone_think_tools_native_profile_command_rs::full,
     solstone_think_tools_native_profile_command_rs::list_active,
 ];
+
+pub const RESIDENT_HANDLERS: &[ResidentHandler] =
+    &[solstone_think_native_link_command_rs::link_serve];

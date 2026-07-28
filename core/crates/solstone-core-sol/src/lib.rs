@@ -26,12 +26,17 @@ use solstone_core_sol_client::seam::{
     BuildIdentityProvider, ChatEventSource, ChatInput, ClientItemIdProvider, Clock, FileProvider,
     HttpTransport, NotificationSink, NotificationSinkError, ProcessOutput, ProcessSpawner,
 };
+#[cfg(target_os = "ios")]
+use solstone_core_sol_client::seam::{LinkServeError, LinkServeErrorKind, LinkServeRunner};
 use solstone_core_sol_client::sse::SseDecoder;
 use solstone_core_sol_client::transport::UreqHttpTransport;
 use solstone_core_sol_client_cli::{
-    DispatchSeams, Outcome, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    dispatch_sol_import_with_seams, dispatch_sol_notify_with_seams, evaluate_args, help,
+    DispatchSeams, LinkDispatch, LinkDispatchSeams, Outcome, dispatch_sol_call_with_seams,
+    dispatch_sol_chat_with_seams, dispatch_sol_import_with_seams, dispatch_sol_link_with_seams,
+    dispatch_sol_notify_with_seams, evaluate_args, help,
 };
+#[cfg(not(target_os = "ios"))]
+use solstone_core_sol_link::SplLinkServeRunner;
 
 mod generated;
 mod skills;
@@ -91,6 +96,12 @@ fn run_with_stdin_provider(
         }
         [command, rest @ ..] if command == OsStr::new("import") => {
             run_top_level_native(public_argv0, &args, "import", rest, stdin_provider)
+        }
+        [command, rest @ ..]
+            if command == OsStr::new("link")
+                && rest.first().is_some_and(|verb| verb == OsStr::new("serve")) =>
+        {
+            run_top_level_native(public_argv0, &args, "link", rest, stdin_provider)
         }
         [command, rest @ ..] if command == OsStr::new("notify") => {
             run_top_level_native(public_argv0, &args, "notify", rest, stdin_provider)
@@ -489,6 +500,52 @@ fn run_dispatched(
     let chat_events = ChannelChatEventSource::default();
     let notification_sink = UnixNotificationSink::new(journal.path.join("health/callosum.sock"));
 
+    if let Outcome::Link { .. } = outcome {
+        #[cfg(not(target_os = "ios"))]
+        let link_serve_runner = SplLinkServeRunner;
+        #[cfg(target_os = "ios")]
+        let link_serve_runner = UnavailableLinkServeRunner;
+        let dispatch = dispatch_sol_link_with_seams(
+            &args,
+            &env,
+            &stdin,
+            &today,
+            LinkDispatchSeams {
+                transport: &transport,
+                clock: Some(&clock),
+                files: Some(&files),
+                link_pairing: None,
+                link_serve: Some(&link_serve_runner),
+                journal_root: Some(&journal.path),
+            },
+        );
+        return match dispatch {
+            LinkDispatch::Buffered(output) => render_output(output),
+            LinkDispatch::Resident {
+                handler,
+                args: resident_args,
+            } => {
+                let context = CommandContext {
+                    args: &resident_args,
+                    env: &env,
+                    stdin: &stdin,
+                    today: &today,
+                    transport: &transport,
+                    clock: Some(&clock),
+                    chat_events: None,
+                    files: Some(&files),
+                    build_identity: None,
+                    client_item_ids: None,
+                    notification_sink: None,
+                    link_pairing: None,
+                    link_serve: Some(&link_serve_runner),
+                    journal_root: Some(&journal.path),
+                };
+                run_resident_command(handler, context)
+            }
+        };
+    }
+
     let output = match outcome {
         Outcome::Migrated { .. } | Outcome::MovedStub { .. } => dispatch_sol_call_with_seams(
             &args,
@@ -550,9 +607,24 @@ fn run_dispatched(
                 notification_sink: Some(&notification_sink),
             },
         ),
+        Outcome::Link { .. } => unreachable!("link outcome handled before buffered dispatch"),
         Outcome::Unsupported { .. } => unsupported_output(),
     };
     render_output(output)
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Default)]
+struct UnavailableLinkServeRunner;
+
+#[cfg(target_os = "ios")]
+impl LinkServeRunner for UnavailableLinkServeRunner {
+    fn start(
+        &self,
+        _request: solstone_core_sol_client::seam::LinkServeRequest,
+    ) -> Result<Box<dyn solstone_core_sol_client::seam::LinkServeSession>, LinkServeError> {
+        Err(LinkServeError::new(LinkServeErrorKind::RuntimeUnavailable))
+    }
 }
 
 fn delegate_to_compat(public_argv0: &str, all_args: &[OsString]) -> ExitCode {

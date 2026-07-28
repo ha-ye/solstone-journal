@@ -605,6 +605,7 @@ mod tests {
             client_item_ids: Some(client_item_ids),
             notification_sink: None,
             link_pairing: None,
+            link_serve: None,
             journal_root: None,
         })
     }

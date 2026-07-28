@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::seam::{
     BuildIdentityProvider, ChatEventSource, ClientItemIdProvider, Clock, FileProvider,
-    HttpTransport, LinkJoinPairingSeam, NotificationSink,
+    HttpTransport, LinkJoinPairingSeam, LinkServeRunner, NotificationSink,
 };
 
 #[derive(Clone, Copy)]
@@ -23,6 +23,7 @@ pub struct CommandContext<'a> {
     pub client_item_ids: Option<&'a dyn ClientItemIdProvider>,
     pub notification_sink: Option<&'a dyn NotificationSink>,
     pub link_pairing: Option<&'a dyn LinkJoinPairingSeam>,
+    pub link_serve: Option<&'a dyn LinkServeRunner>,
     pub journal_root: Option<&'a Path>,
 }
 

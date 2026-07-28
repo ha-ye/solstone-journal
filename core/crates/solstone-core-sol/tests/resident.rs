@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use solstone_core_sol_client::aggregate::{self, Handler};
+use solstone_core_sol_client::resident::ResidentHandler;
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_solstone-resident-fixture")
@@ -117,6 +118,7 @@ fn assert_graceful_shutdown_and_released_port(status: ExitStatus, port: u16) {
 }
 
 fn assert_buffered_handler_slice(_handlers: &'static [Handler]) {}
+fn assert_resident_handler_slice(_handlers: &'static [ResidentHandler]) {}
 
 #[test]
 fn resident_startup_line_arrives_before_child_exit_unlike_buffered_output() {
@@ -160,8 +162,13 @@ fn resident_fixture_is_absent_from_inventory_and_handlers_are_buffered() {
     }
 
     let handlers = aggregate::handler_bindings();
-    assert_eq!(handlers.len(), aggregate::entries().len());
+    let resident_handlers = aggregate::resident_handler_bindings();
+    assert_eq!(
+        handlers.len() + resident_handlers.len(),
+        aggregate::entries().len()
+    );
     // The helper's &'static [Handler] parameter is the compile-time assertion
     // that generated inventory bindings stay on the buffered handler lane.
     assert_buffered_handler_slice(handlers);
+    assert_resident_handler_slice(resident_handlers);
 }

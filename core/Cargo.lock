@@ -1030,6 +1030,7 @@ dependencies = [
  "solstone-core-journal",
  "solstone-core-sol-client",
  "solstone-core-sol-client-cli",
+ "solstone-core-sol-link",
 ]
 
 [[package]]
@@ -1063,6 +1064,7 @@ dependencies = [
  "spl-core",
  "spl-transport",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
+use solstone_core_sol_client::command::CommandContext;
 use solstone_core_sol_client::error::ClientError;
 use solstone_core_sol_client::seam::{
     ChatInput, ExpectedHttpCall, FakeBuildIdentityProvider, FakeClientItemIdProvider, FakeClock,
     FixtureFileProvider, RecordedHttpCall, RecordingNotificationSink, ScriptedChatEventSource,
-    ScriptedHttpTransport, ScriptedLinkJoinPairingSeam,
+    ScriptedHttpTransport, ScriptedLinkJoinPairingSeam, ScriptedLinkServeRunner,
 };
 use solstone_core_sol_client::sse::iter_sse_events;
 use solstone_core_sol_client::transport::{
@@ -17,8 +18,9 @@ use solstone_core_sol_client::transport::{
     TimeoutPolicy, UploadRequest,
 };
 use solstone_core_sol_client_cli::{
-    DispatchSeams, LinkDispatchSeams, dispatch_sol_call_with_seams, dispatch_sol_chat_with_seams,
-    dispatch_sol_import_with_seams, dispatch_sol_link_with_seams, dispatch_sol_notify_with_seams,
+    DispatchSeams, LinkDispatch, LinkDispatchSeams, dispatch_sol_call_with_seams,
+    dispatch_sol_chat_with_seams, dispatch_sol_import_with_seams, dispatch_sol_link_with_seams,
+    dispatch_sol_notify_with_seams,
 };
 
 const ACTIVITIES_VECTORS: &str =
@@ -39,6 +41,8 @@ const IMPORT_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/i
 const LEDGER_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/ledger.jsonl");
 const LINK_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link.jsonl");
 const LINK_JOIN_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/link_join.jsonl");
+const LINK_SERVE_VECTORS: &str =
+    include_str!("../../../fixtures/native-sol/parity/link_serve.jsonl");
 const MOVED_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/moved.jsonl");
 const NOTIFY_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/notify.jsonl");
 const PROFILE_VECTORS: &str = include_str!("../../../fixtures/native-sol/parity/profile.jsonl");
@@ -70,6 +74,7 @@ fn native_matches_sol_call_parity_vectors() {
         .chain(load_vectors(LEDGER_VECTORS))
         .chain(load_vectors(LINK_VECTORS))
         .chain(load_vectors(LINK_JOIN_VECTORS))
+        .chain(load_vectors(LINK_SERVE_VECTORS))
         .chain(load_vectors(MOVED_VECTORS))
         .chain(load_vectors(NOTIFY_VECTORS))
         .chain(load_vectors(PROFILE_VECTORS))
@@ -120,6 +125,7 @@ fn run_vector(vector: &Value) {
         RecordingNotificationSink::new()
     };
     let link_pairing = ScriptedLinkJoinPairingSeam::new(vec![]);
+    let link_serve = ScriptedLinkServeRunner::new(vec![]);
 
     let output = if vector["surface"].as_str() == Some("sol-chat") {
         dispatch_sol_chat_with_seams(
@@ -171,7 +177,7 @@ fn run_vector(vector: &Value) {
             },
         )
     } else if vector["surface"].as_str() == Some("sol-link") {
-        dispatch_sol_link_with_seams(
+        let dispatch = dispatch_sol_link_with_seams(
             &argv,
             &env,
             stdin,
@@ -181,9 +187,35 @@ fn run_vector(vector: &Value) {
                 clock: Some(&clock),
                 files: Some(&files),
                 link_pairing: Some(&link_pairing),
+                link_serve: Some(&link_serve),
                 journal_root: Some(std::path::Path::new("/native-sol-parity-journal")),
             },
-        )
+        );
+        match dispatch {
+            LinkDispatch::Buffered(output) => output,
+            LinkDispatch::Resident { handler, args } => {
+                let output = handler(CommandContext {
+                    args: &args,
+                    env: &env,
+                    stdin,
+                    today,
+                    transport: &transport,
+                    clock: Some(&clock),
+                    chat_events: None,
+                    files: Some(&files),
+                    build_identity: None,
+                    client_item_ids: None,
+                    notification_sink: None,
+                    link_pairing: Some(&link_pairing),
+                    link_serve: Some(&link_serve),
+                    journal_root: Some(std::path::Path::new("/native-sol-parity-journal")),
+                });
+                match output {
+                    Err(output) => output,
+                    Ok(_) => panic!("resident parity vector entered the serve loop"),
+                }
+            }
+        }
     } else {
         dispatch_sol_call_with_seams(
             &argv,
@@ -203,6 +235,7 @@ fn run_vector(vector: &Value) {
     };
     transport.assert_done();
     link_pairing.assert_done();
+    link_serve.assert_done();
     let mut actual = json!({
         "stdout": output.stdout,
         "stderr": output.stderr,

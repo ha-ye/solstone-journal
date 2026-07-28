@@ -14,6 +14,9 @@ use spl_transport::{RelayControlEndpoint, RelayError, TransportError, tls};
 
 mod direct_seam;
 mod pairing_entry;
+mod serve;
+
+pub use serve::SplLinkServeRunner;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SplLinkJoinPairingSeam;

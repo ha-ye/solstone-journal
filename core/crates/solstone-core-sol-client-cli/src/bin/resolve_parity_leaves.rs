@@ -44,7 +44,7 @@ fn main() -> Result<(), String> {
             let lookup_args = match surface {
                 "sol-chat" => vec!["chat".to_string()],
                 "sol-import" => vec!["import".to_string()],
-                "sol-link" => vec!["link".to_string(), "join".to_string()],
+                "sol-link" => link_lookup_args(&argv),
                 "sol-notify" => vec!["notify".to_string()],
                 _ => argv,
             };
@@ -61,4 +61,12 @@ fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn link_lookup_args(argv: &[String]) -> Vec<String> {
+    match argv {
+        [command, verb, ..] if command == "link" => vec![String::from("link"), verb.clone()],
+        [verb, ..] => vec![String::from("link"), verb.clone()],
+        [] => vec![String::from("link")],
+    }
 }
