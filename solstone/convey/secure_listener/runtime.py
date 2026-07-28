@@ -10,7 +10,6 @@ import atexit
 import logging
 import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +20,7 @@ from solstone.think.link.paths import LinkState, authorized_clients_path, ca_dir
 from solstone.think.utils import get_journal, journal_is_active
 
 from .accept import SecureListener
+from .admission import SecureListenerAdmission, resolve_admission_config
 from .tls import build_relaxed_server_context, build_server_context, issue_server_cert
 
 logger = logging.getLogger("convey.secure_listener.runtime")
@@ -33,11 +33,8 @@ class RuntimeState:
     started_event: threading.Event = field(default_factory=threading.Event)
     apps: list[Any] = field(default_factory=list)
     authorized: AuthorizedClients | None = None
-    executor: ThreadPoolExecutor = field(
-        default_factory=lambda: ThreadPoolExecutor(
-            max_workers=16,
-            thread_name_prefix="secure-listener-wsgi",
-        )
+    admission: SecureListenerAdmission = field(
+        default_factory=lambda: SecureListenerAdmission(resolve_admission_config())
     )
     listener: SecureListener | None = None
     start_error: BaseException | None = None
@@ -96,7 +93,7 @@ def _thread_main(runtime: RuntimeState) -> None:
             strict_tls_ctx=strict_tls_ctx,
             relaxed_tls_ctx=relaxed_tls_ctx,
             authorized=authorized,
-            executor=runtime.executor,
+            admission=runtime.admission,
             callosum_emit=emit,
         )
         runtime.listener = listener
@@ -120,7 +117,13 @@ def _thread_main(runtime: RuntimeState) -> None:
                     asyncio.gather(*pending, return_exceptions=True)
                 )
         finally:
-            runtime.executor.shutdown(wait=True, cancel_futures=True)
+            loop.run_until_complete(
+                asyncio.to_thread(
+                    runtime.admission.shutdown,
+                    wait=True,
+                    cancel_futures=True,
+                )
+            )
             loop.close()
 
 

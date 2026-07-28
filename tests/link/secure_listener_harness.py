@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,10 @@ from typing import Any
 import pytest
 
 from solstone.convey.secure_listener.accept import SecureListener
+from solstone.convey.secure_listener.admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+)
 from solstone.convey.secure_listener.tls import (
     build_relaxed_server_context,
     build_server_context,
@@ -30,7 +34,7 @@ class SecureListenerHarness:
     ca: LoadedCa
     authorized: AuthorizedClients
     listener: SecureListener
-    executor: ThreadPoolExecutor
+    admission: SecureListenerAdmission
     host: str
     port: int
 
@@ -62,8 +66,12 @@ class SecureListenerHarness:
             server_key,
             authorized,
         )
-        executor = ThreadPoolExecutor(
-            max_workers=4,
+        admission = SecureListenerAdmission(
+            SecureListenerAdmissionConfig(
+                capacity=4,
+                streaming_capacity=4,
+                refuse_when_full=False,
+            ),
             thread_name_prefix="secure-listener-e2e-wsgi",
         )
         listener = SecureListener(
@@ -71,7 +79,7 @@ class SecureListenerHarness:
             strict_tls_ctx=strict_tls_ctx,
             relaxed_tls_ctx=relaxed_tls_ctx,
             authorized=authorized,
-            executor=executor,
+            admission=admission,
             callosum_emit=lambda _event, _fields: None,
             host="127.0.0.1",
             port=0,
@@ -85,7 +93,7 @@ class SecureListenerHarness:
             ca=ca,
             authorized=authorized,
             listener=listener,
-            executor=executor,
+            admission=admission,
             host=str(host),
             port=int(port),
         )
@@ -94,7 +102,11 @@ class SecureListenerHarness:
         try:
             await self.listener.stop()
         finally:
-            self.executor.shutdown(wait=True, cancel_futures=True)
+            await asyncio.to_thread(
+                self.admission.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
 
     def seed_nonce(
         self,

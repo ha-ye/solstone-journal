@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solstone.convey import root as root_module
+from solstone.convey.secure_listener.admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+)
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.wsgi import (
     _normalize_location_headers,
@@ -56,8 +59,17 @@ async def _dispatch_raw_request(
     reader.feed_eof()
     writer = FakeStreamWriter()
     loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        await dispatch_stream(app, identity, reader, writer, loop, executor)
+    admission = SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=1,
+            streaming_capacity=1,
+            refuse_when_full=False,
+        )
+    )
+    try:
+        await dispatch_stream(app, identity, reader, writer, loop, admission)
+    finally:
+        await asyncio.to_thread(admission.shutdown, wait=True, cancel_futures=True)
     status, headers, body = _parse_http_response(bytes(writer.data))
     return status, headers, body, writer
 

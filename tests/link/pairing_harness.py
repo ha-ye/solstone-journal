@@ -9,7 +9,6 @@ import queue
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,10 @@ import pytest
 from OpenSSL import SSL
 
 from solstone.apps.network.routes import _build_pair_link
+from solstone.convey.secure_listener.admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+)
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.mux import Multiplexer, StreamWriter
 from solstone.convey.secure_listener.tls import (
@@ -37,6 +40,7 @@ PairingStreamHandler = Callable[
     [asyncio.StreamReader, StreamWriter],
     Awaitable[None],
 ]
+QueuedFrame = tuple[int, int, bytes]
 
 
 @dataclass
@@ -48,8 +52,14 @@ class PairingHarness:
     handle_stream: PairingStreamHandler | None = None
     host: str = "127.0.0.1"
     port: int = 0
-    _executor: ThreadPoolExecutor = field(
-        default_factory=lambda: ThreadPoolExecutor(max_workers=2),
+    _admission: SecureListenerAdmission = field(
+        default_factory=lambda: SecureListenerAdmission(
+            SecureListenerAdmissionConfig(
+                capacity=2,
+                streaming_capacity=2,
+                refuse_when_full=False,
+            )
+        ),
     )
     _ready: queue.Queue[BaseException | None] = field(default_factory=queue.Queue)
     _loop: asyncio.AbstractEventLoop | None = None
@@ -109,7 +119,7 @@ class PairingHarness:
             loop.call_soon_threadsafe(loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._admission.shutdown(wait=True, cancel_futures=True)
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
@@ -157,7 +167,8 @@ class PairingHarness:
         tcp_writer: asyncio.StreamWriter,
     ) -> None:
         tls = new_server(self.relaxed_ctx)
-        send_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        send_queue: asyncio.PriorityQueue[QueuedFrame] = asyncio.PriorityQueue()
+        send_sequence = 0
         loop = asyncio.get_running_loop()
         identity = ConveyIdentity(
             mode="pl-via-spl",
@@ -173,8 +184,11 @@ class PairingHarness:
             tcp_writer.write(data)
             await tcp_writer.drain()
 
-        async def send_frame(frame: bytes) -> None:
-            send_queue.put_nowait(frame)
+        async def send_frame(frame: bytes, *, urgent: bool = False) -> None:
+            nonlocal send_sequence
+            priority = 0 if urgent else 1
+            send_queue.put_nowait((priority, send_sequence, frame))
+            send_sequence += 1
 
         async def handle_stream(
             reader: asyncio.StreamReader,
@@ -189,7 +203,7 @@ class PairingHarness:
                 reader,
                 writer,
                 loop,
-                self._executor,
+                self._admission,
             )
 
         mux = Multiplexer(send_frame, handle_stream, is_listener=True)
@@ -207,7 +221,7 @@ class PairingHarness:
 
         async def writer_loop() -> None:
             while True:
-                frame = await send_queue.get()
+                _priority, _sequence, frame = await send_queue.get()
                 await write_ciphertext(_encrypt(tls, frame))
 
         reader_task = asyncio.create_task(reader_loop())
@@ -279,10 +293,10 @@ def _encrypt(tls: Any, plaintext: bytes) -> bytes:
 async def _drain_send_queue(
     tls: Any,
     write_ciphertext: Callable[[bytes], Awaitable[None]],
-    send_queue: asyncio.Queue[bytes],
+    send_queue: asyncio.PriorityQueue[QueuedFrame],
 ) -> None:
-    drained: list[bytes] = []
+    drained: list[QueuedFrame] = []
     while not send_queue.empty():
         drained.append(send_queue.get_nowait())
-    for frame in drained:
+    for _priority, _sequence, frame in drained:
         await write_ciphertext(_encrypt(tls, frame))

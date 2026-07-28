@@ -32,6 +32,7 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 TLS termination, multiplexing, and inline WSGI dispatch now live in
 `solstone/convey/secure_listener/`, because Convey owns both listening ports:
 the DL web port and the PL secure-listener port 7657.
+Secure-listener capacity is configured with `link.secure_listener_capacity`; `link.secure_listener_streaming_capacity = 0` disables the streaming lane split.
 
 ## naming
 

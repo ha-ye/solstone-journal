@@ -43,7 +43,7 @@ class PairWs:
             raise ConnectionClosed(None, None)
         return self.frames.pop(0)
 
-    async def send(self, data: bytes) -> None:
+    async def send(self, data: bytes, *, urgent: bool = False) -> None:
         self.sent.append(data)
 
     async def close(self) -> None:

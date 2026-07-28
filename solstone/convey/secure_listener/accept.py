@@ -12,15 +12,15 @@ import logging
 import socket
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from OpenSSL import SSL
 
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.window import window_open
 
+from .admission import SecureListenerAdmission
 from .framing import RESET_INTERNAL_ERROR
 from .identity import ConveyIdentity
 from .mux import RESET_CTX_NO_IDENTITY, Multiplexer, ResetDiagnostic, StreamWriter
@@ -34,8 +34,13 @@ CERTLESS_TUNNEL_CAP = 4
 CERTLESS_PAIR_FAILURE_CAP = 3
 CERTLESS_INVALID_NONCE_BACKOFF_SECONDS = 1.0
 CERTLESS_WINDOW_POLL_SECONDS = 5.0
+SECURE_LISTENER_TCP_DRAIN_TIMEOUT_SECONDS: Final[float] = 120.0
+KEEPALIVE_IDLE_SECONDS: Final[int] = 30
+KEEPALIVE_INTERVAL_SECONDS: Final[int] = 10
+KEEPALIVE_COUNT: Final[int] = 3
 
 PeerMode = Literal["pl-direct", "pl-via-spl"]
+QueuedFrame = tuple[int, int, bytes]
 
 
 def certless_admission_mode(
@@ -84,7 +89,7 @@ class SecureListener:
         strict_tls_ctx: SSL.Context,
         relaxed_tls_ctx: SSL.Context,
         authorized: AuthorizedClients,
-        executor: ThreadPoolExecutor,
+        admission: SecureListenerAdmission,
         callosum_emit: CallosumEmit | None = None,
         host: str = "0.0.0.0",
         port: int = 7657,
@@ -94,7 +99,7 @@ class SecureListener:
         self._strict_tls_ctx = strict_tls_ctx
         self._relaxed_tls_ctx = relaxed_tls_ctx
         self._authorized = authorized
-        self._executor = executor
+        self._admission = admission
         self._emit = callosum_emit or (lambda _event, _fields: None)
         self._host = host
         self._port = port
@@ -180,6 +185,7 @@ class SecureListener:
     ) -> None:
         connection_id = uuid.uuid4().hex
         mode = _mode_from_peername(writer.get_extra_info("peername"))
+        _apply_tcp_keepalive(writer, self._log)
         self._log.info(
             "secure connection accepted conn=%s mode=%s",
             connection_id,
@@ -234,7 +240,8 @@ class SecureListener:
         admitted_certless = certless_mode is not None
         tls_ctx = self._relaxed_tls_ctx if admitted_certless else self._strict_tls_ctx
         tls = new_server(tls_ctx)
-        send_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        send_queue: asyncio.PriorityQueue[QueuedFrame] = asyncio.PriorityQueue()
+        send_sequence = 0
         identity: ConveyIdentity | None = None
         certless_handle: CertlessConnection | None = None
         certless_registered = False
@@ -243,10 +250,16 @@ class SecureListener:
             if not data:
                 return
             tcp_writer.write(data)
-            await tcp_writer.drain()
+            await asyncio.wait_for(
+                tcp_writer.drain(),
+                timeout=SECURE_LISTENER_TCP_DRAIN_TIMEOUT_SECONDS,
+            )
 
-        async def send_frame(frame: bytes) -> None:
-            send_queue.put_nowait(frame)
+        async def send_frame(frame: bytes, *, urgent: bool = False) -> None:
+            nonlocal send_sequence
+            priority = 0 if urgent else 1
+            send_queue.put_nowait((priority, send_sequence, frame))
+            send_sequence += 1
 
         async def handle_stream(
             reader: asyncio.StreamReader,
@@ -272,7 +285,7 @@ class SecureListener:
                                 reader,
                                 writer,
                                 asyncio.get_running_loop(),
-                                self._executor,
+                                self._admission,
                             )
                             close_after_failure = await self._record_certless_dispatch(
                                 certless_handle,
@@ -293,7 +306,7 @@ class SecureListener:
                         reader,
                         writer,
                         asyncio.get_running_loop(),
-                        self._executor,
+                        self._admission,
                     )
             finally:
                 self._log.debug(
@@ -389,7 +402,7 @@ class SecureListener:
 
         async def app_writer_loop() -> None:
             while True:
-                data = await send_queue.get()
+                _priority, _sequence, data = await send_queue.get()
                 try:
                     outbound = _encrypt(tls, data)
                     await write_ciphertext(outbound)
@@ -405,13 +418,19 @@ class SecureListener:
             name=f"secure-tcp-writer-{connection_id}",
         )
         try:
-            await reader_task
+            done, pending = await asyncio.wait(
+                {reader_task, writer_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                task.result()
         finally:
             if certless_registered:
                 self._unregister_certless_connection(connection_id)
-            writer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await writer_task
+            for task in (reader_task, writer_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(reader_task, writer_task, return_exceptions=True)
             await mux.close()
 
     def _identity_for_peer(self, mode: PeerMode, fingerprint: str) -> ConveyIdentity:
@@ -499,11 +518,11 @@ def _encrypt(tls: Any, plaintext: bytes) -> bytes:
 async def _drain_send_queue(
     tls: Any,
     write_ciphertext: Callable[[bytes], asyncio.Future[Any] | Any],
-    queue: asyncio.Queue[bytes],
+    queue: asyncio.PriorityQueue[QueuedFrame],
 ) -> None:
     while True:
         try:
-            chunk = queue.get_nowait()
+            _priority, _sequence, chunk = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
         try:
@@ -534,6 +553,49 @@ def _tls_close_reason(exc: TlsError) -> str:
     if "certificate" in text or "verify" in text:
         return "verify_failed"
     return "tls_alert"
+
+
+def _tcp_keepalive_options(socket_module: Any = socket) -> list[tuple[int, int, int]]:
+    options: list[tuple[int, int, int]] = []
+    if hasattr(socket_module, "SOL_SOCKET") and hasattr(socket_module, "SO_KEEPALIVE"):
+        options.append((socket_module.SOL_SOCKET, socket_module.SO_KEEPALIVE, 1))
+    if hasattr(socket_module, "IPPROTO_TCP"):
+        tcp_level = socket_module.IPPROTO_TCP
+        if hasattr(socket_module, "TCP_KEEPIDLE"):
+            options.append(
+                (tcp_level, socket_module.TCP_KEEPIDLE, KEEPALIVE_IDLE_SECONDS)
+            )
+        if hasattr(socket_module, "TCP_KEEPALIVE"):
+            options.append(
+                (tcp_level, socket_module.TCP_KEEPALIVE, KEEPALIVE_IDLE_SECONDS)
+            )
+        if hasattr(socket_module, "TCP_KEEPINTVL"):
+            options.append(
+                (tcp_level, socket_module.TCP_KEEPINTVL, KEEPALIVE_INTERVAL_SECONDS)
+            )
+        if hasattr(socket_module, "TCP_KEEPCNT"):
+            options.append((tcp_level, socket_module.TCP_KEEPCNT, KEEPALIVE_COUNT))
+    return options
+
+
+def _apply_tcp_keepalive(
+    tcp_writer: asyncio.StreamWriter,
+    logger: logging.Logger,
+) -> None:
+    sock = tcp_writer.get_extra_info("socket")
+    if sock is None or not hasattr(sock, "setsockopt"):
+        return
+    for level, optname, value in _tcp_keepalive_options():
+        try:
+            sock.setsockopt(level, optname, value)
+        except Exception:
+            logger.warning(
+                "secure listener TCP keepalive option failed level=%r opt=%r value=%r",
+                level,
+                optname,
+                value,
+                exc_info=True,
+            )
 
 
 __all__ = ["SecureListener", "certless_admission_mode"]

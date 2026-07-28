@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import urllib.parse
 from collections.abc import Iterable
-from concurrent.futures import CancelledError, ThreadPoolExecutor
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from typing import Any, Callable, Final
 
@@ -18,6 +19,7 @@ from werkzeug.exceptions import HTTPException
 
 from solstone.think.link.window import window_open
 
+from .admission import SecureListenerAdmission, SecureListenerAdmissionRejected
 from .identity import ConveyIdentity
 from .mux import (
     RESET_CTX_APP_CANCELLATION,
@@ -31,6 +33,9 @@ _NO_BODY_STATUSES = {204, 304}
 _DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
 WSGI_SEND_BRIDGE_POLL_SECONDS: Final[float] = 0.5
 WSGI_INPUT_READ_TIMEOUT_SECONDS: Final[float] = 120.0
+STREAMING_PERMIT_WAIT_TIMEOUT_SECONDS: Final[float] = 1.0
+CAPACITY_SNAPSHOT_PATH: Final[str] = "/__solstone/secure-listener/capacity"
+_SAFE_STREAM_REFUSAL_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 # The cert-less pairing tunnel admits EXACTLY these endpoints (canonical +
 # the /app/link legacy alias). Never relax to a suffix/substring match — that
 # would admit pair_start and widen the tunnel.
@@ -41,6 +46,12 @@ class HttpBadRequest(ValueError): ...
 
 
 class _WsgiClientDisconnected(ConnectionError): ...
+
+
+class _WsgiResponseRefused(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(status)
+        self.status = status
 
 
 def _normalize_location_headers(
@@ -283,7 +294,7 @@ async def dispatch_stream(
     stream_reader: asyncio.StreamReader,
     stream_writer: StreamWriter,
     loop: asyncio.AbstractEventLoop,
-    executor: ThreadPoolExecutor,
+    admission: SecureListenerAdmission,
 ) -> DispatchResult:
     try:
         request = await parse_http_head(stream_reader)
@@ -297,6 +308,17 @@ async def dispatch_stream(
         )
         return DispatchResult(endpoint=None, status=400)
     stream_writer.report_recv_consumed(request.head_bytes)
+
+    if request.path == CAPACITY_SNAPSHOT_PATH:
+        if identity.fingerprint is not None and request.method in {"GET", "HEAD"}:
+            await write_json_response(
+                stream_writer,
+                200,
+                "OK",
+                admission.snapshot(),
+                include_body=request.method != "HEAD",
+            )
+            return DispatchResult(endpoint=None, status=200)
 
     transfer_encoding = (request.transfer_encoding or "").lower()
     if transfer_encoding:
@@ -369,20 +391,29 @@ async def dispatch_stream(
         report_recv_consumed,
         path_info,
     )
-    future = loop.run_in_executor(
-        executor,
-        _run_wsgi,
-        app,
-        environ,
-        stream_writer,
-        loop,
-        disconnect_event,
-    )
     try:
-        status = await future
+        status = await admission.submit(
+            loop,
+            _run_wsgi,
+            app,
+            environ,
+            stream_writer,
+            loop,
+            disconnect_event,
+            admission,
+        )
         wsgi_input = environ["wsgi.input"]
         if wsgi_input.remaining > 0:
             stream_writer.begin_drain(RESET_CTX_APP_CANCELLATION)
+    except SecureListenerAdmissionRejected:
+        await write_json_response(
+            stream_writer,
+            503,
+            "Service Unavailable",
+            {"error": "secure listener capacity is full"},
+        )
+        stream_writer.begin_drain(RESET_CTX_BODY_DISCARD_CANCELLATION)
+        return DispatchResult(endpoint=endpoint, status=503)
     except asyncio.CancelledError:
         disconnect_event.set()
         raise
@@ -475,6 +506,27 @@ async def write_simple_response(
     await writer.close()
 
 
+async def write_json_response(
+    writer: StreamWriter,
+    status_code: int,
+    reason: str,
+    payload: dict[str, Any],
+    *,
+    include_body: bool = True,
+) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    response_body = body if include_body else b""
+    head = (
+        f"HTTP/1.1 {status_code} {reason}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    await writer.write(head + response_body)
+    await writer.close()
+
+
 async def _finish_early(
     stream_writer: StreamWriter,
     status_code: int,
@@ -493,6 +545,7 @@ def _run_wsgi(
     stream_writer: StreamWriter,
     loop: asyncio.AbstractEventLoop,
     disconnect_event: threading.Event,
+    admission: SecureListenerAdmission,
 ) -> int:
     state: dict[str, Any] = {
         "status": None,
@@ -501,6 +554,7 @@ def _run_wsgi(
         "chunked": False,
         "body_allowed": True,
     }
+    streaming_permit = None
 
     def send(data: bytes) -> None:
         if disconnect_event.is_set():
@@ -545,6 +599,7 @@ def _run_wsgi(
         return write
 
     def ensure_head() -> None:
+        nonlocal streaming_permit
         if state["headers_sent"]:
             return
         status = state["status"] or "500 Internal Server Error"
@@ -567,6 +622,34 @@ def _run_wsgi(
         if body_allowed and not has_content_length and not has_transfer_encoding:
             headers.append(("Transfer-Encoding", "chunked"))
             state["chunked"] = True
+            has_transfer_encoding = True
+        if _should_use_streaming_lane(
+            headers,
+            body_allowed=body_allowed,
+            has_content_length=has_content_length,
+            has_transfer_encoding=has_transfer_encoding,
+            admission=admission,
+        ):
+            permit = admission.try_acquire_streaming()
+            if permit is not None:
+                streaming_permit = permit
+            else:
+                method_is_safe = method in _SAFE_STREAM_REFUSAL_METHODS
+                if method_is_safe:
+                    admission.reject_streaming()
+                    _send_refusal_response(send, method)
+                    state["headers_sent"] = True
+                    raise _WsgiResponseRefused(503)
+                # why: a response that got this far on a non-safe method may
+                # have committed side effects, so it must queue rather than refuse.
+                permit = admission.acquire_streaming(
+                    STREAMING_PERMIT_WAIT_TIMEOUT_SECONDS,
+                    cancel_event=disconnect_event,
+                )
+                if permit is None:
+                    streaming_permit = admission.admit_streaming_over_budget()
+                else:
+                    streaming_permit = permit
         lines = [f"HTTP/1.1 {status}\r\n"]
         lines.extend(f"{name}: {value}\r\n" for name, value in headers)
         lines.append("\r\n")
@@ -602,9 +685,15 @@ def _run_wsgi(
                 send(b"0\r\n\r\n")
             future = asyncio.run_coroutine_threadsafe(stream_writer.close(), loop)
             future.result()
+    except _WsgiResponseRefused as exc:
+        future = asyncio.run_coroutine_threadsafe(stream_writer.close(), loop)
+        future.result()
+        return exc.status
     except _WsgiClientDisconnected:
         return 499
     finally:
+        if streaming_permit is not None:
+            streaming_permit.release()
         disconnect_event.set()
         if response_iter is not None and hasattr(response_iter, "close"):
             response_iter.close()  # type: ignore[attr-defined]
@@ -616,3 +705,38 @@ def _status_code(status: str) -> int:
         return int(status.split(" ", 1)[0])
     except (ValueError, IndexError):
         return 500
+
+
+def _should_use_streaming_lane(
+    headers: list[tuple[str, str]],
+    *,
+    body_allowed: bool,
+    has_content_length: bool,
+    has_transfer_encoding: bool,
+    admission: SecureListenerAdmission,
+) -> bool:
+    if not body_allowed or admission.config.streaming_capacity <= 0:
+        return False
+    content_type = ""
+    for name, value in headers:
+        if name.lower() == "content-type":
+            content_type = value.split(";", 1)[0].strip().lower()
+            break
+    return (
+        content_type == "text/event-stream"
+        or has_transfer_encoding
+        or not has_content_length
+    )
+
+
+def _send_refusal_response(send: Callable[[bytes], None], method: str) -> None:
+    body = b'{"error":"secure listener streaming capacity is full"}\n'
+    response_body = b"" if method == "HEAD" else body
+    head = (
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    send(head + response_body)

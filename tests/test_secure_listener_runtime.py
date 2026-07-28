@@ -7,13 +7,13 @@ import json
 import logging
 import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from solstone.convey.secure_listener import accept as accept_module
 from solstone.convey.secure_listener import runtime as rt
 from solstone.convey.secure_listener.accept import (
     CERTLESS_PAIR_FAILURE_CAP,
@@ -22,6 +22,15 @@ from solstone.convey.secure_listener.accept import (
     SecureListener,
     certless_admission_mode,
 )
+from solstone.convey.secure_listener.admission import (
+    DEFAULT_SECURE_LISTENER_CAPACITY,
+    DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY,
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+    SecureListenerAdmissionRejected,
+    resolve_admission_config,
+)
+from solstone.convey.secure_listener.framing import build_ping
 from solstone.think.link import client as link_client
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
@@ -31,13 +40,19 @@ from tests.link.secure_listener_harness import SecureListenerHarness
 
 
 def test_reuse_port_allows_coexisting_bind():
-    executor = ThreadPoolExecutor(max_workers=1)
+    admission = SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=1,
+            streaming_capacity=1,
+            refuse_when_full=False,
+        )
+    )
     listener = SecureListener(
         app=MagicMock(),
         strict_tls_ctx=MagicMock(),
         relaxed_tls_ctx=MagicMock(),
         authorized=set(),
-        executor=executor,
+        admission=admission,
         callosum_emit=lambda *a, **kw: None,
         host="127.0.0.1",
         port=0,
@@ -60,7 +75,7 @@ def test_reuse_port_allows_coexisting_bind():
         if s2 is not None:
             s2.close()
         loop.close()
-        executor.shutdown(wait=True, cancel_futures=True)
+        admission.shutdown(wait=True, cancel_futures=True)
 
 
 def test_stop_all_after_loop_closed_does_not_raise():
@@ -68,7 +83,13 @@ def test_stop_all_after_loop_closed_does_not_raise():
 
     previous_runtime = rt._runtime
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    executor = ThreadPoolExecutor(max_workers=1)
+    admission = SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=1,
+            streaming_capacity=1,
+            refuse_when_full=False,
+        )
+    )
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -86,7 +107,7 @@ def test_stop_all_after_loop_closed_does_not_raise():
             loop=loop,
             thread=thread,
             apps=[app],
-            executor=executor,
+            admission=admission,
             listener=listener,
             sockets=(s,),
         )
@@ -98,7 +119,114 @@ def test_stop_all_after_loop_closed_does_not_raise():
     finally:
         rt._runtime = previous_runtime
         s.close()
-        executor.shutdown(wait=True, cancel_futures=True)
+        admission.shutdown(wait=True, cancel_futures=True)
+
+
+def test_secure_listener_admission_config_defaults_to_current_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {"setup": {"completed_at": 1700000000000}},
+    )
+
+    config = resolve_admission_config()
+
+    assert config.capacity == DEFAULT_SECURE_LISTENER_CAPACITY == 16
+    assert config.streaming_capacity == DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY == 8
+    assert config.refuse_when_full is False
+    assert config.queue_limit == 32
+
+
+def test_secure_listener_admission_config_reads_link_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {
+            "setup": {"completed_at": 1700000000000},
+            "link": {
+                "secure_listener_capacity": 24,
+                "secure_listener_streaming_capacity": 6,
+                "secure_listener_refuse_when_full": True,
+            },
+        },
+    )
+
+    config = resolve_admission_config()
+
+    assert config.capacity == 24
+    assert config.streaming_capacity == 6
+    assert config.refuse_when_full is True
+    assert config.queue_limit == 48
+
+
+def test_secure_listener_admission_config_warns_and_falls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {
+            "setup": {"completed_at": 1700000000000},
+            "link": {
+                "secure_listener_capacity": "wide",
+                "secure_listener_streaming_capacity": "many",
+                "secure_listener_refuse_when_full": "yes",
+            },
+        },
+    )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="convey.secure_listener.admission",
+    ):
+        config = resolve_admission_config()
+
+    assert config == SecureListenerAdmissionConfig()
+    assert (
+        "Invalid link.secure_listener_capacity in journal config: 'wide' "
+        "\u2014 defaulting to 16"
+    ) in caplog.text
+    assert (
+        "Invalid link.secure_listener_streaming_capacity in journal config: 'many' "
+        "\u2014 defaulting to 8"
+    ) in caplog.text
+    assert (
+        "Invalid link.secure_listener_refuse_when_full in journal config: 'yes' "
+        "\u2014 defaulting to false"
+    ) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_secure_listener_admission_refuses_when_enabled_queue_is_full() -> None:
+    admission = SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=1,
+            streaming_capacity=0,
+            refuse_when_full=True,
+        )
+    )
+    try:
+        with admission._lock:
+            admission._active_total = admission.config.capacity
+            for _ in range(admission.config.queue_limit):
+                admission._waiters.append(SimpleNamespace(queued_at=0.0))
+
+        with pytest.raises(SecureListenerAdmissionRejected):
+            await admission.acquire()
+
+        snapshot = admission.snapshot()
+        assert snapshot["queued"]["total"] == admission.config.queue_limit
+        assert snapshot["rejected"]["total"] == 1
+    finally:
+        admission.shutdown(wait=True, cancel_futures=True)
 
 
 def test_start_secure_listener_setup_incomplete_does_not_establish_identity(
@@ -261,6 +389,128 @@ def test_certless_admission_mode(
     expected: str | None,
 ) -> None:
     assert certless_admission_mode(mode, window_is_open) == expected
+
+
+@pytest.mark.asyncio
+async def test_priority_send_queue_drains_urgent_frames_first_and_preserves_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue: asyncio.PriorityQueue[tuple[int, int, bytes]] = asyncio.PriorityQueue()
+    queue.put_nowait((1, 0, b"normal"))
+    queue.put_nowait((0, 1, b"urgent"))
+    written: list[bytes] = []
+
+    monkeypatch.setattr(accept_module, "_encrypt", lambda _tls, plaintext: plaintext)
+
+    async def write_ciphertext(data: bytes) -> None:
+        written.append(data)
+
+    await accept_module._drain_send_queue(object(), write_ciphertext, queue)
+    await asyncio.wait_for(queue.join(), timeout=1.0)
+
+    assert written == [b"urgent", b"normal"]
+
+
+def test_tcp_keepalive_options_are_feature_detected() -> None:
+    linux_socket = SimpleNamespace(
+        SOL_SOCKET=1,
+        SO_KEEPALIVE=2,
+        IPPROTO_TCP=3,
+        TCP_KEEPIDLE=4,
+        TCP_KEEPINTVL=5,
+        TCP_KEEPCNT=6,
+    )
+    mac_socket = SimpleNamespace(
+        SOL_SOCKET=1,
+        SO_KEEPALIVE=2,
+        IPPROTO_TCP=3,
+        TCP_KEEPALIVE=7,
+    )
+    minimal_socket = SimpleNamespace(SOL_SOCKET=1, SO_KEEPALIVE=2)
+
+    assert accept_module._tcp_keepalive_options(linux_socket) == [
+        (1, 2, 1),
+        (3, 4, 30),
+        (3, 5, 10),
+        (3, 6, 3),
+    ]
+    assert accept_module._tcp_keepalive_options(mac_socket) == [
+        (1, 2, 1),
+        (3, 7, 30),
+    ]
+    assert accept_module._tcp_keepalive_options(minimal_socket) == [(1, 2, 1)]
+
+
+def test_tcp_keepalive_failures_log_and_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sock = _FailingSocket()
+    writer = _SocketWriter(sock)
+    monkeypatch.setattr(
+        accept_module,
+        "_tcp_keepalive_options",
+        lambda: [(1, 2, 3), (4, 5, 6)],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="convey.secure_listener.accept"):
+        accept_module._apply_tcp_keepalive(
+            writer, logging.getLogger("convey.secure_listener.accept")
+        )
+
+    assert sock.calls == [(1, 2, 3), (4, 5, 6)]
+    assert caplog.text.count("secure listener TCP keepalive option failed") == 2
+
+
+@pytest.mark.asyncio
+async def test_pump_connection_writer_failure_ends_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listener = _listener()
+    tcp_reader = asyncio.StreamReader()
+    tcp_reader.feed_data(b"tls-record")
+    tcp_writer = _HangingDrainWriter()
+    ping = build_ping(b"12345678").encode()
+    tls = SimpleNamespace(handshake_done=False, peer_fingerprint=None)
+
+    monkeypatch.setattr(accept_module, "new_server", lambda _ctx: tls)
+    monkeypatch.setattr(accept_module, "window_open", lambda: False)
+    monkeypatch.setattr(
+        accept_module,
+        "SECURE_LISTENER_TCP_DRAIN_TIMEOUT_SECONDS",
+        0.0,
+    )
+
+    async def no_reader_drain(*_args: object) -> None:
+        return
+
+    def fake_drive_tls(
+        _tls: object,
+        *,
+        inbound: bytes = b"",
+        plaintext_out: bytes = b"",
+    ) -> tuple[bytes, bytes]:
+        if plaintext_out:
+            return plaintext_out, b""
+        if inbound:
+            return b"", ping
+        return b"", b""
+
+    monkeypatch.setattr(accept_module, "_drain_send_queue", no_reader_drain)
+    monkeypatch.setattr(accept_module, "drive_tls", fake_drive_tls)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            listener._pump_connection(
+                tcp_reader,
+                tcp_writer,
+                "conn-writer-failure",
+                "pl-direct",
+            ),
+            timeout=1.0,
+        )
+
+    assert tcp_writer.writes
 
 
 @pytest.mark.asyncio
@@ -481,7 +731,7 @@ def _listener() -> SecureListener:
         strict_tls_ctx=MagicMock(),
         relaxed_tls_ctx=MagicMock(),
         authorized=MagicMock(),
-        executor=MagicMock(),
+        admission=MagicMock(),
         callosum_emit=lambda *a, **kw: None,
         host="127.0.0.1",
         port=0,
@@ -553,3 +803,33 @@ class _FakeMux:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FailingSocket:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, int]] = []
+
+    def setsockopt(self, level: int, optname: int, value: int) -> None:
+        self.calls.append((level, optname, value))
+        raise OSError("option unavailable")
+
+
+class _SocketWriter:
+    def __init__(self, sock: _FailingSocket) -> None:
+        self._sock = sock
+
+    def get_extra_info(self, name: str) -> object:
+        if name == "socket":
+            return self._sock
+        return None
+
+
+class _HangingDrainWriter:
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def drain(self) -> None:
+        await asyncio.Event().wait()

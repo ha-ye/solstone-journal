@@ -8,7 +8,6 @@ import contextlib
 import hashlib
 import json
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -20,6 +19,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from solstone.convey.secure_listener.admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+)
 from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.convey.secure_listener.wsgi import DispatchResult, dispatch_stream
 from solstone.think.link.ca import ca_pin_matches
@@ -528,8 +531,17 @@ async def dispatch_request(
     reader.feed_eof()
     writer = FakeStreamWriter()
     loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        result = await dispatch_stream(app, identity, reader, writer, loop, executor)
+    admission = SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=1,
+            streaming_capacity=1,
+            refuse_when_full=False,
+        )
+    )
+    try:
+        result = await dispatch_stream(app, identity, reader, writer, loop, admission)
+    finally:
+        await asyncio.to_thread(admission.shutdown, wait=True, cancel_futures=True)
     status, response_headers, response_body = _parse_http_response(bytes(writer.data))
     return DispatchResponse(
         result=result,

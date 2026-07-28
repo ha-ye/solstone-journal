@@ -23,7 +23,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import Final, Protocol
 
 from .framing import (
     FLAG_CLOSE,
@@ -58,10 +58,12 @@ from .framing import (
     validate_flags,
 )
 
-if TYPE_CHECKING:
-    StreamHandler = Callable[[asyncio.StreamReader, "StreamWriter"], Awaitable[None]]
-else:
-    StreamHandler = object
+StreamHandler = Callable[[asyncio.StreamReader, "StreamWriter"], Awaitable[None]]
+
+
+class FrameSender(Protocol):
+    def __call__(self, frame: bytes, *, urgent: bool = False) -> Awaitable[None]: ...
+
 
 RESET_CTX_MALFORMED_FRAME: Final[str] = "malformed_frame"
 RESET_CTX_PARITY_VIOLATION: Final[str] = "parity_violation"
@@ -197,7 +199,7 @@ class Multiplexer:
 
     def __init__(
         self,
-        send_frame: Callable[[bytes], Awaitable[None]],
+        send_frame: FrameSender,
         handler: StreamHandler,
         *,
         is_listener: bool = True,
@@ -395,7 +397,7 @@ class Multiplexer:
             await self._tunnel_fatal(RESET_CTX_MALFORMED_FRAME)
             return
         if is_ping:
-            await self._emit(build_pong(nonce))
+            await self._emit(build_pong(nonce), urgent=True)
         # Stray PONG: the listener does not initiate pings (the dialer drives
         # keepalive), so an unsolicited PONG is silently dropped per
         # proto/framing.md § responder behavior.
@@ -468,14 +470,14 @@ class Multiplexer:
             return False
         return (stream_id % 2 == 1) if self._is_listener else (stream_id % 2 == 0)
 
-    async def _emit(self, frame: Frame) -> None:
+    async def _emit(self, frame: Frame, *, urgent: bool = False) -> None:
         if self._closed:
             return
         try:
             encoded = frame.encode()
         except ProtocolError:
             return
-        await self._send_frame(encoded)
+        await self._send_frame(encoded, urgent=urgent)
 
     def _fire_diag(self, stream_id: int, reason: int, context: str) -> None:
         if self._on_reset is None:

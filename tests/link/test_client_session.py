@@ -46,7 +46,7 @@ class FakeTransport:
         self._auto_pong = auto_pong
         self._decoder = FrameDecoder()
 
-    async def send(self, data: bytes) -> None:
+    async def send(self, data: bytes, *, urgent: bool = False) -> None:
         self.sent.append(data)
         if not self._auto_pong:
             return
@@ -294,7 +294,7 @@ def _probing_body_source(probe: list[int]) -> client.BodySource:
 async def test_dialer_mux_ping_emits_matching_pong() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     nonce = b"12345678"
@@ -313,7 +313,7 @@ async def test_dialer_mux_pong_records_liveness_without_emit() -> None:
     sent: list[bytes] = []
     inbound_count = 0
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     def on_inbound() -> None:
@@ -332,7 +332,7 @@ async def test_dialer_mux_malformed_control_frame_closes_without_raising() -> No
     sent: list[bytes] = []
     dispatched: list[Frame] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -357,7 +357,7 @@ async def test_dialer_mux_malformed_control_frame_closes_without_raising() -> No
 async def test_dialer_window_credit_exact_cap_is_accepted() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -373,7 +373,7 @@ async def test_dialer_window_credit_exact_cap_is_accepted() -> None:
 async def test_dialer_window_credit_overflow_resets_and_forgets() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -394,7 +394,7 @@ async def test_dialer_window_credit_overflow_resets_and_forgets() -> None:
 async def test_dialer_window_credit_uses_remaining_credit_accounting() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -458,7 +458,7 @@ async def test_dialer_window_credit_uses_remaining_credit_accounting() -> None:
 async def test_dialer_invalid_flags_on_known_stream_reset_and_forget() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -480,7 +480,7 @@ async def test_dialer_invalid_open_flags_close_existing_stream_before_open_polic
 ):
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -499,7 +499,7 @@ async def test_dialer_invalid_open_flags_close_existing_stream_before_open_polic
 async def test_dialer_misplaced_control_on_unknown_stream_resets() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -517,7 +517,7 @@ async def test_dialer_misplaced_control_on_unknown_stream_resets() -> None:
 async def test_dialer_misplaced_control_on_known_stream_beats_invalid_data() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -537,7 +537,7 @@ async def test_dialer_misplaced_control_on_known_stream_beats_invalid_data() -> 
 async def test_dialer_sibling_stream_survives_window_overflow() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -563,7 +563,7 @@ async def test_dialer_sibling_stream_survives_window_overflow() -> None:
 async def test_dialer_sibling_stream_survives_invalid_flags() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -589,7 +589,7 @@ async def test_dialer_sibling_stream_survives_invalid_flags() -> None:
 async def test_dialer_sibling_stream_survives_misplaced_control() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -615,7 +615,7 @@ async def test_dialer_sibling_stream_survives_misplaced_control() -> None:
 async def test_dialer_unknown_stream_close_is_ignored() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -630,7 +630,7 @@ async def test_dialer_unknown_stream_close_is_ignored() -> None:
 async def test_dialer_unknown_stream_reset_is_ignored() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
@@ -645,7 +645,7 @@ async def test_dialer_unknown_stream_reset_is_ignored() -> None:
 async def test_dialer_unknown_stream_data_and_window_get_reset() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)

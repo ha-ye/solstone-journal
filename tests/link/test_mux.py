@@ -5,20 +5,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-from flask import Response, request
+from flask import Response, jsonify, request
 
 from solstone.convey import root as root_module
 from solstone.convey.secure_listener import mux as mux_module
 from solstone.convey.secure_listener import wsgi as wsgi_module
+from solstone.convey.secure_listener.admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionConfig,
+)
 from solstone.convey.secure_listener.framing import (
     FLAG_CLOSE,
     FLAG_DATA,
@@ -74,6 +79,7 @@ from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.client import _http_head_bytes, _parse_http_response
 from solstone.think.link.paths import authorized_clients_path
 from tests.link.certless_helpers import (
+    FakeStreamWriter,
     certless_identity,
     make_convey_app,
     pl_identity,
@@ -102,6 +108,24 @@ def _authorize_fingerprint(
     authorized = AuthorizedClients(authorized_clients_path())
     authorized.add(fingerprint, "pytest phone", "inst-1")
     monkeypatch.setattr(root_module, "get_authorized_clients", lambda: authorized)
+
+
+def _admission(
+    capacity: int = 1,
+    *,
+    streaming_capacity: int | None = None,
+    refuse_when_full: bool = False,
+) -> SecureListenerAdmission:
+    resolved_streaming_capacity = (
+        capacity if streaming_capacity is None else streaming_capacity
+    )
+    return SecureListenerAdmission(
+        SecureListenerAdmissionConfig(
+            capacity=capacity,
+            streaming_capacity=resolved_streaming_capacity,
+            refuse_when_full=refuse_when_full,
+        )
+    )
 
 
 class _ObservedEvent(asyncio.Event):
@@ -158,6 +182,45 @@ async def _wait_for_stream_data(sent: list[bytes], stream_id: int) -> bytes:
     raise AssertionError(f"stream {stream_id} did not emit DATA")
 
 
+async def _dispatch_raw_request(
+    app: Any,
+    identity: Any,
+    admission: SecureListenerAdmission,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    body: bytes = b"",
+) -> tuple[int, dict[str, str], bytes, FakeStreamWriter]:
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        _http_head_bytes(
+            method,
+            path,
+            headers=headers,
+            content_length=len(body),
+        )
+        + body
+    )
+    reader.feed_eof()
+    writer = FakeStreamWriter()
+    result = await dispatch_stream(
+        app,
+        identity,
+        reader,
+        writer,
+        asyncio.get_running_loop(),
+        admission,
+    )
+    status, response_headers, response_body = _parse_http_response(bytes(writer.data))
+    assert result.status == status
+    return status, response_headers, response_body, writer
+
+
+async def _shutdown_admission(admission: SecureListenerAdmission) -> None:
+    await asyncio.to_thread(admission.shutdown, wait=True, cancel_futures=True)
+
+
 def _assert_single_reset(
     frames: list[Frame],
     stream_id: int,
@@ -202,7 +265,7 @@ async def _new_parked_writer(stream_id: int = 1) -> _ParkedWriter:
     handler_done = asyncio.Event()
     captured: dict[str, Any] = {}
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
@@ -240,7 +303,7 @@ async def _new_parked_read_task(stream_id: int = 1) -> _OpenReader:
     handler_done = asyncio.Event()
     captured: dict[str, Any] = {}
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
@@ -406,7 +469,7 @@ async def test_open_with_initial_payload_hits_handler() -> None:
 
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = Multiplexer(send, handler, is_listener=True)
@@ -438,7 +501,7 @@ async def test_open_payload_over_window_is_rejected_without_opening() -> None:
     sent: list[bytes] = []
     handler_invoked = False
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:  # pragma: no cover - must not run
@@ -465,7 +528,7 @@ async def test_open_payload_at_window_boundary_opens() -> None:
     """An OPEN payload of exactly INITIAL_WINDOW is within the window (the
     guard is strictly greater-than) and opens the stream normally."""
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(*_: object) -> None:
@@ -487,7 +550,7 @@ async def test_open_payload_at_window_boundary_opens() -> None:
 async def test_wrong_parity_stream_id_gets_reset() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -505,7 +568,7 @@ async def test_wrong_parity_stream_id_gets_reset() -> None:
 async def test_unknown_stream_data_gets_reset() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -524,7 +587,7 @@ async def test_unknown_stream_bare_close_is_ignored() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -543,7 +606,7 @@ async def test_unknown_stream_bare_reset_is_ignored() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -562,7 +625,7 @@ async def test_unknown_stream_data_still_gets_reset_with_diagnostic() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -589,7 +652,7 @@ async def test_unknown_stream_window_gets_reset() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -615,7 +678,7 @@ async def test_unknown_stream_window_gets_reset() -> None:
 async def test_listener_window_credit_exact_cap_is_accepted() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -640,7 +703,7 @@ async def test_listener_window_credit_overflow_resets_and_terminates() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -673,7 +736,7 @@ async def test_listener_invalid_flags_on_unknown_stream_reset_without_state() ->
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -702,7 +765,7 @@ async def test_listener_invalid_open_flags_reject_before_opening() -> None:
     diags: list[ResetDiagnostic] = []
     handler_invoked = False
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -734,7 +797,7 @@ async def test_listener_invalid_flags_on_known_stream_terminate_without_payload(
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -766,7 +829,7 @@ async def test_listener_misplaced_pong_on_known_stream_resets_and_terminates() -
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -797,7 +860,7 @@ async def test_listener_sibling_stream_survives_window_overflow() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -835,7 +898,7 @@ async def test_listener_sibling_stream_survives_invalid_flags() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -875,7 +938,7 @@ async def test_listener_sibling_stream_survives_misplaced_control() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -923,7 +986,7 @@ async def test_concurrent_streams_do_not_interfere() -> None:
 
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = Multiplexer(send, handler, is_listener=True)
@@ -953,7 +1016,7 @@ async def test_concurrent_streams_do_not_interfere() -> None:
 async def test_validates_open_reopen_is_protocol_error() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     gate = asyncio.Event()
@@ -980,7 +1043,7 @@ async def test_validates_open_reopen_is_protocol_error() -> None:
 async def test_listener_local_stream_ids_do_not_recycle_after_stream_close() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1006,7 +1069,7 @@ async def test_listener_local_stream_ids_do_not_recycle_after_stream_close() -> 
 
 
 def test_listener_local_stream_id_exhaustion_still_raises() -> None:
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(*_: object) -> None:
@@ -1026,7 +1089,7 @@ def test_listener_local_stream_id_exhaustion_still_raises() -> None:
 async def test_ping_emits_matching_pong() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1047,7 +1110,7 @@ async def test_ping_emits_matching_pong() -> None:
 async def test_repeated_pings_each_get_matching_pong() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1067,7 +1130,7 @@ async def test_repeated_pings_each_get_matching_pong() -> None:
 async def test_unsolicited_pong_is_silently_dropped() -> None:
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1095,7 +1158,7 @@ async def test_stream_zero_malformed_control_raises_tunnel_fatal_once(
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1122,7 +1185,7 @@ async def test_decoder_corrupt_frame_fatal_tears_down_streams_without_diag_storm
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1159,7 +1222,7 @@ async def test_second_feed_after_tunnel_fatal_is_inert() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1185,7 +1248,7 @@ async def test_ping_on_nonzero_stream_is_protocol_error() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(*_: object) -> None:
@@ -1226,7 +1289,7 @@ async def test_pings_interleave_with_open_streams() -> None:
 
     sent: list[bytes] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     mux = Multiplexer(send, handler, is_listener=True)
@@ -1251,6 +1314,31 @@ async def test_pings_interleave_with_open_streams() -> None:
 
 
 @pytest.mark.asyncio
+async def test_control_pong_uses_urgent_send_path() -> None:
+    sends: list[tuple[bool, bytes]] = []
+
+    async def send(data: bytes, *, urgent: bool = False) -> None:
+        sends.append((urgent, data))
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    nonce = b"12345678"
+    try:
+        await mux.feed(build_ping(nonce).encode())
+    finally:
+        await mux.close()
+
+    assert len(sends) == 1
+    assert sends[0][0] is True
+    frames = _decode_frames([sends[0][1]])
+    assert len(frames) == 1
+    assert frames[0].flags & FLAG_PONG
+    assert frames[0].payload == nonce
+
+
+@pytest.mark.asyncio
 async def test_wsgi_pool_survives_zero_credit_streams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1265,9 +1353,17 @@ async def test_wsgi_pool_survives_zero_credit_streams(
     monkeypatch.setattr(wsgi_module, "WSGI_SEND_BRIDGE_POLL_SECONDS", 0.01)
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     _authorize_fingerprint(monkeypatch, fingerprint)
+    park_entries = 0
+    park_entries_lock = threading.Lock()
+    park_entries_complete = threading.Event()
 
     @app.get("/_mux_test/park")
     def mux_test_park() -> Response:
+        nonlocal park_entries
+        with park_entries_lock:
+            park_entries += 1
+            if park_entries == worker_count:
+                park_entries_complete.set()
         return Response(
             parked_body,
             content_type="application/octet-stream",
@@ -1286,9 +1382,9 @@ async def test_wsgi_pool_survives_zero_credit_streams(
     healthy_closed = asyncio.Event()
     loop = asyncio.get_running_loop()
     identity = pl_identity(fingerprint)
-    executor = ThreadPoolExecutor(max_workers=worker_count)
+    admission = _admission(capacity=worker_count)
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         for frame in _decode_frames([data]):
             if frame.flags & FLAG_DATA:
                 sent_payload_size[frame.stream_id] = sent_payload_size.get(
@@ -1307,7 +1403,7 @@ async def test_wsgi_pool_survives_zero_credit_streams(
                     healthy_closed.set()
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
-        await dispatch_stream(app, identity, reader, writer, loop, executor)
+        await dispatch_stream(app, identity, reader, writer, loop, admission)
 
     async def open_get(stream_id: int, path: str) -> None:
         head = _http_head_bytes("GET", path, headers=None, content_length=0)
@@ -1326,6 +1422,10 @@ async def test_wsgi_pool_survives_zero_credit_streams(
         for stream_id in parked_stream_ids:
             await open_get(stream_id, "/_mux_test/park")
 
+        assert await asyncio.wait_for(
+            asyncio.to_thread(park_entries_complete.wait),
+            timeout=1.0,
+        )
         await asyncio.wait_for(
             asyncio.gather(*(event.wait() for event in zero_credit_events.values())),
             timeout=2.0,
@@ -1337,7 +1437,7 @@ async def test_wsgi_pool_survives_zero_credit_streams(
         assert body == healthy_body
     finally:
         await mux.close()
-        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.parametrize(
@@ -1365,9 +1465,17 @@ async def test_teardown_paths_reclaim_wsgi_workers_for_sentinel_jobs(
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     fingerprint = "sha256:" + ("b" * 64)
     _authorize_fingerprint(monkeypatch, fingerprint)
+    park_entries = 0
+    park_entries_lock = threading.Lock()
+    park_entries_complete = threading.Event()
 
     @app.get("/_mux_test/park")
     def mux_test_park() -> Response:
+        nonlocal park_entries
+        with park_entries_lock:
+            park_entries += 1
+            if park_entries == worker_count:
+                park_entries_complete.set()
         return Response(
             b"x" * (INITIAL_WINDOW + 1),
             content_type="application/octet-stream",
@@ -1378,9 +1486,9 @@ async def test_teardown_paths_reclaim_wsgi_workers_for_sentinel_jobs(
     writers: dict[int, Any] = {}
     loop = asyncio.get_running_loop()
     identity = pl_identity(fingerprint)
-    executor = ThreadPoolExecutor(max_workers=worker_count)
+    admission = _admission(capacity=worker_count)
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         for frame in _decode_frames([data]):
             if frame.flags & FLAG_DATA:
                 sent_payload_size[frame.stream_id] = sent_payload_size.get(
@@ -1393,7 +1501,7 @@ async def test_teardown_paths_reclaim_wsgi_workers_for_sentinel_jobs(
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
         writers[writer.stream_id] = writer
-        await dispatch_stream(app, identity, reader, writer, loop, executor)
+        await dispatch_stream(app, identity, reader, writer, loop, admission)
 
     async def open_get(stream_id: int) -> None:
         head = _http_head_bytes(
@@ -1409,6 +1517,10 @@ async def test_teardown_paths_reclaim_wsgi_workers_for_sentinel_jobs(
         for stream_id in stream_ids:
             await open_get(stream_id)
 
+        assert await asyncio.wait_for(
+            asyncio.to_thread(park_entries_complete.wait),
+            timeout=1.0,
+        )
         await asyncio.wait_for(
             asyncio.gather(*(event.wait() for event in zero_credit_events.values())),
             timeout=2.0,
@@ -1453,15 +1565,16 @@ async def test_teardown_paths_reclaim_wsgi_workers_for_sentinel_jobs(
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.wait_for(state.task, timeout=1.0)
 
-        sentinel_futures = [
-            executor.submit(lambda value=value: value) for value in range(worker_count)
-        ]
-        assert [future.result(timeout=1.0) for future in sentinel_futures] == list(
-            range(worker_count)
+        sentinel_results = await asyncio.gather(
+            *(
+                admission.submit(loop, lambda value=value: value)
+                for value in range(worker_count)
+            )
         )
+        assert sentinel_results == list(range(worker_count))
     finally:
         await mux.close()
-        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
@@ -1469,7 +1582,7 @@ async def test_write_rechecks_closed_before_clearing_teardown_wake() -> None:
     emit_entered = asyncio.Event()
     release_emit = asyncio.Event()
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         emit_entered.set()
         await release_emit.wait()
 
@@ -1510,7 +1623,7 @@ async def test_credit_stall_deadline_is_per_stall_and_window_resets_clock(
     data_events = [asyncio.Event() for _ in payload]
     write_task: asyncio.Task[None] | None = None
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         for frame in _decode_frames([data]):
             if frame.flags & FLAG_DATA:
                 sent_bytes.append(frame.payload)
@@ -1573,7 +1686,7 @@ async def test_send_credit_starvation_diagnostic_survives_closed_mux_without_sto
     captured: dict[str, Any] = {}
     state: Any | None = None
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
@@ -1636,15 +1749,15 @@ async def test_receive_window_credit_returns_after_head_and_body_consumption(
     loop = asyncio.get_running_loop()
     identity = pl_identity(fingerprint)
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
         if any(frame.flags & FLAG_WINDOW for frame in _decode_frames([data])):
             window_event.set()
 
-    executor = ThreadPoolExecutor(max_workers=1)
+    admission = _admission(capacity=1)
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
-        await dispatch_stream(app, identity, reader, writer, loop, executor)
+        await dispatch_stream(app, identity, reader, writer, loop, admission)
 
     mux = Multiplexer(send, handler, is_listener=True)
     try:
@@ -1675,14 +1788,14 @@ async def test_receive_window_credit_returns_after_head_and_body_consumption(
     finally:
         await mux.close()
         assert mux._window_tasks == set()
-        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
 async def test_window_task_completion_logs_emit_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def handler(*_: object) -> None:
@@ -1731,13 +1844,13 @@ async def test_wsgi_input_read_timeout_releases_pool_worker(
     result: dict[str, int] = {}
     loop = asyncio.get_running_loop()
     identity = pl_identity(fingerprint)
-    executor = ThreadPoolExecutor(max_workers=1)
+    admission = _admission(capacity=1)
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
-        dispatch = await dispatch_stream(app, identity, reader, writer, loop, executor)
+        dispatch = await dispatch_stream(app, identity, reader, writer, loop, admission)
         result["status"] = dispatch.status
         dispatch_done.set()
 
@@ -1753,12 +1866,256 @@ async def test_wsgi_input_read_timeout_releases_pool_worker(
 
         await asyncio.wait_for(dispatch_done.wait(), timeout=1.0)
         assert result["status"] == 499
-        assert (
-            executor.submit(lambda: "worker-free").result(timeout=1.0) == "worker-free"
-        )
+        assert await admission.submit(loop, lambda: "worker-free") == "worker-free"
     finally:
         await mux.close()
-        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_capacity_snapshot_is_readable_while_workers_are_occupied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    admission = _admission(capacity=2, streaming_capacity=1)
+    entered = 0
+    entered_lock = threading.Lock()
+    entered_all = threading.Event()
+    release_workers = threading.Event()
+
+    def blocking_job() -> str:
+        nonlocal entered
+        with entered_lock:
+            entered += 1
+            if entered == admission.config.capacity:
+                entered_all.set()
+        release_workers.wait(timeout=5.0)
+        return "done"
+
+    tasks = [
+        asyncio.create_task(admission.submit(asyncio.get_running_loop(), blocking_job))
+        for _ in range(admission.config.capacity)
+    ]
+    try:
+        assert await asyncio.wait_for(
+            asyncio.to_thread(entered_all.wait),
+            timeout=1.0,
+        )
+
+        status, headers, body, writer = await _dispatch_raw_request(
+            app,
+            pl_identity("sha256:capacity"),
+            admission,
+            "GET",
+            wsgi_module.CAPACITY_SNAPSHOT_PATH,
+        )
+
+        payload = json.loads(body.decode("utf-8"))
+        assert status == 200
+        assert headers["content-type"] == "application/json"
+        assert writer.closed is True
+        assert set(payload) == {
+            "timestamp_ms",
+            "active",
+            "limit",
+            "queued",
+            "rejected",
+            "admitted_over_budget",
+            "longest_wait_ms",
+            "refusal_enabled",
+        }
+        assert set(payload["active"]) == {
+            "total",
+            "streaming",
+            "streaming_over_budget",
+        }
+        assert set(payload["limit"]) == {"total", "streaming", "queue"}
+        assert set(payload["queued"]) == {"total"}
+        assert set(payload["rejected"]) == {"total", "streaming"}
+        assert set(payload["admitted_over_budget"]) == {"streaming"}
+        assert payload["active"]["total"] == admission.config.capacity
+        assert payload["limit"]["total"] == admission.config.capacity
+        assert "sha256" not in body.decode("utf-8")
+        assert "127.0.0.1" not in body.decode("utf-8")
+    finally:
+        release_workers.set()
+        await asyncio.gather(*tasks)
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_capacity_snapshot_requires_paired_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    admission = _admission(capacity=1)
+    try:
+        status, _headers, _body, _writer = await _dispatch_raw_request(
+            app,
+            certless_identity(),
+            admission,
+            "GET",
+            wsgi_module.CAPACITY_SNAPSHOT_PATH,
+        )
+
+        assert status == 403
+    finally:
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_content_length_json_response_does_not_take_streaming_permit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    fingerprint = "sha256:" + ("e" * 64)
+    _authorize_fingerprint(monkeypatch, fingerprint)
+
+    @app.get("/_mux_test/json")
+    def mux_test_json() -> Response:
+        return jsonify({"status": "ok"})
+
+    admission = _admission(capacity=1, streaming_capacity=1)
+    try:
+        status, headers, body, _writer = await _dispatch_raw_request(
+            app,
+            pl_identity(fingerprint),
+            admission,
+            "GET",
+            "/_mux_test/json",
+        )
+
+        snapshot = admission.snapshot()
+        assert status == 200
+        assert headers["content-type"].startswith("application/json")
+        assert int(headers["content-length"]) == len(body)
+        assert snapshot["active"]["streaming"] == 0
+        assert snapshot["rejected"]["streaming"] == 0
+        assert snapshot["admitted_over_budget"]["streaming"] == 0
+    finally:
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_get_streaming_response_refuses_before_body_when_lane_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    fingerprint = "sha256:" + ("f" * 64)
+    _authorize_fingerprint(monkeypatch, fingerprint)
+
+    @app.get("/_mux_test/events")
+    def mux_test_events() -> Response:
+        def generate() -> Iterator[bytes]:
+            yield b"data: should-not-send\n\n"
+
+        return Response(generate(), mimetype="text/event-stream")
+
+    admission = _admission(capacity=1, streaming_capacity=1)
+    held = admission.try_acquire_streaming()
+    assert held is not None
+    try:
+        status, _headers, body, writer = await _dispatch_raw_request(
+            app,
+            pl_identity(fingerprint),
+            admission,
+            "GET",
+            "/_mux_test/events",
+        )
+
+        snapshot = admission.snapshot()
+        assert status == 503
+        assert writer.closed is True
+        assert b"secure listener streaming capacity is full" in body
+        assert b"should-not-send" not in body
+        assert snapshot["rejected"]["streaming"] == 1
+        assert snapshot["admitted_over_budget"]["streaming"] == 0
+    finally:
+        held.release()
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_post_streaming_response_proceeds_over_budget_when_lane_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wsgi_module, "STREAMING_PERMIT_WAIT_TIMEOUT_SECONDS", 0.0)
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    fingerprint = "sha256:" + ("0" * 64)
+    _authorize_fingerprint(monkeypatch, fingerprint)
+
+    @app.post("/_mux_test/events")
+    def mux_test_events() -> Response:
+        def generate() -> Iterator[bytes]:
+            yield b"data: committed\n\n"
+
+        return Response(generate(), mimetype="text/event-stream")
+
+    admission = _admission(capacity=1, streaming_capacity=1)
+    held = admission.try_acquire_streaming()
+    assert held is not None
+    try:
+        status, _headers, body, writer = await _dispatch_raw_request(
+            app,
+            pl_identity(fingerprint),
+            admission,
+            "POST",
+            "/_mux_test/events",
+        )
+
+        snapshot = admission.snapshot()
+        assert status == 200
+        assert writer.closed is True
+        assert body == b"data: committed\n\n"
+        assert snapshot["rejected"]["streaming"] == 0
+        assert snapshot["active"]["streaming_over_budget"] == 0
+        assert snapshot["admitted_over_budget"]["streaming"] == 1
+    finally:
+        held.release()
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
+async def test_streaming_capacity_zero_disables_lane_split(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    fingerprint = "sha256:" + ("1" * 64)
+    _authorize_fingerprint(monkeypatch, fingerprint)
+
+    @app.get("/_mux_test/events")
+    def mux_test_events() -> Response:
+        def generate() -> Iterator[bytes]:
+            yield b"data: legacy-shared-pool\n\n"
+
+        return Response(generate(), mimetype="text/event-stream")
+
+    admission = _admission(capacity=1, streaming_capacity=0)
+    try:
+        status, _headers, body, writer = await _dispatch_raw_request(
+            app,
+            pl_identity(fingerprint),
+            admission,
+            "GET",
+            "/_mux_test/events",
+        )
+
+        snapshot = admission.snapshot()
+        assert status == 200
+        assert writer.closed is True
+        assert body == b"data: legacy-shared-pool\n\n"
+        assert snapshot["limit"]["streaming"] == 0
+        assert snapshot["active"]["streaming"] == 0
+        assert snapshot["rejected"]["streaming"] == 0
+        assert snapshot["admitted_over_budget"]["streaming"] == 0
+    finally:
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
@@ -1771,17 +2128,18 @@ async def test_early_bridge_response_drains_in_flight_body_without_unknown_strea
     sent: list[bytes] = []
     loop = asyncio.get_running_loop()
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    admission = _admission(capacity=1)
+    try:
 
         async def handler(
             reader: asyncio.StreamReader,
             writer: Any,
         ) -> None:
             stream_identity = certless_identity() if writer.stream_id == 3 else identity
-            await dispatch_stream(app, stream_identity, reader, writer, loop, executor)
+            await dispatch_stream(app, stream_identity, reader, writer, loop, admission)
 
         mux = Multiplexer(send, handler, is_listener=True)
         try:
@@ -1806,6 +2164,8 @@ async def test_early_bridge_response_drains_in_flight_body_without_unknown_strea
             assert state.task is not None and state.task.done()
         finally:
             await mux.close()
+    finally:
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
@@ -1819,17 +2179,18 @@ async def test_early_bridge_response_cancels_on_drain_budget_exhaustion(
     diags: list[ResetDiagnostic] = []
     loop = asyncio.get_running_loop()
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    admission = _admission(capacity=1)
+    try:
 
         async def handler(
             reader: asyncio.StreamReader,
             writer: Any,
         ) -> None:
             stream_identity = certless_identity() if writer.stream_id == 3 else identity
-            await dispatch_stream(app, stream_identity, reader, writer, loop, executor)
+            await dispatch_stream(app, stream_identity, reader, writer, loop, admission)
 
         mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
         try:
@@ -1861,6 +2222,8 @@ async def test_early_bridge_response_cancels_on_drain_budget_exhaustion(
             )
         finally:
             await mux.close()
+    finally:
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
@@ -1874,17 +2237,18 @@ async def test_app_early_response_drains_then_cancels_with_app_context(
     diags: list[ResetDiagnostic] = []
     loop = asyncio.get_running_loop()
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    admission = _admission(capacity=1)
+    try:
 
         async def handler(
             reader: asyncio.StreamReader,
             writer: Any,
         ) -> None:
             stream_identity = certless_identity() if writer.stream_id == 3 else identity
-            await dispatch_stream(app, stream_identity, reader, writer, loop, executor)
+            await dispatch_stream(app, stream_identity, reader, writer, loop, admission)
 
         mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
         try:
@@ -1924,6 +2288,8 @@ async def test_app_early_response_drains_then_cancels_with_app_context(
             assert not mux._closed
         finally:
             await mux.close()
+    finally:
+        await _shutdown_admission(admission)
 
 
 @pytest.mark.asyncio
@@ -1931,7 +2297,7 @@ async def test_handler_exception_is_stream_scoped() -> None:
     sent: list[bytes] = []
     diags: list[ResetDiagnostic] = []
 
-    async def send(data: bytes) -> None:
+    async def send(data: bytes, *, urgent: bool = False) -> None:
         sent.append(data)
 
     async def handler(
@@ -1974,7 +2340,7 @@ async def test_true_mux_violations_keep_reason_codes() -> None:
         sent: list[bytes] = []
         diags: list[ResetDiagnostic] = []
 
-        async def send(data: bytes) -> None:
+        async def send(data: bytes, *, urgent: bool = False) -> None:
             sent.append(data)
 
         async def handler(*_: object) -> None:
@@ -2071,7 +2437,7 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
 ) -> None:
     diags: list[ResetDiagnostic] = []
 
-    async def send(_: bytes) -> None:
+    async def send(_: bytes, *, urgent: bool = False) -> None:
         return
 
     async def collect_with_handler(handler: Any, frame: bytes) -> None:
@@ -2163,7 +2529,8 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
 
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    admission = _admission(capacity=1)
+    try:
 
         async def bridge_handler(
             reader: asyncio.StreamReader,
@@ -2175,7 +2542,7 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
                 reader,
                 writer,
                 loop,
-                executor,
+                admission,
             )
 
         bridge_mux = Multiplexer(
@@ -2207,7 +2574,7 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
                 reader,
                 writer,
                 loop,
-                executor,
+                admission,
             )
 
         app_mux = Multiplexer(
@@ -2225,6 +2592,8 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
             await app_mux.feed(build_data(1, b"x" * state.recv_credit).encode())
         finally:
             await app_mux.close()
+    finally:
+        await _shutdown_admission(admission)
 
     contexts = {diag.context for diag in diags}
     assert {
