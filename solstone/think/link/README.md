@@ -1,23 +1,29 @@
-# link access helpers
+# link helpers
 
-Caller-side link commands and shared pairing helpers.
+Shared private-link pairing/runtime helpers. Public caller-side `sol link`
+commands are native; this Python package remains the home-side/shared helper
+package used by pairing, direct dialing, SPL, Convey, observe, and dashboards.
 
 **Forked from [`github.com/solpbc/spl`](https://github.com/solpbc/spl) `home/` on 2026-04-20.**
 The two copies are now fully independent: no pip dep, no submodule, no sync scripts.
-The `spl` repo's `home/` continues as the open-source reference implementation of the protocol; this package keeps the caller-side/shared implementation used by pairing, direct dialing, and the link dashboard. The supervised home-side rendezvous daemon lives in `solstone/think/spl/` and runs as `journal spl`.
+The `spl` repo's `home/` continues as the open-source reference implementation of the protocol; this package keeps the shared implementation used by pairing, direct dialing, and the link dashboard. The supervised home-side rendezvous daemon lives in `solstone/think/spl/` and runs as `journal spl`.
 
 ## layout
 
 | File | Purpose |
 |------|---------|
-| `cli.py` | Entry point for caller-side `sol link join` and `sol link serve`. |
-| `serve_cli.py` | Loopback proxy over the PL tunnel for paired caller access. |
-| `observer_paths.py` | Shared observer SPL bundle path helpers. |
 | `ca.py` | Local CA lifecycle + CSR signing + home-attestation minting. |
 | `auth.py` | `authorized_clients.json` reader/writer with mtime-reload and last-seen tracking. |
-| `nonces.py` | Pair-ceremony nonce store (shared between CLI and convey pair route). |
+| `bundle.py` | Observer bundle loading and client identity conversion. |
+| `client.py` | PL/SPL tunnel client protocol helpers. |
+| `dialer.py` | Paired-device dialer used by observe and transfer flows. |
+| `establish.py` | Home-side private-link setup and pairing bootstrap helpers. |
+| `mark.py` | Journal mark derivation and display assets. |
+| `nonces.py` | Pair-ceremony nonce store shared with Convey pair routes. |
 | `paths.py` | Journal-path helpers + `SOL_LINK_RELAY_URL` resolution. |
-| `direct_admission.py` | Consumer-side admission predicate for direct pair-link IPv4 candidates. |
+| `runtime.py` | Convey startup integration for link runtime state. |
+| `tls.py` | Client-side TLS helper wrappers used by PL/SPL helpers. |
+| `window.py` | Pairing-window state helpers. |
 
 TLS termination, multiplexing, and inline WSGI dispatch now live in
 `solstone/convey/secure_listener/`, because Convey owns both listening ports:
@@ -31,16 +37,15 @@ the DL web port and the PL secure-listener port 7657.
 
 The home-side daemon emits Callosum relay-status events on the internal `link` tract, and Convey caches the structured `link_health` snapshot for dashboard status.
 
-## direct join admission
+## native join admission
 
-Direct 0x04 and 0x05 pair-links are structurally decoded before any key
-material is generated or any socket is opened. The embedded candidate set is
-admitted or refused as a whole by `direct_admission.py`; the README deliberately
-does not duplicate that allow-list. The intent is to dial only local,
+Native `sol link join` owns direct pair-link decoding and admission. Direct
+0x04 and 0x05 pair-links are structurally decoded before any key material is
+generated or any socket is opened. The intent is to dial only local,
 self-owned, or operator-controlled local-network addresses from a pasted direct
 pair-link. If `--home` is supplied, it is applied only after the embedded set
-passes that policy. The override is operator-supplied and may be a hostname,
-but it still must include an explicit port.
+passes that policy. The override is operator-supplied and may be a hostname, but
+it still must include an explicit port.
 
 ## privacy
 

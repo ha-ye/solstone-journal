@@ -269,8 +269,8 @@ def build_edge_schema_fixture() -> dict[str, Any]:
 
 
 def render_peer_json(peer: dict[str, Any]) -> str:
-    # Mirrors join_cli.py:233 and :496 exactly; keep this oracle in sync because
-    # join_cli has no extracted peer.json serializer to import here.
+    # Mirrors native link join peer.json formatting; keep this oracle in sync
+    # because the Rust serializer is not imported by this Python fixture builder.
     return json.dumps(peer, indent=2) + "\n"
 
 

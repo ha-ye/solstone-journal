@@ -184,7 +184,7 @@ DOCUMENTED_IP_LITERAL_EXCLUSIONS = {
     ipaddress.IPv4Network("198.51.100.0/24"),
     # RFC 5737: documentation range.
     ipaddress.IPv4Network("203.0.113.0/24"),
-    # Direct-pair admission boundary fixtures from tests/link/test_direct_admission.py.
+    # Direct-pair admission boundary fixture values retained from legacy tests.
     # Adjacent-refused boundary below RFC 1918 10/8.
     ipaddress.IPv4Address("9.255.255.255"),
     # Adjacent-refused boundary above RFC 1918 10/8.
