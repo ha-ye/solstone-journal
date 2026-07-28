@@ -96,6 +96,22 @@ def _local_response(finish_reason):
     }
 
 
+def _request_json_payload(url, body):
+    import httpx
+
+    request = httpx.Request("POST", url, json=body)
+    decoded = request.content.decode("utf-8")
+    return json.loads(decoded), decoded, request.content
+
+
+def _has_surrogate_codepoint(text: str) -> bool:
+    return any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+
+
+def _assert_no_surrogate_codepoint(text: str) -> None:
+    assert not _has_surrogate_codepoint(text)
+
+
 class _ChatResponse:
     def __init__(self, text: str = "hello") -> None:
         self.text = text
@@ -1197,6 +1213,432 @@ def _run_bundled_generate_capture(
         max_output_tokens=max_output_tokens,
     )
     return result, captured, provider
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("pre\ud83dpost", "pre\ufffdpost"),
+        ("pre\ude00post", "pre\ufffdpost"),
+        ("pre\ud83d\ude00post", "pre\U0001f600post"),
+        ("pre\ud83dX\ude00post", "pre\ufffdX\ufffdpost"),
+        ("pre\U0001f600post", "pre\U0001f600post"),
+    ],
+    ids=[
+        "unpaired-high",
+        "unpaired-low",
+        "surrogate-pair",
+        "separated-pair",
+        "valid-non-bmp",
+    ],
+)
+def test_run_generate_endpoint_unknown_window_serializes_normalized_surrogate_text(
+    monkeypatch,
+    prompt,
+    expected,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+        raising=False,
+    )
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        captured.update({"payload": payload, "decoded": decoded, "content": content})
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(prompt, model=LOCAL_MODEL, max_output_tokens=7)
+
+    message = captured["payload"]["messages"][0]["content"]
+    assert message == expected
+    _assert_no_surrogate_codepoint(message)
+    assert captured["decoded"].encode("utf-8") == captured["content"]
+    if expected == "pre\U0001f600post":
+        assert b"pre\xf0\x9f\x98\x80post" in captured["content"]
+
+
+def test_run_agenerate_endpoint_unknown_window_serializes_normalized_surrogate_text(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+        raising=False,
+    )
+    captured = {}
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            payload, decoded, content = _request_json_payload(url, kwargs["json"])
+            captured.update(
+                {"payload": payload, "decoded": decoded, "content": content}
+            )
+            return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    asyncio.run(
+        provider.run_agenerate(
+            "pre\ud83dpost",
+            model=LOCAL_MODEL,
+            max_output_tokens=7,
+        )
+    )
+
+    message = captured["payload"]["messages"][0]["content"]
+    assert message == "pre\ufffdpost"
+    _assert_no_surrogate_codepoint(message)
+    assert captured["decoded"].encode("utf-8") == captured["content"]
+
+
+def test_run_generate_endpoint_known_window_normalizes_before_fit_and_serialization(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: 4096,
+        raising=False,
+    )
+
+    from solstone.think.providers import local_budget
+
+    original_fit_contents = local_budget.fit_contents
+    captured_fit = {}
+
+    def spy_fit_contents(
+        contents, system_instruction, max_output_tokens, *, count, window
+    ):
+        captured_fit.update(
+            {
+                "contents": contents,
+                "system_instruction": system_instruction,
+                "max_output_tokens": max_output_tokens,
+                "window": window,
+            }
+        )
+        return original_fit_contents(
+            contents,
+            system_instruction,
+            max_output_tokens,
+            count=count,
+            window=window,
+        )
+
+    monkeypatch.setattr(local_budget, "fit_contents", spy_fit_contents)
+    captured_post = {}
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        captured_post.update(
+            {"payload": payload, "decoded": decoded, "content": content}
+        )
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        ["## Segment\npre\ud83dpost\n", "tail\ude00"],
+        model=LOCAL_MODEL,
+        system_instruction="sys\ud83d",
+        max_output_tokens=7,
+    )
+
+    assert captured_fit["contents"] == ["## Segment\npre\ufffdpost\n", "tail\ufffd"]
+    assert captured_fit["system_instruction"] == "sys\ufffd"
+    assert captured_fit["window"] == 4096
+    for item in captured_fit["contents"]:
+        _assert_no_surrogate_codepoint(item)
+    _assert_no_surrogate_codepoint(captured_fit["system_instruction"])
+
+    messages = captured_post["payload"]["messages"]
+    assert messages[0] == {"role": "system", "content": "sys\ufffd"}
+    assert "pre\ufffdpost" in messages[1]["content"]
+    assert "tail\ufffd" in messages[1]["content"]
+    assert captured_post["decoded"].encode("utf-8") == captured_post["content"]
+
+
+def test_run_generate_bundled_tokenize_and_chat_receive_normalized_text(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+    tokenize_texts = []
+    captured_chat = {}
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        if str(url).endswith("/tokenize"):
+            text = payload["content"]
+            tokenize_texts.append(text)
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={"tokens": list(range(max(1, len(text) // 3)))},
+            )
+        if str(url).endswith("/v1/chat/completions"):
+            captured_chat.update(
+                {"payload": payload, "decoded": decoded, "content": content}
+            )
+            return _ChatResponse("ok")
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate("pre\ud83dpost", model=LOCAL_MODEL, max_output_tokens=7)
+
+    assert tokenize_texts
+    assert "pre\ufffdpost" in tokenize_texts
+    for text in tokenize_texts:
+        _assert_no_surrogate_codepoint(text)
+    message = captured_chat["payload"]["messages"][0]["content"]
+    assert message == "pre\ufffdpost"
+    _assert_no_surrogate_codepoint(message)
+    assert captured_chat["decoded"].encode("utf-8") == captured_chat["content"]
+
+
+def test_run_generate_confidential_endpoint_serializes_normalized_text_and_keeps_qwen_block(
+    monkeypatch,
+):
+    provider = _provider()
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    endpoint = LocalEndpoint(
+        base_url="https://spp.example.test",
+        served_model_id="confidential-model",
+        credential="confidential-token",
+        is_bundled=False,
+        is_confidential=True,
+    )
+    monkeypatch.setattr(provider, "resolve_local_endpoint", lambda: endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda _base_url: "http://127.0.0.1:4567",
+    )
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        captured.update(
+            {"url": url, "payload": payload, "decoded": decoded, "content": content}
+        )
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        "confidential\ud83dtext",
+        model=LOCAL_MODEL,
+        temperature=0.4,
+        max_output_tokens=7,
+    )
+
+    assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["payload"]["messages"][0]["content"] == "confidential\ufffdtext"
+    assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["payload"]["top_p"] == 0.8
+    assert captured["payload"]["top_k"] == 20
+    assert captured["payload"]["min_p"] == 0.0
+    assert captured["payload"]["presence_penalty"] == 1.5
+    assert captured["decoded"].encode("utf-8") == captured["content"]
+
+
+def test_run_generate_role_dict_multimodal_content_normalizes_text_and_preserves_image_identity(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+        raising=False,
+    )
+    image = b"\x89PNG\r\n\x1a\npayload"
+    contents = [{"role": "user", "content": ["caption\ud83d", image]}]
+    encoded_parts = []
+
+    def fake_encode_image_part(part):
+        encoded_parts.append(part)
+        assert part is image
+        return "image/png", "encoded"
+
+    monkeypatch.setattr(provider, "encode_image_part", fake_encode_image_part)
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        captured.update({"payload": payload, "decoded": decoded, "content": content})
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(contents, model=LOCAL_MODEL, max_output_tokens=7)
+
+    assert encoded_parts == [image]
+    assert encoded_parts[0] is image
+    message_content = captured["payload"]["messages"][0]["content"]
+    assert message_content[0] == {"type": "text", "text": "caption\ufffd"}
+    assert message_content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,encoded"},
+    }
+    _assert_no_surrogate_codepoint(message_content[0]["text"])
+    assert captured["decoded"].encode("utf-8") == captured["content"]
+
+
+def test_local_request_normalizer_preserves_clean_identity_and_non_mutation():
+    provider = _provider()
+    from PIL import Image
+
+    image = Image.new("RGB", (1, 1))
+    raw_bytes = b"\x89PNG\r\n\x1a\npayload"
+    mutable_bytes = bytearray(raw_bytes)
+    clean_text = "pre\U0001f600post"
+    clean_list = [clean_text, image, raw_bytes, mutable_bytes]
+    clean_tuple = (clean_text, image)
+    clean_dict = {"role": "user", "content": clean_text, "image": image}
+
+    assert provider._normalize_request_text(clean_text) is clean_text
+    assert provider._normalize_request_text(clean_list) is clean_list
+    assert provider._normalize_request_text(clean_tuple) is clean_tuple
+    assert provider._normalize_request_text(clean_dict) is clean_dict
+    assert provider._normalize_request_text(image) is image
+    assert provider._normalize_request_text(raw_bytes) is raw_bytes
+    assert provider._normalize_request_text(mutable_bytes) is mutable_bytes
+    assert provider._normalize_request_text(None) is None
+
+    dirty_text = "pre\ud83dpost"
+    dirty_list = [dirty_text, image]
+    dirty_tuple = (dirty_text, image)
+    dirty_dict = {"content": dirty_text, "image": image}
+
+    normalized_list = provider._normalize_request_text(dirty_list)
+    normalized_tuple = provider._normalize_request_text(dirty_tuple)
+    normalized_dict = provider._normalize_request_text(dirty_dict)
+
+    assert normalized_list is not dirty_list
+    assert normalized_list == ["pre\ufffdpost", image]
+    assert normalized_list[1] is image
+    assert dirty_list == [dirty_text, image]
+    assert dirty_list[0] is dirty_text
+
+    assert normalized_tuple is not dirty_tuple
+    assert normalized_tuple == ("pre\ufffdpost", image)
+    assert normalized_tuple[1] is image
+    assert dirty_tuple == (dirty_text, image)
+
+    assert normalized_dict is not dirty_dict
+    assert normalized_dict == {"content": "pre\ufffdpost", "image": image}
+    assert normalized_dict["image"] is image
+    assert dirty_dict == {"content": dirty_text, "image": image}
+
+
+def test_run_generate_does_not_mutate_contents_or_schema_when_normalizing(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        provider,
+        "resolve_endpoint_served_window",
+        lambda _endpoint: None,
+        raising=False,
+    )
+    image = b"\x89PNG\r\n\x1a\npayload"
+    content_parts = ["pre\ud83dpost", image]
+    message = {"role": "user", "content": content_parts}
+    contents = [message]
+    schema = {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "pattern": r"^\w+$",
+                "minLength": 1,
+                "maxLength": 12,
+            }
+        },
+    }
+    contents_before = copy.deepcopy(contents)
+    schema_before = copy.deepcopy(schema)
+    contents_ref = contents
+    message_ref = message
+    content_parts_ref = content_parts
+    prompt_ref = content_parts[0]
+    schema_ref = schema
+    captured = {}
+
+    monkeypatch.setattr(
+        provider,
+        "encode_image_part",
+        lambda part: ("image/png", "encoded") if part is image else None,
+    )
+
+    def fake_post(url, **kwargs):
+        payload, decoded, content = _request_json_payload(url, kwargs["json"])
+        captured.update({"payload": payload, "decoded": decoded, "content": content})
+        return _ChatResponse("ok")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate(
+        contents,
+        model=LOCAL_MODEL,
+        max_output_tokens=7,
+        json_schema=schema,
+    )
+
+    assert contents is contents_ref
+    assert contents == contents_before
+    assert contents[0] is message_ref
+    assert contents[0]["content"] is content_parts_ref
+    assert contents[0]["content"][0] is prompt_ref
+    assert contents[0]["content"][1] is image
+    assert schema is schema_ref
+    assert schema == schema_before
+
+    message_content = captured["payload"]["messages"][0]["content"]
+    assert message_content[0] == {"type": "text", "text": "pre\ufffdpost"}
+    assert captured["payload"]["response_format"]["json_schema"]["schema"] == {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+    }
+    assert captured["decoded"].encode("utf-8") == captured["content"]
 
 
 def test_run_generate_bundled_above_quarter_bounds_footprint(monkeypatch):

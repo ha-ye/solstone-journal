@@ -92,6 +92,7 @@ _ENDPOINT_INPUT_RE = re.compile(
     r"(?P<input>\d+)\s+tokens?\s+from\s+the\s+input\s+messages?\s+and\s+"
     r"\d+\s+tokens?\s+for\s+the\s+completion"
 )
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,41 @@ def _contains_image(value: Any) -> bool:
     if isinstance(value, list | tuple):
         return any(_contains_image(item) for item in value)
     return False
+
+
+def _normalize_request_text(value: Any) -> Any:
+    """Return a request payload tree with invalid UTF-16 surrogate text repaired.
+
+    Only string leaves are normalized; image parts and unchanged containers are
+    returned by identity. Caller-provided containers and schemas are never
+    mutated.
+    """
+    if isinstance(value, str):
+        if _SURROGATE_RE.search(value) is None:
+            return value
+        return value.encode("utf-16", "surrogatepass").decode(
+            "utf-16",
+            errors="replace",
+        )
+    if is_image_part(value):
+        return value
+    if isinstance(value, list | tuple):
+        normalized_items = [_normalize_request_text(item) for item in value]
+        if all(new is old for new, old in zip(normalized_items, value)):
+            return value
+        return tuple(normalized_items) if isinstance(value, tuple) else normalized_items
+    if isinstance(value, dict):
+        changed = False
+        normalized_items = {}
+        for key, item in value.items():
+            normalized_item = _normalize_request_text(item)
+            if normalized_item is not item:
+                changed = True
+            normalized_items[key] = normalized_item
+        if not changed:
+            return value
+        return normalized_items
+    return value
 
 
 def _image_content_part(part: Any) -> dict[str, Any]:
@@ -572,6 +608,11 @@ def _prepare_bundled_request(
     json_output: bool,
     json_schema: dict | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, int]]:
+    # Normalize here because this prep entry sits above every bundled fit, count,
+    # and serialize path.
+    contents = _normalize_request_text(contents)
+    system_instruction = _normalize_request_text(system_instruction)
+
     from solstone.think.providers import local_budget
 
     def counter(text: str) -> int:
@@ -652,6 +693,11 @@ def _prepare_endpoint_request(
     json_output: bool,
     json_schema: dict | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, int | None]]:
+    # Normalize here because this prep entry sits above the served_window is None
+    # branch that returns before fit_contents runs.
+    contents = _normalize_request_text(contents)
+    system_instruction = _normalize_request_text(system_instruction)
+
     from solstone.think.providers import local_budget
 
     if served_window is None:
