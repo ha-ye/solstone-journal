@@ -535,52 +535,82 @@ def test_process_one_builds_confidential_backend_config(tmp_path: Path) -> None:
     assert captured == {"backend": "confidential", "backend_config": {}}
 
 
-def test_process_one_routes_over_cap_confidential_audio_to_local(
+def test_process_audio_confidential_over_cap_defers_before_backend(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from solstone.observe.transcribe.main import _process_one
+    from solstone.observe.transcribe.main import process_audio
     from solstone.observe.transcribe.resource import CONFIDENTIAL_STT_MAX_AUDIO_SECONDS
 
-    audio_path = _raw_audio_path(tmp_path)
-    captured = {}
+    raw_path = _raw_audio_path(tmp_path)
+    before = sorted(path.name for path in raw_path.parent.iterdir())
     audio = np.zeros(
-        int((CONFIDENTIAL_STT_MAX_AUDIO_SECONDS + 1) * SAMPLE_RATE),
+        int(CONFIDENTIAL_STT_MAX_AUDIO_SECONDS * SAMPLE_RATE) + 1,
         dtype=np.float32,
     )
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-
-    def fake_process_audio(
-        _audio_path,
-        _audio_buffer,
-        _vad_result_value,
-        backend_config,
-        **kwargs,
-    ):
-        captured["backend_config"] = backend_config
-        captured["backend"] = kwargs["backend"]
 
     with (
-        patch("solstone.observe.transcribe.main.load_audio", return_value=audio),
-        patch(
-            "solstone.observe.vad.run_vad",
-            return_value=_vad_result(CONFIDENTIAL_STT_MAX_AUDIO_SECONDS + 1),
-        ),
-        patch("solstone.observe.vad.reduce_audio", return_value=(None, None)),
-        patch(
-            "solstone.observe.transcribe.main.local_stt_backend",
-            return_value="parakeet",
-        ),
-        patch(
-            "solstone.observe.transcribe.main.process_audio",
-            side_effect=fake_process_audio,
-        ),
+        patch("solstone.observe.transcribe.main.stt_transcribe") as mock_stt,
+        patch("solstone.observe.transcribe.main.get_backend") as mock_get_backend,
+        patch("solstone.observe.transcribe.get_backend") as mock_dispatch_get_backend,
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        _process_one(
-            audio_path,
-            argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
-            {},
-            "confidential",
-        )
+        with pytest.raises(SystemExit) as exc_info:
+            process_audio(
+                raw_path,
+                audio,
+                _vad_result(CONFIDENTIAL_STT_MAX_AUDIO_SECONDS + 1 / SAMPLE_RATE),
+                {},
+                backend="confidential",
+            )
 
-    assert captured == {"backend": "parakeet", "backend_config": {}}
+    assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
+    assert raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.with_suffix(".npz").exists()
+    assert sorted(path.name for path in raw_path.parent.iterdir()) == before
+    mock_stt.assert_not_called()
+    mock_get_backend.assert_not_called()
+    mock_dispatch_get_backend.assert_not_called()
+    mock_send.assert_called_once()
+    assert mock_send.call_args.args == ("observe", "transcribed")
+
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["reason"] == "confidential_audio_too_long"
+    assert kwargs["backend"] == "confidential"
+
+
+def test_process_audio_confidential_at_cap_dispatches_to_confidential_backend(
+    tmp_path: Path,
+) -> None:
+    from solstone.observe.transcribe.main import process_audio
+    from solstone.observe.transcribe.resource import CONFIDENTIAL_STT_MAX_AUDIO_SECONDS
+
+    raw_path = _raw_audio_path(tmp_path)
+    audio = np.zeros(
+        int(CONFIDENTIAL_STT_MAX_AUDIO_SECONDS * SAMPLE_RATE),
+        dtype=np.float32,
+    )
+    with (
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            side_effect=ConfidentialTranscribeDeferral("hosted_transcribe_unreachable"),
+        ) as mock_stt,
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            process_audio(
+                raw_path,
+                audio,
+                _vad_result(CONFIDENTIAL_STT_MAX_AUDIO_SECONDS),
+                {},
+                backend="confidential",
+            )
+
+    assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
+    mock_stt.assert_called_once()
+    backend, stt_audio, sample_rate, config = mock_stt.call_args.args
+    assert backend == "confidential"
+    assert stt_audio is audio
+    assert sample_rate == SAMPLE_RATE
+    assert config == {}

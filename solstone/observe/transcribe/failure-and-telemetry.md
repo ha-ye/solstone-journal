@@ -59,6 +59,7 @@ Backend-specific policy:
 | Parakeet server unreachable, warming, or **dead mid-request** | Defer (`69`) | The server is a supervised process. It comes back. |
 | Confidential lane refuses cloud egress | Defer (`69`) | The lane may permit a local backend later; the audio must not be lost. |
 | Confidential backend already dispatched, then lane inactive or audio disabled | Defer (`69`) | The selected backend can no longer carry audio at dispatch time. The input is preserved for a later local or confidential retry. |
+| Confidential backend selected and decoded audio exceeds the hosted duration cap | Defer (`69`) | No fallback is attempted; the input stays on disk for a later retry after the provider limit is addressed. |
 | Stranded confidential channel before dispatch and local RAM below floor | Fail (`1`) | `resolve_default_backend` surfaces the local-STT requirement before `_process_one`; no JSONL is written, input audio stays on disk, and the segment remains `incomplete`. |
 | Confidential hosted STT 400/413 or bad 200 contract | Defer (`69`) | Hosted STT is operated infrastructure. A 400 can be an engine-side regression, and owner audio is irreplaceable; preserving it for a post-fix drain is safer than failing permanently. |
 | Confidential hosted STT unreachable, backpressured, or unexpected status | Defer (`69`) | These are service-side or lane-side conditions. The deferred event carries the reason so health surfaces can show the condition without leaking content. |
@@ -101,6 +102,7 @@ Every deferred and failed event carries a machine-readable `reason`.
 | `confidential_egress_blocked` | `process_audio` | The confidential lane refused to send audio to a cloud backend. |
 | `confidential_lane_inactive` | confidential STT gate or backend | Confidential STT was selected, but the confidential lane was no longer active. |
 | `confidential_audio_disabled` | confidential STT gate | Confidential STT was selected under the lane, but `transcribe.confidential_audio` was off. |
+| `confidential_audio_too_long` | `process_audio` | Confidential STT was selected, but the decoded input exceeded the hosted audio duration cap. |
 | `attestation_unreachable` | confidential probe status | Confidential attestation could not reach the gateway. Reused from the confidential lane health vocabulary. |
 | `attestation_failed` | confidential probe status | Confidential attestation completed but did not verify. Reused from the confidential lane health vocabulary. |
 | `attestation_not_yet_verified` | confidential probe status | Confidential provenance exists, but this process has no verified attestation session yet. Reused from the confidential lane health vocabulary. |

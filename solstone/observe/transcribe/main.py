@@ -912,9 +912,10 @@ def process_audio(
             _process_one. A fresh one is created when called without it.
 
     Raises:
-        SystemExit: EXIT_PROVIDER_BLOCKED when the STT provider is not ready or the
-            confidential lane refuses egress -- an honest deferral that preserves the
-            input for the next run. 1 on hard failure.
+        SystemExit: EXIT_PROVIDER_BLOCKED when the STT provider is not ready, the
+            confidential lane refuses egress, or confidential audio exceeds the
+            hosted duration cap -- an honest deferral that preserves the input for
+            the next run. 1 on hard failure.
     """
     start_time = time.time()
     resolved_backend = backend or DEFAULT_BACKEND
@@ -954,6 +955,17 @@ def process_audio(
         stt_buffer = audio_buffer
 
     try:
+        if (
+            resolved_backend == "confidential"
+            and audio_seconds > CONFIDENTIAL_STT_MAX_AUDIO_SECONDS
+        ):
+            logging.info(
+                "Confidential STT cap exceeded (duration=%.1fs cap=%.1fs); deferring transcription",
+                audio_seconds,
+                CONFIDENTIAL_STT_MAX_AUDIO_SECONDS,
+            )
+            raise ConfidentialTranscribeDeferral("confidential_audio_too_long")
+
         # Dispatch to STT backend
         with timings.time("asr"):
             statements = stt_transcribe(
@@ -1482,21 +1494,6 @@ def _process_one(
     # Stage 3: Determine backend and build backend config
     # CLI --backend flag overrides the invocation-level default
     backend = args.backend or default_backend
-
-    if backend == "confidential":
-        audio_seconds = len(audio_buffer) / SAMPLE_RATE
-        if audio_seconds > CONFIDENTIAL_STT_MAX_AUDIO_SECONDS:
-            logging.info(
-                "Confidential STT cap exceeded (duration=%.1fs cap=%.1fs); routing to local STT placement",
-                audio_seconds,
-                CONFIDENTIAL_STT_MAX_AUDIO_SECONDS,
-            )
-            backend = local_stt_backend() or STT_SURFACE
-            if backend == STT_SURFACE:
-                _surface_stt_requirement(
-                    read_available_bytes(), stt_local_floor_bytes()
-                )
-                raise SystemExit(1)
 
     # Get backend-specific config from nested structure
     if _uses_parakeet_cpp(backend):
