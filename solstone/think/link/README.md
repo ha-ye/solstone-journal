@@ -14,15 +14,19 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 |------|---------|
 | `ca.py` | Local CA lifecycle + CSR signing + home-attestation minting. |
 | `auth.py` | `authorized_clients.json` reader/writer with mtime-reload and last-seen tracking. |
+| `browser_pairing.py` | Browser public-key registration over SPL pair-window tunnels. |
 | `bundle.py` | Observer bundle loading and client identity conversion. |
 | `client.py` | PL/SPL tunnel client protocol helpers. |
 | `dialer.py` | Paired-device dialer used by observe and transfer flows. |
 | `establish.py` | Home-side private-link setup and pairing bootstrap helpers. |
+| `interface_watcher.py` | LAN/VPN interface polling and local endpoint advertising for pair links. |
+| `local_endpoints.py` | Frozen wire values and serializers for LAN-direct endpoint responses. |
 | `mark.py` | Journal mark derivation and display assets. |
 | `nonces.py` | Pair-ceremony nonce store shared with Convey pair routes. |
 | `paths.py` | Journal-path helpers + `SOL_LINK_RELAY_URL` resolution. |
 | `runtime.py` | Convey startup integration for link runtime state. |
 | `tls.py` | Client-side TLS helper wrappers used by PL/SPL helpers. |
+| `upload_key.py` | Home upload HPKE key loading/generation for browser blob uplink. |
 | `window.py` | Pairing-window state helpers. |
 
 TLS termination, multiplexing, and inline WSGI dispatch now live in
