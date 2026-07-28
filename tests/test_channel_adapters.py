@@ -156,6 +156,22 @@ def _artifact_listing_stdout(artifact_bytes: dict[str, bytes]) -> str:
     return "\n".join(lines) + "\n"
 
 
+MACOS_MAKE_FAILURE_STDERR = "session wrapper attached"
+MACOS_MAKE_FAILURE_STDOUT = "make target failed"
+MACOS_MAKE_FAILURE_DETAIL = (
+    f"stderr:\n{MACOS_MAKE_FAILURE_STDERR}\nstdout:\n{MACOS_MAKE_FAILURE_STDOUT}"
+)
+
+
+def _macos_make_failure_stderr(headline: str) -> str:
+    return f"adapter error: {headline}\n{MACOS_MAKE_FAILURE_DETAIL}\n"
+
+
+def _scp_retrieval_argvs(argvs: list[list[str]]) -> list[list[str]]:
+    """scp invocations whose source is remote, not the bundle upload."""
+    return [argv for argv in argvs if argv[0] == "scp" and ":" in argv[-2]]
+
+
 def _write_build_request(tmp_path: Path) -> tuple[Path, build_rail.SourceBundle, dict]:
     bundle = tmp_path / "source.bundle"
     bundle.write_bytes(b"bundle")
@@ -414,6 +430,111 @@ def test_build_request_response_round_trip_through_rail_parser(
         build_rail.MACOS_CORE_RECORD,
         build_rail.MACOS_SPEAKERS_ANALYZE_RECORD,
     )
+
+
+def test_build_host_macos_unlock_failure_preserves_labeled_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, _source_bundle, _payload = _write_build_request(tmp_path)
+    scripts: list[str] = []
+    argvs: list[list[str]] = []
+
+    def fake_runner(argv, **kwargs):
+        argvs.append(list(argv))
+        script = kwargs.get("input_text") or ""
+        scripts.append(script)
+        if "emit python" in script:
+            return _completed(_tool_stdout())
+        if "git checkout" in script:
+            return _completed(f"{build_host_macos.CHECKOUT_TOKEN}\n")
+        if "make unlock-signing" in script:
+            return _completed(
+                MACOS_MAKE_FAILURE_STDOUT,
+                stderr=MACOS_MAKE_FAILURE_STDERR,
+                returncode=2,
+            )
+        return _completed()
+
+    monkeypatch.setattr(common, "run", fake_runner)
+    monkeypatch.chdir(request_path.parent)
+
+    with pytest.raises(SystemExit) as excinfo:
+        build_host_macos.build_macos(_lane(), request_path)
+
+    stderr = capsys.readouterr().err
+    assert excinfo.value.code != 0
+    assert not (request_path.parent / "response.json").exists()
+    assert stderr == _macos_make_failure_stderr(
+        "make unlock-signing failed on macOS build host"
+    )
+    assert stderr.count(MACOS_MAKE_FAILURE_STDERR) == 1
+    assert stderr.count(MACOS_MAKE_FAILURE_STDOUT) == 1
+    assert not any("make wheel-macos" in script for script in scripts)
+    assert not any("for f in" in script for script in scripts)
+    assert _scp_retrieval_argvs(argvs) == []
+
+
+def test_build_host_macos_wheel_failure_preserves_labeled_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, _source_bundle, _payload = _write_build_request(tmp_path)
+    scripts: list[str] = []
+    argvs: list[list[str]] = []
+
+    def fake_runner(argv, **kwargs):
+        argvs.append(list(argv))
+        script = kwargs.get("input_text") or ""
+        scripts.append(script)
+        if "emit python" in script:
+            return _completed(_tool_stdout())
+        if "git checkout" in script:
+            return _completed(f"{build_host_macos.CHECKOUT_TOKEN}\n")
+        if "make wheel-macos" in script:
+            return _completed(
+                MACOS_MAKE_FAILURE_STDOUT,
+                stderr=MACOS_MAKE_FAILURE_STDERR,
+                returncode=2,
+            )
+        return _completed()
+
+    monkeypatch.setattr(common, "run", fake_runner)
+    monkeypatch.chdir(request_path.parent)
+
+    with pytest.raises(SystemExit) as excinfo:
+        build_host_macos.build_macos(_lane(), request_path)
+
+    stderr = capsys.readouterr().err
+    assert excinfo.value.code != 0
+    assert not (request_path.parent / "response.json").exists()
+    assert stderr == _macos_make_failure_stderr(
+        "make wheel-macos failed on macOS build host"
+    )
+    assert stderr.count(MACOS_MAKE_FAILURE_STDERR) == 1
+    assert stderr.count(MACOS_MAKE_FAILURE_STDOUT) == 1
+    assert not any("for f in" in script for script in scripts)
+    assert _scp_retrieval_argvs(argvs) == []
+
+
+def test_stream_detail_omits_blank_stderr() -> None:
+    assert (
+        build_host_macos._stream_detail("", "compile step reported failure\n")
+        == "stdout:\ncompile step reported failure"
+    )
+
+
+def test_stream_detail_omits_whitespace_stdout() -> None:
+    assert (
+        build_host_macos._stream_detail("build step reported failure\n", " \n\t")
+        == "stderr:\nbuild step reported failure"
+    )
+
+
+def test_stream_detail_returns_empty_for_blank_streams() -> None:
+    assert build_host_macos._stream_detail("\n", " \n\t") == ""
 
 
 def test_build_retrieved_artifact_digest_mismatch_writes_no_response(

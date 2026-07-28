@@ -60,6 +60,17 @@ def _failure_detail(failures: object) -> str:
     return "\n".join(lines)
 
 
+def _stream_detail(stderr: str, stdout: str) -> str:
+    sections: list[str] = []
+    normalized_stderr = stderr.strip()
+    normalized_stdout = stdout.strip()
+    if normalized_stderr:
+        sections.append(f"stderr:\n{normalized_stderr}")
+    if normalized_stdout:
+        sections.append(f"stdout:\n{normalized_stdout}")
+    return "\n".join(sections)
+
+
 def _parse_observed_tool_lines(stdout: str) -> dict[str, str]:
     observed: dict[str, str] = {}
     for line in stdout.splitlines():
@@ -247,7 +258,7 @@ echo CHECKOUT_OK
     if unlock.returncode != 0:
         die(
             "make unlock-signing failed on macOS build host",
-            detail=(unlock.stderr or unlock.stdout or ""),
+            detail=_stream_detail(unlock.stderr, unlock.stdout),
         )
 
     build = ssh_run(
@@ -264,7 +275,7 @@ echo CHECKOUT_OK
     if build.returncode != 0:
         die(
             "make wheel-macos failed on macOS build host",
-            detail=(build.stderr or build.stdout or ""),
+            detail=_stream_detail(build.stderr, build.stdout),
         )
 
     expected_files = [

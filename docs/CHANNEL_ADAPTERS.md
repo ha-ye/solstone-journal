@@ -135,6 +135,9 @@ unknown keys fail closed and name the config path plus
 Remote sentinel checks require both exit status zero and the expected success
 token. Missing tokens fail the adapter even when the subprocess exits zero.
 
+macOS build-host make failures preserve stderr and stdout separately under
+labeled stderr: and stdout: sections.
+
 Retrieved build artifacts and proof files are checked for regular-file presence,
 non-empty bytes, and the digest/byte count reported by the remote harness before
 the response is written. Missing, malformed, duplicate, unexpected, or invalid
