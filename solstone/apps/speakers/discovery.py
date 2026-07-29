@@ -178,11 +178,11 @@ def _labels_from_discovery_response(stdout: str, *, rows: int) -> Any:
 
     try:
         response = json.loads(stdout)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         raise SpeakerDiscoveryKernelError(
             stage="response",
             reason="response-json-invalid",
-        ) from exc
+        ) from None
 
     if not isinstance(response, dict) or (
         response.get("schema") != DISCOVERY_CLUSTER_RESPONSE_SCHEMA

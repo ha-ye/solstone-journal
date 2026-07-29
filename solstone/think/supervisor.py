@@ -3193,17 +3193,6 @@ def _build_parakeet_cmd(
     return cmd
 
 
-def _site_package_search_dirs() -> list[Path]:
-    dirs: list[Path] = []
-    for raw in sys.path:
-        if not raw:
-            continue
-        path = Path(raw)
-        if path.is_dir() and path not in dirs:
-            dirs.append(path)
-    return dirs
-
-
 def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
     binary_path = _required_plan_path(plan.binary_path, "binary_path")
     model_path = _required_plan_path(plan.model_path, "model_path")
