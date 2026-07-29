@@ -27,6 +27,7 @@ from scripts.check_rust_release_manifest import (
 )
 from scripts.release_digest import file_sha256_size
 from scripts.release_install_smoke import (
+    CURRENT_PROOF_SCHEMA_VERSION,
     PROOF_TARGETS,
     candidate_file_entries,
     target_install_paths_from_ledger,
@@ -860,6 +861,7 @@ class ExternalProofHostChannel:
             ledger_payload,
             target=target,
             candidate_dir=candidate_dir,
+            schema_version=CURRENT_PROOF_SCHEMA_VERSION,
         )
         cohort_id = self._cohort_id_factory()
         _validate_cohort_id(cohort_id)
@@ -1085,6 +1087,38 @@ class ExternalProofHostChannel:
             install_proof_bytes = install_proof_path.read_bytes()
             nvattest_proof_bytes = nvattest_proof_path.read_bytes()
             _validate_directory_identities(identities)
+            try:
+                install_proof_payload = json.loads(install_proof_bytes)
+            except json.JSONDecodeError as exc:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host install proof schema could not be read",
+                            expected=(
+                                f"schema_version {CURRENT_PROOF_SCHEMA_VERSION} "
+                                "install proof JSON"
+                            ),
+                            actual=str(exc),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                ) from None
+            actual_schema = (
+                install_proof_payload.get("schema_version")
+                if isinstance(install_proof_payload, Mapping)
+                else install_proof_payload
+            )
+            if actual_schema != CURRENT_PROOF_SCHEMA_VERSION:
+                raise ProofHostError(
+                    [
+                        _failure(
+                            "proof-host install proof schema is not current",
+                            expected=str(CURRENT_PROOF_SCHEMA_VERSION),
+                            actual=repr(actual_schema),
+                            repair="bash scripts/release.sh --candidate",
+                        )
+                    ]
+                )
             proof_failures = validate_install_proof_bytes(
                 install_proof_bytes,
                 target=target,
@@ -1104,6 +1138,7 @@ class ExternalProofHostChannel:
                         ledger_payload,
                         target=target,
                         candidate_dir=request_candidate_dir,
+                        schema_version=CURRENT_PROOF_SCHEMA_VERSION,
                     )
                 )
                 expected_support_distributions = (

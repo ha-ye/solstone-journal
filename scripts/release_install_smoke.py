@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -36,20 +38,27 @@ from scripts.check_wheel_contents import (
 )
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
+from solstone.apps.speakers.encoder_config import WESPEAKER_EMBEDDING_WIDTH
+from solstone.observe.model_assets import (
+    PYANNOTE_SEGMENTATION_MODEL_FILENAME,
+    WESPEAKER_MODEL_FILENAME,
+)
 from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
-
-# Derived, never restated: the helper's declared coverage lives in
-# solstone/think/probe.py. A literal here would keep selecting the old
-# filename if the measured floor ever moves, silently proving nothing.
-SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
-    ("linux", "x86_64")
-]
 
 PROOF_TARGETS: tuple[str, ...] = (
     "linux-x86_64-musl",
     "linux-aarch64-musl",
     "macos-arm64",
 )
+SPEAKERS_ANALYZE_TARGET_PLATFORMS = {
+    "linux-x86_64-musl": ("linux", "x86_64"),
+    "linux-aarch64-musl": ("linux", "aarch64"),
+    "macos-arm64": ("darwin", "arm64"),
+}
+SPEAKERS_ANALYZE_PLATFORM_TAG_BY_TARGET = {
+    target: SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[platform]
+    for target, platform in SPEAKERS_ANALYZE_TARGET_PLATFORMS.items()
+}
 TOP_LEVEL_KEYS = frozenset(
     (
         "schema_version",
@@ -78,7 +87,6 @@ CORE_SMOKE_STDOUT = {
 # Version smoke spans root launchers plus the core member.
 INSTALL_SCRIPT_NAMES = ROOT_LAUNCHER_NAMES + CORE_SCRIPT_NAMES
 SPEAKERS_ANALYZE_SCRIPT_NAME = SPEAKERS_ANALYZE_SCRIPT_NAMES[0]
-SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS = frozenset(("linux-x86_64-musl",))
 SPEAKERS_ANALYZE_RESPONSE_SCHEMA = "solstone-speaker-analyze-response-v1"
 SPEAKERS_ANALYZE_REQUEST_SCHEMA = "solstone-speaker-analyze-request-v1"
 # Retained install proofs are re-validated by --recover and gate publication, so the
@@ -87,9 +95,16 @@ SPEAKERS_ANALYZE_REQUEST_SCHEMA = "solstone-speaker-analyze-request-v1"
 # would let a genuinely missing wheel make the validator expect less and pass.
 # v1: releases cut before the speakers-analyze helper shipped as its own wheel.
 # v2: adds solstone-core-speakers-analyze on its real-inference target.
-CURRENT_PROOF_SCHEMA_VERSION = 2
-REGISTERED_PROOF_SCHEMA_VERSIONS = frozenset((1, 2))
-SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION = 2
+# v3: runs solstone-core-speakers-analyze on every proof target.
+SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA = {
+    1: frozenset(),
+    2: frozenset(("linux-x86_64-musl",)),
+    3: frozenset(("linux-x86_64-musl", "linux-aarch64-musl", "macos-arm64")),
+}
+CURRENT_PROOF_SCHEMA_VERSION = 3
+REGISTERED_PROOF_SCHEMA_VERSIONS = frozenset(SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA)
+SPEAKERS_ANALYZE_ASSET_RESOLUTION_EXIT = 78
+SPEAKERS_ANALYZE_FLOAT32_BYTES = 4
 ENVROOT = "ENVROOT"
 CANDIDATE = "CANDIDATE"
 RETAINED_PROOF_REPAIR = (
@@ -268,15 +283,16 @@ print('\\n'.join(sorted(entries)))
     return tuple(entries)
 
 
-def _select_names_for_target(target: str, names: Sequence[str]) -> tuple[str, ...]:
+def _select_names_for_target(
+    target: str, names: Sequence[str], *, schema_version: int
+) -> tuple[str, ...]:
     selected: list[str] = []
     for name in sorted(names):
         if not name.endswith(".whl"):
             continue
         if name.startswith("solstone_core_speakers_analyze-"):
-            if (
-                target == "linux-x86_64-musl"
-                and SPEAKERS_ANALYZE_LINUX_X86_64_TAG in name
+            if _expects_speakers_analyze(target, schema_version) and (
+                SPEAKERS_ANALYZE_PLATFORM_TAG_BY_TARGET[target] in name
             ):
                 selected.append(name)
             continue
@@ -311,6 +327,7 @@ def target_install_paths_from_ledger(
     *,
     target: str,
     candidate_dir: Path,
+    schema_version: int,
 ) -> tuple[Path, ...]:
     candidate = ledger_payload.get("candidate")
     entries = candidate.get("files", []) if isinstance(candidate, Mapping) else []
@@ -319,7 +336,7 @@ def target_install_paths_from_ledger(
         for entry in entries
         if isinstance(entry, Mapping) and isinstance(entry.get("name"), str)
     ]
-    selected = _select_names_for_target(target, names)
+    selected = _select_names_for_target(target, names, schema_version=schema_version)
     if not selected:
         raise InstallProofError(
             [
@@ -335,12 +352,14 @@ def target_install_paths_from_ledger(
 
 
 def _install_paths_for_target(
-    target: str, candidate_paths: Sequence[Path]
+    target: str, candidate_paths: Sequence[Path], *, schema_version: int
 ) -> tuple[Path, ...]:
     by_name = {path.name: path for path in candidate_paths}
     return tuple(
         by_name[name]
-        for name in _select_names_for_target(target, tuple(by_name))
+        for name in _select_names_for_target(
+            target, tuple(by_name), schema_version=schema_version
+        )
         if name in by_name
     )
 
@@ -360,39 +379,105 @@ def _find_single(root: Path, name: str) -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _speakers_analyze_request(env_root: Path) -> str:
+def _speakers_analyze_statement_spans() -> list[dict[str, float | int]]:
+    return [{"statement_id": 1, "start_s": 0.0, "end_s": 0.5}]
+
+
+def _speakers_analyze_statement_ids() -> list[int]:
+    return [int(span["statement_id"]) for span in _speakers_analyze_statement_spans()]
+
+
+def _expected_speakers_analyze_payload_path(env_root: Path | str) -> str:
+    return f"{env_root}/speakers-analyze-smoke/statement-embedding.f32le"
+
+
+def _expected_speakers_analyze_shape() -> list[int]:
+    return [len(_speakers_analyze_statement_ids()), WESPEAKER_EMBEDDING_WIDTH]
+
+
+def _expected_speakers_analyze_byte_count() -> int:
+    rows = len(_speakers_analyze_statement_ids())
+    return rows * WESPEAKER_EMBEDDING_WIDTH * SPEAKERS_ANALYZE_FLOAT32_BYTES
+
+
+def _resolve_installed_speakers_analyze_model_assets(
+    env_python: Path,
+) -> tuple[Mapping[str, str] | None, str]:
+    script = f"""
+import importlib.resources as r
+import json
+import sys
+
+try:
+    assets = r.files("solstone_journal_models").joinpath("assets")
+    result = {{
+        "pyannote": str(assets.joinpath({PYANNOTE_SEGMENTATION_MODEL_FILENAME!r})),
+        "wespeaker": str(assets.joinpath({WESPEAKER_MODEL_FILENAME!r})),
+    }}
+    for path in result.values():
+        if not __import__("pathlib").Path(path).is_file():
+            raise FileNotFoundError(path)
+except Exception as exc:  # noqa: BLE001 - convert any resolver failure into proof evidence
+    print(f"{{type(exc).__name__}}: {{exc}}", file=sys.stderr)
+    sys.exit(1)
+
+print(json.dumps(result, sort_keys=True))
+"""
+    result = subprocess.run(
+        [str(env_python), "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(SCRUBBED_COMMAND_ENV),
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        return (
+            None,
+            "missing solstone_journal_models wheel or packaged speaker model assets; "
+            f"repair: set RELEASE_MODEL_PACKAGES=include and rebuild the candidate; {detail}",
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"installed model asset resolver returned invalid JSON: {exc}"
+    if not isinstance(payload, Mapping) or not all(
+        isinstance(payload.get(key), str) for key in ("pyannote", "wespeaker")
+    ):
+        return None, "installed model asset resolver returned incomplete model paths"
+    return {
+        "pyannote": str(payload["pyannote"]),
+        "wespeaker": str(payload["wespeaker"]),
+    }, ""
+
+
+def _speakers_analyze_request(
+    env_root: Path, env_python: Path
+) -> tuple[str | None, str]:
     work_dir = env_root / "speakers-analyze-smoke"
     work_dir.mkdir(parents=True, exist_ok=True)
     audio_path = work_dir / "audio.f32le"
     audio_path.write_bytes(b"\0" * 4 * 16000)
     payload_path = work_dir / "statement-embedding.f32le"
     interval_payload_path = work_dir / "interval-embedding.f32le"
-    assets = (
-        ROOT
-        / "packages"
-        / "solstone-journal-models"
-        / "solstone_journal_models"
-        / "assets"
-    )
+    assets, asset_error = _resolve_installed_speakers_analyze_model_assets(env_python)
+    if assets is None:
+        return None, asset_error
     request = {
         "schema": SPEAKERS_ANALYZE_REQUEST_SCHEMA,
         "sample_rate_hz": 16000,
         "full_audio_f32le_path": str(audio_path),
         "reduced_audio_f32le_path": None,
         "models": {
-            "pyannote_segmentation_onnx_path": str(
-                assets / "pyannote-segmentation-3.0.onnx"
-            ),
-            "wespeaker_onnx_path": str(assets / "wespeaker-resnet34-256.onnx"),
+            "pyannote_segmentation_onnx_path": assets["pyannote"],
+            "wespeaker_onnx_path": assets["wespeaker"],
         },
         "output_payload_f32le_path": str(payload_path),
         "interval_embedding_payload_f32le_path": str(interval_payload_path),
-        "statement_embedding": {
-            "spans": [{"statement_id": 1, "start_s": 0.0, "end_s": 0.5}]
-        },
-        "diarization": {"spans": [{"statement_id": 1, "start_s": 0.0, "end_s": 0.5}]},
+        "statement_embedding": {"spans": _speakers_analyze_statement_spans()},
+        "diarization": {"spans": _speakers_analyze_statement_spans()},
     }
-    return json.dumps(request, sort_keys=True)
+    return json.dumps(request, sort_keys=True), ""
 
 
 def _distribution_from_wheel_metadata(path: Path) -> Mapping[str, str] | None:
@@ -448,7 +533,9 @@ def _default_observe_install(
 ) -> InstallObservation:
     env_python = _env_python(env_root)
     before = tuple(entry["name"] for entry in _solstone_distributions(env_python))
-    install_paths = _install_paths_for_target(target, candidate_paths)
+    install_paths = _install_paths_for_target(
+        target, candidate_paths, schema_version=CURRENT_PROOF_SCHEMA_VERSION
+    )
     install = _run_command(
         (
             str(env_python),
@@ -463,7 +550,7 @@ def _default_observe_install(
     after = _solstone_distributions(env_python)
     installed_members: list[Mapping[str, Any]] = []
     executable_names = list(INSTALL_SCRIPT_NAMES)
-    if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if _expects_speakers_analyze(target, CURRENT_PROOF_SCHEMA_VERSION):
         executable_names.append(SPEAKERS_ANALYZE_SCRIPT_NAME)
     executable_paths = {name: _env_bin(env_root, name) for name in executable_names}
     for name, executable_path in executable_paths.items():
@@ -476,10 +563,22 @@ def _default_observe_install(
     for name, executable_path in executable_paths.items():
         if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
             if executable_path.exists() or executable_path.is_symlink():
-                smoke[name] = _run_command(
-                    (str(executable_path),),
-                    input_text=_speakers_analyze_request(env_root),
+                request_text, request_error = _speakers_analyze_request(
+                    env_root, env_python
                 )
+                if request_text is None:
+                    smoke[name] = CommandResult(
+                        argv=(str(executable_path),),
+                        exit_code=SPEAKERS_ANALYZE_ASSET_RESOLUTION_EXIT,
+                        stdout="",
+                        stderr=request_error,
+                        env=SCRUBBED_COMMAND_ENV,
+                    )
+                else:
+                    smoke[name] = _run_command(
+                        (str(executable_path),),
+                        input_text=request_text,
+                    )
             else:
                 smoke[name] = CommandResult(
                     argv=(str(executable_path),),
@@ -738,6 +837,7 @@ def _expected_install_members(
                 ledger_payload,
                 target=target,
                 candidate_dir=candidate_dir,
+                schema_version=schema_version,
             )
         except InstallProofError as exc:
             return members, list(exc.failures)
@@ -853,10 +953,7 @@ def _env_failures(
 
 
 def _expects_speakers_analyze(target: str, schema_version: int) -> bool:
-    return (
-        target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS
-        and schema_version >= SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION
-    )
+    return target in SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA[schema_version]
 
 
 def _proof_schema_version(proof: Mapping[str, Any]) -> tuple[int | None, list[Failure]]:
@@ -888,11 +985,25 @@ def _expected_smoke_argv(name: str) -> tuple[str, ...]:
     return (f"{ENVROOT}/bin/{name}", "--version")
 
 
-def _validate_speakers_analyze_stdout(stdout: str, *, repair: str) -> list[Failure]:
+_MISSING = object()
+
+
+def _json_value(payload: Mapping[str, Any], path: Sequence[str]) -> object:
+    value: object = payload
+    for key in path:
+        if not isinstance(value, Mapping) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _speakers_analyze_stdout_payload(
+    stdout: str, *, expected_payload_path: str, repair: str
+) -> tuple[Mapping[str, Any] | None, list[Failure]]:
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        return [
+        return None, [
             _failure(
                 "install proof speakers-analyze smoke stdout is not JSON",
                 expected=f"{SPEAKERS_ANALYZE_RESPONSE_SCHEMA} JSON response",
@@ -903,7 +1014,7 @@ def _validate_speakers_analyze_stdout(stdout: str, *, repair: str) -> list[Failu
     if not isinstance(payload, Mapping) or payload.get("schema") != (
         SPEAKERS_ANALYZE_RESPONSE_SCHEMA
     ):
-        return [
+        return None, [
             _failure(
                 "install proof speakers-analyze smoke response schema is invalid",
                 expected=SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
@@ -913,7 +1024,101 @@ def _validate_speakers_analyze_stdout(stdout: str, *, repair: str) -> list[Failu
                 repair=repair,
             )
         ]
-    return []
+    expected_values: tuple[tuple[tuple[str, ...], object], ...] = (
+        (
+            ("inputs", "statement_embedding", "statement_ids"),
+            _speakers_analyze_statement_ids(),
+        ),
+        (("statement_embeddings", "statement_ids"), _speakers_analyze_statement_ids()),
+        (("statement_embeddings", "shape"), _expected_speakers_analyze_shape()),
+        (
+            ("statement_embeddings", "byte_count"),
+            _expected_speakers_analyze_byte_count(),
+        ),
+        (("statement_embeddings", "dtype"), "float32-le"),
+        (
+            ("statement_embeddings", "payload_format"),
+            "raw-f32le-row-major-v1",
+        ),
+        (("statement_embeddings", "payload_path"), expected_payload_path),
+    )
+    failures: list[Failure] = []
+    for path, expected in expected_values:
+        actual = _json_value(payload, path)
+        if actual != expected:
+            failures.append(
+                _failure(
+                    "install proof speakers-analyze smoke response field is invalid",
+                    expected=f"{'.'.join(path)} == {expected!r}",
+                    actual="<missing>" if actual is _MISSING else repr(actual),
+                    repair=repair,
+                )
+            )
+    return payload, failures
+
+
+def _validate_speakers_analyze_stdout(
+    stdout: str, *, expected_payload_path: str, repair: str
+) -> list[Failure]:
+    _payload, failures = _speakers_analyze_stdout_payload(
+        stdout, expected_payload_path=expected_payload_path, repair=repair
+    )
+    return failures
+
+
+def _validate_speakers_analyze_payload_file(
+    payload: Mapping[str, Any], *, repair: str
+) -> list[Failure]:
+    embeddings = payload.get("statement_embeddings")
+    if not isinstance(embeddings, Mapping):
+        return []
+    payload_path = embeddings.get("payload_path")
+    byte_count = embeddings.get("byte_count")
+    if not isinstance(payload_path, str) or not isinstance(byte_count, int):
+        return []
+    path = Path(payload_path)
+    failures: list[Failure] = []
+    if not path.is_file():
+        return [
+            _failure(
+                "install proof speakers-analyze payload file is missing",
+                expected=payload_path,
+                actual="<missing>",
+                repair=repair,
+            )
+        ]
+    content = path.read_bytes()
+    if len(content) != byte_count:
+        failures.append(
+            _failure(
+                "install proof speakers-analyze payload byte count does not match stdout",
+                expected=str(byte_count),
+                actual=str(len(content)),
+                repair=repair,
+            )
+        )
+    if len(content) % SPEAKERS_ANALYZE_FLOAT32_BYTES != 0:
+        failures.append(
+            _failure(
+                "install proof speakers-analyze payload byte count is not f32 aligned",
+                expected=f"multiple of {SPEAKERS_ANALYZE_FLOAT32_BYTES}",
+                actual=str(len(content)),
+                repair=repair,
+            )
+        )
+        return failures
+    for index, (value,) in enumerate(struct.iter_unpack("<f", content)):
+        if not math.isfinite(value):
+            failures.append(
+                _failure(
+                    "install proof speakers-analyze payload contains non-finite f32 values",
+                    expected="all f32 values finite",
+                    actual=f"index {index}: {value!r}",
+                    repair=repair,
+                )
+            )
+            break
+    return failures
 
 
 def _expected_install_argv(
@@ -1239,7 +1444,25 @@ def _validate_observation(
                 expected=SCRUBBED_COMMAND_ENV,
             )
         )
-        if result.exit_code != 0:
+        if (
+            name == SPEAKERS_ANALYZE_SCRIPT_NAME
+            and result.exit_code == SPEAKERS_ANALYZE_ASSET_RESOLUTION_EXIT
+        ):
+            failures.append(
+                _failure(
+                    "install proof speakers-analyze model wheel is missing",
+                    expected=(
+                        "installed solstone_journal_models wheel with packaged "
+                        "speaker model assets"
+                    ),
+                    actual=result.stderr or "<empty stderr>",
+                    repair=(
+                        "set RELEASE_MODEL_PACKAGES=include and rebuild the candidate "
+                        "with bash scripts/release.sh --candidate"
+                    ),
+                )
+            )
+        elif result.exit_code != 0:
             failures.append(
                 _failure(
                     "install proof smoke command failed",
@@ -1253,12 +1476,21 @@ def _validate_observation(
                 )
             )
         if name == SPEAKERS_ANALYZE_SCRIPT_NAME:
-            failures.extend(
-                _validate_speakers_analyze_stdout(
-                    result.stdout,
-                    repair="python3 scripts/check_rust_release_manifest.py",
-                )
+            payload, stdout_failures = _speakers_analyze_stdout_payload(
+                result.stdout,
+                expected_payload_path=_expected_speakers_analyze_payload_path(
+                    observation.env_root
+                ),
+                repair="python3 scripts/check_rust_release_manifest.py",
             )
+            failures.extend(stdout_failures)
+            if payload is not None:
+                failures.extend(
+                    _validate_speakers_analyze_payload_file(
+                        payload,
+                        repair="python3 scripts/check_rust_release_manifest.py",
+                    )
+                )
         else:
             expected_stdout = f"{CORE_SMOKE_STDOUT.get(name, name)} {version}"
             if result.stdout != expected_stdout:
@@ -1325,6 +1557,7 @@ def build_install_proof(
             ledger_payload,
             target=target,
             candidate_dir=candidate_dir,
+            schema_version=CURRENT_PROOF_SCHEMA_VERSION,
         )
         files = candidate_file_entries(install_paths)
     except InstallProofError as exc:
@@ -1613,6 +1846,7 @@ def _validate_proof_semantics(
             ledger_payload,
             target=target,
             candidate_dir=candidate_dir,
+            schema_version=schema_version,
         )
     except InstallProofError as exc:
         return list(exc.failures)
@@ -1794,6 +2028,9 @@ def _validate_proof_semantics(
             failures.extend(
                 _validate_speakers_analyze_stdout(
                     str(smoke_entry.get("stdout")),
+                    expected_payload_path=_expected_speakers_analyze_payload_path(
+                        ENVROOT
+                    ),
                     repair="python3 scripts/check_rust_release_manifest.py",
                 )
             )
@@ -2233,6 +2470,7 @@ def run_install_proof(
             ledger_payload,
             target=target,
             candidate_dir=candidate_dir,
+            schema_version=CURRENT_PROOF_SCHEMA_VERSION,
         )
         observation = resolved_services.observe_install(target, env_root, install_paths)
         proof = build_install_proof(

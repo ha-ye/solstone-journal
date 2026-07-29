@@ -76,6 +76,7 @@ from scripts.release_build_host import (
 from scripts.release_digest import bundle_digest, candidate_digest, file_sha256_size
 from scripts.release_install_smoke import (
     CANDIDATE,
+    CURRENT_PROOF_SCHEMA_VERSION,
     ENVROOT,
     PROOF_TARGETS,
     RETAINED_PROOF_REPAIR,
@@ -2112,6 +2113,10 @@ def _validate_proof_binding(
     release_dir: Path,
 ) -> list[Failure]:
     failures: list[Failure] = []
+    proof_schema_version, proof_version_failures = _proof_schema_version(proof)
+    if proof_schema_version is None:
+        failures.extend(proof_version_failures)
+        return failures
     expected_scalars = {
         "target": target,
         "source_commit": ledger.get("source_commit"),
@@ -2156,6 +2161,7 @@ def _validate_proof_binding(
             ledger,
             target=target,
             candidate_dir=release_dir,
+            schema_version=proof_schema_version,
         )
         expected_entries = {
             (
@@ -2177,10 +2183,6 @@ def _validate_proof_binding(
                 repair="bash scripts/release.sh --recover",
             )
         )
-    proof_schema_version, proof_version_failures = _proof_schema_version(proof)
-    if proof_schema_version is None:
-        failures.extend(proof_version_failures)
-        return failures
     expected_members, expected_member_failures = _expected_members(
         ledger, target, release_dir=release_dir, schema_version=proof_schema_version
     )
@@ -2510,7 +2512,9 @@ def _root_wheel_name_for_target(
     target: str,
     names: Sequence[str],
 ) -> tuple[str | None, list[Failure]]:
-    selected = _select_names_for_target(target, names)
+    selected = _select_names_for_target(
+        target, names, schema_version=CURRENT_PROOF_SCHEMA_VERSION
+    )
     root_wheels = [name for name in selected if name.startswith("solstone-")]
     if len(root_wheels) == 1:
         return root_wheels[0], []
@@ -2769,6 +2773,42 @@ def _retained_authority_binding(
     return authority_bytes, failures
 
 
+def _retained_install_proof_schema_version(
+    *, evidence_dir: Path, target: str
+) -> tuple[int | None, list[Failure]]:
+    path = evidence_dir / "proofs" / f"{target}.json"
+    if not path.is_file() or path.is_symlink():
+        return None, [
+            _failure(
+                "retained install proof is missing for schema dispatch",
+                expected=f"{target} install proof",
+                actual="missing",
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    try:
+        proof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [
+            _failure(
+                "retained install proof schema could not be read",
+                expected=f"{target} install proof JSON",
+                actual=str(exc),
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    if not isinstance(proof, Mapping):
+        return None, [
+            _failure(
+                "retained install proof schema payload is invalid",
+                expected=f"{target} install proof object",
+                actual=type(proof).__name__,
+                repair="bash scripts/release.sh --recover",
+            )
+        ]
+    return _proof_schema_version(proof)
+
+
 def _validate_retained_nvattest_binding(
     *,
     evidence_dir: Path,
@@ -2853,15 +2893,28 @@ def _validate_retained_nvattest_binding(
         expected_candidate_wheels: Sequence[Mapping[str, Any]] = ()
         candidate_closure_inputs_ready = True
         try:
+            proof_schema_version, proof_schema_failures = (
+                _retained_install_proof_schema_version(
+                    evidence_dir=evidence_dir, target=target
+                )
+            )
+            if proof_schema_version is None:
+                failures.extend(proof_schema_failures)
+                candidate_closure_inputs_ready = False
+                continue
             expected_candidate_wheels = candidate_wheel_entries(
                 target_install_paths_from_ledger(
                     ledger,
                     target=target,
                     candidate_dir=release_dir,
+                    schema_version=proof_schema_version,
                 )
             )
         except NvattestProofError as exc:
             failures.extend(_driver_failures_from_nvattest_error(exc))
+            candidate_closure_inputs_ready = False
+        except InstallProofError as exc:
+            failures.extend(exc.failures)
             candidate_closure_inputs_ready = False
         if support_closure_inputs_ready and candidate_closure_inputs_ready:
             failures.extend(

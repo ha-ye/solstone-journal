@@ -3734,6 +3734,7 @@ def test_proof_binding_surfaces_target_install_parse_failure(tmp_path: Path) -> 
         },
     }
     proof = {
+        "schema_version": driver.CURRENT_PROOF_SCHEMA_VERSION,
         "target": target,
         "source_commit": SOURCE_COMMIT,
         "candidate_digest": digest,

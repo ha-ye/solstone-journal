@@ -241,6 +241,7 @@ def _write_proof_request(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate_dir,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     support_paths = candidate_fixtures._write_fixture_support_wheels(  # noqa: SLF001
         support_dir
@@ -283,7 +284,9 @@ def _write_valid_install_proof(
     executable_paths = {
         name: env_root / "bin" / name for name in smoke.INSTALL_SCRIPT_NAMES
     }
-    if request_payload["target"] in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if smoke._expects_speakers_analyze(
+        request_payload["target"], smoke.CURRENT_PROOF_SCHEMA_VERSION
+    ):
         executable_paths[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME] = (
             env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME
         )
@@ -300,6 +303,7 @@ def _write_valid_install_proof(
         ledger,
         target=request_payload["target"],
         candidate_dir=candidate_dir,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     expected_members, expected_failures = smoke._expected_install_members(
         ledger,
@@ -309,6 +313,9 @@ def _write_valid_install_proof(
         schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     assert expected_failures == []
+    payload_path = env_root / "speakers-analyze-smoke" / "statement-embedding.f32le"
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path.write_bytes(b"\0" * smoke._expected_speakers_analyze_byte_count())
     proof = smoke.build_install_proof(
         target=request_payload["target"],
         version=request_payload["version"],
@@ -352,7 +359,24 @@ def _write_valid_install_proof(
                         argv=(str(path),),
                         exit_code=0,
                         stdout=json.dumps(
-                            {"schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                            {
+                                "schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                                "inputs": {
+                                    "statement_embedding": {
+                                        "statement_ids": smoke._speakers_analyze_statement_ids()
+                                    }
+                                },
+                                "statement_embeddings": {
+                                    "statement_ids": smoke._speakers_analyze_statement_ids(),
+                                    "shape": smoke._expected_speakers_analyze_shape(),
+                                    "byte_count": smoke._expected_speakers_analyze_byte_count(),
+                                    "dtype": "float32-le",
+                                    "payload_format": "raw-f32le-row-major-v1",
+                                    "payload_path": smoke._expected_speakers_analyze_payload_path(
+                                        env_root
+                                    ),
+                                },
+                            },
                             separators=(",", ":"),
                         ),
                         env=smoke.SCRUBBED_COMMAND_ENV,

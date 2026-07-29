@@ -163,7 +163,7 @@ def _observation(
         (env_root / "bin" / name).write_bytes(content)
     for name in smoke.CORE_SCRIPT_NAMES:
         (env_root / "bin" / name).write_bytes(b"core")
-    if target in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if smoke._expects_speakers_analyze(target, smoke.CURRENT_PROOF_SCHEMA_VERSION):
         (env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME).write_text(
             smoke.SPEAKERS_ANALYZE_SCRIPT_NAME,
             encoding="utf-8",
@@ -172,6 +172,7 @@ def _observation(
         ledger,
         target=target,
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     expected_members, expected_failures = smoke._expected_install_members(
         ledger,
@@ -201,12 +202,32 @@ def _observation(
         )
         for name in smoke.INSTALL_SCRIPT_NAMES
     }
-    if target in smoke.SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+    if smoke._expects_speakers_analyze(target, smoke.CURRENT_PROOF_SCHEMA_VERSION):
+        payload_path = env_root / "speakers-analyze-smoke" / "statement-embedding.f32le"
+        payload_path.parent.mkdir(parents=True, exist_ok=True)
+        payload_path.write_bytes(b"\0" * smoke._expected_speakers_analyze_byte_count())
         smoke_results[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME] = smoke.CommandResult(
             argv=(str(env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME),),
             exit_code=0,
             stdout=json.dumps(
-                {"schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                {
+                    "schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                    "inputs": {
+                        "statement_embedding": {
+                            "statement_ids": smoke._speakers_analyze_statement_ids()
+                        }
+                    },
+                    "statement_embeddings": {
+                        "statement_ids": smoke._speakers_analyze_statement_ids(),
+                        "shape": smoke._expected_speakers_analyze_shape(),
+                        "byte_count": smoke._expected_speakers_analyze_byte_count(),
+                        "dtype": "float32-le",
+                        "payload_format": "raw-f32le-row-major-v1",
+                        "payload_path": smoke._expected_speakers_analyze_payload_path(
+                            env_root
+                        ),
+                    },
+                },
                 separators=(",", ":"),
             ),
             env=smoke.SCRUBBED_COMMAND_ENV,
@@ -462,6 +483,7 @@ def test_proof_host_transfers_target_install_set_and_accepts_valid_proof(
         ledger,
         target=target,
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     assert payload["candidate_files"] == smoke.candidate_file_entries(expected_paths)
     assert calls[0][0] == "prove"

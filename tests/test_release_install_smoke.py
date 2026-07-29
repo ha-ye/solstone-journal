@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import zipfile
 from collections.abc import Callable
@@ -181,7 +182,6 @@ def _observation(
         path
         for path in install_paths
         if path.name.startswith("solstone_core_speakers_analyze-")
-        and smoke.SPEAKERS_ANALYZE_LINUX_X86_64_TAG in path.name
     ]
     helper_bytes = b""
     if helper_wheels:
@@ -243,10 +243,33 @@ def _observation(
         for name in smoke.INSTALL_SCRIPT_NAMES
     }
     if helper_wheels:
-        smoke_results["solstone-core-speakers-analyze"] = smoke.CommandResult(
-            argv=(str(env_root / "bin" / "solstone-core-speakers-analyze"),),
+        payload_path = env_root / "speakers-analyze-smoke" / "statement-embedding.f32le"
+        payload_path.parent.mkdir(parents=True, exist_ok=True)
+        payload_path.write_bytes(b"\0" * smoke._expected_speakers_analyze_byte_count())
+        smoke_results[smoke.SPEAKERS_ANALYZE_SCRIPT_NAME] = smoke.CommandResult(
+            argv=(str(env_root / "bin" / smoke.SPEAKERS_ANALYZE_SCRIPT_NAME),),
             exit_code=0,
-            stdout='{"schema":"solstone-speaker-analyze-response-v1"}',
+            stdout=json.dumps(
+                {
+                    "schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                    "inputs": {
+                        "statement_embedding": {
+                            "statement_ids": smoke._speakers_analyze_statement_ids()
+                        }
+                    },
+                    "statement_embeddings": {
+                        "statement_ids": smoke._speakers_analyze_statement_ids(),
+                        "shape": smoke._expected_speakers_analyze_shape(),
+                        "byte_count": smoke._expected_speakers_analyze_byte_count(),
+                        "dtype": "float32-le",
+                        "payload_format": "raw-f32le-row-major-v1",
+                        "payload_path": smoke._expected_speakers_analyze_payload_path(
+                            env_root
+                        ),
+                    },
+                },
+                separators=(",", ":"),
+            ),
             env=smoke.SCRUBBED_COMMAND_ENV,
         )
     return smoke.InstallObservation(
@@ -305,6 +328,7 @@ def test_install_proof_records_inventory_normalized_argv_and_paths(
         ledger,
         target="macos-arm64",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
 
     proof = smoke.build_install_proof(
@@ -348,6 +372,7 @@ def test_install_proof_normalizes_pip24_stdout_candidate_paths(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     core_wheel = next(
         path for path in install_paths if path.name.startswith("solstone_core-")
@@ -405,6 +430,7 @@ def test_install_proof_rejects_unrelated_absolute_stdout_path(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     observation = _observation(
         env_root=tmp_path / "env",
@@ -449,6 +475,7 @@ def test_install_proof_rejects_prefix_sibling_stdout_paths(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     env_root = tmp_path / "env"
     stdout = "\n".join(
@@ -500,6 +527,7 @@ def test_install_proof_normalizes_stderr_and_preserves_empty_streams(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     wheel = next(
         path for path in install_paths if path.name.startswith("solstone_core-")
@@ -561,6 +589,7 @@ def test_install_proof_normalizes_realpath_aliases_in_command_output(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     wheel = next(
         path for path in install_paths if path.name.startswith("solstone_core-")
@@ -613,6 +642,7 @@ def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
         ledger,
         target="macos-arm64",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     selected = install_paths[0]
     selected.unlink()
@@ -667,6 +697,7 @@ def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
                     ledger,
                     target="macos-arm64",
                     candidate_dir=candidate,
+                    schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
                 ),
             ),
             recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
@@ -695,6 +726,7 @@ def test_install_proof_rejects_symlink_duplicate_and_member_hash_mismatch(
                     _ledger_payload(candidate_digest(candidate), candidate),
                     target="macos-arm64",
                     candidate_dir=candidate,
+                    schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
                 ),
                 member_hash="0" * 64,
             ),
@@ -715,6 +747,7 @@ def test_observed_expected_hash_has_no_authority(tmp_path: Path) -> None:
             _ledger_payload(candidate_digest(candidate), candidate),
             target="macos-arm64",
             candidate_dir=candidate,
+            schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
         ),
         member_hash="0" * 64,
     )
@@ -825,6 +858,7 @@ def test_install_proof_rejects_empty_or_extra_member_sets(tmp_path: Path) -> Non
             _ledger_payload(digest, candidate),
             target="linux-x86_64-musl",
             candidate_dir=candidate,
+            schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
         ),
         macos=False,
     )
@@ -877,6 +911,7 @@ def test_written_install_proof_rejects_public_evidence_hazards(tmp_path: Path) -
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     proof = smoke.build_install_proof(
         target="linux-x86_64-musl",
@@ -924,6 +959,7 @@ def test_install_proof_validators_require_binding_arguments(tmp_path: Path) -> N
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     proof = smoke.build_install_proof(
         target="linux-x86_64-musl",
@@ -1003,6 +1039,7 @@ def _linux_context(
         ledger,
         target="linux-x86_64-musl",
         candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
     )
     return candidate, paths, ledger, install_paths
 
@@ -1184,34 +1221,165 @@ RETAINED_1_0_17_PROOFS = (
     / "retained-1.0.17"
     / "proofs"
 )
+EXPECTED_V3_SPEAKERS_ANALYZE_TARGETS = frozenset(
+    ("linux-x86_64-musl", "linux-aarch64-musl", "macos-arm64")
+)
+EXPECTED_SCHEMA_TARGETS = {
+    1: frozenset(),
+    2: frozenset(("linux-x86_64-musl",)),
+    3: EXPECTED_V3_SPEAKERS_ANALYZE_TARGETS,
+}
+BASE_SMOKE_NAMES = {"sol", "solstone", "solstone-core"}
+HELPER_SMOKE_NAMES = BASE_SMOKE_NAMES | {"solstone-core-speakers-analyze"}
 
 
-def test_v1_expects_the_pre_speakers_analyze_executable_set() -> None:
-    assert smoke._expected_smoke_names("linux-x86_64-musl", 1) == {
-        "sol",
-        "solstone",
-        "solstone-core",
-    }
+def test_speakers_analyze_schema_target_sets_are_literal_invariants() -> None:
+    assert smoke.SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA == EXPECTED_SCHEMA_TARGETS
+    assert (
+        smoke.SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA[3]
+        == EXPECTED_V3_SPEAKERS_ANALYZE_TARGETS
+    )
+    assert set(smoke.PROOF_TARGETS) == EXPECTED_V3_SPEAKERS_ANALYZE_TARGETS
 
 
-def test_v2_adds_speakers_analyze_on_its_real_inference_target() -> None:
-    assert smoke._expected_smoke_names("linux-x86_64-musl", 2) == {
-        "sol",
-        "solstone",
-        "solstone-core",
-        "solstone-core-speakers-analyze",
-    }
-    # distinct from v1 -- identical sets would pass whether or not the gate is wired
-    assert smoke._expected_smoke_names(
-        "linux-x86_64-musl", 1
-    ) != smoke._expected_smoke_names("linux-x86_64-musl", 2)
+@pytest.mark.parametrize(
+    ("schema_version", "target", "expected_names"),
+    [
+        (1, "linux-x86_64-musl", BASE_SMOKE_NAMES),
+        (1, "linux-aarch64-musl", BASE_SMOKE_NAMES),
+        (1, "macos-arm64", BASE_SMOKE_NAMES),
+        (2, "linux-x86_64-musl", HELPER_SMOKE_NAMES),
+        (2, "linux-aarch64-musl", BASE_SMOKE_NAMES),
+        (2, "macos-arm64", BASE_SMOKE_NAMES),
+        (3, "linux-x86_64-musl", HELPER_SMOKE_NAMES),
+        (3, "linux-aarch64-musl", HELPER_SMOKE_NAMES),
+        (3, "macos-arm64", HELPER_SMOKE_NAMES),
+    ],
+)
+def test_expected_smoke_names_follow_declared_proof_schema(
+    schema_version: int, target: str, expected_names: set[str]
+) -> None:
+    assert smoke._expected_smoke_names(target, schema_version) == expected_names
 
 
-def test_speakers_analyze_stays_off_non_inference_targets_at_every_version() -> None:
-    for version in sorted(smoke.REGISTERED_PROOF_SCHEMA_VERSIONS):
-        assert "solstone-core-speakers-analyze" not in smoke._expected_smoke_names(
-            "macos-arm64", version
+@pytest.mark.parametrize(
+    ("schema_version", "target", "expects_helper"),
+    [
+        (1, "linux-x86_64-musl", False),
+        (1, "linux-aarch64-musl", False),
+        (1, "macos-arm64", False),
+        (2, "linux-x86_64-musl", True),
+        (2, "linux-aarch64-musl", False),
+        (2, "macos-arm64", False),
+        (3, "linux-x86_64-musl", True),
+        (3, "linux-aarch64-musl", True),
+        (3, "macos-arm64", True),
+    ],
+)
+def test_target_install_selection_follows_declared_proof_schema(
+    tmp_path: Path, schema_version: int, target: str, expects_helper: bool
+) -> None:
+    candidate, _paths = _candidate(tmp_path)
+    ledger = _ledger_payload(candidate_digest(candidate), candidate)
+
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target=target,
+        candidate_dir=candidate,
+        schema_version=schema_version,
+    )
+
+    helper_names = [
+        path.name
+        for path in install_paths
+        if path.name.startswith("solstone_core_speakers_analyze-")
+    ]
+    if expects_helper:
+        assert len(helper_names) == 1
+        assert smoke.SPEAKERS_ANALYZE_PLATFORM_TAG_BY_TARGET[target] in helper_names[0]
+    else:
+        assert helper_names == []
+
+
+def test_speakers_analyze_stdout_oracle_names_invalid_shape() -> None:
+    stdout = json.dumps(
+        {
+            "schema": smoke.SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+            "inputs": {
+                "statement_embedding": {
+                    "statement_ids": smoke._speakers_analyze_statement_ids()
+                }
+            },
+            "statement_embeddings": {
+                "statement_ids": smoke._speakers_analyze_statement_ids(),
+                "shape": [1, 255],
+                "byte_count": smoke._expected_speakers_analyze_byte_count(),
+                "dtype": "float32-le",
+                "payload_format": "raw-f32le-row-major-v1",
+                "payload_path": smoke._expected_speakers_analyze_payload_path(
+                    smoke.ENVROOT
+                ),
+            },
+        },
+        separators=(",", ":"),
+    )
+
+    failures = smoke._validate_speakers_analyze_stdout(
+        stdout,
+        expected_payload_path=smoke._expected_speakers_analyze_payload_path(
+            smoke.ENVROOT
+        ),
+        repair="repair",
+    )
+
+    assert any("statement_embeddings.shape" in failure.expected for failure in failures)
+
+
+def test_speakers_analyze_observation_oracle_rejects_payload_byte_mismatch(
+    tmp_path: Path,
+) -> None:
+    candidate, paths = _candidate(tmp_path)
+    digest = candidate_digest(candidate)
+    ledger = _ledger_payload(digest, candidate)
+    install_paths = smoke.target_install_paths_from_ledger(
+        ledger,
+        target="linux-x86_64-musl",
+        candidate_dir=candidate,
+        schema_version=smoke.CURRENT_PROOF_SCHEMA_VERSION,
+    )
+    observation = _observation(
+        env_root=tmp_path / "env",
+        candidate_dir=candidate,
+        install_paths=install_paths,
+        macos=False,
+    )
+    payload_path = (
+        observation.env_root / "speakers-analyze-smoke" / "statement-embedding.f32le"
+    )
+    payload_path.write_bytes(
+        b"\0" * (smoke._expected_speakers_analyze_byte_count() - 4)
+    )
+
+    with pytest.raises(smoke.InstallProofError) as exc:
+        smoke.build_install_proof(
+            target="linux-x86_64-musl",
+            version="1.0.0",
+            source_commit=SOURCE_COMMIT,
+            core_lock_sha256=CORE_LOCK,
+            candidate_digest=digest,
+            ledger_sha256=LEDGER_SHA,
+            candidate_dir=candidate,
+            candidate_paths=paths,
+            ledger_payload=ledger,
+            observation=observation,
+            recorded_at=datetime(2026, 7, 20, 12, tzinfo=UTC),
         )
+
+    assert any(
+        failure.error
+        == "install proof speakers-analyze payload byte count does not match stdout"
+        for failure in exc.value.failures
+    )
 
 
 def test_the_real_retained_1_0_17_proof_declares_v1_and_matches_its_own_set() -> None:
@@ -1232,11 +1400,17 @@ def test_unregistered_and_missing_schema_versions_fail_closed_and_loudly() -> No
         assert len(failures) == 1
         assert "schema_version is not registered" in failures[0].error
         # the message names what IS registered, so the repair is obvious
-        assert "1" in failures[0].expected and "2" in failures[0].expected
+        assert "1" in failures[0].expected
+        assert "2" in failures[0].expected
+        assert "3" in failures[0].expected
 
 
 def test_the_writer_emits_the_current_registered_version() -> None:
+    assert smoke.CURRENT_PROOF_SCHEMA_VERSION == 3
     assert smoke.CURRENT_PROOF_SCHEMA_VERSION in smoke.REGISTERED_PROOF_SCHEMA_VERSIONS
     assert (
-        smoke.CURRENT_PROOF_SCHEMA_VERSION >= smoke.SPEAKERS_ANALYZE_MIN_SCHEMA_VERSION
+        smoke.SPEAKERS_ANALYZE_TARGETS_BY_PROOF_SCHEMA[
+            smoke.CURRENT_PROOF_SCHEMA_VERSION
+        ]
+        == EXPECTED_V3_SPEAKERS_ANALYZE_TARGETS
     )

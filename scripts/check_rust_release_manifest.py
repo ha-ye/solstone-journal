@@ -2368,12 +2368,16 @@ def run_fixtures_mode() -> list[Failure]:
                 INSTALL_SCRIPT_NAMES,
                 PROOF_TARGETS,
                 SCRUBBED_COMMAND_ENV,
-                SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS,
                 SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
                 SPEAKERS_ANALYZE_SCRIPT_NAME,
                 CommandResult,
                 InstallObservation,
                 _expected_install_members,
+                _expected_speakers_analyze_byte_count,
+                _expected_speakers_analyze_payload_path,
+                _expected_speakers_analyze_shape,
+                _expects_speakers_analyze,
+                _speakers_analyze_statement_ids,
                 build_install_proof,
                 expected_distribution_entries,
                 proof_targets_match_lanes,
@@ -2597,6 +2601,7 @@ def run_fixtures_mode() -> list[Failure]:
                     ledger_payload,
                     target=target,
                     candidate_dir=ready,
+                    schema_version=CURRENT_PROOF_SCHEMA_VERSION,
                 )
                 expected_members, expected_member_failures = _expected_install_members(
                     ledger_payload,
@@ -2627,12 +2632,38 @@ def run_fixtures_mode() -> list[Failure]:
                     )
                     for name in INSTALL_SCRIPT_NAMES
                 }
-                if target in SPEAKERS_ANALYZE_REAL_INFERENCE_TARGETS:
+                if _expects_speakers_analyze(target, CURRENT_PROOF_SCHEMA_VERSION):
+                    payload_path = (
+                        env_root
+                        / "speakers-analyze-smoke"
+                        / ("statement-embedding.f32le")
+                    )
+                    payload_path.parent.mkdir(parents=True, exist_ok=True)
+                    payload_path.write_bytes(
+                        b"\0" * _expected_speakers_analyze_byte_count()
+                    )
                     smoke[SPEAKERS_ANALYZE_SCRIPT_NAME] = CommandResult(
                         argv=(str(env_root / "bin" / SPEAKERS_ANALYZE_SCRIPT_NAME),),
                         exit_code=0,
                         stdout=json.dumps(
-                            {"schema": SPEAKERS_ANALYZE_RESPONSE_SCHEMA},
+                            {
+                                "schema": SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                                "inputs": {
+                                    "statement_embedding": {
+                                        "statement_ids": _speakers_analyze_statement_ids()
+                                    }
+                                },
+                                "statement_embeddings": {
+                                    "statement_ids": _speakers_analyze_statement_ids(),
+                                    "shape": _expected_speakers_analyze_shape(),
+                                    "byte_count": _expected_speakers_analyze_byte_count(),
+                                    "dtype": "float32-le",
+                                    "payload_format": "raw-f32le-row-major-v1",
+                                    "payload_path": _expected_speakers_analyze_payload_path(
+                                        env_root
+                                    ),
+                                },
+                            },
                             separators=(",", ":"),
                         ),
                         env=SCRUBBED_COMMAND_ENV,

@@ -95,8 +95,8 @@ for the helper release lanes.
 | Helper target | Status | Evidence |
 |---------------|--------|----------|
 | Linux x86_64 glibc | Proven here. | Build, content check, install into a bare venv, and real-inference smoke using the shipped `pyannote-segmentation-3.0.onnx` and `wespeaker-resnet34-256.onnx` assets. |
-| Linux aarch64 glibc | Build and cross-link proven here; install-and-run smoke deferred to real aarch64 hardware in the release loop, post-ship. | Local zig GNU cross-link artifact plus real-hardware install/smoke evidence from the release loop. Do not provision an emulator for this lane. |
-| macOS arm64 | Deferred to the macOS build host. | macOS build-host wheel, signing/notarization records for the executable and bundled dylib, RECORD repair, and macOS host evidence. This Linux host claims no macOS runtime proof. |
+| Linux aarch64 glibc | Build, cross-link, install, and real-inference smoke are proven on real aarch64 hardware in the release loop. | Local zig GNU cross-link artifact plus real-hardware install/smoke evidence from the release loop. Do not provision an emulator for this lane. |
+| macOS arm64 | Built on the macOS build host and executed on the macOS proof host. | macOS build-host wheel, signing/notarization records for the executable and bundled dylib, RECORD repair, and macOS install/smoke proof evidence. This Linux host claims no macOS runtime proof. |
 
 | Evidence | Repository command | Class | Notes |
 |----------|--------------------|-------|-------|

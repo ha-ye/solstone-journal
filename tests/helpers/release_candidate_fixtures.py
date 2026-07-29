@@ -36,10 +36,17 @@ from scripts.release_advisory_policy import PolicyRun
 from scripts.release_build_host import BuildHostResult, SourceBundle
 from scripts.release_install_smoke import (
     CORE_SMOKE_STDOUT,
+    CURRENT_PROOF_SCHEMA_VERSION,
     INSTALL_SCRIPT_NAMES,
     SCRUBBED_COMMAND_ENV,
+    SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+    SPEAKERS_ANALYZE_SCRIPT_NAME,
     CommandResult,
     InstallObservation,
+    _expected_speakers_analyze_byte_count,
+    _expected_speakers_analyze_payload_path,
+    _expected_speakers_analyze_shape,
+    _speakers_analyze_statement_ids,
     build_install_proof,
     expected_distribution_entries,
     target_install_paths_from_ledger,
@@ -49,19 +56,13 @@ from scripts.release_nvattest_proof import SUPPORT_DISTRIBUTION_NAMES
 from scripts.release_nvattest_support import read_support_lock_entries
 from scripts.release_proof_host import TargetProofPaths
 from scripts.release_target_policy import TARGET_POLICY
-from solstone.think.probe import (
-    SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS,
-)
+from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS
 from solstone.think.providers.nvattest_authority import (
     authority_payload,
     nvattest_target_key,
 )
 from solstone.think.providers.nvattest_install import SIDECAR_SCHEMA_VERSION
 from solstone.think.providers.nvattest_loader import nvattest_library_env
-
-SPEAKERS_ANALYZE_LINUX_X86_64_TAG = SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[
-    ("linux", "x86_64")
-]
 from tests.helpers.release_wheel_fixtures import (
     NVATTEST_AUTHORITY_BYTES,
     ROOT_LAUNCHER_BYTES,
@@ -69,6 +70,7 @@ from tests.helpers.release_wheel_fixtures import (
     minimal_macho,
     record_hash,
     speakers_analyze_elf,
+    speakers_analyze_macho,
     write_core_wheel,
     write_platform_base_wheel,
     write_speakers_analyze_wheel,
@@ -82,7 +84,7 @@ _LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])
 _LINUX_AARCH64_CORE = minimal_elf(ELF_MACHINE["aarch64"])
 MACOS_CORE = minimal_macho(CPU_TYPE_ARM64)
 MACOS_HELPER = minimal_macho(CPU_TYPE_ARM64)
-MACOS_SPEAKERS_ANALYZE = minimal_macho(CPU_TYPE_ARM64)
+MACOS_SPEAKERS_ANALYZE = speakers_analyze_macho()
 MACOS_ONNXRUNTIME = minimal_macho(CPU_TYPE_ARM64)
 SPEAKERS_ANALYZE_RUNTIME_BYTES = b"fixture onnxruntime GLIBC_2.27\n"
 SPEAKERS_ANALYZE_LICENSE_BYTES = b"fixture onnxruntime license\n"
@@ -497,7 +499,6 @@ def _proof_observation(
         path
         for path in install_paths
         if path.name.startswith("solstone_core_speakers_analyze-")
-        and SPEAKERS_ANALYZE_LINUX_X86_64_TAG in path.name
     ]
     if helper_wheels:
         with zipfile.ZipFile(helper_wheels[0]) as wheel:
@@ -529,10 +530,33 @@ def _proof_observation(
         for name in INSTALL_SCRIPT_NAMES
     }
     if helper_wheels:
-        smoke_results["solstone-core-speakers-analyze"] = CommandResult(
-            argv=(str(env_root / "bin" / "solstone-core-speakers-analyze"),),
+        payload_path = env_root / "speakers-analyze-smoke" / "statement-embedding.f32le"
+        payload_path.parent.mkdir(parents=True, exist_ok=True)
+        payload_path.write_bytes(b"\0" * _expected_speakers_analyze_byte_count())
+        smoke_results[SPEAKERS_ANALYZE_SCRIPT_NAME] = CommandResult(
+            argv=(str(env_root / "bin" / SPEAKERS_ANALYZE_SCRIPT_NAME),),
             exit_code=0,
-            stdout='{"schema":"solstone-speaker-analyze-response-v1"}',
+            stdout=json.dumps(
+                {
+                    "schema": SPEAKERS_ANALYZE_RESPONSE_SCHEMA,
+                    "inputs": {
+                        "statement_embedding": {
+                            "statement_ids": _speakers_analyze_statement_ids()
+                        }
+                    },
+                    "statement_embeddings": {
+                        "statement_ids": _speakers_analyze_statement_ids(),
+                        "shape": _expected_speakers_analyze_shape(),
+                        "byte_count": _expected_speakers_analyze_byte_count(),
+                        "dtype": "float32-le",
+                        "payload_format": "raw-f32le-row-major-v1",
+                        "payload_path": _expected_speakers_analyze_payload_path(
+                            env_root
+                        ),
+                    },
+                },
+                separators=(",", ":"),
+            ),
             env=SCRUBBED_COMMAND_ENV,
         )
     return InstallObservation(
@@ -944,6 +968,7 @@ def services(
             kwargs["ledger_payload"],
             target=target,
             candidate_dir=Path(kwargs["candidate_dir"]),
+            schema_version=CURRENT_PROOF_SCHEMA_VERSION,
         )
         install_excluded_keys = {
             "canonical_authority_bytes",

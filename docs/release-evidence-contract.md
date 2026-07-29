@@ -68,6 +68,17 @@ local. The receipt validators in `scripts/release_install_smoke.py`,
 pin their own artifact schemas, not the retained ledger's schema, and do not
 move automatically merely because the retained ledger schema moves.
 
+The install/smoke proof schema is one of those separate artifact schemas.
+Install-proof schema v3 expands `solstone-core-speakers-analyze` execution to
+every proof target, while retained ledger schema v2 remains the current ledger
+shape.
+Version 3 install-proof evidence requires the candidate to include the
+`solstone_journal_models` wheel because the helper's real-inference smoke
+resolves model assets from the installed environment rather than a repo
+checkout, which lets the macOS and aarch64 proof lanes run on hosts with no
+source tree; `RELEASE_MODEL_PACKAGES=exclude` is therefore incompatible with
+cutting a v3 candidate.
+
 ## Changing the registered shape
 
 Adding or removing a registered retained-ledger shape member is a **breaking
