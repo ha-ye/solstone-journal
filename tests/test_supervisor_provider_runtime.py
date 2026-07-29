@@ -358,7 +358,6 @@ def _parakeet_plan(backend: str = "cpu") -> supervisor.ParakeetServerLaunchPlan:
         binary_path=Path(f"/tmp/parakeet-{backend}"),
         model_path=Path("/tmp/parakeet-model.bin"),
         threads=4,
-        library_dirs=(),
         desired_fingerprint_json='{"provider":"parakeet"}',
         desired_fingerprint_sha256="fp-parakeet",
         placement="gpu" if backend == "vulkan" else "cpu",
@@ -1342,7 +1341,6 @@ def test_parakeet_desired_state_table_remote_platform_and_stt(
         lambda _device, _selected: ("cpu", {}, None),
     )
     monkeypatch.setattr(supervisor, "parakeet_physical_thread_count", lambda: 4)
-    monkeypatch.setattr(supervisor, "_parakeet_runtime_library_dirs", lambda: [])
 
     observation = supervisor._observe_parakeet_provider_truth()
 

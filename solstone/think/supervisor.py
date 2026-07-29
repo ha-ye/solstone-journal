@@ -1273,7 +1273,6 @@ class ParakeetServerLaunchPlan:
     binary_path: Path
     model_path: Path
     threads: int
-    library_dirs: tuple[Path, ...]
     desired_fingerprint_json: str
     desired_fingerprint_sha256: str
     placement: Literal["cpu", "gpu"]
@@ -2946,7 +2945,6 @@ def _observe_parakeet_provider_truth() -> ProviderTruthObservation:
             binary_path=Path(str(readiness.artifacts[binary_key])),
             model_path=Path(str(readiness.artifacts["model_path"])),
             threads=threads,
-            library_dirs=tuple(_parakeet_runtime_library_dirs()),
             desired_fingerprint_json=before_json,
             desired_fingerprint_sha256=before_sha,
             placement="gpu" if backend == "vulkan" else "cpu",
@@ -3024,7 +3022,6 @@ def resolve_parakeet_server_launch_plan(
     binary_path: Path,
     model_path: Path,
     threads: int,
-    library_dirs: Iterable[Path] = (),
     desired_fingerprint_json: str = "",
     desired_fingerprint_sha256: str = "",
 ) -> ParakeetServerLaunchPlan:
@@ -3038,7 +3035,6 @@ def resolve_parakeet_server_launch_plan(
         binary_path=binary_path,
         model_path=model_path,
         threads=threads,
-        library_dirs=tuple(library_dirs),
         desired_fingerprint_json=desired_fingerprint_json,
         desired_fingerprint_sha256=desired_fingerprint_sha256,
         placement="gpu" if backend == "vulkan" else "cpu",
@@ -3206,51 +3202,6 @@ def _site_package_search_dirs() -> list[Path]:
         if path.is_dir() and path not in dirs:
             dirs.append(path)
     return dirs
-
-
-def _find_bundled_libgomp() -> Path | None:
-    for site_dir in _site_package_search_dirs():
-        for libs_dir in (site_dir / "scikit_learn.libs", site_dir / "scipy.libs"):
-            if not libs_dir.is_dir():
-                continue
-            candidates = sorted(libs_dir.glob("libgomp*.so*"))
-            if candidates:
-                return candidates[0]
-    return None
-
-
-def _parakeet_runtime_library_dirs() -> list[Path]:
-    """Return library dirs needed by downloaded parakeet.cpp binaries."""
-    from solstone.think import parakeet_readiness
-
-    libgomp = _find_bundled_libgomp()
-    if libgomp is None:
-        return []
-
-    try:
-        lib_dir = (
-            parakeet_readiness.parakeet_cpp_cache_root(Path(get_journal())) / "lib"
-        )
-        lib_dir.mkdir(parents=True, exist_ok=True)
-        alias = lib_dir / "libgomp.so.1"
-        if alias.is_symlink() or alias.exists():
-            if alias.resolve() != libgomp.resolve():
-                alias.unlink()
-        if not alias.exists():
-            alias.symlink_to(libgomp)
-        return [lib_dir]
-    except Exception:
-        logging.exception("could not prepare parakeet-server OpenMP runtime alias")
-        return []
-
-
-def _with_library_path(env: dict[str, str], dirs: Iterable[Path]) -> dict[str, str]:
-    additions = [str(path) for path in dirs]
-    if not additions:
-        return env
-    existing = env.get("LD_LIBRARY_PATH") or ""
-    paths = additions + ([existing] if existing else [])
-    return env | {"LD_LIBRARY_PATH": ":".join(paths)}
 
 
 def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
@@ -3488,7 +3439,7 @@ def _launch_and_warm_parakeet(
         reservation if reservation is not None else ReservedPort.reserve()
     )
     port = owned_reservation.port
-    env = _with_library_path(os.environ | plan.env_updates, plan.library_dirs)
+    env = os.environ | plan.env_updates
     env = env | {PARAKEET_ATT_CONTEXT_ENV: str(PARAKEET_ATT_CONTEXT_FRAMES)}
     logging.info(
         "parakeet-server launch backend=%s attention=local att_context_frames=%d",

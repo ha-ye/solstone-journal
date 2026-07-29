@@ -192,7 +192,6 @@ def _parakeet_plan(
     *,
     env_updates: dict[str, str] | None = None,
     gpu_index: int | None = None,
-    library_dirs: tuple[Path, ...] = (Path("/parakeet/lib"),),
 ) -> supervisor.ParakeetServerLaunchPlan:
     return supervisor.ParakeetServerLaunchPlan(
         binary_backend=backend,
@@ -201,7 +200,6 @@ def _parakeet_plan(
         binary_path=Path(f"/tmp/{backend}/parakeet-server"),
         model_path=Path("/tmp/model.gguf"),
         threads=6,
-        library_dirs=library_dirs,
         desired_fingerprint_json='{"provider":"parakeet"}',
         desired_fingerprint_sha256="fp-parakeet",
         placement="gpu" if backend == "vulkan" else "cpu",
@@ -374,36 +372,6 @@ def test_build_parakeet_cmd_load_bearing_invariants() -> None:
     assert cmd[cmd.index("--threads") + 1] == "6"
 
 
-def test_parakeet_runtime_library_dirs_aliases_bundled_libgomp(
-    tmp_path, monkeypatch
-) -> None:
-    site_dir = tmp_path / "site-packages"
-    libs_dir = site_dir / "scikit_learn.libs"
-    libs_dir.mkdir(parents=True)
-    bundled = libs_dir / "libgomp-e985bcbb.so.1.0.0"
-    bundled.write_text("runtime")
-    journal = tmp_path / "journal"
-
-    monkeypatch.setattr(supervisor, "_site_package_search_dirs", lambda: [site_dir])
-    monkeypatch.setattr(supervisor, "get_journal", lambda: str(journal))
-
-    result = supervisor._parakeet_runtime_library_dirs()
-
-    assert result == [journal / "cache" / "providers" / "parakeet" / "lib"]
-    alias = result[0] / "libgomp.so.1"
-    assert alias.is_symlink()
-    assert alias.resolve() == bundled.resolve()
-
-
-def test_with_library_path_prepends_dirs() -> None:
-    env = {"LD_LIBRARY_PATH": "/existing"}
-
-    result = supervisor._with_library_path(env, [Path("/parakeet/lib")])
-
-    assert result["LD_LIBRARY_PATH"] == "/parakeet/lib:/existing"
-    assert env["LD_LIBRARY_PATH"] == "/existing"
-
-
 def test_start_parakeet_server_vulkan_crash_returns_exited_cleanup_handle(
     monkeypatch,
     tmp_path,
@@ -444,7 +412,7 @@ def test_start_parakeet_server_vulkan_crash_returns_exited_cleanup_handle(
     assert launches[0]["restart"] is False
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
-    assert launches[0]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
+    assert "LD_LIBRARY_PATH" not in launches[0]["env"]
     _assert_att_context(launches[0])
     assert ports == []
     assert terminated == []
