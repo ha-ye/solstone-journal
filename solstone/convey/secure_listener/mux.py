@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Final, Protocol
@@ -84,6 +85,7 @@ RESET_CTX_SEND_CREDIT_STARVATION: Final[str] = "send_credit_starvation"
 STREAM_CREDIT_STALL_TIMEOUT_SECONDS: Final[float] = 120.0
 
 log = logging.getLogger("convey.secure_listener.mux")
+_monotonic = time.monotonic
 
 _REASON_NAMES: Final[dict[int, str]] = {
     RESET_PROTOCOL_ERROR: "protocol_error",
@@ -101,6 +103,7 @@ class ResetDiagnostic:
     reason_code: int
     reason_name: str
     context: str
+    stall_age_ms: float | None = None
 
 
 ResetDiag = Callable[[ResetDiagnostic], None]
@@ -120,6 +123,7 @@ class _StreamState:
     recv_credit: int = INITIAL_WINDOW
     unacked_recv: int = 0
     credit_event: asyncio.Event = field(default_factory=asyncio.Event)
+    send_credit_stall_started_at: float | None = None
     task: asyncio.Task[None] | None = None
     draining: bool = False
     drained_bytes: int = 0
@@ -145,6 +149,8 @@ class StreamWriter:
                 )
             chunk_len = min(len(view), RECOMMENDED_CHUNK, self._state.send_credit)
             if chunk_len <= 0:
+                if self._state.send_credit_stall_started_at is None:
+                    self._state.send_credit_stall_started_at = _monotonic()
                 self._state.credit_event.clear()
                 try:
                     await asyncio.wait_for(
@@ -153,18 +159,24 @@ class StreamWriter:
                     )
                 except TimeoutError as exc:
                     if not self._state.writer_closed:
+                        origin = self._state.send_credit_stall_started_at
+                        stall_age_ms = (_monotonic() - origin) * 1000.0
                         # Withheld credit is ambiguous, not a protocol violation:
                         # we locally cancel the stream to reclaim service capacity.
                         await self._mux._emit_reset(
                             self._state.stream_id,
                             RESET_CANCEL,
                             RESET_CTX_SEND_CREDIT_STARVATION,
+                            stall_age_ms=stall_age_ms,
                         )
                         self._mux._close_stream(self._state)
                     raise ConnectionError(
                         f"stream {self._state.stream_id} writer is closed"
                     ) from exc
                 continue
+            # A zero-credit WINDOW only wakes wait_for; the zero-credit condition
+            # ends when credit is actually consumed, so age may exceed the deadline.
+            self._state.send_credit_stall_started_at = None
             chunk = bytes(view[:chunk_len])
             view = view[chunk_len:]
             self._state.send_credit -= chunk_len
@@ -479,7 +491,14 @@ class Multiplexer:
             return
         await self._send_frame(encoded, urgent=urgent)
 
-    def _fire_diag(self, stream_id: int, reason: int, context: str) -> None:
+    def _fire_diag(
+        self,
+        stream_id: int,
+        reason: int,
+        context: str,
+        *,
+        stall_age_ms: float | None = None,
+    ) -> None:
         if self._on_reset is None:
             return
         if self._closed and context != RESET_CTX_SEND_CREDIT_STARVATION:
@@ -491,18 +510,36 @@ class Multiplexer:
             reason_code=reason,
             reason_name=_REASON_NAMES.get(reason, "unspecified"),
             context=context,
+            stall_age_ms=stall_age_ms,
         )
         try:
             self._on_reset(diag)
         except Exception:
             pass
 
-    async def _emit_reset(self, stream_id: int, reason: int, context: str) -> None:
+    async def _emit_reset(
+        self,
+        stream_id: int,
+        reason: int,
+        context: str,
+        *,
+        stall_age_ms: float | None = None,
+    ) -> None:
         if self._closed:
-            self._fire_diag(stream_id, reason, context)
+            self._fire_diag(
+                stream_id,
+                reason,
+                context,
+                stall_age_ms=stall_age_ms,
+            )
             return
         await self._emit(build_reset(stream_id, reason))
-        self._fire_diag(stream_id, reason, context)
+        self._fire_diag(
+            stream_id,
+            reason,
+            context,
+            stall_age_ms=stall_age_ms,
+        )
 
     async def _reject_stream(self, frame: Frame, context: str) -> None:
         state = self._streams.get(frame.stream_id)

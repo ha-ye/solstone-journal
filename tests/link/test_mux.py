@@ -139,6 +139,14 @@ class _ObservedEvent(asyncio.Event):
         return await super().wait()
 
 
+class _MutableClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
 @dataclass
 class _ParkedWriter:
     mux: Multiplexer
@@ -1678,10 +1686,15 @@ async def test_credit_stall_deadline_is_per_stall_and_window_resets_clock(
 
 
 @pytest.mark.asyncio
-async def test_send_credit_starvation_diagnostic_survives_closed_mux_without_storm(
+async def test_send_credit_starvation_diagnostic_reports_stall_age_ms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.05)
+    deadline_seconds = 0.05
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(
+        mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", deadline_seconds
+    )
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
     diags: list[ResetDiagnostic] = []
     opened = asyncio.Event()
     captured: dict[str, Any] = {}
@@ -1704,19 +1717,21 @@ async def test_send_credit_starvation_diagnostic_survives_closed_mux_without_sto
         waiter_entered = asyncio.Event()
         state.credit_event = _ObservedEvent(waiter_entered)
         state.send_credit = 0
+
+        clock.now = 0.0
         write_task = asyncio.create_task(captured["writer"].write(b"x"))
         await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
-
-        mux._closed = True
+        clock.now = mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
 
         with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
-            await asyncio.wait_for(write_task, timeout=1.0)
+            await asyncio.wait_for(write_task, timeout=15.0)
         assert diags == [
             ResetDiagnostic(
                 stream_id=1,
                 reason_code=RESET_CANCEL,
                 reason_name="cancel",
                 context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0,
             )
         ]
     finally:
@@ -1726,6 +1741,359 @@ async def test_send_credit_starvation_diagnostic_survives_closed_mux_without_sto
                 await state.task
         if open_state := mux._streams.get(1):
             mux._close_stream(open_state)
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_credit_grant_resets_later_stall_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deadline_seconds = 0.05
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(
+        mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", deadline_seconds
+    )
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    diags: list[ResetDiagnostic] = []
+    sent_payloads: list[bytes] = []
+
+    async def send(data: bytes, *, urgent: bool = False) -> None:
+        for frame in _decode_frames([data]):
+            if frame.flags & FLAG_DATA:
+                sent_payloads.append(frame.payload)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    write_task: asyncio.Task[None] | None = None
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+        waiter_entered = asyncio.Event()
+        state.credit_event = _ObservedEvent(waiter_entered)
+        state.send_credit = 0
+        writer = StreamWriter(mux, state)
+
+        clock.now = 0.0
+        write_task = asyncio.create_task(writer.write(b"xy"))
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+
+        waiter_entered.clear()
+        await mux.feed(build_window(1, 1).encode())
+        clock.now = 1.0
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+        clock.now = 1.0 + mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
+
+        with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
+            await asyncio.wait_for(write_task, timeout=15.0)
+        assert sent_payloads == [b"x"]
+        assert len(diags) == 1
+        assert diags[0].stream_id == 1
+        assert diags[0].reason_code == RESET_CANCEL
+        assert diags[0].reason_name == "cancel"
+        assert diags[0].context == RESET_CTX_SEND_CREDIT_STARVATION
+        assert diags[0].stall_age_ms == pytest.approx(
+            mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0
+        )
+    finally:
+        if write_task is not None and not write_task.done():
+            write_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await write_task
+        if state := mux._streams.get(1):
+            mux._close_stream(state)
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_credit_window_does_not_reset_stall_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deadline_seconds = 0.05
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(
+        mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", deadline_seconds
+    )
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    diags: list[ResetDiagnostic] = []
+
+    async def send(_: bytes, *, urgent: bool = False) -> None:
+        return
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    write_task: asyncio.Task[None] | None = None
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+        waiter_entered = asyncio.Event()
+        state.credit_event = _ObservedEvent(waiter_entered)
+        state.send_credit = 0
+        writer = StreamWriter(mux, state)
+
+        clock.now = 0.0
+        write_task = asyncio.create_task(writer.write(b"x"))
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+
+        waiter_entered.clear()
+        await mux.feed(build_window(1, 0).encode())
+        clock.now = mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 2
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+
+        with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
+            await asyncio.wait_for(write_task, timeout=15.0)
+        assert diags == [
+            ResetDiagnostic(
+                stream_id=1,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 2000.0,
+            )
+        ]
+        assert diags[0].stall_age_ms > (
+            mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0
+        )
+    finally:
+        if write_task is not None and not write_task.done():
+            write_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await write_task
+        if state := mux._streams.get(1):
+            mux._close_stream(state)
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_send_credit_starvation_diagnostic_survives_closed_mux_without_storm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.05)
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    diags: list[ResetDiagnostic] = []
+    opened = asyncio.Event()
+    captured: dict[str, Any] = {}
+    state: Any | None = None
+
+    async def send(_: bytes, *, urgent: bool = False) -> None:
+        return
+
+    async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
+        captured["reader"] = reader
+        captured["writer"] = writer
+        opened.set()
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode())
+        await asyncio.wait_for(opened.wait(), timeout=1.0)
+        state = mux._streams[1]
+        waiter_entered = asyncio.Event()
+        state.credit_event = _ObservedEvent(waiter_entered)
+        state.send_credit = 0
+        clock.now = 0.0
+        write_task = asyncio.create_task(captured["writer"].write(b"x"))
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+
+        mux._closed = True
+        clock.now = mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
+
+        with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
+            await asyncio.wait_for(write_task, timeout=15.0)
+        assert diags == [
+            ResetDiagnostic(
+                stream_id=1,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0,
+            )
+        ]
+    finally:
+        if state is not None and state.task is not None and not state.task.done():
+            state.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await state.task
+        if open_state := mux._streams.get(1):
+            mux._close_stream(open_state)
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_send_credit_starvation_timeout_then_mux_close_without_duplicate_diag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.05)
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+    opened = asyncio.Event()
+    captured: dict[str, Any] = {}
+
+    async def send(data: bytes, *, urgent: bool = False) -> None:
+        sent.append(data)
+
+    async def handler(reader: asyncio.StreamReader, writer: Any) -> None:
+        captured["reader"] = reader
+        captured["writer"] = writer
+        opened.set()
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode())
+        await asyncio.wait_for(opened.wait(), timeout=1.0)
+        state = mux._streams[1]
+        waiter_entered = asyncio.Event()
+        state.credit_event = _ObservedEvent(waiter_entered)
+        state.send_credit = 0
+
+        clock.now = 0.0
+        write_task = asyncio.create_task(captured["writer"].write(b"x"))
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+        clock.now = mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
+
+        with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
+            await asyncio.wait_for(write_task, timeout=15.0)
+        await mux.close()
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_CANCEL)
+        assert diags == [
+            ResetDiagnostic(
+                stream_id=1,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0,
+            )
+        ]
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_send_credit_starvation_raising_on_reset_still_reclaims_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.05)
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    sent: list[bytes] = []
+    observed_diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes, *, urgent: bool = False) -> None:
+        sent.append(data)
+
+    def on_reset(diag: ResetDiagnostic) -> None:
+        observed_diags.append(diag)
+        raise RuntimeError("emit failed")
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=on_reset)
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+        waiter_entered = asyncio.Event()
+        state.credit_event = _ObservedEvent(waiter_entered)
+        state.send_credit = 0
+        writer = StreamWriter(mux, state)
+
+        clock.now = 0.0
+        write_task = asyncio.create_task(writer.write(b"x"))
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+        clock.now = mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
+
+        with pytest.raises(ConnectionError, match="stream 1 writer is closed"):
+            await asyncio.wait_for(write_task, timeout=15.0)
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_CANCEL)
+        assert observed_diags == [
+            ResetDiagnostic(
+                stream_id=1,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0,
+            )
+        ]
+        assert state.writer_closed is True
+        assert 1 not in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_two_streams_can_starve_concurrently_with_independent_ages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mux_module, "STREAM_CREDIT_STALL_TIMEOUT_SECONDS", 0.05)
+    clock = _MutableClock(5.0)
+    monkeypatch.setattr(mux_module, "_monotonic", clock)
+    diags: list[ResetDiagnostic] = []
+    opened: dict[int, asyncio.Event] = {1: asyncio.Event(), 3: asyncio.Event()}
+    captured: dict[int, Any] = {}
+
+    async def send(_: bytes, *, urgent: bool = False) -> None:
+        return
+
+    async def handler(_reader: asyncio.StreamReader, writer: Any) -> None:
+        captured[writer.stream_id] = writer
+        opened[writer.stream_id].set()
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        await mux.feed(build_open(1).encode())
+        await mux.feed(build_open(3).encode())
+        await asyncio.wait_for(opened[1].wait(), timeout=1.0)
+        await asyncio.wait_for(opened[3].wait(), timeout=1.0)
+
+        for stream_id, origin in ((1, 0.0), (3, 1.0)):
+            state = mux._streams[stream_id]
+            waiter_entered = asyncio.Event()
+            state.credit_event = _ObservedEvent(waiter_entered)
+            state.send_credit = 0
+            clock.now = origin
+            task = asyncio.create_task(captured[stream_id].write(b"x"))
+            tasks.append(task)
+            await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+
+        clock.now = 1.0 + mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS
+        for task in tasks:
+            with pytest.raises(ConnectionError, match=r"stream [13] writer is closed"):
+                await asyncio.wait_for(task, timeout=15.0)
+
+        assert sorted(diag.stream_id for diag in diags) == [1, 3]
+        by_stream = {diag.stream_id: diag for diag in diags}
+        assert by_stream[1].reason_code == RESET_CANCEL
+        assert by_stream[1].reason_name == "cancel"
+        assert by_stream[1].context == RESET_CTX_SEND_CREDIT_STARVATION
+        assert by_stream[1].stall_age_ms == pytest.approx(
+            (1.0 + mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS) * 1000.0
+        )
+        assert by_stream[3].reason_code == RESET_CANCEL
+        assert by_stream[3].reason_name == "cancel"
+        assert by_stream[3].context == RESET_CTX_SEND_CREDIT_STARVATION
+        assert by_stream[3].stall_age_ms == pytest.approx(
+            mux_module.STREAM_CREDIT_STALL_TIMEOUT_SECONDS * 1000.0
+        )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await mux.close()
 
 
@@ -2670,7 +3038,9 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
             "reason_code",
             "reason_name",
             "context",
+            "stall_age_ms",
         }
+        assert diag.stall_age_ms is None
         values = [str(value) for value in diag.__dict__.values()]
         for secret in forbidden:
             assert all(secret not in value for value in values)

@@ -30,7 +30,16 @@ from solstone.convey.secure_listener.admission import (
     SecureListenerAdmissionRejected,
     resolve_admission_config,
 )
-from solstone.convey.secure_listener.framing import build_ping
+from solstone.convey.secure_listener.framing import (
+    RESET_CANCEL,
+    RESET_PROTOCOL_ERROR,
+    build_ping,
+)
+from solstone.convey.secure_listener.mux import (
+    RESET_CTX_SEND_CREDIT_STARVATION,
+    RESET_CTX_UNKNOWN_STREAM,
+    ResetDiagnostic,
+)
 from solstone.think.link import client as link_client
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.nonces import NONCE_TTL_SECONDS, NonceStore
@@ -511,6 +520,189 @@ async def test_pump_connection_writer_failure_ends_connection(
         )
 
     assert tcp_writer.writes
+
+
+def test_on_stream_reset_payload_keys_and_log_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    emitted: list[tuple[str, dict[str, object]]] = []
+    listener = _listener()
+    listener._emit = lambda event, fields: emitted.append((event, dict(fields)))
+    starvation_diag = ResetDiagnostic(
+        stream_id=7,
+        reason_code=RESET_CANCEL,
+        reason_name="cancel",
+        context=RESET_CTX_SEND_CREDIT_STARVATION,
+        stall_age_ms=250.0,
+    )
+    non_starvation_diag = ResetDiagnostic(
+        stream_id=9,
+        reason_code=RESET_PROTOCOL_ERROR,
+        reason_name="protocol_error",
+        context=RESET_CTX_UNKNOWN_STREAM,
+    )
+
+    with caplog.at_level(logging.INFO, logger="convey.secure_listener.accept"):
+        listener._on_stream_reset("conn-starved", starvation_diag)
+        listener._on_stream_reset("conn-normal", non_starvation_diag)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "convey.secure_listener.accept"
+    ]
+    assert records[0].levelno == logging.WARNING
+    assert (
+        records[0].getMessage()
+        == "secure stream starvation reset conn=conn-starved stream_id=7 "
+        "reason=cancel context=send_credit_starvation stall_age_ms=250.000"
+    )
+    assert records[1].levelno == logging.INFO
+    assert (
+        records[1].getMessage() == "secure stream reset conn=conn-normal stream_id=9 "
+        "reason=protocol_error context=unknown_stream"
+    )
+
+    starvation_payload = emitted[0][1]
+    non_starvation_payload = emitted[1][1]
+    assert emitted[0][0] == "stream_reset"
+    assert emitted[1][0] == "stream_reset"
+    assert set(starvation_payload) == {
+        "stream_id",
+        "reason_code",
+        "reason_name",
+        "context",
+        "tunnel_id",
+        "stall_age_ms",
+    }
+    assert starvation_payload == {
+        "stream_id": 7,
+        "reason_code": RESET_CANCEL,
+        "reason_name": "cancel",
+        "context": RESET_CTX_SEND_CREDIT_STARVATION,
+        "tunnel_id": "conn-starved",
+        "stall_age_ms": 250.0,
+    }
+    assert set(non_starvation_payload) == {
+        "stream_id",
+        "reason_code",
+        "reason_name",
+        "context",
+        "tunnel_id",
+    }
+    assert non_starvation_payload == {
+        "stream_id": 9,
+        "reason_code": RESET_PROTOCOL_ERROR,
+        "reason_name": "protocol_error",
+        "context": RESET_CTX_UNKNOWN_STREAM,
+        "tunnel_id": "conn-normal",
+    }
+    forbidden = {
+        "sha256:",
+        "127.0.0.1",
+        "token",
+        "BEGIN CERTIFICATE",
+    }
+    for _event, payload in emitted:
+        values = [str(value) for value in payload.values()]
+        for secret in forbidden:
+            assert all(secret not in value for value in values)
+
+
+def test_on_stream_reset_correlates_two_starved_streams_to_tunnels(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    emitted: list[tuple[str, dict[str, object]]] = []
+    listener = _listener()
+    listener._emit = lambda event, fields: emitted.append((event, dict(fields)))
+
+    with caplog.at_level(logging.WARNING, logger="convey.secure_listener.accept"):
+        listener._on_stream_reset(
+            "conn-a",
+            ResetDiagnostic(
+                stream_id=1,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=50.0,
+            ),
+        )
+        listener._on_stream_reset(
+            "conn-b",
+            ResetDiagnostic(
+                stream_id=3,
+                reason_code=RESET_CANCEL,
+                reason_name="cancel",
+                context=RESET_CTX_SEND_CREDIT_STARVATION,
+                stall_age_ms=75.0,
+            ),
+        )
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "convey.secure_listener.accept"
+        and record.levelno == logging.WARNING
+    ]
+    assert warnings == [
+        "secure stream starvation reset conn=conn-a stream_id=1 reason=cancel "
+        "context=send_credit_starvation stall_age_ms=50.000",
+        "secure stream starvation reset conn=conn-b stream_id=3 reason=cancel "
+        "context=send_credit_starvation stall_age_ms=75.000",
+    ]
+    assert emitted == [
+        (
+            "stream_reset",
+            {
+                "stream_id": 1,
+                "reason_code": RESET_CANCEL,
+                "reason_name": "cancel",
+                "context": RESET_CTX_SEND_CREDIT_STARVATION,
+                "tunnel_id": "conn-a",
+                "stall_age_ms": 50.0,
+            },
+        ),
+        (
+            "stream_reset",
+            {
+                "stream_id": 3,
+                "reason_code": RESET_CANCEL,
+                "reason_name": "cancel",
+                "context": RESET_CTX_SEND_CREDIT_STARVATION,
+                "tunnel_id": "conn-b",
+                "stall_age_ms": 75.0,
+            },
+        ),
+    ]
+
+
+def test_on_stream_reset_logs_warning_before_raising_emit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    listener = _listener()
+
+    def emit(_event: str, _fields: dict[str, object]) -> None:
+        raise RuntimeError("emit failed")
+
+    listener._emit = emit
+
+    with caplog.at_level(logging.WARNING, logger="convey.secure_listener.accept"):
+        with pytest.raises(RuntimeError, match="emit failed"):
+            listener._on_stream_reset(
+                "conn-raising",
+                ResetDiagnostic(
+                    stream_id=1,
+                    reason_code=RESET_CANCEL,
+                    reason_name="cancel",
+                    context=RESET_CTX_SEND_CREDIT_STARVATION,
+                    stall_age_ms=50.0,
+                ),
+            )
+
+    assert (
+        "secure stream starvation reset conn=conn-raising stream_id=1 "
+        "reason=cancel context=send_credit_starvation stall_age_ms=50.000"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio

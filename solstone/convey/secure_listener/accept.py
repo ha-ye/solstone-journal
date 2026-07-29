@@ -13,6 +13,7 @@ import socket
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Final, Literal
 
 from OpenSSL import SSL
@@ -23,7 +24,13 @@ from solstone.think.link.window import window_open
 from .admission import SecureListenerAdmission
 from .framing import RESET_INTERNAL_ERROR
 from .identity import ConveyIdentity
-from .mux import RESET_CTX_NO_IDENTITY, Multiplexer, ResetDiagnostic, StreamWriter
+from .mux import (
+    RESET_CTX_NO_IDENTITY,
+    RESET_CTX_SEND_CREDIT_STARVATION,
+    Multiplexer,
+    ResetDiagnostic,
+    StreamWriter,
+)
 from .tls import TlsError, drive_tls, new_server
 from .wsgi import CERTLESS_PAIR_ENDPOINTS, DispatchResult, dispatch_stream
 
@@ -315,30 +322,11 @@ class SecureListener:
                     writer.stream_id,
                 )
 
-        def on_reset(diag: ResetDiagnostic) -> None:
-            self._log.info(
-                "secure stream reset conn=%s stream_id=%d reason=%s context=%s",
-                connection_id,
-                diag.stream_id,
-                diag.reason_name,
-                diag.context,
-            )
-            self._emit(
-                "stream_reset",
-                {
-                    "stream_id": diag.stream_id,
-                    "reason_code": diag.reason_code,
-                    "reason_name": diag.reason_name,
-                    "context": diag.context,
-                    "tunnel_id": connection_id,
-                },
-            )
-
         mux = Multiplexer(
             send_frame,
             handle_stream,
             is_listener=True,
-            on_reset=on_reset,
+            on_reset=partial(self._on_stream_reset, connection_id),
         )
 
         async def tcp_reader_loop() -> None:
@@ -432,6 +420,36 @@ class SecureListener:
                     task.cancel()
             await asyncio.gather(reader_task, writer_task, return_exceptions=True)
             await mux.close()
+
+    def _on_stream_reset(self, connection_id: str, diag: ResetDiagnostic) -> None:
+        if diag.context == RESET_CTX_SEND_CREDIT_STARVATION:
+            self._log.warning(
+                "secure stream starvation reset conn=%s stream_id=%d reason=%s "
+                "context=%s stall_age_ms=%.3f",
+                connection_id,
+                diag.stream_id,
+                diag.reason_name,
+                diag.context,
+                diag.stall_age_ms,
+            )
+        else:
+            self._log.info(
+                "secure stream reset conn=%s stream_id=%d reason=%s context=%s",
+                connection_id,
+                diag.stream_id,
+                diag.reason_name,
+                diag.context,
+            )
+        payload: dict[str, Any] = {
+            "stream_id": diag.stream_id,
+            "reason_code": diag.reason_code,
+            "reason_name": diag.reason_name,
+            "context": diag.context,
+            "tunnel_id": connection_id,
+        }
+        if diag.stall_age_ms is not None:
+            payload["stall_age_ms"] = diag.stall_age_ms
+        self._emit("stream_reset", payload)
 
     def _identity_for_peer(self, mode: PeerMode, fingerprint: str) -> ConveyIdentity:
         entry = self._authorized.get(fingerprint)
