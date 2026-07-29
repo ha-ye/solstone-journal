@@ -51,6 +51,10 @@ FORBIDDEN_MARKERS = {
     FORM_FIELD_MARKER,
     CREDENTIAL_MARKER,
 }
+PAYLOAD_SURFACE_FORBIDDEN_MARKERS = {
+    PAYLOAD_MARKER,
+    CREDENTIAL_MARKER,
+}
 
 
 @dataclass(frozen=True)
@@ -133,18 +137,26 @@ def build_observer_multipart_body(
 ) -> ObserverMultipartFixture:
     def part(name: str, value: bytes) -> bytes:
         return (
-            f"--{BOUNDARY}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n'
-            "\r\n"
-        ).encode("ascii") + value + b"\r\n"
+            (
+                f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+            ).encode("ascii")
+            + value
+            + b"\r\n"
+        )
 
-    def file_part(name: str, part_filename: str, content: bytes, content_type: str) -> bytes:
+    def file_part(
+        name: str, part_filename: str, content: bytes, content_type: str
+    ) -> bytes:
         return (
-            f"--{BOUNDARY}\r\n"
-            f'Content-Disposition: form-data; name="{name}"; filename="{part_filename}"\r\n'
-            f"Content-Type: {content_type}\r\n"
-            "\r\n"
-        ).encode("ascii") + content + b"\r\n"
+            (
+                f"--{BOUNDARY}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{part_filename}"\r\n'
+                f"Content-Type: {content_type}\r\n"
+                "\r\n"
+            ).encode("ascii")
+            + content
+            + b"\r\n"
+        )
 
     audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00","text":"hello"}\n'
     screen = b'{"raw":"screen.mp4","qualified_count":1}\n{"timestamp":1.0}\n'
@@ -186,6 +198,17 @@ def build_observer_multipart_body(
         prefix=prefix,
         tail=tail,
         content_type=f"multipart/form-data; boundary={BOUNDARY}",
+    )
+
+
+def build_marker_observer_multipart_body(
+    *,
+    payload: bytes = PAYLOAD_MARKER.encode("ascii"),
+) -> ObserverMultipartFixture:
+    return build_observer_multipart_body(
+        filename=FILENAME_MARKER,
+        payload=payload,
+        extra_field=FORM_FIELD_MARKER,
     )
 
 
@@ -251,10 +274,9 @@ async def _run_mux_ingest(
     monkeypatch.setattr(
         observer_routes,
         "emit",
-        lambda tract, event, **fields: emitted.append(
-            {"tract": tract, "event": event, **fields}
-        )
-        or True,
+        lambda tract, event, **fields: (
+            emitted.append({"tract": tract, "event": event, **fields}) or True
+        ),
     )
 
     loop = asyncio.get_running_loop()
@@ -334,11 +356,36 @@ def _parse_response(exchange: MuxExchange) -> tuple[int, dict[str, str], bytes]:
 
 def _segment_dir(exchange: MuxExchange) -> Path:
     fixture = exchange.fixture
-    return exchange.journal / "chronicle" / fixture.day / fixture.stream / fixture.segment
+    return (
+        exchange.journal / "chronicle" / fixture.day / fixture.stream / fixture.segment
+    )
 
 
 def _stored_bytes(exchange: MuxExchange) -> bytes:
     return (_segment_dir(exchange) / exchange.fixture.filename).read_bytes()
+
+
+def _assert_stored_payload_exact(exchange: MuxExchange) -> None:
+    stored = _stored_bytes(exchange)
+    expected_sha = hashlib.sha256(exchange.fixture.payload).hexdigest()
+    stored_sha = hashlib.sha256(stored).hexdigest()
+    assert {
+        "stored_len": len(stored),
+        "expected_len": len(exchange.fixture.payload),
+        "stored_sha": stored_sha,
+        "expected_sha": expected_sha,
+        "stored_prefix": stored[:2],
+        "expected_prefix": exchange.fixture.payload[:2],
+    } == {
+        "stored_len": len(exchange.fixture.payload),
+        "expected_len": len(exchange.fixture.payload),
+        "stored_sha": expected_sha,
+        "expected_sha": expected_sha,
+        "stored_prefix": exchange.fixture.payload[:2],
+        "expected_prefix": exchange.fixture.payload[:2],
+    }
+    assert stored == exchange.fixture.payload
+    assert not stored.startswith(b"\r\n")
 
 
 def assert_no_ingest_mutations(exchange: MuxExchange) -> None:
@@ -353,15 +400,11 @@ def assert_no_ingest_mutations(exchange: MuxExchange) -> None:
     assert exchange.emitted == []
 
 
-def _assert_no_marker_leaks(
+def _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(
     exchange: MuxExchange,
     caplog: pytest.LogCaptureFixture,
-    *,
-    response_body: bytes = b"",
 ) -> None:
-    surfaces = [response_body.decode("utf-8", "replace")]
-    surfaces.extend(record.getMessage() for record in caplog.records)
-    surfaces.extend(json.dumps(payload, sort_keys=True) for payload in exchange.emitted)
+    surfaces = [record.getMessage() for record in caplog.records]
     for diag in exchange.diagnostics:
         assert set(diag.__dict__) == {
             "stream_id",
@@ -375,13 +418,27 @@ def _assert_no_marker_leaks(
         assert all(marker not in surface for surface in surfaces)
 
 
+def _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(
+    exchange: MuxExchange,
+    *,
+    response_body: bytes = b"",
+) -> None:
+    # why: successful observer ingest legitimately returns/emits stored
+    # filenames and meta (routes.py:1229-1238), so these payload surfaces only
+    # forbid file body bytes and bearer credentials.
+    surfaces = [response_body.decode("utf-8", "replace")]
+    surfaces.extend(json.dumps(payload, sort_keys=True) for payload in exchange.emitted)
+    for marker in PAYLOAD_SURFACE_FORBIDDEN_MARKERS:
+        assert all(marker not in surface for surface in surfaces)
+
+
 @pytest.mark.asyncio
 async def test_observer_multipart_boundary_split_does_not_prefix_file_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    fixture = build_observer_multipart_body()
+    fixture = build_marker_observer_multipart_body()
 
     async def feed(
         mux: Multiplexer,
@@ -389,9 +446,7 @@ async def test_observer_multipart_boundary_split_does_not_prefix_file_bytes(
         _dispatch_done: asyncio.Event,
     ) -> None:
         await mux.feed(build_data(1, fixture.prefix).encode())
-        await _wait_for_probe(
-            lambda: probe.has_pending_read_after(len(fixture.prefix))
-        )
+        await _wait_for_probe(lambda: probe.has_pending_read_after(len(fixture.prefix)))
         await mux.feed(build_data(1, fixture.tail).encode() + build_close(1).encode())
 
     with caplog.at_level(logging.DEBUG):
@@ -400,33 +455,20 @@ async def test_observer_multipart_boundary_split_does_not_prefix_file_bytes(
             monkeypatch,
             fixture,
             name="boundary-split",
+            include_credential_marker=True,
             feed=feed,
         )
 
     status, _headers, response_body = _parse_response(exchange)
     assert status == 200
     assert json.loads(response_body)["status"] == "ok"
-    stored = _stored_bytes(exchange)
-    expected_sha = hashlib.sha256(fixture.payload).hexdigest()
-    stored_sha = hashlib.sha256(stored).hexdigest()
-    assert {
-        "stored_len": len(stored),
-        "expected_len": len(fixture.payload),
-        "stored_sha": stored_sha,
-        "expected_sha": expected_sha,
-        "stored_prefix": stored[:2],
-        "expected_prefix": fixture.payload[:2],
-    } == {
-        "stored_len": len(fixture.payload),
-        "expected_len": len(fixture.payload),
-        "stored_sha": expected_sha,
-        "expected_sha": expected_sha,
-        "stored_prefix": fixture.payload[:2],
-        "expected_prefix": fixture.payload[:2],
-    }
-    assert stored == fixture.payload
-    assert not stored.startswith(b"\r\n")
-    _assert_no_marker_leaks(exchange, caplog, response_body=response_body)
+    assert exchange.emitted
+    _assert_stored_payload_exact(exchange)
+    _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(exchange, caplog)
+    _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(
+        exchange,
+        response_body=response_body,
+    )
 
 
 @pytest.mark.asyncio
@@ -435,8 +477,10 @@ async def test_wsgi_input_small_fragmentation_reaches_content_length_without_clo
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    fixture = build_observer_multipart_body()
-    chunks = [fixture.body[index : index + 37] for index in range(0, len(fixture.body), 37)]
+    fixture = build_marker_observer_multipart_body()
+    chunks = [
+        fixture.body[index : index + 37] for index in range(0, len(fixture.body), 37)
+    ]
 
     async def feed(
         mux: Multiplexer,
@@ -455,19 +499,21 @@ async def test_wsgi_input_small_fragmentation_reaches_content_length_without_clo
             monkeypatch,
             fixture,
             name="small-fragmentation",
+            include_credential_marker=True,
             feed=feed,
         )
 
     status, _headers, response_body = _parse_response(exchange)
     assert status == 200
-    stored = _stored_bytes(exchange)
-    expected_sha = hashlib.sha256(fixture.payload).hexdigest()
-    assert stored == fixture.payload
-    assert len(stored) == len(fixture.payload)
-    assert hashlib.sha256(stored).hexdigest() == expected_sha
+    assert exchange.emitted
+    _assert_stored_payload_exact(exchange)
     assert exchange.report_recv_consumed_calls[0] == len(exchange.head)
     assert sum(exchange.report_recv_consumed_calls[1:]) == len(fixture.body)
-    _assert_no_marker_leaks(exchange, caplog, response_body=response_body)
+    _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(exchange, caplog)
+    _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(
+        exchange,
+        response_body=response_body,
+    )
 
 
 @pytest.mark.asyncio
@@ -476,11 +522,7 @@ async def test_observer_multipart_premature_eof_remains_400_without_mutation(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    fixture = build_observer_multipart_body(
-        filename=FILENAME_MARKER,
-        payload=PAYLOAD_MARKER.encode("ascii"),
-        extra_field=FORM_FIELD_MARKER,
-    )
+    fixture = build_marker_observer_multipart_body()
 
     async def feed_full_tail(
         mux: Multiplexer,
@@ -488,20 +530,30 @@ async def test_observer_multipart_premature_eof_remains_400_without_mutation(
         _dispatch_done: asyncio.Event,
     ) -> None:
         await mux.feed(build_data(1, fixture.prefix).encode())
-        await _wait_for_probe(
-            lambda: probe.has_pending_read_after(len(fixture.prefix))
-        )
+        await _wait_for_probe(lambda: probe.has_pending_read_after(len(fixture.prefix)))
         await mux.feed(build_data(1, fixture.tail).encode() + build_close(1).encode())
 
-    green_exchange = await _run_mux_ingest(
-        tmp_path / "green",
-        monkeypatch,
-        fixture,
-        name="premature-eof-green",
-        include_credential_marker=True,
-        feed=feed_full_tail,
+    with caplog.at_level(logging.DEBUG):
+        green_exchange = await _run_mux_ingest(
+            tmp_path / "green",
+            monkeypatch,
+            fixture,
+            name="premature-eof-green",
+            include_credential_marker=True,
+            feed=feed_full_tail,
+        )
+    green_status, _headers, green_response_body = _parse_response(green_exchange)
+    assert green_status == 200
+    assert green_exchange.emitted
+    _assert_stored_payload_exact(green_exchange)
+    _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(
+        green_exchange,
+        caplog,
     )
-    assert _parse_response(green_exchange)[0] == 200
+    _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(
+        green_exchange,
+        response_body=green_response_body,
+    )
     caplog.clear()
 
     async def feed_eof(
@@ -510,9 +562,7 @@ async def test_observer_multipart_premature_eof_remains_400_without_mutation(
         _dispatch_done: asyncio.Event,
     ) -> None:
         await mux.feed(build_data(1, fixture.prefix).encode())
-        await _wait_for_probe(
-            lambda: probe.has_pending_read_after(len(fixture.prefix))
-        )
+        await _wait_for_probe(lambda: probe.has_pending_read_after(len(fixture.prefix)))
         await mux.feed(build_close(1).encode())
 
     with caplog.at_level(logging.DEBUG):
@@ -534,7 +584,11 @@ async def test_observer_multipart_premature_eof_remains_400_without_mutation(
     assert exchange.diagnostics == []
     assert exchange.worker_reclaimed
     assert_no_ingest_mutations(exchange)
-    _assert_no_marker_leaks(exchange, caplog, response_body=response_body)
+    _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(exchange, caplog)
+    _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(
+        exchange,
+        response_body=response_body,
+    )
 
 
 @pytest.mark.asyncio
@@ -544,15 +598,18 @@ async def test_wsgi_input_absolute_deadline_progress_does_not_renew_timeout(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     timeout_seconds = 0.2
+    fragment_interval = 0.05
+    fragment_count = 32
+    elapsed_upper_bound = timeout_seconds * 2.5
+    renewing_timeout_floor = fragment_count * fragment_interval + timeout_seconds
+    assert renewing_timeout_floor >= elapsed_upper_bound * 3
     monkeypatch.setattr(wsgi_module, "WSGI_INPUT_READ_TIMEOUT_SECONDS", timeout_seconds)
-    fixture = build_observer_multipart_body(
-        filename=FILENAME_MARKER,
+    fixture = build_marker_observer_multipart_body(
         payload=(PAYLOAD_MARKER * 20).encode("ascii"),
-        extra_field=FORM_FIELD_MARKER,
     )
     progress_chunks = [
         fixture.tail[index : index + 1]
-        for index in range(min(12, len(fixture.tail)))
+        for index in range(min(fragment_count, len(fixture.tail)))
     ]
 
     async def feed_timeout(
@@ -566,7 +623,7 @@ async def test_wsgi_input_absolute_deadline_progress_does_not_renew_timeout(
         for chunk in progress_chunks:
             if dispatch_done.is_set():
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(fragment_interval)
             await mux.feed(build_data(1, chunk).encode())
             sent += len(chunk)
             if not dispatch_done.is_set():
@@ -592,7 +649,8 @@ async def test_wsgi_input_absolute_deadline_progress_does_not_renew_timeout(
 
     assert exchange.dispatch["status"] == 499
     assert exchange.response_payload == b""
-    assert exchange.elapsed < timeout_seconds * 2.5
+    assert exchange.elapsed < elapsed_upper_bound
     assert exchange.worker_reclaimed
     assert_no_ingest_mutations(exchange)
-    _assert_no_marker_leaks(exchange, caplog)
+    _assert_no_marker_leaks_in_listener_logs_or_reset_diagnostics(exchange, caplog)
+    _assert_no_body_or_credential_leak_in_peer_or_callosum_payloads(exchange)
