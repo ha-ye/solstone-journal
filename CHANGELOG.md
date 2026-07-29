@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- media sent from a paired device now lands in your journal byte-for-byte. a relay read could add two blank-line bytes to the front of a file while still saying the transfer finished.
+
 ## [1.0.19] - 2026-07-29
 
 ### Added

@@ -9,6 +9,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 import urllib.parse
 from collections.abc import Iterable
 from concurrent.futures import CancelledError
@@ -215,6 +216,14 @@ async def parse_http_head(stream_reader: asyncio.StreamReader) -> ParsedRequest:
 
 
 class MuxWSGIInput:
+    """Known-length WSGI body stream for muxed private-link requests.
+
+    A read returns exactly the requested bytes within the declared remaining
+    length, or raises when the peer ends early or the logical read deadline
+    expires. Premature EOF and deadline expiry are errors, never short or empty
+    successful reads.
+    """
+
     def __init__(
         self,
         stream_reader: asyncio.StreamReader,
@@ -240,25 +249,39 @@ class MuxWSGIInput:
             size = self._remaining
         if size <= 0:
             return b""
-        if self._disconnect_event.is_set():
-            raise _WsgiClientDisconnected
-        future = asyncio.run_coroutine_threadsafe(
-            self._stream_reader.read(size),
-            self._loop,
-        )
-        try:
-            chunk = future.result(timeout=WSGI_INPUT_READ_TIMEOUT_SECONDS)
-        except TimeoutError as exc:
-            future.cancel()
-            self._disconnect_event.set()
-            raise _WsgiClientDisconnected from exc
-        except (CancelledError, ConnectionError, RuntimeError) as exc:
-            self._disconnect_event.set()
-            raise _WsgiClientDisconnected from exc
-        self._remaining -= len(chunk)
-        if chunk:
+
+        deadline = time.monotonic() + WSGI_INPUT_READ_TIMEOUT_SECONDS
+        chunks: list[bytes] = []
+        read_total = 0
+        while read_total < size:
+            if self._disconnect_event.is_set():
+                raise _WsgiClientDisconnected
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                self._disconnect_event.set()
+                raise _WsgiClientDisconnected
+            future = asyncio.run_coroutine_threadsafe(
+                self._stream_reader.read(size - read_total),
+                self._loop,
+            )
+            try:
+                chunk = future.result(timeout=timeout)
+            except TimeoutError as exc:
+                future.cancel()
+                self._disconnect_event.set()
+                raise _WsgiClientDisconnected from exc
+            except (CancelledError, ConnectionError, RuntimeError) as exc:
+                self._disconnect_event.set()
+                raise _WsgiClientDisconnected from exc
+            if not chunk:
+                # why: EOF is only half-close here; the peer may still receive
+                # the HTTP 400 Werkzeug produces from this boundary failure.
+                raise _WsgiClientDisconnected
+            chunks.append(chunk)
+            read_total += len(chunk)
+            self._remaining -= len(chunk)
             self._report_recv_consumed(len(chunk))
-        return chunk
+        return b"".join(chunks)
 
     def readline(self, size: int = -1) -> bytes:
         if self._remaining <= 0:
