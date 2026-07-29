@@ -1409,11 +1409,11 @@ def main():
         sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
 
     from solstone.think.speakers_analyze_installation import (
-        begin_speakers_analyze_generation,
+        enter_speakers_analyze_generation,
     )
 
     try:
-        sensor._speakers_analyze_generation = begin_speakers_analyze_generation(
+        sensor._speakers_analyze_generation = enter_speakers_analyze_generation(
             journal_path=journal
         )
     except Exception as exc:

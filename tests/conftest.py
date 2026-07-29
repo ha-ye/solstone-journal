@@ -191,7 +191,9 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
 
 @pytest.fixture(autouse=True)
 def _speakers_analyze_startup_invariant_ready(
-    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
 ) -> None:
     """Keep unit tests independent of the installed native helper wheel.
 
@@ -202,31 +204,14 @@ def _speakers_analyze_startup_invariant_ready(
         return
 
     from solstone.think import speakers_analyze_installation as installation
-
-    class _NoopLease:
-        def release(self) -> None:
-            return None
-
-    def begin_ready_generation(
-        **_kwargs: object,
-    ) -> installation.SpeakersAnalyzeGeneration:
-        generation_id = "test-speakers-analyze-generation"
-        os.environ[installation.GENERATION_ENV_KEY] = generation_id
-        return installation.SpeakersAnalyzeGeneration(
-            generation_id=generation_id,
-            lease=_NoopLease(),
-        )
+    from tests.helpers.speakers_analyze import install_enter_generation_stub
 
     monkeypatch.setattr(
         installation,
         "check_speakers_analyze_installation",
         lambda **_kwargs: installation.SpeakersAnalyzeInstallationResult("ok"),
     )
-    monkeypatch.setattr(
-        installation,
-        "begin_speakers_analyze_generation",
-        begin_ready_generation,
-    )
+    install_enter_generation_stub(monkeypatch, tmp_path)
 
 
 @pytest.fixture(autouse=True)

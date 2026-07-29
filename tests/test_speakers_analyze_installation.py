@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
@@ -13,6 +14,13 @@ import pytest
 
 from solstone.think import probe
 from solstone.think import speakers_analyze_installation as installation
+from solstone.think.journal_io.lease import (
+    BorrowedFileLease,
+    FileLease,
+    acquire_file_lease,
+    read_file_lease_fd,
+    read_file_lease_offset_token,
+)
 
 
 def _version_reader(dist_name: str) -> str:
@@ -59,6 +67,34 @@ def _asset_fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             ("pyannote", pyannote, pyannote_sha256),
         ),
     )
+
+
+def _entry_kwargs(tmp_path: Path, executable: Path) -> dict:
+    return {
+        "journal_path": tmp_path,
+        "executable": executable,
+        "version_reader": _version_reader,
+        "platform_reader": _platform_reader,
+    }
+
+
+def _clear_generation_env() -> None:
+    os.environ.pop(installation.GENERATION_ENV_KEY, None)
+    os.environ.pop(installation.GENERATION_FD_ENV_KEY, None)
+    os.environ.pop(installation.GENERATION_TOKEN_ENV_KEY, None)
+
+
+def _restore_generation_env(
+    monkeypatch: pytest.MonkeyPatch, generation_id: str, fd: int, token: int
+) -> None:
+    monkeypatch.setenv(installation.GENERATION_ENV_KEY, generation_id)
+    monkeypatch.setenv(installation.GENERATION_FD_ENV_KEY, str(fd))
+    monkeypatch.setenv(installation.GENERATION_TOKEN_ENV_KEY, str(token))
+
+
+def _assert_fd_closed(fd: int) -> None:
+    with pytest.raises(OSError):
+        os.fstat(fd)
 
 
 def test_coverage_gate_reads_helper_constants_not_core_constants(monkeypatch):
@@ -225,11 +261,8 @@ def test_live_generation_record_reuses_digest_proof(
 ):
     executable = _helper(tmp_path)
     _asset_fixtures(tmp_path, monkeypatch)
-    generation = installation.begin_speakers_analyze_generation(
-        journal_path=tmp_path,
-        executable=executable,
-        version_reader=_version_reader,
-        platform_reader=_platform_reader,
+    generation = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
     )
     calls = 0
 
@@ -251,7 +284,7 @@ def test_live_generation_record_reuses_digest_proof(
         )
     finally:
         generation.release()
-        os.environ.pop(installation.GENERATION_ENV_KEY, None)
+        _clear_generation_env()
 
     assert result.status == "ok"
     assert calls == 0
@@ -262,15 +295,12 @@ def test_stale_generation_record_degrades_to_full_digest(
 ):
     executable = _helper(tmp_path)
     _asset_fixtures(tmp_path, monkeypatch)
-    generation = installation.begin_speakers_analyze_generation(
-        journal_path=tmp_path,
-        executable=executable,
-        version_reader=_version_reader,
-        platform_reader=_platform_reader,
+    generation = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
     )
     generation_id = generation.generation_id
     generation.release()
-    os.environ.pop(installation.GENERATION_ENV_KEY, None)
+    _clear_generation_env()
     calls = 0
     original_digest = installation._sha256_file
 
@@ -292,3 +322,230 @@ def test_stale_generation_record_degrades_to_full_digest(
 
     assert result.status == "ok"
     assert calls == 2
+
+
+def test_owned_entry_publishes_fd_token_and_token_free_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+
+    generation = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    try:
+        assert isinstance(generation.lease, FileLease)
+        fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+        token = int(os.environ[installation.GENERATION_TOKEN_ENV_KEY])
+        assert os.environ[installation.GENERATION_ENV_KEY] == generation.generation_id
+        assert token > 0
+        assert read_file_lease_fd(generation.lease) == fd
+        assert read_file_lease_offset_token(fd) == token
+
+        record = json.loads(
+            (
+                tmp_path / "health" / "speakers-analyze" / "install-generation.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert record["schema"] == installation.INSTALL_GENERATION_SCHEMA
+        assert record["generation_id"] == generation.generation_id
+        assert "token" not in record
+        assert installation.GENERATION_TOKEN_ENV_KEY not in record
+    finally:
+        generation.release()
+        _clear_generation_env()
+
+
+def test_borrowed_entry_reuses_proof_without_hash_and_keeps_owner_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    owner = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    owner_fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+    token = int(os.environ[installation.GENERATION_TOKEN_ENV_KEY])
+    inherited_fd = os.dup(owner_fd)
+    _restore_generation_env(monkeypatch, owner.generation_id, inherited_fd, token)
+    calls = 0
+
+    def fail_digest(_path: Path) -> str:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("borrow must reuse the live proof")
+
+    monkeypatch.setattr(installation, "_sha256_file", fail_digest)
+    borrower = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    try:
+        assert isinstance(borrower.lease, BorrowedFileLease)
+        assert calls == 0
+        borrower.release()
+        assert (
+            acquire_file_lease(
+                tmp_path / "health" / "speakers-analyze" / "install-generation.lock",
+                attempts=1,
+            )
+            is None
+        )
+        _restore_generation_env(monkeypatch, owner.generation_id, inherited_fd, token)
+        assert (
+            installation.check_speakers_analyze_installation(
+                journal_path=tmp_path,
+                executable=executable,
+                version_reader=_version_reader,
+                platform_reader=_platform_reader,
+                platform_tag_reader=_platform_tags,
+            ).status
+            == "ok"
+        )
+    finally:
+        try:
+            os.close(inherited_fd)
+        except OSError:
+            pass
+        owner.release()
+        _clear_generation_env()
+
+
+def test_copied_or_separately_opened_generation_env_cannot_borrow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    owner = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    owner_fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+    token = int(os.environ[installation.GENERATION_TOKEN_ENV_KEY])
+    lock_path = tmp_path / "health" / "speakers-analyze" / "install-generation.lock"
+
+    cases: list[tuple[str, int | None]] = []
+    cases.append(("missing-fd", None))
+    unrelated_fd = os.open(tmp_path / "unrelated.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    cases.append(("unrelated-fd", unrelated_fd))
+    separate_fd = os.open(lock_path, os.O_RDWR)
+    os.lseek(separate_fd, token, os.SEEK_SET)
+    cases.append(("separate-same-path-fd", separate_fd))
+    mismatched_id_fd = os.dup(owner_fd)
+    cases.append(("mismatched-id", mismatched_id_fd))
+
+    try:
+        for name, fd in cases:
+            _restore_generation_env(
+                monkeypatch,
+                "stale-generation" if name == "mismatched-id" else owner.generation_id,
+                fd if fd is not None else owner_fd,
+                token,
+            )
+            if name == "missing-fd":
+                os.environ.pop(installation.GENERATION_FD_ENV_KEY, None)
+            monkeypatch.setenv("SOL_SUPERVISOR_SPAWNED", "1")
+            with pytest.raises(RuntimeError, match="generation lease is already held"):
+                installation.enter_speakers_analyze_generation(
+                    **_entry_kwargs(tmp_path, executable)
+                )
+            assert installation.GENERATION_ENV_KEY not in os.environ
+            assert installation.GENERATION_FD_ENV_KEY not in os.environ
+            assert installation.GENERATION_TOKEN_ENV_KEY not in os.environ
+            if fd is not None:
+                _assert_fd_closed(fd)
+    finally:
+        owner.release()
+        _clear_generation_env()
+
+
+def test_final_duplicate_rejection_closes_candidate_before_fresh_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    owner = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    old_fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+    token = int(os.environ[installation.GENERATION_TOKEN_ENV_KEY])
+    final_duplicate_fd = os.dup(old_fd)
+    os.close(old_fd)
+    owner.lease._fd = None
+    _restore_generation_env(monkeypatch, "stale-generation", final_duplicate_fd, token)
+
+    calls = 0
+    original_digest = installation._sha256_file
+
+    def counted_digest(path: Path) -> str:
+        nonlocal calls
+        calls += 1
+        return original_digest(path)
+
+    monkeypatch.setattr(installation, "_sha256_file", counted_digest)
+    fresh = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    try:
+        assert fresh.generation_id != owner.generation_id
+        assert calls == 2
+        _assert_fd_closed(final_duplicate_fd)
+    finally:
+        fresh.release()
+        _clear_generation_env()
+
+
+@pytest.mark.parametrize(
+    "failure", ["proof-key", "validation", "token-init", "record-write"]
+)
+def test_owned_entry_failures_release_and_allow_reacquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    if failure == "proof-key":
+        monkeypatch.setattr(
+            installation,
+            "_installation_proof_key",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("proof failed")),
+        )
+    elif failure == "validation":
+        monkeypatch.setattr(
+            installation,
+            "_validated_asset_digests",
+            lambda _proof_key: (
+                installation.SpeakersAnalyzeInstallationResult(
+                    "asset-missing", "validation failed"
+                ),
+                [],
+            ),
+        )
+    elif failure == "token-init":
+        monkeypatch.setattr(
+            installation,
+            "set_file_lease_offset_token",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("token failed")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            installation,
+            "_write_generation_record",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("write failed")
+            ),
+        )
+
+    with pytest.raises(RuntimeError):
+        installation.enter_speakers_analyze_generation(
+            **_entry_kwargs(tmp_path, executable)
+        )
+    assert installation.GENERATION_ENV_KEY not in os.environ
+    assert installation.GENERATION_FD_ENV_KEY not in os.environ
+    assert installation.GENERATION_TOKEN_ENV_KEY not in os.environ
+
+    lease = acquire_file_lease(
+        tmp_path / "health" / "speakers-analyze" / "install-generation.lock",
+        attempts=1,
+    )
+    assert lease is not None
+    lease.release()

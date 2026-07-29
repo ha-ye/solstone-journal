@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import sys
 import uuid
 from collections.abc import Callable
@@ -27,9 +28,12 @@ from solstone.apps.speakers.encoder_config import (
 from solstone.think import probe
 from solstone.think.journal_io import MalformedPolicy, atomic_replace, read_json
 from solstone.think.journal_io.lease import (
+    BorrowedFileLease,
     FileLease,
     acquire_file_lease,
-    probe_file_lease_held,
+    adopt_inherited_file_lease_fd,
+    read_file_lease_fd,
+    set_file_lease_offset_token,
 )
 from solstone.think.model_assets import (
     ModelsDistributionUnavailable,
@@ -45,7 +49,12 @@ ROOT_DIST_NAME = "solstone"
 INSTALL_GENERATION_SCHEMA = "solstone.speakers_analyze.install_generation.v1"
 PROOF_KEY_SCHEMA = "solstone.speakers_analyze.install_proof_key.v1"
 GENERATION_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID"
+GENERATION_FD_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD"
+GENERATION_TOKEN_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN"
 GENERATION_MODE = 0o600
+GENERATION_FD_MIN = 3
+GENERATION_FD_MAX = 1_048_576
+GENERATION_TOKEN_MAX = (1 << 62) - 1
 
 SPEAKERS_ANALYZE_REPAIR_TEXT = (
     "Repair: reinstall the journal host stack with solstone-journal, or "
@@ -87,9 +96,15 @@ class SpeakersAnalyzeInstallationResult:
 @dataclass(frozen=True)
 class SpeakersAnalyzeGeneration:
     generation_id: str
-    lease: FileLease
+    lease: FileLease | BorrowedFileLease
 
     def release(self) -> None:
+        if isinstance(self.lease, FileLease) and (
+            os.environ.get(GENERATION_ENV_KEY) == self.generation_id
+        ):
+            os.environ.pop(GENERATION_ENV_KEY, None)
+            os.environ.pop(GENERATION_FD_ENV_KEY, None)
+            os.environ.pop(GENERATION_TOKEN_ENV_KEY, None)
         self.lease.release()
 
     def __enter__(self) -> SpeakersAnalyzeGeneration:
@@ -164,7 +179,7 @@ def check_speakers_analyze_installation(
     return _digest_assets(proof_key)
 
 
-def begin_speakers_analyze_generation(
+def enter_speakers_analyze_generation(
     *,
     journal_path: str | Path | None = None,
     executable: str | Path | None = None,
@@ -174,45 +189,63 @@ def begin_speakers_analyze_generation(
     ] = probe.current_solstone_core_platform,
 ) -> SpeakersAnalyzeGeneration:
     root = _journal_root(journal_path)
+    borrowed = _borrow_speakers_analyze_generation(
+        root=root,
+        executable=executable,
+        version_reader=version_reader,
+        platform_reader=platform_reader,
+    )
+    if borrowed is not None:
+        return borrowed
+
     lease = acquire_file_lease(
         _generation_lease_path(root), attempts=1, retry_max_seconds=0
     )
     if lease is None:
         raise RuntimeError("speakers-analyze generation lease is already held")
-    cheap = _cheap_installation_result(
-        executable=executable,
-        version_reader=version_reader,
-        platform_reader=platform_reader,
-        platform_tag_reader=_packaging_platform_tags,
-        executable_predicate=lambda path: os.access(path, os.X_OK),
-    )
-    if not cheap.ok:
+    try:
+        cheap = _cheap_installation_result(
+            executable=executable,
+            version_reader=version_reader,
+            platform_reader=platform_reader,
+            platform_tag_reader=_packaging_platform_tags,
+            executable_predicate=lambda path: os.access(path, os.X_OK),
+        )
+        if not cheap.ok:
+            raise RuntimeError(cheap.message)
+        proof_key = _installation_proof_key(
+            executable=executable,
+            version_reader=version_reader,
+            platform_reader=platform_reader,
+        )
+        result, observed_assets = _validated_asset_digests(proof_key)
+        if not result.ok:
+            raise RuntimeError(result.message)
+        generation_id = uuid.uuid4().hex
+        token = secrets.randbelow(GENERATION_TOKEN_MAX) + 1
+        set_file_lease_offset_token(lease, token, _generation_lease_path(root))
+        record = {
+            "schema": INSTALL_GENERATION_SCHEMA,
+            "generation_id": generation_id,
+            "created_at": _now_iso(),
+            "verified_at": _now_iso(),
+            "proof_key": proof_key,
+            "assets": observed_assets,
+            "helper": proof_key["helper"],
+            "packages": proof_key["packages"],
+            "platform": proof_key["platform"],
+        }
+        _write_generation_record(root, record)
+        os.environ[GENERATION_ENV_KEY] = generation_id
+        os.environ[GENERATION_FD_ENV_KEY] = str(
+            read_file_lease_fd(lease, _generation_lease_path(root))
+        )
+        os.environ[GENERATION_TOKEN_ENV_KEY] = str(token)
+        return SpeakersAnalyzeGeneration(generation_id=generation_id, lease=lease)
+    except BaseException:
+        _clear_generation_env()
         lease.release()
-        raise RuntimeError(cheap.message)
-    proof_key = _installation_proof_key(
-        executable=executable,
-        version_reader=version_reader,
-        platform_reader=platform_reader,
-    )
-    result, observed_assets = _validated_asset_digests(proof_key)
-    if not result.ok:
-        lease.release()
-        raise RuntimeError(result.message)
-    generation_id = uuid.uuid4().hex
-    record = {
-        "schema": INSTALL_GENERATION_SCHEMA,
-        "generation_id": generation_id,
-        "created_at": _now_iso(),
-        "verified_at": _now_iso(),
-        "proof_key": proof_key,
-        "assets": observed_assets,
-        "helper": proof_key["helper"],
-        "packages": proof_key["packages"],
-        "platform": proof_key["platform"],
-    }
-    _write_generation_record(root, record)
-    os.environ[GENERATION_ENV_KEY] = generation_id
-    return SpeakersAnalyzeGeneration(generation_id=generation_id, lease=lease)
+        raise
 
 
 def _cheap_installation_result(
@@ -379,8 +412,81 @@ def _generation_proves_digest(
     if not generation_id:
         return False
     root = _journal_root(journal_path)
-    if not probe_file_lease_held(_generation_lease_path(root)):
+    candidate = _inherited_generation_candidate()
+    if candidate is None:
         return False
+    fd, token = candidate
+    borrowed = adopt_inherited_file_lease_fd(
+        _generation_lease_path(root), fd=fd, token=token
+    )
+    if borrowed is None:
+        return False
+    try:
+        return _generation_record_proves_digest(
+            root=root,
+            generation_id=generation_id,
+            proof_key=proof_key,
+        )
+    finally:
+        borrowed.release()
+
+
+def _borrow_speakers_analyze_generation(
+    *,
+    root: Path,
+    executable: str | Path | None,
+    version_reader: Callable[[str], str],
+    platform_reader: Callable[[], probe.CorePlatform],
+) -> SpeakersAnalyzeGeneration | None:
+    generation_id = os.environ.get(GENERATION_ENV_KEY)
+    if not any(
+        os.environ.get(key)
+        for key in (
+            GENERATION_ENV_KEY,
+            GENERATION_FD_ENV_KEY,
+            GENERATION_TOKEN_ENV_KEY,
+        )
+    ):
+        return None
+    candidate = _inherited_generation_candidate()
+    if generation_id is None or candidate is None:
+        _reject_generation_borrow()
+        return None
+    fd, token = candidate
+    borrowed = adopt_inherited_file_lease_fd(
+        _generation_lease_path(root), fd=fd, token=token
+    )
+    if borrowed is None:
+        _reject_generation_borrow(candidate_fd=fd)
+        return None
+    try:
+        proof_key = _installation_proof_key(
+            executable=executable,
+            version_reader=version_reader,
+            platform_reader=platform_reader,
+        )
+        if _generation_record_proves_digest(
+            root=root,
+            generation_id=generation_id,
+            proof_key=proof_key,
+        ):
+            return SpeakersAnalyzeGeneration(
+                generation_id=generation_id, lease=borrowed
+            )
+    except BaseException:
+        borrowed.release()
+        raise
+    borrowed.release()
+    _reject_generation_borrow(candidate_fd=fd)
+    return None
+
+
+def _generation_record_proves_digest(
+    *,
+    root: Path,
+    generation_id: str,
+    proof_key: dict[str, object],
+) -> bool:
     raw = read_json(
         _generation_record_path(root),
         on_error=MalformedPolicy.WARN_AND_SKIP,
@@ -403,6 +509,57 @@ def _generation_proves_digest(
         if asset.get("observed_sha256") != asset.get("expected_sha256"):
             return False
     return True
+
+
+def _inherited_generation_candidate() -> tuple[int, int] | None:
+    fd = _parse_generation_fd(os.environ.get(GENERATION_FD_ENV_KEY))
+    token = _parse_generation_token(os.environ.get(GENERATION_TOKEN_ENV_KEY))
+    if fd is None or token is None:
+        return None
+    try:
+        os.fstat(fd)
+    except OSError:
+        return None
+    return fd, token
+
+
+def _parse_generation_fd(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        fd = int(value)
+    except (TypeError, ValueError):
+        return None
+    if fd < GENERATION_FD_MIN or fd > GENERATION_FD_MAX:
+        return None
+    return fd
+
+
+def _parse_generation_token(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        token = int(value)
+    except (TypeError, ValueError):
+        return None
+    if token <= 0 or token > GENERATION_TOKEN_MAX:
+        return None
+    return token
+
+
+def _reject_generation_borrow(candidate_fd: int | None = None) -> None:
+    if candidate_fd is not None:
+        try:
+            os.close(candidate_fd)
+        except OSError:
+            pass
+    _clear_generation_env()
+
+
+def _clear_generation_env() -> None:
+    os.environ.pop(GENERATION_ENV_KEY, None)
+    os.environ.pop(GENERATION_FD_ENV_KEY, None)
+    os.environ.pop(GENERATION_TOKEN_ENV_KEY, None)
 
 
 def _required_assets() -> tuple[tuple[str, Path, str], ...]:
@@ -445,7 +602,9 @@ def _now_iso() -> str:
 
 
 __all__ = [
+    "GENERATION_FD_ENV_KEY",
     "GENERATION_ENV_KEY",
+    "GENERATION_TOKEN_ENV_KEY",
     "HELPER_BINARY_NAME",
     "HELPER_DIST_NAME",
     "MODELS_DIST_NAME",
@@ -453,8 +612,8 @@ __all__ = [
     "SPEAKERS_ANALYZE_REPAIR_TEXT",
     "SpeakersAnalyzeGeneration",
     "SpeakersAnalyzeInstallationResult",
-    "begin_speakers_analyze_generation",
     "check_speakers_analyze_installation",
+    "enter_speakers_analyze_generation",
     "runtime_has_speakers_analyze_wheel_coverage",
     "speakers_analyze_path_for_executable",
 ]

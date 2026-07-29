@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -67,7 +68,7 @@ def _speakers_analyze_generation_ready(monkeypatch):
 
     monkeypatch.setattr(
         "solstone.think.speakers_analyze_installation."
-        "begin_speakers_analyze_generation",
+        "enter_speakers_analyze_generation",
         lambda **_kwargs: Generation(),
     )
 
@@ -2890,7 +2891,7 @@ def test_main_speakers_analyze_failure_prints_canonical_message_once(
 
     monkeypatch.setattr(
         "solstone.think.speakers_analyze_installation."
-        "begin_speakers_analyze_generation",
+        "enter_speakers_analyze_generation",
         fail_generation,
     )
 
@@ -2901,6 +2902,43 @@ def test_main_speakers_analyze_failure_prints_canonical_message_once(
     assert exc_info.value.code == 78
     assert captured.err.count("Speakers-analyze installation is incomplete") == 1
     assert message in captured.err
+
+
+def test_main_live_generation_id_without_fd_still_prints_canonical_message_once(
+    tmp_path, monkeypatch, capsys
+):
+    from solstone.observe import sense
+
+    message = "speakers-analyze generation lease is already held"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setenv(
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID",
+        "live-generation",
+    )
+    monkeypatch.setenv("SOL_SUPERVISOR_SPAWNED", "1")
+    monkeypatch.delenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD", raising=False)
+    monkeypatch.delenv(
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN",
+        raising=False,
+    )
+    monkeypatch.setattr(sense, "require_solstone", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["sense", "--day", "20250101"])
+
+    def fail_generation(**_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "enter_speakers_analyze_generation",
+        fail_generation,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        sense.main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 78
+    assert captured.err.count(message) == 1
 
 
 def _registered_describe_commands(sensor: FileSensor) -> list[list[str]]:
@@ -3096,6 +3134,61 @@ def test_queue_wait_ms_reaches_child_env(tmp_path, monkeypatch):
         "20250101",
     )
     assert "SOL_QUEUE_WAIT_MS" not in captured["env"]
+
+
+def test_generation_env_reaches_event_and_batch_transcribe_children(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    fd = os.open(tmp_path / "generation.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    monkeypatch.setenv(
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID",
+        "generation",
+    )
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD", str(fd))
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN", "123")
+    sensor = FileSensor(tmp_path)
+    test_file = make_segment_file(tmp_path, "audio.flac")
+    captured: list[dict[str, str]] = []
+
+    def fake_runner_spawn(cmd, ref, callosum, env, day):
+        captured.append(env)
+        return FakeManaged(FakeProcess(0), ref=ref)
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.RunnerManagedProcess.spawn", fake_runner_spawn
+    )
+
+    try:
+        sensor._spawn_managed_process(
+            ["journal", "transcribe", str(test_file)],
+            test_file,
+            "event-ref",
+            "143022_300",
+            None,
+            None,
+            None,
+        )
+        sensor._spawn_managed_process(
+            ["journal", "transcribe", str(test_file)],
+            test_file,
+            "batch-ref",
+            "143022_300",
+            None,
+            None,
+            "20250101",
+        )
+    finally:
+        os.close(fd)
+
+    assert [
+        (
+            env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID"],
+            env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD"],
+            env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN"],
+        )
+        for env in captured
+    ] == [("generation", str(fd), "123"), ("generation", str(fd), "123")]
 
 
 def test_run_handler_passes_queue_wait_from_queued_at(tmp_path, monkeypatch):
