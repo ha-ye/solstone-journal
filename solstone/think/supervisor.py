@@ -1724,7 +1724,15 @@ def _handle_task_request(message: dict) -> None:
         if active_ref:
             with _task_queue._lock:
                 managed = _task_queue._active.get(active_ref)
+                active_cmd = list(managed.cmd) if managed else None
                 cap = _task_queue._effective_cap(cmd_name)
+            if (
+                message.get("queue_if_active_cmd_differs")
+                and active_cmd is not None
+                and active_cmd != cmd
+            ):
+                _task_queue.submit(cmd, ref, day=day, scheduler_name=scheduler_name)
+                return
             runtime = time.time() - managed.start_time if managed else 0
             reason = "wedged" if runtime > 2 * cap else "still_running"
             if _supervisor_callosum:

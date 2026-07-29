@@ -2862,6 +2862,126 @@ def test_task_history_records_cap_kill_as_timeout(monkeypatch):
     assert queue._history[0]["exit_status"] == "timeout"
 
 
+def test_handle_task_request_opt_in_queues_differing_active_command(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    spawned = _capture_thread_starts(monkeypatch, mod)
+    active_cmd = ["journal", "think", "-v", "--day", "20250115"]
+    incoming_cmd = ["journal", "think", "-v", "--day", "20250115", "--from-scratch"]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": incoming_cmd,
+            "ref": "requested-ref",
+            "day": "20250115",
+            "queue_if_active_cmd_differs": True,
+        }
+    )
+
+    assert queue._queues.get(partition) == [
+        {
+            "refs": ["requested-ref"],
+            "cmd": incoming_cmd,
+            "day": "20250115",
+            "scheduler_name": None,
+        }
+    ]
+    assert spawned == []
+
+
+def test_handle_task_request_opt_in_skips_identical_active_command(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    spawned = _capture_thread_starts(monkeypatch, mod)
+    active_cmd = ["journal", "think", "-v", "--day", "20250115"]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+    queue.set_cap(partition, 50)
+    callosum = MagicMock()
+
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
+    monkeypatch.setattr(mod.time, "time", lambda: 150.0)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": active_cmd,
+            "ref": "requested-ref",
+            "day": "20250115",
+            "queue_if_active_cmd_differs": True,
+        }
+    )
+
+    callosum.emit.assert_called_once_with(
+        "supervisor",
+        "skipped",
+        reason="still_running",
+        ref="requested-ref",
+        active_ref="active-ref",
+        cmd=active_cmd,
+        scheduler_name=None,
+    )
+    assert queue._queues == {}
+    assert spawned == []
+
+
+def test_handle_task_request_without_opt_in_skips_differing_active_command(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    spawned = _capture_thread_starts(monkeypatch, mod)
+    active_cmd = ["journal", "think", "-v", "--day", "20250115"]
+    incoming_cmd = ["journal", "think", "-v", "--day", "20250115", "--from-scratch"]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+    queue.set_cap(partition, 50)
+    callosum = MagicMock()
+
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
+    monkeypatch.setattr(mod.time, "time", lambda: 150.0)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": incoming_cmd,
+            "ref": "requested-ref",
+            "day": "20250115",
+        }
+    )
+
+    callosum.emit.assert_called_once_with(
+        "supervisor",
+        "skipped",
+        reason="still_running",
+        ref="requested-ref",
+        active_ref="active-ref",
+        cmd=incoming_cmd,
+        scheduler_name=None,
+    )
+    assert queue._queues == {}
+    assert spawned == []
+
+
 def test_handle_task_request_skips_still_running(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
