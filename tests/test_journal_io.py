@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,10 +29,15 @@ from solstone.think.journal_io.errors import (
     PathEscapeError,
 )
 from solstone.think.journal_io.lease import (
+    BorrowedFileLease,
     acquire_file_lease,
+    adopt_inherited_file_lease_fd,
     assert_file_lease_owned,
     probe_file_lease_free,
     probe_file_lease_held,
+    read_file_lease_fd,
+    read_file_lease_offset_token,
+    set_file_lease_offset_token,
 )
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.journal_io.paths import contained_path
@@ -86,6 +92,107 @@ def test_file_lease_holder_and_probe(tmp_path) -> None:
 
     lease.release()
     assert probe_file_lease_free(path) is True
+
+
+def test_borrowed_file_lease_adoption_matrix(tmp_path) -> None:
+    path = tmp_path / "health" / "speakers-analyze.lock"
+    lease = acquire_file_lease(path, attempts=1)
+    assert lease is not None
+    token = 37
+    set_file_lease_offset_token(lease, token, path)
+    owner_fd = read_file_lease_fd(lease, path)
+
+    duplicate_fd = os.dup(owner_fd)
+    try:
+        borrowed = adopt_inherited_file_lease_fd(path, duplicate_fd, token)
+        assert isinstance(borrowed, BorrowedFileLease)
+        borrowed.release()
+        assert probe_file_lease_held(path) is True
+        assert acquire_file_lease(path, attempts=1) is None
+
+        assert adopt_inherited_file_lease_fd(path, duplicate_fd, token + 1) is None
+        assert adopt_inherited_file_lease_fd(path, duplicate_fd, 0) is None
+
+        wrong_path = tmp_path / "health" / "other.lock"
+        wrong_path.write_text("", encoding="utf-8")
+        assert adopt_inherited_file_lease_fd(wrong_path, duplicate_fd, token) is None
+
+        separate_fd = os.open(path, os.O_RDWR)
+        try:
+            assert read_file_lease_offset_token(separate_fd) == 0
+            assert adopt_inherited_file_lease_fd(path, separate_fd, token) is None
+            assert read_file_lease_offset_token(separate_fd) == 0
+        finally:
+            os.close(separate_fd)
+
+        closed_fd = os.dup(owner_fd)
+        os.close(closed_fd)
+        assert adopt_inherited_file_lease_fd(path, closed_fd, token) is None
+
+        reused_fd = os.dup(owner_fd)
+        os.close(reused_fd)
+        reused_path = tmp_path / "health" / "reused.lock"
+        actual_reused_fd = os.open(reused_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            assert actual_reused_fd == reused_fd
+            assert adopt_inherited_file_lease_fd(path, actual_reused_fd, token) is None
+        finally:
+            os.close(actual_reused_fd)
+    finally:
+        os.close(duplicate_fd)
+        lease.release()
+
+    assert probe_file_lease_free(path) is True
+
+
+def test_inherited_duplicate_preserves_token_and_lock_after_owner_close(
+    tmp_path,
+) -> None:
+    path = tmp_path / "health" / "speakers-analyze.lock"
+    lease = acquire_file_lease(path, attempts=1)
+    assert lease is not None
+    token = 91
+    set_file_lease_offset_token(lease, token, path)
+    owner_fd = read_file_lease_fd(lease, path)
+
+    script = (
+        "import fcntl,json,os,sys\n"
+        "fd=int(sys.argv[1])\n"
+        "path=sys.argv[2]\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print(json.dumps({'fd': fd, 'offset': os.lseek(fd, 0, os.SEEK_CUR)}), flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", script, str(owner_fd), str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(owner_fd,),
+    )
+    try:
+        assert child.stdout is not None
+        payload = json.loads(child.stdout.readline())
+        assert payload == {"fd": owner_fd, "offset": token}
+
+        os.close(owner_fd)
+        lease._fd = None
+        assert acquire_file_lease(path, attempts=1) is None
+
+        assert child.stdin is not None
+        child.stdin.close()
+        assert child.wait(timeout=5) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        if lease._fd is not None:
+            lease.release()
+
+    reacquired = acquire_file_lease(path, attempts=1)
+    assert reacquired is not None
+    reacquired.release()
 
 
 def test_install_file_crash_safe(tmp_path, monkeypatch) -> None:

@@ -53,6 +53,27 @@ class FileLease:
         self.release()
 
 
+@dataclass
+class BorrowedFileLease:
+    """Borrowed file lease backed by a duplicated flock handle."""
+
+    path: Path
+    _fd: int | None
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd = self._fd
+        self._fd = None
+        os.close(fd)
+
+    def __enter__(self) -> BorrowedFileLease:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
+
+
 def _retry_sleep_seconds(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -114,6 +135,31 @@ def assert_file_lease_owned(
     return lease
 
 
+def read_file_lease_fd(lease: FileLease, path: Path | None = None) -> int:
+    """Return the owned lease fd without transferring ownership."""
+
+    owned = assert_file_lease_owned(lease, path)
+    assert owned._fd is not None
+    return owned._fd
+
+
+def set_file_lease_offset_token(
+    lease: FileLease, token: int, path: Path | None = None
+) -> None:
+    """Set a nonzero offset token on an owned lease fd."""
+
+    if token <= 0:
+        raise ValueError("file lease offset token must be nonzero")
+    fd = read_file_lease_fd(lease, path)
+    os.lseek(fd, token, os.SEEK_SET)
+
+
+def read_file_lease_offset_token(fd: int) -> int:
+    """Read an fd's current offset token without moving it."""
+
+    return os.lseek(fd, 0, os.SEEK_CUR)
+
+
 def probe_file_lease_held(path: Path) -> bool:
     """Return whether an existing lease file is currently held by another process."""
 
@@ -140,10 +186,46 @@ def probe_file_lease_free(path: Path) -> bool:
     return not probe_file_lease_held(path)
 
 
+def adopt_inherited_file_lease_fd(
+    path: Path, fd: int, token: int
+) -> BorrowedFileLease | None:
+    """Adopt an inherited duplicate only when it proves the held lease."""
+
+    try:
+        candidate_stat = os.fstat(fd)
+        path_stat = os.stat(path)
+    except OSError:
+        return None
+    if (
+        candidate_stat.st_dev != path_stat.st_dev
+        or candidate_stat.st_ino != path_stat.st_ino
+    ):
+        return None
+    try:
+        if token == 0 or read_file_lease_offset_token(fd) != token:
+            return None
+        if not probe_file_lease_held(path):
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return None
+            raise
+        return BorrowedFileLease(path=path, _fd=os.dup(fd))
+    except OSError:
+        return None
+
+
 __all__ = [
+    "BorrowedFileLease",
     "FileLease",
     "acquire_file_lease",
+    "adopt_inherited_file_lease_fd",
     "assert_file_lease_owned",
     "probe_file_lease_free",
     "probe_file_lease_held",
+    "read_file_lease_fd",
+    "read_file_lease_offset_token",
+    "set_file_lease_offset_token",
 ]
