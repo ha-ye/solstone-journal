@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "chrono",
  "solstone-core-cli",
@@ -986,11 +986,11 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-cli"
-version = "1.0.18"
+version = "1.0.19"
 
 [[package]]
 name = "solstone-core-indexer"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-indexer-store"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-journal"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "serde_json",
  "toml_edit",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-sol"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "chrono",
  "nix",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-sol-client"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "chrono",
  "nix",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-sol-client-cli"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "serde_json",
  "solstone-core-sol-client",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-sol-link"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "rcgen",
  "rustls",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-speakers"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "hdbscan",
  "serde_json",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-speakers-analyze"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "serde_json",
  "solstone-core-speakers",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-core-speakers-onnx"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "ort",
  "serde_json",

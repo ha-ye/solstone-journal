@@ -4,12 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [1.0.19] - 2026-07-29
+
+### Added
+
+- the entities overview in your journal now shows what each entity is, read from that entity's own record and never guessed from its name. an entity with no type of its own still appears in the list with everything else about it unchanged.
 
 ### Changed
 
 - speaker analysis now uses the native helper only. if the helper is missing, damaged, or returns invalid data, journal startup and transcription fail loudly instead of falling back to the old python speaker path.
 - new transcript headers name `solstone-core-speakers-analyze-v1` as the speaker-analysis producer whenever the helper actually ran, including when it declines speaker labels. transcripts with no speech-bearing statements still omit the field because no speaker-analysis producer touched them.
+- long audio no longer quietly changes engines. with confidential processing turned on, audio longer than the confidential service accepts used to be handed to the built-in local engine instead. it now stops with a stated reason and the audio is kept as it is, so nothing gets processed somewhere you didn't choose.
+
+### Fixed
+
+- what sol takes in on your paired devices keeps reaching your journal. an unsteady connection could leave a transfer stalled and holding one of the journal's slots for incoming work indefinitely. enough of those and nothing arrived at all, with no error, and with pairing, the connection, and the device's last-seen time all still reading healthy until the journal was restarted. stalled transfers are now bounded and cleared, everyday arrivals have room reserved for them so long streams can't take every slot, and a stall that does happen is logged with how long it waited.
+- a day sol is thinking through no longer stalls on unusual text. a stray half of an emoji, or another unpaired character, could stop the request while it was still being built on your machine, and the failure was reported against the endpoint, which never received it. that text is repaired before the request is built now, and text that was already valid is unchanged.
 
 ## [1.0.18] - 2026-07-28
 

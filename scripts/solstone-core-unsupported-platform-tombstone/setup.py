@@ -12,7 +12,7 @@ import sys
 
 from setuptools import setup
 
-TOMBSTONE_VERSION = "1.0.18"
+TOMBSTONE_VERSION = "1.0.19"
 ALLOW_BUILD_ENV = "SOLSTONE_CORE_UNSUPPORTED_PLATFORM_TOMBSTONE_ALLOW_BUILD"
 
 UNSUPPORTED_PLATFORM_MESSAGE = """solstone requires a native solstone-core wheel for this platform.
