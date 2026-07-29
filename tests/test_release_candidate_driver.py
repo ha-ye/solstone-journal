@@ -2571,14 +2571,17 @@ def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None
     report = driver.run_candidate(root, env, _services(root))
     payload = json.loads((report.evidence_dir / "ledger.json").read_text())
 
-    assert payload["models"] == {"decision": "include", "package_version": "1.0.0"}
+    assert payload["models"] == {
+        "decision": "include",
+        "package_version": wheel_checker._models_version(),
+    }
     assert any(
         item["name"].startswith("solstone_journal_models-")
         for item in payload["candidate"]["files"]
     )
 
     (root / "packages" / "solstone-journal-models" / "pyproject.toml").write_text(
-        '[project]\nname = "solstone-journal-models"\nversion = "1.0.1"\n',
+        '[project]\nname = "solstone-journal-models"\nversion = "9.9.9"\n',
         encoding="utf-8",
     )
     recovered = _recover(root)
@@ -2646,7 +2649,9 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
                     for path in dist.iterdir()
                     if path.name.startswith("solstone_journal_models-")
                 )
-                changed = models[0].name.replace("1.0.0", "1.0.1")
+                changed = models[0].name.replace(
+                    wheel_checker._models_version(), "9.9.9"
+                )
                 models[0].unlink()
                 (dist / changed).write_bytes(b"package")
         return subprocess.CompletedProcess(argv, 0, "", "")

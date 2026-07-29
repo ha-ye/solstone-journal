@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import scripts.check_rust_release_manifest as checker
+import scripts.check_wheel_contents as wheel_checker
 import scripts.record_macos_native_wheel as native
 import scripts.release_candidate_driver as driver
 import scripts.release_nvattest_proof as nvattest_proof
@@ -123,7 +124,8 @@ def repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (root / "packages" / "solstone-journal-models" / "pyproject.toml").write_text(
-        '[project]\nname = "solstone-journal-models"\nversion = "1.0.0"\n',
+        f'[project]\nname = "solstone-journal-models"\n'
+        f'version = "{wheel_checker._models_version()}"\n',
         encoding="utf-8",
     )
     _write_fixture_support_lock(root)
