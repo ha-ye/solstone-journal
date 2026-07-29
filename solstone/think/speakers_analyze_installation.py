@@ -450,7 +450,9 @@ def _borrow_speakers_analyze_generation(
         return None
     candidate = _inherited_generation_candidate()
     if generation_id is None or candidate is None:
-        _reject_generation_borrow()
+        _reject_generation_borrow(
+            candidate_fd=_parse_generation_fd(os.environ.get(GENERATION_FD_ENV_KEY))
+        )
         return None
     fd, token = candidate
     borrowed = adopt_inherited_file_lease_fd(

@@ -436,6 +436,7 @@ def test_out_of_range_generation_token_is_rejected_and_cannot_borrow(
         assert installation.GENERATION_ENV_KEY not in os.environ
         assert installation.GENERATION_FD_ENV_KEY not in os.environ
         assert installation.GENERATION_TOKEN_ENV_KEY not in os.environ
+        _assert_fd_closed(inherited_fd)
     finally:
         try:
             os.close(inherited_fd)
