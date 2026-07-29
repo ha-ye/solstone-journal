@@ -183,20 +183,28 @@ class SpeakersAnalyzeRuntimeLinkContract(NamedTuple):
     runtime_load: str
 
 
+def _speakers_analyze_runtime_load(platform_tuple: CorePlatform) -> str:
+    target_key = SPEAKERS_ANALYZE_PLATFORM_TARGETS[platform_tuple]
+    staged_name = SPEAKERS_ANALYZE_TARGETS[target_key].runtime_staged_name
+    if platform_tuple[0] == "darwin":
+        return f"@rpath/{staged_name}"
+    return staged_name
+
+
 SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS: dict[
     CorePlatform, SpeakersAnalyzeRuntimeLinkContract
 ] = {
     ("linux", "x86_64"): SpeakersAnalyzeRuntimeLinkContract(
         "$ORIGIN/../lib/solstone-core-speakers-analyze",
-        "libonnxruntime.so.1",
+        _speakers_analyze_runtime_load(("linux", "x86_64")),
     ),
     ("linux", "aarch64"): SpeakersAnalyzeRuntimeLinkContract(
         "$ORIGIN/../lib/solstone-core-speakers-analyze",
-        "libonnxruntime.so.1",
+        _speakers_analyze_runtime_load(("linux", "aarch64")),
     ),
     ("darwin", "arm64"): SpeakersAnalyzeRuntimeLinkContract(
         "@loader_path/../lib/solstone-core-speakers-analyze",
-        "@rpath/libonnxruntime.1.25.0.dylib",
+        _speakers_analyze_runtime_load(("darwin", "arm64")),
     ),
 }
 SPEAKERS_ANALYZE_FORBIDDEN_PROVIDER_RE = re.compile(
@@ -1662,7 +1670,7 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                         f"{path.name}:{library_member}",
                         library_content,
                         platform_tuple,
-                        binary_label="libonnxruntime.1.25.0.dylib",
+                        binary_label=spec.runtime_staged_name,
                     )
                 )
         errors.extend(_check_record(path, wheel))

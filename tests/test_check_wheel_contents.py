@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -371,6 +372,15 @@ def test_speakers_analyze_runtime_link_contract_matches_build_script() -> None:
         checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
     )
     assert contracts[("linux", "x86_64")] == contracts[("linux", "aarch64")]
+    assert (
+        contracts[("linux", "x86_64")].rpath
+        == "$ORIGIN/../lib/solstone-core-speakers-analyze"
+    )
+    assert (
+        contracts[("darwin", "arm64")].rpath
+        == "@loader_path/../lib/solstone-core-speakers-analyze"
+    )
+    assert contracts[("linux", "x86_64")].rpath != contracts[("darwin", "arm64")].rpath
     build_rs = (
         Path(__file__).resolve().parents[1]
         / "core"
@@ -378,11 +388,26 @@ def test_speakers_analyze_runtime_link_contract_matches_build_script() -> None:
         / "solstone-core-speakers-analyze"
         / "build.rs"
     ).read_text(encoding="utf-8")
-    for rpath in {
-        contracts[("linux", "x86_64")].rpath,
-        contracts[("darwin", "arm64")].rpath,
-    }:
-        assert build_rs.count(rpath) == 1
+    rpaths_by_target_os = dict(
+        re.findall(r'"(linux|macos)"\s*=>\s*"([^"]+)"', build_rs)
+    )
+    assert rpaths_by_target_os == {
+        "linux": contracts[("linux", "x86_64")].rpath,
+        "macos": contracts[("darwin", "arm64")].rpath,
+    }
+
+
+def test_speakers_analyze_runtime_load_contract_matches_staged_runtime_name() -> None:
+    for (
+        platform_tuple,
+        contract,
+    ) in checker.SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS.items():
+        target_key = checker.SPEAKERS_ANALYZE_PLATFORM_TARGETS[platform_tuple]
+        staged_name = checker.SPEAKERS_ANALYZE_TARGETS[target_key].runtime_staged_name
+        expected_load = (
+            f"@rpath/{staged_name}" if platform_tuple[0] == "darwin" else staged_name
+        )
+        assert contract.runtime_load == expected_load
 
 
 def test_speakers_analyze_linux_rejects_substituted_runtime_library(
