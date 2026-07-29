@@ -1020,7 +1020,7 @@ def _verify_uploaded_index(
         [
             failure(
                 "release publish package index verification timed out",
-                expected="all publish-owned retained files visible with matching SHA-256",
+                expected="all train retained files visible with matching SHA-256",
                 actual=_describe_index_matches(last_matches),
                 repair=config.resume_target,
             )
@@ -1086,15 +1086,15 @@ def _resolve_publish_set(
         if (match.project, match.version) != model_key
     )
     train_state = _assert_pre_upload_index_clean_or_published(train_matches)
-    publish_uploads = tuple(
+    train_uploads = tuple(
         entry
         for entry in classified.uploads
         if not (entry.project == MODEL_PROJECT and entry.version == model_key[1])
     )
     return (
         ResolvedPublishSet(
-            uploads=publish_uploads,
-            verify_expectations=_project_expectations_for(publish_uploads),
+            uploads=train_uploads,
+            verify_expectations=_project_expectations_for(train_uploads),
             reused_project=f"{model_match.project}=={model_match.version}",
             reused_files=model_names,
             reused_model_pin=ProjectExpectation(
@@ -1167,7 +1167,7 @@ def _download_and_compare_reused_models(
                 retained.path,
                 destination,
                 retained_label=f"retained {name}",
-                candidate_label=f"published {name}",
+                published_label=f"published {name}",
             )
 
 

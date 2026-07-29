@@ -10,6 +10,7 @@ import hashlib
 import stat
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,25 +68,25 @@ def archive_manifest(
 
 def assert_archives_semantically_identical(
     retained: Path,
-    candidate: Path,
+    published: Path,
     *,
     retained_label: str = "retained archive",
-    candidate_label: str = "candidate archive",
+    published_label: str = "published archive",
 ) -> ArchiveManifest:
     """Raise unless two on-disk archives have identical canonical manifests."""
     retained_manifest = archive_manifest(retained, label=retained_label)
-    candidate_manifest = archive_manifest(
-        candidate,
+    published_manifest = archive_manifest(
+        published,
         limits=retained_manifest,
-        label=candidate_label,
+        label=published_label,
     )
-    if candidate_manifest.rows != retained_manifest.rows:
+    if published_manifest.rows != retained_manifest.rows:
         raise DriverError(
             [
                 failure(
                     "release archive canonical manifest mismatch",
                     expected=_manifest_summary(retained_manifest, retained_label),
-                    actual=_manifest_diff(retained_manifest, candidate_manifest),
+                    actual=_manifest_diff(retained_manifest, published_manifest),
                     repair="restore matching model archives or cut the next version",
                 )
             ]
@@ -122,8 +123,15 @@ def _zip_manifest(
                 )
                 sha256 = ""
                 if kind == "file":
-                    with archive.open(info) as member:
-                        sha256 = _sha256_stream(member)
+                    try:
+                        with archive.open(info) as member:
+                            sha256 = _sha256_stream(member)
+                    except (
+                        NotImplementedError,
+                        RuntimeError,
+                        zlib.error,
+                    ) as exc:
+                        _raise_member_unreadable(info.filename, label=label, exc=exc)
                 rows.append(
                     ArchiveManifestRow(
                         path=info.filename,
@@ -156,6 +164,7 @@ def _tar_manifest(
                 if info is None:
                     break
                 _check_member_count(len(rows) + 1, limits=limits, label=label)
+                _validate_member_path(info.name, seen=seen, label=label)
                 kind = _tar_kind(info, label=label)
                 row_size = int(info.size)
                 total_uncompressed = _check_member_limits(
@@ -166,16 +175,18 @@ def _tar_manifest(
                     limits=limits,
                     label=label,
                 )
-                _validate_member_path(info.name, seen=seen, label=label)
                 sha256 = ""
                 if kind == "file":
-                    member = archive.extractfile(info)
-                    if member is None:
-                        _raise_unsupported_kind(
-                            info.name, "missing regular-file data", label
-                        )
-                    with member:
-                        sha256 = _sha256_stream(member)
+                    try:
+                        member = archive.extractfile(info)
+                        if member is None:
+                            _raise_unsupported_kind(
+                                info.name, "missing regular-file data", label
+                            )
+                        with member:
+                            sha256 = _sha256_stream(member)
+                    except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
+                        _raise_member_unreadable(info.name, label=label, exc=exc)
                 rows.append(
                     ArchiveManifestRow(
                         path=info.name,
@@ -322,7 +333,7 @@ def _check_member_limits(
             [
                 failure(
                     "release archive member is not in retained manifest",
-                    expected="candidate archive members from the retained manifest",
+                    expected="published archive members from the retained manifest",
                     actual=f"{label} unexpected member {member_path!r}",
                     repair="restore matching model archives or cut the next version",
                 )
@@ -387,6 +398,21 @@ def _raise_unsupported_kind(path: str, kind: str, label: str) -> None:
     )
 
 
+def _raise_member_unreadable(path: str, *, label: str, exc: Exception) -> None:
+    raise DriverError(
+        [
+            failure(
+                "release archive member could not be read",
+                expected=(
+                    "readable, unencrypted archive member using standard compression"
+                ),
+                actual=f"{label} {path!r}: {type(exc).__name__}",
+                repair="rebuild the archive without encryption or unsupported compression",
+            )
+        ]
+    ) from None
+
+
 def _raise_malformed(path: Path, *, label: str, exc: Exception) -> None:
     raise DriverError(
         [
@@ -420,7 +446,7 @@ def _manifest_diff(expected: ArchiveManifest, actual: ArchiveManifest) -> str:
     )
     return (
         f"missing={missing} extra={extra} changed={changed} "
-        f"actual={_manifest_summary(actual, 'candidate archive')}"
+        f"actual={_manifest_summary(actual, 'published archive')}"
     )
 
 

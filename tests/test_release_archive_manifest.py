@@ -67,6 +67,8 @@ def _patch_zip_central_directory(
     *,
     external_attr: int | None = None,
     create_system: int | None = None,
+    flag_bits: int | None = None,
+    compress_type: int | None = None,
 ) -> None:
     data = bytearray(path.read_bytes())
     pos = 0
@@ -81,8 +83,18 @@ def _patch_zip_central_directory(
         if name == member:
             if create_system is not None:
                 data[idx + 5] = create_system
+            if flag_bits is not None:
+                struct.pack_into("<H", data, idx + 8, flag_bits)
+            if compress_type is not None:
+                struct.pack_into("<H", data, idx + 10, compress_type)
             if external_attr is not None:
                 struct.pack_into("<L", data, idx + 38, external_attr)
+            local_offset = struct.unpack_from("<L", data, idx + 42)[0]
+            if bytes(data[local_offset : local_offset + 4]) == b"PK\x03\x04":
+                if flag_bits is not None:
+                    struct.pack_into("<H", data, local_offset + 6, flag_bits)
+                if compress_type is not None:
+                    struct.pack_into("<H", data, local_offset + 8, compress_type)
             path.write_bytes(data)
             return
         pos = idx + 46 + name_len + extra_len + comment_len
@@ -141,6 +153,27 @@ def test_zip_archives_without_explicit_directory_entries_compare_clean(
         "pkg-1.0.dist-info/METADATA",
         "pkg/module.py",
     ]
+
+
+def test_zip_explicit_directory_entries_compare_clean(tmp_path: Path) -> None:
+    retained = tmp_path / "retained.whl"
+    published = tmp_path / "published.whl"
+    entries = [
+        (_zip_dir_info("pkg", mode=0o755), b""),
+        (_zip_file_info("pkg/module.py", mode=0o664), b"VALUE = 1\n"),
+    ]
+
+    _write_zip(retained, entries)
+    _write_zip(published, entries, reverse=True)
+
+    manifest = assert_archives_semantically_identical(retained, published)
+    assert manifest.rows[0] == ArchiveManifestRow(
+        path="pkg/",
+        kind="dir",
+        mode=0o755,
+        size=0,
+        sha256="",
+    )
 
 
 def test_duplicate_path_refuses(tmp_path: Path) -> None:
@@ -264,6 +297,34 @@ def test_zip_undecidable_permission_metadata_refuses(
     )
 
 
+def test_zip_encrypted_member_refuses_as_driver_error(tmp_path: Path) -> None:
+    archive = tmp_path / "encrypted.whl"
+    _write_zip(archive, [(_zip_file_info("pkg/file.txt"), b"content")])
+    _patch_zip_central_directory(archive, "pkg/file.txt", flag_bits=1)
+
+    with pytest.raises(DriverError) as excinfo:
+        archive_manifest(archive)
+
+    assert _first_error(excinfo) == "release archive member could not be read"
+    assert "RuntimeError" in excinfo.value.failures[0].actual
+    assert "pkg/file.txt" in excinfo.value.failures[0].actual
+
+
+def test_zip_unsupported_compression_refuses_as_driver_error(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "unsupported-compression.whl"
+    _write_zip(archive, [(_zip_file_info("pkg/file.txt"), b"content")])
+    _patch_zip_central_directory(archive, "pkg/file.txt", compress_type=99)
+
+    with pytest.raises(DriverError) as excinfo:
+        archive_manifest(archive)
+
+    assert _first_error(excinfo) == "release archive member could not be read"
+    assert "NotImplementedError" in excinfo.value.failures[0].actual
+    assert "pkg/file.txt" in excinfo.value.failures[0].actual
+
+
 def test_zip_symlink_refuses(tmp_path: Path) -> None:
     archive = tmp_path / "symlink.whl"
     _write_zip(
@@ -293,6 +354,18 @@ def test_unsafe_member_path_refuses(tmp_path: Path, member_path: str) -> None:
 
     with pytest.raises(DriverError) as excinfo:
         archive_manifest(archive)
+
+    assert _first_error(excinfo) == "release archive member path is unsafe"
+
+
+def test_tar_unsafe_path_refuses_before_limits(tmp_path: Path) -> None:
+    retained = tmp_path / "retained.tar.gz"
+    published = tmp_path / "published.tar.gz"
+    _write_tar(retained, [_tar_file_info("pkg/file.txt")], {"pkg/file.txt": b"a"})
+    _write_tar(published, [_tar_file_info("/abs.txt")], {"/abs.txt": b"abcd"})
+
+    with pytest.raises(DriverError) as excinfo:
+        assert_archives_semantically_identical(retained, published)
 
     assert _first_error(excinfo) == "release archive member path is unsafe"
 
