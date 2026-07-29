@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from packaging.version import InvalidVersion, Version
 
 import scripts.check_rust_release_manifest as checker
 import scripts.check_wheel_contents as wheel_checker
@@ -37,6 +38,7 @@ from scripts.release_build_host import BuildHostResult, SourceBundle
 from scripts.release_nvattest_proof import CHALLENGE_RE
 from scripts.transparency_core import collect_candidate_parts, snapshot_candidate
 from tests.helpers.release_candidate_fixtures import (
+    DRIFT_MODEL_VERSION,
     LOCK_SHA,
     MACOS_CORE,
     MACOS_HELPER,
@@ -2564,6 +2566,12 @@ def test_tool_skew_is_rejected_before_any_build(tmp_path: Path) -> None:
     )
 
 
+def test_drift_model_version_is_not_a_publishable_version() -> None:
+    with pytest.raises(InvalidVersion):
+        Version(DRIFT_MODEL_VERSION)
+    assert "-" not in DRIFT_MODEL_VERSION
+
+
 def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     env = _env()
@@ -2581,7 +2589,9 @@ def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None
     )
 
     (root / "packages" / "solstone-journal-models" / "pyproject.toml").write_text(
-        '[project]\nname = "solstone-journal-models"\nversion = "9.9.9"\n',
+        "[project]\n"
+        'name = "solstone-journal-models"\n'
+        f'version = "{DRIFT_MODEL_VERSION}"\n',
         encoding="utf-8",
     )
     recovered = _recover(root)
@@ -2650,7 +2660,7 @@ def test_default_build_local_dist_rejects_models_inventory_drift(
                     if path.name.startswith("solstone_journal_models-")
                 )
                 changed = models[0].name.replace(
-                    wheel_checker._models_version(), "9.9.9"
+                    wheel_checker._models_version(), DRIFT_MODEL_VERSION
                 )
                 models[0].unlink()
                 (dist / changed).write_bytes(b"package")

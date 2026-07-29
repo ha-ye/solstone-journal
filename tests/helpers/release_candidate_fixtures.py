@@ -79,6 +79,8 @@ from tests.helpers.release_wheel_fixtures import (
 )
 
 SOURCE_COMMIT = "a" * 40
+# PEP-440-invalid so it cannot collide with a real cut model version.
+DRIFT_MODEL_VERSION = "0.0.0.drift"
 _CORE_LOCK_CONTENT = "fixture lock\n"
 LOCK_SHA = hashlib.sha256(_CORE_LOCK_CONTENT.encode("utf-8")).hexdigest()
 _LINUX_X86_CORE = minimal_elf(ELF_MACHINE["x86_64"])

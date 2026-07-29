@@ -11,13 +11,14 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
 
 import scripts.check_rust_release_manifest as manifest
 import scripts.check_wheel_contents as wheel_checker
@@ -910,6 +911,30 @@ def _forbidden_archive_downloader(calls: list[str]) -> publisher.ArchiveDownload
     return download
 
 
+class _ArchiveResponse:
+    def __init__(
+        self,
+        *,
+        chunks: Sequence[bytes],
+        exc: BaseException | None = None,
+    ) -> None:
+        self.status_code = 200
+        self._chunks = chunks
+        self._exc = exc
+
+    def __enter__(self) -> "_ArchiveResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+        del chunk_size
+        yield from self._chunks
+        if self._exc is not None:
+            raise self._exc
+
+
 def _run_publish(
     config: publisher.PublishConfig,
     *,
@@ -953,6 +978,54 @@ def _run_publish_with_counted_seams(
 
 def _first_failure(error: DriverError) -> str:
     return error.failures[0].error
+
+
+def test_default_archive_downloader_request_exception_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "downloads" / "archive.whl"
+
+    def get(_url: str, **_kwargs: object) -> _ArchiveResponse:
+        return _ArchiveResponse(
+            chunks=(b"partial bytes",),
+            exc=requests.RequestException("stream failed"),
+        )
+
+    monkeypatch.setattr(requests, "get", get)
+
+    with pytest.raises(DriverError) as excinfo:
+        publisher.default_archive_downloader(
+            "https://files.example/archive.whl",
+            destination,
+            1024,
+        )
+
+    assert _first_failure(excinfo.value) == "release publish archive download failed"
+    assert not destination.exists()
+
+
+def test_default_archive_downloader_size_ceiling_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "downloads" / "archive.whl"
+
+    def get(_url: str, **_kwargs: object) -> _ArchiveResponse:
+        return _ArchiveResponse(chunks=(b"12345", b"67890"))
+
+    monkeypatch.setattr(requests, "get", get)
+
+    with pytest.raises(DriverError) as excinfo:
+        publisher.default_archive_downloader(
+            "https://files.example/archive.whl",
+            destination,
+            6,
+        )
+
+    assert (
+        _first_failure(excinfo.value)
+        == "release publish archive download exceeded retained size ceiling"
+    )
+    assert not destination.exists()
 
 
 def _queried_projects(index: RecordingIndex) -> set[tuple[str, str]]:
@@ -1627,6 +1700,50 @@ def test_reused_model_fetched_digest_mismatch_refuses_before_late_seams(
 
     assert _first_failure(excinfo.value) == (
         "release publish downloaded model archive digest mismatch"
+    )
+    late_seams.assert_zero()
+
+
+def test_reused_model_missing_archive_url_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = _model_remote_facts(remote_paths)
+    base_snapshot = _snapshot_with_models(model_files=remote_facts, train="empty")
+
+    def snapshot_missing_one_url(
+        projects: Sequence[publisher.ProjectExpectation],
+    ) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
+        snapshot = dict(base_snapshot(projects))
+        model_key = (publisher.MODEL_PROJECT, _models_version())
+        model_payload = dict(snapshot[model_key] or {})
+        urls = [dict(item) for item in model_payload["urls"]]
+        assert {item["filename"] for item in urls} == set(remote_facts)
+        urls[0].pop("url")
+        assert sum("url" not in item for item in urls) == 1
+        model_payload["urls"] = urls
+        snapshot[model_key] = model_payload
+        return snapshot
+
+    calls: list[str] = []
+    index = RecordingIndex(calls, [snapshot_missing_one_url])
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert (
+        _first_failure(excinfo.value)
+        == "release publish model project index file URL is missing"
     )
     late_seams.assert_zero()
 
