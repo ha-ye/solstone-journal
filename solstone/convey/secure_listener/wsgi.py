@@ -34,6 +34,8 @@ _DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
 WSGI_SEND_BRIDGE_POLL_SECONDS: Final[float] = 0.5
 WSGI_INPUT_READ_TIMEOUT_SECONDS: Final[float] = 120.0
 STREAMING_PERMIT_WAIT_TIMEOUT_SECONDS: Final[float] = 1.0
+# Five seconds dampens reconnect storms without making transient saturation stale.
+SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS: Final[int] = 5
 CAPACITY_SNAPSHOT_PATH: Final[str] = "/__solstone/secure-listener/capacity"
 _SAFE_STREAM_REFUSAL_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 # The cert-less pairing tunnel admits EXACTLY these endpoints (canonical +
@@ -411,6 +413,12 @@ async def dispatch_stream(
             503,
             "Service Unavailable",
             {"error": "secure listener capacity is full"},
+            extra_headers=(
+                (
+                    "Retry-After",
+                    str(SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS),
+                ),
+            ),
         )
         stream_writer.begin_drain(RESET_CTX_BODY_DISCARD_CANCELLATION)
         return DispatchResult(endpoint=endpoint, status=503)
@@ -513,16 +521,18 @@ async def write_json_response(
     payload: dict[str, Any],
     *,
     include_body: bool = True,
+    extra_headers: Iterable[tuple[str, str]] = (),
 ) -> None:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     response_body = body if include_body else b""
-    head = (
-        f"HTTP/1.1 {status_code} {reason}\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-    ).encode("ascii")
+    header_lines = [
+        f"HTTP/1.1 {status_code} {reason}\r\n",
+        "Content-Type: application/json\r\n",
+        f"Content-Length: {len(body)}\r\n",
+    ]
+    header_lines.extend(f"{name}: {value}\r\n" for name, value in extra_headers)
+    header_lines.extend(("Connection: close\r\n", "\r\n"))
+    head = "".join(header_lines).encode("ascii")
     await writer.write(head + response_body)
     await writer.close()
 
@@ -736,6 +746,7 @@ def _send_refusal_response(send: Callable[[bytes], None], method: str) -> None:
         "HTTP/1.1 503 Service Unavailable\r\n"
         "Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n"
+        f"Retry-After: {SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS}\r\n"
         "Connection: close\r\n"
         "\r\n"
     ).encode("ascii")

@@ -12,6 +12,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -2000,6 +2001,39 @@ async def test_content_length_json_response_does_not_take_streaming_permit(
 
 
 @pytest.mark.asyncio
+async def test_ordinary_capacity_refusal_carries_retry_after_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    fingerprint = "sha256:" + ("c" * 64)
+    _authorize_fingerprint(monkeypatch, fingerprint)
+    admission = _admission(capacity=1, streaming_capacity=0, refuse_when_full=True)
+    try:
+        with admission._lock:
+            admission._active_total = admission.config.capacity
+            for _ in range(admission.config.queue_limit):
+                admission._waiters.append(SimpleNamespace(queued_at=0.0))
+
+        status, headers, body, writer = await _dispatch_raw_request(
+            app,
+            pl_identity(fingerprint),
+            admission,
+            "GET",
+            "/app/network/api/status",
+        )
+
+        assert status == 503
+        assert writer.closed is True
+        assert headers["retry-after"] == str(
+            wsgi_module.SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS
+        )
+        assert b"secure listener capacity is full" in body
+    finally:
+        await _shutdown_admission(admission)
+
+
+@pytest.mark.asyncio
 async def test_get_streaming_response_refuses_before_body_when_lane_full(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2019,7 +2053,7 @@ async def test_get_streaming_response_refuses_before_body_when_lane_full(
     held = admission.try_acquire_streaming()
     assert held is not None
     try:
-        status, _headers, body, writer = await _dispatch_raw_request(
+        status, headers, body, writer = await _dispatch_raw_request(
             app,
             pl_identity(fingerprint),
             admission,
@@ -2030,6 +2064,9 @@ async def test_get_streaming_response_refuses_before_body_when_lane_full(
         snapshot = admission.snapshot()
         assert status == 503
         assert writer.closed is True
+        assert headers["retry-after"] == str(
+            wsgi_module.SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS
+        )
         assert b"secure listener streaming capacity is full" in body
         assert b"should-not-send" not in body
         assert snapshot["rejected"]["streaming"] == 1

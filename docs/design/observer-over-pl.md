@@ -142,7 +142,7 @@ prefix for history, stats, and SSE registration.
 The helper reads `g.identity` directly. PL identity is already stamped by
 Convey: `install_identity_stamper()` sets DL identity defaults at
 `solstone/convey/__init__.py:95-108`, while the secure listener stamps
-`request.environ["pl.identity"]` at `solstone/convey/secure_listener/wsgi.py:213-239`.
+`request.environ["pl.identity"]` at `solstone/convey/secure_listener/wsgi.py:472`.
 The identity shape is `mode`, `fingerprint`, `device_label`, `paired_at`, and
 `session_id` (`solstone/convey/secure_listener/identity.py:12-18`).
 
