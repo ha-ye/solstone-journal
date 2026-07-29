@@ -15,6 +15,9 @@ from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_install import ParakeetProviderError
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
+from solstone.think.speakers_analyze_installation import (
+    SpeakersAnalyzeInstallationResult,
+)
 
 
 @pytest.fixture
@@ -37,6 +40,15 @@ def vad_result() -> VadResult:
         speech_duration=5.0,
         has_speech=True,
         speech_segments=[(1.0, 6.0)],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _speakers_analyze_installation_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "check_speakers_analyze_installation",
+        lambda: SpeakersAnalyzeInstallationResult("ok"),
     )
 
 

@@ -57,6 +57,21 @@ def _default_thinking_engine_selected(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _speakers_analyze_generation_ready(monkeypatch):
+    class Generation:
+        generation_id = "test-generation"
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "begin_speakers_analyze_generation",
+        lambda **_kwargs: Generation(),
+    )
+
+
 class _ClockShim:
     def __init__(
         self,

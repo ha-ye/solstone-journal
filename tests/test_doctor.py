@@ -500,6 +500,52 @@ class TestParakeetCppSttReady:
         assert not journal.exists()
 
 
+class TestSpeakersAnalyzeInstallation:
+    def test_registered_for_journal_and_journal_readiness_only(self, doctor):
+        pair = (
+            doctor.SPEAKERS_ANALYZE_INSTALLATION_CHECK,
+            doctor.speakers_analyze_installation_check,
+        )
+
+        assert doctor.SPEAKERS_ANALYZE_INSTALLATION_CHECK.name in doctor.CHECK_MAP
+        assert pair in doctor.JOURNAL_CHECKS
+        assert pair in doctor.JOURNAL_READINESS_CHECKS
+        assert pair not in doctor.UNIVERSAL_CHECKS
+        assert pair not in doctor.READINESS_CHECKS
+        assert doctor.CHECK_MAP["speakers_analyze_installation"].severity == "blocker"
+
+    def test_ok_when_shared_invariant_is_ok(self, doctor, monkeypatch):
+        from solstone.think import speakers_analyze_installation as installation
+
+        monkeypatch.setattr(
+            installation,
+            "check_speakers_analyze_installation",
+            lambda: installation.SpeakersAnalyzeInstallationResult("ok"),
+        )
+
+        result = doctor.speakers_analyze_installation_check(args(doctor))
+
+        assert result.status == "ok"
+        assert result.detail == "speakers-analyze installation ready"
+
+    def test_fails_with_shared_repair_text(self, doctor, monkeypatch):
+        from solstone.think import speakers_analyze_installation as installation
+
+        monkeypatch.setattr(
+            installation,
+            "check_speakers_analyze_installation",
+            lambda: installation.SpeakersAnalyzeInstallationResult(
+                "asset-missing", "wespeaker"
+            ),
+        )
+
+        result = doctor.speakers_analyze_installation_check(args(doctor))
+
+        assert result.status == "fail"
+        assert "asset-missing" in result.detail
+        assert result.fix == installation.SPEAKERS_ANALYZE_REPAIR_TEXT
+
+
 class TestHostDependencies:
     def test_client_readiness_battery_is_host_free(self, doctor, monkeypatch):
         expected = [
@@ -516,6 +562,7 @@ class TestHostDependencies:
         for name in [
             "host_dependencies",
             "default_stt_ready",
+            "speakers_analyze_installation",
             "feature:pdf-import",
             "feature:pdf-export",
         ]:
@@ -542,6 +589,9 @@ class TestHostDependencies:
         assert selected[0][0] is doctor.HOST_DEPENDENCIES_CHECK
         assert selected[0][0].name == "host_dependencies"
         assert "default_stt_ready" in {check.name for check, _runner in selected}
+        assert "speakers_analyze_installation" in {
+            check.name for check, _runner in selected
+        }
         assert "feature:pdf-import" in {check.name for check, _runner in selected}
         assert "feature:pdf-export" in {check.name for check, _runner in selected}
 

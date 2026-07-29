@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from solstone.observe.model_assets import resolve_silero_vad_model
+from solstone.think.model_assets import resolve_silero_vad_model
 
 
 # The code below is adapted from https://github.com/snakers4/silero-vad.

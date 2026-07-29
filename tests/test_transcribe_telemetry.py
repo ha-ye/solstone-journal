@@ -17,10 +17,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from solstone.observe.transcribe.overlap import (
-    OverlapInferenceResult,
-    SpeakerWindowStats,
-)
+from solstone.apps.speakers.evidence import SpeakerEvidenceDecision
+from solstone.observe.transcribe.speakers_analyze_adapter import SpeakerAnalyzeResult
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
@@ -29,14 +27,15 @@ from tests.helpers.module_mocks import module_mock
 # A string that exists nowhere but in the (mocked) transcript. If it shows up in a
 # serialized event, transcript content leaked into telemetry.
 TRANSCRIPT_SENTINEL = "zzq-secret-utterance-do-not-leak"
-NO_SPEECH_STATS = (SpeakerWindowStats(0, 0, 0),)
 
 
-def _overlap_result() -> OverlapInferenceResult:
-    return OverlapInferenceResult(
-        0.0,
-        np.zeros((589, 7), dtype=np.float32),
-        NO_SPEECH_STATS,
+def _speaker_result(statements: list[dict]) -> SpeakerAnalyzeResult:
+    return SpeakerAnalyzeResult(
+        statements=[dict(statement) for statement in statements],
+        embeddings_data=None,
+        speaker_evidence=SpeakerEvidenceDecision("none", 0.0, 0.0),
+        overlap_fraction=0.0,
+        statement_labels=None,
     )
 
 
@@ -102,10 +101,9 @@ def _run_success(
             "solstone.observe.transcribe.main.get_backend",
             return_value=backend_module or _backend_module(),
         ),
-        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(statements),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -174,9 +172,10 @@ def test_success_event_carries_stage_timings_and_envelope(
     assert kwargs["outcome"] == "transcribed"
     timings = kwargs["timings"]
     # Stages that ran inside process_audio. decode/vad/reduce are measured in
-    # _process_one, which this test calls past; no speech-bearing evidence
-    # resolves the speaker decision to none, so diarization is skipped.
-    assert {"asr_ms", "embed_ms", "overlap_ms", "write_ms"} <= set(timings)
+    # _process_one, which this test calls past; the speaker decision is native.
+    assert {"asr_ms", "speakers_analyze_ms", "write_ms"} <= set(timings)
+    assert "embed_ms" not in timings
+    assert "overlap_ms" not in timings
     assert "diarize_ms" not in timings
     assert all(isinstance(v, int) and v >= 0 for v in timings.values())
 

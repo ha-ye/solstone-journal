@@ -17,6 +17,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1406,6 +1407,20 @@ def main():
 
     for ext in IMAGE_EXTENSIONS:
         sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
+
+    from solstone.think.speakers_analyze_installation import (
+        begin_speakers_analyze_generation,
+    )
+
+    try:
+        sensor._speakers_analyze_generation = begin_speakers_analyze_generation(
+            journal_path=journal
+        )
+    except Exception as exc:
+        message = f"Speakers-analyze installation is incomplete: {exc}"
+        logger.error(message)
+        print(message, file=sys.stderr)
+        raise SystemExit(78) from exc
 
     if args.day:
         day_dir = day_path(args.day)

@@ -1499,8 +1499,8 @@ def test_identify_fault_resume_forward_stages(speakers_env, monkeypatch, stage):
     _create_identify_cluster(env, 40, "120000_300")
     calls = {"failed": False}
 
-    def fail_once(seam: str) -> None:
-        if seam == stage and not calls["failed"]:
+    def fail_once(stage_name: str) -> None:
+        if stage_name == stage and not calls["failed"]:
             calls["failed"] = True
             raise RuntimeError(f"forced {stage}")
 

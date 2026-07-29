@@ -6,16 +6,12 @@
 from __future__ import annotations
 
 import logging
+import platform
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, Sequence
 
-from solstone.apps.speakers.encoder_config import (
-    DIARIZE_MIN_OVERLAP,
-    SLOT_ACTIVE_MIN_SHARE,
-    SPEAKER_EVIDENCE_MULTI_MIN,
-    SPEAKER_EVIDENCE_SINGLE_MAX,
-)
+from solstone.apps.speakers.evidence import SpeakerEvidenceDecision
 from solstone.observe.utils import SAMPLE_RATE
 
 if TYPE_CHECKING:
@@ -28,6 +24,10 @@ WINDOW_S = 10
 STRIDE_S = 5
 FRAMES_PER_WINDOW = 589
 OVERLAP_CLASSES = (4, 5, 6)
+SLOT_ACTIVE_MIN_SHARE = 0.10
+SPEAKER_EVIDENCE_MULTI_MIN = 0.05
+SPEAKER_EVIDENCE_SINGLE_MAX = 0.05
+DIARIZE_MIN_OVERLAP = 0.05
 
 # Tighter stride used when sharing pyannote output with the diarizer
 _DIARIZE_STRIDE_S = 2
@@ -39,12 +39,6 @@ class SpeakerWindowStats(NamedTuple):
     speech_frames: int
     active_slot_count: int
     overlap_frames: int
-
-
-class SpeakerEvidenceDecision(NamedTuple):
-    speaker_evidence: str
-    multi_window_fraction: float
-    mean_window_overlap_share: float
 
 
 class OverlapInferenceResult(NamedTuple):
@@ -132,8 +126,7 @@ def _get_overlap_session() -> ort.InferenceSession:
     import onnxruntime as ort
 
     if _overlap_session is None:
-        from solstone.observe.model_assets import resolve_pyannote_segmentation_model
-        from solstone.observe.transcribe.main import _select_onnx_providers
+        from solstone.think.model_assets import resolve_pyannote_segmentation_model
 
         pyannote_model_path = resolve_pyannote_segmentation_model()
         if not pyannote_model_path.is_file():
@@ -156,6 +149,12 @@ def _get_overlap_session() -> ort.InferenceSession:
         )
 
     return _overlap_session
+
+
+def _select_onnx_providers() -> list[str]:
+    if platform.system() == "Darwin":
+        return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def compute_overlap_fraction(

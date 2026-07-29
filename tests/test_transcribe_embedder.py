@@ -9,14 +9,15 @@ import platform
 import numpy as np
 import pytest
 
-from solstone.observe.transcribe.main import (
-    EMBEDDER_NAME,
+from tests.speaker_oracle import embedder
+from tests.speaker_oracle.embedder import (
+    ENCODER_ID,
     _compute_wespeaker_features,
     _embed_statements,
     _select_onnx_providers,
 )
 
-transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+oracle_embedder = importlib.import_module("tests.speaker_oracle.embedder")
 
 
 class _Input:
@@ -41,14 +42,14 @@ class _WeSpeakerStubSession:
 
 
 def test_embed_synthetic_shape_and_provenance(monkeypatch) -> None:
-    monkeypatch.setattr(transcribe_main, "_embedder_session", None)
+    monkeypatch.setattr(embedder, "_embedder_session", None)
     monkeypatch.setattr(
-        transcribe_main,
+        oracle_embedder,
         "_get_embedder_session",
         lambda: _WeSpeakerStubSession(),
     )
     monkeypatch.setattr(
-        transcribe_main,
+        oracle_embedder,
         "_compute_wespeaker_features",
         lambda _audio, _sr: np.zeros((10, 80), dtype=np.float32),
     )
@@ -63,7 +64,7 @@ def test_embed_synthetic_shape_and_provenance(monkeypatch) -> None:
     assert result["embeddings"].shape == (1, 256)
     assert result["embeddings"].dtype == np.float32
     assert result["statement_ids"].tolist() == [1]
-    assert result["encoder"].item() == EMBEDDER_NAME
+    assert result["encoder"].item() == ENCODER_ID
 
 
 def test_compute_wespeaker_features_applies_cmn() -> None:

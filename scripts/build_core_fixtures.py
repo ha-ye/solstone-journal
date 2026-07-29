@@ -24,6 +24,10 @@ from typing import Any
 
 import numpy as np
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from solstone.apps.speakers.encoder_config import (
     ACOUSTIC_HIGH,
     ACOUSTIC_MARGIN_MIN,
@@ -68,7 +72,17 @@ from solstone.apps.speakers.encoder_config import (
     VP_OUTLIER_MIN_SIMILARITY,
 )
 from solstone.convey.contract.assemble import CALLOSUM_REGISTRY
-from solstone.observe.transcribe.diarize import (
+from solstone.think import markdown as markdown_formatter
+from solstone.think.cogitate_contract import (
+    COGITATE_ACCESS_TIERS,
+    COGITATE_READ_TOOL_NAMES,
+    COGITATE_RUNTIME_PREAMBLE,
+    FUTURE_ACCESS_TIERS,
+    TALENT_FINALIZATION_MODES,
+    capabilities_for_access_tier,
+)
+from solstone.think.indexer.edges import EDGES_SCHEMA_VERSION, _ensure_edges_schema
+from tests.speaker_oracle.diarize import (
     AHC_LINKAGE,
     AHC_METRIC,
     FRAMES_PER_WINDOW,
@@ -85,45 +99,34 @@ from solstone.observe.transcribe.diarize import (
     _silhouette,
     _wespeaker_features,
 )
-from solstone.observe.transcribe.diarize import (
+from tests.speaker_oracle.diarize import (
     SAMPLE_RATE as DIARIZE_SAMPLE_RATE,
 )
-from solstone.observe.transcribe.diarize import (
+from tests.speaker_oracle.diarize import (
     STRIDE_S as DIARIZE_STRIDE_S,
 )
-from solstone.observe.transcribe.diarize import (
+from tests.speaker_oracle.diarize import (
     WINDOW_S as DIARIZE_WINDOW_S,
 )
-from solstone.observe.transcribe.main import _compute_wespeaker_features
-from solstone.observe.transcribe.overlap import (
+from tests.speaker_oracle.embedder import _compute_wespeaker_features
+from tests.speaker_oracle.overlap import (
     _DIARIZE_STRIDE_S as OVERLAP_DIARIZE_STRIDE_S,
 )
-from solstone.observe.transcribe.overlap import (
+from tests.speaker_oracle.overlap import (
     FRAMES_PER_WINDOW as OVERLAP_FRAMES_PER_WINDOW,
 )
-from solstone.observe.transcribe.overlap import (
+from tests.speaker_oracle.overlap import (
     OVERLAP_CLASSES,
     _speaker_window_stats,
     decide_speaker_evidence,
 )
-from solstone.observe.transcribe.overlap import (
+from tests.speaker_oracle.overlap import (
     STRIDE_S as OVERLAP_STRIDE_S,
 )
-from solstone.observe.transcribe.overlap import (
+from tests.speaker_oracle.overlap import (
     WINDOW_S as OVERLAP_WINDOW_S,
 )
-from solstone.think import markdown as markdown_formatter
-from solstone.think.cogitate_contract import (
-    COGITATE_ACCESS_TIERS,
-    COGITATE_READ_TOOL_NAMES,
-    COGITATE_RUNTIME_PREAMBLE,
-    FUTURE_ACCESS_TIERS,
-    TALENT_FINALIZATION_MODES,
-    capabilities_for_access_tier,
-)
-from solstone.think.indexer.edges import EDGES_SCHEMA_VERSION, _ensure_edges_schema
 
-ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = ROOT / "core" / "fixtures"
 CALLOSUM_ARTIFACT_PATH = FIXTURE_DIR / "callosum_registry.json"
 COGITATE_ARTIFACT_PATH = FIXTURE_DIR / "cogitate_contract.json"

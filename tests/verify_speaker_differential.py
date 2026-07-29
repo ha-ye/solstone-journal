@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Differential harness for the local speaker pipeline.
-
-The bundle schema says ``statements`` everywhere because
-``solstone.observe.transcribe.main`` owns the production pipeline vocabulary.
-At the single boundary into ``solstone.observe.transcribe.diarize``, those same
-records are passed as that module's local ``sentences`` parameter.
-"""
+"""Differential harness for the frozen Python speaker oracle."""
 
 from __future__ import annotations
 
@@ -26,7 +20,6 @@ from typing import Any
 
 import numpy as np
 
-from solstone.observe.transcribe import diarize, overlap
 from solstone.observe.vad import AudioReduction, restore_statement_timestamps
 from solstone.think.utils import get_rev
 from tests._speaker_differential_fixtures import (
@@ -42,8 +35,7 @@ from tests._speaker_differential_fixtures import (
     SAMPLE_RATE,
     STATEMENT_DURATION_ABS_TOLERANCE,
 )
-
-transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+from tests.speaker_oracle import diarize, embedder, overlap
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +230,7 @@ def _provenance(producer: str) -> dict[str, Any]:
         },
         "onnx_execution_providers": {
             "statement_encoder": _session_providers(
-                getattr(transcribe_main, "_embedder_session", None)
+                getattr(embedder, "_embedder_session", None)
             ),
             "interval_encoder": _session_providers(
                 getattr(diarize, "_wespeaker_session", None)
@@ -863,7 +855,7 @@ def emit_speaker_bundle(
         _refresh_provenance(bundle, producer)
         return bundle
 
-    embedding_result = transcribe_main._embed_statements(
+    embedding_result = embedder._embed_statements(
         stt_buffer,
         working_statements,
         sample_rate,

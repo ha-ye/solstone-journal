@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 
 from solstone.apps.speakers import encoder_config
-from solstone.observe.transcribe import diarize
 from tests import verify_speaker_differential as harness
 from tests import verify_speaker_verdict as verdict
 from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
 from tests._speaker_differential_fixtures import EMBEDDING_MAX_ABS_TOLERANCE
+from tests.speaker_oracle import diarize
 from tests.test_speaker_differential import _emit_model_free_bundle
 
 

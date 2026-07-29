@@ -12,16 +12,14 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from solstone.apps.speakers.evidence import SpeakerEvidenceDecision
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
     REASON_NO_DECODABLE_AUDIO,
     SCHEMA,
     STATE_EMPTY,
 )
-from solstone.observe.transcribe.overlap import (
-    OverlapInferenceResult,
-    SpeakerWindowStats,
-)
+from solstone.observe.transcribe.speakers_analyze_adapter import SpeakerAnalyzeResult
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.data_state import (
@@ -39,14 +37,15 @@ SOUND_TAGS = {
     "windows": 1,
     "tags": {"Music": 0.201, "Silence": 0.5},
 }
-CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
 
 
-def _overlap_result() -> OverlapInferenceResult:
-    return OverlapInferenceResult(
-        0.0,
-        np.zeros((589, 7), dtype=np.float32),
-        CLEAN_SINGLE_STATS,
+def _speaker_result(statements: list[dict]) -> SpeakerAnalyzeResult:
+    return SpeakerAnalyzeResult(
+        statements=[dict(statement) for statement in statements],
+        embeddings_data=None,
+        speaker_evidence=SpeakerEvidenceDecision("single", 0.0, 0.0),
+        overlap_fraction=0.0,
+        statement_labels=None,
     )
 
 
@@ -148,10 +147,9 @@ def test_process_audio_speech_writes_sound_tags_and_keeps_audio(
             "solstone.observe.transcribe.main.get_backend",
             return_value=_backend_module(),
         ),
-        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(statements),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -170,7 +168,9 @@ def test_process_audio_speech_writes_sound_tags_and_keeps_audio(
     assert mock_send.call_args.kwargs["outcome"] == "transcribed"
 
 
-def test_empty_statements_filter_path(raw_path, audio_buffer, vad_result):
+def test_zero_statement_header_omits_speaker_analysis_producer(
+    raw_path, audio_buffer, vad_result
+):
     from solstone.observe.transcribe.main import process_audio
 
     with (
@@ -196,6 +196,7 @@ def test_empty_statements_filter_path(raw_path, audio_buffer, vad_result):
     assert jsonl_path.exists()
     header = _read_header(jsonl_path)
     _assert_empty_record(header)
+    assert "speaker_analysis_producer" not in header
     assert "sound_tags" not in header
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "filtered"

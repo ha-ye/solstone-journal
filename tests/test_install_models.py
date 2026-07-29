@@ -100,7 +100,7 @@ def test_verify_bundled_assets_returns_when_hashes_match(
     )
     monkeypatch.setattr(
         install_models,
-        "PYANNOTE_OVERLAP_MODEL_SHA256",
+        "OVERLAP_DETECTOR_SHA256",
         _sha256(b"pyannote"),
     )
 
@@ -124,7 +124,7 @@ def test_verify_bundled_assets_reports_mutated_asset(
     )
     monkeypatch.setattr(
         install_models,
-        "PYANNOTE_OVERLAP_MODEL_SHA256",
+        "OVERLAP_DETECTOR_SHA256",
         _sha256(b"pyannote"),
     )
 

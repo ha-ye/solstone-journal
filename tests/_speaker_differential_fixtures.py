@@ -9,9 +9,9 @@ there must not silently change this instrument's inputs.  The differential also
 needs materially different shapes: multi-window log-prob matrices and embeddings
 that survive real AHC, not the monkeypatched clustering used by older unit tests.
 
-DRY still binds for production constants: thresholds and frame geometry are
-imported from their real homes.  Only comparator tolerances are declared here,
-with enough room for float noise while staying far below branch margins.
+The speaker-plane Python algorithm is now a frozen test oracle.  Comparator
+tolerances live here, with enough room for float noise while staying far below
+branch margins.
 """
 
 from __future__ import annotations
@@ -20,15 +20,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from solstone.observe.transcribe.diarize import (
+from tests.speaker_oracle.diarize import (
     FRAMES_PER_WINDOW,
     MIN_INTERVAL_S,
     SAMPLE_RATE,
     SINGLE_SPEAKER_CLASSES,
     WINDOW_S,
 )
-from solstone.observe.transcribe.main import EMBEDDER_NAME, MIN_STATEMENT_DURATION
-from solstone.observe.transcribe.overlap import OVERLAP_CLASSES, SpeakerWindowStats
+from tests.speaker_oracle.embedder import EMBEDDER_NAME, MIN_STATEMENT_DURATION
+from tests.speaker_oracle.overlap import OVERLAP_CLASSES, SpeakerWindowStats
 
 # Comparator tolerances.  These are instrument tolerances, not production
 # thresholds.  They allow small float drift while preserving all branch decisions.

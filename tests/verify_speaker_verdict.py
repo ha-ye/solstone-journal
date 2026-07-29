@@ -47,10 +47,10 @@ from scipy.optimize import linear_sum_assignment
 
 from solstone.apps.speakers import encoder_config
 from solstone.apps.speakers.attribution import _passes_acoustic_margin
-from solstone.observe.transcribe import diarize
 from solstone.think.entities.voiceprints import normalize_embedding
 from solstone.think.utils import get_rev
 from tests import verify_speaker_differential as differential
+from tests.speaker_oracle import diarize
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ REFERENCE_CENTROIDS_SCHEMA = "solstone-speaker-verdict-centroids"
 SCHEMA_VERSION = 1
 REFERENCE_CENTROIDS_MANIFEST_KEY = "__speaker_verdict_centroids_manifest_json__"
 
-DIARIZE_MODULE = "solstone.observe.transcribe.diarize"
+DIARIZE_MODULE = "tests.speaker_oracle.diarize"
 ENCODER_MODULE = "solstone.apps.speakers.encoder_config"
 _MISSING = object()
 

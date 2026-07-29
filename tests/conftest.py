@@ -190,6 +190,46 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
 
 
 @pytest.fixture(autouse=True)
+def _speakers_analyze_startup_invariant_ready(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Keep unit tests independent of the installed native helper wheel.
+
+    tests/test_speakers_analyze_installation.py exercises the real invariant
+    directly; other unit tests patch specific failure modes when needed.
+    """
+    if Path(str(request.node.path)).name == "test_speakers_analyze_installation.py":
+        return
+
+    from solstone.think import speakers_analyze_installation as installation
+
+    class _NoopLease:
+        def release(self) -> None:
+            return None
+
+    def begin_ready_generation(
+        **_kwargs: object,
+    ) -> installation.SpeakersAnalyzeGeneration:
+        generation_id = "test-speakers-analyze-generation"
+        os.environ[installation.GENERATION_ENV_KEY] = generation_id
+        return installation.SpeakersAnalyzeGeneration(
+            generation_id=generation_id,
+            lease=_NoopLease(),
+        )
+
+    monkeypatch.setattr(
+        installation,
+        "check_speakers_analyze_installation",
+        lambda **_kwargs: installation.SpeakersAnalyzeInstallationResult("ok"),
+    )
+    monkeypatch.setattr(
+        installation,
+        "begin_speakers_analyze_generation",
+        begin_ready_generation,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _default_local_backend_vulkan(monkeypatch, request):
     from solstone.think.providers import local_cuda, local_install
 

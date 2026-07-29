@@ -7,14 +7,14 @@ import math
 from pathlib import Path
 
 from solstone.apps.speakers import attribution, candidate_tracker, encoder_config, owner
-from solstone.observe.transcribe.main import (
-    OVERLAP_DETECTOR_ID as MAIN_OVERLAP_DETECTOR_ID,
-)
-from solstone.observe.transcribe.main import PYANNOTE_OVERLAP_MODEL_SHA256
 
 
 def test_locked_constants():
     assert encoder_config.ENCODER_ID == "wespeaker-resnet34-256"
+    assert (
+        encoder_config.WESPEAKER_MODEL_SHA256
+        == "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
+    )
     assert encoder_config.OWNER_THRESHOLD == 0.43
     assert encoder_config.OWNER_MARGIN_MIN == 0.05
     assert encoder_config.SOLO_CLUSTER_MIN_COSINE == 0.43
@@ -40,8 +40,11 @@ def test_locked_constants():
     assert encoder_config.SPEAKER_EVIDENCE_SINGLE_MAX == 0.05
     assert encoder_config.DIARIZE_MIN_OVERLAP == 0.05
     assert encoder_config.SPEAKER_EVIDENCE_VERSION == "windowed-slots-v1"
-    assert encoder_config.OVERLAP_DETECTOR_ID == MAIN_OVERLAP_DETECTOR_ID
-    assert encoder_config.OVERLAP_DETECTOR_SHA256 == PYANNOTE_OVERLAP_MODEL_SHA256
+    assert encoder_config.OVERLAP_DETECTOR_ID == "pyannote-segmentation-3.0-onnx"
+    assert (
+        encoder_config.OVERLAP_DETECTOR_SHA256
+        == "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25"
+    )
     assert encoder_config.MERGE_THRESHOLD == 0.72
     assert encoder_config.SPLIT_THRESHOLD == 0.55
     assert encoder_config.STABILITY_THRESHOLD == 0.25

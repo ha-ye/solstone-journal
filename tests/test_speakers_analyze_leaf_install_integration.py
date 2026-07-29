@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.speakers_analyze_handshake import (
+from solstone.think.speakers_analyze_installation import (
     runtime_has_speakers_analyze_wheel_coverage,
 )
 
@@ -55,15 +55,15 @@ def test_cpu_leaf_install_reaches_speakers_analyze_helper(tmp_path: Path) -> Non
     )
     assert install.returncode == 0, install.stderr or install.stdout
 
-    handshake = subprocess.run(
+    invariant = subprocess.run(
         [
             str(python),
             "-c",
             "\n".join(
                 [
-                    "from solstone.think.speakers_analyze_handshake import check_speakers_analyze_handshake",
-                    "result = check_speakers_analyze_handshake()",
-                    'print(f"handshake status={result.status!r} message={result.message!r}")',
+                    "from solstone.think.speakers_analyze_installation import check_speakers_analyze_installation",
+                    "result = check_speakers_analyze_installation()",
+                    'print(f"installation status={result.status!r} message={result.message!r}")',
                     "raise SystemExit(0 if result.status == 'ok' else 1)",
                 ]
             ),
@@ -73,5 +73,5 @@ def test_cpu_leaf_install_reaches_speakers_analyze_helper(tmp_path: Path) -> Non
         check=False,
         timeout=120,
     )
-    print(handshake.stdout, end="")
-    assert handshake.returncode == 0, handshake.stderr or handshake.stdout
+    print(invariant.stdout, end="")
+    assert invariant.returncode == 0, invariant.stderr or invariant.stdout

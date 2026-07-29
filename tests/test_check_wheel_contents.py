@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -29,6 +30,7 @@ from tests.helpers.release_wheel_fixtures import (
 )
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_wheel_contents.py"
+ROOT = Path(__file__).resolve().parents[1]
 CPU_TYPE_X86_64 = 0x01000007
 SPEAKERS_LIBRARY = b"fixture libonnxruntime.so.1 GLIBC_2.27\n"
 SPEAKERS_LICENSE = b"fixture license\n"
@@ -91,6 +93,34 @@ def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_production_imports_do_not_reach_deleted_speaker_plane_or_oracle() -> None:
+    forbidden_exact = {
+        "kaldi_native_fbank",
+        "solstone.observe.model_assets",
+        "solstone.observe.transcribe.diarize",
+        "solstone.observe.transcribe.overlap",
+        "solstone.observe.transcribe.speakers_analyze_seam",
+        "solstone.think.speakers_analyze_handshake",
+        "solstone.think.speakers_analyze_runtime",
+    }
+    forbidden_prefixes = ("tests.speaker_oracle",)
+    violations: list[str] = []
+    for path in sorted((ROOT / "solstone").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            module_names: list[str] = []
+            if isinstance(node, ast.Import):
+                module_names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                module_names = [node.module]
+            for module_name in module_names:
+                if module_name in forbidden_exact or module_name.startswith(
+                    forbidden_prefixes
+                ):
+                    violations.append(f"{path.relative_to(ROOT)} imports {module_name}")
+    assert violations == []
 
 
 def test_core_wheel_validator_accepts_static_manylinux_wheel(tmp_path: Path) -> None:

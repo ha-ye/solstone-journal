@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from solstone.apps.speakers.encoder_config import SPEAKER_EVIDENCE_VERSION
+from solstone.apps.speakers.evidence import VALID_SPEAKER_EVIDENCE_DECISIONS
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def _read_segment_speaker_evidence(jsonl_path: Path) -> SegmentSpeakerEvidence:
     speaker_evidence = header.get("speaker_evidence")
     version = header.get("speaker_evidence_version")
     if (
-        speaker_evidence not in {"none", "single", "multi"}
+        speaker_evidence not in VALID_SPEAKER_EVIDENCE_DECISIONS
         or version != SPEAKER_EVIDENCE_VERSION
     ):
         return UNKNOWN_SPEAKER_EVIDENCE

@@ -12,8 +12,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from solstone.observe.transcribe.speakers_analyze_errors import SpeakerAnalyzeError
 from solstone.observe.vad import VadResult
+from solstone.think.speakers_analyze_installation import (
+    SpeakersAnalyzeInstallationResult,
+)
 from tests.helpers.journal_config import seed_journal_config
+
+
+@pytest.fixture(autouse=True)
+def _speaker_installation_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "check_speakers_analyze_installation",
+        lambda: SpeakersAnalyzeInstallationResult("ok"),
+    )
 
 
 def _args(backend: str | None = None) -> argparse.Namespace:
@@ -215,6 +228,157 @@ def test_all_batch_processes_unprocessed_skips_transcribed(
     captured = capsys.readouterr()
     assert "1 processed" in captured.out
     assert "1 skipped" in captured.out
+
+
+def test_all_batch_counts_typed_speaker_failure_and_continues(
+    tmp_path, monkeypatch, capsys
+):
+    journal = _make_batch_journal(tmp_path)
+    extra = journal / "chronicle" / "20260101" / "default" / "180000_300" / "audio.flac"
+    extra.touch()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr("sys.argv", ["sol transcribe", "--all"])
+
+    calls: list[Path] = []
+
+    def process_one(audio_path, *_args):
+        calls.append(audio_path)
+        if len(calls) == 1:
+            raise SpeakerAnalyzeError(
+                path=audio_path,
+                stage="invoke",
+                reason="unavailable",
+                native_exit_code=75,
+            )
+
+    with (
+        patch("solstone.observe.transcribe.main._process_one", side_effect=process_one),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+    ):
+        from solstone.observe.transcribe.main import main
+
+        main()
+
+    assert len(calls) == 2
+    captured = capsys.readouterr()
+    assert "1 processed" in captured.out
+    assert "1 skipped" in captured.out
+    assert "1 failed" in captured.out
+
+
+def test_all_batch_generic_exception_aborts(tmp_path, monkeypatch):
+    journal = _make_batch_journal(tmp_path)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr("sys.argv", ["sol transcribe", "--all"])
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main._process_one",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+    ):
+        from solstone.observe.transcribe.main import main
+
+        with pytest.raises(RuntimeError, match="boom"):
+            main()
+
+
+def test_all_batch_provider_blocked_is_deferred_not_failed(
+    tmp_path, monkeypatch, capsys
+):
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    journal = _make_batch_journal(tmp_path)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr("sys.argv", ["sol transcribe", "--all"])
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main._process_one",
+            side_effect=SystemExit(EXIT_PROVIDER_BLOCKED),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+    ):
+        from solstone.observe.transcribe.main import main
+
+        main()
+
+    captured = capsys.readouterr()
+    assert "1 deferred" in captured.out
+    assert "failed" not in captured.out
+
+
+def test_single_file_typed_speaker_failure_exits_one(tmp_path, monkeypatch):
+    journal = _make_batch_journal(tmp_path)
+    audio_file = (
+        journal / "chronicle" / "20260101" / "default" / "090000_300" / "audio.flac"
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr("sys.argv", ["sol transcribe", str(audio_file)])
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main._process_one",
+            side_effect=SpeakerAnalyzeError(
+                path=audio_file,
+                stage="invoke",
+                reason="unavailable",
+                native_exit_code=75,
+            ),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+    ):
+        from solstone.observe.transcribe.main import main
+
+        with pytest.raises(SystemExit) as exc:
+            main()
+
+    assert exc.value.code == 1
 
 
 def test_all_redo_reprocesses_transcribed(tmp_path, monkeypatch):

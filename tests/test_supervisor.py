@@ -36,6 +36,19 @@ from tests.helpers.module_mocks import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _speakers_analyze_installation_ready(monkeypatch):
+    from solstone.think.speakers_analyze_installation import (
+        SpeakersAnalyzeInstallationResult,
+    )
+
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "check_speakers_analyze_installation",
+        lambda: SpeakersAnalyzeInstallationResult("ok"),
+    )
+
+
 def _mlx_readiness(
     *,
     model_installed: bool = True,

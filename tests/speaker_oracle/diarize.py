@@ -15,9 +15,9 @@ sentences list, matching the transcript `speaker` field format.  Sentences
 with no single-speaker interval coverage get None.
 
 Public API:
-    from solstone.observe.transcribe.diarize import diarize, diarize_auto_k
+    from tests.speaker_oracle.diarize import diarize, diarize_auto_k
 
-    labels = diarize(wav_path, sentences)            # auto-estimate k
+    labels = diarize(wav_path, sentences)                # auto-estimate k
     labels = diarize(wav_path, sentences, n_speakers=4)  # known k
 """
 
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from solstone.observe.model_assets import (
+from solstone.think.model_assets import (
     resolve_pyannote_segmentation_model,
     resolve_wespeaker_model,
 )

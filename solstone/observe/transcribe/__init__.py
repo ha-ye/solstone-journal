@@ -34,7 +34,7 @@ Backend Interface:
         "end": float,           # seconds
         "text": str,            # transcribed text
         "words": list[dict] | None,  # word-level data if available
-        "speaker": int | None,  # speaker ID assigned by local diarization
+        "speaker": int | None,  # speaker ID assigned by native speaker analysis
     }
 
     Word format (when available):

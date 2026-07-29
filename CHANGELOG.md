@@ -4,6 +4,13 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Changed
+
+- speaker analysis now uses the native helper only. if the helper is missing, damaged, or returns invalid data, journal startup and transcription fail loudly instead of falling back to the old python speaker path.
+- new transcript headers name `solstone-core-speakers-analyze-v1` as the speaker-analysis producer whenever the helper actually ran, including when it declines speaker labels. transcripts with no speech-bearing statements still omit the field because no speaker-analysis producer touched them.
+
 ## [1.0.18] - 2026-07-28
 
 ### Added

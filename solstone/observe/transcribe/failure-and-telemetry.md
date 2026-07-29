@@ -63,6 +63,7 @@ Backend-specific policy:
 | Stranded confidential channel before dispatch and local RAM below floor | Fail (`1`) | `resolve_default_backend` surfaces the local-STT requirement before `_process_one`; no JSONL is written, input audio stays on disk, and the segment remains `incomplete`. |
 | Confidential hosted STT 400/413 or bad 200 contract | Defer (`69`) | Hosted STT is operated infrastructure. A 400 can be an engine-side regression, and owner audio is irreplaceable; preserving it for a post-fix drain is safer than failing permanently. |
 | Confidential hosted STT unreachable, backpressured, or unexpected status | Defer (`69`) | These are service-side or lane-side conditions. The deferred event carries the reason so health surfaces can show the condition without leaking content. |
+| Native speakers-analyze helper exits non-zero, times out, exceeds stream bounds, emits malformed JSON, or violates the response schema | Fail (`1`) | Speaker analysis is now the only speaker plane. A failed helper leaves the input audio on disk and writes no transcript or embedding archive. |
 | HTTP 5xx from a live server, malformed JSON, contract violation | Fail (`1`) | The server answered — it is broken, not absent. Retrying the same request reproduces it. |
 | Malformed request or bad URL scheme (`LocalProtocolError`, `UnsupportedProtocol`) | Fail (`1`) | These are transport errors, but the bug is on *our* side of the wire. A retry cannot fix them, and deferring would hide the bug behind a daily retry forever. |
 | Anything else unexpected | Fail (`1`) | Surface it. |
@@ -112,6 +113,7 @@ Every deferred and failed event carries a machine-readable `reason`.
 | `hosted_transcribe_unreachable` | confidential backend | The hosted STT POST timed out or failed at the transport layer, or required local credential/device header data was unavailable. |
 | `hosted_transcribe_contract_failed` | confidential backend | Hosted STT returned 200 with invalid JSON, a non-object body, or a body that violated the expected word-timing contract. |
 | `hosted_transcribe_unexpected_status` | confidential backend | Hosted STT returned a non-200 status outside the named rejected/backpressure buckets. |
+| `speaker_analysis_native_failure` | native speakers-analyze typed failure | Speaker analysis failed after STT. The event carries content-free native attribution fields below; the local log carries full details. |
 | *(provider reason code)* | failed path | On a hard failure from a provider error — e.g. `transcription_http_error`, `invalid_json`, `contract_violation`. |
 | *(exception type name)* | failed path | On any other hard failure. |
 
@@ -145,6 +147,10 @@ One event name, five outcomes. Every attempt emits exactly one event.
 | `vad_duration`, `vad_speech`, `noisy`, RMS/loud stats | VAD summary | always |
 | `duration_ms` | total wall-clock of `process_audio` | success |
 | `day`, `segment`, `observer` | provenance | when derivable |
+| `speaker_analysis_failure_path` | currently `native` | failed native speakers-analyze path only |
+| `speaker_analysis_failure_stage` | `request` \| `invoke` \| `parse` \| `payload` | failed native speakers-analyze path only |
+| `speaker_analysis_failure_reason` | lowercase machine label, e.g. `timeout`, `stdout-too-large`, `malformed-response`, `embedding-payload-size-mismatch` | failed native speakers-analyze path only |
+| `speaker_analysis_failure_native_exit_code` | helper exit code, including negative signal codes | failed native speakers-analyze path only, when known |
 
 ### Timing stages
 
@@ -158,9 +164,7 @@ the jsonl and the npz) reports its total.
 | `vad_ms` | `run_vad` |
 | `reduce_ms` | `reduce_audio` (absent when reduction was skipped) |
 | `asr_ms` | `stt_transcribe` — the STT call itself |
-| `embed_ms` | sentence-embedding generation |
-| `overlap_ms` | overlap + log-prob computation |
-| `diarize_ms` | local diarization (absent when skipped — the common case) |
+| `speakers_analyze_ms` | native helper request construction, invocation, response validation, speaker evidence, diarization, and statement embeddings |
 | `write_ms` | jsonl + npz writes |
 
 Deferred and failed events carry whatever completed before the failure — typically

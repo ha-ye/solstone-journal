@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from solstone.observe.model_assets import (
+from solstone.think.model_assets import (
     ModelsDistributionUnavailable,
     resolve_wespeaker_model,
 )

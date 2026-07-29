@@ -76,7 +76,7 @@ let your human know: **open http://localhost:5015 in a browser**. the first-run 
 
 a `solstone-journal` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
 
-Pick one of `solstone-journal` or `solstone-journal-cuda` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime and model are ready.
+Pick one of `solstone-journal` or `solstone-journal-cuda` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime, native speaker-analysis helper, and bundled models are ready.
 
 This CUDA extra is only for transcription. The Linux local model provider picks its own GPU backend: on NVIDIA GPUs from the RTX 30 series up with a current NVIDIA driver (580 series or newer), it runs natively on CUDA; the runtime downloads from updates.solstone.app as a checksum-pinned bundle. On other hardware GPUs (AMD, Intel, or older NVIDIA) it uses Vulkan. CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
 

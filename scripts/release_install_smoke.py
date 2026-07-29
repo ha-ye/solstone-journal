@@ -39,7 +39,7 @@ from scripts.check_wheel_contents import (
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
 from solstone.apps.speakers.encoder_config import WESPEAKER_EMBEDDING_WIDTH
-from solstone.observe.model_assets import (
+from solstone.think.model_assets import (
     PYANNOTE_SEGMENTATION_MODEL_FILENAME,
     WESPEAKER_MODEL_FILENAME,
 )

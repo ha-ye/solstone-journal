@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Transcribe audio files with pluggable STT backends and sentence-level embeddings.
+"""Transcribe audio files with pluggable STT and native speaker analysis.
 
 Transcription pipeline:
 1. VAD stage: Run Silero VAD to detect speech and filter silent files early
 2. Audio reduction: Trim long silence gaps for faster processing
 3. Transcription: Dispatch to the configured or resource-aware STT backend
-4. Embeddings: Generate voice embeddings for each sentence using wespeaker-resnet34
+4. Speaker analysis: Call the native helper for labels, evidence, and embeddings
 5. Output: JSONL format compatible with format_audio() in observe/hear.py
 
 Output files:
 - <stem>.jsonl: Transcript with HH:MM:SS timestamps and optional speaker labels
-- <stem>.npz: Sentence-level voice embeddings indexed by statement id
+- <stem>.npz: Native helper embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
 - transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "confidential"). If unset, auto-selected by lane and resources.
@@ -44,7 +44,6 @@ import datetime
 import json
 import logging
 import os
-import platform
 import resource
 import sys
 import time
@@ -61,13 +60,10 @@ from solstone.apps.settings.install_copy import (
     STT_NO_LOCAL_STT_RECOVERY,
 )
 from solstone.apps.speakers.encoder_config import (
-    ENCODER_ID,
     OVERLAP_DETECTOR_ID,
-    OVERLAP_DETECTOR_SHA256,
     SPEAKER_EVIDENCE_VERSION,
 )
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
-from solstone.observe.model_assets import resolve_wespeaker_model
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
     REASON_CORRUPT_INPUT,
@@ -94,6 +90,11 @@ from solstone.observe.transcribe.resource import (
     stt_local_floor_bytes,
 )
 from solstone.observe.transcribe.sound_tags import tag_audio
+from solstone.observe.transcribe.speakers_analyze_errors import (
+    SPEAKER_ANALYSIS_FAILURE_LABEL,
+    SPEAKER_ANALYSIS_FAILURE_REASON,
+    SpeakerAnalyzeError,
+)
 from solstone.observe.utils import (
     SAMPLE_RATE,
     AudioDecodeError,
@@ -119,11 +120,12 @@ from solstone.think.utils import (
     setup_cli,
 )
 
+SPEAKERS_ANALYZE_EX_CONFIG = 78
+
 if TYPE_CHECKING:
     import numpy as np
-    import onnxruntime as ort
 
-    from solstone.observe.transcribe.overlap import SpeakerEvidenceDecision
+    from solstone.apps.speakers.evidence import SpeakerEvidenceDecision
     from solstone.observe.vad import AudioReduction, VadResult
 
 # Re-export defaults for backwards compatibility
@@ -139,15 +141,6 @@ DEFAULT_MIN_SPEECH_SECONDS = 1.0
 
 # Minimum statement duration for embedding (seconds)
 MIN_STATEMENT_DURATION = 0.3
-
-EMBEDDER_NAME = ENCODER_ID
-WESPEAKER_MODEL_SHA256 = (
-    "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
-)
-PYANNOTE_OVERLAP_MODEL_SHA256 = OVERLAP_DETECTOR_SHA256
-
-# Module-level embedder cache
-_embedder_session: ort.InferenceSession | None = None
 
 
 def _join_missing_fields(fields: list[str]) -> str:
@@ -276,79 +269,6 @@ def _surface_stt_requirement(
         else STT_DETECTED_MEMORY_TEMPLATE.format(available_gb=available_gb)
     )
     logging.error("%s %s %s", requirement, detected, STT_NO_LOCAL_STT_RECOVERY)
-
-
-def _select_onnx_providers() -> list[str]:
-    """Return the ONNX Runtime provider list for this host.
-
-    Darwin (any arch) prefers CoreML with CPU fallback; elsewhere, CPU only.
-    """
-    if platform.system() == "Darwin":
-        return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
-    return ["CPUExecutionProvider"]
-
-
-def _get_embedder_session() -> ort.InferenceSession:
-    """Return a cached ONNX InferenceSession for the WeSpeaker encoder."""
-    global _embedder_session
-
-    if _embedder_session is None:
-        import onnxruntime as ort
-
-        wespeaker_model_path = resolve_wespeaker_model()
-        if not wespeaker_model_path.is_file():
-            raise FileNotFoundError(
-                f"WeSpeaker model asset not found at {wespeaker_model_path}. "
-                "Run `make install` to verify the bundled asset."
-            )
-        providers = _select_onnx_providers()
-        start = time.monotonic()
-        _embedder_session = ort.InferenceSession(
-            str(wespeaker_model_path),
-            providers=providers,
-        )
-        elapsed = time.monotonic() - start
-        logging.info(
-            "wespeaker session loaded providers=%s elapsed=%.2fs",
-            _embedder_session.get_providers(),
-            elapsed,
-        )
-
-    return _embedder_session
-
-
-def _compute_wespeaker_features(audio: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Compute Kaldi-style fbank features for the bundled WeSpeaker encoder."""
-    import kaldi_native_fbank as knf
-    import numpy as np
-
-    if sample_rate != SAMPLE_RATE:
-        raise ValueError(
-            f"WeSpeaker embedder requires {SAMPLE_RATE} Hz audio, got {sample_rate}"
-        )
-
-    opts = knf.FbankOptions()
-    opts.frame_opts.samp_freq = float(sample_rate)
-    opts.frame_opts.dither = 0.0
-    opts.frame_opts.snip_edges = True
-    opts.frame_opts.frame_length_ms = 25.0
-    opts.frame_opts.frame_shift_ms = 10.0
-    opts.mel_opts.num_bins = 80
-    opts.energy_floor = 0.0
-    opts.use_energy = False
-
-    fbank = knf.OnlineFbank(opts)
-    scaled = (audio.astype(np.float32) * 32768.0).tolist()
-    fbank.accept_waveform(float(sample_rate), scaled)
-    fbank.input_finished()
-
-    frames = [fbank.get_frame(i) for i in range(fbank.num_frames_ready)]
-    if not frames:
-        return np.zeros((0, 80), dtype=np.float32)
-
-    feats = np.stack(frames, axis=0).astype(np.float32)
-    feats = feats - feats.mean(axis=0, keepdims=True)
-    return feats
 
 
 def _get_jsonl_path(audio_path: Path) -> Path:
@@ -530,6 +450,8 @@ def _failure_reason(exc: Exception) -> str:
     Provider errors already carry a reason code; anything else is labelled by its
     exception type.
     """
+    if isinstance(exc, SpeakerAnalyzeError):
+        return SPEAKER_ANALYSIS_FAILURE_REASON
     if isinstance(exc, ParakeetProviderError):
         return exc.reason_code
     return type(exc).__name__
@@ -546,6 +468,8 @@ def _failure_label(exc: Exception) -> str:
     guarantee structural instead of a per-exception audit that any new provider
     error could quietly break.
     """
+    if isinstance(exc, SpeakerAnalyzeError):
+        return SPEAKER_ANALYSIS_FAILURE_LABEL
     return type(exc).__name__
 
 
@@ -602,114 +526,6 @@ def _build_base_event(
     return event
 
 
-def _embed_statements(
-    audio: np.ndarray,
-    statements: list[dict],
-    sample_rate: int,
-) -> dict[str, np.ndarray] | None:
-    """Generate voice embeddings for each statement.
-
-    Args:
-        audio: Audio buffer (float32, mono)
-        statements: List of statements
-        sample_rate: Sample rate in Hz
-
-    Returns:
-        Dict with embedding data or None on error:
-        - embeddings: (N, 256) float32 array
-        - statement_ids: (N,) int32 array of statement IDs
-        - encoder: 0-d array naming the embedder
-    """
-    import numpy as np
-
-    try:
-        session = _get_embedder_session()
-        audio_duration = len(audio) / sample_rate
-        input_name = session.get_inputs()[0].name
-        output_name = session.get_outputs()[0].name
-
-        # Filter statements with valid timestamps and sufficient duration
-        # Defensive: handle None timestamps, clamp to audio bounds
-        valid_statements = []
-        for s in statements:
-            start = s.get("start")
-            end = s.get("end")
-
-            # Skip if timestamps are None or invalid
-            if start is None or end is None:
-                continue
-            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
-                continue
-
-            # Clamp to audio bounds
-            start = max(0.0, min(start, audio_duration))
-            end = max(0.0, min(end, audio_duration))
-
-            # Check duration after clamping
-            if end - start >= MIN_STATEMENT_DURATION:
-                valid_statements.append({"id": s["id"], "start": start, "end": end})
-
-        if not valid_statements:
-            logging.info("No statements with sufficient duration for embedding")
-            return None
-
-        logging.info(f"Embedding {len(valid_statements)} statements...")
-        t0 = time.perf_counter()
-
-        embeddings = []
-        statement_ids = []
-        durations = []
-        skipped = 0
-
-        for stmt in valid_statements:
-            start_sample = int(stmt["start"] * sample_rate)
-            end_sample = int(stmt["end"] * sample_rate)
-            stmt_audio = audio[start_sample:end_sample]
-
-            # Skip if too short after slicing
-            if len(stmt_audio) < int(MIN_STATEMENT_DURATION * sample_rate):
-                skipped += 1
-                continue
-
-            try:
-                feats = _compute_wespeaker_features(stmt_audio, sample_rate)
-                if feats.shape[0] == 0:
-                    skipped += 1
-                    continue
-                emb = session.run([output_name], {input_name: feats[None, :, :]})[0]
-                embeddings.append(emb[0].astype(np.float32))
-                statement_ids.append(stmt["id"])
-                durations.append((end_sample - start_sample) / SAMPLE_RATE)
-            except Exception:
-                logging.exception(
-                    "wespeaker embedding failed for statement %s", stmt["id"]
-                )
-                skipped += 1
-                continue
-
-        embed_time = time.perf_counter() - t0
-
-        if not embeddings:
-            logging.warning("No embeddings generated")
-            return None
-
-        logging.info(
-            f"  Embedded {len(embeddings)} statements "
-            f"(skipped {skipped}) in {embed_time:.2f}s"
-        )
-
-        return {
-            "embeddings": np.stack(embeddings, axis=0).astype(np.float32),
-            "statement_ids": np.asarray(statement_ids, dtype=np.int32),
-            "durations_s": np.asarray(durations, dtype=np.float32),
-            "encoder": np.array(EMBEDDER_NAME),
-        }
-
-    except Exception:
-        logging.exception("failed to load WeSpeaker embedder")
-        return None
-
-
 def _statements_to_jsonl(
     statements: list[dict],
     raw_filename: str,
@@ -743,7 +559,7 @@ def _statements_to_jsonl(
         backend: Optional STT backend name (e.g., "parakeet")
         overlap_fraction: Optional fraction of speech containing overlapping speakers
         overlap_detector: Optional overlap detector identifier
-        speaker_evidence: Optional local diarization engagement decision
+        speaker_evidence: Optional native speaker-evidence decision
         processing_record: Optional _solstone_processing record
         sound_tags: Optional ambient sound-tag metadata
         speaker_analysis_producer: Optional segment-level speaker analysis producer id
@@ -813,7 +629,7 @@ def _statements_to_jsonl(
         if source:
             entry["source"] = source
 
-        # Pass through speaker ID if present from local diarization.
+        # Pass through speaker ID if present from native speaker analysis.
         if "speaker" in stmt:
             entry["speaker"] = stmt["speaker"]
 
@@ -894,7 +710,7 @@ def process_audio(
 
     This is the main orchestration function that coordinates:
     - STT backend dispatch
-    - Embedding generation
+    - Native speaker analysis
     - Output file writing
     - Event emission
 
@@ -1048,18 +864,11 @@ def process_audio(
         if suffix.endswith("_audio") and suffix != "audio":
             source = suffix[:-6]  # Remove "_audio" suffix
 
-        speaker_analysis_event_fields: dict[str, object] = {}
-        speaker_analysis_producer: str | None = None
-        native_completed = False
-
-        from solstone.observe.transcribe.speakers_analyze_seam import (
-            EXIT_CONFIG as SPEAKERS_ANALYZE_EXIT_CONFIG,
-        )
-        from solstone.observe.transcribe.speakers_analyze_seam import (
+        from solstone.observe.transcribe.speakers_analyze_adapter import (
             PRODUCER_ID as SPEAKERS_ANALYZE_PRODUCER_ID,
         )
-        from solstone.observe.transcribe.speakers_analyze_seam import (
-            maybe_run_native_speaker_analysis,
+        from solstone.observe.transcribe.speakers_analyze_adapter import (
+            analyze_speakers,
         )
 
         def native_restored_statements() -> list[dict]:
@@ -1069,116 +878,22 @@ def process_audio(
 
             return restore_statement_timestamps(statements, reduction)
 
-        native_result = maybe_run_native_speaker_analysis(
-            journal=journal_path,
-            raw_path=raw_path,
-            full_audio=audio_buffer,
-            statement_audio=stt_buffer,
-            reduced_audio=reduced_audio,
-            statements_pre_restore=statements,
-            statements_restored=native_restored_statements,
-            sample_rate=SAMPLE_RATE,
-            min_statement_duration=MIN_STATEMENT_DURATION,
-        )
-        if native_result.status == "config_error":
-            event.update(native_result.event_fields)
-            _emit_transcribed(
-                event,
-                outcome="failed",
-                timings=timings,
-                backend=resolved_backend,
-                model_info=model_info,
-                backend_config=backend_config,
-                audio_seconds=audio_seconds,
-                reduced_seconds=reduced_seconds,
-                reason=str(
-                    native_result.event_fields.get(
-                        "speaker_analysis_reason", "speaker-analysis-config"
-                    )
-                ),
-                error="speaker_analysis_config",
+        with timings.time("speakers_analyze"):
+            speaker_result = analyze_speakers(
+                raw_path=raw_path,
+                full_audio=audio_buffer,
+                statement_audio=stt_buffer,
+                reduced_audio=reduced_audio,
+                statements_pre_restore=statements,
+                statements_restored=native_restored_statements,
+                sample_rate=SAMPLE_RATE,
+                min_statement_duration=MIN_STATEMENT_DURATION,
             )
-            raise SystemExit(SPEAKERS_ANALYZE_EXIT_CONFIG)
-        if native_result.status == "accepted":
-            assert native_result.statements is not None
-            assert native_result.speaker_evidence is not None
-            assert native_result.overlap_fraction is not None
-            statements = native_result.statements
-            embeddings_data = native_result.embeddings_data
-            speaker_evidence = native_result.speaker_evidence
-            overlap_fraction_value = native_result.overlap_fraction
-            speaker_analysis_event_fields.update(native_result.event_fields)
-            speaker_analysis_producer = SPEAKERS_ANALYZE_PRODUCER_ID
-            native_completed = True
-        elif native_result.status == "fallback":
-            speaker_analysis_event_fields.update(native_result.event_fields)
-
-        if not native_completed:
-            # Generate embeddings before timestamp restoration
-            # Use reduced audio buffer if available for consistent timestamps
-            with timings.time("embed"):
-                embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
-            from solstone.observe.transcribe.overlap import (
-                compute_overlap_and_logprobs,
-                decide_speaker_evidence,
-            )
-
-            with timings.time("overlap"):
-                overlap_result = compute_overlap_and_logprobs(audio_buffer)
-                speaker_evidence = decide_speaker_evidence(
-                    overlap_result.overlap_fraction,
-                    overlap_result.window_stats,
-                )
-                overlap_fraction_value = overlap_result.overlap_fraction
-                pyannote_logprobs = overlap_result.avg_log_probs
-
-            # Restore original timestamps if audio was reduced.
-            if reduction:
-                from solstone.observe.vad import restore_statement_timestamps
-
-                statements = restore_statement_timestamps(statements, reduction)
-                logging.info(
-                    f"  Restored timestamps from reduced audio "
-                    f"({reduction.reduced_duration:.1f}s -> {reduction.original_duration:.1f}s)"
-                )
-
-            # Local speaker diarization for backends that produce no speaker labels.
-            # Reuse the pyannote log-probs computed above so the diarizer skips its
-            # own pyannote pass when the speaker-evidence gate engages it.
-            if speaker_evidence.speaker_evidence != "multi":
-                logging.info(
-                    "  Skipping diarization: speaker_evidence=%s overlap=%.2f "
-                    "multi_window_fraction=%.2f",
-                    speaker_evidence.speaker_evidence,
-                    overlap_fraction_value,
-                    speaker_evidence.multi_window_fraction,
-                )
-            else:
-                try:
-                    from solstone.observe.transcribe.diarize import diarize_auto_k
-
-                    with timings.time("diarize"):
-                        labels = diarize_auto_k(
-                            raw_path,
-                            statements,
-                            avg_log_probs=pyannote_logprobs,
-                            audio=audio_buffer,
-                        )
-                    assigned = 0
-                    for stmt, lbl in zip(statements, labels):
-                        if lbl is not None:
-                            stmt["speaker"] = lbl
-                            assigned += 1
-                    logging.info(
-                        "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
-                        assigned,
-                        len(statements),
-                        overlap_fraction_value,
-                    )
-                except Exception:
-                    logging.exception(
-                        "Local diarization failed; speaker labels will be absent"
-                    )
+        statements = speaker_result.statements
+        embeddings_data = speaker_result.embeddings_data
+        speaker_evidence = speaker_result.speaker_evidence
+        overlap_fraction_value = speaker_result.overlap_fraction
+        speaker_analysis_producer = SPEAKERS_ANALYZE_PRODUCER_ID
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
@@ -1251,7 +966,6 @@ def process_audio(
         except ValueError:
             rel_output = jsonl_path
         event["output"] = rel_output
-        event.update(speaker_analysis_event_fields)
 
         _emit_transcribed(
             event,
@@ -1328,12 +1042,36 @@ def process_audio(
         )
         raise SystemExit(EXIT_PROVIDER_BLOCKED) from e
 
+    except SpeakerAnalyzeError as e:
+        logging.error(
+            "Native speaker analysis failed for %s: %s",
+            raw_path,
+            e,
+            exc_info=True,
+        )
+        try:
+            event = _build_base_event(raw_path, vad_result, segment, observer)
+            event.update(e.event_fields())
+            _emit_transcribed(
+                event,
+                outcome="failed",
+                timings=timings,
+                backend=resolved_backend,
+                model_info=model_info,
+                backend_config=backend_config,
+                audio_seconds=audio_seconds,
+                reduced_seconds=reduced_seconds,
+                reason=_failure_reason(e),
+                error=_failure_label(e),
+            )
+        except Exception:
+            logging.exception("Failed to emit transcription failure event")
+        raise
+
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
         try:
             event = _build_base_event(raw_path, vad_result, segment, observer)
-            if "speaker_analysis_event_fields" in locals():
-                event.update(speaker_analysis_event_fields)
             _emit_transcribed(
                 event,
                 outcome="failed",
@@ -1536,7 +1274,7 @@ def _process_one(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transcribe audio files using pluggable STT with sentence embeddings"
+        description="Transcribe audio files using pluggable STT and native speaker analysis"
     )
     parser.add_argument(
         "audio_path",
@@ -1576,6 +1314,15 @@ def main():
         transcribe_config,
         journal_config=config,
     )
+    from solstone.think.speakers_analyze_installation import (
+        check_speakers_analyze_installation,
+    )
+
+    speakers_installation = check_speakers_analyze_installation()
+    if not speakers_installation.ok:
+        print(speakers_installation.message, file=sys.stderr)
+        logging.error(speakers_installation.message)
+        raise SystemExit(SPEAKERS_ANALYZE_EX_CONFIG)
 
     if args.all:
         processed = 0
@@ -1602,6 +1349,13 @@ def main():
                             default_backend,
                         )
                         processed += 1
+                    except SpeakerAnalyzeError:
+                        logging.error(
+                            "Native speaker analysis failed for %s",
+                            audio_file,
+                            exc_info=True,
+                        )
+                        failed += 1
                     except SystemExit as exit_signal:
                         # A provider deferral is per-file, not per-batch: the audio is
                         # preserved for the next run and the batch moves on. SystemExit
@@ -1611,12 +1365,6 @@ def main():
                             raise
                         logging.info("Deferred (provider not ready): %s", audio_file)
                         deferred += 1
-                    except Exception:
-                        logging.error(
-                            f"Failed to transcribe {audio_file}", exc_info=True
-                        )
-                        failed += 1
-
         summary = f"{processed} processed, {skipped} skipped (already transcribed)"
         if deferred:
             summary += f", {deferred} deferred (provider not ready, will retry)"
@@ -1653,7 +1401,10 @@ def main():
             f"but parent is: {audio_path.parent.name}"
         )
 
-    _process_one(audio_path, args, transcribe_config, default_backend)
+    try:
+        _process_one(audio_path, args, transcribe_config, default_backend)
+    except SpeakerAnalyzeError as exc:
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

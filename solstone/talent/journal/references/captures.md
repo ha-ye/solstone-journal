@@ -186,7 +186,7 @@ Example transcript file:
 - `start` – timestamp in HH:MM:SS format (required)
 - `text` – transcribed text (required)
 - `source` – audio source: "mic" or "sys" (optional)
-- `speaker` – speaker identifier, numeric or string (optional, from local diarization)
+- `speaker` – speaker identifier, numeric or string (optional, from native speaker analysis)
 - `corrected` – legacy LLM-corrected version of text, still present in some existing journals
 - `description` – legacy tone or delivery description, e.g., "enthusiastic", "questioning", still present in some existing journals
 

@@ -4271,7 +4271,6 @@ journal-host = [
     { name = "huggingface-hub" },
     { name = "icalendar" },
     { name = "jsonschema" },
-    { name = "kaldi-native-fbank" },
     { name = "litellm" },
     { name = "markdown" },
     { name = "mistune" },
@@ -4321,6 +4320,7 @@ pdf-import = [
 [package.dev-dependencies]
 dev = [
     { name = "freezegun" },
+    { name = "kaldi-native-fbank" },
     { name = "onnx" },
     { name = "pypdf" },
     { name = "pytest" },
@@ -4352,7 +4352,6 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'journal-host'", specifier = ">=0.24" },
     { name = "icalendar", marker = "extra == 'journal-host'" },
     { name = "jsonschema", marker = "extra == 'journal-host'", specifier = ">=4.26,<5" },
-    { name = "kaldi-native-fbank", marker = "extra == 'journal-host'", specifier = ">=1.22" },
     { name = "litellm", marker = "extra == 'journal-host'", specifier = "==1.86.1" },
     { name = "markdown", marker = "extra == 'journal-host'" },
     { name = "mistune", marker = "extra == 'journal-host'" },
@@ -4406,6 +4405,7 @@ provides-extras = ["pdf-import", "pdf-export", "pdf", "journal-host", "journal",
 [package.metadata.requires-dev]
 dev = [
     { name = "freezegun" },
+    { name = "kaldi-native-fbank", specifier = ">=1.22" },
     { name = "onnx" },
     { name = "pypdf", specifier = ">=4.0.0" },
     { name = "pytest" },

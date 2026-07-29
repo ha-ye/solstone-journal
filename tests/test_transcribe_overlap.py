@@ -50,7 +50,7 @@ def _dominant_log_probs(classes: np.ndarray) -> np.ndarray:
 
 
 def test_compute_overlap_fraction_silent_audio_returns_zero(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     monkeypatch.setattr(
         overlap,
@@ -66,7 +66,7 @@ def test_compute_overlap_fraction_silent_audio_returns_zero(monkeypatch):
 
 
 def test_compute_overlap_fraction_short_audio_padded(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     monkeypatch.setattr(
         overlap,
@@ -83,7 +83,7 @@ def test_compute_overlap_fraction_short_audio_padded(monkeypatch):
 
 
 def test_compute_overlap_fraction_non_aligned_length(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     monkeypatch.setattr(
         overlap,
@@ -98,15 +98,15 @@ def test_compute_overlap_fraction_non_aligned_length(monkeypatch):
 
 
 def test_compute_overlap_fraction_rejects_wrong_sample_rate():
-    from solstone.observe.transcribe.overlap import compute_overlap_fraction
+    from tests.speaker_oracle.overlap import compute_overlap_fraction
 
     with pytest.raises(ValueError, match="requires 16000 Hz audio"):
         compute_overlap_fraction(np.zeros(16000, dtype=np.float32), sample_rate=8000)
 
 
 def test_get_overlap_session_loads_and_caches(monkeypatch, tmp_path):
-    from solstone.observe import model_assets
-    from solstone.observe.transcribe import overlap
+    from solstone.think import model_assets
+    from tests.speaker_oracle import overlap
 
     model = tmp_path / "seg.onnx"
     model.write_bytes(b"stub")
@@ -137,7 +137,7 @@ def test_get_overlap_session_loads_and_caches(monkeypatch, tmp_path):
 
 
 def test_compute_overlap_fraction_uses_conditioned_formula(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     classes = np.concatenate(
         [
@@ -160,7 +160,7 @@ def test_compute_overlap_fraction_uses_conditioned_formula(monkeypatch):
 
 
 def test_compute_overlap_and_logprobs_returns_fraction_and_logprobs(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     classes = np.concatenate(
         [
@@ -186,7 +186,7 @@ def test_compute_overlap_and_logprobs_returns_fraction_and_logprobs(monkeypatch)
 
 
 def test_decide_speaker_evidence_solo_one_slot_returns_single():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.0,
@@ -198,7 +198,7 @@ def test_decide_speaker_evidence_solo_one_slot_returns_single():
 
 
 def test_decide_speaker_evidence_slot_permuted_windows_return_single(monkeypatch):
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     monkeypatch.setattr(
         overlap,
@@ -225,7 +225,7 @@ def test_decide_speaker_evidence_slot_permuted_windows_return_single(monkeypatch
 
 
 def test_decide_speaker_evidence_turn_taking_returns_multi():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.0,
@@ -236,7 +236,7 @@ def test_decide_speaker_evidence_turn_taking_returns_multi():
 
 
 def test_decide_speaker_evidence_overlap_heavy_returns_multi():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.8,
@@ -247,7 +247,7 @@ def test_decide_speaker_evidence_overlap_heavy_returns_multi():
 
 
 def test_decide_speaker_evidence_all_silence_returns_none():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.0,
@@ -259,7 +259,7 @@ def test_decide_speaker_evidence_all_silence_returns_none():
 
 
 def test_decide_speaker_evidence_overlap_fraction_term_engages_multi():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.5,
@@ -270,7 +270,7 @@ def test_decide_speaker_evidence_overlap_fraction_term_engages_multi():
 
 
 def test_decide_speaker_evidence_branch_four_overlap_ambiguity_returns_multi():
-    from solstone.observe.transcribe import overlap
+    from tests.speaker_oracle import overlap
 
     decision = overlap.decide_speaker_evidence(
         0.0,

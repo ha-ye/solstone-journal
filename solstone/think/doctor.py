@@ -132,6 +132,9 @@ DEFAULT_STT_READY_CHECK = Check("default_stt_ready", "advisory", ("linux", "darw
 PARAKEET_CPP_STT_READY_CHECK = Check(
     "parakeet_cpp_stt_ready", "advisory", ("linux", "darwin")
 )
+SPEAKERS_ANALYZE_INSTALLATION_CHECK = Check(
+    "speakers_analyze_installation", "blocker", ("linux", "darwin")
+)
 _PARAKEET_CPP_INSTALL_FIX = (
     "parakeet-cpp artifacts are not installed — fetch them with: "
     "journal install-provider parakeet"
@@ -1228,6 +1231,20 @@ def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
     return _parakeet_cpp_ready_result(check)
 
 
+def speakers_analyze_installation_check(args: Args) -> CheckResult:
+    del args
+    from solstone.think.speakers_analyze_installation import (
+        SPEAKERS_ANALYZE_REPAIR_TEXT,
+        check_speakers_analyze_installation,
+    )
+
+    check = SPEAKERS_ANALYZE_INSTALLATION_CHECK
+    result = check_speakers_analyze_installation()
+    if result.ok:
+        return make_result(check, "ok", "speakers-analyze installation ready")
+    return make_result(check, "fail", result.message, SPEAKERS_ANALYZE_REPAIR_TEXT)
+
+
 def _make_feature_check(
     feat_name: str,
 ) -> tuple[Check, Runner]:
@@ -1285,6 +1302,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
     (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
+    (SPEAKERS_ANALYZE_INSTALLATION_CHECK, speakers_analyze_installation_check),
     (SKILL_STATE_CHECK, skill_state_check),
     *FEATURE_CHECKS.values(),
 ]
@@ -1303,6 +1321,7 @@ JOURNAL_READINESS_CHECKS: list[tuple[Check, Runner]] = [
     *READINESS_CHECKS,
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
     (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
+    (SPEAKERS_ANALYZE_INSTALLATION_CHECK, speakers_analyze_installation_check),
     *FEATURE_CHECKS.values(),
 ]
 

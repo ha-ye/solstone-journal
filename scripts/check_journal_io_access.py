@@ -152,8 +152,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Provider cache-local nvattest artifacts and install single-flight lock.
         "solstone/think/providers/nvattest_install.py",
         "solstone/think/providers/runtime_health.py",
-        # Native speakers-analyze circuit breaker.
-        "solstone/think/speakers_analyze_runtime.py",
+        # Native speakers-analyze install-generation proof record and lease.
+        "solstone/think/speakers_analyze_installation.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).

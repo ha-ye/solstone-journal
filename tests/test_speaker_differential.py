@@ -28,7 +28,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from solstone.observe.transcribe import diarize, overlap
 from solstone.observe.vad import AudioReduction, SpeechSegment
 from tests import verify_speaker_differential as harness
 from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
@@ -43,6 +42,7 @@ from tests._speaker_differential_fixtures import (
     model_free_case,
     real_model_waveform,
 )
+from tests.speaker_oracle import diarize, embedder, overlap
 
 CACHE_MUTATION_TIMEOUT_S = 2.0
 CACHE_MUTATION_JOIN_TIMEOUT_S = 1.0
@@ -103,7 +103,7 @@ def _install_model_free_patches(
         fake_compute_overlap_and_logprobs,
     )
     monkeypatch.setattr(
-        harness.transcribe_main,
+        embedder,
         "_embed_statements",
         fake_embed_statements,
     )
@@ -679,10 +679,10 @@ def test_real_model_emitter_wiring_records_provenance_and_reuses_pyannote(
     # Prep measured this path at about 0.1s warm and 0.25s cold on this host,
     # well under the 15s global pytest timeout; keep this unmarked by integration.
     monkeypatch.setattr(overlap, "_overlap_session", None)
-    monkeypatch.setattr(harness.transcribe_main, "_embedder_session", None)
+    monkeypatch.setattr(embedder, "_embedder_session", None)
     monkeypatch.setattr(diarize, "_wespeaker_session", None)
     overlap_session = overlap._get_overlap_session()
-    harness.transcribe_main._get_embedder_session()
+    embedder._get_embedder_session()
     diarize._get_wespeaker_session()
     counting_session = _CountingSession(overlap_session)
     monkeypatch.setattr(overlap, "_overlap_session", counting_session)

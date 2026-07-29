@@ -123,7 +123,7 @@
                 "type": "object"
               },
               "speaker_evidence": {
-                "description": "Windowed slot evidence decision for local diarization engagement. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed.",
+                "description": "Windowed slot evidence decision from native speaker analysis. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed.",
                 "enum": [
                   "single",
                   "multi",

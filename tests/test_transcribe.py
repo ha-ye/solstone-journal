@@ -6,6 +6,7 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from solstone.apps.speakers.encoder_config import ENCODER_ID
+from solstone.apps.speakers.evidence import SpeakerEvidenceDecision
 from solstone.observe import utils as observe_utils
 from solstone.observe.transcribe import (
     DEFAULT_MIN_SPEECH_SECONDS,
@@ -23,30 +26,37 @@ from solstone.observe.transcribe import (
     build_statement,
     build_statements_from_acoustic,
 )
-from solstone.observe.transcribe.main import EMBEDDER_NAME, _statements_to_jsonl
-from solstone.observe.transcribe.overlap import (
-    OverlapInferenceResult,
-    SpeakerEvidenceDecision,
-    SpeakerWindowStats,
+from solstone.observe.transcribe.main import _statements_to_jsonl
+from solstone.observe.transcribe.speakers_analyze_adapter import (
+    PRODUCER_ID as SPEAKERS_ANALYZE_PRODUCER_ID,
+)
+from solstone.observe.transcribe.speakers_analyze_adapter import (
+    SpeakerAnalyzeResult,
 )
 from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError, load_audio
 from solstone.observe.vad import AudioReduction, SpeechSegment, VadResult
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.npz import load_npz
 from solstone.think.media import AUDIO_EXTENSIONS
-
-CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
-MULTI_STATS = (SpeakerWindowStats(589, 2, 300),)
+from tests._repo_inventory import assert_inventory_unchanged, repository_inventory
 
 
-def _overlap_result(
-    overlap_fraction: float,
-    avg_log_probs: np.ndarray | None = None,
-    window_stats: tuple[SpeakerWindowStats, ...] = CLEAN_SINGLE_STATS,
-) -> OverlapInferenceResult:
-    if avg_log_probs is None:
-        avg_log_probs = np.zeros((589, 7), dtype=np.float32)
-    return OverlapInferenceResult(overlap_fraction, avg_log_probs, window_stats)
+def _speaker_result(
+    statements: list[dict],
+    *,
+    embeddings_data: dict[str, np.ndarray] | None = None,
+    speaker_evidence: SpeakerEvidenceDecision | None = None,
+    overlap_fraction: float = 0.0,
+    statement_labels: list[int | None] | None = None,
+) -> SpeakerAnalyzeResult:
+    return SpeakerAnalyzeResult(
+        statements=[dict(statement) for statement in statements],
+        embeddings_data=embeddings_data,
+        speaker_evidence=speaker_evidence
+        or SpeakerEvidenceDecision("single", 0.0, 0.0),
+        overlap_fraction=overlap_fraction,
+        statement_labels=statement_labels,
+    )
 
 
 class TestBuildStatementsFromAcoustic:
@@ -478,7 +488,7 @@ class TestEmbeddingsFormat:
 
             embeddings = np.random.randn(5, 256).astype(np.float32)
             statement_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32)
-            encoder = np.array(EMBEDDER_NAME)
+            encoder = np.array(ENCODER_ID)
 
             np.savez_compressed(
                 npz_path,
@@ -490,7 +500,7 @@ class TestEmbeddingsFormat:
             loaded = np.load(npz_path)
             np.testing.assert_array_almost_equal(loaded["embeddings"], embeddings)
             np.testing.assert_array_equal(loaded["statement_ids"], statement_ids)
-            assert loaded["encoder"].item() == EMBEDDER_NAME
+            assert loaded["encoder"].item() == ENCODER_ID
 
     def test_statement_ids_are_unique(self):
         """Statement IDs should be unique."""
@@ -544,12 +554,8 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
         patch(
-            "solstone.observe.transcribe.main._embed_statements",
-            return_value=embeddings_data,
-        ),
-        patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.0),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(statements, embeddings_data=embeddings_data),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
         patch(
@@ -613,12 +619,8 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
         patch(
-            "solstone.observe.transcribe.main._embed_statements",
-            return_value=embeddings_data,
-        ),
-        patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.0),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(statements, embeddings_data=embeddings_data),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -635,12 +637,26 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
     assert list(embeddings_path.parent.glob("*.lock")) == []
 
 
-def test_process_audio_native_failure_writes_python_identical_artifacts(tmp_path):
+def test_process_audio_native_failure_emits_attributed_failure_only(tmp_path):
     from solstone.observe.transcribe.main import process_audio
-    from solstone.observe.transcribe.speakers_analyze_seam import (
-        NativeSpeakerAnalysisResult,
+    from solstone.observe.transcribe.speakers_analyze_errors import (
+        SPEAKER_ANALYSIS_FAILURE_LABEL,
+        SPEAKER_ANALYSIS_FAILURE_REASON,
+        SpeakerAnalyzeError,
     )
 
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 2048)
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
     statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
     backend_module = MagicMock()
     backend_module.get_model_info.return_value = {
@@ -648,104 +664,320 @@ def test_process_audio_native_failure_writes_python_identical_artifacts(tmp_path
         "device": "cpu",
         "compute_type": "int8",
     }
-    embeddings_data = {
-        "embeddings": np.zeros((1, 256), dtype=np.float32),
-        "statement_ids": np.zeros((1,), dtype=np.int32),
-        "durations_s": np.zeros((1,), dtype=np.float32),
-        "encoder": np.array("test"),
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=SpeakerAnalyzeError(
+                path=raw_path,
+                stage="invoke",
+                reason="unavailable",
+                native_exit_code=75,
+            ),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        with pytest.raises(SpeakerAnalyzeError):
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
+
+    assert raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.with_suffix(".npz").exists()
+    assert mock_send.call_count == 1
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["outcome"] == "failed"
+    assert kwargs["reason"] == SPEAKER_ANALYSIS_FAILURE_REASON
+    assert kwargs["error"] == SPEAKER_ANALYSIS_FAILURE_LABEL
+    assert kwargs["speaker_analysis_failure_path"] == "native"
+    assert kwargs["speaker_analysis_failure_stage"] == "invoke"
+    assert kwargs["speaker_analysis_failure_reason"] == "unavailable"
+    assert kwargs["speaker_analysis_failure_native_exit_code"] == 75
+
+
+def test_process_audio_native_failure_emit_error_does_not_write_artifacts(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+):
+    from solstone.observe.transcribe.main import process_audio
+    from solstone.observe.transcribe.speakers_analyze_errors import SpeakerAnalyzeError
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"\x00" * 2048)
+    before = repository_inventory(tmp_path)
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
     }
 
-    def run_case(case: str, native_result: NativeSpeakerAnalysisResult):
-        raw_path = (
-            tmp_path
-            / case
-            / "chronicle"
-            / "20260416"
-            / "default"
-            / "120000_300"
-            / "audio.m4a"
-        )
-        raw_path.parent.mkdir(parents=True)
-        raw_path.write_bytes(b"\x00" * 2048)
-        audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
-        vad_result = VadResult(
-            duration=10.0,
-            speech_duration=5.0,
-            has_speech=True,
-            speech_segments=[(1.0, 6.0)],
-        )
-        with (
-            patch(
-                "solstone.observe.transcribe.main.get_journal",
-                return_value=str(raw_path.parents[4]),
-            ),
-            patch(
-                "solstone.observe.transcribe.main.get_config",
-                return_value={"transcribe": {"preserve_all": False}},
-            ),
-            patch(
-                "solstone.observe.transcribe.main.stt_transcribe",
-                return_value=statements,
-            ),
-            patch(
-                "solstone.observe.transcribe.main.get_backend",
-                return_value=backend_module,
-            ),
-            patch(
-                "solstone.observe.transcribe.main._embed_statements",
-                return_value=embeddings_data,
-            ),
-            patch(
-                "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-                return_value=_overlap_result(0.0),
-            ),
-            patch(
-                "solstone.observe.processing_record.now_iso_utc",
-                return_value="2026-06-30T12:00:00Z",
-            ),
-            patch(
-                "solstone.observe.transcribe.speakers_analyze_seam."
-                "maybe_run_native_speaker_analysis",
-                return_value=native_result,
-            ),
-            patch("solstone.observe.transcribe.main.callosum_send"),
-        ):
-            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
-        return raw_path.with_suffix(".jsonl").read_bytes(), load_npz(
-            raw_path.with_suffix(".npz")
-        )
-
-    fallback_jsonl, fallback_npz = run_case(
-        "fallback",
-        NativeSpeakerAnalysisResult(
-            status="fallback",
-            event_fields={
-                "speaker_analysis_path": "native_to_python",
-                "speaker_analysis_degradation": "native_failure",
-                "speaker_analysis_stage": "invoke",
-                "speaker_analysis_reason": "unavailable",
-                "speaker_analysis_native_exit_code": 75,
-            },
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
         ),
-    )
-    python_jsonl, python_npz = run_case(
-        "python",
-        NativeSpeakerAnalysisResult(status="python"),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=SpeakerAnalyzeError(
+                path=raw_path,
+                stage="invoke",
+                reason="timeout",
+            ),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.callosum_send",
+            side_effect=RuntimeError("callosum down"),
+        ) as mock_send,
+        caplog.at_level("ERROR"),
+    ):
+        with pytest.raises(SpeakerAnalyzeError):
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
+
+    assert mock_send.call_count == 1
+    assert "Failed to emit transcription failure event" in caplog.text
+    assert raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.with_suffix(".npz").exists()
+    assert_inventory_unchanged(before, repository_inventory(tmp_path))
+
+
+def test_all_batch_typed_speaker_failure_continues_and_preserves_failed_audio(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    from solstone.observe.transcribe.main import main
+    from solstone.observe.transcribe.speakers_analyze_errors import SpeakerAnalyzeError
+    from solstone.think.speakers_analyze_installation import (
+        SpeakersAnalyzeInstallationResult,
     )
 
-    assert fallback_jsonl == python_jsonl
-    assert fallback_npz is not None
-    assert python_npz is not None
-    assert set(fallback_npz) == set(python_npz)
-    for key in fallback_npz:
-        np.testing.assert_array_equal(fallback_npz[key], python_npz[key])
+    first = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.flac"
+    )
+    second = (
+        tmp_path / "chronicle" / "20260416" / "default" / "121000_300" / "audio.flac"
+    )
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+
+    def fake_analyze_speakers(**kwargs):
+        raw_path = kwargs["raw_path"]
+        if raw_path == first:
+            raise SpeakerAnalyzeError(
+                path=raw_path,
+                stage="invoke",
+                reason="unavailable",
+                native_exit_code=75,
+            )
+        return _speaker_result(statements)
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["journal transcribe", "--all"])
+    with (
+        patch(
+            "solstone.think.speakers_analyze_installation."
+            "check_speakers_analyze_installation",
+            return_value=SpeakersAnalyzeInstallationResult("ok"),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+        patch(
+            "solstone.observe.transcribe.main.load_audio",
+            return_value=np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+        ),
+        patch(
+            "solstone.observe.vad.run_vad",
+            return_value=VadResult(
+                duration=10.0,
+                speech_duration=5.0,
+                has_speech=True,
+                speech_segments=[(1.0, 6.0)],
+            ),
+        ),
+        patch("solstone.observe.vad.reduce_audio", return_value=(None, None)),
+        patch("solstone.observe.transcribe.main.tag_audio", return_value=None),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            return_value=statements,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend",
+            return_value=backend_module,
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=fake_analyze_speakers,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    assert "1 processed" in captured.out
+    assert "1 failed" in captured.out
+    assert first.exists()
+    assert not first.with_suffix(".jsonl").exists()
+    assert not first.with_suffix(".npz").exists()
+    assert second.with_suffix(".jsonl").exists()
+    speaker_failure_events = [
+        call
+        for call in mock_send.call_args_list
+        if call.kwargs.get("outcome") == "failed"
+        and call.kwargs.get("speaker_analysis_failure_path") == "native"
+    ]
+    assert len(speaker_failure_events) == 1
+
+
+def test_single_file_typed_speaker_failure_emits_once_and_exits_one(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from solstone.observe.transcribe.main import main
+    from solstone.observe.transcribe.speakers_analyze_errors import SpeakerAnalyzeError
+    from solstone.think.speakers_analyze_installation import (
+        SpeakersAnalyzeInstallationResult,
+    )
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.flac"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_bytes(b"audio")
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["journal transcribe", str(raw_path)])
+    with (
+        patch(
+            "solstone.think.speakers_analyze_installation."
+            "check_speakers_analyze_installation",
+            return_value=SpeakersAnalyzeInstallationResult("ok"),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+        patch(
+            "solstone.observe.transcribe.main.load_audio",
+            return_value=np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+        ),
+        patch(
+            "solstone.observe.vad.run_vad",
+            return_value=VadResult(
+                duration=10.0,
+                speech_duration=5.0,
+                has_speech=True,
+                speech_segments=[(1.0, 6.0)],
+            ),
+        ),
+        patch("solstone.observe.vad.reduce_audio", return_value=(None, None)),
+        patch("solstone.observe.transcribe.main.tag_audio", return_value=None),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            return_value=statements,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend",
+            return_value=backend_module,
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=SpeakerAnalyzeError(
+                path=raw_path,
+                stage="invoke",
+                reason="timeout",
+            ),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main()
+
+    assert exc.value.code == 1
+    assert raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl").exists()
+    assert not raw_path.with_suffix(".npz").exists()
+    speaker_failure_events = [
+        call
+        for call in mock_send.call_args_list
+        if call.kwargs.get("outcome") == "failed"
+        and call.kwargs.get("speaker_analysis_failure_path") == "native"
+    ]
+    assert len(speaker_failure_events) == 1
 
 
 def test_process_audio_zero_row_native_response_writes_no_embedding_archive(tmp_path):
     from solstone.observe.transcribe.main import process_audio
-    from solstone.observe.transcribe.speakers_analyze_seam import (
-        NativeSpeakerAnalysisResult,
-    )
 
     raw_path = (
         tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
@@ -759,18 +991,12 @@ def test_process_audio_zero_row_native_response_writes_no_embedding_archive(tmp_
         "device": "cpu",
         "compute_type": "int8",
     }
-    native_result = NativeSpeakerAnalysisResult(
-        status="accepted",
+    native_result = SpeakerAnalyzeResult(
         statements=statements,
         embeddings_data=None,
         speaker_evidence=SpeakerEvidenceDecision("single", 0.0, 0.0),
         overlap_fraction=0.0,
-        event_fields={
-            "speaker_analysis_path": "native",
-            "speaker_analysis_degradation": "gate_decline",
-            "speaker_analysis_stage": "evidence_gate",
-            "speaker_analysis_reason": "single",
-        },
+        statement_labels=None,
     )
 
     with (
@@ -789,12 +1015,7 @@ def test_process_audio_zero_row_native_response_writes_no_embedding_archive(tmp_
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
         patch(
-            "solstone.observe.transcribe.main._embed_statements",
-            side_effect=AssertionError("Python embedder should not run"),
-        ),
-        patch(
-            "solstone.observe.transcribe.speakers_analyze_seam."
-            "maybe_run_native_speaker_analysis",
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
             return_value=native_result,
         ),
         patch("solstone.observe.transcribe.main.callosum_send"),
@@ -816,11 +1037,8 @@ def test_process_audio_zero_row_native_response_writes_no_embedding_archive(tmp_
     assert not raw_path.with_suffix(".npz").exists()
 
 
-def test_process_audio_python_selection_restores_once_after_embedding(tmp_path):
+def test_process_audio_native_adapter_restores_once_after_stt(tmp_path):
     from solstone.observe.transcribe.main import process_audio
-    from solstone.observe.transcribe.speakers_analyze_seam import (
-        NativeSpeakerAnalysisResult,
-    )
 
     raw_path = (
         tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
@@ -839,18 +1057,15 @@ def test_process_audio_python_selection_restores_once_after_embedding(tmp_path):
         "device": "cpu",
         "compute_type": "int8",
     }
-    embeddings_data = {
-        "embeddings": np.zeros((1, 256), dtype=np.float32),
-        "statement_ids": np.zeros((1,), dtype=np.int32),
-        "durations_s": np.zeros((1,), dtype=np.float32),
-        "encoder": np.array("test"),
-    }
-    embed_seen: list[list[dict]] = []
+    adapter_seen: list[list[dict]] = []
     restore_seen: list[list[dict]] = []
 
-    def fake_embed(_audio, seen_statements, _sample_rate):
-        embed_seen.append([dict(statement) for statement in seen_statements])
-        return embeddings_data
+    def fake_analyze_speakers(**kwargs):
+        adapter_seen.append(
+            [dict(statement) for statement in kwargs["statements_pre_restore"]]
+        )
+        restored = kwargs["statements_restored"]()
+        return _speaker_result(restored)
 
     def fake_restore(seen_statements, _reduction):
         restore_seen.append([dict(statement) for statement in seen_statements])
@@ -879,16 +1094,8 @@ def test_process_audio_python_selection_restores_once_after_embedding(tmp_path):
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
         patch(
-            "solstone.observe.transcribe.main._embed_statements", side_effect=fake_embed
-        ),
-        patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.0),
-        ),
-        patch(
-            "solstone.observe.transcribe.speakers_analyze_seam."
-            "maybe_run_native_speaker_analysis",
-            return_value=NativeSpeakerAnalysisResult(status="python"),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=fake_analyze_speakers,
         ),
         patch(
             "solstone.observe.vad.restore_statement_timestamps",
@@ -911,7 +1118,7 @@ def test_process_audio_python_selection_restores_once_after_embedding(tmp_path):
             backend="parakeet",
         )
 
-    assert embed_seen == [statements]
+    assert adapter_seen == [statements]
     assert restore_seen == [statements]
 
 
@@ -965,12 +1172,8 @@ def test_process_audio_records_analyzed_processing(tmp_path):
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
         patch(
-            "solstone.observe.transcribe.main._embed_statements",
-            return_value=embeddings_data,
-        ),
-        patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.0),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(statements, embeddings_data=embeddings_data),
         ),
         patch(
             "solstone.observe.processing_record.now_iso_utc",
@@ -1048,7 +1251,7 @@ def test_process_audio_silent_filtered_writes_empty_record(tmp_path):
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
 
-def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
+def test_process_audio_native_gate_decline_is_accepted(tmp_path):
     from solstone.observe.transcribe.main import process_audio
 
     raw_path = (
@@ -1086,14 +1289,13 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
         patch(
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
-        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.5, window_stats=MULTI_STATS),
-        ),
-        patch(
-            "solstone.observe.transcribe.diarize.diarize_auto_k",
-            side_effect=RuntimeError("boom"),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(
+                statements,
+                speaker_evidence=SpeakerEvidenceDecision("single", 0.0, 0.0),
+                statement_labels=None,
+            ),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -1108,7 +1310,7 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
     assert "speaker" not in json.loads(lines[1])
 
 
-def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_path):
+def test_process_audio_writes_native_statement_labels(tmp_path):
     from solstone.observe.transcribe.main import process_audio
 
     raw_path = (
@@ -1130,7 +1332,7 @@ def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_pa
         "device": "cpu",
         "compute_type": "int8",
     }
-    logprobs = np.zeros((589, 7), dtype=np.float32)
+    labeled_statements = [{**statements[0], "speaker": 2}]
 
     with (
         patch(
@@ -1147,23 +1349,18 @@ def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_pa
         patch(
             "solstone.observe.transcribe.main.get_backend", return_value=backend_module
         ),
-        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
-            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.5, logprobs, CLEAN_SINGLE_STATS),
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            return_value=_speaker_result(
+                labeled_statements,
+                speaker_evidence=SpeakerEvidenceDecision("multi", 1.0, 0.5),
+                overlap_fraction=0.5,
+                statement_labels=[2],
+            ),
         ),
-        patch(
-            "solstone.observe.transcribe.diarize.diarize_auto_k",
-            return_value=[2],
-        ) as mock_diarize,
         patch("solstone.observe.transcribe.main.callosum_send"),
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet-cpp")
-
-    mock_diarize.assert_called_once()
-    kwargs = mock_diarize.call_args.kwargs
-    assert kwargs["avg_log_probs"] is logprobs
-    assert kwargs["audio"] is audio_buffer
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     jsonl_path = raw_path.with_suffix(".jsonl")
     lines = jsonl_path.read_text(encoding="utf-8").splitlines()
@@ -1271,28 +1468,27 @@ class TestJSONLFormat:
         assert metadata["speaker_evidence_version"] == "windowed-slots-v1"
         assert "speaker_evidence_mean_window_overlap_share" not in metadata
 
-    def test_statements_to_jsonl_speaker_analysis_producer_is_opt_in(self):
-        python_lines = _statements_to_jsonl(
+    def test_new_headers_always_include_speaker_analysis_producer(self):
+        no_helper_lines = _statements_to_jsonl(
             [{"start": 1.0, "end": 2.0, "text": "Hello"}],
             "audio.flac",
             datetime(2026, 5, 22, 9, 0, 0),
             {"model": "unit", "device": "cpu", "compute_type": "int8"},
         )
-        native_lines = _statements_to_jsonl(
+        helper_lines = _statements_to_jsonl(
             [{"start": 1.0, "end": 2.0, "text": "Hello"}],
             "audio.flac",
             datetime(2026, 5, 22, 9, 0, 0),
             {"model": "unit", "device": "cpu", "compute_type": "int8"},
-            speaker_analysis_producer="solstone-core-speakers-analyze-v1",
+            speaker_analysis_producer=SPEAKERS_ANALYZE_PRODUCER_ID,
         )
 
-        python_metadata = json.loads(python_lines[0])
-        native_metadata = json.loads(native_lines[0])
+        no_helper_metadata = json.loads(no_helper_lines[0])
+        helper_metadata = json.loads(helper_lines[0])
 
-        assert "speaker_analysis_producer" not in python_metadata
+        assert "speaker_analysis_producer" not in no_helper_metadata
         assert (
-            native_metadata["speaker_analysis_producer"]
-            == "solstone-core-speakers-analyze-v1"
+            helper_metadata["speaker_analysis_producer"] == SPEAKERS_ANALYZE_PRODUCER_ID
         )
 
     def test_metadata_first_line(self):

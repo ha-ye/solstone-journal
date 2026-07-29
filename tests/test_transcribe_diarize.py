@@ -51,7 +51,7 @@ def _dummy_features(_audio_slice: np.ndarray) -> np.ndarray:
 
 
 def test_diarize_precomputed_logprobs_emits_one_indexed_int(monkeypatch):
-    from solstone.observe.transcribe import diarize
+    from tests.speaker_oracle import diarize
 
     def fail_pyannote():
         raise AssertionError("precomputed logprobs should skip pyannote")
@@ -80,7 +80,7 @@ def test_diarize_precomputed_logprobs_emits_one_indexed_int(monkeypatch):
 
 
 def test_find_intervals_filters_to_confident_single_speaker_runs():
-    from solstone.observe.transcribe import diarize
+    from tests.speaker_oracle import diarize
 
     classes = np.concatenate(
         [
@@ -110,7 +110,7 @@ def test_find_intervals_filters_to_confident_single_speaker_runs():
 
 
 def test_auto_k_clusters_well_separated_embeddings_by_invariant(monkeypatch):
-    from solstone.observe.transcribe import diarize
+    from tests.speaker_oracle import diarize
 
     embs = np.zeros((6, 256), dtype=np.float32)
     embs[0, 0] = 1.0
@@ -149,7 +149,7 @@ def test_auto_k_clusters_well_separated_embeddings_by_invariant(monkeypatch):
 def test_get_pyannote_session_missing_asset_raises_file_not_found(
     monkeypatch, tmp_path
 ):
-    from solstone.observe.transcribe import diarize
+    from tests.speaker_oracle import diarize
 
     monkeypatch.setattr(
         diarize,

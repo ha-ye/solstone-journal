@@ -6528,6 +6528,16 @@ def main() -> None:
         logging.error(core_result.message)
         sys.exit(core_handshake.EX_CONFIG)
 
+    from solstone.think.speakers_analyze_installation import (
+        check_speakers_analyze_installation,
+    )
+
+    speakers_installation = check_speakers_analyze_installation()
+    if not speakers_installation.ok:
+        print(speakers_installation.message, file=sys.stderr)
+        logging.error(speakers_installation.message)
+        sys.exit(core_handshake.EX_CONFIG)
+
     if args.verbose or args.debug:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(log_level)
@@ -6659,7 +6669,7 @@ def main() -> None:
         logging.exception("Journal archive extract sweep raised; continuing startup")
 
     try:
-        from solstone.observe.transcribe.speakers_analyze_seam import (
+        from solstone.observe.transcribe.speakers_analyze_adapter import (
             sweep_stale_speakers_analyze_dirs,
         )
 
