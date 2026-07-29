@@ -8,12 +8,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+import re
+import shutil
+import tempfile
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers.attribution import (
     _load_setting_field,
@@ -29,7 +34,17 @@ from solstone.apps.speakers.eligibility import (
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.journal_io import atomic_replace
+from solstone.think.speakers_analyze_installation import (
+    speakers_analyze_path_for_executable,
+)
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
+
+if TYPE_CHECKING:
+    from solstone.observe.transcribe.speakers_analyze_adapter import (
+        HelperInvocationResult,
+    )
+else:
+    HelperInvocationResult = Any
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +52,219 @@ MIN_CLUSTER_SIZE = 5
 MIN_SAMPLES = 3
 MIN_SEGMENT_DIVERSITY = 3
 MAX_UNMATCHED_EMBEDDINGS = 10000
+UNIT_NORM_TOLERANCE = 1.0e-3
+
+DISCOVERY_CLUSTER_REQUEST_SCHEMA = "solstone-speaker-discovery-cluster-request-v1"
+DISCOVERY_CLUSTER_RESPONSE_SCHEMA = "solstone-speaker-discovery-cluster-response-v1"
+DISCOVERY_CLUSTER_COMMAND = "discovery-cluster"
+DISCOVERY_CLUSTER_PAYLOAD_FORMAT = "raw-f32le-row-major-v1"
+DISCOVERY_CLUSTER_DTYPE = "float32-le"
+DISCOVERY_CLUSTER_ALGORITHM = "hdbscan-eom-euclidean-f64-prim-mst"
+DISCOVERY_TEMP_PREFIX = "solstone-speakers-analyze-discovery-cluster-"
+TEMP_ROOT = Path("/var/tmp")
+TEMP_DIR_MODE = 0o700
+TEMP_FILE_MODE = 0o600
+
+DiscoveryHelperLocator = Callable[[], Path]
+DiscoveryHelperInvoker = Callable[[list[str], str], HelperInvocationResult]
+DiscoveryTempDirFactory = Callable[[], Path]
+_REASON_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+class SpeakerDiscoveryKernelError(RuntimeError):
+    """Content-free attribution for failed native discovery clustering."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        reason: str,
+        native_exit_code: int | None = None,
+    ) -> None:
+        safe_reason = (
+            reason if _REASON_RE.fullmatch(reason) else "invalid-helper-reason"
+        )
+        super().__init__(f"speaker discovery kernel failed: {stage}/{safe_reason}")
+        self.stage = stage
+        self.reason = safe_reason
+        self.native_exit_code = native_exit_code
+
+    def event_fields(self) -> dict[str, object]:
+        fields: dict[str, object] = {
+            "speaker_discovery_kernel_failure_stage": self.stage,
+            "speaker_discovery_kernel_failure_reason": self.reason,
+        }
+        if self.native_exit_code is not None:
+            fields["speaker_discovery_kernel_failure_native_exit_code"] = (
+                self.native_exit_code
+            )
+        return fields
+
+
+def create_discovery_cluster_temp_dir() -> Path:
+    """Create a native discovery-cluster temp directory swept by the adapter."""
+    prefix = f"{DISCOVERY_TEMP_PREFIX}{os.getpid()}-"
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=TEMP_ROOT))
+    path.chmod(TEMP_DIR_MODE)
+    return path
+
+
+def _invoke_discovery_helper(
+    argv: list[str],
+    stdin_text: str,
+) -> HelperInvocationResult:
+    from solstone.observe.transcribe.speakers_analyze_adapter import (
+        SpeakersAnalyzeBudget,
+        invoke_speakers_analyze_helper,
+    )
+
+    return invoke_speakers_analyze_helper(
+        argv,
+        stdin_text,
+        Path("speaker-discovery-cluster"),
+        budget=SpeakersAnalyzeBudget(
+            timeout_s=180.0,
+            stdout_limit_bytes=1024 * 1024,
+            stderr_limit_bytes=64 * 1024,
+            terminate_grace_s=5.0,
+            kill_grace_s=5.0,
+        ),
+    )
+
+
+def _write_embeddings_f32le(path: Path, embeddings_matrix: Any) -> None:
+    import numpy as np
+
+    payload = np.ascontiguousarray(embeddings_matrix, dtype="<f4")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, TEMP_FILE_MODE)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload.tobytes(order="C"))
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _raise_for_discovery_returncode(completed: HelperInvocationResult) -> None:
+    if completed.returncode == 0:
+        return
+    if completed.returncode < 0:
+        reason = f"signal-{abs(completed.returncode)}"
+    else:
+        reason = f"exit-{completed.returncode}"
+    raise SpeakerDiscoveryKernelError(
+        stage="invoke",
+        reason=reason,
+        native_exit_code=completed.returncode,
+    )
+
+
+def _discovery_cluster_request(payload_path: Path, rows: int, cols: int) -> dict:
+    return {
+        "schema": DISCOVERY_CLUSTER_REQUEST_SCHEMA,
+        "embeddings_f32le_path": str(payload_path),
+        "payload_format": DISCOVERY_CLUSTER_PAYLOAD_FORMAT,
+        "dtype": DISCOVERY_CLUSTER_DTYPE,
+        "shape": [rows, cols],
+        "min_cluster_size": MIN_CLUSTER_SIZE,
+        "min_samples": MIN_SAMPLES,
+    }
+
+
+def _labels_from_discovery_response(stdout: str, *, rows: int) -> Any:
+    import numpy as np
+
+    try:
+        response = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise SpeakerDiscoveryKernelError(
+            stage="response",
+            reason="response-json-invalid",
+        ) from exc
+
+    if not isinstance(response, dict) or (
+        response.get("schema") != DISCOVERY_CLUSTER_RESPONSE_SCHEMA
+    ):
+        raise SpeakerDiscoveryKernelError(stage="response", reason="schema-mismatch")
+
+    labels = response.get("labels")
+    if not isinstance(labels, list) or any(type(label) is not int for label in labels):
+        raise SpeakerDiscoveryKernelError(stage="response", reason="labels-invalid")
+
+    if len(labels) != rows:
+        raise SpeakerDiscoveryKernelError(
+            stage="response",
+            reason="label-count-mismatch",
+        )
+
+    parameters = response.get("parameters")
+    if (
+        not isinstance(parameters, dict)
+        or parameters.get("min_cluster_size") != MIN_CLUSTER_SIZE
+        or parameters.get("min_samples") != MIN_SAMPLES
+    ):
+        raise SpeakerDiscoveryKernelError(
+            stage="response",
+            reason="parameters-mismatch",
+        )
+
+    if response.get("algorithm") != DISCOVERY_CLUSTER_ALGORITHM:
+        raise SpeakerDiscoveryKernelError(
+            stage="response",
+            reason="algorithm-mismatch",
+        )
+
+    noise_count = sum(1 for label in labels if int(label) == -1)
+    cluster_count = len({int(label) for label in labels if int(label) != -1})
+    if (
+        type(response.get("noise_count")) is not int
+        or type(response.get("cluster_count")) is not int
+        or int(response["noise_count"]) != noise_count
+        or int(response["cluster_count"]) != cluster_count
+    ):
+        raise SpeakerDiscoveryKernelError(stage="response", reason="count-mismatch")
+
+    return np.asarray(labels, dtype=np.int64)
+
+
+def _cluster_discovery_embeddings_native(
+    embeddings_matrix: Any,
+    *,
+    helper_locator: DiscoveryHelperLocator,
+    helper_invoker: DiscoveryHelperInvoker,
+    temp_dir_factory: DiscoveryTempDirFactory,
+) -> Any:
+    rows = int(embeddings_matrix.shape[0])
+    cols = int(embeddings_matrix.shape[1])
+    temp_dir: Path | None = None
+    try:
+        temp_dir = temp_dir_factory()
+        payload_path = temp_dir / "embeddings.f32le"
+        _write_embeddings_f32le(payload_path, embeddings_matrix)
+        request = _discovery_cluster_request(payload_path, rows, cols)
+        completed = helper_invoker(
+            [str(helper_locator()), DISCOVERY_CLUSTER_COMMAND],
+            json.dumps(request),
+        )
+        _raise_for_discovery_returncode(completed)
+        return _labels_from_discovery_response(completed.stdout, rows=rows)
+    except Exception as exc:
+        from solstone.observe.transcribe.speakers_analyze_errors import (
+            SpeakerAnalyzeError,
+        )
+
+        if not isinstance(exc, SpeakerAnalyzeError):
+            raise
+        raise SpeakerDiscoveryKernelError(
+            stage=exc.stage,
+            reason=exc.reason,
+            native_exit_code=exc.native_exit_code,
+        ) from exc
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _routes_helpers():
@@ -216,10 +444,14 @@ def _clear_discovery_cache() -> None:
     _discovery_resolved_path().unlink(missing_ok=True)
 
 
-def discover_unknown_speakers() -> dict[str, Any]:
+def discover_unknown_speakers(
+    *,
+    helper_locator: DiscoveryHelperLocator = speakers_analyze_path_for_executable,
+    helper_invoker: DiscoveryHelperInvoker = _invoke_discovery_helper,
+    temp_dir_factory: DiscoveryTempDirFactory = create_discovery_cluster_temp_dir,
+) -> dict[str, Any]:
     """Scan journal for recurring unknown speaker clusters."""
     import numpy as np
-    from sklearn.cluster import HDBSCAN
 
     load_owner_centroid = _owner_helpers()
     (
@@ -292,6 +524,22 @@ def discover_unknown_speakers() -> dict[str, Any]:
         return {"clusters": []}
 
     embeddings_matrix = np.vstack(embedding_chunks)
+    finite_mask = np.isfinite(embeddings_matrix).all(axis=1)
+    with np.errstate(invalid="ignore"):
+        norms = np.linalg.norm(embeddings_matrix.astype(np.float64), axis=1)
+    unit_mask = np.abs(norms - 1.0) <= UNIT_NORM_TOLERANCE
+    admission_mask = finite_mask & unit_mask
+    dropped_count = int(len(embeddings_matrix) - int(np.count_nonzero(admission_mask)))
+    if dropped_count:
+        logger.info(
+            "speaker discovery admission filtered: dropped_invalid_embeddings=%d",
+            dropped_count,
+        )
+        embeddings_matrix = embeddings_matrix[admission_mask]
+        provenance = [
+            row for row, keep in zip(provenance, admission_mask, strict=True) if keep
+        ]
+
     if len(embeddings_matrix) > MAX_UNMATCHED_EMBEDDINGS:
         rng = np.random.default_rng(42)
         indices = rng.choice(
@@ -307,13 +555,12 @@ def discover_unknown_speakers() -> dict[str, Any]:
         _clear_discovery_cache()
         return {"clusters": []}
 
-    clusterer = HDBSCAN(
-        min_cluster_size=MIN_CLUSTER_SIZE,
-        min_samples=MIN_SAMPLES,
-        metric="euclidean",
+    labels = _cluster_discovery_embeddings_native(
+        embeddings_matrix,
+        helper_locator=helper_locator,
+        helper_invoker=helper_invoker,
+        temp_dir_factory=temp_dir_factory,
     )
-    clusterer.fit(embeddings_matrix)
-    labels = clusterer.labels_
     if np.all(labels == -1):
         _clear_discovery_cache()
         return {"clusters": []}

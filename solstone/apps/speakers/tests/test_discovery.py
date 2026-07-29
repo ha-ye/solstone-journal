@@ -7,15 +7,29 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import sys
+import time
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from solstone.apps.speakers import discovery as discovery_module
 from solstone.apps.speakers.discovery import (
+    DISCOVERY_CLUSTER_ALGORITHM,
+    DISCOVERY_CLUSTER_DTYPE,
+    DISCOVERY_CLUSTER_PAYLOAD_FORMAT,
+    DISCOVERY_CLUSTER_REQUEST_SCHEMA,
+    DISCOVERY_CLUSTER_RESPONSE_SCHEMA,
+    MIN_CLUSTER_SIZE,
+    MIN_SAMPLES,
+    SpeakerDiscoveryKernelError,
     _discovery_cache_path,
     _discovery_resolved_path,
+    create_discovery_cluster_temp_dir,
     discover_unknown_speakers,
     get_cluster_conversation_count,
     get_cluster_presence,
@@ -26,6 +40,12 @@ from solstone.apps.speakers.discovery import (
 )
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 from solstone.apps.speakers.tests.conftest import journal_tree_hash
+from solstone.observe.transcribe.speakers_analyze_adapter import (
+    HelperInvocationResult,
+    SpeakersAnalyzeBudget,
+    invoke_speakers_analyze_helper,
+)
+from solstone.observe.transcribe.speakers_analyze_errors import SpeakerAnalyzeError
 
 
 def _domain_tree_hash(journal: Path) -> dict[str, str]:
@@ -49,6 +69,69 @@ def _make_speaker_embeddings(
     embeddings = base + noise
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     return embeddings / norms
+
+
+def _discovery_response(labels: list[int]) -> dict:
+    return {
+        "schema": DISCOVERY_CLUSTER_RESPONSE_SCHEMA,
+        "labels": labels,
+        "cluster_count": len({label for label in labels if label != -1}),
+        "noise_count": sum(1 for label in labels if label == -1),
+        "parameters": {
+            "min_cluster_size": MIN_CLUSTER_SIZE,
+            "min_samples": MIN_SAMPLES,
+        },
+        "algorithm": DISCOVERY_CLUSTER_ALGORITHM,
+    }
+
+
+def _matrix_from_discovery_request(stdin_text: str) -> np.ndarray:
+    request = json.loads(stdin_text)
+    assert request["schema"] == DISCOVERY_CLUSTER_REQUEST_SCHEMA
+    assert request["payload_format"] == DISCOVERY_CLUSTER_PAYLOAD_FORMAT
+    assert request["dtype"] == DISCOVERY_CLUSTER_DTYPE
+    assert request["min_cluster_size"] == MIN_CLUSTER_SIZE
+    assert request["min_samples"] == MIN_SAMPLES
+    shape = request["shape"]
+    assert isinstance(shape, list)
+    assert len(shape) == 2
+    rows, cols = int(shape[0]), int(shape[1])
+    payload = np.fromfile(request["embeddings_f32le_path"], dtype="<f4")
+    assert payload.size == rows * cols
+    return payload.reshape((rows, cols))
+
+
+def _group_identical_unit_rows(matrix: np.ndarray) -> list[int]:
+    labels = [-1] * int(matrix.shape[0])
+    groups: dict[tuple[float, ...], list[int]] = {}
+    for index, row in enumerate(matrix):
+        key = tuple(np.round(row.astype(np.float64), 6).tolist())
+        groups.setdefault(key, []).append(index)
+
+    next_label = 0
+    for indices in groups.values():
+        if len(indices) < MIN_CLUSTER_SIZE:
+            continue
+        for index in indices:
+            labels[index] = next_label
+        next_label += 1
+    return labels
+
+
+def _grouping_discovery_helper(
+    _argv: list[str],
+    stdin_text: str,
+) -> HelperInvocationResult:
+    matrix = _matrix_from_discovery_request(stdin_text)
+    labels = _group_identical_unit_rows(matrix)
+    return HelperInvocationResult(0, json.dumps(_discovery_response(labels)), "")
+
+
+def _discover_with_grouping_double() -> dict:
+    return discover_unknown_speakers(
+        helper_locator=lambda: Path("/tmp/solstone-core-speakers-analyze"),
+        helper_invoker=_grouping_discovery_helper,
+    )
 
 
 def _setup_owner_centroid(
@@ -409,7 +492,7 @@ def test_resolve_statement_cluster_distinguishes_hit_miss_and_unavailable(
 def test_discover_no_owner_centroid(speakers_env):
     speakers_env()
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     assert result == {"clusters": []}
 
@@ -428,7 +511,7 @@ def test_discover_no_unmatched(speakers_env):
             _all_sentence_labels("alice_test", sentence_count),
         )
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     assert result == {"clusters": []}
 
@@ -439,7 +522,7 @@ def test_discover_clusters_found(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     _create_cluster_segments(env, embeddings)
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     assert len(result["clusters"]) == 1
     cluster = result["clusters"][0]
@@ -454,7 +537,7 @@ def test_discover_samples_use_registered_audio_extension(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     _create_cluster_segments(env, embeddings, audio_extension=".m4a")
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     samples = result["clusters"][0]["samples"]
     assert len(samples) == 3
@@ -473,7 +556,7 @@ def test_discover_samples_allow_missing_audio(speakers_env):
     for day, segment_key, _sentence_count in segments:
         (env.journal / "chronicle" / day / "test" / segment_key / "audio.flac").unlink()
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     samples = result["clusters"][0]["samples"]
     assert len(samples) == 3
@@ -494,7 +577,7 @@ def test_discover_filters_attributed(speakers_env):
             _all_sentence_labels("alice_test", sentence_count),
         )
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     assert result == {"clusters": []}
 
@@ -505,7 +588,7 @@ def test_discover_sample_shape_stays_scan_stable(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     _create_cluster_segments(env, embeddings)
 
-    result = discover_unknown_speakers()
+    result = _discover_with_grouping_double()
 
     sample = result["clusters"][0]["samples"][0]
     assert set(sample) == {
@@ -517,6 +600,374 @@ def test_discover_sample_shape_stays_scan_stable(speakers_env):
         "audio_url",
         "text",
     }
+
+
+def _seed_kernel_reaching_discovery(env) -> None:
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
+    _create_cluster_segments(env, embeddings)
+
+
+def _seed_discovery_cache_files(env) -> tuple[Path, Path, bytes, bytes]:
+    cache_path = _discovery_cache_path(create=True)
+    resolved_path = _discovery_resolved_path(create=True)
+    cache_path.write_bytes(b'{"version":"old","clusters":{}}\n')
+    resolved_path.write_bytes(b'{"resolved":true}\n')
+    return (
+        cache_path,
+        resolved_path,
+        cache_path.read_bytes(),
+        resolved_path.read_bytes(),
+    )
+
+
+def _assert_kernel_failure_preserves_cache(
+    env,
+    helper_invoker,
+    *,
+    reason: str,
+) -> SpeakerDiscoveryKernelError:
+    cache_path, resolved_path, cache_before, resolved_before = (
+        _seed_discovery_cache_files(env)
+    )
+    tree_before = journal_tree_hash(env.journal)
+    with pytest.raises(SpeakerDiscoveryKernelError) as exc:
+        discover_unknown_speakers(
+            helper_locator=lambda: Path("/tmp/solstone-core-speakers-analyze"),
+            helper_invoker=helper_invoker,
+        )
+
+    assert exc.value.reason == reason
+    assert cache_path.read_bytes() == cache_before
+    assert resolved_path.read_bytes() == resolved_before
+    assert journal_tree_hash(env.journal) == tree_before
+    return exc.value
+
+
+def _response_helper(response: dict | str) -> HelperInvocationResult:
+    stdout = response if isinstance(response, str) else json.dumps(response)
+    return HelperInvocationResult(0, stdout, "")
+
+
+@pytest.mark.parametrize(
+    ("name", "helper_factory", "reason"),
+    [
+        (
+            "nonzero",
+            lambda rows: lambda _argv, _stdin: HelperInvocationResult(7, "", ""),
+            "exit-7",
+        ),
+        (
+            "malformed-json",
+            lambda rows: lambda _argv, _stdin: _response_helper("{"),
+            "response-json-invalid",
+        ),
+        (
+            "schema",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    {
+                        **_discovery_response([0] * rows),
+                        "schema": "wrong",
+                    }
+                )
+            ),
+            "schema-mismatch",
+        ),
+        (
+            "labels-invalid",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    {
+                        **_discovery_response([0] * rows),
+                        "labels": [True] * rows,
+                    }
+                )
+            ),
+            "labels-invalid",
+        ),
+        (
+            "wrong-length",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    _discovery_response([0] * (rows - 1))
+                )
+            ),
+            "label-count-mismatch",
+        ),
+        (
+            "parameters",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    {
+                        **_discovery_response([0] * rows),
+                        "parameters": {
+                            "min_cluster_size": MIN_CLUSTER_SIZE + 1,
+                            "min_samples": MIN_SAMPLES,
+                        },
+                    }
+                )
+            ),
+            "parameters-mismatch",
+        ),
+        (
+            "algorithm",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    {
+                        **_discovery_response([0] * rows),
+                        "algorithm": "wrong",
+                    }
+                )
+            ),
+            "algorithm-mismatch",
+        ),
+        (
+            "counts",
+            lambda rows: (
+                lambda _argv, _stdin: _response_helper(
+                    {
+                        **_discovery_response([0] * rows),
+                        "cluster_count": 99,
+                    }
+                )
+            ),
+            "count-mismatch",
+        ),
+    ],
+)
+def test_discovery_kernel_failure_preserves_existing_cache(
+    speakers_env,
+    name,
+    helper_factory,
+    reason,
+):
+    env = speakers_env()
+    _seed_kernel_reaching_discovery(env)
+
+    def helper(argv: list[str], stdin_text: str) -> HelperInvocationResult:
+        matrix = _matrix_from_discovery_request(stdin_text)
+        return helper_factory(int(matrix.shape[0]))(argv, stdin_text)
+
+    assert name
+    _assert_kernel_failure_preserves_cache(env, helper, reason=reason)
+
+
+def test_discovery_kernel_timeout_preserves_existing_cache(speakers_env):
+    env = speakers_env()
+    _seed_kernel_reaching_discovery(env)
+    budget = SpeakersAnalyzeBudget(
+        timeout_s=0.01,
+        stdout_limit_bytes=1024,
+        stderr_limit_bytes=1024,
+        terminate_grace_s=0.05,
+        kill_grace_s=0.5,
+    )
+    real_invoker = partial(
+        invoke_speakers_analyze_helper,
+        budget=budget,
+        clock=time.monotonic,
+    )
+
+    def helper(_argv: list[str], stdin_text: str) -> HelperInvocationResult:
+        return real_invoker(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            stdin_text,
+            Path("speaker-discovery-cluster"),
+        )
+
+    _assert_kernel_failure_preserves_cache(env, helper, reason="timeout")
+
+
+@pytest.mark.parametrize(
+    ("name", "helper_invoker", "reason", "exit_code"),
+    [
+        (
+            "popen-oserror",
+            lambda: partial(
+                invoke_speakers_analyze_helper,
+                budget=SpeakersAnalyzeBudget(timeout_s=1.0),
+                popen_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    OSError("boom")
+                ),
+                clock=time.monotonic,
+            ),
+            "oserror",
+            None,
+        ),
+        (
+            "timeout",
+            lambda: partial(
+                invoke_speakers_analyze_helper,
+                budget=SpeakersAnalyzeBudget(
+                    timeout_s=0.01,
+                    terminate_grace_s=0.05,
+                    kill_grace_s=0.5,
+                ),
+                clock=time.monotonic,
+            ),
+            "timeout",
+            None,
+        ),
+        (
+            "stdout-too-large",
+            lambda: partial(
+                invoke_speakers_analyze_helper,
+                budget=SpeakersAnalyzeBudget(
+                    timeout_s=1.0,
+                    stdout_limit_bytes=64,
+                    stderr_limit_bytes=64,
+                    terminate_grace_s=0.05,
+                    kill_grace_s=0.5,
+                ),
+                clock=time.monotonic,
+            ),
+            "stdout-too-large",
+            None,
+        ),
+        (
+            "stderr-too-large",
+            lambda: partial(
+                invoke_speakers_analyze_helper,
+                budget=SpeakersAnalyzeBudget(
+                    timeout_s=1.0,
+                    stdout_limit_bytes=64,
+                    stderr_limit_bytes=64,
+                    terminate_grace_s=0.05,
+                    kill_grace_s=0.5,
+                ),
+                clock=time.monotonic,
+            ),
+            "stderr-too-large",
+            None,
+        ),
+        (
+            "nonzero",
+            lambda: None,
+            "exit-9",
+            9,
+        ),
+    ],
+)
+def test_speaker_analyze_errors_translate_totally_to_discovery_errors(
+    speakers_env,
+    name,
+    helper_invoker,
+    reason,
+    exit_code,
+):
+    env = speakers_env()
+    _seed_kernel_reaching_discovery(env)
+
+    def helper(_argv: list[str], stdin_text: str) -> HelperInvocationResult:
+        if exit_code is not None:
+            return HelperInvocationResult(exit_code, "", "")
+        invoker = helper_invoker()
+        if name == "timeout":
+            argv = [sys.executable, "-c", "import time; time.sleep(10)"]
+        elif name == "stdout-too-large":
+            argv = [
+                sys.executable,
+                "-c",
+                "import sys, time; sys.stdout.write('x' * 2048); "
+                "sys.stdout.flush(); time.sleep(10)",
+            ]
+        elif name == "stderr-too-large":
+            argv = [
+                sys.executable,
+                "-c",
+                "import sys, time; sys.stderr.write('x' * 2048); "
+                "sys.stderr.flush(); time.sleep(10)",
+            ]
+        else:
+            argv = [sys.executable, "-c", ""]
+        return invoker(argv, stdin_text, Path("speaker-discovery-cluster"))
+
+    error = _assert_kernel_failure_preserves_cache(env, helper, reason=reason)
+
+    assert not isinstance(error, SpeakerAnalyzeError)
+    assert all(
+        not key.startswith("speaker_analysis_failure_") for key in error.event_fields()
+    )
+
+
+def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
+    speakers_env,
+    monkeypatch,
+    caplog,
+):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    valid = _make_speaker_embeddings([1.0, 0.0], 5)
+    invalid_inf = np.array([[np.inf] + [0.0] * 255], dtype=np.float32)
+    invalid_nonunit = np.array([[2.0] + [0.0] * 255], dtype=np.float32)
+    days = ["20240101", "20240102", "20240103", "20240104"]
+    for idx, day in enumerate(days):
+        embeddings = valid
+        if idx == 0:
+            embeddings = np.vstack([valid, invalid_inf, invalid_nonunit])
+        env.create_segment(day, "090000_300", ["audio"], embeddings=embeddings)
+
+    original_helpers = discovery_module._routes_helpers()
+    original_normalize = original_helpers[2]
+
+    def patched_routes_helpers():
+        (
+            load_embeddings_file,
+            load_speaker_labels,
+            _normalize_embedding,
+            scan_segment_embeddings,
+            check_owner_contamination,
+        ) = original_helpers
+
+        def normalize_for_test(emb: np.ndarray) -> np.ndarray | None:
+            if np.isfinite(emb).all() and np.isclose(float(emb[0]), 2.0):
+                return emb.astype(np.float32)
+            return original_normalize(emb)
+
+        return (
+            load_embeddings_file,
+            load_speaker_labels,
+            normalize_for_test,
+            scan_segment_embeddings,
+            check_owner_contamination,
+        )
+
+    monkeypatch.setattr(discovery_module, "_routes_helpers", patched_routes_helpers)
+    caplog.set_level("INFO")
+
+    result = _discover_with_grouping_double()
+
+    assert result["clusters"][0]["size"] == 20
+    assert "dropped_invalid_embeddings=2" in caplog.text
+    cache = load_discovery_cache()
+    assert cache is not None
+    members = cache["clusters"][str(result["clusters"][0]["cluster_id"])]
+    assert {
+        (member["day"], member["sentence_id"])
+        for member in members
+        if member["day"] == "20240101"
+    } == {("20240101", sid) for sid in range(1, 6)}
+
+
+def test_discovery_temp_dirs_are_reaped_by_speakers_analyze_sweeper(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.observe.transcribe import speakers_analyze_adapter
+
+    monkeypatch.setattr(discovery_module, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(speakers_analyze_adapter, "TEMP_ROOT", tmp_path)
+    temp_dir = create_discovery_cluster_temp_dir()
+    assert temp_dir.name.startswith("solstone-speakers-analyze-discovery-cluster-")
+    old = time.time() - 200
+    os.utime(temp_dir, (old, old))
+
+    assert (
+        speakers_analyze_adapter.sweep_stale_speakers_analyze_dirs(max_age_seconds=100)
+        == 1
+    )
+    assert not temp_dir.exists()
 
 
 def test_cluster_presence_aggregates_persisted_evidence_and_ranks(speakers_env):
@@ -1103,7 +1554,7 @@ def test_identify_creates_entity(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     segments = _create_cluster_segments(env, embeddings)
 
-    scan_result = discover_unknown_speakers()
+    scan_result = _discover_with_grouping_double()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
 
     result = identify_cluster(cluster_id, "Bob Smith", create_new=True)
@@ -1141,7 +1592,7 @@ def test_identify_matches_existing(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     _create_cluster_segments(env, embeddings)
 
-    scan_result = discover_unknown_speakers()
+    scan_result = _discover_with_grouping_double()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
     result = identify_cluster(cluster_id, "Bob Smith")
 
@@ -1310,7 +1761,7 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     segments = _create_cluster_segments(env, embeddings)
 
-    scan_result = discover_unknown_speakers()
+    scan_result = _discover_with_grouping_double()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
     candidate_path = env.journal / "awareness" / "speaker_candidates.json"
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1436,7 +1887,7 @@ def test_identify_idempotent(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     segments = _create_cluster_segments(env, embeddings)
 
-    scan_result = discover_unknown_speakers()
+    scan_result = _discover_with_grouping_double()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
 
     first = identify_cluster(cluster_id, "Bob Smith", create_new=True)
@@ -1467,7 +1918,7 @@ def test_identify_contamination_guard(speakers_env):
     embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
     _create_cluster_segments(env, embeddings)
 
-    scan_result = discover_unknown_speakers()
+    scan_result = _discover_with_grouping_double()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
     _setup_owner_centroid(env.journal, [1.0, 0.0])
 

@@ -10,7 +10,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from solstone.apps.speakers.discovery import discover_unknown_speakers
+from solstone.apps.speakers.discovery import (
+    SpeakerDiscoveryKernelError,
+    discover_unknown_speakers,
+)
 from solstone.think import speaker_candidate_pair_review_candidates as pair_store
 from solstone.think.entities.journal import (
     get_journal_principal,
@@ -68,6 +71,13 @@ def run_discovery_scan(args: list[str]) -> int:
     except LockTimeout as exc:
         logger.warning("speaker discovery scan skipped: %s", exc)
         return 1
+    except SpeakerDiscoveryKernelError as exc:
+        logger.warning(
+            "speaker discovery scan failed: stage=%s reason=%s",
+            exc.stage,
+            exc.reason,
+        )
+        return 2
 
     logger.info(
         "speaker discovery refreshed: clusters=%d",

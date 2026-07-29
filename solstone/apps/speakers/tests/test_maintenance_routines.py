@@ -188,6 +188,32 @@ def test_run_discovery_scan_returns_one_on_lock_timeout(speakers_env, monkeypatc
     assert run_discovery_scan([]) == 1
 
 
+def test_run_discovery_scan_returns_two_on_kernel_failure(
+    speakers_env,
+    monkeypatch,
+    caplog,
+):
+    from solstone.apps.speakers import maintenance as speakers_maintenance
+    from solstone.apps.speakers.discovery import SpeakerDiscoveryKernelError
+
+    env = speakers_env()
+    owner_dir = env.create_entity("Self Person", is_principal=True)
+    (owner_dir / "owner_centroid.npz").write_bytes(b"centroid")
+
+    def fail_scan():
+        raise SpeakerDiscoveryKernelError(stage="response", reason="schema-mismatch")
+
+    monkeypatch.setattr(
+        speakers_maintenance,
+        "discover_unknown_speakers",
+        fail_scan,
+    )
+    caplog.set_level("WARNING")
+
+    assert run_discovery_scan([]) == 2
+    assert "stage=response reason=schema-mismatch" in caplog.text
+
+
 def test_run_consolidation_merges_dense_pool(speakers_env):
     from solstone.apps.speakers.candidate_tracker import CandidateTracker
 
