@@ -3,14 +3,17 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import logging
 import subprocess
 import sys
+import tarfile
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,12 @@ from tests.helpers.release_candidate_fixtures import (
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
 TOKEN = "pypi-canary-token"
+MODEL_ASSET_BYTES = {
+    "pyannote-segmentation-3.0.onnx": b"tiny pyannote model\n",
+    "silero_vad_v6.onnx": b"tiny silero model\n",
+    "wespeaker-resnet34-256.onnx": b"tiny wespeaker model\n",
+}
+ZIP_DATE_TIME = (2026, 7, 20, 12, 0, 0)
 
 
 @pytest.fixture(autouse=True)
@@ -122,11 +131,158 @@ def _checkout_authority_bytes() -> bytes:
     return render_nvattest_authority_json().encode("utf-8")
 
 
+def _zip_info(name: str, *, mode: int = 0o664) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, ZIP_DATE_TIME)
+    info.create_system = 3
+    info.external_attr = mode << 16
+    return info
+
+
+def _tar_info(name: str, *, mode: int = 0o664, is_dir: bool = False) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.mtime = 0
+    info.mode = mode
+    if is_dir:
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o755
+    return info
+
+
+def _model_wheel_members(
+    *, mutate_content: bool = False
+) -> list[tuple[str, bytes, int]]:
+    version = _models_version()
+    dist_info = f"solstone_journal_models-{version}.dist-info"
+    members = [
+        ("solstone_journal_models/__init__.py", b'"""tiny model fixture."""\n', 0o664),
+        (
+            "solstone_journal_models/MODEL_NOTICES.md",
+            b"# Model notices\n\nTiny fixture notices.\n",
+            0o664,
+        ),
+        (f"{dist_info}/METADATA", b"Name: solstone-journal-models\n", 0o664),
+        (f"{dist_info}/WHEEL", b"Wheel-Version: 1.0\n", 0o664),
+        (f"{dist_info}/RECORD", b"", 0o664),
+    ]
+    for index, (basename, content) in enumerate(sorted(MODEL_ASSET_BYTES.items())):
+        member_content = (
+            b"x" * len(content) if mutate_content and index == 0 else content
+        )
+        members.append(
+            (
+                f"solstone_journal_models/assets/{basename}",
+                member_content,
+                0o664,
+            )
+        )
+    return members
+
+
+def _write_model_wheel(
+    path: Path,
+    *,
+    reverse: bool = False,
+    mutate_content: bool = False,
+) -> None:
+    members = _model_wheel_members(mutate_content=mutate_content)
+    if reverse:
+        members = list(reversed(members))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
+        for name, content, mode in members:
+            wheel.writestr(_zip_info(name, mode=mode), content)
+
+
+def _model_sdist_members() -> list[tuple[tarfile.TarInfo, bytes | None]]:
+    version = _models_version()
+    root = f"solstone_journal_models-{version}"
+    files: list[tuple[str, bytes, int]] = [
+        (
+            "MANIFEST.in",
+            b"recursive-include solstone_journal_models/assets *.onnx\n",
+            0o664,
+        ),
+        (
+            "pyproject.toml",
+            (
+                b"[project]\n"
+                b'name = "solstone-journal-models"\n'
+                + f'version = "{version}"\n'.encode()
+            ),
+            0o664,
+        ),
+        (
+            "solstone_journal_models/MODEL_NOTICES.md",
+            b"# Model notices\n\nTiny fixture notices.\n",
+            0o664,
+        ),
+        ("solstone_journal_models/__init__.py", b'"""tiny model fixture."""\n', 0o664),
+        (
+            "solstone_journal_models.egg-info/PKG-INFO",
+            b"Name: solstone-journal-models\n",
+            0o644,
+        ),
+        (
+            "solstone_journal_models.egg-info/SOURCES.txt",
+            b"pyproject.toml\n",
+            0o644,
+        ),
+        (
+            "solstone_journal_models.egg-info/top_level.txt",
+            b"solstone_journal_models\n",
+            0o644,
+        ),
+    ]
+    files.extend(
+        (
+            f"solstone_journal_models/assets/{basename}",
+            content,
+            0o664,
+        )
+        for basename, content in sorted(MODEL_ASSET_BYTES.items())
+    )
+    members: list[tuple[tarfile.TarInfo, bytes | None]] = [
+        (_tar_info(root, is_dir=True), None),
+        (_tar_info(f"{root}/solstone_journal_models", is_dir=True), None),
+        (_tar_info(f"{root}/solstone_journal_models/assets", is_dir=True), None),
+        (_tar_info(f"{root}/solstone_journal_models.egg-info", is_dir=True), None),
+    ]
+    members.extend(
+        (_tar_info(f"{root}/{name}", mode=mode), content)
+        for name, content, mode in files
+    )
+    return members
+
+
+def _write_model_sdist(path: Path, *, reverse: bool = False) -> None:
+    members = _model_sdist_members()
+    if reverse:
+        members = list(reversed(members))
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gzipped:
+            with tarfile.open(fileobj=gzipped, mode="w") as archive:
+                for info, content in members:
+                    if content is None:
+                        archive.addfile(info)
+                    else:
+                        info.size = len(content)
+                        archive.addfile(info, BytesIO(content))
+
+
+def _write_model_archive(path: Path, *, reverse: bool = False) -> None:
+    if path.name.endswith(".whl"):
+        _write_model_wheel(path, reverse=reverse)
+        return
+    _write_model_sdist(path, reverse=reverse)
+
+
 def _write_publish_fixture_file(path: Path, content: bytes) -> None:
+    if path.name.startswith("solstone_journal_models-"):
+        _write_model_archive(path)
+        return
     if path.name.startswith("solstone-") and path.name.endswith(".whl"):
         info = zipfile.ZipInfo(
             wheel_checker.NVATTEST_AUTHORITY_MEMBER,
-            (2026, 7, 20, 12, 0, 0),
+            ZIP_DATE_TIME,
         )
         info.create_system = 3
         info.external_attr = 0o644 << 16
@@ -337,7 +493,11 @@ def _full_snapshot(
     return {
         (project.project, project.version): {
             "urls": [
-                {"digests": {"sha256": digest}, "filename": filename}
+                {
+                    "digests": {"sha256": digest},
+                    "filename": filename,
+                    "url": f"https://files.example/{project.project}/{filename}",
+                }
                 for filename, digest in sorted(project.files.items())
             ]
         }
@@ -371,13 +531,107 @@ def _divergent_snapshot(
     first_project = projects[0]
     payload = dict(snapshot[(first_project.project, first_project.version)])
     urls = list(payload["urls"])
-    urls[0] = {
-        "digests": {"sha256": "0" * 64},
-        "filename": urls[0]["filename"],
-    }
+    urls[0] = {**urls[0], "digests": {"sha256": "0" * 64}}
     payload["urls"] = urls
     snapshot[(first_project.project, first_project.version)] = payload
     return snapshot
+
+
+def _model_url(filename: str) -> str:
+    return f"https://files.example/{publisher.MODEL_PROJECT}/{filename}"
+
+
+def _model_entries(report: CandidateReport) -> tuple[publisher.ArtifactEntry, ...]:
+    config = _config(report.release_dir.parents[2], report)
+    classified = publisher.classify_candidate_artifacts(config)
+    return tuple(
+        entry
+        for entry in classified.uploads
+        if entry.project == publisher.MODEL_PROJECT
+    )
+
+
+def _write_remote_model_archives(
+    tmp_path: Path,
+    report: CandidateReport,
+    *,
+    reverse: bool = True,
+) -> Mapping[str, Path]:
+    remote = tmp_path / "remote-models"
+    remote.mkdir()
+    paths: dict[str, Path] = {}
+    for entry in _model_entries(report):
+        path = remote / entry.name
+        _write_model_archive(path, reverse=reverse)
+        paths[entry.name] = path
+    return paths
+
+
+def _model_remote_facts(
+    remote_paths: Mapping[str, Path],
+) -> Mapping[str, tuple[str, str]]:
+    return {
+        name: (_sha(path)[0], _model_url(name))
+        for name, path in sorted(remote_paths.items())
+    }
+
+
+def _snapshot_with_models(
+    *,
+    model_files: Mapping[str, tuple[str, str]] | None,
+    train: str,
+) -> Callable[
+    [Sequence[publisher.ProjectExpectation]],
+    Mapping[tuple[str, str], Mapping[str, Any] | None],
+]:
+    def snapshot(
+        projects: Sequence[publisher.ProjectExpectation],
+    ) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
+        result: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+        for project in projects:
+            key = (project.project, project.version)
+            if project.project == publisher.MODEL_PROJECT:
+                if model_files is None:
+                    result[key] = None
+                else:
+                    result[key] = {
+                        "urls": [
+                            {
+                                "digests": {"sha256": digest},
+                                "filename": filename,
+                                "url": url,
+                            }
+                            for filename, (digest, url) in sorted(model_files.items())
+                        ]
+                    }
+                continue
+            if train == "empty":
+                result[key] = None
+            elif train == "full":
+                result[key] = _full_snapshot([project])[key]
+            elif train == "divergent":
+                result[key] = _divergent_snapshot([project])[key]
+            else:
+                raise AssertionError(f"unknown train snapshot kind: {train}")
+        return result
+
+    return snapshot
+
+
+def _recording_archive_downloader(
+    calls: list[str],
+    remote_paths: Mapping[str, Path],
+    retained_caps: Mapping[str, int],
+) -> publisher.ArchiveDownloader:
+    by_url = {_model_url(name): path for name, path in remote_paths.items()}
+
+    def download(url: str, destination: Path, max_bytes: int) -> None:
+        calls.append("download")
+        name = Path(url).name
+        assert max_bytes == retained_caps[name]
+        destination.write_bytes(by_url[url].read_bytes())
+
+    return download
 
 
 class RecordingIndex:
@@ -648,11 +902,20 @@ def _forbidden_runner(label: str, calls: list[str]) -> publisher.ProcessRunner:
     return run
 
 
+def _forbidden_archive_downloader(calls: list[str]) -> publisher.ArchiveDownloader:
+    def download(_url: str, _destination: Path, _max_bytes: int) -> None:
+        calls.append("download")
+        raise AssertionError("download seam must not be invoked")
+
+    return download
+
+
 def _run_publish(
     config: publisher.PublishConfig,
     *,
     calls: list[str],
     index: RecordingIndex,
+    archive_downloader: publisher.ArchiveDownloader | None = None,
     upload_runner: publisher.ProcessRunner | None = None,
     git_runner: publisher.ProcessRunner | None = None,
     gh_runner: publisher.ProcessRunner | None = None,
@@ -661,6 +924,7 @@ def _run_publish(
     return publisher.publish_release(
         config=config,
         index_client=index,
+        archive_downloader=archive_downloader or _forbidden_archive_downloader(calls),
         upload_runner=upload_runner or _upload_runner(calls),
         git_runner=git_runner or _forbidden_runner("git", calls),
         gh_runner=gh_runner or _forbidden_runner("witness", calls),
@@ -677,6 +941,7 @@ def _run_publish_with_counted_seams(
     return publisher.publish_release(
         config=config,
         index_client=seams.index_client,
+        archive_downloader=_forbidden_archive_downloader([]),
         upload_runner=seams.upload_runner,
         git_runner=seams.git_runner,
         gh_runner=seams.gh_runner,
@@ -701,6 +966,8 @@ def _assert_tombstone_not_classified_for_upload(
     upload_argv: Sequence[Sequence[str]],
     version: str,
 ) -> None:
+    assert result.reused_project == ""
+    assert result.reused_files == ()
     assert manifest.CORE_UNSUPPORTED_TOMBSTONE_RECORD not in result.uploaded_files
     assert not any(
         name.startswith("solstone_core_unsupported_platform-")
@@ -832,6 +1099,8 @@ def test_production_clean_path_orders_upload_verify_tag_witness(
     ]
     assert index.base_urls == [publisher.PRODUCTION_INDEX_BASE_URL] * 2
     assert result.upload_state == "uploaded"
+    assert result.reused_project == ""
+    assert result.reused_files == ()
     assert result.tag_state == "created-and-pushed"
     assert result.witness_status.state == "created"
 
@@ -862,6 +1131,8 @@ def test_production_accepts_published_tombstone_with_empty_base_index(
         for name in publisher.expected_package_names(include_models=False)
     )
     assert result.upload_state == "uploaded"
+    assert result.reused_project == ""
+    assert result.reused_files == ()
 
 
 def test_test_mode_real_recovery_without_prerequisite_reaches_index_and_upload(
@@ -1087,6 +1358,8 @@ def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
     )
 
     assert result.upload_state == "uploaded"
+    assert result.reused_project == ""
+    assert result.reused_files == ()
     assert set(ledger_uploads) == expected_uploads
     assert {path.name for path in captured_paths} == expected_uploads
     assert not any(
@@ -1097,6 +1370,423 @@ def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
         assert (
             hashlib.sha256(path.read_bytes()).hexdigest() == ledger_uploads[path.name]
         )
+
+
+def test_reused_models_are_downloaded_and_matched_before_train_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = _model_remote_facts(remote_paths)
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    index = RecordingIndex(
+        calls,
+        [
+            _snapshot_with_models(model_files=remote_facts, train="empty"),
+            _full_snapshot,
+            _snapshot_with_models(model_files=remote_facts, train="empty"),
+        ],
+    )
+
+    result = _run_publish(
+        _config(tmp_path, report, mode="production"),
+        calls=calls,
+        index=index,
+        archive_downloader=_recording_archive_downloader(
+            calls,
+            remote_paths,
+            retained_caps,
+        ),
+        upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+        git_runner=RecordingGit(calls),
+        gh_runner=_gh_runner(calls),
+    )
+
+    assert calls == [
+        "source-check",
+        "changelog",
+        "index",
+        "download",
+        "download",
+        "upload",
+        "index",
+        "index",
+        "tag-check",
+        "local-tag-check",
+        "tag",
+        "push",
+        "witness",
+    ]
+    uploaded_args = [Path(item).name for argv in upload_argv for item in argv[4:]]
+    assert not any(
+        name.startswith("solstone_journal_models-") for name in uploaded_args
+    )
+    assert result.reused_project == f"{publisher.MODEL_PROJECT}=={_models_version()}"
+    assert result.reused_files == tuple(sorted(remote_facts))
+    assert result.as_dict()["reused_project"] == result.reused_project
+    assert result.as_dict()["reused_files"] == list(result.reused_files)
+    assert not any(
+        name.startswith("solstone_journal_models-") for name in result.uploaded_files
+    )
+    assert not any(
+        project.startswith(publisher.MODEL_PROJECT) for project in result.projects
+    )
+
+
+def test_reused_models_exact_digest_short_circuits_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    download_calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    index = RecordingIndex(
+        calls,
+        [
+            _snapshot_with_models(
+                model_files={
+                    entry.name: (entry.sha256, _model_url(entry.name))
+                    for entry in _model_entries(report)
+                },
+                train="empty",
+            ),
+            _full_snapshot,
+            _snapshot_with_models(
+                model_files={
+                    entry.name: (entry.sha256, _model_url(entry.name))
+                    for entry in _model_entries(report)
+                },
+                train="empty",
+            ),
+        ],
+    )
+
+    result = _run_publish(
+        _config(tmp_path, report),
+        calls=calls,
+        index=index,
+        archive_downloader=lambda *_args: download_calls.append("download"),
+        upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+    )
+
+    uploaded_args = [Path(item).name for argv in upload_argv for item in argv[4:]]
+    assert download_calls == []
+    assert result.upload_state == "uploaded"
+    assert result.reused_files == tuple(
+        sorted(entry.name for entry in _model_entries(report))
+    )
+    assert not any(
+        name.startswith("solstone_journal_models-") for name in uploaded_args
+    )
+
+
+def test_reused_models_idempotent_train_full_rerun_skips_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = _model_remote_facts(remote_paths)
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    upload_calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [
+            _snapshot_with_models(model_files=remote_facts, train="full"),
+            _full_snapshot,
+            _snapshot_with_models(model_files=remote_facts, train="empty"),
+        ],
+    )
+
+    result = _run_publish(
+        _config(tmp_path, report),
+        calls=calls,
+        index=index,
+        archive_downloader=_recording_archive_downloader(
+            calls,
+            remote_paths,
+            retained_caps,
+        ),
+        upload_runner=lambda *_args, **_kwargs: upload_calls.append("upload"),
+    )
+
+    assert calls == ["index", "download", "download", "index", "index"]
+    assert upload_calls == []
+    assert result.upload_state == "skipped-already-published"
+    assert result.verified is True
+    assert result.reused_project == f"{publisher.MODEL_PROJECT}=={_models_version()}"
+
+
+def test_model_absent_uses_legacy_uniform_index_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=None, train="full")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert _first_failure(excinfo.value) == "release publish package index is divergent"
+    assert calls == ["index"]
+    late_seams.assert_zero()
+
+
+def test_reused_model_manifest_mismatch_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = dict(_write_remote_model_archives(tmp_path, report, reverse=True))
+    wheel_name = next(name for name in remote_paths if name.endswith(".whl"))
+    _write_model_wheel(
+        remote_paths[wheel_name],
+        reverse=True,
+        mutate_content=True,
+    )
+    remote_facts = _model_remote_facts(remote_paths)
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=remote_facts, train="empty")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            archive_downloader=_recording_archive_downloader(
+                calls,
+                remote_paths,
+                retained_caps,
+            ),
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert (
+        _first_failure(excinfo.value) == "release archive canonical manifest mismatch"
+    )
+    late_seams.assert_zero()
+
+
+def test_reused_model_fetched_digest_mismatch_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = dict(_write_remote_model_archives(tmp_path, report, reverse=True))
+    remote_facts = _model_remote_facts(remote_paths)
+    first_name = sorted(remote_paths)[0]
+    bad_path = tmp_path / "bad-download"
+    bad_path.write_bytes(b"different bytes")
+    remote_paths[first_name] = bad_path
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=remote_facts, train="empty")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            archive_downloader=_recording_archive_downloader(
+                calls,
+                remote_paths,
+                retained_caps,
+            ),
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "release publish downloaded model archive digest mismatch"
+    )
+    late_seams.assert_zero()
+
+
+def test_reused_model_partial_published_set_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = dict(_model_remote_facts(remote_paths))
+    remote_facts.pop(sorted(remote_facts)[0])
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=remote_facts, train="empty")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "release publish model project index file set is invalid"
+    )
+    late_seams.assert_zero()
+
+
+def test_reused_model_extra_published_set_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = dict(_model_remote_facts(remote_paths))
+    remote_facts[f"solstone_journal_models-{_models_version()}-extra.whl"] = (
+        "1" * 64,
+        "https://files.example/extra.whl",
+    )
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=remote_facts, train="empty")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "release publish model project index file set is invalid"
+    )
+    late_seams.assert_zero()
+
+
+def test_reused_model_train_divergence_refuses_before_late_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = _model_remote_facts(remote_paths)
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    index = RecordingIndex(
+        calls,
+        [_snapshot_with_models(model_files=remote_facts, train="divergent")],
+    )
+    late_seams = PublishSeamCounters()
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            _config(tmp_path, report),
+            calls=calls,
+            index=index,
+            archive_downloader=_recording_archive_downloader(
+                calls,
+                remote_paths,
+                retained_caps,
+            ),
+            upload_runner=late_seams.upload_runner,
+            git_runner=late_seams.git_runner,
+            gh_runner=late_seams.gh_runner,
+        )
+
+    assert _first_failure(excinfo.value) == "release publish package index is divergent"
+    late_seams.assert_zero()
+
+
+def test_reused_model_second_observation_mismatch_refuses_before_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _candidate(tmp_path, include_models=True)
+    _patch_recover(monkeypatch, report, rehash_payloads=True)
+    remote_paths = _write_remote_model_archives(tmp_path, report, reverse=True)
+    remote_facts = _model_remote_facts(remote_paths)
+    retained_caps = {entry.name: entry.bytes * 2 for entry in _model_entries(report)}
+    calls: list[str] = []
+    upload_argv: list[tuple[str, ...]] = []
+    config = _config(tmp_path, report, mode="production")
+    index = RecordingIndex(
+        calls,
+        [
+            _snapshot_with_models(model_files=remote_facts, train="empty"),
+            _full_snapshot,
+            _snapshot_with_models(
+                model_files={
+                    name: ("0" * 64, url)
+                    for name, (_digest, url) in remote_facts.items()
+                },
+                train="empty",
+            ),
+        ],
+    )
+
+    with pytest.raises(DriverError) as excinfo:
+        _run_publish(
+            config,
+            calls=calls,
+            index=index,
+            archive_downloader=_recording_archive_downloader(
+                calls,
+                remote_paths,
+                retained_caps,
+            ),
+            upload_runner=_upload_runner(calls, captured_argv=upload_argv),
+            git_runner=RecordingGit(calls),
+            gh_runner=_gh_runner(calls),
+        )
+
+    assert _first_failure(excinfo.value) == (
+        "release publish reused model index changed after train artifacts may already have uploaded"
+    )
+    assert excinfo.value.failures[0].repair == config.resume_target
+    assert calls == [
+        "source-check",
+        "changelog",
+        "index",
+        "download",
+        "download",
+        "upload",
+        "index",
+        "index",
+    ]
+    assert "tag" not in calls
+    assert "witness" not in calls
 
 
 def test_byte_divergence_from_recover_prevents_transport(
@@ -1335,6 +2025,8 @@ def test_already_published_skips_upload_and_verifies(
 
     assert calls == ["index", "index"]
     assert result.upload_state == "skipped-already-published"
+    assert result.reused_project == ""
+    assert result.reused_files == ()
     assert result.verified is True
 
 
@@ -1520,6 +2212,8 @@ def test_remote_tag_at_same_commit_skips_push_but_records_witness(
         "witness",
     ]
     assert result.upload_state == "skipped-already-published"
+    assert result.reused_project == ""
+    assert result.reused_files == ()
     assert result.tag_state == "remote-already-correct"
 
 

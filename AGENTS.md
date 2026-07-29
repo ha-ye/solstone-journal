@@ -220,9 +220,15 @@ finalized retained candidate. `make publish-release
 RELEASE_DIR=<retained ready dir>` runs `scripts/release_publish.py --mode
 production`: it revalidates retained candidate bytes, uploads the canonical PyPI
 artifact set, verifies PyPI digests, tags `v<version>` at the retained source
-commit, and records a GitHub Release witness. `make publish-release-test
-RELEASE_DIR=<retained ready dir>` is TestPyPI upload+verify only; it does not
-validate changelog or tag readiness and does not invoke git or gh.
+commit, and records a GitHub Release witness. The independently versioned
+`solstone-journal-models` wheel and sdist may be reused when the package index
+already holds that ledger-declared version and its canonical archive manifests
+match the retained archives; reused model archives are removed from twine upload
+and train-owned exact-digest verification, then the model index is rechecked
+before tag/witness. The GitHub Release witness still receives the full retained
+asset list. `make publish-release-test RELEASE_DIR=<retained ready dir>` is
+TestPyPI upload+verify only; it does not validate changelog or tag readiness and
+does not invoke git or gh.
 
 Publication additionally refuses when the retained candidate's nvattest
 authority does not bind to the current checkout's canonical authority. That

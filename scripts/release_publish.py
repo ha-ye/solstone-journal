@@ -41,6 +41,9 @@ from scripts.check_rust_release_manifest import (  # noqa: E402
     rust_artifact_targets,
     validate_core_unsupported_tombstone_record,
 )
+from scripts.release_archive_manifest import (  # noqa: E402
+    assert_archives_semantically_identical,
+)
 from scripts.release_candidate_driver import (  # noqa: E402
     CandidateReport,
     DriverError,
@@ -59,6 +62,7 @@ LOG = logging.getLogger(__name__)
 Mode = Literal["production", "test"]
 IndexStatus = Literal["empty", "full", "divergent"]
 UploadState = Literal["uploaded", "skipped-already-published"]
+MODEL_PROJECT = "solstone-journal-models"
 
 PRODUCTION_REPOSITORY_URL = "https://upload.pypi.org/legacy/"
 TEST_REPOSITORY_URL = "https://test.pypi.org/legacy/"
@@ -76,6 +80,7 @@ IndexClient = Callable[
     [str, Sequence["ProjectExpectation"]],
     Mapping[tuple[str, str], Mapping[str, Any] | None],
 ]
+ArchiveDownloader = Callable[[str, Path, int], None]
 Sleeper = Callable[[float], None]
 
 
@@ -220,15 +225,7 @@ class ClassifiedArtifacts:
 
     @property
     def project_expectations(self) -> tuple["ProjectExpectation", ...]:
-        grouped: dict[tuple[str, str], dict[str, str]] = {}
-        for entry in self.uploads:
-            grouped.setdefault((entry.project, entry.version), {})[entry.name] = (
-                entry.sha256
-            )
-        return tuple(
-            ProjectExpectation(project=project, version=version, files=dict(files))
-            for (project, version), files in sorted(grouped.items())
-        )
+        return _project_expectations_for(self.uploads)
 
 
 @dataclass(frozen=True)
@@ -238,6 +235,20 @@ class ProjectExpectation:
     files: Mapping[str, str]
 
 
+def _project_expectations_for(
+    entries: Sequence[ArtifactEntry],
+) -> tuple[ProjectExpectation, ...]:
+    grouped: dict[tuple[str, str], dict[str, str]] = {}
+    for entry in entries:
+        grouped.setdefault((entry.project, entry.version), {})[entry.name] = (
+            entry.sha256
+        )
+    return tuple(
+        ProjectExpectation(project=project, version=version, files=dict(files))
+        for (project, version), files in sorted(grouped.items())
+    )
+
+
 @dataclass(frozen=True)
 class ProjectIndexMatch:
     project: str
@@ -245,6 +256,15 @@ class ProjectIndexMatch:
     status: IndexStatus
     expected: Mapping[str, str]
     actual: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class ResolvedPublishSet:
+    uploads: tuple[ArtifactEntry, ...]
+    verify_expectations: tuple["ProjectExpectation", ...]
+    reused_project: str
+    reused_files: tuple[str, ...]
+    reused_model_pin: "ProjectExpectation | None"
 
 
 @dataclass(frozen=True)
@@ -258,11 +278,15 @@ class PublishResult:
     witness_status: WitnessStatus
     uploaded_files: tuple[str, ...]
     projects: tuple[str, ...]
+    reused_project: str
+    reused_files: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "projects": list(self.projects),
+            "reused_files": list(self.reused_files),
+            "reused_project": self.reused_project,
             "source_commit": self.source_commit,
             "tag_state": self.tag_state,
             "upload_state": self.upload_state,
@@ -725,6 +749,68 @@ def default_index_client(
     return responses
 
 
+def default_archive_downloader(url: str, destination: Path, max_bytes: int) -> None:
+    import requests
+
+    written = 0
+    try:
+        with requests.get(url, stream=True, timeout=(30, 45)) as response:
+            if response.status_code != 200:
+                raise DriverError(
+                    [
+                        failure(
+                            "release publish archive download failed",
+                            expected=f"{url} HTTP 200",
+                            actual=f"HTTP {response.status_code}",
+                            repair="retry after the package index files are reachable",
+                        )
+                    ]
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=256 * 1024):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > max_bytes:
+                        destination.unlink(missing_ok=True)
+                        raise DriverError(
+                            [
+                                failure(
+                                    "release publish archive download exceeded retained size ceiling",
+                                    expected=f"<= {max_bytes} bytes",
+                                    actual=f"{url} wrote {written} bytes",
+                                    repair="audit the package index; cut the next version if bytes differ",
+                                )
+                            ]
+                        )
+                    handle.write(chunk)
+    except requests.RequestException as exc:
+        destination.unlink(missing_ok=True)
+        raise DriverError(
+            [
+                failure(
+                    "release publish archive download failed",
+                    expected=url,
+                    actual=type(exc).__name__,
+                    repair="retry after the package index files are reachable",
+                )
+            ]
+        ) from None
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise DriverError(
+            [
+                failure(
+                    "release publish archive download failed",
+                    expected=f"write downloaded archive to {destination}",
+                    actual=type(exc).__name__,
+                    repair="retry after local temporary storage is healthy",
+                )
+            ]
+        ) from None
+
+
 def _remote_files_from_payload(payload: Mapping[str, Any] | None) -> Mapping[str, str]:
     if payload is None:
         return {}
@@ -743,6 +829,25 @@ def _remote_files_from_payload(payload: Mapping[str, Any] | None) -> Mapping[str
             files[str(filename)] = ""
             continue
         files[filename] = sha256
+    return files
+
+
+def _remote_file_urls_from_payload(
+    payload: Mapping[str, Any] | None,
+) -> Mapping[str, str]:
+    if payload is None:
+        return {}
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        return {}
+    files: dict[str, str] = {}
+    for item in urls:
+        if not isinstance(item, Mapping):
+            continue
+        filename = item.get("filename")
+        url = item.get("url")
+        if isinstance(filename, str) and isinstance(url, str) and url:
+            files[filename] = url
     return files
 
 
@@ -769,11 +874,31 @@ def match_project_index(
 def _index_matches(
     *,
     config: PublishConfig,
-    classified: ClassifiedArtifacts,
+    expectations: Sequence[ProjectExpectation],
     index_client: IndexClient,
 ) -> tuple[ProjectIndexMatch, ...]:
-    expectations = classified.project_expectations
-    responses = index_client(config.index_base_url, expectations)
+    responses = _index_responses(
+        config=config,
+        expectations=expectations,
+        index_client=index_client,
+    )
+    return _matches_from_responses(expectations=expectations, responses=responses)
+
+
+def _index_responses(
+    *,
+    config: PublishConfig,
+    expectations: Sequence[ProjectExpectation],
+    index_client: IndexClient,
+) -> Mapping[tuple[str, str], Mapping[str, Any] | None]:
+    return index_client(config.index_base_url, expectations)
+
+
+def _matches_from_responses(
+    *,
+    expectations: Sequence[ProjectExpectation],
+    responses: Mapping[tuple[str, str], Mapping[str, Any] | None],
+) -> tuple[ProjectIndexMatch, ...]:
     return tuple(
         match_project_index(
             expectation,
@@ -835,7 +960,7 @@ def _redact_secret(text: str, secret: str) -> str:
 
 def _run_twine_upload(
     config: PublishConfig,
-    classified: ClassifiedArtifacts,
+    uploads: Sequence[ArtifactEntry],
     *,
     upload_runner: ProcessRunner,
 ) -> None:
@@ -844,7 +969,7 @@ def _run_twine_upload(
         "upload",
         "--repository-url",
         config.repository_url,
-        *(str(entry.path) for entry in classified.uploads),
+        *(str(entry.path) for entry in uploads),
     ]
     env = dict(os.environ)
     env["TWINE_USERNAME"] = "__token__"
@@ -874,7 +999,7 @@ def _run_twine_upload(
 def _verify_uploaded_index(
     *,
     config: PublishConfig,
-    classified: ClassifiedArtifacts,
+    expectations: Sequence[ProjectExpectation],
     index_client: IndexClient,
     sleep: Sleeper,
     max_attempts: int,
@@ -884,7 +1009,7 @@ def _verify_uploaded_index(
     for attempt in range(max_attempts):
         last_matches = _index_matches(
             config=config,
-            classified=classified,
+            expectations=expectations,
             index_client=index_client,
         )
         if _all_index_matches_full(last_matches):
@@ -895,12 +1020,193 @@ def _verify_uploaded_index(
         [
             failure(
                 "release publish package index verification timed out",
-                expected="all retained files visible with matching SHA-256",
+                expected="all publish-owned retained files visible with matching SHA-256",
                 actual=_describe_index_matches(last_matches),
                 repair=config.resume_target,
             )
         ]
     )
+
+
+def _models_package_version(config: PublishConfig) -> str:
+    models = config.retained_ledger.get("models")
+    version = models.get("package_version") if isinstance(models, Mapping) else None
+    return str(version) if isinstance(version, str) else ""
+
+
+def _model_key(config: PublishConfig) -> tuple[str, str]:
+    return (MODEL_PROJECT, _models_package_version(config))
+
+
+def _entry_by_name(entries: Sequence[ArtifactEntry]) -> Mapping[str, ArtifactEntry]:
+    return {entry.name: entry for entry in entries}
+
+
+def _resolve_publish_set(
+    *,
+    config: PublishConfig,
+    classified: ClassifiedArtifacts,
+    pre_upload_matches: Sequence[ProjectIndexMatch],
+    pre_upload_responses: Mapping[tuple[str, str], Mapping[str, Any] | None],
+    archive_downloader: ArchiveDownloader,
+) -> tuple[ResolvedPublishSet, str]:
+    full_expectations = classified.project_expectations
+    full_set = ResolvedPublishSet(
+        uploads=classified.uploads,
+        verify_expectations=full_expectations,
+        reused_project="",
+        reused_files=(),
+        reused_model_pin=None,
+    )
+    model_key = _model_key(config)
+    model_matches = [
+        match
+        for match in pre_upload_matches
+        if (match.project, match.version) == model_key
+    ]
+    if not model_matches or model_matches[0].status == "empty":
+        return (
+            full_set,
+            _assert_pre_upload_index_clean_or_published(pre_upload_matches),
+        )
+
+    model_match = model_matches[0]
+    _assert_model_file_set_exact(model_match)
+    if dict(model_match.actual) != dict(model_match.expected):
+        _download_and_compare_reused_models(
+            classified=classified,
+            model_match=model_match,
+            payload=pre_upload_responses.get(model_key),
+            archive_downloader=archive_downloader,
+        )
+    model_names = tuple(sorted(model_match.expected))
+    train_matches = tuple(
+        match
+        for match in pre_upload_matches
+        if (match.project, match.version) != model_key
+    )
+    train_state = _assert_pre_upload_index_clean_or_published(train_matches)
+    publish_uploads = tuple(
+        entry
+        for entry in classified.uploads
+        if not (entry.project == MODEL_PROJECT and entry.version == model_key[1])
+    )
+    return (
+        ResolvedPublishSet(
+            uploads=publish_uploads,
+            verify_expectations=_project_expectations_for(publish_uploads),
+            reused_project=f"{model_match.project}=={model_match.version}",
+            reused_files=model_names,
+            reused_model_pin=ProjectExpectation(
+                project=model_match.project,
+                version=model_match.version,
+                files=dict(model_match.actual),
+            ),
+        ),
+        train_state,
+    )
+
+
+def _assert_model_file_set_exact(model_match: ProjectIndexMatch) -> None:
+    expected = set(model_match.expected)
+    actual = set(model_match.actual)
+    if len(expected) != 2 or actual != expected:
+        raise DriverError(
+            [
+                failure(
+                    "release publish model project index file set is invalid",
+                    expected=", ".join(sorted(expected)),
+                    actual=", ".join(sorted(actual)) or "<empty>",
+                    repair="audit the package index; cut the next version if the published set differs",
+                )
+            ]
+        )
+
+
+def _download_and_compare_reused_models(
+    *,
+    classified: ClassifiedArtifacts,
+    model_match: ProjectIndexMatch,
+    payload: Mapping[str, Any] | None,
+    archive_downloader: ArchiveDownloader,
+) -> None:
+    urls = _remote_file_urls_from_payload(payload)
+    entries = _entry_by_name(classified.uploads)
+    missing_urls = sorted(name for name in model_match.expected if name not in urls)
+    if missing_urls:
+        raise DriverError(
+            [
+                failure(
+                    "release publish model project index file URL is missing",
+                    expected="download URL for each reused model archive",
+                    actual=", ".join(missing_urls),
+                    repair="retry after the package index exposes archive URLs",
+                )
+            ]
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for name in sorted(model_match.expected):
+            retained = entries[name]
+            destination = tmp_path / name
+            archive_downloader(urls[name], destination, retained.bytes * 2)
+            downloaded_sha256 = _sha256_file(destination)
+            expected_sha256 = model_match.actual[name]
+            if downloaded_sha256 != expected_sha256:
+                raise DriverError(
+                    [
+                        failure(
+                            "release publish downloaded model archive digest mismatch",
+                            expected=f"{name} {expected_sha256}",
+                            actual=f"{downloaded_sha256} bytes={destination.stat().st_size}",
+                            repair="retry after the package index files are consistent",
+                        )
+                    ]
+                )
+            assert_archives_semantically_identical(
+                retained.path,
+                destination,
+                retained_label=f"retained {name}",
+                candidate_label=f"published {name}",
+            )
+
+
+def _assert_reused_model_project_still_pinned(
+    *,
+    config: PublishConfig,
+    pin: ProjectExpectation | None,
+    index_client: IndexClient,
+) -> None:
+    if pin is None:
+        return
+    matches = _index_matches(
+        config=config,
+        expectations=(pin,),
+        index_client=index_client,
+    )
+    if len(matches) == 1 and matches[0].status == "full":
+        return
+    raise DriverError(
+        [
+            failure(
+                "release publish reused model index changed after train artifacts may already have uploaded",
+                expected=str(dict(sorted(pin.files.items()))),
+                actual=_describe_index_matches(matches),
+                repair=config.resume_target,
+            )
+        ]
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(256 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _remote_tag_commit(
@@ -1105,6 +1411,7 @@ def publish_release(
     *,
     config: PublishConfig,
     index_client: IndexClient = default_index_client,
+    archive_downloader: ArchiveDownloader = default_archive_downloader,
     upload_runner: ProcessRunner = subprocess.run,
     git_runner: ProcessRunner = subprocess.run,
     gh_runner: ProcessRunner = subprocess.run,
@@ -1121,25 +1428,41 @@ def publish_release(
     changelog_block = ""
     if config.mode == "production":
         changelog_block = _read_changelog_block(config, git_runner)
-    pre_upload = _index_matches(
+    full_expectations = classified.project_expectations
+    pre_upload_responses = _index_responses(
         config=config,
-        classified=classified,
+        expectations=full_expectations,
         index_client=index_client,
     )
-    index_state = _assert_pre_upload_index_clean_or_published(pre_upload)
+    pre_upload = _matches_from_responses(
+        expectations=full_expectations,
+        responses=pre_upload_responses,
+    )
+    publish_set, index_state = _resolve_publish_set(
+        config=config,
+        classified=classified,
+        pre_upload_matches=pre_upload,
+        pre_upload_responses=pre_upload_responses,
+        archive_downloader=archive_downloader,
+    )
     if index_state == "clean":
-        _run_twine_upload(config, classified, upload_runner=upload_runner)
+        _run_twine_upload(config, publish_set.uploads, upload_runner=upload_runner)
         upload_state: UploadState = "uploaded"
     else:
         LOG.info("release artifacts are already published with retained digests")
         upload_state = "skipped-already-published"
     _verify_uploaded_index(
         config=config,
-        classified=classified,
+        expectations=publish_set.verify_expectations,
         index_client=index_client,
         sleep=sleep,
         max_attempts=max_verify_attempts,
         sleep_seconds=verify_sleep_seconds,
+    )
+    _assert_reused_model_project_still_pinned(
+        config=config,
+        pin=publish_set.reused_model_pin,
+        index_client=index_client,
     )
     if config.mode == "test":
         tag_state = "test-skipped"
@@ -1163,11 +1486,13 @@ def publish_release(
         verified=True,
         tag_state=tag_state,
         witness_status=witness,
-        uploaded_files=tuple(entry.name for entry in classified.uploads),
+        uploaded_files=tuple(entry.name for entry in publish_set.uploads),
         projects=tuple(
             f"{project.project}=={project.version}"
-            for project in classified.project_expectations
+            for project in publish_set.verify_expectations
         ),
+        reused_project=publish_set.reused_project,
+        reused_files=publish_set.reused_files,
     )
 
 

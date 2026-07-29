@@ -9,6 +9,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 ### Fixed
 
 - media sent from a paired device now lands in your journal byte-for-byte. a relay read could add two blank-line bytes to the front of a file while still saying the transfer finished.
+- publishing a solstone release can now reuse the already-published journal model package when its wheel and source archive still contain the same files, modes, and bytes. the train-owned packages are still uploaded and checked by exact digest, and the reused model index is checked again before the release is tagged.
 
 ## [1.0.19] - 2026-07-29
 
