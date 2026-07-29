@@ -25,7 +25,7 @@ import subprocess
 import threading
 import time
 from collections import namedtuple
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +48,12 @@ _SIGNAL_RACE_EXCEPTIONS = (
     psutil.NoSuchProcess,
     psutil.AccessDenied,
 )
+
+_GENERATION_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID"
+_GENERATION_FD_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD"
+_GENERATION_TOKEN_ENV_KEY = "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN"
+_GENERATION_FD_MIN = 3
+_GENERATION_FD_MAX = 1_048_576
 
 
 class ProcessTreeNotReaped(subprocess.TimeoutExpired):
@@ -463,6 +469,33 @@ def _command_partition(cmd: Sequence[str]) -> str:
     return name
 
 
+def _parse_generation_fd(value: object) -> int:
+    try:
+        fd = int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("invalid speakers-analyze generation fd") from exc
+    if fd < _GENERATION_FD_MIN or fd > _GENERATION_FD_MAX:
+        raise RuntimeError("invalid speakers-analyze generation fd")
+    try:
+        os.fstat(fd)
+    except OSError as exc:
+        raise RuntimeError("invalid speakers-analyze generation fd") from exc
+    return fd
+
+
+def _generation_pass_fds(effective_env: Mapping[str, object]) -> tuple[int, ...]:
+    if not effective_env.get(_GENERATION_ENV_KEY):
+        return ()
+    if os.name != "posix":
+        return ()
+    fd_value = effective_env.get(_GENERATION_FD_ENV_KEY)
+    if fd_value is None:
+        raise RuntimeError("missing speakers-analyze generation fd")
+    if effective_env.get(_GENERATION_TOKEN_ENV_KEY) is None:
+        raise RuntimeError("missing speakers-analyze generation token")
+    return (_parse_generation_fd(fd_value),)
+
+
 @dataclass
 class ManagedProcess:
     """Subprocess wrapper with automatic output logging and lifecycle management.
@@ -552,6 +585,8 @@ class ManagedProcess:
         logger.info(f"Starting {name}: {' '.join(cmd)}")
 
         try:
+            effective_env = env if env is not None else os.environ
+            pass_fds = _generation_pass_fds(effective_env)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -560,6 +595,7 @@ class ManagedProcess:
                 text=True,
                 bufsize=1,
                 env=env,
+                pass_fds=pass_fds,
                 process_group=0,
             )
         except Exception as exc:

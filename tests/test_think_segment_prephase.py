@@ -7,9 +7,11 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -623,6 +625,53 @@ def test_run_bounded_phase_timeout_with_exit_zero_propagates_failure(
     )
 
     assert result == (False, True)
+
+
+def test_run_bounded_phase_preserves_generation_env_for_batch_sense(
+    journal_copy, monkeypatch, tmp_path
+):
+    mod = importlib.import_module("solstone.think.thinking")
+    captured = {}
+    fd = os.open(tmp_path / "generation.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID", "generation")
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD", str(fd))
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN", "123")
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            self.pid = 1234
+            self.stdout = StringIO("")
+            self.stderr = StringIO("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("solstone.think.runner.subprocess.Popen", FakePopen)
+
+    try:
+        result = mod.run_bounded_phase(
+            ["journal", "sense", "--day", DAY],
+            DAY,
+            timeout=mod.DEFAULT_TASK_MAX_RUNTIME,
+        )
+    finally:
+        os.close(fd)
+
+    assert result == (True, False)
+    assert captured["kwargs"]["pass_fds"] == (fd,)
+    assert captured["kwargs"]["env"] is None
 
 
 def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch):

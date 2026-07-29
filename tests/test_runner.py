@@ -801,15 +801,105 @@ def test_command_name_derivation(
     assert set(captured_kwargs) == {
         "bufsize",
         "env",
+        "pass_fds",
         "process_group",
         "stderr",
         "stdin",
         "stdout",
         "text",
     }
+    assert captured_kwargs["pass_fds"] == ()
     assert captured_kwargs["process_group"] == 0
     assert managed.name == expected_name
     assert managed.log_writer.path.name == f"testref_{expected_name}.log"
 
     managed.wait()
     managed.cleanup()
+
+
+def test_spawn_passes_generation_fd_from_effective_env(
+    journal_path, mock_callosum, monkeypatch, tmp_path
+):
+    captured_kwargs = {}
+    fd = os.open(tmp_path / "generation.lock", os.O_RDWR | os.O_CREAT, 0o600)
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.pid = 4321
+            self.stdout = StringIO("")
+            self.stderr = StringIO("")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("solstone.think.runner.subprocess.Popen", FakePopen)
+    env = {
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID": "generation",
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD": str(fd),
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN": "123",
+    }
+
+    try:
+        managed = ManagedProcess.spawn(["journal", "sense"], env=env, ref="genref")
+        assert captured_kwargs["pass_fds"] == (fd,)
+        assert captured_kwargs["env"] is env
+        assert (
+            captured_kwargs["env"]["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN"]
+            == "123"
+        )
+        managed.wait()
+        managed.cleanup()
+    finally:
+        os.close(fd)
+
+
+def test_spawn_invalid_generation_fd_fails_before_popen(
+    journal_path, mock_callosum, monkeypatch
+):
+    launched = False
+
+    def fail_popen(*_args, **_kwargs):
+        nonlocal launched
+        launched = True
+        raise AssertionError("Popen must not be reached")
+
+    monkeypatch.setattr("solstone.think.runner.subprocess.Popen", fail_popen)
+    env = {
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID": "generation",
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD": "999999",
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN": "123",
+    }
+
+    with pytest.raises(RuntimeError, match="invalid speakers-analyze generation fd"):
+        ManagedProcess.spawn(["journal", "sense"], env=env, ref="badgen")
+
+    assert launched is False
+
+
+def test_spawn_non_posix_generation_env_passes_no_fds(
+    journal_path, mock_callosum, monkeypatch, tmp_path
+):
+    fd = os.open(tmp_path / "generation.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    env = {
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID": "generation",
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD": str(fd),
+        "SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN": "123",
+    }
+
+    try:
+        monkeypatch.setattr(runner.os, "name", "nt")
+        assert runner._generation_pass_fds(env) == ()
+    finally:
+        os.close(fd)
