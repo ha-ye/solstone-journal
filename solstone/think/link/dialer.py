@@ -24,7 +24,12 @@ from solstone.think.link.client import (
 )
 from solstone.think.link.tls import TlsError
 
-_ESTABLISH_TIMEOUT_SECONDS = 30
+# Request timeout, not session establishment: a single request may include a
+# worst-case segment body. The max observed body is 26.4 MB = 211.2 Mbit,
+# which needs ~105.6s at 2 Mbit/s; 180s clears that with headroom while
+# still bounding a wedged tunnel. The old 30s establishment-shaped bound
+# could not fit a request body, which is why it was wrong.
+_REQUEST_TIMEOUT_SECONDS = 180
 _QUEUE_PUT_TIMEOUT_SECONDS = 0.1
 _REQUEST_SESSION_WAIT_SECONDS = 5.0
 _RECONNECT_INITIAL_BACKOFF_SECONDS = 1.0
@@ -207,14 +212,14 @@ class TunnelClient:
         identity: ClientIdentity,
         relay_url: str | None,
         *,
-        establish_timeout: float = _ESTABLISH_TIMEOUT_SECONDS,
+        request_timeout: float = _REQUEST_TIMEOUT_SECONDS,
         request_session_wait: float = _REQUEST_SESSION_WAIT_SECONDS,
         reconnect_initial_backoff: float = _RECONNECT_INITIAL_BACKOFF_SECONDS,
         reconnect_max_backoff: float = _RECONNECT_MAX_BACKOFF_SECONDS,
     ) -> None:
         self._identity = identity
         self._relay_url = relay_url.rstrip("/") if relay_url else None
-        self._establish_timeout = establish_timeout
+        self._request_timeout = request_timeout
         self._request_session_wait = request_session_wait
         self._reconnect_initial_backoff = reconnect_initial_backoff
         self._reconnect_max_backoff = reconnect_max_backoff
@@ -455,6 +460,11 @@ class TunnelClient:
             return
         self._run(self._close_session_async())
 
+    def _resolve_request_timeout(self, timeout: float | None) -> float:
+        if timeout is not None:
+            return timeout
+        return self._request_timeout
+
     def request(
         self,
         method: str,
@@ -462,6 +472,7 @@ class TunnelClient:
         *,
         headers: dict[str, str] | None = None,
         body: bytes | BodySource = b"",
+        timeout: float | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         try:
             return self._run(
@@ -470,6 +481,7 @@ class TunnelClient:
                     path,
                     headers=headers or {},
                     body=body,
+                    timeout=timeout,
                 )
             )
         except TunnelLifecycleError:
@@ -485,11 +497,12 @@ class TunnelClient:
         *,
         headers: dict[str, str],
         body: bytes | BodySource,
+        timeout: float | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         await self._begin_active_request()
         try:
             session = await self._get_session_async()
-            async with asyncio.timeout(self._establish_timeout):
+            async with asyncio.timeout(self._resolve_request_timeout(timeout)):
                 return await session.request(method, path, headers=headers, body=body)
         finally:
             await self._end_active_request()
@@ -502,6 +515,7 @@ class TunnelClient:
         headers: dict[str, str] | None = None,
         body: bytes | BodySource = b"",
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
+        timeout: float | None = None,
     ) -> Future[None]:
         """Stream a proxy response to a queue.
 
@@ -517,6 +531,7 @@ class TunnelClient:
                 headers=headers or {},
                 body=body,
                 chunks=chunks,
+                timeout=timeout,
             ),
             loop,
         )
@@ -529,6 +544,7 @@ class TunnelClient:
         headers: dict[str, str] | None = None,
         body: bytes | BodySource = b"",
         chunks: queue.Queue[bytes | Exception | None] | None = None,
+        timeout: float | None = None,
     ) -> Future[None] | tuple[int, dict[str, str], bytes, Any]:
         if chunks is None:
             return self._run(
@@ -537,6 +553,7 @@ class TunnelClient:
                     path,
                     headers=headers or {},
                     body=body,
+                    timeout=timeout,
                 )
             )
         loop = self._ensure_loop()
@@ -547,6 +564,7 @@ class TunnelClient:
                 headers=headers or {},
                 body=body,
                 chunks=chunks,
+                timeout=timeout,
             ),
             loop,
         )
@@ -558,9 +576,10 @@ class TunnelClient:
         *,
         headers: dict[str, str],
         body: bytes | BodySource,
+        timeout: float | None = None,
     ) -> tuple[int, dict[str, str], bytes, Any]:
         session = await self._get_session_async()
-        async with asyncio.timeout(self._establish_timeout):
+        async with asyncio.timeout(self._resolve_request_timeout(timeout)):
             return await session.stream_request(
                 method, path, headers=headers, body=body
             )
@@ -573,6 +592,7 @@ class TunnelClient:
         headers: dict[str, str],
         body: bytes | BodySource,
         chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None],
+        timeout: float | None = None,
     ) -> None:
         stream: Any | None = None
         cancelled = False
@@ -588,6 +608,7 @@ class TunnelClient:
                 path,
                 headers=headers,
                 body=body,
+                timeout=timeout,
             )
             await _put_queue_item(
                 chunks, TunnelResponseHead(status, dict(resp_headers))
@@ -624,6 +645,7 @@ class TunnelClient:
         headers: dict[str, str],
         body: bytes | BodySource,
         chunks: queue.Queue[bytes | Exception | None],
+        timeout: float | None = None,
     ) -> None:
         stream: Any | None = None
         cancelled = False
@@ -634,6 +656,7 @@ class TunnelClient:
                 path,
                 headers=headers,
                 body=body,
+                timeout=timeout,
             )
             if status == 200:
                 if initial_body:

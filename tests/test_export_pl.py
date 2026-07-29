@@ -14,9 +14,11 @@ import requests
 from cryptography.hazmat.primitives import serialization
 
 import solstone.think.utils as think_utils
+from solstone.observe import export
+from solstone.observe.export import UPLOAD_TIMEOUT
 from solstone.observe.peer_lookup import PeerInfo
 from solstone.observe.peer_unpair import maybe_prompt_unpair
-from solstone.observe.pl_http import PlHttpResponse
+from solstone.observe.pl_http import PlHttpResponse, PlHttpSession
 from solstone.think.link.ca import cert_fingerprint, generate_ca
 
 
@@ -89,6 +91,48 @@ def _patch_tunnel(
 
     monkeypatch.setattr("solstone.think.link.dialer.open_tunnel", fake_open_tunnel)
     monkeypatch.setenv("SOL_LINK_RELAY_URL", "https://relay.test")
+
+
+def test_query_manifest_forwards_upload_timeout() -> None:
+    class RecordingTunnel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, str], bytes, float | None]] = []
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            headers: dict[str, str],
+            body: bytes,
+            timeout: float | None = None,
+        ) -> tuple[int, dict[str, str], bytes]:
+            self.calls.append((method, path, headers, body, timeout))
+            return 200, {}, b"{}"
+
+        def close(self) -> None:
+            return None
+
+    tunnel = RecordingTunnel()
+    session = PlHttpSession(tunnel)
+
+    assert (
+        export._query_manifest(
+            session,
+            "https://pl.peer",
+            "12345678-1234-1234-1234-123456789abc",
+        )
+        == {}
+    )
+    assert tunnel.calls == [
+        (
+            "GET",
+            "/app/import/journal/12345678/manifest/segments",
+            {"Host": "pl.peer"},
+            b"",
+            UPLOAD_TIMEOUT,
+        )
+    ]
 
 
 def test_export_pl_single_area_uses_pl_url_and_no_authorization(

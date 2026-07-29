@@ -10,6 +10,7 @@ import contextlib
 import gc
 import queue
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import CancelledError
 
@@ -419,7 +420,7 @@ def test_proxy_stream_request_queues_head_body_and_sentinel(monkeypatch) -> None
     client = TunnelClient(_identity(endpoints=()), None)
     calls = []
 
-    async def fake_stream_request_async(method, path, *, headers, body):
+    async def fake_stream_request_async(method, path, *, headers, body, timeout=None):
         calls.append((method, path, headers, body))
         return 418, {"x-test": "yes"}, b"initial", FakeStream()
 
@@ -448,8 +449,8 @@ def test_proxy_stream_request_queues_head_body_and_sentinel(monkeypatch) -> None
 def test_proxy_stream_request_queues_tunnel_error_and_sentinel(monkeypatch) -> None:
     client = TunnelClient(_identity(endpoints=()), None)
 
-    async def fake_stream_request_async(_method, _path, *, headers, body):
-        _ = (headers, body)
+    async def fake_stream_request_async(_method, _path, *, headers, body, timeout=None):
+        _ = (headers, body, timeout)
         raise ConnectionError("down")
 
     monkeypatch.setattr(client, "_stream_request_async", fake_stream_request_async)
@@ -666,7 +667,7 @@ def test_proxy_stream_request_accepts_body_source(monkeypatch) -> None:
     source = BodySource(6, (b"ab", b"cd", b"ef"))
     calls = []
 
-    async def fake_stream_request_async(method, path, *, headers, body):
+    async def fake_stream_request_async(method, path, *, headers, body, timeout=None):
         calls.append((method, path, headers, body))
         return 200, {}, b"", FakeStream()
 
@@ -704,8 +705,8 @@ def test_proxy_stream_request_cancel_resets_remote_stream(monkeypatch) -> None:
 
     client = TunnelClient(_identity(endpoints=()), None)
 
-    async def fake_stream_request_async(_method, _path, *, headers, body):
-        _ = (headers, body)
+    async def fake_stream_request_async(_method, _path, *, headers, body, timeout=None):
+        _ = (headers, body, timeout)
         return 200, {}, b"", CancellableStream()
 
     monkeypatch.setattr(client, "_stream_request_async", fake_stream_request_async)
@@ -826,6 +827,185 @@ def test_failed_redial_queues_lifecycle_error(monkeypatch) -> None:
     assert client._session is None
 
 
+def test_request_timeout_argument_can_loosen_constructor_bound(monkeypatch) -> None:
+    class SlowRequestSession(_ManagedSession):
+        async def request(self, method, path, *, headers, body):
+            self.requests.append((method, path, headers, body))
+            assert isinstance(body, bytes)
+            assert len(body) >= 1024 * 1024
+            await asyncio.sleep(0.1)
+            return 200, {"x-timeout": "loosened"}, b"ok"
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        return SlowRequestSession()
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    body = b"x" * (1024 * 1024)
+
+    client = _managed_client(request_timeout=0.02)
+    try:
+        assert client.request("POST", "/large", body=body, timeout=2.0) == (
+            200,
+            {"x-timeout": "loosened"},
+            b"ok",
+        )
+    finally:
+        client.close()
+
+    client = _managed_client(request_timeout=0.02)
+    try:
+        with pytest.raises(TunnelRequestError) as exc_info:
+            client.request("POST", "/large", body=body)
+    finally:
+        client.close()
+
+    assert exc_info.value.reason == "TimeoutError"
+
+
+def test_request_timeout_argument_can_tighten_large_constructor_bound(
+    monkeypatch,
+) -> None:
+    class HangingManagedSession(_ManagedSession):
+        async def request(self, *_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+    sessions: list[HangingManagedSession] = []
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        session = HangingManagedSession()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(request_timeout=10.0)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TunnelRequestError) as exc_info:
+            client.request("GET", "/hang", timeout=0.05)
+    finally:
+        client.close()
+
+    assert time.monotonic() - started < 1.0
+    assert exc_info.value.reason == "TimeoutError"
+    assert sessions[0].close_calls == 1
+
+
+def test_request_timeout_uses_constructor_when_argument_omitted(monkeypatch) -> None:
+    class HangingManagedSession(_ManagedSession):
+        async def request(self, *_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+    sessions: list[HangingManagedSession] = []
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        session = HangingManagedSession()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(request_timeout=0.05)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TunnelRequestError) as exc_info:
+            client.request("GET", "/hang")
+    finally:
+        client.close()
+
+    assert time.monotonic() - started < 1.0
+    assert exc_info.value.reason == "TimeoutError"
+    assert sessions[0].close_calls == 1
+
+
+def test_bare_stream_request_honors_per_request_timeout(monkeypatch) -> None:
+    class HangingManagedSession(_ManagedSession):
+        async def stream_request(self, *_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        return HangingManagedSession()
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(request_timeout=10.0)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            client.stream_request("GET", "/hang", timeout=0.05)
+    finally:
+        client.close()
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_proxy_stream_request_honors_per_request_timeout(monkeypatch) -> None:
+    class HangingManagedSession(_ManagedSession):
+        async def stream_request(self, *_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+    sessions: list[HangingManagedSession] = []
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        session = HangingManagedSession()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(request_timeout=10.0)
+    chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None] = queue.Queue()
+    started = time.monotonic()
+    try:
+        future = client.proxy_stream_request(
+            "GET",
+            "/hang",
+            chunks=chunks,
+            timeout=0.05,
+        )
+        future.result(timeout=1)
+    finally:
+        client.close()
+
+    assert time.monotonic() - started < 1.0
+    error = chunks.get_nowait()
+    assert isinstance(error, TunnelRequestError)
+    assert error.reason == "TimeoutError"
+    assert chunks.get_nowait() is None
+    assert sessions[0].close_calls == 1
+
+
+def test_stream_request_timeout_does_not_cover_response_tail(monkeypatch) -> None:
+    class SlowTailStream:
+        async def read(self):
+            for chunk in (b"tail-a", b"tail-b", b"tail-c"):
+                await asyncio.sleep(0.25)
+                yield chunk
+
+    class SlowTailSession(_ManagedSession):
+        async def stream_request(self, method, path, *, headers, body):
+            self.stream_requests.append((method, path, headers, body))
+            return 200, {}, b"", SlowTailStream()
+
+    async def fake_open_tunnel(_identity, _relay_url):
+        return SlowTailSession()
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(request_timeout=10.0)
+    chunks: queue.Queue[bytes | Exception | None] = queue.Queue()
+    try:
+        future = client.stream_request(
+            "GET",
+            "/slow-tail",
+            chunks=chunks,
+            timeout=0.4,
+        )
+        future.result(timeout=3)
+    finally:
+        client.close()
+
+    assert chunks.get_nowait() == b"tail-a"
+    assert chunks.get_nowait() == b"tail-b"
+    assert chunks.get_nowait() == b"tail-c"
+    assert chunks.get_nowait() is None
+
+
 def test_proxy_stream_request_times_out_during_head_and_clears_session() -> None:
     class HangingManagedSession(_ManagedSession):
         async def stream_request(self, *_args, **_kwargs):
@@ -840,7 +1020,7 @@ def test_proxy_stream_request_times_out_during_head_and_clears_session() -> None
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
-    client = _managed_client(establish_timeout=0.05)
+    client = _managed_client(request_timeout=0.05)
     chunks: queue.Queue[TunnelResponseHead | bytes | Exception | None] = queue.Queue()
     try:
         future = client.proxy_stream_request("GET", "/hang", chunks=chunks)
@@ -866,7 +1046,7 @@ def test_bare_stream_request_times_out_during_head(monkeypatch) -> None:
         return HangingManagedSession()
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
-    client = _managed_client(establish_timeout=0.05)
+    client = _managed_client(request_timeout=0.05)
     try:
         with pytest.raises(TimeoutError):
             client.stream_request("GET", "/hang")
@@ -887,7 +1067,7 @@ def test_request_times_out_during_head_and_clears_session(monkeypatch) -> None:
         return session
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
-    client = _managed_client(establish_timeout=0.05)
+    client = _managed_client(request_timeout=0.05)
     try:
         with pytest.raises(TunnelRequestError) as exc_info:
             client.request("GET", "/hang")
@@ -899,7 +1079,7 @@ def test_request_times_out_during_head_and_clears_session(monkeypatch) -> None:
     assert client._session is None
 
 
-def test_establish_timeout_is_not_armed_during_body_streaming() -> None:
+def test_request_timeout_is_not_armed_during_body_streaming() -> None:
     class SlowBodySession(_ManagedSession):
         async def stream_request(self, method, path, *, headers, body):
             self.stream_requests.append((method, path, headers, body))
@@ -914,7 +1094,7 @@ def test_establish_timeout_is_not_armed_during_body_streaming() -> None:
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
-    client = _managed_client(establish_timeout=0.01)
+    client = _managed_client(request_timeout=0.01)
     chunks: queue.Queue[bytes | Exception | None] = queue.Queue()
     try:
         future = client.stream_request("GET", "/slow", chunks=chunks)

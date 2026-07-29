@@ -11,8 +11,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 
 import solstone.think.utils as think_utils
+from solstone.observe import transfer
 from solstone.observe.peer_lookup import PeerInfo
-from solstone.observe.transfer import send_segments_pl
+from solstone.observe.pl_http import PlHttpSession
+from solstone.observe.transfer import UPLOAD_TIMEOUT, send_segments_pl
 from solstone.think.link.ca import cert_fingerprint, generate_ca
 
 
@@ -53,6 +55,48 @@ def _write_segment(journal: Path) -> None:
     (segment / "audio.flac").write_bytes(b"audio")
     (segment / "transcript.jsonl").write_bytes(b"transcript")
     (segment / "stream.json").write_bytes(b'{"name": "laptop"}')
+
+
+def test_query_journal_segments_forwards_upload_timeout() -> None:
+    class RecordingTunnel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, str], bytes, float | None]] = []
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            headers: dict[str, str],
+            body: bytes,
+            timeout: float | None = None,
+        ) -> tuple[int, dict[str, str], bytes]:
+            self.calls.append((method, path, headers, body, timeout))
+            return 200, {}, b"{}"
+
+        def close(self) -> None:
+            return None
+
+    tunnel = RecordingTunnel()
+    session = PlHttpSession(tunnel)
+
+    assert (
+        transfer._query_journal_segments(
+            session,
+            "https://pl.peer",
+            "12345678",
+        )
+        == {}
+    )
+    assert tunnel.calls == [
+        (
+            "GET",
+            "/app/import/journal/12345678/manifest/segments",
+            {"Host": "pl.peer"},
+            b"",
+            UPLOAD_TIMEOUT,
+        )
+    ]
 
 
 def test_transfer_send_pl_posts_journal_segment_day_path(

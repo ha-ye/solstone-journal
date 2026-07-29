@@ -48,7 +48,7 @@ class PlHttpSession:
         json: Any = None,
         files: Any = None,
         headers: dict[str, str] | None = None,
-        timeout: float | tuple[float, float | None] | None = None,
+        timeout: float | None = None,
     ) -> PlHttpResponse:
         request_headers = self._headers(headers, url)
         body = b""
@@ -70,16 +70,24 @@ class PlHttpSession:
             else:
                 body = bytes(data)
 
-        return self._request("POST", url, headers=request_headers, body=body)
+        return self._request(
+            "POST", url, headers=request_headers, body=body, timeout=timeout
+        )
 
     def get(
         self,
         url: str,
         *,
         headers: dict[str, str] | None = None,
-        timeout: float | tuple[float, float | None] | None = None,
+        timeout: float | None = None,
     ) -> PlHttpResponse:
-        return self._request("GET", url, headers=self._headers(headers, url), body=b"")
+        return self._request(
+            "GET",
+            url,
+            headers=self._headers(headers, url),
+            body=b"",
+            timeout=timeout,
+        )
 
     def close(self) -> None:
         self._tunnel.close()
@@ -91,6 +99,7 @@ class PlHttpSession:
         *,
         headers: dict[str, str],
         body: bytes,
+        timeout: float | None = None,
     ) -> PlHttpResponse:
         path = _path_from_url(url)
         status, response_headers, response_body = self._tunnel.request(
@@ -98,6 +107,7 @@ class PlHttpSession:
             path,
             headers=headers,
             body=body,
+            timeout=timeout,
         )
         return PlHttpResponse(status, dict(response_headers), response_body)
 
