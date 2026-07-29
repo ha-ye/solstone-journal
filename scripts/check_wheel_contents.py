@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import hashlib
 import re
@@ -210,10 +211,44 @@ SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS: dict[
 SPEAKERS_ANALYZE_FORBIDDEN_PROVIDER_RE = re.compile(
     r"providers_(?:cuda|tensorrt|shared)", re.IGNORECASE
 )
+FORBIDDEN_PRODUCTION_IMPORT_EXACT = {
+    "kaldi_native_fbank",
+    "solstone.observe.model_assets",
+    "solstone.observe.transcribe.diarize",
+    "solstone.observe.transcribe.overlap",
+    "solstone.observe.transcribe.speakers_analyze_seam",
+    "solstone.think.speakers_analyze_handshake",
+    "solstone.think.speakers_analyze_runtime",
+}
+FORBIDDEN_PRODUCTION_IMPORT_PREFIXES = ("tests.speaker_oracle", "sklearn")
 
 
 def _is_base_wheel(path: Path) -> bool:
     return bool(re.match(r"solstone-\d", path.name))
+
+
+def forbidden_production_imports(
+    root: Path,
+    *,
+    forbidden_exact: set[str] = FORBIDDEN_PRODUCTION_IMPORT_EXACT,
+    forbidden_prefixes: tuple[str, ...] = FORBIDDEN_PRODUCTION_IMPORT_PREFIXES,
+) -> list[str]:
+    source_root = root / "solstone" if (root / "solstone").is_dir() else root
+    violations: list[str] = []
+    for path in sorted(source_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            module_names: list[str] = []
+            if isinstance(node, ast.Import):
+                module_names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                module_names = [node.module]
+            for module_name in module_names:
+                if module_name in forbidden_exact or module_name.startswith(
+                    forbidden_prefixes
+                ):
+                    violations.append(f"{path.relative_to(root)} imports {module_name}")
+    return violations
 
 
 def _is_models_wheel(path: Path) -> bool:

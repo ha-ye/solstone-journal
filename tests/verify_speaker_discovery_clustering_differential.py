@@ -20,6 +20,7 @@ import numpy as np
 import sklearn
 from sklearn.cluster import HDBSCAN
 
+from solstone.apps.speakers import discovery
 from solstone.apps.speakers.discovery import MIN_CLUSTER_SIZE, MIN_SAMPLES
 from solstone.think.utils import get_rev
 
@@ -32,6 +33,9 @@ RESPONSE_SCHEMA = "solstone-speaker-discovery-cluster-response-v1"
 PAYLOAD_FORMAT = "raw-f32le-row-major-v1"
 DTYPE_F32LE = "float32-le"
 RUST_COMMAND = "discovery-cluster"
+MODE_PRODUCTION_PATH = "production-path"
+MODE_DIRECT_BINARY = "direct-binary"
+MODES = (MODE_PRODUCTION_PATH, MODE_DIRECT_BINARY)
 
 NOISE = -1
 
@@ -66,7 +70,12 @@ def _refuse_repo_destination(path: Path) -> Path:
     return resolved
 
 
-def _provenance(*, matrix_path: Path | None, rust_bin: Path | None) -> dict[str, Any]:
+def _provenance(
+    *,
+    matrix_path: Path | None,
+    rust_bin: Path | None,
+    mode: str | None,
+) -> dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "harness": {
@@ -85,19 +94,27 @@ def _provenance(*, matrix_path: Path | None, rust_bin: Path | None) -> dict[str,
         "inputs": {
             "matrix_path": str(matrix_path) if matrix_path is not None else None,
             "rust_bin": str(rust_bin) if rust_bin is not None else None,
+            "mode": mode,
         },
     }
 
 
 def _base_report(
-    *, matrix_path: Path | None = None, rust_bin: Path | None = None
+    *,
+    matrix_path: Path | None = None,
+    rust_bin: Path | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": REPORT_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "classification": HARNESS_ERROR,
         "failure": None,
-        "provenance": _provenance(matrix_path=matrix_path, rust_bin=rust_bin),
+        "provenance": _provenance(
+            matrix_path=matrix_path,
+            rust_bin=rust_bin,
+            mode=mode,
+        ),
         "parameters": {
             "min_cluster_size": MIN_CLUSTER_SIZE,
             "min_samples": MIN_SAMPLES,
@@ -186,6 +203,15 @@ def run_rust(
             f"rust labels shape {labels.shape} does not match rows={matrix.shape[0]}"
         )
     return labels
+
+
+def run_rust_production_path(matrix: np.ndarray, rust_bin: Path) -> np.ndarray:
+    return discovery._cluster_discovery_embeddings_native(
+        matrix,
+        helper_locator=lambda: rust_bin,
+        helper_invoker=discovery._invoke_discovery_helper,
+        temp_dir_factory=discovery.create_discovery_cluster_temp_dir,
+    )
 
 
 def _cluster_count(labels: Sequence[int]) -> int:
@@ -349,21 +375,33 @@ def _classify(
 
 
 def compare_matrix(
-    matrix: np.ndarray, rust_bin: Path, *, temp_parent: Path | None = None
+    matrix: np.ndarray,
+    rust_bin: Path,
+    *,
+    mode: str,
+    temp_parent: Path | None = None,
 ) -> dict[str, Any]:
     sklearn_labels = run_sklearn(matrix)
-    rust_labels = run_rust(matrix, rust_bin, temp_parent=temp_parent)
+    if mode == MODE_DIRECT_BINARY:
+        rust_labels = run_rust(matrix, rust_bin, temp_parent=temp_parent)
+    elif mode == MODE_PRODUCTION_PATH:
+        rust_labels = run_rust_production_path(matrix, rust_bin)
+    else:
+        raise HarnessError(f"unsupported native mode: {mode}")
     return _compare_clustering(sklearn_labels, rust_labels, cols=int(matrix.shape[1]))
 
 
-def compare_matrix_file(matrix_path: Path, rust_bin: Path) -> dict[str, Any]:
-    report = _base_report(matrix_path=matrix_path, rust_bin=rust_bin)
+def compare_matrix_file(
+    matrix_path: Path, rust_bin: Path, *, mode: str
+) -> dict[str, Any]:
+    report = _base_report(matrix_path=matrix_path, rust_bin=rust_bin, mode=mode)
     try:
         matrix = load_matrix(matrix_path)
         report.update(
             compare_matrix(
                 matrix,
                 rust_bin,
+                mode=mode,
                 temp_parent=_temp_parent_for_matrix(matrix_path),
             )
         )
@@ -387,6 +425,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rust-bin", required=True, help="Path to Rust analyzer binary"
     )
     parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default=MODE_PRODUCTION_PATH,
+        help="Native comparison path",
+    )
+    parser.add_argument(
         "--report", help="JSON report destination outside the repository"
     )
     return parser.parse_args(argv)
@@ -401,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             report_path = _refuse_repo_destination(requested_report_path)
         matrix_path = Path(args.matrix_path)
         rust_bin = Path(args.rust_bin)
-        report = compare_matrix_file(matrix_path, rust_bin)
+        report = compare_matrix_file(matrix_path, rust_bin, mode=args.mode)
     except Exception as exc:
         report = _base_report()
         report["failure"] = {"class": HARNESS_ERROR, "message": str(exc)}

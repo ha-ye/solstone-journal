@@ -247,8 +247,11 @@ Python-to-port parity checks.
 
 `tests/verify_speaker_discovery_clustering_differential.py` runs the
 unknown-speaker discovery clustering differential, feeding an `.npz` embedding
-matrix to sklearn and the native analyzer `discovery-cluster` subcommand while
-separating noise-boundary flips from cluster-to-cluster structural moves.
+matrix to sklearn and to the native analyzer. Its default `production-path` mode
+drives the `solstone.apps.speakers.discovery` kernel invocation path with the
+operator-supplied helper binary, while `direct-binary` keeps the lower-level
+`discovery-cluster` request mode available. The report separates noise-boundary
+flips from cluster-to-cluster structural moves.
 
 `tests/verify_speaker_verdict.py` consumes those recorded bundles without
 rerunning speaker models, adding decision-flip replay for clustering,

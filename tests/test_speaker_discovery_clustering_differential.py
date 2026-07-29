@@ -103,3 +103,19 @@ def test_rust_bin_is_required() -> None:
         harness.parse_args(["matrix.npz"])
 
     assert exc.value.code == 2
+
+
+def test_mode_defaults_to_production_path() -> None:
+    args = harness.parse_args(["matrix.npz", "--rust-bin", "/tmp/helper"])
+
+    assert args.mode == harness.MODE_PRODUCTION_PATH
+
+
+def test_provenance_records_native_mode() -> None:
+    report = harness._base_report(
+        matrix_path=Path("matrix.npz"),
+        rust_bin=Path("/tmp/helper"),
+        mode=harness.MODE_DIRECT_BINARY,
+    )
+
+    assert report["provenance"]["inputs"]["mode"] == harness.MODE_DIRECT_BINARY

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import os
 import re
 import subprocess
@@ -96,31 +95,24 @@ def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> 
 
 
 def test_production_imports_do_not_reach_deleted_speaker_plane_or_oracle() -> None:
-    forbidden_exact = {
-        "kaldi_native_fbank",
-        "solstone.observe.model_assets",
-        "solstone.observe.transcribe.diarize",
-        "solstone.observe.transcribe.overlap",
-        "solstone.observe.transcribe.speakers_analyze_seam",
-        "solstone.think.speakers_analyze_handshake",
-        "solstone.think.speakers_analyze_runtime",
-    }
-    forbidden_prefixes = ("tests.speaker_oracle",)
-    violations: list[str] = []
-    for path in sorted((ROOT / "solstone").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            module_names: list[str] = []
-            if isinstance(node, ast.Import):
-                module_names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                module_names = [node.module]
-            for module_name in module_names:
-                if module_name in forbidden_exact or module_name.startswith(
-                    forbidden_prefixes
-                ):
-                    violations.append(f"{path.relative_to(ROOT)} imports {module_name}")
-    assert violations == []
+    assert checker.forbidden_production_imports(ROOT) == []
+
+
+def test_forbidden_production_imports_catches_sklearn_prefixes(tmp_path: Path) -> None:
+    source_dir = tmp_path / "solstone" / "apps" / "speakers"
+    source_dir.mkdir(parents=True)
+    (source_dir / "direct.py").write_text("import sklearn\n", encoding="utf-8")
+    (source_dir / "from_import.py").write_text(
+        "from sklearn.cluster import HDBSCAN\n",
+        encoding="utf-8",
+    )
+
+    violations = checker.forbidden_production_imports(tmp_path)
+
+    assert violations == [
+        "solstone/apps/speakers/direct.py imports sklearn",
+        "solstone/apps/speakers/from_import.py imports sklearn.cluster",
+    ]
 
 
 def test_core_wheel_validator_accepts_static_manylinux_wheel(tmp_path: Path) -> None:
