@@ -483,6 +483,7 @@ class TestReprocessRoute:
                         "--from-scratch",
                     ],
                     "day": DAY,
+                    "queue_if_active_cmd_differs": True,
                 },
             )
         ]

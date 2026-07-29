@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.think import reprocess
+from tests.helpers.module_mocks import capturing_thread_constructor, module_mock
 
 DAY = "20250115"
 SEGMENT = "120000_300"
@@ -48,6 +50,62 @@ def _touch_marker(journal: Path, day: str, name: str, ns: int) -> Path:
     marker.touch()
     os.utime(marker, ns=(ns, ns))
     return marker
+
+
+class _ActiveTaskStub:
+    def __init__(self, cmd):
+        self.cmd = cmd
+        self.start_time = 100.0
+
+
+class _SupervisorRequestHarness:
+    def __init__(self, monkeypatch, *, active_cmd=None, fail_day: str | None = None):
+        self.mod = importlib.import_module("solstone.think.supervisor")
+        self.queue = self.mod.TaskQueue(on_queue_change=None)
+        self.fail_day = fail_day
+        active_cmd = active_cmd or ["journal", "think", "-v", "--day", "20250114"]
+        partition = self.mod.TaskQueue.get_command_name(active_cmd)
+        self.queue._active["active-ref"] = _ActiveTaskStub(active_cmd)
+        self.queue._running[partition] = {
+            "ref": "active-ref",
+            "thread": None,
+            "scheduler_name": None,
+        }
+        self.submit_calls = []
+        original_submit = self.queue.submit
+
+        def submit_spy(cmd, ref=None, day=None, scheduler_name=None):
+            self.submit_calls.append(
+                {
+                    "cmd": cmd,
+                    "ref": ref,
+                    "day": day,
+                    "scheduler_name": scheduler_name,
+                }
+            )
+            return original_submit(cmd, ref=ref, day=day, scheduler_name=scheduler_name)
+
+        self.spawned = []
+        monkeypatch.setattr(
+            self.mod,
+            "threading",
+            module_mock(
+                self.mod.threading,
+                Thread=capturing_thread_constructor(
+                    self.spawned,
+                    capture=lambda thread: thread._args,
+                ),
+            ),
+        )
+        monkeypatch.setattr(self.queue, "submit", submit_spy)
+        monkeypatch.setattr(self.mod, "_task_queue", self.queue)
+        monkeypatch.setattr(self.mod, "_supervisor_callosum", Mock())
+
+    def callosum_send(self, tract, event, **fields):
+        if fields.get("day") == self.fail_day:
+            return False
+        self.mod._handle_task_request({"tract": tract, "event": event, **fields})
+        return True
 
 
 def test_process_now_pending_day_sends_drain_and_preserves_marker(
@@ -114,6 +172,7 @@ def test_from_scratch_sends_request_and_preserves_marker(tmp_path, monkeypatch, 
         "request",
         cmd=["journal", "think", "-v", "--day", DAY, "--from-scratch"],
         day=DAY,
+        queue_if_active_cmd_differs=True,
     )
     assert stream.stat().st_mtime_ns == before
 
@@ -420,6 +479,7 @@ def test_reprocess_day_from_scratch_submitted_before_complete_check(
         "request",
         cmd=["journal", "think", "-v", "--day", DAY, "--from-scratch"],
         day=DAY,
+        queue_if_active_cmd_differs=True,
     )
 
 
@@ -500,4 +560,235 @@ def test_reprocess_day_from_scratch_unreachable(tmp_path, monkeypatch):
         "request",
         cmd=["journal", "think", "-v", "--day", DAY, "--from-scratch"],
         day=DAY,
+        queue_if_active_cmd_differs=True,
     )
+
+
+def test_range_from_scratch_without_yes_prints_plan_and_sends_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal, "20250115")
+    _seed_segment(journal, "20250116")
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        "20250115",
+        "--from-scratch",
+        "--through",
+        "20250116",
+    )
+
+    assert code == 0
+    assert out == (
+        "from-scratch reprocess plan:\n"
+        "2 days with data (0 segments) will be queued. Progress will be visible "
+        "in journal top or journal health. Queued days do not survive a supervisor "
+        "restart.\n"
+        "These days run one at a time and can take hours; today's own journal "
+        "processing waits until the whole range finishes.\n"
+        "re-run with --yes to proceed\n"
+    )
+    assert err == ""
+    send.assert_not_called()
+
+
+def test_range_from_scratch_queues_oldest_first_through_supervisor(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    days = ["20250115", "20250116", "20250117"]
+    for day in days:
+        _seed_segment(journal, day)
+    harness = _SupervisorRequestHarness(monkeypatch)
+    monkeypatch.setattr(reprocess, "callosum_send", harness.callosum_send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        days[0],
+        "--from-scratch",
+        "--through",
+        days[-1],
+        "--yes",
+    )
+
+    assert code == 0
+    assert out == (
+        "queued from-scratch reprocess for 3 days (0 segments)\n"
+        "progress is visible in journal top or journal health\n"
+        "queued days do not survive a supervisor restart\n"
+    )
+    assert err == ""
+    assert [call["day"] for call in harness.submit_calls] == days
+    assert [call["cmd"] for call in harness.submit_calls] == [
+        ["journal", "think", "-v", "--day", day, "--from-scratch"] for day in days
+    ]
+    partition = harness.mod.TaskQueue.get_command_name(harness.submit_calls[0]["cmd"])
+    assert [entry["cmd"] for entry in harness.queue._queues[partition]] == [
+        ["journal", "think", "-v", "--day", day, "--from-scratch"] for day in days
+    ]
+    assert harness.spawned == []
+
+
+def test_range_from_scratch_skips_no_data_days_through_supervisor(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal, "20250115")
+    _seed_segment(journal, "20250117")
+    harness = _SupervisorRequestHarness(monkeypatch)
+    monkeypatch.setattr(reprocess, "callosum_send", harness.callosum_send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        "20250115",
+        "--from-scratch",
+        "--through",
+        "20250117",
+        "--yes",
+    )
+
+    assert code == 0
+    assert out == (
+        "queued from-scratch reprocess for 2 days (0 segments)\n"
+        "progress is visible in journal top or journal health\n"
+        "queued days do not survive a supervisor restart\n"
+    )
+    assert err == ""
+    assert [call["day"] for call in harness.submit_calls] == ["20250115", "20250117"]
+    partition = harness.mod.TaskQueue.get_command_name(harness.submit_calls[0]["cmd"])
+    assert len(harness.queue._queues[partition]) == 2
+    assert harness.spawned == []
+
+
+def test_range_from_scratch_empty_segment_counts_day_with_zero_segments(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    _seed_segment(journal, DAY)
+    harness = _SupervisorRequestHarness(monkeypatch)
+    monkeypatch.setattr(reprocess, "callosum_send", harness.callosum_send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        DAY,
+        "--from-scratch",
+        "--through",
+        DAY,
+        "--yes",
+    )
+
+    assert code == 0
+    assert out == (
+        "queued from-scratch reprocess for 1 days (0 segments)\n"
+        "progress is visible in journal top or journal health\n"
+        "queued days do not survive a supervisor restart\n"
+    )
+    assert err == ""
+    assert [call["day"] for call in harness.submit_calls] == [DAY]
+    assert harness.spawned == []
+
+
+@pytest.mark.parametrize("with_yes", [False, True])
+def test_range_from_scratch_zero_data_exits_nonzero_without_plan_or_send(
+    tmp_path, monkeypatch, capsys, with_yes
+):
+    journal = tmp_path / "journal"
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+    argv = [DAY, "--from-scratch", "--through", "20250116"]
+    if with_yes:
+        argv.append("--yes")
+
+    code, out, err = _invoke_reprocess(monkeypatch, capsys, journal, *argv)
+
+    assert code == 1
+    assert out == ""
+    assert err == f"no data for days {DAY} through 20250116\n"
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_err"),
+    [
+        ([DAY, "--through", "20250116"], "--through requires --from-scratch\n"),
+        (
+            [DAY, "--mark-updated", "--through", "20250116"],
+            "--through requires --from-scratch\n",
+        ),
+        (
+            [DAY, "--from-scratch", "--through", "2025011"],
+            "expected day in YYYYMMDD format\n",
+        ),
+        (
+            [
+                DAY,
+                "--from-scratch",
+                "--through",
+                date.today().strftime("%Y%m%d"),
+            ],
+            "reprocess is past-only (cannot reprocess today or a future day)\n",
+        ),
+        (
+            [DAY, "--from-scratch", "--through", "20250114"],
+            "--through must be on or after the start day\n",
+        ),
+    ],
+)
+def test_range_from_scratch_through_validation_failures_queue_nothing(
+    tmp_path, monkeypatch, capsys, argv, expected_err
+):
+    journal = tmp_path / "journal"
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(monkeypatch, capsys, journal, *argv)
+
+    assert code == 1
+    assert out == ""
+    assert err == expected_err
+    send.assert_not_called()
+
+
+def test_range_from_scratch_partial_send_failure_reports_day_sets(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    days = ["20250115", "20250116", "20250117"]
+    for day in days:
+        _seed_segment(journal, day)
+    harness = _SupervisorRequestHarness(monkeypatch, fail_day=days[0])
+    monkeypatch.setattr(reprocess, "callosum_send", harness.callosum_send)
+
+    code, out, err = _invoke_reprocess(
+        monkeypatch,
+        capsys,
+        journal,
+        days[0],
+        "--from-scratch",
+        "--through",
+        days[-1],
+        "--yes",
+    )
+
+    assert code == 1
+    assert out == ""
+    assert err == (
+        "failed to queue day 1 of 3 (20250115): supervisor not reachable - start "
+        "it (journal start), then retry\n"
+        "queued day set: none\n"
+        "not-queued day set: 20250115, 20250116, 20250117\n"
+    )
+    assert harness.submit_calls == []
+    assert harness.queue._queues == {}
+    assert harness.spawned == []

@@ -8,10 +8,11 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 
 from solstone.think.callosum import callosum_send
+from solstone.think.cluster import cluster_segments
 from solstone.think.streams import touch_stream_health_marker
 from solstone.think.utils import (
     DATE_RE,
@@ -25,6 +26,9 @@ UNREACHABLE_MESSAGE = "supervisor not reachable - start it (journal start), then
 FLAVOR_PROCESS_NOW = "process-now"
 FLAVOR_FROM_SCRATCH = "from-scratch"
 FLAVOR_MARK_UPDATED = "mark-updated"
+THROUGH_REQUIRES_FROM_SCRATCH = "--through requires --from-scratch"
+THROUGH_BEFORE_START = "--through must be on or after the start day"
+NO_DATA_RANGE = "no data for days {start} through {end}"
 
 
 class ReprocessCode(Enum):
@@ -41,6 +45,13 @@ class ReprocessCode(Enum):
 @dataclass(frozen=True)
 class ReprocessOutcome:
     code: ReprocessCode
+
+
+@dataclass(frozen=True)
+class RangeDay:
+    day: str
+    has_iter_segments_data: bool
+    cluster_segment_count: int
 
 
 _CLI_STDOUT = {
@@ -87,6 +98,7 @@ def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
             "request",
             cmd=["journal", "think", "-v", "--day", day, "--from-scratch"],
             day=day,
+            queue_if_active_cmd_differs=True,
         )
         return ReprocessOutcome(
             ReprocessCode.FROM_SCRATCH_SUBMITTED if ok else ReprocessCode.UNREACHABLE
@@ -110,11 +122,106 @@ def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
     )
 
 
+def _parse_day(day: str) -> date | None:
+    if not DATE_RE.fullmatch(day):
+        return None
+    try:
+        return datetime.strptime(day, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _enumerate_range_days(start: date, through: date) -> list[RangeDay]:
+    range_days: list[RangeDay] = []
+    current = start
+    while current <= through:
+        day = current.strftime("%Y%m%d")
+        iter_segments_entries = iter_segments(day)
+        has_iter_segments_data = day_path(day, create=False).is_dir() and bool(
+            iter_segments_entries
+        )
+        cluster_segment_count = (
+            len(cluster_segments(day)) if has_iter_segments_data else 0
+        )
+        range_days.append(
+            RangeDay(
+                day=day,
+                has_iter_segments_data=has_iter_segments_data,
+                cluster_segment_count=cluster_segment_count,
+            )
+        )
+        current += timedelta(days=1)
+    return range_days
+
+
+def _range_data_days(range_days: list[RangeDay]) -> list[RangeDay]:
+    return [entry for entry in range_days if entry.has_iter_segments_data]
+
+
+def _range_segment_count(range_days: list[RangeDay]) -> int:
+    return sum(entry.cluster_segment_count for entry in _range_data_days(range_days))
+
+
+def _print_range_plan(range_days: list[RangeDay]) -> None:
+    data_days = _range_data_days(range_days)
+    print("from-scratch reprocess plan:")
+    print(
+        f"{len(data_days)} days with data ({_range_segment_count(range_days)} segments) "
+        "will be queued. Progress will be visible in journal top or journal health. "
+        "Queued days do not survive a supervisor restart."
+    )
+    print(
+        "These days run one at a time and can take hours; today's own journal "
+        "processing waits until the whole range finishes."
+    )
+    print("re-run with --yes to proceed")
+
+
+def _format_day_set(days: list[str]) -> str:
+    return ", ".join(days) if days else "none"
+
+
+def _run_from_scratch_range(range_days: list[RangeDay]) -> None:
+    data_days = [entry.day for entry in _range_data_days(range_days)]
+    queued_days: list[str] = []
+    for entry in range_days:
+        outcome = reprocess_day(entry.day, FLAVOR_FROM_SCRATCH)
+        code = outcome.code
+        if code is ReprocessCode.NO_DATA:
+            continue
+        if code is ReprocessCode.FROM_SCRATCH_SUBMITTED:
+            queued_days.append(entry.day)
+            continue
+        if code is ReprocessCode.UNREACHABLE:
+            not_queued_days = data_days[len(queued_days) :]
+            print(
+                "failed to queue day "
+                f"{len(queued_days) + 1} of {len(data_days)} ({entry.day}): "
+                f"{UNREACHABLE_MESSAGE}",
+                file=sys.stderr,
+            )
+            print(f"queued day set: {_format_day_set(queued_days)}", file=sys.stderr)
+            print(
+                f"not-queued day set: {_format_day_set(not_queued_days)}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+    print(
+        f"queued from-scratch reprocess for {len(data_days)} days "
+        f"({_range_segment_count(range_days)} segments)"
+    )
+    print("progress is visible in journal top or journal health")
+    print("queued days do not survive a supervisor restart")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Submit a past journal day for reprocessing"
     )
     parser.add_argument("day", help="Past day in YYYYMMDD format")
+    parser.add_argument("--through", help="Inclusive range end in YYYYMMDD format")
+    parser.add_argument("--yes", action="store_true")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--from-scratch",
@@ -134,6 +241,36 @@ def main() -> None:
         flavor = FLAVOR_FROM_SCRATCH
     else:
         flavor = FLAVOR_PROCESS_NOW
+
+    if args.through:
+        if flavor != FLAVOR_FROM_SCRATCH:
+            print(THROUGH_REQUIRES_FROM_SCRATCH, file=sys.stderr)
+            raise SystemExit(1)
+        start = _parse_day(args.day)
+        through = _parse_day(args.through)
+        if start is None or through is None:
+            print(_CLI_STDERR[ReprocessCode.MALFORMED_DAY], file=sys.stderr)
+            raise SystemExit(1)
+        if start >= date.today() or through >= date.today():
+            print(_CLI_STDERR[ReprocessCode.PAST_ONLY], file=sys.stderr)
+            raise SystemExit(1)
+        if through < start:
+            print(THROUGH_BEFORE_START, file=sys.stderr)
+            raise SystemExit(1)
+
+        range_days = _enumerate_range_days(start, through)
+        if not _range_data_days(range_days):
+            print(
+                NO_DATA_RANGE.format(start=args.day, end=args.through),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        if not args.yes:
+            _print_range_plan(range_days)
+            return
+        _run_from_scratch_range(range_days)
+        return
+
     outcome = reprocess_day(args.day, flavor)
     code = outcome.code
     if code in _CLI_STDOUT:
