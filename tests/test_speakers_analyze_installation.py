@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from solstone.think.journal_io.lease import (
     acquire_file_lease,
     read_file_lease_fd,
     read_file_lease_offset_token,
+    set_file_lease_offset_token,
 )
 
 _GENERATION_ENV_KEYS = (
@@ -335,6 +337,112 @@ def test_stale_generation_record_degrades_to_full_digest(
 
     assert result.status == "ok"
     assert calls == 2
+
+
+def test_generation_token_max_is_a_portable_file_offset():
+    assert installation.GENERATION_TOKEN_MAX == (1 << 31) - 1
+
+
+@pytest.mark.parametrize(
+    ("randbelow_result", "expected_token"),
+    (
+        (0, 1),
+        (
+            installation.GENERATION_TOKEN_MAX - 1,
+            installation.GENERATION_TOKEN_MAX,
+        ),
+    ),
+)
+def test_generation_token_endpoints_publish_and_borrow_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    randbelow_result: int,
+    expected_token: int,
+):
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    observed_bounds: list[int] = []
+
+    def stub_randbelow(n: int) -> int:
+        observed_bounds.append(n)
+        return randbelow_result
+
+    monkeypatch.setattr(secrets, "randbelow", stub_randbelow)
+    owner = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    owner_fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+    inherited_fd = os.dup(owner_fd)
+    borrower = None
+    try:
+        assert observed_bounds == [installation.GENERATION_TOKEN_MAX]
+        assert os.environ[installation.GENERATION_TOKEN_ENV_KEY] == str(expected_token)
+        assert read_file_lease_offset_token(owner_fd) == expected_token
+        _restore_generation_env(
+            monkeypatch, owner.generation_id, inherited_fd, expected_token
+        )
+        borrower = installation.enter_speakers_analyze_generation(
+            **_entry_kwargs(tmp_path, executable)
+        )
+        assert isinstance(borrower.lease, BorrowedFileLease)
+    finally:
+        if borrower is not None:
+            borrower.release()
+        try:
+            os.close(inherited_fd)
+        except OSError:
+            pass
+        owner.release()
+        _clear_generation_env(monkeypatch)
+
+
+def test_generation_token_max_round_trips_file_lease_offset_token(tmp_path: Path):
+    lease_path = tmp_path / "token-roundtrip.lock"
+    token = installation.GENERATION_TOKEN_MAX
+    lease = acquire_file_lease(lease_path, attempts=1)
+    assert lease is not None
+    try:
+        fd = read_file_lease_fd(lease, lease_path)
+        set_file_lease_offset_token(lease, token, lease_path)
+        assert read_file_lease_offset_token(fd) == token
+    finally:
+        lease.release()
+
+
+def test_out_of_range_generation_token_is_rejected_and_cannot_borrow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    max_token = installation.GENERATION_TOKEN_MAX
+    assert installation._parse_generation_token(str(max_token)) == max_token
+    assert installation._parse_generation_token(str(max_token + 1)) is None
+    executable = _helper(tmp_path)
+    _asset_fixtures(tmp_path, monkeypatch)
+    owner = installation.enter_speakers_analyze_generation(
+        **_entry_kwargs(tmp_path, executable)
+    )
+    owner_fd = int(os.environ[installation.GENERATION_FD_ENV_KEY])
+    inherited_fd = os.dup(owner_fd)
+    try:
+        _restore_generation_env(
+            monkeypatch,
+            owner.generation_id,
+            inherited_fd,
+            max_token + 1,
+        )
+        with pytest.raises(RuntimeError, match="generation lease is already held"):
+            installation.enter_speakers_analyze_generation(
+                **_entry_kwargs(tmp_path, executable)
+            )
+        assert installation.GENERATION_ENV_KEY not in os.environ
+        assert installation.GENERATION_FD_ENV_KEY not in os.environ
+        assert installation.GENERATION_TOKEN_ENV_KEY not in os.environ
+    finally:
+        try:
+            os.close(inherited_fd)
+        except OSError:
+            pass
+        owner.release()
+        _clear_generation_env(monkeypatch)
 
 
 def test_owned_entry_publishes_fd_token_and_token_free_record(
