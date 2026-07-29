@@ -111,6 +111,22 @@ def test_live_lock_authorities_match_root_project_version() -> None:
     )
 
 
+def test_journal_host_excludes_sklearn_and_scipy_with_dev_sklearn_only() -> None:
+    root = SCRIPT.parents[1]
+    root_pyproject = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    journal_host = root_pyproject["project"]["optional-dependencies"]["journal-host"]
+    dev_group = root_pyproject["dependency-groups"]["dev"]
+
+    assert not any(dep.startswith("scikit-learn") for dep in journal_host)
+    assert not any(dep.startswith("scipy") for dep in journal_host)
+    assert [dep for dep in dev_group if dep.startswith("scikit-learn")] == [
+        "scikit-learn>=1.3"
+    ]
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(text).lstrip(), encoding="utf-8")

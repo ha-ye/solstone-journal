@@ -68,13 +68,12 @@ def _install_heavy_module_stubs():
 
         st_mod.SentenceTransformer = DummyST
         sys.modules["sentence_transformers"] = st_mod
-    # NOTE: do NOT stub sklearn. scikit-learn is a hard, installed dependency
-    # (pyproject `scikit-learn>=1.3`) and the speakers discovery code uses
-    # the real `sklearn.cluster.HDBSCAN`. A persistent `sys.modules` stub here
-    # leaked a DummyHDBSCAN (labels every point as noise) into whichever
-    # co-scheduled test imported it first under xdist, silently breaking the
-    # real-clustering tests. Only genuinely-absent heavy deps (usearch,
-    # sentence_transformers) belong in this stub set.
+    # NOTE: do NOT stub sklearn. scikit-learn is dev/test-only now, but it is
+    # still genuinely installed in the dev environment. tests/speaker_oracle/
+    # and the speaker discovery differential use the real implementation. A
+    # persistent sys.modules stub here would leak into whichever co-scheduled
+    # test imported it first under xdist. Only genuinely-absent heavy deps
+    # (usearch, sentence_transformers) belong in this stub set.
     if "dotenv" not in sys.modules:
         dotenv_mod = types.ModuleType("dotenv")
 

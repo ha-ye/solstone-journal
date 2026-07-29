@@ -40,6 +40,7 @@ def test_warm_names_keep_onnxruntime_without_removed_stt_import(monkeypatch):
     names = warm.warm_module_names()
 
     assert "onnxruntime" in names
+    assert "sklearn" not in names
     assert "onnx" + "_asr" not in names
 
 

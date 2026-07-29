@@ -10,10 +10,10 @@ import sys
 # Single source of truth: pyproject.toml [journal-host], plus the CPU/GPU
 # onnxruntime entries in the solstone-journal / solstone-journal-cuda leaves.
 # Package-to-import mapping:
-# Pillow -> PIL; opencv-python-headless -> cv2; scikit-learn -> sklearn.
+# Pillow -> PIL; opencv-python-headless -> cv2.
 #
-# Excluded intentionally: pyarrow (not a dependency), scipy (transitive through
-# sklearn), and pure-Python dependencies (no native code-signing surface).
+# Excluded intentionally: pyarrow (not a dependency), test-only clustering
+# libraries, and pure-Python dependencies (no native code-signing surface).
 _WARM_ALL = [
     "numpy",
     "PIL",
@@ -21,7 +21,6 @@ _WARM_ALL = [
     "av",
     "soundfile",
     "onnxruntime",
-    "sklearn",
 ]
 _WARM_DARWIN_ARM64 = ["mlx", "mlx_vlm"]
 
