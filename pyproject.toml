@@ -88,7 +88,7 @@ pdf = [
 # CPU-vs-CUDA choice made by the solstone-journal leaf packages). Not a
 # user-facing extra — always pulled in by a leaf package.
 journal-host = [
-    "solstone-journal-models==1.0.0",
+    "solstone-journal-models==1.0.1",
     "python-dotenv",
     "pyhpke==0.6.4",
     # Private-link host/runtime helpers: local CA, CSR/cert handling, secure

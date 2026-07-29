@@ -4478,7 +4478,7 @@ requires-dist = [
 
 [[package]]
 name = "solstone-journal-models"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "packages/solstone-journal-models" }
 
 [[package]]
