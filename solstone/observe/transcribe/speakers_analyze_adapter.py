@@ -41,7 +41,6 @@ REQUEST_SCHEMA = "solstone-speaker-analyze-request-v1"
 RESPONSE_SCHEMA = "solstone-speaker-analyze-response-v1"
 ERROR_SCHEMA = "solstone-speaker-analyze-error-v1"
 PRODUCER_ID = "solstone-core-speakers-analyze-v1"
-EXIT_UNAVAILABLE = 69
 TEMP_ROOT = Path("/var/tmp")
 TEMP_PREFIX = "solstone-speakers-analyze-"
 TEMP_DIR_MODE = 0o700
@@ -149,7 +148,7 @@ def analyze_speakers(
             pyannote_model_path=pyannote_model_path,
         )
         request_ids = [int(statement["id"]) for statement in statements_pre_restore]
-        expected_statement_ids = _python_admitted_statement_ids(
+        expected_statement_ids = _request_admitted_statement_ids(
             statement_audio,
             statements_pre_restore,
             sample_rate=sample_rate,
@@ -169,7 +168,6 @@ def analyze_speakers(
             ) from exc
         return _accepted_result_from_response(
             response,
-            raw_path=raw_path,
             payload_path=payload_path,
             statements_restored=restored_statements,
             expected_statement_ids=expected_statement_ids,
@@ -183,10 +181,6 @@ def analyze_speakers(
             path=raw_path, stage=exc.stage, reason=exc.reason
         ) from exc
     except OSError as exc:
-        raise SpeakerAnalyzeError(
-            path=raw_path, stage="request", reason=type(exc).__name__.lower()
-        ) from exc
-    except Exception as exc:
         raise SpeakerAnalyzeError(
             path=raw_path, stage="request", reason=type(exc).__name__.lower()
         ) from exc
@@ -205,6 +199,7 @@ def invoke_speakers_analyze_helper(
     selector_factory=selectors.DefaultSelector,
     clock: Callable[[], float] = time.monotonic,
 ) -> HelperInvocationResult:
+    deadline = clock() + budget.timeout_s
     try:
         proc = popen_factory(
             argv,
@@ -219,32 +214,59 @@ def invoke_speakers_analyze_helper(
     assert proc.stdin is not None
     assert proc.stdout is not None
     assert proc.stderr is not None
-    try:
-        proc.stdin.write(stdin_text.encode("utf-8"))
-        proc.stdin.close()
-    except BrokenPipeError:
-        pass
 
+    stdin_bytes = memoryview(stdin_text.encode("utf-8"))
+    stdin_offset = 0
+    stdin_open = True
     stdout = bytearray()
     stderr = bytearray()
-    deadline = clock() + budget.timeout_s
     with selector_factory() as selector:
+        os.set_blocking(proc.stdin.fileno(), False)
         os.set_blocking(proc.stdout.fileno(), False)
         os.set_blocking(proc.stderr.fileno(), False)
+        if stdin_bytes:
+            selector.register(proc.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            proc.stdin.close()
+            stdin_open = False
         selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
         selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
         while selector.get_map():
             remaining = deadline - clock()
             if remaining <= 0:
+                reason = (
+                    "stdin-write-timeout"
+                    if stdin_open and stdin_offset < len(stdin_bytes)
+                    else "timeout"
+                )
                 _terminate_and_reap(proc, budget)
                 raise SpeakerAnalyzeError(
                     path=raw_path,
                     stage="invoke",
-                    reason="timeout",
+                    reason=reason,
                     native_exit_code=proc.returncode,
                 )
             for key, _events in selector.select(timeout=min(0.1, remaining)):
                 stream_name = key.data
+                if stream_name == "stdin":
+                    try:
+                        written = os.write(
+                            key.fileobj.fileno(),
+                            stdin_bytes[stdin_offset : stdin_offset + 8192],
+                        )
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        stdin_open = False
+                        continue
+                    stdin_offset += written
+                    if stdin_offset >= len(stdin_bytes):
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        stdin_open = False
+                    continue
                 chunk = os.read(key.fileobj.fileno(), 8192)
                 if not chunk:
                     selector.unregister(key.fileobj)
@@ -397,7 +419,7 @@ def _ensure_span_parity(
             raise NativePayloadError("request", "span-parity-statement-id")
 
 
-def _python_admitted_statement_ids(
+def _request_admitted_statement_ids(
     audio: np.ndarray,
     statements: list[dict[str, Any]],
     *,
@@ -430,7 +452,6 @@ def _python_admitted_statement_ids(
 def _accepted_result_from_response(
     response: object,
     *,
-    raw_path: Path,
     payload_path: Path,
     statements_restored: list[dict[str, Any]],
     expected_statement_ids: list[int],
@@ -727,7 +748,6 @@ class NativePayloadError(RuntimeError):
 
 __all__ = [
     "DEFAULT_INVOCATION_BUDGET",
-    "EXIT_UNAVAILABLE",
     "PRODUCER_ID",
     "RESPONSE_SCHEMA",
     "SpeakerAnalyzeResult",

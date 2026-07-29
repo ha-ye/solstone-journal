@@ -884,6 +884,90 @@ def test_all_batch_typed_speaker_failure_continues_and_preserves_failed_audio(
     assert len(speaker_failure_events) == 1
 
 
+def test_all_batch_unexpected_adapter_exception_aborts(tmp_path, monkeypatch):
+    from solstone.observe.transcribe.main import main
+    from solstone.think.speakers_analyze_installation import (
+        SpeakersAnalyzeInstallationResult,
+    )
+
+    class UnexpectedAdapterBug(RuntimeError):
+        pass
+
+    first = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.flac"
+    )
+    second = (
+        tmp_path / "chronicle" / "20260416" / "default" / "121000_300" / "audio.flac"
+    )
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "medium.en",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["journal transcribe", "--all"])
+    with (
+        patch(
+            "solstone.think.speakers_analyze_installation."
+            "check_speakers_analyze_installation",
+            return_value=SpeakersAnalyzeInstallationResult("ok"),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+        patch(
+            "solstone.observe.transcribe.main.load_audio",
+            return_value=np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+        ),
+        patch(
+            "solstone.observe.vad.run_vad",
+            return_value=VadResult(
+                duration=10.0,
+                speech_duration=5.0,
+                has_speech=True,
+                speech_segments=[(1.0, 6.0)],
+            ),
+        ),
+        patch("solstone.observe.vad.reduce_audio", return_value=(None, None)),
+        patch("solstone.observe.transcribe.main.tag_audio", return_value=None),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            return_value=statements,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend",
+            return_value=backend_module,
+        ),
+        patch(
+            "solstone.observe.transcribe.speakers_analyze_adapter.analyze_speakers",
+            side_effect=UnexpectedAdapterBug("boom"),
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+    assert exc_info.value.code == 1
+    assert isinstance(exc_info.value.__cause__, UnexpectedAdapterBug)
+    assert not first.with_suffix(".jsonl").exists()
+    assert not second.with_suffix(".jsonl").exists()
+
+
 def test_single_file_typed_speaker_failure_emits_once_and_exits_one(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

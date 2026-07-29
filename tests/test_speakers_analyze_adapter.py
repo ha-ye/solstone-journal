@@ -289,6 +289,40 @@ def test_payload_size_checked_before_read(
     assert exc.value.reason == "embedding-payload-size-mismatch"
 
 
+def test_unexpected_internal_exception_propagates_and_cleans_temp_dir(tmp_path: Path):
+    class UnexpectedAdapterBug(RuntimeError):
+        pass
+
+    temp_dir = tmp_path / "adapter-temp"
+
+    def temp_dir_factory(_raw_path: Path) -> Path:
+        temp_dir.mkdir(mode=0o700)
+        return temp_dir
+
+    def statements_restored() -> list[dict[str, Any]]:
+        raise UnexpectedAdapterBug("boom")
+
+    with pytest.raises(UnexpectedAdapterBug, match="boom"):
+        analyze_speakers(
+            raw_path=tmp_path / "audio.flac",
+            full_audio=np.zeros(20, dtype=np.float32),
+            statement_audio=np.zeros(20, dtype=np.float32),
+            reduced_audio=None,
+            statements_pre_restore=[{"id": 1, "start": 0.0, "end": 0.5, "text": "x"}],
+            statements_restored=statements_restored,
+            sample_rate=10,
+            min_statement_duration=0.3,
+            helper_locator=lambda: tmp_path / "helper",
+            helper_invoker=lambda _argv, _stdin, _raw_path: pytest.fail(
+                "helper should not be invoked after restoration fails"
+            ),
+            model_path_resolver=lambda: (tmp_path / "w.onnx", tmp_path / "p.onnx"),
+            temp_dir_factory=temp_dir_factory,
+        )
+
+    assert not temp_dir.exists()
+
+
 def test_gate_decline_null_labels_is_accepted(tmp_path: Path):
     result, _request, _temp_dir = _run_adapter(
         tmp_path,

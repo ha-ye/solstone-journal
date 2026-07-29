@@ -2868,6 +2868,41 @@ def test_main_rejects_invalid_stream_filter(tmp_path, monkeypatch):
     assert exc_info.value.code == 2
 
 
+def test_main_speakers_analyze_failure_prints_canonical_message_once(
+    tmp_path, monkeypatch, capsys
+):
+    from solstone.observe import sense
+    from solstone.think.speakers_analyze_installation import (
+        SPEAKERS_ANALYZE_REPAIR_TEXT,
+    )
+
+    message = (
+        "Speakers-analyze installation is incomplete "
+        f"(asset-missing: wespeaker). {SPEAKERS_ANALYZE_REPAIR_TEXT}"
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(sense, "require_solstone", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["sense", "--day", "20250101"])
+
+    def fail_generation(**_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(
+        "solstone.think.speakers_analyze_installation."
+        "begin_speakers_analyze_generation",
+        fail_generation,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        sense.main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 78
+    assert captured.err.count("Speakers-analyze installation is incomplete") == 1
+    assert message in captured.err
+
+
 def _registered_describe_commands(sensor: FileSensor) -> list[list[str]]:
     return [
         command

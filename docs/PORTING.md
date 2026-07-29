@@ -85,11 +85,9 @@ binary at `GLIBC_2.27`. Prep also measured a host GNU cargo-built helper binary
 at `GLIBC_2.34`; that measured regression is why host GNU builds are forbidden
 for the helper release lanes.
 
-| Helper target | Status | Evidence |
-|---------------|--------|----------|
-| Linux x86_64 glibc | Proven here. | Build, content check, install into a bare venv, and real-inference smoke using the shipped `pyannote-segmentation-3.0.onnx` and `wespeaker-resnet34-256.onnx` assets. |
-| Linux aarch64 glibc | Build, cross-link, install, and real-inference smoke are proven on real aarch64 hardware in the release loop. | Local zig GNU cross-link artifact plus real-hardware install/smoke evidence from the release loop. Do not provision an emulator for this lane. |
-| macOS arm64 | Built on the macOS build host and executed on the macOS proof host. | macOS build-host wheel, signing/notarization records for the executable and bundled dylib, RECORD repair, and macOS install/smoke proof evidence. This Linux host claims no macOS runtime proof. |
+| Helper coverage | Status | Evidence |
+|-----------------|--------|----------|
+| `solstone/think/probe.py:SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS` | Platform coverage authority. | Build, content check, install into a bare venv, and real-inference smoke using the shipped `pyannote-segmentation-3.0.onnx` and `wespeaker-resnet34-256.onnx` assets for each covered helper platform. Linux helper lanes use zig GNU cross-link artifacts; macOS evidence is produced by the macOS build/proof hosts. Do not provision an emulator for the aarch64 Linux lane. |
 
 | Evidence | Repository command | Class | Notes |
 |----------|--------------------|-------|-------|

@@ -61,6 +61,49 @@ def test_timeout_terminates_and_reaps_child(tmp_path: Path):
     assert exc.value.reason == "timeout"
 
 
+def test_stdin_write_timeout_terminates_reaps_and_cleans_temp_dir(tmp_path: Path):
+    helper = tmp_path / "never_reads_stdin.py"
+    helper.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    temp_dir = tmp_path / "adapter-temp"
+    statements = [
+        {"id": statement_id, "start": 0.0, "end": 1.0, "text": "x"}
+        for statement_id in range(20_000)
+    ]
+
+    def temp_dir_factory(_raw_path: Path) -> Path:
+        temp_dir.mkdir(mode=0o700)
+        return temp_dir
+
+    with pytest.raises(SpeakerAnalyzeError) as exc:
+        analyze_speakers(
+            raw_path=tmp_path / "audio.flac",
+            full_audio=np.zeros(10, dtype=np.float32),
+            statement_audio=np.zeros(10, dtype=np.float32),
+            reduced_audio=None,
+            statements_pre_restore=statements,
+            statements_restored=statements,
+            sample_rate=10,
+            min_statement_duration=0.3,
+            helper_locator=lambda: helper,
+            helper_invoker=lambda argv, stdin, raw_path: invoke_speakers_analyze_helper(
+                argv,
+                stdin,
+                raw_path,
+                budget=_budget(timeout_s=0.01),
+            ),
+            model_path_resolver=lambda: (tmp_path / "w.onnx", tmp_path / "p.onnx"),
+            temp_dir_factory=temp_dir_factory,
+        )
+
+    assert exc.value.stage == "invoke"
+    assert exc.value.reason == "stdin-write-timeout"
+    assert not temp_dir.exists()
+
+
 @pytest.mark.parametrize(
     ("stream", "reason"),
     [("stdout", "stdout-too-large"), ("stderr", "stderr-too-large")],

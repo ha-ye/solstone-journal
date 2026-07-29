@@ -1417,7 +1417,7 @@ def main():
             journal_path=journal
         )
     except Exception as exc:
-        message = f"Speakers-analyze installation is incomplete: {exc}"
+        message = str(exc)
         logger.error(message)
         print(message, file=sys.stderr)
         raise SystemExit(78) from exc
