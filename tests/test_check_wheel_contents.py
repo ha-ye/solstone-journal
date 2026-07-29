@@ -21,6 +21,7 @@ from tests.helpers.release_wheel_fixtures import (
     minimal_macho,
     record_hash,
     speakers_analyze_elf,
+    speakers_analyze_macho,
     write_core_wheel,
     write_platform_base_wheel,
     write_speakers_analyze_wheel,
@@ -273,6 +274,115 @@ def test_speakers_analyze_macos_signed_dylib_bytes_are_allowed(
     )
 
     assert checker.check_speakers_analyze_wheel(wheel) == []
+
+
+def test_speakers_analyze_macos_runtime_rpath_is_checked_with_specific_diagnostic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(
+        monkeypatch,
+        target="macos-arm64",
+        patch_runtime=False,
+    )
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        tag=checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[("darwin", "arm64")],
+        binary=speakers_analyze_macho(
+            rpath="$ORIGIN/../lib/solstone-core-speakers-analyze"
+        ),
+        library=minimal_macho(checker.CPU_TYPE_ARM64),
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "speakers analyze Mach-O RPATH is wrong" in error
+        and "expected: @loader_path/../lib/solstone-core-speakers-analyze" in error
+        and "actual: $ORIGIN/../lib/solstone-core-speakers-analyze" in error
+        and "repair command: make wheel-macos" in error
+        for error in errors
+    )
+
+
+def test_speakers_analyze_macos_missing_rpath_is_rejected_with_specific_diagnostic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(
+        monkeypatch,
+        target="macos-arm64",
+        patch_runtime=False,
+    )
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        tag=checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[("darwin", "arm64")],
+        binary=speakers_analyze_macho(rpath=None),
+        library=minimal_macho(checker.CPU_TYPE_ARM64),
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "speakers analyze Mach-O RPATH is wrong" in error
+        and "expected: @loader_path/../lib/solstone-core-speakers-analyze" in error
+        and "actual: <missing>" in error
+        and "repair command: make wheel-macos" in error
+        for error in errors
+    )
+
+
+def test_speakers_analyze_macos_bad_load_command_rejects_even_with_correct_rpath(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_speakers_fixture_hashes(
+        monkeypatch,
+        target="macos-arm64",
+        patch_runtime=False,
+    )
+    bad_load = (
+        "@loader_path/../lib/solstone-core-speakers-analyze/libonnxruntime.1.25.0.dylib"
+    )
+    wheel = write_speakers_analyze_wheel(
+        tmp_path,
+        tag=checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS[("darwin", "arm64")],
+        binary=speakers_analyze_macho(load_dylib=bad_load),
+        library=minimal_macho(checker.CPU_TYPE_ARM64),
+        license_notice=SPEAKERS_LICENSE,
+        third_party_notice=SPEAKERS_THIRD_PARTY_NOTICE,
+    )
+
+    errors = checker.check_speakers_analyze_wheel(wheel)
+
+    assert any(
+        "ONNX Runtime load command is outside bundled sibling-library contract" in error
+        and "expected: LC_LOAD_DYLIB @rpath/libonnxruntime.1.25.0.dylib" in error
+        and f"actual: {bad_load}" in error
+        and "repair command: make wheel-macos" in error
+        for error in errors
+    )
+
+
+def test_speakers_analyze_runtime_link_contract_matches_build_script() -> None:
+    contracts = checker.SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS
+    assert set(contracts) == set(
+        checker.SOLSTONE_CORE_SPEAKERS_ANALYZE_COVERED_PLATFORMS
+    )
+    assert contracts[("linux", "x86_64")] == contracts[("linux", "aarch64")]
+    build_rs = (
+        Path(__file__).resolve().parents[1]
+        / "core"
+        / "crates"
+        / "solstone-core-speakers-analyze"
+        / "build.rs"
+    ).read_text(encoding="utf-8")
+    for rpath in {
+        contracts[("linux", "x86_64")].rpath,
+        contracts[("darwin", "arm64")].rpath,
+    }:
+        assert build_rs.count(rpath) == 1
 
 
 def test_speakers_analyze_linux_rejects_substituted_runtime_library(

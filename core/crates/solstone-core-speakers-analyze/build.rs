@@ -2,10 +2,16 @@
 // Copyright (c) 2026 sol pbc
 
 fn main() {
-    // GNU ld defaults to new dtags, so this emits DT_RUNPATH rather than old
-    // DT_RPATH. The dynamic loader searches RUNPATH after LD_LIBRARY_PATH,
-    // keeping scripts/resolve_onnxruntime_capi.py's dev resolver in control.
-    println!(
-        "cargo:rustc-link-arg-bin=solstone-core-speakers-analyze=-Wl,-rpath,$ORIGIN/../lib/solstone-core-speakers-analyze"
-    );
+    let target_os =
+        std::env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is set by cargo");
+    let rpath = match target_os.as_str() {
+        "linux" => "$ORIGIN/../lib/solstone-core-speakers-analyze",
+        "macos" => "@loader_path/../lib/solstone-core-speakers-analyze",
+        other => panic!(
+            "unsupported solstone-core-speakers-analyze target OS {other:?}; expected linux or macos"
+        ),
+    };
+    // Keep the helper's bundled ONNX Runtime lookup relative to the installed
+    // helper binary on every supported target.
+    println!("cargo:rustc-link-arg-bin=solstone-core-speakers-analyze=-Wl,-rpath,{rpath}");
 }

@@ -41,7 +41,7 @@ cache-keys = [
     { file = "../../core/crates/solstone-core-speakers-analyze/Cargo.toml" },
     # Link-time input: keep this explicit because the neighbouring `**/*.rs`
     # glob is not guaranteed to match a root-level build.rs, and a stale build
-    # script can silently drop the wheel binary's $ORIGIN RUNPATH.
+    # script can silently drop the wheel binary's target-specific runtime path.
     { file = "../../core/crates/solstone-core-speakers-analyze/build.rs" },
     { file = "../../core/crates/solstone-core-speakers-analyze/**/*.rs" },
 ]

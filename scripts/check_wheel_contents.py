@@ -16,7 +16,7 @@ import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal, NamedTuple, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -87,6 +87,8 @@ FAT_CIGAM_64 = 0xBFBAFECA
 FAT_ARCH_SIZE = 20
 FAT_ARCH_64_SIZE = 32
 CPU_TYPE_ARM64 = 0x0100000C
+LC_LOAD_DYLIB = 0x0000000C
+LC_RPATH = 0x8000001C
 ReleaseScope = Literal["linux", "all-hosts"]
 ModelsDecision = Literal["publish", "skip"]
 CORE_REQUIRED_SDIST_MEMBERS = {
@@ -174,7 +176,29 @@ SPEAKERS_ANALYZE_PLATFORM_TARGETS = {
     ("linux", "aarch64"): "linux-aarch64",
     ("darwin", "arm64"): "macos-arm64",
 }
-SPEAKERS_ANALYZE_RUNPATH = "$ORIGIN/../lib/solstone-core-speakers-analyze"
+
+
+class SpeakersAnalyzeRuntimeLinkContract(NamedTuple):
+    rpath: str
+    runtime_load: str
+
+
+SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS: dict[
+    CorePlatform, SpeakersAnalyzeRuntimeLinkContract
+] = {
+    ("linux", "x86_64"): SpeakersAnalyzeRuntimeLinkContract(
+        "$ORIGIN/../lib/solstone-core-speakers-analyze",
+        "libonnxruntime.so.1",
+    ),
+    ("linux", "aarch64"): SpeakersAnalyzeRuntimeLinkContract(
+        "$ORIGIN/../lib/solstone-core-speakers-analyze",
+        "libonnxruntime.so.1",
+    ),
+    ("darwin", "arm64"): SpeakersAnalyzeRuntimeLinkContract(
+        "@loader_path/../lib/solstone-core-speakers-analyze",
+        "@rpath/libonnxruntime.1.25.0.dylib",
+    ),
+}
 SPEAKERS_ANALYZE_FORBIDDEN_PROVIDER_RE = re.compile(
     r"providers_(?:cuda|tensorrt|shared)", re.IGNORECASE
 )
@@ -831,6 +855,287 @@ def _check_macho_binary(
     ]
 
 
+def _macho_thin_endian(content: bytes) -> str | None:
+    if len(content) < 4:
+        return None
+    magic_be = struct.unpack_from(">I", content, 0)[0]
+    magic_le = struct.unpack_from("<I", content, 0)[0]
+    if magic_le == MH_MAGIC_64:
+        return "<"
+    if magic_be == MH_MAGIC_64:
+        return ">"
+    return None
+
+
+def _macho_arm64_slice(
+    wheel_name: str, content: bytes, *, repair: str
+) -> tuple[bytes | None, list[str]]:
+    if _macho_thin_endian(content) is not None:
+        return content, []
+    if len(content) < 8:
+        return None, [
+            _failure(
+                wheel_name,
+                "speakers analyze Mach-O binary is too short for load commands",
+                expected="Mach-O header",
+                actual=f"{len(content)} bytes",
+                repair=repair,
+            )
+        ]
+    magic_be = struct.unpack_from(">I", content, 0)[0]
+    if magic_be not in (FAT_MAGIC, FAT_MAGIC_64, FAT_CIGAM, FAT_CIGAM_64):
+        return None, [
+            _failure(
+                wheel_name,
+                "speakers analyze binary is not recognized as Mach-O for load commands",
+                expected="Mach-O 64-bit or fat Mach-O magic",
+                actual=content[:4].hex(),
+                repair=repair,
+            )
+        ]
+    endian = ">" if magic_be in (FAT_MAGIC, FAT_MAGIC_64) else "<"
+    arch_size = (
+        FAT_ARCH_64_SIZE if magic_be in (FAT_MAGIC_64, FAT_CIGAM_64) else FAT_ARCH_SIZE
+    )
+    nfat_arch = struct.unpack_from(f"{endian}I", content, 4)[0]
+    header_size = 8 + nfat_arch * arch_size
+    if header_size > len(content):
+        return None, [
+            _failure(
+                wheel_name,
+                "speakers analyze fat Mach-O header exceeds binary length",
+                expected="all fat architecture records inside file",
+                actual=f"{nfat_arch} records require {header_size} bytes; file {len(content)}",
+                repair=repair,
+            )
+        ]
+    for index in range(nfat_arch):
+        arch_offset = 8 + arch_size * index
+        cputype = struct.unpack_from(f"{endian}I", content, arch_offset)[0]
+        if cputype != CPU_TYPE_ARM64:
+            continue
+        if arch_size == FAT_ARCH_64_SIZE:
+            slice_offset = struct.unpack_from(f"{endian}Q", content, arch_offset + 8)[0]
+            slice_size = struct.unpack_from(f"{endian}Q", content, arch_offset + 16)[0]
+        else:
+            slice_offset = struct.unpack_from(f"{endian}I", content, arch_offset + 8)[0]
+            slice_size = struct.unpack_from(f"{endian}I", content, arch_offset + 12)[0]
+        if slice_offset + slice_size > len(content):
+            return None, [
+                _failure(
+                    wheel_name,
+                    "speakers analyze arm64 Mach-O slice exceeds binary length",
+                    expected="arm64 slice fully inside fat binary",
+                    actual=f"offset {slice_offset}, size {slice_size}, file {len(content)}",
+                    repair=repair,
+                )
+            ]
+        return content[slice_offset : slice_offset + slice_size], []
+    return None, [
+        _failure(
+            wheel_name,
+            "speakers analyze fat Mach-O has no arm64 slice for load commands",
+            expected=f"at least one cputype {CPU_TYPE_ARM64:#010x}",
+            actual=f"{nfat_arch} slice(s), none arm64",
+            repair=repair,
+        )
+    ]
+
+
+def _macho_load_command_string(
+    wheel_name: str,
+    content: bytes,
+    *,
+    command_start: int,
+    command_size: int,
+    string_offset: int,
+    command_label: str,
+    repair: str,
+) -> tuple[str | None, list[str]]:
+    if string_offset < 8 or string_offset >= command_size:
+        return None, [
+            _failure(
+                wheel_name,
+                f"speakers analyze Mach-O {command_label} string offset is invalid",
+                expected="lc_str offset inside load command",
+                actual=str(string_offset),
+                repair=repair,
+            )
+        ]
+    start = command_start + string_offset
+    end = command_start + command_size
+    nul = content.find(b"\0", start, end)
+    if nul < 0:
+        return None, [
+            _failure(
+                wheel_name,
+                f"speakers analyze Mach-O {command_label} string is not terminated",
+                expected="NUL-terminated lc_str inside load command",
+                actual="missing terminator",
+                repair=repair,
+            )
+        ]
+    try:
+        return content[start:nul].decode("utf-8"), []
+    except UnicodeDecodeError as exc:
+        return None, [
+            _failure(
+                wheel_name,
+                f"speakers analyze Mach-O {command_label} string is not UTF-8",
+                expected="UTF-8 load-command string",
+                actual=str(exc),
+                repair=repair,
+            )
+        ]
+
+
+def _macho_runtime_load_commands(
+    wheel_name: str, content: bytes, *, repair: str
+) -> tuple[tuple[str, ...], tuple[str, ...], list[str]]:
+    slice_content, failures = _macho_arm64_slice(wheel_name, content, repair=repair)
+    if failures or slice_content is None:
+        return (), (), failures
+    endian = _macho_thin_endian(slice_content)
+    if endian is None or len(slice_content) < 32:
+        return (
+            (),
+            (),
+            [
+                _failure(
+                    wheel_name,
+                    "speakers analyze Mach-O header is invalid for load commands",
+                    expected="64-bit Mach-O header with load-command fields",
+                    actual=f"{len(slice_content)} bytes",
+                    repair=repair,
+                )
+            ],
+        )
+    ncmds = struct.unpack_from(f"{endian}I", slice_content, 16)[0]
+    sizeofcmds = struct.unpack_from(f"{endian}I", slice_content, 20)[0]
+    commands_start = 32
+    commands_end = commands_start + sizeofcmds
+    if commands_end > len(slice_content):
+        return (
+            (),
+            (),
+            [
+                _failure(
+                    wheel_name,
+                    "speakers analyze Mach-O load commands exceed binary length",
+                    expected="load commands inside Mach-O slice",
+                    actual=f"sizeofcmds {sizeofcmds}, slice {len(slice_content)}",
+                    repair=repair,
+                )
+            ],
+        )
+    rpaths: list[str] = []
+    dylibs: list[str] = []
+    cursor = commands_start
+    for _index in range(ncmds):
+        if cursor + 8 > commands_end:
+            failures.append(
+                _failure(
+                    wheel_name,
+                    "speakers analyze Mach-O load command header is truncated",
+                    expected="8-byte load command header",
+                    actual=f"offset {cursor}, commands end {commands_end}",
+                    repair=repair,
+                )
+            )
+            break
+        cmd, cmdsize = struct.unpack_from(f"{endian}II", slice_content, cursor)
+        if cmdsize < 8 or cursor + cmdsize > commands_end:
+            failures.append(
+                _failure(
+                    wheel_name,
+                    "speakers analyze Mach-O load command size is invalid",
+                    expected="cmdsize inside load-command region",
+                    actual=f"cmd {cmd:#x}, cmdsize {cmdsize}",
+                    repair=repair,
+                )
+            )
+            break
+        if cmd == LC_RPATH:
+            path_offset = struct.unpack_from(f"{endian}I", slice_content, cursor + 8)[0]
+            value, value_failures = _macho_load_command_string(
+                wheel_name,
+                slice_content,
+                command_start=cursor,
+                command_size=cmdsize,
+                string_offset=path_offset,
+                command_label="LC_RPATH",
+                repair=repair,
+            )
+            failures.extend(value_failures)
+            if value is not None:
+                rpaths.append(value)
+        elif cmd == LC_LOAD_DYLIB:
+            name_offset = struct.unpack_from(f"{endian}I", slice_content, cursor + 8)[0]
+            value, value_failures = _macho_load_command_string(
+                wheel_name,
+                slice_content,
+                command_start=cursor,
+                command_size=cmdsize,
+                string_offset=name_offset,
+                command_label="LC_LOAD_DYLIB",
+                repair=repair,
+            )
+            failures.extend(value_failures)
+            if value is not None:
+                dylibs.append(value)
+        cursor += cmdsize
+    if cursor != commands_end:
+        failures.append(
+            _failure(
+                wheel_name,
+                "speakers analyze Mach-O load command walk did not consume sizeofcmds",
+                expected=f"cursor {commands_end}",
+                actual=f"cursor {cursor}",
+                repair=repair,
+            )
+        )
+    return tuple(rpaths), tuple(dylibs), failures
+
+
+def _check_speakers_analyze_macho_runtime_paths(
+    wheel_name: str, content: bytes, platform_tuple: CorePlatform
+) -> list[str]:
+    repair = _speakers_analyze_rebuild_command(platform_tuple)
+    contract = SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS[platform_tuple]
+    rpaths, dylibs, failures = _macho_runtime_load_commands(
+        wheel_name, content, repair=repair
+    )
+    if failures:
+        return failures
+    rpath_set = set(rpaths)
+    if rpath_set != {contract.rpath}:
+        failures.append(
+            _failure(
+                wheel_name,
+                "speakers analyze Mach-O RPATH is wrong",
+                expected=contract.rpath,
+                actual=", ".join(rpaths) or "<missing>",
+                repair=repair,
+            )
+        )
+    runtime_loads = [
+        value
+        for value in dylibs
+        if value == contract.runtime_load or "onnxruntime" in value.lower()
+    ]
+    if runtime_loads != [contract.runtime_load]:
+        failures.append(
+            _failure(
+                wheel_name,
+                "speakers analyze Mach-O ONNX Runtime load command is outside bundled sibling-library contract",
+                expected=f"LC_LOAD_DYLIB {contract.runtime_load}",
+                actual=", ".join(runtime_loads) or "<missing>",
+                repair=repair,
+            )
+        )
+    return failures
+
+
 def _check_core_binary(
     wheel_name: str,
     content: bytes,
@@ -1090,7 +1395,8 @@ def _check_speakers_analyze_elf_binary(
     tag: str,
 ) -> list[str]:
     errors: list[str] = []
-    repair = "make wheel-speakers-analyze-linux-x86_64"
+    repair = _speakers_analyze_rebuild_command(platform_tuple)
+    contract = SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS[platform_tuple]
     machine_name = platform_tuple[1]
     expected_machine = ELF_MACHINE[machine_name]
     if len(content) < 64 or content[:4] != ELF_MAGIC:
@@ -1135,22 +1441,22 @@ def _check_speakers_analyze_elf_binary(
                 repair=repair,
             )
         )
-    if "libonnxruntime.so.1" not in needed:
+    if contract.runtime_load not in needed:
         errors.append(
             _failure(
                 wheel_name,
                 "speakers analyze ELF binary does not need ONNX Runtime",
-                expected="DT_NEEDED libonnxruntime.so.1",
+                expected=f"DT_NEEDED {contract.runtime_load}",
                 actual=", ".join(needed) or "<empty>",
                 repair=repair,
             )
         )
-    if runpath != SPEAKERS_ANALYZE_RUNPATH:
+    if runpath != contract.rpath:
         errors.append(
             _failure(
                 wheel_name,
                 "speakers analyze ELF RUNPATH is wrong",
-                expected=SPEAKERS_ANALYZE_RUNPATH,
+                expected=contract.rpath,
                 actual=runpath or "<missing>",
                 repair=repair,
             )
@@ -1342,6 +1648,13 @@ def check_speakers_analyze_wheel(path: Path) -> list[str]:
                         binary_content,
                         platform_tuple,
                         binary_label="solstone-core-speakers-analyze",
+                    )
+                )
+                errors.extend(
+                    _check_speakers_analyze_macho_runtime_paths(
+                        f"{path.name}:{binary_member}",
+                        binary_content,
+                        platform_tuple,
                     )
                 )
                 errors.extend(

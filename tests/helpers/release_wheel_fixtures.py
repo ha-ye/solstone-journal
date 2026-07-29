@@ -101,7 +101,9 @@ def speakers_analyze_elf(
     machine: int,
     *,
     needed: Sequence[str] = ("libonnxruntime.so.1", "libc.so.6"),
-    runpath: str | None = checker.SPEAKERS_ANALYZE_RUNPATH,
+    runpath: str | None = checker.SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS[
+        ("linux", "x86_64")
+    ].rpath,
     rpath: str | None = None,
     include_interp: bool = True,
     glibc: str = "2.27",
@@ -188,6 +190,57 @@ def minimal_macho(cputype: int) -> bytes:
     content = bytearray(32)
     struct.pack_into("<I", content, 0, checker.MH_MAGIC_64)
     struct.pack_into("<I", content, 4, cputype)
+    return bytes(content)
+
+
+def _macho_command_size(size: int) -> int:
+    return (size + 7) & ~7
+
+
+def _macho_rpath_command(path: str) -> bytes:
+    encoded = path.encode("utf-8") + b"\0"
+    cmdsize = _macho_command_size(12 + len(encoded))
+    command = bytearray(cmdsize)
+    struct.pack_into("<III", command, 0, checker.LC_RPATH, cmdsize, 12)
+    command[12 : 12 + len(encoded)] = encoded
+    return bytes(command)
+
+
+def _macho_load_dylib_command(name: str) -> bytes:
+    encoded = name.encode("utf-8") + b"\0"
+    cmdsize = _macho_command_size(24 + len(encoded))
+    command = bytearray(cmdsize)
+    struct.pack_into("<IIIIII", command, 0, checker.LC_LOAD_DYLIB, cmdsize, 24, 0, 0, 0)
+    command[24 : 24 + len(encoded)] = encoded
+    return bytes(command)
+
+
+def speakers_analyze_macho(
+    *,
+    cputype: int = checker.CPU_TYPE_ARM64,
+    rpath: str | None = checker.SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS[
+        ("darwin", "arm64")
+    ].rpath,
+    load_dylib: str | None = checker.SPEAKERS_ANALYZE_RUNTIME_LINK_CONTRACTS[
+        ("darwin", "arm64")
+    ].runtime_load,
+) -> bytes:
+    commands: list[bytes] = []
+    if load_dylib is not None:
+        commands.append(_macho_load_dylib_command(load_dylib))
+    if rpath is not None:
+        commands.append(_macho_rpath_command(rpath))
+    sizeofcmds = sum(len(command) for command in commands)
+    content = bytearray(32 + sizeofcmds)
+    struct.pack_into("<I", content, 0, checker.MH_MAGIC_64)
+    struct.pack_into("<I", content, 4, cputype)
+    struct.pack_into("<I", content, 12, 2)
+    struct.pack_into("<I", content, 16, len(commands))
+    struct.pack_into("<I", content, 20, sizeofcmds)
+    cursor = 32
+    for command in commands:
+        content[cursor : cursor + len(command)] = command
+        cursor += len(command)
     return bytes(content)
 
 
@@ -280,7 +333,7 @@ def write_speakers_analyze_wheel(
     ]
     if binary is None:
         if platform_tuple[0] == "darwin":
-            binary = minimal_macho(checker.CPU_TYPE_ARM64)
+            binary = speakers_analyze_macho()
         else:
             machine = (
                 checker.ELF_MACHINE["aarch64"]
