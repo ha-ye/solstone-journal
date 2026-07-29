@@ -6528,16 +6528,6 @@ def main() -> None:
         logging.error(core_result.message)
         sys.exit(core_handshake.EX_CONFIG)
 
-    from solstone.think.speakers_analyze_installation import (
-        check_speakers_analyze_installation,
-    )
-
-    speakers_installation = check_speakers_analyze_installation()
-    if not speakers_installation.ok:
-        print(speakers_installation.message, file=sys.stderr)
-        logging.error(speakers_installation.message)
-        sys.exit(core_handshake.EX_CONFIG)
-
     if args.verbose or args.debug:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(log_level)
@@ -6594,7 +6584,6 @@ def main() -> None:
         except Exception:
             pass
         sys.exit(1)
-    write_self_heartbeat(journal=journal_path)
 
     pid_path.write_text(str(os.getpid()))
     start_time_path = health_dir / "supervisor.start_time"
@@ -6605,250 +6594,280 @@ def main() -> None:
     logging.info("Singleton lock acquired (PID %d)", os.getpid())
     _sweep_orphaned_sol_processes(journal_path)
 
-    # Set up signal handlers
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
+    from solstone.think.speakers_analyze_installation import (
+        enter_speakers_analyze_generation,
+    )
 
-    # Show journal path and source on startup
-    path, source = journal_info
-    print(f"Journal: {path} (from {source})")
-    logging.info("Supervisor starting...")
-
-    global _managed_procs, _supervisor_callosum, _is_remote_mode
-    global _task_queue
-    procs: list[RunnerManagedProcess] = []
-    convey_port = None
-    convey_proc = None
-
-    # Remote mode: run sync instead of local processing
-    _is_remote_mode = bool(args.remote)
-
-    # Run pending journal-maintenance tasks before spawning any writer children.
-    # Callosum isn't up yet (emit_fn=None); migrations log through supervisor's logger only.
     try:
-        maint_results = run_pending_tasks(journal_path, emit_fn=None)
-        ran = len(maint_results)
-        succeeded = sum(1 for result in maint_results if result.success)
-        if ran > 0:
-            print(f"  Ran {ran} maintenance task(s)", flush=True)
-            if ran == succeeded:
-                logging.info("Completed %d/%d maintenance task(s)", succeeded, ran)
+        speakers_generation = enter_speakers_analyze_generation(
+            journal_path=journal_path
+        )
+    except Exception as exc:
+        message = str(exc)
+        print(message, file=sys.stderr)
+        logging.error(message)
+        sys.exit(core_handshake.EX_CONFIG)
+
+    try:
+        write_self_heartbeat(journal=journal_path)
+
+        # Set up signal handlers
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
+
+        # Show journal path and source on startup
+        path, source = journal_info
+        print(f"Journal: {path} (from {source})")
+        logging.info("Supervisor starting...")
+
+        global _managed_procs, _supervisor_callosum, _is_remote_mode
+        global _task_queue
+        procs: list[RunnerManagedProcess] = []
+        convey_port = None
+        convey_proc = None
+
+        # Remote mode: run sync instead of local processing
+        _is_remote_mode = bool(args.remote)
+
+        # Run pending journal-maintenance tasks before spawning any writer children.
+        # Callosum isn't up yet (emit_fn=None); migrations log through supervisor's logger only.
+        try:
+            maint_results = run_pending_tasks(journal_path, emit_fn=None)
+            ran = len(maint_results)
+            succeeded = sum(1 for result in maint_results if result.success)
+            if ran > 0:
+                print(f"  Ran {ran} maintenance task(s)", flush=True)
+                if ran == succeeded:
+                    logging.info("Completed %d/%d maintenance task(s)", succeeded, ran)
+                else:
+                    logging.error(
+                        "Maintenance tasks completed with failures: %d/%d succeeded",
+                        succeeded,
+                        ran,
+                    )
+                    blocking_failures = [
+                        result
+                        for result in maint_results
+                        if not result.success and result.task.blocks_supervisor_start
+                    ]
+                    if blocking_failures:
+                        failure = blocking_failures[0]
+                        message = (
+                            "Startup blocked by maintenance task "
+                            f"{failure.task.qualified_name} "
+                            f"(exit {failure.exit_code}). Log: {failure.state_file}. "
+                            "This task is retry-on-next-start; fix the error and start "
+                            "the supervisor again."
+                        )
+                        logging.error(message)
+                        print(f"  {message}", file=sys.stderr, flush=True)
+                        sys.exit(1)
+        except Exception:
+            logging.exception("Maintenance runner raised; continuing startup")
+
+        try:
+            from solstone.think.importers.journal_archive import (
+                sweep_stale_extract_dirs,
+            )
+
+            swept = sweep_stale_extract_dirs()
+            if swept > 0:
+                logging.info("Swept %d stale journal-archive extract dir(s)", swept)
+        except Exception:
+            logging.exception(
+                "Journal archive extract sweep raised; continuing startup"
+            )
+
+        try:
+            from solstone.observe.transcribe.speakers_analyze_adapter import (
+                sweep_stale_speakers_analyze_dirs,
+            )
+
+            swept = sweep_stale_speakers_analyze_dirs()
+            if swept > 0:
+                logging.info("Swept %d stale speakers-analyze temp dir(s)", swept)
+        except Exception:
+            logging.exception("Speakers-analyze temp sweep raised; continuing startup")
+
+        # Start Callosum in-process first - it's the message bus that other services depend on
+        try:
+            print("  Starting Callosum bus...", flush=True)
+            start_callosum_in_process()
+        except RuntimeError as e:
+            logging.error(f"Failed to start Callosum server: {e}")
+            parser.error(f"Failed to start Callosum server: {e}")
+            return
+
+        # Connect supervisor's Callosum client to capture startup events from other services
+        try:
+            _supervisor_callosum = CallosumConnection(defaults={"rev": get_rev()})
+            _supervisor_callosum.start(callback=_handle_callosum_message)
+            logging.info("Supervisor connected to Callosum")
+        except Exception as e:
+            logging.warning(f"Failed to start Callosum connection: {e}")
+
+        # Mirror supervisor log output to callosum logs tract (best-effort)
+        supervisor_ref = str(now_ms())
+        global _supervisor_ref, _supervisor_start
+        _supervisor_ref = supervisor_ref
+        _supervisor_start = time.time()
+        if _supervisor_callosum:
+            try:
+                handler = CallosumLogHandler(_supervisor_callosum, supervisor_ref)
+                handler.setFormatter(
+                    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+                )
+                logging.getLogger().addHandler(handler)
+            except Exception:
+                pass
+
+        # Initialize task queue with callosum event callback
+        _task_queue = TaskQueue(on_queue_change=_emit_queue_event, ready=False)
+        register_baseline_caps(_task_queue)
+
+        # Now start other services (their startup events will be captured)
+        if _is_remote_mode:
+            # Remote mode: transfer send will be added here
+            pass
+        else:
+            # Local mode: convey first, then sense for file processing
+            os.environ["SOL_SUPERVISOR_SPAWNED"] = "1"
+            if not args.no_convey:
+                print(f"  Starting convey on port {args.port}...", flush=True)
+                convey_proc, convey_port = start_convey_server(
+                    verbose=args.verbose, debug=args.debug, port=args.port
+                )
+                procs.append(convey_proc)
+                wait_for_convey_ready(convey_proc)
+                print("  Convey ready", flush=True)
+            # Sense handles file processing
+            print("  Starting sense...", flush=True)
+            procs.append(start_sense())
+            # Cortex for agent execution
+            if not args.no_cortex:
+                print("  Starting cortex...", flush=True)
+                procs.append(start_cortex_server())
+            # spl tunnel service (opt-out via --no-spl)
+            if not args.no_spl:
+                print("  Starting spl...", flush=True)
+                procs.append(start_spl_service())
+
+        # Make procs accessible to restart handler
+        _managed_procs = procs
+        _initialize_provider_startup_gate()
+
+        # Initialize daily state to today - think only triggers at midnight when day changes
+        _daily_state["last_day"] = datetime.now().date()
+
+        # Initialize periodic task scheduler
+        schedule_enabled = not args.no_schedule and not _is_remote_mode
+        if schedule_enabled and _supervisor_callosum:
+            try:
+                maintenance.register_maintenance_schedules()
+            except Exception:
+                logging.error("Failed to register maintenance schedules", exc_info=True)
+            scheduler.init(_supervisor_callosum)
+            _register_scheduler_defaults()
+            if _task_queue:
+                for cmd, seconds in scheduler.collect_runtime_caps():
+                    cmd_name = TaskQueue.get_command_name(cmd)
+                    _task_queue.set_cap(cmd_name, seconds)
+                    logging.info(
+                        "Registered max_runtime cap for %s: %ss",
+                        cmd_name,
+                        seconds,
+                    )
+
+        # Show Convey URL if running
+        if convey_port:
+            print(f"Convey: http://localhost:{convey_port}/")
+
+        logging.info(f"Started {len(procs)} processes, entering supervision loop")
+        daily_enabled = not args.no_daily and not _is_remote_mode
+        if daily_enabled:
+            logging.info("Daily processing scheduled for midnight")
+
+        # Startup catchup: submit thinks for days with pending stream data
+        if daily_enabled:
+            _startup_catchup_drain()
+
+        # Startup catch-up: submit overdue schedule entries missed while down
+        if schedule_enabled and _supervisor_callosum:
+            scheduler.catch_up()
+
+        try:
+            convey_accepting = convey_proc is None or is_solstone_up(timeout=1.0)
+            if convey_accepting:
+                print("  Supervisor ready", flush=True)
+                _sd_notify("READY=1")
+                signal_ready()
             else:
                 logging.error(
-                    "Maintenance tasks completed with failures: %d/%d succeeded",
-                    succeeded,
-                    ran,
+                    "Convey is not accepting on :%s; withholding readiness marker, "
+                    "continuing into supervise loop",
+                    read_service_port("convey"),
                 )
-                blocking_failures = [
-                    result
-                    for result in maint_results
-                    if not result.success and result.task.blocks_supervisor_start
-                ]
-                if blocking_failures:
-                    failure = blocking_failures[0]
-                    message = (
-                        "Startup blocked by maintenance task "
-                        f"{failure.task.qualified_name} "
-                        f"(exit {failure.exit_code}). Log: {failure.state_file}. "
-                        "This task is retry-on-next-start; fix the error and start "
-                        "the supervisor again."
-                    )
-                    logging.error(message)
-                    print(f"  {message}", file=sys.stderr, flush=True)
-                    sys.exit(1)
-    except Exception:
-        logging.exception("Maintenance runner raised; continuing startup")
-
-    try:
-        from solstone.think.importers.journal_archive import sweep_stale_extract_dirs
-
-        swept = sweep_stale_extract_dirs()
-        if swept > 0:
-            logging.info("Swept %d stale journal-archive extract dir(s)", swept)
-    except Exception:
-        logging.exception("Journal archive extract sweep raised; continuing startup")
-
-    try:
-        from solstone.observe.transcribe.speakers_analyze_adapter import (
-            sweep_stale_speakers_analyze_dirs,
-        )
-
-        swept = sweep_stale_speakers_analyze_dirs()
-        if swept > 0:
-            logging.info("Swept %d stale speakers-analyze temp dir(s)", swept)
-    except Exception:
-        logging.exception("Speakers-analyze temp sweep raised; continuing startup")
-
-    # Start Callosum in-process first - it's the message bus that other services depend on
-    try:
-        print("  Starting Callosum bus...", flush=True)
-        start_callosum_in_process()
-    except RuntimeError as e:
-        logging.error(f"Failed to start Callosum server: {e}")
-        parser.error(f"Failed to start Callosum server: {e}")
-        return
-
-    # Connect supervisor's Callosum client to capture startup events from other services
-    try:
-        _supervisor_callosum = CallosumConnection(defaults={"rev": get_rev()})
-        _supervisor_callosum.start(callback=_handle_callosum_message)
-        logging.info("Supervisor connected to Callosum")
-    except Exception as e:
-        logging.warning(f"Failed to start Callosum connection: {e}")
-
-    # Mirror supervisor log output to callosum logs tract (best-effort)
-    supervisor_ref = str(now_ms())
-    global _supervisor_ref, _supervisor_start
-    _supervisor_ref = supervisor_ref
-    _supervisor_start = time.time()
-    if _supervisor_callosum:
-        try:
-            handler = CallosumLogHandler(_supervisor_callosum, supervisor_ref)
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            if app_supervised:
+                start_parent_death_watcher()
+            asyncio.run(
+                supervise(
+                    daily=daily_enabled,
+                    schedule=schedule_enabled,
+                    procs=procs if procs else None,
+                )
             )
-            logging.getLogger().addHandler(handler)
-        except Exception:
-            pass
-
-    # Initialize task queue with callosum event callback
-    _task_queue = TaskQueue(on_queue_change=_emit_queue_event, ready=False)
-    register_baseline_caps(_task_queue)
-
-    # Now start other services (their startup events will be captured)
-    if _is_remote_mode:
-        # Remote mode: transfer send will be added here
-        pass
-    else:
-        # Local mode: convey first, then sense for file processing
-        os.environ["SOL_SUPERVISOR_SPAWNED"] = "1"
-        if not args.no_convey:
-            print(f"  Starting convey on port {args.port}...", flush=True)
-            convey_proc, convey_port = start_convey_server(
-                verbose=args.verbose, debug=args.debug, port=args.port
-            )
-            procs.append(convey_proc)
-            wait_for_convey_ready(convey_proc)
-            print("  Convey ready", flush=True)
-        # Sense handles file processing
-        print("  Starting sense...", flush=True)
-        procs.append(start_sense())
-        # Cortex for agent execution
-        if not args.no_cortex:
-            print("  Starting cortex...", flush=True)
-            procs.append(start_cortex_server())
-        # spl tunnel service (opt-out via --no-spl)
-        if not args.no_spl:
-            print("  Starting spl...", flush=True)
-            procs.append(start_spl_service())
-
-    # Make procs accessible to restart handler
-    _managed_procs = procs
-    _initialize_provider_startup_gate()
-
-    # Initialize daily state to today - think only triggers at midnight when day changes
-    _daily_state["last_day"] = datetime.now().date()
-
-    # Initialize periodic task scheduler
-    schedule_enabled = not args.no_schedule and not _is_remote_mode
-    if schedule_enabled and _supervisor_callosum:
-        try:
-            maintenance.register_maintenance_schedules()
-        except Exception:
-            logging.error("Failed to register maintenance schedules", exc_info=True)
-        scheduler.init(_supervisor_callosum)
-        _register_scheduler_defaults()
-        if _task_queue:
-            for cmd, seconds in scheduler.collect_runtime_caps():
-                cmd_name = TaskQueue.get_command_name(cmd)
-                _task_queue.set_cap(cmd_name, seconds)
-                logging.info(
-                    "Registered max_runtime cap for %s: %ss",
-                    cmd_name,
-                    seconds,
+        except KeyboardInterrupt:
+            logging.info("Caught KeyboardInterrupt, shutting down...")
+        finally:
+            _cancel_all_provider_starts("supervisor shutdown")
+            _cancel_all_provider_stops("supervisor shutdown")
+            try:
+                clear_ready()
+            except Exception as exc:
+                logging.warning(
+                    "Failed to clear readiness marker during shutdown: %s", exc
+                )
+            try:
+                if not _sync_conflict_shutdown:
+                    clear_self_heartbeat()
+            except Exception as exc:
+                logging.warning(
+                    "Failed to clear sync heartbeat during shutdown: %s", exc
                 )
 
-    # Show Convey URL if running
-    if convey_port:
-        print(f"Convey: http://localhost:{convey_port}/")
+            logging.info("Stopping all processes...")
+            print("\nShutting down gracefully (this may take a moment)...", flush=True)
 
-    logging.info(f"Started {len(procs)} processes, entering supervision loop")
-    daily_enabled = not args.no_daily and not _is_remote_mode
-    if daily_enabled:
-        logging.info("Daily processing scheduled for midnight")
+            if _task_queue:
+                task_drain_timeout = (
+                    APP_SUPERVISED_TASK_DRAIN_S if app_supervised else 10
+                )
+                _task_queue.shutdown(timeout=task_drain_timeout)
 
-    # Startup catchup: submit thinks for days with pending stream data
-    if daily_enabled:
-        _startup_catchup_drain()
+            # Stop services in reverse order
+            child_stop_timeout = APP_SUPERVISED_CHILD_STOP_S if app_supervised else None
+            for managed in reversed(procs):
+                _stop_process(managed, timeout_cap=child_stop_timeout)
 
-    # Startup catch-up: submit overdue schedule entries missed while down
-    if schedule_enabled and _supervisor_callosum:
-        scheduler.catch_up()
+            # Disconnect supervisor's Callosum connection
+            if _supervisor_callosum:
+                _supervisor_callosum.stop()
+                logging.info("Supervisor disconnected from Callosum")
 
-    try:
-        convey_accepting = convey_proc is None or is_solstone_up(timeout=1.0)
-        if convey_accepting:
-            print("  Supervisor ready", flush=True)
-            _sd_notify("READY=1")
-            signal_ready()
-        else:
-            logging.error(
-                "Convey is not accepting on :%s; withholding readiness marker, "
-                "continuing into supervise loop",
-                read_service_port("convey"),
+            # Stop in-process Callosum server last
+            callosum_join_timeout = (
+                APP_SUPERVISED_CALLOSUM_JOIN_S if app_supervised else 5.0
             )
-        if app_supervised:
-            start_parent_death_watcher()
-        asyncio.run(
-            supervise(
-                daily=daily_enabled,
-                schedule=schedule_enabled,
-                procs=procs if procs else None,
-            )
-        )
-    except KeyboardInterrupt:
-        logging.info("Caught KeyboardInterrupt, shutting down...")
+            stop_callosum_in_process(join_timeout=callosum_join_timeout)
+
+            logging.info("Supervisor shutdown complete.")
+            print("Shutdown complete.", flush=True)
+
+        if _sync_conflict_shutdown:
+            sys.exit(2)
+
     finally:
-        _cancel_all_provider_starts("supervisor shutdown")
-        _cancel_all_provider_stops("supervisor shutdown")
-        try:
-            clear_ready()
-        except Exception as exc:
-            logging.warning("Failed to clear readiness marker during shutdown: %s", exc)
-        try:
-            if not _sync_conflict_shutdown:
-                clear_self_heartbeat()
-        except Exception as exc:
-            logging.warning("Failed to clear sync heartbeat during shutdown: %s", exc)
-
-        logging.info("Stopping all processes...")
-        print("\nShutting down gracefully (this may take a moment)...", flush=True)
-
-        if _task_queue:
-            task_drain_timeout = APP_SUPERVISED_TASK_DRAIN_S if app_supervised else 10
-            _task_queue.shutdown(timeout=task_drain_timeout)
-
-        # Stop services in reverse order
-        child_stop_timeout = APP_SUPERVISED_CHILD_STOP_S if app_supervised else None
-        for managed in reversed(procs):
-            _stop_process(managed, timeout_cap=child_stop_timeout)
-
-        # Disconnect supervisor's Callosum connection
-        if _supervisor_callosum:
-            _supervisor_callosum.stop()
-            logging.info("Supervisor disconnected from Callosum")
-
-        # Stop in-process Callosum server last
-        callosum_join_timeout = (
-            APP_SUPERVISED_CALLOSUM_JOIN_S if app_supervised else 5.0
-        )
-        stop_callosum_in_process(join_timeout=callosum_join_timeout)
-
-        logging.info("Supervisor shutdown complete.")
-        print("Shutdown complete.", flush=True)
-
-    if _sync_conflict_shutdown:
-        sys.exit(2)
+        speakers_generation.release()
 
 
 if __name__ == "__main__":

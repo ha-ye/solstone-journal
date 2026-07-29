@@ -14,9 +14,6 @@ import pytest
 
 from solstone.think import maintenance, maintenance_cli, schedule_config, scheduler
 from solstone.think.maintenance import MaintenanceDescriptorError, MaintenanceRoutine
-from solstone.think.speakers_analyze_installation import (
-    SpeakersAnalyzeInstallationResult,
-)
 
 
 def _use_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -87,12 +84,12 @@ def _run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
 
 
 @pytest.fixture(autouse=True)
-def _speakers_analyze_installation_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "solstone.think.speakers_analyze_installation."
-        "check_speakers_analyze_installation",
-        lambda: SpeakersAnalyzeInstallationResult("ok"),
-    )
+def _speakers_analyze_installation_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.helpers.speakers_analyze import install_enter_generation_stub
+
+    install_enter_generation_stub(monkeypatch, tmp_path)
 
 
 @pytest.fixture(autouse=True)

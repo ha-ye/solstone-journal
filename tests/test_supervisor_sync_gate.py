@@ -6,24 +6,22 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from solstone.think import sync_check
-from solstone.think.speakers_analyze_installation import (
-    SpeakersAnalyzeInstallationResult,
-)
 
 
 @pytest.fixture(autouse=True)
-def _speakers_analyze_installation_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "solstone.think.speakers_analyze_installation."
-        "check_speakers_analyze_installation",
-        lambda: SpeakersAnalyzeInstallationResult("ok"),
-    )
+def _speakers_analyze_installation_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.helpers.speakers_analyze import install_enter_generation_stub
+
+    install_enter_generation_stub(monkeypatch, tmp_path)
 
 
 def _set_identity(monkeypatch):

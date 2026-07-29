@@ -1,15 +1,88 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import os
 import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from solstone.think import supervisor
+from solstone.think.journal_io.lease import (
+    acquire_file_lease,
+    read_file_lease_fd,
+    set_file_lease_offset_token,
+)
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 
 TEST_JOURNAL = Path("/journal/test")
+
+
+def _write_fd_holder_script(tmp_path: Path) -> Path:
+    script = tmp_path / "fd_holder.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import os",
+                "import subprocess",
+                "import sys",
+                "import time",
+                "",
+                "fd = int(sys.argv[1])",
+                "role = sys.argv[2]",
+                "if role == 'child':",
+                "    grand = subprocess.Popen(",
+                "        [sys.executable, __file__, str(fd), 'grand'],",
+                "        stdin=subprocess.DEVNULL,",
+                "        stdout=subprocess.DEVNULL,",
+                "        stderr=subprocess.DEVNULL,",
+                "        pass_fds=(fd,),",
+                "    )",
+                "    print(grand.pid, flush=True)",
+                "else:",
+                "    print(os.getpid(), flush=True)",
+                "while True:",
+                "    time.sleep(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _spawn_fd_holder(script: Path, fd: int, role: str) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, str(script), str(fd), role],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(fd,),
+    )
+
+
+def _cleanup_processes(*pids: int) -> None:
+    for pid in pids:
+        try:
+            proc = supervisor.psutil.Process(pid)
+        except supervisor.psutil.NoSuchProcess:
+            continue
+        try:
+            proc.terminate()
+        except supervisor.psutil.Error:
+            pass
+    for pid in pids:
+        try:
+            proc = supervisor.psutil.Process(pid)
+            proc.wait(timeout=2)
+        except (supervisor.psutil.NoSuchProcess, supervisor.psutil.TimeoutExpired):
+            try:
+                supervisor.psutil.Process(pid).kill()
+            except supervisor.psutil.Error:
+                pass
 
 
 class _FakeProcess:
@@ -191,3 +264,62 @@ class TestOrphanSweep:
 
         assert supervisor._sweep_orphaned_sol_processes(journal=TEST_JOURNAL) == 1
         assert kills == [(111, signal.SIGTERM)]
+
+    def test_fd_holding_child_grandchild_reaped_before_replacement_and_survivor_blocks(
+        self, tmp_path, monkeypatch
+    ):
+        journal = tmp_path / "journal"
+        lock_path = journal / "health" / "speakers-analyze" / "install-generation.lock"
+        script = _write_fd_holder_script(tmp_path)
+        current_user = supervisor.getpass.getuser()
+        monkeypatch.setattr(supervisor.sys, "platform", "linux")
+        monkeypatch.setattr(supervisor.getpass, "getuser", lambda: current_user)
+        monkeypatch.setattr(
+            supervisor, "_candidate_journal", lambda proc: journal.resolve()
+        )
+
+        lease = acquire_file_lease(lock_path, attempts=1)
+        assert lease is not None
+        set_file_lease_offset_token(lease, 73, lock_path)
+        owner_fd = read_file_lease_fd(lease, lock_path)
+        child = _spawn_fd_holder(script, owner_fd, "child")
+        assert child.stdout is not None
+        grand_pid = int(child.stdout.readline().strip())
+        os.close(owner_fd)
+        lease._fd = None
+        spawned_pids = {child.pid, grand_pid}
+        inventory = [
+            _FakeProcess(pid=child.pid, name="journal:sense", username=current_user),
+            _FakeProcess(pid=grand_pid, name="journal:think", username=current_user),
+        ]
+        assert {proc.pid for proc in inventory}.issubset(spawned_pids)
+        monkeypatch.setattr(supervisor.psutil, "process_iter", lambda _attrs: inventory)
+        try:
+            assert acquire_file_lease(lock_path, attempts=1) is None
+            assert supervisor._sweep_orphaned_sol_processes(journal=journal) == 2
+            _cleanup_processes(child.pid, grand_pid)
+            replacement = acquire_file_lease(lock_path, attempts=1)
+            assert replacement is not None
+            replacement.release()
+        finally:
+            _cleanup_processes(child.pid, grand_pid)
+
+        survivor_lease = acquire_file_lease(lock_path, attempts=1)
+        assert survivor_lease is not None
+        set_file_lease_offset_token(survivor_lease, 74, lock_path)
+        survivor_fd = read_file_lease_fd(survivor_lease, lock_path)
+        survivor = _spawn_fd_holder(script, survivor_fd, "survivor")
+        assert survivor.stdout is not None
+        survivor_pid = int(survivor.stdout.readline().strip())
+        os.close(survivor_fd)
+        survivor_lease._fd = None
+        monkeypatch.setattr(supervisor.psutil, "process_iter", lambda _attrs: [])
+        try:
+            assert supervisor._sweep_orphaned_sol_processes(journal=journal) == 0
+            assert acquire_file_lease(lock_path, attempts=1) is None
+        finally:
+            _cleanup_processes(survivor.pid, survivor_pid)
+
+        replacement = acquire_file_lease(lock_path, attempts=1)
+        assert replacement is not None
+        replacement.release()

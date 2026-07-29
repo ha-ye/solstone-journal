@@ -37,16 +37,10 @@ from tests.helpers.module_mocks import (
 
 
 @pytest.fixture(autouse=True)
-def _speakers_analyze_installation_ready(monkeypatch):
-    from solstone.think.speakers_analyze_installation import (
-        SpeakersAnalyzeInstallationResult,
-    )
+def _speakers_analyze_installation_ready(monkeypatch, tmp_path):
+    from tests.helpers.speakers_analyze import install_enter_generation_stub
 
-    monkeypatch.setattr(
-        "solstone.think.speakers_analyze_installation."
-        "check_speakers_analyze_installation",
-        lambda: SpeakersAnalyzeInstallationResult("ok"),
-    )
+    install_enter_generation_stub(monkeypatch, tmp_path)
 
 
 def _mlx_readiness(
@@ -166,6 +160,9 @@ def test_start_sense(tmp_path, mock_callosum, monkeypatch):
 def test_launch_process_records_service_state(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     mod._SERVICE_STATE.clear()
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID", "generation")
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD", "42")
+    monkeypatch.setenv("SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN", "123")
 
     process = MagicMock()
     process.pid = 12345
@@ -184,6 +181,9 @@ def test_launch_process_records_service_state(monkeypatch):
         assert cmd == ["journal", "sense"]
         assert ref == "ref-1"
         assert day is None
+        assert env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_ID"] == "generation"
+        assert env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_FD"] == "42"
+        assert env["SOL_SPEAKERS_ANALYZE_INSTALL_GENERATION_TOKEN"] == "123"
         return managed
 
     monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
@@ -194,6 +194,7 @@ def test_launch_process_records_service_state(monkeypatch):
         restart=True,
         shutdown_timeout=7,
         ref="ref-1",
+        env=os.environ.copy(),
     )
 
     assert result is managed
@@ -302,6 +303,8 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
 ):
     """The main shutdown path stops managed services in reverse startup order."""
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    from solstone.think import speakers_analyze_installation as installation
+
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.delenv("SOL_SUPERVISOR_SPAWNED", raising=False)
     monkeypatch.setattr(
@@ -346,11 +349,27 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
     monkeypatch.setattr(mod, "start_cortex_server", lambda: procs[2])
     monkeypatch.setattr(mod, "start_spl_service", lambda: procs[3])
 
+    lifecycle_order = []
+
+    class FakeGeneration:
+        generation_id = "test-generation"
+
+        def release(self):
+            lifecycle_order.append("release-generation")
+
+    monkeypatch.setattr(
+        installation,
+        "enter_speakers_analyze_generation",
+        lambda **_kwargs: FakeGeneration(),
+    )
     stop_order = []
     monkeypatch.setattr(
         mod,
         "_stop_process",
-        lambda managed, **_kwargs: stop_order.append(managed.name),
+        lambda managed, **_kwargs: (
+            stop_order.append(managed.name),
+            lifecycle_order.append(f"stop-{managed.name}"),
+        ),
     )
 
     def interrupt_supervise(coro):
@@ -365,6 +384,13 @@ def test_graceful_shutdown_calls_stop_process_for_each_managed_proc(
         os.environ.pop("SOL_SUPERVISOR_SPAWNED", None)
 
     assert stop_order == ["spl", "cortex", "sense", "convey"]
+    assert lifecycle_order[-1] == "release-generation"
+    assert lifecycle_order[:-1] == [
+        "stop-spl",
+        "stop-cortex",
+        "stop-sense",
+        "stop-convey",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -4026,18 +4052,39 @@ def test_handle_runner_exits_reports_llama_server_to_reconciler(monkeypatch):
 
 def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    from solstone.think import speakers_analyze_installation as installation
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     (tmp_path / "health").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(sys, "argv", ["supervisor"])
+    order = []
 
     def stop_after_lock():
+        order.append("callosum")
         raise SystemExit(0)
+
+    class FakeGeneration:
+        generation_id = "test-generation"
+
+        def release(self):
+            order.append("release")
 
     # Skip maint discovery/subprocess runs — unrelated to lock acquisition and
     # slow enough on a fresh tmp_path to blow the 5s pytest-timeout under load.
     monkeypatch.setattr(mod, "run_pending_tasks", lambda *a, **k: [])
-    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: order.append("sweep")
+    )
+    monkeypatch.setattr(
+        installation,
+        "enter_speakers_analyze_generation",
+        lambda **_kwargs: order.append("entry") or FakeGeneration(),
+    )
+    monkeypatch.setattr(
+        mod,
+        "write_self_heartbeat",
+        lambda journal: order.append("heartbeat"),
+    )
     monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(mod, "start_callosum_in_process", stop_after_lock)
 
@@ -4054,6 +4101,7 @@ def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):
     )
     assert start_time == psutil.Process(os.getpid()).create_time()
     assert mod.is_supervisor_up() is True
+    assert order == ["sweep", "entry", "heartbeat", "callosum", "release"]
 
 
 def test_supervisor_blocks_before_callosum_on_blocking_maint_failure(
@@ -4091,6 +4139,80 @@ def test_supervisor_blocks_before_callosum_on_blocking_maint_failure(
     assert "thinking:001_migrate_provider_install_state" in captured.err
     assert str(state_file) in captured.err
     assert "retry-on-next-start" in captured.err
+
+
+def test_supervisor_generation_entry_failure_exits_78_before_launch(
+    tmp_path, monkeypatch, capsys
+):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    from solstone.think import speakers_analyze_installation as installation
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    (tmp_path / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
+    monkeypatch.setattr(mod, "run_pending_tasks", MagicMock())
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    heartbeat = MagicMock()
+    start_callosum = MagicMock()
+    start_sense = MagicMock()
+    monkeypatch.setattr(mod, "write_self_heartbeat", heartbeat)
+    monkeypatch.setattr(mod, "start_callosum_in_process", start_callosum)
+    monkeypatch.setattr(mod, "start_sense", start_sense)
+    message = "speakers-analyze generation lease is already held"
+    monkeypatch.setattr(
+        installation,
+        "enter_speakers_analyze_generation",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(message)),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == 78
+    captured = capsys.readouterr()
+    assert captured.err.count(message) == 1
+    heartbeat.assert_not_called()
+    start_callosum.assert_not_called()
+    start_sense.assert_not_called()
+
+
+def test_supervisor_partial_startup_failure_after_entry_releases_generation(
+    tmp_path, monkeypatch
+):
+    mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    from solstone.think import speakers_analyze_installation as installation
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    (tmp_path / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
+    monkeypatch.setattr(mod, "run_pending_tasks", MagicMock())
+    monkeypatch.setattr(mod, "_sweep_orphaned_sol_processes", lambda *_a, **_k: 0)
+    released = []
+
+    class FakeGeneration:
+        generation_id = "test-generation"
+
+        def release(self):
+            released.append("release")
+
+    monkeypatch.setattr(
+        installation,
+        "enter_speakers_analyze_generation",
+        lambda **_kwargs: FakeGeneration(),
+    )
+    monkeypatch.setattr(
+        mod,
+        "write_self_heartbeat",
+        lambda journal: (_ for _ in ()).throw(RuntimeError("heartbeat failed")),
+    )
+    start_callosum = MagicMock()
+    monkeypatch.setattr(mod, "start_callosum_in_process", start_callosum)
+
+    with pytest.raises(RuntimeError, match="heartbeat failed"):
+        mod.main()
+
+    assert released == ["release"]
+    start_callosum.assert_not_called()
 
 
 def test_supervisor_continues_after_successful_blocking_maint_task(
@@ -4133,6 +4255,7 @@ def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):
     import fcntl
 
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))
+    from solstone.think import speakers_analyze_installation as installation
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.delenv("INVOCATION_ID", raising=False)
@@ -4144,6 +4267,8 @@ def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["supervisor"])
 
     start_mock = MagicMock()
+    entry_mock = MagicMock()
+    monkeypatch.setattr(installation, "enter_speakers_analyze_generation", entry_mock)
     monkeypatch.setattr(mod, "start_callosum_in_process", start_mock)
 
     try:
@@ -4156,6 +4281,7 @@ def test_supervisor_singleton_lock_blocked(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Supervisor already running" in output
     assert "PID 12345" in output
+    entry_mock.assert_not_called()
     start_mock.assert_not_called()
 
 
