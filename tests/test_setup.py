@@ -18,6 +18,8 @@ import pytest
 from solstone.think import health_cli, install_guard, service, setup, setup_events
 from solstone.think.user_config import write_user_config
 
+_REAL_TOPOLOGY_PROBE = setup.read_sol_already_keeps_journal
+
 
 def fake_check_report(overall: str = "ok") -> SimpleNamespace:
     return SimpleNamespace(report=SimpleNamespace(overall=overall))
@@ -37,6 +39,11 @@ def fast_brain_check(monkeypatch: pytest.MonkeyPatch) -> None:
     from solstone.think import check
 
     monkeypatch.setattr(check, "build_check_report", lambda: fake_check_report())
+
+
+@pytest.fixture(autouse=True)
+def neutral_supervisor_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: False)
 
 
 def patch_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -317,6 +324,22 @@ def patch_runtime_bin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         write_executable_script(bin_dir / binary)
     monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
     return bin_dir
+
+
+def plant_app_owned_child_launcher(binary: str, target: Path) -> Path:
+    alias = install_guard.alias_paths()[binary]
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    alias.write_text(
+        install_guard.render_app_owned_child_launcher(str(target), binary),
+        encoding="utf-8",
+    )
+    return alias
+
+
+def patch_supervisor_app_state(monkeypatch: pytest.MonkeyPatch, app_state: str) -> Mock:
+    inspect = Mock(return_value=SimpleNamespace(app_state=app_state))
+    monkeypatch.setattr(service, "inspect_supervisor_conflict", inspect)
+    return inspect
 
 
 def assert_setup_wrapper(
@@ -697,6 +720,362 @@ def test_skip_wrapper_and_skip_service_are_independent(
         )
 
 
+def test_setup_skips_service_when_app_owned_launcher_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    plant_app_owned_child_launcher("journal", bin_dir / "journal")
+    inspect = patch_supervisor_app_state(monkeypatch, "running")
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    # Deliberately no --skip-wrapper: wrapper runs immediately before service
+    # and currently overwrites this launcher.
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    artifact = setup.service_artifact_path()
+    assert artifact is not None
+    assert not artifact.exists()
+    assert expected_service_install_command() not in calls
+    service_up.assert_not_called()
+    assert expected_service_restart_command() not in calls
+    service_step = step_by_name(read_manifest(journal), "service")
+    assert service_step["status"] == "skipped"
+    assert service_step["reason"] == "sol on this Mac already keeps this journal"
+    inspect.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", [None, 0o644])
+def test_setup_installs_service_when_app_owned_launcher_target_not_live(
+    mode: int | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    target = tmp_path / "not-live" / "journal"
+    if mode is not None:
+        write_executable_script(target)
+        target.chmod(mode)
+    plant_app_owned_child_launcher("journal", target)
+    patch_supervisor_app_state(monkeypatch, "absent")
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_service_install_command() in calls
+    service_up.assert_called_once_with()
+    service_step = step_by_name(read_manifest(journal), "service")
+    assert service_step["status"] == "ok"
+
+
+def test_setup_skips_service_when_sol_is_running_without_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    patch_supervisor_app_state(monkeypatch, "running")
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_service_install_command() not in calls
+    service_up.assert_not_called()
+    service_step = step_by_name(read_manifest(journal), "service")
+    assert service_step["status"] == "skipped"
+    assert service_step["reason"] == setup_events.SOL_ALREADY_KEEPS_JOURNAL_REASON
+
+
+def test_setup_installs_service_when_supervisor_app_state_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    patch_supervisor_app_state(monkeypatch, "unknown")
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_service_install_command() in calls
+    service_up.assert_called_once_with()
+    service_step = step_by_name(read_manifest(journal), "service")
+    assert service_step["status"] == "ok"
+
+
+def test_setup_probe_failure_installs_service_and_warns_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+
+    def fail_inspect() -> SimpleNamespace:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "inspect_supervisor_conflict", fail_inspect)
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert expected_service_install_command() in calls
+    service_up.assert_called_once_with()
+    assert (
+        "warning: setup could not determine whether sol already keeps this "
+        "journal; continuing with the normal install (RuntimeError: boom)\n"
+    ) in captured.err
+
+
+def test_resume_service_topology_skip_avoids_health_and_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: True)
+    journal = tmp_path / "journal"
+    write_clean_prior_manifest(journal)
+    monkeypatch.setattr(
+        service,
+        "service_is_installed",
+        lambda: pytest.fail("service_is_installed should not run"),
+    )
+    monkeypatch.setattr(
+        health_cli,
+        "health_check",
+        lambda: pytest.fail("health_check should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_service_restart_command() not in calls
+    service_step = step_by_name(read_manifest(journal), "service")
+    assert service_step["status"] == "skipped"
+    assert service_step["reason"] == setup_events.SOL_ALREADY_KEEPS_JOURNAL_REASON
+    assert service_step["paths"] == []
+
+
+def test_topology_skip_summary_and_artifacts_on_fresh_and_resume_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: True)
+    (home / ".claude").mkdir()
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    fresh_journal = tmp_path / "fresh-journal"
+
+    fresh_rc = setup.main(["--yes", "--journal", str(fresh_journal)])
+    fresh_out = capsys.readouterr().out
+
+    assert fresh_rc == 0
+    assert "0 of 8 steps already done; ran 6" in fresh_out
+    assert "solstone is running at http://localhost:5015" not in fresh_out
+    assert "org.solpbc.solstone.plist" not in fresh_out
+    assert expected_service_install_command() not in calls
+    service_up.assert_not_called()
+
+    calls.clear()
+    resume_journal = tmp_path / "resume-journal"
+    write_clean_prior_manifest(resume_journal)
+
+    resume_rc = setup.main(["--yes", "--journal", str(resume_journal)])
+    resume_out = capsys.readouterr().out
+
+    assert resume_rc == 0
+    assert "7 of 8 steps already done; ran 0" in resume_out
+    assert "solstone is running at http://localhost:5015" not in resume_out
+    assert "org.solpbc.solstone.plist" not in resume_out
+    assert expected_service_restart_command() not in calls
+    service_step = step_by_name(read_manifest(resume_journal), "service")
+    assert service_step["paths"] == []
+
+
+def test_skip_service_reason_wins_over_topology_for_service_and_brain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: True)
+    (home / ".claude").mkdir()
+    calls = patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--skip-service"])
+
+    assert rc == 0
+    manifest = read_manifest(journal)
+    assert step_by_name(manifest, "service")["reason"] == "--skip-service"
+    assert step_by_name(manifest, "brain")["reason"] == "--skip-service"
+    assert expected_service_install_command() not in calls
+
+
+def test_topology_reason_and_narration_literals_are_pinned() -> None:
+    reason = setup_events.SOL_ALREADY_KEEPS_JOURNAL_REASON
+    narration = setup.SOL_ALREADY_KEEPS_JOURNAL_NARRATION
+
+    assert reason == "sol on this Mac already keeps this journal"
+    assert narration == (
+        "sol on this Mac already keeps this journal, so setup did not install a background launcher.\n"
+        "Run journal doctor if something looks wrong."
+    )
+    for value in (reason, narration):
+        assert "—" not in value
+        for banned in (
+            "journal service",
+            "journal host",
+            "server",
+            "users",
+            "capture",
+        ):
+            assert banned not in value
+
+
+def test_linux_launcher_does_not_probe_or_skip_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    plant_app_owned_child_launcher("journal", bin_dir / "journal")
+    monkeypatch.setattr(
+        service.psutil,
+        "process_iter",
+        lambda: pytest.fail("process_iter should not run on linux"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_service_install_command() in calls
+    service_up.assert_called_once_with()
+    assert step_by_name(read_manifest(journal), "service")["status"] == "ok"
+
+
+def test_topology_guard_plan_prints_would_skip_for_dry_run_and_explain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: True)
+    expected = f"  would skip: {setup_events.SOL_ALREADY_KEEPS_JOURNAL_REASON}"
+
+    dry_run_rc = setup.main(["--dry-run", "--journal", str(tmp_path / "dry")])
+    dry_run_out = capsys.readouterr().out
+    explain_rc = setup.main(["--explain", "--journal", str(tmp_path / "explain")])
+    explain_out = capsys.readouterr().out
+
+    assert dry_run_rc == 0
+    assert explain_rc == 0
+    assert dry_run_out.count(expected) == 2
+    assert explain_out.count(expected) == 2
+
+
+def test_real_topology_probe_walks_process_table_at_most_once_per_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", _REAL_TOPOLOGY_PROBE)
+    (home / ".claude").mkdir()
+    count = 0
+
+    def fake_process_iter() -> list[object]:
+        nonlocal count
+        count += 1
+        return []
+
+    monkeypatch.setattr(service.psutil, "process_iter", fake_process_iter)
+    calls = patch_subprocess(monkeypatch)
+    service_up = Mock(return_value=0)
+    monkeypatch.setattr(service, "_up", service_up)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert count <= 1
+    assert expected_service_install_command() in calls
+
+
 def test_skip_wrapper_args_resolved_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -906,6 +1285,47 @@ def test_brain_skip_service_sets_lane_and_skips(
     assert brain_step["status"] == "skipped"
     assert brain_step["reason"] == "--skip-service"
     assert expected_service_install_command() not in calls
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_topology_skip_sets_same_lane_as_skip_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import check
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    patch_journal_os_defaults(monkeypatch)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        check,
+        "build_check_report",
+        lambda: pytest.fail("build_check_report should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    topology_journal = tmp_path / "topology-journal"
+    skip_service_journal = tmp_path / "skip-service-journal"
+
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: True)
+    topology_rc = setup.main(["--yes", "--journal", str(topology_journal)])
+    topology_config = (topology_journal / "config" / "journal.json").read_bytes()
+    monkeypatch.setattr(setup, "read_sol_already_keeps_journal", lambda: False)
+    skip_service_rc = setup.main(
+        ["--yes", "--journal", str(skip_service_journal), "--skip-service"]
+    )
+    skip_service_config = (
+        skip_service_journal / "config" / "journal.json"
+    ).read_bytes()
+
+    assert topology_rc == 0
+    assert skip_service_rc == 0
+    assert topology_config == skip_service_config
+    assert active_provider(topology_journal) == "local"
+    brain_step = step_by_name(read_manifest(topology_journal), "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == setup_events.SOL_ALREADY_KEEPS_JOURNAL_REASON
     assert expected_brain_bootstrap_command() not in calls
 
 

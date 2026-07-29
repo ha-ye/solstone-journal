@@ -26,7 +26,12 @@ from typing import Any, Callable, Literal
 
 from solstone.think import parakeet_readiness
 from solstone.think.journal_config import ensure_journal_config
-from solstone.think.setup_events import EVENT_TYPES, JsonlEmitter, utc_now_iso
+from solstone.think.setup_events import (
+    EVENT_TYPES,
+    SOL_ALREADY_KEEPS_JOURNAL_REASON,
+    JsonlEmitter,
+    utc_now_iso,
+)
 from solstone.think.user_config import (
     config_path,
     default_journal,
@@ -43,6 +48,10 @@ MANIFEST_SCHEMA_VERSION = 1
 DOCTOR_TIMEOUT_SECONDS = 30
 DOCTOR_JSONL_EVENTS = frozenset(
     {"doctor.started", "check.completed", "doctor.completed"}
+)
+SOL_ALREADY_KEEPS_JOURNAL_NARRATION = (
+    "sol on this Mac already keeps this journal, so setup did not install a background launcher.\n"
+    "Run journal doctor if something looks wrong."
 )
 
 StepStatus = Literal["ok", "skipped", "failed", "warning"]
@@ -92,6 +101,7 @@ class SetupContext:
     doctor_advisories: list[dict[str, Any]]
     jsonl: bool = False
     emitter: JsonlEmitter | None = None
+    sol_already_keeps_journal: bool = False
 
 
 @dataclass(frozen=True)
@@ -285,6 +295,31 @@ def resolve_mode(args: argparse.Namespace) -> SetupMode:
     return SetupMode.NON_INTERACTIVE
 
 
+def read_sol_already_keeps_journal() -> bool:
+    """Return True when sol on this Mac already supervises this journal.
+
+    Read-only and macOS-only. Fires on either signal: an installed app-owned
+    child launcher, or sol running right now. Never writes.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        from solstone.think import install_guard
+        from solstone.think.service import inspect_supervisor_conflict
+
+        for binary, alias in install_guard.alias_paths().items():
+            if install_guard.is_live_app_owned_child_launcher(alias, binary):
+                return True
+        return inspect_supervisor_conflict().app_state == "running"
+    except Exception as exc:
+        print(
+            "warning: setup could not determine whether sol already keeps this "
+            f"journal; continuing with the normal install ({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
+        return False
+
+
 def resolve_context(
     args: argparse.Namespace,
     raw_argv: list[str],
@@ -404,6 +439,7 @@ def resolve_context(
         doctor_advisories=[],
         jsonl=bool(args.jsonl),
         emitter=emitter,
+        sol_already_keeps_journal=read_sol_already_keeps_journal(),
     )
     return ctx
 
@@ -1371,6 +1407,18 @@ def step_service(ctx: SetupContext, step_index: int) -> StepResult:
         return step_result(
             "service", "skipped", [], started_at, reason="--skip-service"
         )
+    # Escape hatch: journal service install remains available deliberately; this
+    # guard only skips setup's automatic background launcher install.
+    if ctx.sol_already_keeps_journal:
+        print_step_skipped(ctx, step_index, "service", SOL_ALREADY_KEEPS_JOURNAL_REASON)
+        narrate(ctx, SOL_ALREADY_KEEPS_JOURNAL_NARRATION)
+        return step_result(
+            "service",
+            "skipped",
+            [],
+            started_at,
+            reason=SOL_ALREADY_KEEPS_JOURNAL_REASON,
+        )
     command = service_install_command(ctx)
     print_step_header(ctx, step_index, "service install", command)
     result = run_step_subprocess(ctx, command, timeout=None)
@@ -1456,6 +1504,11 @@ def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
 
     if ctx.skip_service:
         reason = "--skip-service"
+        print_step_skipped(ctx, step_index, "brain", reason)
+        return step_result("brain", "skipped", [], started_at, reason=reason)
+
+    if ctx.sol_already_keeps_journal:
+        reason = SOL_ALREADY_KEEPS_JOURNAL_REASON
         print_step_skipped(ctx, step_index, "brain", reason)
         return step_result("brain", "skipped", [], started_at, reason=reason)
 
@@ -1840,6 +1893,8 @@ def _print_wrapper_plan(ctx: SetupContext) -> None:
 def _print_service_plan(ctx: SetupContext) -> None:
     if ctx.skip_service:
         narrate(ctx, "  skipped: --skip-service")
+    elif ctx.sol_already_keeps_journal:
+        narrate(ctx, f"  would skip: {SOL_ALREADY_KEEPS_JOURNAL_REASON}")
     else:
         narrate(ctx, f"  would run: {format_command(service_install_command(ctx))}")
         narrate(ctx, "  would call: solstone.think.service._up()")
@@ -1852,6 +1907,9 @@ def _print_brain_plan(ctx: SetupContext) -> None:
         return
     if ctx.skip_service:
         narrate(ctx, "  skipped: --skip-service")
+        return
+    if ctx.sol_already_keeps_journal:
+        narrate(ctx, f"  would skip: {SOL_ALREADY_KEEPS_JOURNAL_REASON}")
         return
     narrate(ctx, "  would check local provider fit")
     narrate(ctx, f"  would run: {format_command(brain_bootstrap_command())}")
@@ -1929,7 +1987,7 @@ def print_success_summary(ctx: SetupContext, manifest: dict[str, Any]) -> None:
             elif message:
                 narrate(ctx, f"  - {message}")
         narrate(ctx)
-    if not ctx.skip_service:
+    if not ctx.skip_service and not ctx.sol_already_keeps_journal:
         narrate(ctx, f"solstone is running at http://localhost:{ctx.port}")
         narrate(ctx)
     narrate(
@@ -1985,6 +2043,17 @@ def _resume_service(
     ctx: SetupContext, step_index: int, prior_step: dict
 ) -> StepResult | None:
     started_at = utc_now()
+    if ctx.sol_already_keeps_journal and not ctx.skip_service:
+        print_step_skipped(ctx, step_index, "service", SOL_ALREADY_KEEPS_JOURNAL_REASON)
+        narrate(ctx, SOL_ALREADY_KEEPS_JOURNAL_NARRATION)
+        return step_result(
+            "service",
+            "skipped",
+            [],
+            started_at,
+            reason=SOL_ALREADY_KEEPS_JOURNAL_REASON,
+        )
+
     from solstone.think.service import service_is_installed
 
     if not service_is_installed():
@@ -2073,6 +2142,8 @@ def command_for_step(
     if step is step_skills_journal:
         return skills_journal_command(ctx)
     if step is step_service:
+        if ctx.sol_already_keeps_journal and not ctx.skip_service:
+            return None
         return service_install_command(ctx)
     if step is step_brain:
         return brain_bootstrap_command()

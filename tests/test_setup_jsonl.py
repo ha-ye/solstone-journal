@@ -25,6 +25,7 @@ from tests.test_setup import (
     expected_service_install_command,
     expected_skills_journal_command,
     expected_skills_user_command,
+    neutral_supervisor_topology,  # noqa: F401 - imported so pytest registers it
     patch_home,
     patch_runtime_bin,
     patch_service_health,
@@ -231,6 +232,39 @@ def test_setup_jsonl_step_events_paired(
     assert [event["step"] for event in started] == list(STEP_NAMES)
     assert [event["step"] for event in terminal] == list(STEP_NAMES)
     assert {event["total"] for event in started} == {setup.TOTAL_STEPS}
+
+
+def test_setup_jsonl_topology_skip_service_has_reason_and_no_started_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc, events, _out = run_setup_jsonl(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--skip-models", "--skip-skills"],
+        pre_setup=lambda: monkeypatch.setattr(
+            setup, "read_sol_already_keeps_journal", lambda: True
+        ),
+    )
+
+    service_started = next(
+        event
+        for event in events
+        if event["event"] == "step.started" and event["step"] == "service"
+    )
+    service_completed = next(
+        event
+        for event in events
+        if event["event"] == "step.completed" and event["step"] == "service"
+    )
+
+    assert rc == 0
+    assert "command" not in service_started
+    assert service_completed["outcome"] == "skipped"
+    assert service_completed["reason"] == "sol on this Mac already keeps this journal"
+    assert "step.skipped" not in {event["event"] for event in events}
 
 
 def test_setup_jsonl_forwards_doctor_events_byte_for_byte(

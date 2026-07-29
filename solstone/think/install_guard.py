@@ -52,6 +52,9 @@ APP_OWNED_CHILD_TEMPLATE = """\
 # managed-version: app-owned-child
 exec '{target}' "$@"
 """
+_APP_OWNED_CHILD_PREFIX, _APP_OWNED_CHILD_SUFFIX = APP_OWNED_CHILD_TEMPLATE.split(
+    "{target}"
+)
 
 WRAPPER_MARKER = "# managed-version: 7"
 WRAPPER_VERSION = 7
@@ -158,8 +161,10 @@ def render_app_owned_child_launcher(target: str, binary: str) -> str:
     return APP_OWNED_CHILD_TEMPLATE.format(target=escaped_target)
 
 
-# EXAMINE ONLY: recognized only by doctor.stale_alias_symlink_check.
-# Setup/install/provision/uninstall ownership still flows through check_alias.
+# EXAMINE ONLY: is_app_owned_child_launcher is recognized only by
+# doctor.stale_alias_symlink_check. Setup's pre-wrapper topology check uses
+# is_live_app_owned_child_launcher; install/provision/uninstall ownership still
+# flows through check_alias.
 def is_app_owned_child_launcher(alias: Path, binary: str) -> bool:
     """Return True for the canonical app-owned child launcher.
 
@@ -182,6 +187,39 @@ def is_app_owned_child_launcher(alias: Path, binary: str) -> bool:
     if content != render_app_owned_child_launcher(str(expected), binary):
         return False
     return expected.exists() and os.access(expected, os.X_OK)
+
+
+def is_live_app_owned_child_launcher(alias: Path, binary: str) -> bool:
+    """Return True for an app-owned child launcher targeting any live executable.
+
+    This is a read-only setup probe. It must not confer alias ownership; setup
+    and provisioning still classify through check_alias.
+    """
+    _validate_binary(binary)
+    if alias.is_symlink():
+        return False
+    if not alias.is_file():
+        return False
+    try:
+        content = alias.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    if not content.startswith(_APP_OWNED_CHILD_PREFIX) or not content.endswith(
+        _APP_OWNED_CHILD_SUFFIX
+    ):
+        return False
+
+    raw_target = content[len(_APP_OWNED_CHILD_PREFIX) : -len(_APP_OWNED_CHILD_SUFFIX)]
+    if not raw_target or "\n" in raw_target:
+        return False
+
+    target = raw_target.replace("'\\''", "'")
+    if target.replace("'", "'\\''") != raw_target:
+        return False
+
+    target_path = Path(target)
+    return target_path.exists() and os.access(target_path, os.X_OK)
 
 
 def parse_wrapper(content: str) -> ParsedWrapper | None:

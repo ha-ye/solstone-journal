@@ -48,6 +48,8 @@ STEP_NAMES: tuple[str, ...] = (
     "brain",
 )
 
+SOL_ALREADY_KEEPS_JOURNAL_REASON = "sol on this Mac already keeps this journal"
+
 SKIPPED_REASONS: frozenset[str] = frozenset(
     {
         "--skip-models",
@@ -60,6 +62,7 @@ SKIPPED_REASONS: frozenset[str] = frozenset(
         "provider config is not in the expected shape",
         "local provider unavailable on this host",
         "local bootstrap did not start",
+        SOL_ALREADY_KEEPS_JOURNAL_REASON,
         "prior_run_ok",
         "resumed_after_restart",
     }

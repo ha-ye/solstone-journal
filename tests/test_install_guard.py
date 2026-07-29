@@ -574,6 +574,74 @@ class TestAppOwnedChildLauncher:
             "exec '/tmp/it'\\''s/bin/sol' \"$@\"\n"
         )
 
+    def test_live_app_owned_child_launcher_accepts_arbitrary_executable_target(
+        self, home_root, tmp_path
+    ):
+        target = tmp_path / "elsewhere" / "journal"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o755)
+        alias, _before_bytes, _before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="journal",
+            target=target,
+        )
+
+        assert install_guard.is_live_app_owned_child_launcher(alias, "journal") is True
+
+    def test_live_app_owned_child_launcher_unescapes_single_quote_target(
+        self, home_root, tmp_path
+    ):
+        target = tmp_path / "runtime's bin" / "journal"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o755)
+        alias, _before_bytes, _before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="journal",
+            target=target,
+        )
+
+        assert install_guard.is_live_app_owned_child_launcher(alias, "journal") is True
+
+    @pytest.mark.parametrize("mode", [None, 0o644])
+    def test_live_app_owned_child_launcher_requires_live_executable_target(
+        self, home_root, tmp_path, mode
+    ):
+        target = tmp_path / "runtime" / "journal"
+        if mode is not None:
+            target.parent.mkdir(parents=True)
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            target.chmod(mode)
+        alias, _before_bytes, _before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="journal",
+            target=target,
+        )
+
+        assert install_guard.is_live_app_owned_child_launcher(alias, "journal") is False
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "#!/bin/sh\n# managed-version: app-owned-child\nexec '/tmp/journal' \"$@\"\necho extra\n",
+            "#!/bin/bash\n# managed-version: app-owned-child\nexec '/tmp/journal' \"$@\"\n",
+            "#!/bin/sh\n# managed-version: app-owned-child\nexec '/tmp/journal' \"$@\"\n ",
+            "#!/bin/sh\n# managed-version: app-owned-child\nexec '/tmp/bad'quote' \"$@\"\n",
+        ],
+    )
+    def test_live_app_owned_child_launcher_rejects_non_template_shapes(
+        self, home_root, tmp_path, content
+    ):
+        target = tmp_path / "journal"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o755)
+        alias = home_root / ".local" / "bin" / "journal"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text(content, encoding="utf-8")
+
+        assert install_guard.is_live_app_owned_child_launcher(alias, "journal") is False
+
     def test_numeric_managed_wrappers_still_parse(self):
         journal = "/tmp/solstone"
         sol_bin = "/tmp/repo/.venv/bin/sol"
@@ -667,6 +735,35 @@ class TestAppOwnedChildLauncher:
                 wrapper.read_text(encoding="utf-8")
             )
             assert parsed_wrapper is not None
+
+    def test_app_owned_child_launcher_still_classifies_foreign_and_provisions(
+        self, home_root, tmp_path, monkeypatch
+    ):
+        repo = make_repo(tmp_path)
+        bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+        backup_dir = tmp_path / "legacy-backups"
+        backup_dir.mkdir()
+        monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+        alias, before_bytes, _before_mode = self.write_app_owned_launcher(
+            home_root,
+            binary="journal",
+            target=bin_dir / "journal",
+        )
+        journal = tmp_path / "journal"
+
+        state, _other = install_guard.check_alias(repo, "journal")
+        install_guard.provision_wrappers(repo, str(journal))
+
+        assert state is install_guard.AliasState.FOREIGN
+        backups = list(backup_dir.glob("journal.old-symlink-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == before_bytes
+        parsed = install_guard.parse_wrapper(alias.read_text(encoding="utf-8"))
+        assert parsed == {
+            "journal": str(journal),
+            "sol_bin": str(bin_dir / "journal"),
+            "version": 7,
+        }
 
 
 class TestCheckAlias:
