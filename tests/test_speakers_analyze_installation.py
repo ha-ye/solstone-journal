@@ -22,6 +22,13 @@ from solstone.think.journal_io.lease import (
     read_file_lease_offset_token,
 )
 
+_GENERATION_ENV_KEYS = (
+    installation.GENERATION_ENV_KEY,
+    installation.GENERATION_FD_ENV_KEY,
+    installation.GENERATION_TOKEN_ENV_KEY,
+)
+_GENERATION_ENV_SENTINEL = "__solstone_generation_env_unset__"
+
 
 def _version_reader(dist_name: str) -> str:
     if dist_name in {
@@ -78,10 +85,16 @@ def _entry_kwargs(tmp_path: Path, executable: Path) -> dict:
     }
 
 
-def _clear_generation_env() -> None:
-    os.environ.pop(installation.GENERATION_ENV_KEY, None)
-    os.environ.pop(installation.GENERATION_FD_ENV_KEY, None)
-    os.environ.pop(installation.GENERATION_TOKEN_ENV_KEY, None)
+def _clear_generation_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in _GENERATION_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _generation_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in _GENERATION_ENV_KEYS:
+        monkeypatch.setenv(key, _GENERATION_ENV_SENTINEL)
+        monkeypatch.delenv(key, raising=False)
 
 
 def _restore_generation_env(
@@ -284,7 +297,7 @@ def test_live_generation_record_reuses_digest_proof(
         )
     finally:
         generation.release()
-        _clear_generation_env()
+        _clear_generation_env(monkeypatch)
 
     assert result.status == "ok"
     assert calls == 0
@@ -300,7 +313,7 @@ def test_stale_generation_record_degrades_to_full_digest(
     )
     generation_id = generation.generation_id
     generation.release()
-    _clear_generation_env()
+    _clear_generation_env(monkeypatch)
     calls = 0
     original_digest = installation._sha256_file
 
@@ -353,7 +366,7 @@ def test_owned_entry_publishes_fd_token_and_token_free_record(
         assert installation.GENERATION_TOKEN_ENV_KEY not in record
     finally:
         generation.release()
-        _clear_generation_env()
+        _clear_generation_env(monkeypatch)
 
 
 def test_borrowed_entry_reuses_proof_without_hash_and_keeps_owner_live(
@@ -407,7 +420,7 @@ def test_borrowed_entry_reuses_proof_without_hash_and_keeps_owner_live(
         except OSError:
             pass
         owner.release()
-        _clear_generation_env()
+        _clear_generation_env(monkeypatch)
 
 
 def test_copied_or_separately_opened_generation_env_cannot_borrow(
@@ -441,7 +454,7 @@ def test_copied_or_separately_opened_generation_env_cannot_borrow(
                 token,
             )
             if name == "missing-fd":
-                os.environ.pop(installation.GENERATION_FD_ENV_KEY, None)
+                monkeypatch.delenv(installation.GENERATION_FD_ENV_KEY, raising=False)
             monkeypatch.setenv("SOL_SUPERVISOR_SPAWNED", "1")
             with pytest.raises(RuntimeError, match="generation lease is already held"):
                 installation.enter_speakers_analyze_generation(
@@ -454,7 +467,7 @@ def test_copied_or_separately_opened_generation_env_cannot_borrow(
                 _assert_fd_closed(fd)
     finally:
         owner.release()
-        _clear_generation_env()
+        _clear_generation_env(monkeypatch)
 
 
 def test_final_duplicate_rejection_closes_candidate_before_fresh_entry(
@@ -490,7 +503,7 @@ def test_final_duplicate_rejection_closes_candidate_before_fresh_entry(
         _assert_fd_closed(final_duplicate_fd)
     finally:
         fresh.release()
-        _clear_generation_env()
+        _clear_generation_env(monkeypatch)
 
 
 @pytest.mark.parametrize(
