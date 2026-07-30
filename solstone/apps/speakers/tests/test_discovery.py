@@ -938,7 +938,6 @@ def test_speaker_analyze_errors_translate_totally_to_discovery_errors(
 
 def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
     speakers_env,
-    monkeypatch,
     caplog,
 ):
     env = speakers_env()
@@ -953,32 +952,6 @@ def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
             embeddings = np.vstack([valid, invalid_inf, invalid_nonunit])
         env.create_segment(day, "090000_300", ["audio"], embeddings=embeddings)
 
-    original_helpers = discovery_module._routes_helpers()
-    original_normalize = original_helpers[2]
-
-    def patched_routes_helpers():
-        (
-            load_embeddings_file,
-            load_speaker_labels,
-            _normalize_embedding,
-            scan_segment_embeddings,
-            check_owner_contamination,
-        ) = original_helpers
-
-        def normalize_for_test(emb: np.ndarray) -> np.ndarray | None:
-            if np.isfinite(emb).all() and np.isclose(float(emb[0]), 2.0):
-                return emb.astype(np.float32)
-            return original_normalize(emb)
-
-        return (
-            load_embeddings_file,
-            load_speaker_labels,
-            normalize_for_test,
-            scan_segment_embeddings,
-            check_owner_contamination,
-        )
-
-    monkeypatch.setattr(discovery_module, "_routes_helpers", patched_routes_helpers)
     caplog.set_level("INFO")
 
     result = _discover_with_grouping_double()
@@ -1006,39 +979,11 @@ def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
 
 def test_discovery_admission_filter_all_rejected_reports_degraded_empty(
     speakers_env,
-    monkeypatch,
 ):
     env = speakers_env()
     _setup_owner_centroid(env.journal, [0.0, 1.0])
     invalid = np.tile(np.array([[2.0] + [0.0] * 255], dtype=np.float32), (5, 1))
     env.create_segment("20240101", "090000_300", ["audio"], embeddings=invalid)
-
-    original_helpers = discovery_module._routes_helpers()
-    original_normalize = original_helpers[2]
-
-    def patched_routes_helpers():
-        (
-            load_embeddings_file,
-            load_speaker_labels,
-            _normalize_embedding,
-            scan_segment_embeddings,
-            check_owner_contamination,
-        ) = original_helpers
-
-        def normalize_for_test(emb: np.ndarray) -> np.ndarray | None:
-            if np.isfinite(emb).all() and np.isclose(float(emb[0]), 2.0):
-                return emb.astype(np.float32)
-            return original_normalize(emb)
-
-        return (
-            load_embeddings_file,
-            load_speaker_labels,
-            normalize_for_test,
-            scan_segment_embeddings,
-            check_owner_contamination,
-        )
-
-    monkeypatch.setattr(discovery_module, "_routes_helpers", patched_routes_helpers)
 
     result = _discover_with_grouping_double()
 

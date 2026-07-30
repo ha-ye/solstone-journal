@@ -501,6 +501,7 @@ def discover_unknown_speakers(
     embedding_chunks: list[np.ndarray] = []
     provenance: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    dropped_count = 0
 
     for day in sorted(day_dirs().keys()):
         for segment in scan_segment_embeddings(day):
@@ -530,8 +531,20 @@ def discover_unknown_speakers(
                     if sid_int in attributed_sids:
                         continue
 
+                    raw_embedding = np.asarray(emb, dtype=np.float64)
+                    with np.errstate(invalid="ignore"):
+                        raw_norm = float(np.linalg.norm(raw_embedding))
+                    if (
+                        not np.isfinite(raw_embedding).all()
+                        or not np.isfinite(raw_norm)
+                        or abs(raw_norm - 1.0) > UNIT_NORM_TOLERANCE
+                    ):
+                        dropped_count += 1
+                        continue
+
                     normalized = normalize_embedding(emb)
                     if normalized is None:
+                        dropped_count += 1
                         continue
 
                     score = float(np.dot(normalized, owner_centroid))
@@ -549,27 +562,18 @@ def discover_unknown_speakers(
                         }
                     )
 
-    if not embedding_chunks:
-        _clear_discovery_cache()
-        return _discovery_scan_result([], [])
-
-    embeddings_matrix = np.vstack(embedding_chunks)
-    finite_mask = np.isfinite(embeddings_matrix).all(axis=1)
-    with np.errstate(invalid="ignore"):
-        norms = np.linalg.norm(embeddings_matrix.astype(np.float64), axis=1)
-    unit_mask = np.abs(norms - 1.0) <= UNIT_NORM_TOLERANCE
-    admission_mask = finite_mask & unit_mask
-    dropped_count = int(len(embeddings_matrix) - int(np.count_nonzero(admission_mask)))
     if dropped_count:
         logger.info(
             "speaker discovery admission filtered: dropped_invalid_embeddings=%d",
             dropped_count,
         )
         issues.append(invalid_embeddings_issue(dropped_count))
-        embeddings_matrix = embeddings_matrix[admission_mask]
-        provenance = [
-            row for row, keep in zip(provenance, admission_mask, strict=True) if keep
-        ]
+
+    if not embedding_chunks:
+        _clear_discovery_cache()
+        return _discovery_scan_result([], issues)
+
+    embeddings_matrix = np.vstack(embedding_chunks)
 
     if len(embeddings_matrix) > MAX_UNMATCHED_EMBEDDINGS:
         rng = np.random.default_rng(42)

@@ -1325,13 +1325,7 @@ fn discovery_error(error: ClientError, json_output: bool) -> CommandOutput {
         }
         let mut err = String::new();
         emit(&mut err, error.message());
-        if payload
-            .get("retryable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            emit(&mut err, "try again");
-        }
+        emit(&mut err, "try again");
         return CommandOutput {
             stdout: String::new(),
             stderr: err,
