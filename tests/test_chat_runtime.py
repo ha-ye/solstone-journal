@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -28,6 +30,7 @@ def _reset_chat_state(chat_module) -> None:
         chat_module._active_talents.clear()
         chat_module._reserved_use_ids.clear()
         chat_module._abandoned_raw_use_ids.clear()
+        chat_module._raw_use_liveness.clear()
         for timer in chat_module._watchdog_timers.values():
             timer.cancel()
         chat_module._watchdog_timers.clear()
@@ -1060,7 +1063,7 @@ def test_chat_generate_schema_violation_retries_once_then_chat_errors(
     )
     monkeypatch.setattr(
         "solstone.convey.chat._emit_error",
-        lambda use_id, reason: emitted_errors.append((use_id, reason)),
+        lambda use_id, reason, **_kwargs: emitted_errors.append((use_id, reason)),
     )
 
     with chat._state_lock:
@@ -1110,7 +1113,7 @@ def test_chat_generate_absorbs_prose_context_and_dispatches_talent(
     )
     monkeypatch.setattr(
         "solstone.convey.chat._emit_error",
-        lambda use_id, reason: emitted_errors.append((use_id, reason)),
+        lambda use_id, reason, **_kwargs: emitted_errors.append((use_id, reason)),
     )
 
     with chat._state_lock:
@@ -1471,8 +1474,10 @@ def test_watchdog_refreshed_by_progress_event(tmp_path, monkeypatch):
     _reset_chat_state(chat)
     timers = _install_fake_timers(monkeypatch)
 
+    emitted_cortex: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
     )
 
     with chat._state_lock:
@@ -1498,6 +1503,157 @@ def test_watchdog_refreshed_by_progress_event(tmp_path, monkeypatch):
     assert timers[-1].interval == chat._WATCHDOG_TIMEOUTS["chat"]
 
 
+def test_chat_liveness_accumulates_across_watchdog_refreshes(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+    )
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713627801000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    raw_use_id = start_info["raw_use_id"]
+    for _index in range(2):
+        chat._handle_callosum_message(
+            {
+                "tract": "cortex",
+                "event": "progress",
+                "use_id": raw_use_id,
+                "phase": "generate",
+            }
+        )
+
+    with chat._state_lock:
+        liveness = chat._raw_use_liveness[raw_use_id]
+        assert liveness.observed_progress_count == 2
+        assert liveness.last_event_type == "progress"
+
+    chat._handle_callosum_message(
+        {
+            "tract": "cortex",
+            "event": "start",
+            "use_id": raw_use_id,
+            "provider": "local",
+        }
+    )
+
+    with chat._state_lock:
+        liveness = chat._raw_use_liveness[raw_use_id]
+        assert liveness.observed_progress_count == 2
+        assert liveness.last_event_type == "start"
+
+    chat._handle_callosum_message(
+        {
+            "tract": "cortex",
+            "event": "progress",
+            "use_id": raw_use_id,
+            "phase": "generate",
+        }
+    )
+
+    with chat._state_lock:
+        liveness = chat._raw_use_liveness[raw_use_id]
+        assert liveness.observed_progress_count == 3
+        assert liveness.last_event_type == "progress"
+
+    assert len(timers) == 5
+    assert all(timer.cancelled for timer in timers[:-1])
+    assert timers[-1].cancelled is False
+
+
+def test_live_generate_progress_prevents_chat_watchdog_and_neutered_trips(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.chat as chat
+    from solstone.think import talents
+    from solstone.think.utils import now_ms
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    monkeypatch.setattr(chat, "_WATCHDOG_TIMEOUTS", {"chat": 0.08, "talent": 0.3})
+    monkeypatch.setattr(talents, "_GENERATE_PROGRESS_INTERVAL_S", 0.02)
+    monkeypatch.setattr(talents, "_GENERATE_PROGRESS_JOIN_TIMEOUT_S", 0.1)
+
+    emitted_errors: list[tuple[str, str, dict]] = []
+    emitted_cortex: list[tuple[str, dict]] = []
+    tripped = threading.Event()
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
+    )
+
+    def emit_error(use_id: str, reason: str, **kwargs) -> None:
+        emitted_errors.append((use_id, reason, kwargs))
+        tripped.set()
+
+    monkeypatch.setattr("solstone.convey.chat._emit_error", emit_error)
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
+
+    def activate(logical_use_id: str) -> str:
+        with chat._state_lock:
+            start_info = chat._activate_current_locked(
+                logical_use_id,
+                {"type": "owner_message", "message": "help"},
+                {"app": "sol", "path": "/app/sol", "facet": "work"},
+            )
+        return str(start_info["raw_use_id"])
+
+    def route_from_producer(raw_use_id: str, event: dict) -> None:
+        body = dict(event)
+        body.setdefault("ts", now_ms())
+        body.setdefault("use_id", raw_use_id)
+        event_type = body.pop("event")
+        chat._handle_callosum_message(
+            {
+                "tract": "cortex",
+                "event": event_type,
+                **body,
+            }
+        )
+
+    live_raw_use_id = activate("1713627810000")
+    heartbeat = talents._GenerateProgressHeartbeat(
+        lambda event: route_from_producer(live_raw_use_id, event),
+        talent_name="chat",
+        day=None,
+        schedule=None,
+    )
+    heartbeat.start()
+    try:
+        time.sleep(0.18)
+    finally:
+        heartbeat.stop_and_join()
+
+    assert not tripped.is_set()
+    assert emitted_errors == []
+    assert any(event == "progress" for event, _fields in emitted_cortex)
+
+    _reset_chat_state(chat)
+    emitted_errors.clear()
+    emitted_cortex.clear()
+    tripped.clear()
+
+    activate("1713627811000")
+    deadline = time.monotonic() + 0.5
+    while not tripped.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert tripped.is_set()
+    assert emitted_errors[-1][0:2] == ("1713627811000", "chat_timeout")
+    assert [event for event, _fields in emitted_cortex if event == "cancel"] == [
+        "cancel"
+    ]
+
+
 def test_arm_watchdog_uses_per_kind_timeout(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
@@ -1513,6 +1669,12 @@ def test_arm_watchdog_uses_per_kind_timeout(tmp_path, monkeypatch):
     assert timers[0].interval == 30
     assert timers[1].interval == 180
     assert timers[2].interval == 180
+
+
+def test_chat_watchdog_timeout_constant_remains_30_seconds():
+    import solstone.convey.chat as chat
+
+    assert chat._WATCHDOG_TIMEOUTS["chat"] == 30
 
 
 def test_proxy_progress_does_not_re_emit_request_event(tmp_path, monkeypatch):
@@ -1589,6 +1751,52 @@ def test_proxy_progress_still_emits_other_event_types(
     ]
 
 
+def test_progress_event_is_not_thinking_and_does_not_fill_thinking_buffer(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    _install_fake_timers(monkeypatch)
+
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted.append((event, fields)),
+    )
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713627840000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    assert "progress" not in {"thinking", "start"}
+    chat._handle_callosum_message(
+        {
+            "tract": "cortex",
+            "event": "progress",
+            "use_id": start_info["raw_use_id"],
+            "phase": "generate",
+        }
+    )
+
+    assert emitted == [
+        (
+            "progress",
+            {
+                "phase": "generate",
+                "use_id": "1713627840000",
+                "chat_proxy": True,
+            },
+        )
+    ]
+    with chat._state_lock:
+        assert chat._thinking_buffers == {}
+
+
 def test_watchdog_refresh_is_no_op_when_no_timer_registered(tmp_path, monkeypatch):
     import solstone.convey.chat as chat
 
@@ -1596,8 +1804,10 @@ def test_watchdog_refresh_is_no_op_when_no_timer_registered(tmp_path, monkeypatc
     _reset_chat_state(chat)
     timers = _install_fake_timers(monkeypatch)
 
+    emitted_cortex: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
     )
 
     with chat._state_lock:
@@ -1678,7 +1888,7 @@ def test_stalled_run_still_times_out_after_inactivity(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "solstone.convey.chat._emit_error",
-        lambda use_id, reason: emitted_errors.append((use_id, reason)),
+        lambda use_id, reason, **_kwargs: emitted_errors.append((use_id, reason)),
     )
     monkeypatch.setattr(
         "solstone.convey.chat._run_next_action",
@@ -1730,10 +1940,15 @@ def test_chat_watchdog_times_out_current_chat_generate(tmp_path, monkeypatch):
     timers = _install_fake_timers(monkeypatch)
 
     emitted_errors: list[tuple[str, str]] = []
+    emitted_cortex: list[tuple[str, dict]] = []
     run_actions: list[dict | None] = []
     monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
+    )
+    monkeypatch.setattr(
         "solstone.convey.chat._emit_error",
-        lambda use_id, reason: emitted_errors.append((use_id, reason)),
+        lambda use_id, reason, **_kwargs: emitted_errors.append((use_id, reason)),
     )
     monkeypatch.setattr(
         "solstone.convey.chat._run_next_action",
@@ -1758,6 +1973,15 @@ def test_chat_watchdog_times_out_current_chat_generate(tmp_path, monkeypatch):
         if event["kind"] == "chat_error"
     ]
     assert emitted_errors == [("1713628000000", "chat_timeout")]
+    assert emitted_cortex == [
+        (
+            "cancel",
+            {
+                "use_id": raw_use_id,
+                "reason_code": "chat_watchdog_cancelled",
+            },
+        )
+    ]
     assert run_actions == [None]
     assert errors[-1]["use_id"] == "1713628000000"
     assert errors[-1]["reason"] == "chat_timeout"
@@ -1765,6 +1989,100 @@ def test_chat_watchdog_times_out_current_chat_generate(tmp_path, monkeypatch):
         assert chat._current_chat_use_id is None
         assert chat._current_chat_state is None
         assert raw_use_id not in chat._watchdog_timers
+
+
+def test_chat_watchdog_cancel_emit_failure_does_not_escape(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    emitted_errors: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda use_id, reason, **kwargs: emitted_errors.append(
+            (use_id, reason, kwargs)
+        ),
+    )
+
+    def fail_cancel(event: str, **_fields) -> None:
+        if event == "cancel":
+            raise RuntimeError("callosum unavailable")
+
+    monkeypatch.setattr("solstone.convey.chat._emit_cortex_event", fail_cancel)
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
+
+    with chat._state_lock:
+        chat._activate_current_locked(
+            "1713628020000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    timers[-1].fire()
+
+    errors = [
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "chat_error"
+    ]
+    assert emitted_errors[-1][0:2] == ("1713628020000", "chat_timeout")
+    assert errors[-1]["reason"] == "chat_timeout"
+
+
+def test_chat_watchdog_timeout_detail_reports_liveness(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    emitted_errors: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda use_id, reason, **kwargs: emitted_errors.append(
+            (use_id, reason, kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713628030000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    raw_use_id = start_info["raw_use_id"]
+    for event_type in ("start", "progress", "progress"):
+        chat._handle_callosum_message(
+            {
+                "tract": "cortex",
+                "event": event_type,
+                "use_id": raw_use_id,
+                "phase": "generate",
+            }
+        )
+
+    timers[-1].fire()
+
+    errors = [
+        event
+        for event in read_chat_events(chat._today_day())
+        if event["kind"] == "chat_error"
+    ]
+    detail = errors[-1]["detail"]
+    assert detail == emitted_errors[-1][2]["detail"]
+    assert detail.startswith("silence ")
+    assert "; last event progress; " in detail
+    assert detail.endswith("liveness events 2")
+    assert chat._normalize_chat_error_detail(detail) == detail
+    for banned in ("capture", "watch", "record", "monitor", "track", "collect"):
+        assert banned not in detail
 
 
 def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(
@@ -1778,7 +2096,12 @@ def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(
 
     emitted_errors: list[tuple[str, str, dict]] = []
     emitted_finishes: list[tuple[str, str]] = []
+    emitted_cortex: list[tuple[str, dict]] = []
     run_actions: list[dict | None] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
+    )
     monkeypatch.setattr(
         "solstone.convey.chat._emit_error",
         lambda use_id, reason, **kwargs: emitted_errors.append(
@@ -1812,7 +2135,18 @@ def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(
 
     timers[-1].fire()
 
-    assert emitted_errors == [(logical_use_id, "chat_timeout", {})]
+    assert len(emitted_errors) == 1
+    assert emitted_errors[0][0:2] == (logical_use_id, "chat_timeout")
+    assert emitted_errors[0][2]["detail"].startswith("silence ")
+    assert emitted_cortex == [
+        (
+            "cancel",
+            {
+                "use_id": raw_use_id,
+                "reason_code": "chat_watchdog_cancelled",
+            },
+        )
+    ]
     assert run_actions and run_actions[-1]["logical_use_id"] == queued_use_id
     with chat._state_lock:
         assert chat._current_chat_use_id == queued_use_id
@@ -1845,6 +2179,134 @@ def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(
     assert all("unrouteable cortex event" not in msg for msg in warning_messages)
 
 
+def test_chat_watchdog_cancel_precedes_queued_turn_spawn(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    order: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error",
+        lambda use_id, reason, **_kwargs: order.append(("owner_error", use_id)),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: order.append((event, str(fields.get("use_id") or ""))),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._run_next_action",
+        lambda action: order.append(("run_next", str(action["logical_use_id"]))),
+    )
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713628060000",
+            {"type": "owner_message", "message": "first"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+        queued_use_id, queued, start_action = chat._activate_or_enqueue_trigger_locked(
+            {"type": "owner_message", "message": "second"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    assert queued is True
+    assert start_action is None
+    timers[-1].fire()
+
+    assert order == [
+        ("owner_error", "1713628060000"),
+        ("cancel", start_info["raw_use_id"]),
+        ("run_next", queued_use_id),
+    ]
+
+
+def test_cancel_loopback_after_timeout_without_queue_is_inert(tmp_path, monkeypatch):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    emitted_cortex: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713628070000",
+            {"type": "owner_message", "message": "help"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    raw_use_id = start_info["raw_use_id"]
+    timers[-1].fire()
+    events_before_loopback = read_chat_events(chat._today_day())
+    emitted_cortex.clear()
+
+    chat._handle_callosum_message(
+        {"tract": "cortex", "event": "cancel", "use_id": raw_use_id}
+    )
+
+    assert emitted_cortex == []
+    assert read_chat_events(chat._today_day()) == events_before_loopback
+
+
+def test_cancel_loopback_after_timeout_with_queue_is_superseded(
+    tmp_path, monkeypatch, caplog
+):
+    import solstone.convey.chat as chat
+
+    _setup_journal(tmp_path, monkeypatch)
+    _reset_chat_state(chat)
+    timers = _install_fake_timers(monkeypatch)
+
+    emitted_cortex: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
+    )
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("solstone.convey.chat._run_next_action", lambda action: None)
+
+    with chat._state_lock:
+        start_info = chat._activate_current_locked(
+            "1713628080000",
+            {"type": "owner_message", "message": "first"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+        chat._activate_or_enqueue_trigger_locked(
+            {"type": "owner_message", "message": "second"},
+            {"app": "sol", "path": "/app/sol", "facet": "work"},
+        )
+
+    raw_use_id = start_info["raw_use_id"]
+    timers[-1].fire()
+    events_before_loopback = read_chat_events(chat._today_day())
+    emitted_cortex.clear()
+    caplog.set_level(logging.DEBUG, logger="solstone.convey.chat")
+
+    chat._handle_callosum_message(
+        {"tract": "cortex", "event": "cancel", "use_id": raw_use_id}
+    )
+
+    assert emitted_cortex == []
+    assert read_chat_events(chat._today_day()) == events_before_loopback
+    assert (
+        f"superseded raw cortex event use_id={raw_use_id} "
+        "event=cancel reason=raw rotated"
+    ) in caplog.text
+
+
 def test_chat_watchdog_times_out_active_talent_and_queues_fold_when_chat_busy(
     tmp_path, monkeypatch
 ):
@@ -1854,10 +2316,14 @@ def test_chat_watchdog_times_out_active_talent_and_queues_fold_when_chat_busy(
     _reset_chat_state(chat)
     timers = _install_fake_timers(monkeypatch)
 
+    emitted_cortex: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        "solstone.convey.chat._emit_cortex_event", lambda *args, **kwargs: None
+        "solstone.convey.chat._emit_cortex_event",
+        lambda event, **fields: emitted_cortex.append((event, fields)),
     )
-    monkeypatch.setattr("solstone.convey.chat._emit_error", lambda *args: None)
+    monkeypatch.setattr(
+        "solstone.convey.chat._emit_error", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "solstone.convey.utils.spawn_agent", lambda *args, **kwargs: kwargs["use_id"]
     )
@@ -1905,6 +2371,7 @@ def test_chat_watchdog_times_out_active_talent_and_queues_fold_when_chat_busy(
         if event["kind"] == "talent_errored"
     ]
     assert chat_errors == []
+    assert [event for event, _fields in emitted_cortex if event == "cancel"] == []
     assert talent_errors[-1]["use_id"] == "1713629000001"
     assert talent_errors[-1]["reason"] == "talent took too long"
     with chat._state_lock:

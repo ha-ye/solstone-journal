@@ -84,6 +84,8 @@ _WATCHDOG_TIMEOUTS = {"chat": 30, "talent": 180}
 _DEFAULT_WATCHDOG_SECONDS = 180
 _RESERVED_USE_ID_CAP = 256
 _ABANDONED_RAW_USE_ID_CAP = 256
+_RAW_USE_LIVENESS_CAP = _ABANDONED_RAW_USE_ID_CAP
+_CORTEX_CANCEL_REASON_CODE = "chat_watchdog_cancelled"
 
 _state_lock = threading.Lock()
 _runtime_lock = threading.Lock()
@@ -95,6 +97,7 @@ _reserved_use_ids: dict[str, None] = {}
 _abandoned_raw_use_ids: dict[str, None] = {}
 _thinking_buffers: dict[str, list[str]] = {}
 _thinking_providers: dict[str, str] = {}
+_raw_use_liveness: dict[str, "RawUseLiveness"] = {}
 _watchdog_timers: dict[str, threading.Timer] = {}
 _last_use_id = 0
 _runtime: "ChatRuntimeState | None" = None
@@ -122,6 +125,13 @@ def _normalize_chat_error_detail(raw: str | None) -> str:
 class ChatRuntimeState:
     callosum: CallosumConnection
     apps: list[Any] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RawUseLiveness:
+    last_event_type: str
+    last_seen_ms: int
+    observed_progress_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -474,6 +484,7 @@ def stop_all_chat_runtime() -> None:
         _abandoned_raw_use_ids.clear()
         _thinking_buffers.clear()
         _thinking_providers.clear()
+        _raw_use_liveness.clear()
 
     with _runtime_lock:
         runtime = _runtime
@@ -517,7 +528,7 @@ def _handle_callosum_message(message: dict[str, Any]) -> None:
 
 def _proxy_progress(message: dict[str, Any]) -> None:
     # Cortex listens on tract=cortex, event=request without checking chat_proxy
-    # (cortex.py:199-203). Re-emitting request would spawn a duplicate talent.
+    # (cortex.py:868). Re-emitting request would spawn a duplicate talent.
     if message.get("event") == "request":
         return
 
@@ -532,10 +543,20 @@ def _proxy_progress(message: dict[str, Any]) -> None:
         raw_chat_use_id = str(_current_chat_state.get("raw_use_id") or "")
         if use_id == raw_chat_use_id:
             logical_use_id = _current_chat_use_id
-            _refresh_watchdog_locked(use_id, "chat", str(_current_chat_use_id))
+            _refresh_watchdog_locked(
+                use_id,
+                "chat",
+                str(_current_chat_use_id),
+                str(message.get("event") or "progress"),
+            )
         elif use_id in _active_talents:
             logical_use_id = str(_active_talents[use_id]["chat_use_id"])
-            _refresh_watchdog_locked(use_id, "talent", logical_use_id)
+            _refresh_watchdog_locked(
+                use_id,
+                "talent",
+                logical_use_id,
+                str(message.get("event") or "progress"),
+            )
         elif _is_superseded_raw_use_id_locked(use_id):
             logger.debug(
                 "superseded raw cortex event use_id=%s event=%s reason=%s",
@@ -1460,11 +1481,55 @@ def _abandon_raw_use_ids_locked(use_ids: set[str] | None) -> None:
         _abandoned_raw_use_ids.pop(next(iter(_abandoned_raw_use_ids)))
 
 
+def _evict_raw_use_liveness_locked(use_id: str | None) -> None:
+    if not use_id:
+        return
+    _raw_use_liveness.pop(str(use_id), None)
+
+
+def _record_raw_use_liveness_locked(use_id: str, event_type: str) -> None:
+    if not use_id:
+        return
+    previous = _raw_use_liveness.pop(use_id, None)
+    observed_progress_count = (
+        previous.observed_progress_count if previous is not None else 0
+    )
+    if event_type == "progress":
+        observed_progress_count += 1
+    _raw_use_liveness[use_id] = RawUseLiveness(
+        last_event_type=event_type,
+        last_seen_ms=now_ms(),
+        observed_progress_count=observed_progress_count,
+    )
+    while len(_raw_use_liveness) > _RAW_USE_LIVENESS_CAP:
+        _raw_use_liveness.pop(next(iter(_raw_use_liveness)))
+
+
+def _chat_timeout_detail(liveness: RawUseLiveness | None) -> str:
+    if liveness is None:
+        last_event_type = "none"
+        observed_progress_count = 0
+        elapsed_s = float(_WATCHDOG_TIMEOUTS["chat"])
+    else:
+        last_event_type = liveness.last_event_type
+        observed_progress_count = liveness.observed_progress_count
+        elapsed_s = max(0.0, (now_ms() - liveness.last_seen_ms) / 1000.0)
+    return _normalize_chat_error_detail(
+        "silence "
+        f"{elapsed_s:.1f}s; last event {last_event_type}; "
+        f"liveness events {observed_progress_count}"
+    )
+
+
 def _clear_current_locked() -> dict[str, Any] | None:
     global _current_chat_use_id, _current_chat_state
 
     if _current_chat_state is not None:
-        _abandon_raw_use_ids_locked(_current_chat_state.get("raw_use_ids_seen"))
+        raw_use_ids_seen = _current_chat_state.get("raw_use_ids_seen")
+        _abandon_raw_use_ids_locked(raw_use_ids_seen)
+        if raw_use_ids_seen:
+            for use_id in raw_use_ids_seen:
+                _evict_raw_use_liveness_locked(str(use_id))
     _current_chat_use_id = None
     _current_chat_state = None
     queued = _pop_next_trigger_locked()
@@ -1499,10 +1564,17 @@ def _cancel_watchdog_locked(use_id: str | None) -> None:
         timer.cancel()
 
 
-def _refresh_watchdog_locked(use_id: str, kind: str, logical_use_id: str) -> None:
+def _refresh_watchdog_locked(
+    use_id: str,
+    kind: str,
+    logical_use_id: str,
+    event_type: str = "progress",
+) -> None:
     if not use_id or use_id not in _watchdog_timers:
         return
     _arm_watchdog_locked(use_id, kind, logical_use_id)
+    if kind == "chat":
+        _record_raw_use_liveness_locked(use_id, event_type)
 
 
 def _set_current_raw_use_locked(logical_use_id: str, raw_use_id: str | None) -> None:
@@ -1564,6 +1636,7 @@ def _drain_thinking_locked(
 ) -> dict[str, Any] | None:
     parts = _thinking_buffers.pop(use_id, [])
     provider = _thinking_providers.pop(use_id, "")
+    _evict_raw_use_liveness_locked(use_id)
     if not parts:
         return None
     usage = terminal_message.get("usage")
@@ -1583,6 +1656,7 @@ def _evict_thinking_locked(use_id: str | None) -> None:
         return
     _thinking_buffers.pop(str(use_id), None)
     _thinking_providers.pop(str(use_id), None)
+    _evict_raw_use_liveness_locked(str(use_id))
 
 
 def _is_routeable_cortex_use_id_locked(use_id: str) -> bool:
@@ -1596,9 +1670,14 @@ def _is_routeable_cortex_use_id_locked(use_id: str) -> bool:
 def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
     next_actions: list[dict[str, Any] | None] = []
     should_emit = False
+    should_cancel = False
+    timeout_detail = ""
 
     with _state_lock:
+        liveness_snapshot = _raw_use_liveness.get(use_id)
         _watchdog_timers.pop(use_id, None)
+        if kind == "chat":
+            _evict_raw_use_liveness_locked(use_id)
 
         if kind == "chat":
             if _current_chat_use_id != logical_use_id or _current_chat_state is None:
@@ -1611,16 +1690,18 @@ def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
                 kind,
                 logical_use_id,
             )
+            timeout_detail = _chat_timeout_detail(liveness_snapshot)
             _evict_thinking_locked(use_id)
             append_chat_event(
                 "chat_error",
                 reason="chat_timeout",
                 use_id=logical_use_id,
                 provider="",
-                detail="",
+                detail=timeout_detail,
             )
             next_actions.append(_clear_current_locked())
             should_emit = True
+            should_cancel = True
         elif kind == "talent":
             talent_state = _active_talents.get(use_id)
             if (
@@ -1648,7 +1729,9 @@ def _on_watchdog_timeout(use_id: str, kind: str, logical_use_id: str) -> None:
             return
 
     if should_emit:
-        _emit_error(logical_use_id, "chat_timeout")
+        _emit_error(logical_use_id, "chat_timeout", detail=timeout_detail)
+    if should_cancel:
+        _emit_cortex_cancel(use_id)
     _run_next_actions(next_actions)
 
 
@@ -1984,6 +2067,17 @@ def _emit_error(
         detail=detail,
         chat_proxy=True,
     )
+
+
+def _emit_cortex_cancel(use_id: str) -> None:
+    try:
+        _emit_cortex_event(
+            "cancel",
+            use_id=use_id,
+            reason_code=_CORTEX_CANCEL_REASON_CODE,
+        )
+    except Exception:
+        logger.exception("failed to emit cortex cancel use_id=%s", use_id)
 
 
 def _emit_cortex_event(event: str, **fields: Any) -> None:
