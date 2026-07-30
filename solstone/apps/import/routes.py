@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from werkzeug.utils import secure_filename
 
 from solstone.apps.utils import log_app_action
-from solstone.convey import emit, state
+from solstone.convey import state
 from solstone.convey.icons import lucide_svg
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
@@ -22,6 +21,7 @@ from solstone.convey.reasons import (
     IMPORT_CONFLICT,
     IMPORT_METADATA_FAILED,
     IMPORT_NOT_FOUND,
+    IMPORT_QUEUE_UNREACHABLE,
     INGEST_NO_FILES,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
@@ -34,6 +34,7 @@ from solstone.convey.utils import (
     respond_collection,
     success_response,
 )
+from solstone.think.callosum import callosum_send
 from solstone.think.detect_created import detect_created, resolve_created_deterministic
 from solstone.think.importers.shared import find_manifest_by_hash, hash_source
 from solstone.think.importers.utils import (
@@ -45,6 +46,8 @@ from solstone.think.importers.utils import (
     list_import_timestamps,
     move_import,
     read_import_metadata,
+    read_import_status_info,
+    resolve_import_status,
     save_import_file,
     save_import_text,
     update_import_metadata_fields,
@@ -258,6 +261,7 @@ def _build_save_summary(
     replay: bool,
     duplicate: dict | None,
     recommended_action: str | None = None,
+    in_progress: bool = False,
 ) -> dict:
     """Build the versioned import staging summary response."""
     client = metadata.get("client")
@@ -306,6 +310,8 @@ def _build_save_summary(
             "entry_count": duplicate.get("entry_count"),
             "state": duplicate.get("state"),
         }
+    if in_progress:
+        summary["in_progress"] = True
     return summary
 
 
@@ -362,18 +368,16 @@ def _duplicate_or_replay_response(
     existing = find_staged_by_client_item_id(journal_root, client_item_id)
     if existing:
         if existing.get("source_hash") == source_hash:
-            replay_action = (
-                "do_not_start"
-                if existing.get("task_id") or existing.get("processing_completed")
-                else None
-            )
+            resolution = resolve_import_status(existing)
+            is_terminal = resolution.status in {"success", "running"}
             return jsonify(
                 _build_save_summary(
                     existing,
                     status="staged",
                     replay=True,
                     duplicate=None,
-                    recommended_action=replay_action,
+                    recommended_action="do_not_start" if is_terminal else "start",
+                    in_progress=resolution.status == "running",
                 )
             )
         return error_response(
@@ -412,6 +416,7 @@ def _duplicate_or_replay_response(
 
     staged_duplicate = find_staged_by_source_hash(journal_root, source_hash)
     if staged_duplicate:
+        resolution = resolve_import_status(staged_duplicate)
         duplicate = {
             "import_id": staged_duplicate.get("timestamp"),
             "imported_at": None,
@@ -426,12 +431,23 @@ def _duplicate_or_replay_response(
             duplicate=duplicate,
             existing_metadata=staged_duplicate,
         )
+        if resolution.status not in {"success", "running"}:
+            return jsonify(
+                _build_save_summary(
+                    metadata,
+                    status="staged",
+                    replay=False,
+                    duplicate=None,
+                    recommended_action="start",
+                )
+            )
         return jsonify(
             _build_save_summary(
                 metadata,
                 status="duplicate",
                 replay=False,
                 duplicate=duplicate,
+                in_progress=resolution.status == "running",
             )
         )
 
@@ -733,7 +749,9 @@ def import_update_metadata() -> Any:
             detail=f"Failed to read metadata: {exc}",
         )
 
-    if metadata.get("task_id") or metadata.get("processing_completed"):
+    status_info = read_import_status_info(journal_root, timestamp, metadata)
+    resolution = resolve_import_status(status_info)
+    if resolution.status in {"success", "running"}:
         return error_response(
             INVALID_OPERATION_FOR_STATE,
             detail="import already started or processed",
@@ -813,30 +831,10 @@ def import_list() -> Any:
         if display_name:
             import_data["source_display"] = display_name
 
-        # Calculate status based on processing state
-        # Default status
-        import_data["status"] = "pending"
-
-        task_id = import_data.get("task_id")
-        current_time = time.time()
-        import_age_seconds = current_time - import_data.get("imported_at", current_time)
-        import_timeout_seconds = 3600  # 1 hour
-
-        # Check for error state first (imported.json exists with error field)
-        if import_data.get("error"):
-            import_data["status"] = "failed"
-        # If we have processing results without error, it's successful
-        elif import_data.get("processed"):
-            import_data["status"] = "success"
-        # If task was started but no results yet, check if it timed out
-        elif task_id:
-            if import_age_seconds > import_timeout_seconds:
-                # Import is stuck/crashed - mark as failed
-                import_data["status"] = "failed"
-                import_data["error"] = "Import never completed"
-                import_data["error_stage"] = "timeout"
-            else:
-                import_data["status"] = "running"
+        resolution = resolve_import_status(import_data)
+        import_data["status"] = resolution.status
+        import_data["error"] = resolution.error
+        import_data["error_stage"] = resolution.error_stage
 
         imports.append(import_data)
 
@@ -1209,7 +1207,26 @@ def import_start() -> Any:
     if force:
         cmd.append("--force")
 
-    # Store task_id in metadata
+    # A successful send proves this request reached the bus socket. This closes
+    # a silent-drop class; the measured field defect reached supervisor and is
+    # fixed by queue_if_active_cmd_differs plus terminal-status gates.
+    ok = callosum_send(
+        "supervisor",
+        "request",
+        ref=task_id,
+        cmd=cmd,
+        queue_if_active_cmd_differs=True,
+    )
+    if not ok:
+        return error_response(
+            IMPORT_QUEUE_UNREACHABLE,
+            detail=(
+                "your journal's background service isn't running. "
+                "start it, then try again."
+            ),
+        )
+
+    # Store task_id and source_hint after the accepted send.
     try:
         update_import_metadata_fields(
             journal_root=journal_root,
@@ -1219,11 +1236,12 @@ def import_start() -> Any:
     except Exception as e:
         return error_response(
             IMPORT_METADATA_FAILED,
-            detail=f"Failed to update metadata: {str(e)}",
+            detail=(
+                f"Supervisor accepted task {task_id}, but metadata could not be "
+                f"updated: {str(e)}"
+            ),
+            extra={"task_id": task_id},
         )
-
-    # Emit task request to Callosum (non-blocking, drops if disconnected)
-    emit("supervisor", "request", ref=task_id, cmd=cmd)
 
     return jsonify({"status": "ok", "task_id": task_id})
 

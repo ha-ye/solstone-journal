@@ -73,6 +73,7 @@
               "import_conflict",
               "import_metadata_failed",
               "import_not_found",
+              "import_queue_unreachable",
               "ingest_contract_invalid",
               "ingest_no_files",
               "ingest_sidecar_conflict",
@@ -7031,6 +7032,9 @@
                         "null"
                       ]
                     },
+                    "in_progress": {
+                      "type": "boolean"
+                    },
                     "metadata": {
                       "additionalProperties": true,
                       "properties": {
@@ -7347,6 +7351,9 @@
                         "null"
                       ]
                     },
+                    "in_progress": {
+                      "type": "boolean"
+                    },
                     "metadata": {
                       "additionalProperties": true,
                       "properties": {
@@ -7643,6 +7650,19 @@
             "description": "Import metadata could not be read or updated.",
             "x-reason-codes": [
               "import_metadata_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "your journal's background service isn't running. start it, then try again.",
+            "x-reason-codes": [
+              "import_queue_unreachable"
             ]
           }
         },

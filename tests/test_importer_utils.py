@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think.importers.utils import (
+    IMPORT_TASK_TIMEOUT_SECONDS,
     _load_decision_highlights,
     build_import_info,
     calculate_duration_from_files,
@@ -18,7 +19,9 @@ from solstone.think.importers.utils import (
     load_import_segments,
     move_import,
     read_import_metadata,
+    read_import_status_info,
     read_imported_results,
+    resolve_import_status,
     save_import_file,
     save_import_segments,
     save_import_text,
@@ -294,6 +297,308 @@ def test_build_import_info(temp_journal):
     assert info["total_files_created"] == 3
     assert info["target_day"] == "20250101"
     assert info["duration_minutes"] == 10  # 19:00 to 19:10
+
+
+def test_resolve_import_status_all_states():
+    """Resolve every import state from merged metadata."""
+    now = 2_000.0
+    recent = now - 10.0
+    old = now - IMPORT_TASK_TIMEOUT_SECONDS - 1.0
+
+    assert (
+        resolve_import_status(
+            {
+                "imported_at": recent,
+                "processed": True,
+                "processing_completed": None,
+                "error": None,
+                "error_stage": None,
+            },
+            now=now,
+        ).status
+        == "success"
+    )
+    assert (
+        resolve_import_status(
+            {
+                "imported_at": recent,
+                "processed": False,
+                "processing_completed": "2026-01-01T10:00:00",
+                "error": None,
+                "error_stage": None,
+            },
+            now=now,
+        ).status
+        == "success"
+    )
+    failed = resolve_import_status(
+        {
+            "imported_at": recent,
+            "processed": True,
+            "error": "bad import",
+            "error_stage": "parse",
+        },
+        now=now,
+    )
+    assert failed.status == "failed"
+    assert failed.error == "bad import"
+    assert failed.error_stage == "parse"
+
+    timed_out = resolve_import_status(
+        {
+            "imported_at": old,
+            "processed": False,
+            "error": None,
+            "error_stage": None,
+            "task_id": "task-old",
+        },
+        now=now,
+    )
+    assert timed_out.status == "failed"
+    assert timed_out.error == "Import never completed"
+    assert timed_out.error_stage == "timeout"
+
+    assert (
+        resolve_import_status(
+            {
+                "imported_at": recent,
+                "processed": False,
+                "error": None,
+                "error_stage": None,
+                "task_id": "task-recent",
+            },
+            now=now,
+        ).status
+        == "running"
+    )
+    assert (
+        resolve_import_status(
+            {
+                "imported_at": recent,
+                "processed": False,
+                "error": None,
+                "error_stage": None,
+            },
+            now=now,
+        ).status
+        == "pending"
+    )
+
+
+def test_resolve_import_status_error_wins_over_processed():
+    error_payload = {"message": "failed after writing partial data"}
+    resolution = resolve_import_status(
+        {
+            "imported_at": 2_000.0,
+            "processed": True,
+            "error": error_payload,
+            "error_stage": "write",
+        },
+        now=2_100.0,
+    )
+
+    assert resolution.status == "failed"
+    assert resolution.error == error_payload
+    assert resolution.error_stage == "write"
+
+
+def test_resolve_import_status_raw_import_json_raises():
+    raw_import_json = {"task_id": "task-raw"}
+
+    with pytest.raises(ValueError, match="requires merged import info"):
+        resolve_import_status(raw_import_json, now=2_000.0)
+
+
+def test_import_list_projection_matches_inline_derivation(temp_journal):
+    """List-row status stays compatible with the previous inline derivation."""
+    now = 10_000.0
+    fixtures = {
+        "20250101_190000": {
+            "metadata": {
+                "original_filename": "success.m4a",
+                "file_size": 10,
+                "mime_type": "audio/mp4",
+                "upload_timestamp": 9_000_000,
+                "facet": "work",
+                "setting": "office",
+                "user_timestamp": "20250101_190000",
+                "imported_via": "web_dashboard",
+                "link_id": None,
+                "observer_handle": None,
+            },
+            "imported": {
+                "total_files_created": 2,
+                "target_day": "20250101",
+                "source_type": "audio",
+                "source_display": "audio",
+                "entries_written": 3,
+                "entities_seeded": 1,
+                "date_range": ["20250101", "20250101"],
+            },
+            "expected_status": "success",
+        },
+        "20250101_191000": {
+            "metadata": {
+                "original_filename": "failed.m4a",
+                "file_size": 11,
+                "mime_type": "audio/mp4",
+                "upload_timestamp": 9_010_000,
+                "facet": None,
+                "setting": None,
+                "user_timestamp": "20250101_191000",
+                "imported_via": "web_dashboard",
+                "link_id": None,
+                "observer_handle": None,
+            },
+            "imported": {
+                "total_files_created": 0,
+                "target_day": "20250101",
+                "error": "parse failed",
+                "error_stage": "parse",
+            },
+            "expected_status": "failed",
+        },
+        "20250101_192000": {
+            "metadata": {
+                "original_filename": "running.m4a",
+                "file_size": 12,
+                "mime_type": "audio/mp4",
+                "upload_timestamp": int((now - 100.0) * 1000),
+                "facet": None,
+                "setting": None,
+                "user_timestamp": "20250101_192000",
+                "imported_via": "web_dashboard",
+                "link_id": None,
+                "observer_handle": None,
+                "task_id": "task-recent",
+            },
+            "expected_status": "running",
+        },
+        "20250101_193000": {
+            "metadata": {
+                "original_filename": "timeout.m4a",
+                "file_size": 13,
+                "mime_type": "audio/mp4",
+                "upload_timestamp": int(
+                    (now - IMPORT_TASK_TIMEOUT_SECONDS - 10.0) * 1000
+                ),
+                "facet": None,
+                "setting": None,
+                "user_timestamp": "20250101_193000",
+                "imported_via": "web_dashboard",
+                "link_id": None,
+                "observer_handle": None,
+                "task_id": "task-old",
+            },
+            "expected_status": "failed",
+            "expected_error": "Import never completed",
+            "expected_error_stage": "timeout",
+        },
+        "20250101_194000": {
+            "metadata": {
+                "original_filename": "pending.m4a",
+                "file_size": 14,
+                "mime_type": "audio/mp4",
+                "upload_timestamp": 9_040_000,
+                "facet": None,
+                "setting": None,
+                "user_timestamp": "20250101_194000",
+                "imported_via": "web_dashboard",
+                "link_id": None,
+                "observer_handle": None,
+            },
+            "expected_status": "pending",
+        },
+    }
+
+    for timestamp, fixture in fixtures.items():
+        import_dir = temp_journal / "imports" / timestamp
+        import_dir.mkdir(parents=True)
+        (import_dir / "import.json").write_text(
+            json.dumps(fixture["metadata"]),
+            encoding="utf-8",
+        )
+        if fixture.get("imported"):
+            (import_dir / "imported.json").write_text(
+                json.dumps(fixture["imported"]),
+                encoding="utf-8",
+            )
+
+    projected = []
+    for timestamp in list_import_timestamps(temp_journal):
+        import_data = build_import_info(temp_journal, timestamp)
+        resolution = resolve_import_status(import_data, now=now)
+        import_data["status"] = resolution.status
+        import_data["error"] = resolution.error
+        import_data["error_stage"] = resolution.error_stage
+        projected.append(import_data)
+
+    by_timestamp = {item["timestamp"]: item for item in projected}
+    for timestamp, fixture in fixtures.items():
+        expected = {
+            "timestamp": timestamp,
+            "original_filename": fixture["metadata"]["original_filename"],
+            "file_size": fixture["metadata"]["file_size"],
+            "mime_type": fixture["metadata"]["mime_type"],
+            "facet": fixture["metadata"]["facet"],
+            "setting": fixture["metadata"]["setting"],
+            "user_timestamp": fixture["metadata"]["user_timestamp"],
+            "imported_via": fixture["metadata"]["imported_via"],
+            "link_id": fixture["metadata"]["link_id"],
+            "observer_handle": fixture["metadata"]["observer_handle"],
+            "task_id": fixture["metadata"].get("task_id"),
+            "processed": bool(fixture.get("imported")),
+            "error": fixture.get("expected_error")
+            if "expected_error" in fixture
+            else (fixture.get("imported") or {}).get("error"),
+            "error_stage": fixture.get("expected_error_stage")
+            if "expected_error_stage" in fixture
+            else (fixture.get("imported") or {}).get("error_stage"),
+            "status": fixture["expected_status"],
+        }
+        if fixture.get("imported"):
+            imported = fixture["imported"]
+            expected.update(
+                {
+                    "total_files_created": imported.get("total_files_created", 0),
+                    "target_day": imported.get("target_day"),
+                    "source_type": imported.get("source_type"),
+                    "source_display": imported.get("source_display"),
+                    "entries_written": imported.get("entries_written"),
+                    "entities_seeded": imported.get("entities_seeded"),
+                    "date_range": imported.get("date_range"),
+                }
+            )
+
+        actual = dict(by_timestamp[timestamp])
+        actual.pop("created_at")
+        actual.pop("imported_at")
+        assert actual == expected
+
+
+def test_read_import_status_info_merges_imported_json_only_for_matched_record(
+    temp_journal,
+):
+    timestamp = "20250101_195000"
+    import_dir = temp_journal / "imports" / timestamp
+    import_dir.mkdir(parents=True)
+    metadata = {
+        "client_item_id": "matched",
+        "upload_timestamp": 9_500_000,
+        "task_id": "task-merged",
+    }
+    (import_dir / "import.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (import_dir / "imported.json").write_text(
+        json.dumps({"processing_completed": "2026-01-01T19:50:00"}),
+        encoding="utf-8",
+    )
+
+    info = read_import_status_info(temp_journal, timestamp, metadata)
+
+    assert info["timestamp"] == timestamp
+    assert info["imported_at"] == 9_500.0
+    assert info["processed"] is True
+    assert info["processing_completed"] == "2026-01-01T19:50:00"
 
 
 def test_get_import_details(temp_journal):

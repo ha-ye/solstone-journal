@@ -103,6 +103,7 @@ _SAVE_RESPONSE_FIELDS = (
     FieldSpec("metadata", "object", required=True, raw_schema=_METADATA_SCHEMA),
     FieldSpec("diagnostics", "object", required=True, raw_schema=_DIAGNOSTICS_SCHEMA),
     FieldSpec("duplicate", "object", raw_schema=_DUPLICATE_SCHEMA),
+    FieldSpec("in_progress", "boolean"),
 )
 
 _SAVE_RESPONSE_EXAMPLE = {
@@ -388,6 +389,11 @@ OPERATIONS: list[OperationSpec] = [
                 500,
                 ("import_metadata_failed",),
                 "Import metadata could not be read or updated.",
+            ),
+            _json_error(
+                503,
+                ("import_queue_unreachable",),
+                "your journal's background service isn't running. start it, then try again.",
             ),
             _json_error(
                 403,

@@ -772,9 +772,9 @@ def test_document_upload_stages_emits_command_and_imports_new_shape_segment(
 
     monkeypatch.setattr(
         import_routes,
-        "emit",
-        lambda tract, event, **kwargs: emitted.append(
-            {"tract": tract, "event": event, **kwargs}
+        "callosum_send",
+        lambda tract, event, **kwargs: (
+            emitted.append({"tract": tract, "event": event, **kwargs}) or True
         ),
     )
     monkeypatch.setattr(cli_mod, "CallosumConnection", lambda **kwargs: MagicMock())
@@ -815,6 +815,7 @@ def test_document_upload_stages_emits_command_and_imports_new_shape_segment(
 
     assert start_response.status_code == 200
     assert emitted
+    assert emitted[-1]["queue_if_active_cmd_differs"] is True
     cmd = emitted[-1]["cmd"]
     assert cmd == [
         "journal",

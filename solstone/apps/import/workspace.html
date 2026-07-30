@@ -856,9 +856,12 @@ function isTerminalDuplicate(data) {
   return data?.status === 'duplicate' || data?.recommended_action === 'do_not_start';
 }
 
-function duplicateNoticeText(duplicate = {}) {
+function duplicateNoticeText(duplicate = {}, inProgress = false) {
   const state = duplicate.state || 'imported';
   const importId = duplicate.import_id || '';
+  if (inProgress) {
+    return `this import is already in progress${importId ? ` as ${importId}` : ''}.`;
+  }
   if (state === 'staged') {
     return `this file was already staged${importId ? ` as ${importId}` : ''}.`;
   }
@@ -881,7 +884,7 @@ function showDetect(res) {
     if (duplicateNotice) {
       duplicateNotice.innerHTML = `
         <div class="import-dedup-notice">
-          <span class="dedup-text">${escapeHtml(duplicateNoticeText(res.duplicate))}</span>
+          <span class="dedup-text">${escapeHtml(duplicateNoticeText(res.duplicate, Boolean(res.in_progress)))}</span>
         </div>
       `;
     }
@@ -1785,18 +1788,18 @@ async function uploadGuidedSourceFile(source) {
   currentGuidedSaved = data;
 
   if (isTerminalDuplicate(data)) {
-    showDedupNotice(data.duplicate);
+    showDedupNotice(data.duplicate, Boolean(data.in_progress));
   }
 
   return data;
 }
 
-function showDedupNotice(duplicate) {
+function showDedupNotice(duplicate, inProgress = false) {
   const container = document.getElementById('guidedDedupNotice');
   if (!container) return;
   container.innerHTML = `
     <div class="import-dedup-notice">
-      <span class="dedup-text">${escapeHtml(duplicateNoticeText(duplicate))}</span>
+      <span class="dedup-text">${escapeHtml(duplicateNoticeText(duplicate, inProgress))}</span>
     </div>
   `;
 }
@@ -1834,7 +1837,7 @@ async function saveGuidedPath(source) {
 
   currentGuidedSaved = data;
   if (isTerminalDuplicate(data)) {
-    showDedupNotice(data.duplicate);
+    showDedupNotice(data.duplicate, Boolean(data.in_progress));
   }
   return data;
 }
@@ -1856,7 +1859,7 @@ async function startGuidedImport(source) {
       saved = currentGuidedSaved || await uploadGuidedSourceFile(source);
     }
     if (isTerminalDuplicate(saved)) {
-      showDedupNotice(saved.duplicate);
+      showDedupNotice(saved.duplicate, Boolean(saved.in_progress));
       return;
     }
     const path = saved.path;

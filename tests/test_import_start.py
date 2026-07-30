@@ -17,7 +17,9 @@ import solstone.think.utils as think_utils
 from solstone.convey.reasons import (
     IMPORT_CLIENT_ID_CONFLICT,
     IMPORT_CONFLICT,
+    IMPORT_METADATA_FAILED,
     IMPORT_NOT_FOUND,
+    IMPORT_QUEUE_UNREACHABLE,
     INVALID_OPERATION_FOR_STATE,
     MISSING_REQUIRED_FIELD,
 )
@@ -28,6 +30,9 @@ from solstone.think.importers.utils import (
 )
 
 import_routes = __import__("solstone.apps.import.routes", fromlist=["routes"])
+import_contract = __import__("solstone.apps.import.contract", fromlist=["contract"])
+_ACTION_SCHEMA = import_contract._ACTION_SCHEMA
+_SAVE_RESPONSE_FIELDS = import_contract._SAVE_RESPONSE_FIELDS
 
 
 @pytest.fixture
@@ -95,6 +100,26 @@ def _save_upload(
         "/app/import/api/save",
         data=data,
         content_type="multipart/form-data",
+    )
+
+
+def _save_path(client, *, client_item_id: str, path: Path):
+    return client.post(
+        "/app/import/api/save-path",
+        json={"client_item_id": client_item_id, "path": str(path)},
+    )
+
+
+def _write_imported_results(
+    journal_root: Path,
+    timestamp: str,
+    results: dict,
+) -> None:
+    import_dir = journal_root / "imports" / timestamp
+    import_dir.mkdir(parents=True, exist_ok=True)
+    (import_dir / "imported.json").write_text(
+        json.dumps(results),
+        encoding="utf-8",
     )
 
 
@@ -185,6 +210,61 @@ def test_import_save_audio_upload_stages_versioned_summary(client, journal_env):
     assert metadata["client"] == {"device": "ios"}
 
 
+def test_save_response_contract_keeps_action_enum_and_optional_in_progress():
+    fields = {field.name: field for field in _SAVE_RESPONSE_FIELDS}
+
+    assert set(_ACTION_SCHEMA["enum"]) == {"start", "do_not_start"}
+    assert fields["in_progress"].type == "boolean"
+    assert fields["in_progress"].required is False
+
+
+def test_save_recommended_action_values_match_contract(client, journal_env):
+    allowed_actions = set(_ACTION_SCHEMA["enum"])
+    content = b"contract action"
+    fresh = _save_upload(
+        client,
+        client_item_id="contract-fresh",
+        content=content,
+    ).get_json()
+    _write_manifest(
+        journal_env,
+        import_id="20260101_120001",
+        source_hash=_sha(b"contract-imported"),
+    )
+    imported_duplicate = _save_upload(
+        client,
+        client_item_id="contract-imported",
+        content=b"contract-imported",
+    ).get_json()
+    _write_staged_import(
+        journal_env,
+        "20260101_120002",
+        {
+            "original_filename": "contract-pending.m4a",
+            "client_item_id": "contract-pending-other",
+            "source_hash": _sha(b"contract-pending"),
+        },
+    )
+    pending_staged = _save_upload(
+        client,
+        client_item_id="contract-pending-fresh",
+        content=b"contract-pending",
+    ).get_json()
+    update_import_metadata_fields(
+        journal_root=journal_env,
+        timestamp=fresh["timestamp"],
+        updates={"task_id": "task-running"},
+    )
+    running_replay = _save_upload(
+        client,
+        client_item_id="contract-fresh",
+        content=content,
+    ).get_json()
+
+    for body in (fresh, imported_duplicate, pending_staged, running_replay):
+        assert body["recommended_action"] in allowed_actions
+
+
 def test_import_save_missing_client_item_id_returns_missing_required(client):
     response = client.post(
         "/app/import/api/save",
@@ -249,6 +329,7 @@ def test_import_save_replay_started_item_does_not_recommend_start(client, journa
     assert body["status"] == "staged"
     assert body["replay"] is True
     assert body["recommended_action"] == "do_not_start"
+    assert body["in_progress"] is True
     assert body["path"] == first.get_json()["path"]
     assert _import_dirs(journal_env) == before_dirs
 
@@ -293,7 +374,9 @@ def test_import_save_duplicate_imported_content_is_terminal(client, journal_env)
     assert not any((path / "import.json").exists() for path in before_dirs)
 
 
-def test_import_save_duplicate_staged_content_is_terminal(client, journal_env):
+def test_import_save_pending_source_hash_match_offers_existing_import(
+    client, journal_env
+):
     content = b"already staged"
     _write_staged_import(
         journal_env,
@@ -308,22 +391,207 @@ def test_import_save_duplicate_staged_content_is_terminal(client, journal_env):
 
     response = _save_upload(
         client,
-        client_item_id="ios-staged-dup",
+        client_item_id="ios-staged-fresh-client",
+        content=content,
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "staged"
+    assert body["client_item_id"] == "ios-staged-fresh-client"
+    assert body["timestamp"] == "20260101_121500"
+    assert body["recommended_action"] == "start"
+    assert body["replay"] is False
+    assert "duplicate" not in body
+    assert _import_dirs(journal_env) == before_dirs
+
+
+def test_import_save_path_pending_source_hash_match_offers_existing_import(
+    client, journal_env
+):
+    content = b"already staged path"
+    local_path = journal_env / "existing-source.m4a"
+    local_path.write_bytes(content)
+    _write_staged_import(
+        journal_env,
+        "20260101_121501",
+        {
+            "original_filename": "existing-source.m4a",
+            "client_item_id": "other-client",
+            "file_path": str(local_path),
+            "source_hash": _sha(content),
+        },
+    )
+    before_dirs = _import_dirs(journal_env)
+
+    response = _save_path(
+        client,
+        client_item_id="ios-staged-path-fresh-client",
+        path=local_path,
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "staged"
+    assert body["client_item_id"] == "ios-staged-path-fresh-client"
+    assert body["timestamp"] == "20260101_121501"
+    assert body["recommended_action"] == "start"
+    assert body["replay"] is False
+    assert "duplicate" not in body
+    assert _import_dirs(journal_env) == before_dirs
+
+
+@pytest.mark.parametrize(
+    ("imported_results", "expected_action", "expected_in_progress"),
+    [
+        ({"error": "parse failed", "error_stage": "parse"}, "start", False),
+        ({"total_files_created": 1}, "do_not_start", False),
+        (None, "do_not_start", True),
+    ],
+)
+def test_duplicate_or_replay_response_replay_uses_resolved_terminal_status(
+    client,
+    journal_env,
+    imported_results,
+    expected_action,
+    expected_in_progress,
+):
+    content = f"replay {expected_action} {expected_in_progress}".encode()
+    first = _save_upload(
+        client,
+        client_item_id=f"ios-replay-{expected_action}-{expected_in_progress}",
+        content=content,
+    )
+    timestamp = first.get_json()["timestamp"]
+    if imported_results is not None:
+        _write_imported_results(journal_env, timestamp, imported_results)
+    else:
+        update_import_metadata_fields(
+            journal_root=journal_env,
+            timestamp=timestamp,
+            updates={"task_id": "task-running"},
+        )
+
+    response = _save_upload(
+        client,
+        client_item_id=f"ios-replay-{expected_action}-{expected_in_progress}",
+        content=content,
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "staged"
+    assert body["replay"] is True
+    assert body["recommended_action"] == expected_action
+    if expected_in_progress:
+        assert body["in_progress"] is True
+    else:
+        assert "in_progress" not in body
+
+
+def test_import_save_failed_source_hash_match_offers_start(client, journal_env):
+    content = b"failed staged"
+    _write_staged_import(
+        journal_env,
+        "20260101_121502",
+        {
+            "original_filename": "failed.m4a",
+            "client_item_id": "failed-other-client",
+            "source_hash": _sha(content),
+        },
+    )
+    _write_imported_results(
+        journal_env,
+        "20260101_121502",
+        {"error": "parse failed", "error_stage": "parse"},
+    )
+
+    response = _save_upload(
+        client,
+        client_item_id="failed-fresh-client",
+        content=content,
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "staged"
+    assert body["recommended_action"] == "start"
+    assert body["timestamp"] == "20260101_121502"
+    assert body["replay"] is False
+    assert "duplicate" not in body
+
+
+def test_import_save_path_failed_source_hash_match_offers_start(client, journal_env):
+    content = b"failed staged path"
+    local_path = journal_env / "failed-source.m4a"
+    local_path.write_bytes(content)
+    _write_staged_import(
+        journal_env,
+        "20260101_121503",
+        {
+            "original_filename": "failed-source.m4a",
+            "client_item_id": "failed-path-other-client",
+            "file_path": str(local_path),
+            "source_hash": _sha(content),
+        },
+    )
+    _write_imported_results(
+        journal_env,
+        "20260101_121503",
+        {"error": "parse failed", "error_stage": "parse"},
+    )
+
+    response = _save_path(
+        client,
+        client_item_id="failed-path-fresh-client",
+        path=local_path,
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "staged"
+    assert body["recommended_action"] == "start"
+    assert body["timestamp"] == "20260101_121503"
+    assert body["replay"] is False
+    assert "duplicate" not in body
+
+
+def test_import_save_failed_staged_hash_with_manifest_stays_terminal(
+    client, journal_env
+):
+    content = b"failed but manifest exists"
+    source_hash = _sha(content)
+    _write_staged_import(
+        journal_env,
+        "20260101_121504",
+        {
+            "original_filename": "failed-manifest.m4a",
+            "client_item_id": "failed-manifest-other-client",
+            "source_hash": source_hash,
+        },
+    )
+    _write_imported_results(
+        journal_env,
+        "20260101_121504",
+        {"error": "parse failed", "error_stage": "parse"},
+    )
+    _write_manifest(
+        journal_env,
+        import_id="20260101_121505",
+        source_hash=source_hash,
+    )
+
+    response = _save_upload(
+        client,
+        client_item_id="failed-manifest-fresh-client",
         content=content,
     )
 
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "duplicate"
-    assert body["client_item_id"] == "ios-staged-dup"
     assert body["recommended_action"] == "do_not_start"
-    assert body["duplicate"] == {
-        "import_id": "20260101_121500",
-        "imported_at": None,
-        "entry_count": None,
-        "state": "staged",
-    }
-    assert _import_dirs(journal_env) == before_dirs
+    assert body["duplicate"]["state"] == "imported"
 
 
 def test_import_meta_updates_facet_and_setting(client, journal_env):
@@ -378,6 +646,76 @@ def test_import_meta_missing_item_returns_import_not_found(client, journal_env):
     assert response.get_json()["reason_code"] == IMPORT_NOT_FOUND.code
 
 
+def test_import_meta_failed_item_allows_update(client, journal_env):
+    media_path = _write_staged_import(
+        journal_env,
+        "20260101_130001",
+        {
+            "original_filename": "failed-meta.m4a",
+            "client_item_id": "failed-meta-client",
+        },
+    )
+    _write_imported_results(
+        journal_env,
+        "20260101_130001",
+        {"error": "parse failed", "error_stage": "parse"},
+    )
+
+    response = client.post(
+        "/app/import/api/meta",
+        json={"path": str(media_path), "facet": "personal"},
+    )
+
+    assert response.status_code == 200
+    metadata = read_import_metadata(journal_env, "20260101_130001")
+    assert metadata["facet"] == "personal"
+
+
+def test_import_meta_success_item_returns_invalid_operation(client, journal_env):
+    media_path = _write_staged_import(
+        journal_env,
+        "20260101_130003",
+        {
+            "original_filename": "success-meta.m4a",
+            "client_item_id": "success-meta-client",
+        },
+    )
+    _write_imported_results(
+        journal_env,
+        "20260101_130003",
+        {"total_files_created": 1},
+    )
+
+    response = client.post(
+        "/app/import/api/meta",
+        json={"path": str(media_path), "facet": "work"},
+    )
+
+    assert response.status_code == INVALID_OPERATION_FOR_STATE.status
+    assert response.get_json()["reason_code"] == INVALID_OPERATION_FOR_STATE.code
+
+
+def test_import_meta_running_item_returns_invalid_operation(client, journal_env):
+    media_path = _write_staged_import(
+        journal_env,
+        "20260101_130004",
+        {
+            "original_filename": "running-meta.m4a",
+            "client_item_id": "running-meta-client",
+            "task_id": "task-running",
+            "upload_timestamp": import_routes.now_ms(),
+        },
+    )
+
+    response = client.post(
+        "/app/import/api/meta",
+        json={"path": str(media_path), "facet": "work"},
+    )
+
+    assert response.status_code == INVALID_OPERATION_FOR_STATE.status
+    assert response.get_json()["reason_code"] == INVALID_OPERATION_FOR_STATE.code
+
+
 def test_import_meta_started_item_returns_invalid_operation(client, journal_env):
     media_path = _write_staged_import(
         journal_env,
@@ -404,9 +742,9 @@ def test_import_start_moves_dir_uses_saved_metadata_and_omits_generic_source(
     emitted: list[dict[str, object]] = []
     monkeypatch.setattr(
         import_routes,
-        "emit",
-        lambda tract, event, **payload: emitted.append(
-            {"tract": tract, "event": event, **payload}
+        "callosum_send",
+        lambda tract, event, **payload: (
+            emitted.append({"tract": tract, "event": event, **payload}) or True
         ),
     )
     old_ts = "20260101_120000"
@@ -456,17 +794,19 @@ def test_import_start_moves_dir_uses_saved_metadata_and_omits_generic_source(
                 "office",
                 "--force",
             ],
+            "queue_if_active_cmd_differs": True,
         }
     ]
+    assert metadata["task_id"] == response.get_json()["task_id"]
 
 
 def test_import_start_forwards_only_saved_source_hint(client, journal_env, monkeypatch):
     emitted: list[dict[str, object]] = []
     monkeypatch.setattr(
         import_routes,
-        "emit",
-        lambda tract, event, **payload: emitted.append(
-            {"tract": tract, "event": event, **payload}
+        "callosum_send",
+        lambda tract, event, **payload: (
+            emitted.append({"tract": tract, "event": event, **payload}) or True
         ),
     )
     ts = "20260101_122000"
@@ -494,6 +834,11 @@ def test_import_start_forwards_only_saved_source_hint(client, journal_env, monke
         "--source",
         "obsidian",
     ]
+    assert emitted[0]["queue_if_active_cmd_differs"] is True
+    assert (
+        read_import_metadata(journal_env, ts)["task_id"]
+        == response.get_json()["task_id"]
+    )
 
 
 def test_import_start_refuses_terminal_duplicate_even_with_force(
@@ -502,9 +847,9 @@ def test_import_start_refuses_terminal_duplicate_even_with_force(
     emitted: list[dict[str, object]] = []
     monkeypatch.setattr(
         import_routes,
-        "emit",
-        lambda tract, event, **payload: emitted.append(
-            {"tract": tract, "event": event, **payload}
+        "callosum_send",
+        lambda tract, event, **payload: (
+            emitted.append({"tract": tract, "event": event, **payload}) or True
         ),
     )
     content = b"terminal"
@@ -533,6 +878,98 @@ def test_import_start_refuses_terminal_duplicate_even_with_force(
     assert response.status_code == INVALID_OPERATION_FOR_STATE.status
     assert response.get_json()["reason_code"] == INVALID_OPERATION_FOR_STATE.code
     assert emitted == []
+
+
+def test_import_start_send_failure_returns_non_2xx_without_task_id(
+    client, journal_env, monkeypatch
+):
+    """Covers a silent-drop send failure mode, not the observed field defect."""
+    monkeypatch.setattr(import_routes, "callosum_send", lambda *args, **kwargs: False)
+    ts = "20260101_123100"
+    media_path = _write_staged_import(
+        journal_env,
+        ts,
+        {
+            "original_filename": "send-failed.m4a",
+            "client_item_id": "send-failed-client",
+        },
+    )
+
+    response = client.post(
+        "/app/import/api/start",
+        json={"path": str(media_path), "timestamp": ts},
+    )
+
+    assert response.status_code == IMPORT_QUEUE_UNREACHABLE.status
+    body = response.get_json()
+    assert body["reason_code"] == IMPORT_QUEUE_UNREACHABLE.code
+    assert (
+        body["detail"]
+        == "your journal's background service isn't running. start it, then try again."
+    )
+    assert "task_id" not in read_import_metadata(journal_env, ts)
+
+
+def test_import_start_send_none_is_failure(client, journal_env, monkeypatch):
+    monkeypatch.setattr(import_routes, "callosum_send", lambda *args, **kwargs: None)
+    ts = "20260101_123101"
+    media_path = _write_staged_import(
+        journal_env,
+        ts,
+        {
+            "original_filename": "send-none.m4a",
+            "client_item_id": "send-none-client",
+        },
+    )
+
+    response = client.post(
+        "/app/import/api/start",
+        json={"path": str(media_path), "timestamp": ts},
+    )
+
+    assert response.status_code == IMPORT_QUEUE_UNREACHABLE.status
+    assert response.get_json()["reason_code"] == IMPORT_QUEUE_UNREACHABLE.code
+    assert "task_id" not in read_import_metadata(journal_env, ts)
+
+
+def test_import_start_persist_failure_after_send_names_running_task(
+    client, journal_env, monkeypatch
+):
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        import_routes,
+        "callosum_send",
+        lambda tract, event, **payload: (
+            emitted.append({"tract": tract, "event": event, **payload}) or True
+        ),
+    )
+
+    def _fail_metadata_update(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        import_routes, "update_import_metadata_fields", _fail_metadata_update
+    )
+    ts = "20260101_123102"
+    media_path = _write_staged_import(
+        journal_env,
+        ts,
+        {
+            "original_filename": "persist-failed.m4a",
+            "client_item_id": "persist-failed-client",
+        },
+    )
+
+    response = client.post(
+        "/app/import/api/start",
+        json={"path": str(media_path), "timestamp": ts},
+    )
+
+    assert response.status_code == IMPORT_METADATA_FAILED.status
+    body = response.get_json()
+    assert body["reason_code"] == IMPORT_METADATA_FAILED.code
+    assert body["task_id"] == emitted[0]["ref"]
+    assert body["task_id"] in body["detail"]
 
 
 def test_import_start_missing_source_returns_import_not_found(client, journal_env):

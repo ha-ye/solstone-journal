@@ -73,6 +73,7 @@
               "import_conflict",
               "import_metadata_failed",
               "import_not_found",
+              "import_queue_unreachable",
               "ingest_contract_invalid",
               "ingest_no_files",
               "ingest_sidecar_conflict",

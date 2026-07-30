@@ -180,7 +180,7 @@ EXPECTED_BUNDLE_PAYLOAD_SHA256 = {
         "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8"
     ),
     observer_bundle.PROJECTION_REL: (
-        "2f6fc767e1f27323eaea98657bb7d0365d224b072b34914a843749f6ff397dbc"
+        "83d5b3a8ef1231f485f0545b07dcf0453c927dc3674653c1af6ddb0987041414"
     ),
     observer_bundle.VECTORS_REL: (
         "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec"

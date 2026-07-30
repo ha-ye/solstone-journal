@@ -347,6 +347,11 @@ IMPORT_METADATA_FAILED = Reason(
     "I couldn't update that import metadata.",
     500,
 )
+IMPORT_QUEUE_UNREACHABLE = Reason(
+    "import_queue_unreachable",
+    "your journal's background service isn't running. start it, then try again.",
+    503,
+)
 JOURNAL_SOURCE_PROBLEM = Reason(
     "journal_source_problem",
     "I couldn't use that journal source.",

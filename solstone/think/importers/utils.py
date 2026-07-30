@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from solstone.think.importers.shared import (
     PRIVATE_IMPORT_FILE_MODE,
@@ -19,6 +23,16 @@ from solstone.think.importers.shared import (
 )
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import resolve_journal_path
+
+IMPORT_TASK_TIMEOUT_SECONDS = 3600
+
+
+@dataclass(frozen=True)
+class ImportStatusResolution:
+    status: str
+    error: Any | None
+    error_stage: Any | None
+
 
 # ============================================================================
 # File Operations
@@ -184,9 +198,7 @@ def find_staged_by_client_item_id(
         if not isinstance(metadata, dict):
             continue
         if metadata.get("client_item_id") == client_item_id:
-            result = dict(metadata)
-            result["timestamp"] = timestamp
-            return result
+            return read_import_status_info(journal_root, timestamp, metadata)
 
     return None
 
@@ -208,9 +220,7 @@ def find_staged_by_source_hash(
         if not isinstance(metadata, dict):
             continue
         if metadata.get("source_hash") == source_hash:
-            result = dict(metadata)
-            result["timestamp"] = timestamp
-            return result
+            return read_import_status_info(journal_root, timestamp, metadata)
 
     return None
 
@@ -300,6 +310,77 @@ def read_imported_results(
 # ============================================================================
 # Scanning and Status Logic
 # ============================================================================
+
+
+def read_import_status_info(
+    journal_root: Path,
+    timestamp: str,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict:
+    """Return import.json data plus the status fields supplied by imported.json."""
+    import_dir = journal_root / "imports" / timestamp
+    import_data = dict(
+        metadata
+        if metadata is not None
+        else read_import_metadata(journal_root=journal_root, timestamp=timestamp)
+    )
+    import_data["timestamp"] = timestamp
+    import_data["imported_at"] = import_dir.stat().st_ctime
+    if "upload_timestamp" in import_data:
+        import_data["imported_at"] = import_data["upload_timestamp"] / 1000
+
+    import_data["processed"] = False
+    import_data["error"] = None
+    import_data["error_stage"] = None
+    imported_meta = read_imported_results(journal_root, timestamp)
+    if imported_meta is not None:
+        import_data["processed"] = True
+        import_data["error"] = imported_meta.get("error")
+        import_data["error_stage"] = imported_meta.get("error_stage")
+        if "processing_completed" in imported_meta:
+            import_data["processing_completed"] = imported_meta.get(
+                "processing_completed"
+            )
+
+    return import_data
+
+
+def resolve_import_status(
+    import_data: Mapping[str, Any],
+    *,
+    now: float | None = None,
+    timeout_seconds: int = IMPORT_TASK_TIMEOUT_SECONDS,
+) -> ImportStatusResolution:
+    """Resolve the user-facing import status from merged import metadata."""
+    required = ("imported_at", "processed", "error", "error_stage")
+    missing = [key for key in required if key not in import_data]
+    if missing:
+        raise ValueError(
+            "resolve_import_status requires merged import info with keys: "
+            + ", ".join(missing)
+        )
+
+    error = import_data["error"]
+    error_stage = import_data["error_stage"]
+    if error:
+        return ImportStatusResolution("failed", error, error_stage)
+
+    if import_data["processed"] or import_data.get("processing_completed"):
+        return ImportStatusResolution("success", error, error_stage)
+
+    task_id = import_data.get("task_id")
+    if task_id:
+        current_time = time.time() if now is None else now
+        import_age_seconds = current_time - float(import_data["imported_at"])
+        if import_age_seconds > timeout_seconds:
+            return ImportStatusResolution(
+                "failed",
+                "Import never completed",
+                "timeout",
+            )
+        return ImportStatusResolution("running", error, error_stage)
+
+    return ImportStatusResolution("pending", error, error_stage)
 
 
 def list_import_timestamps(
