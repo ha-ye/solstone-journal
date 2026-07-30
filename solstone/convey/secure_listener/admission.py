@@ -228,7 +228,8 @@ def _resolve_float(
     warning_default: str,
 ) -> float:
     raw = link_cfg.get(key, default)
-    if isinstance(raw, bool):
+
+    def warn_default() -> float:
         log.warning(
             "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
             key,
@@ -236,26 +237,17 @@ def _resolve_float(
             warning_default,
         )
         return default
+
+    if isinstance(raw, bool):
+        return warn_default()
     if raw == 0:
         log.info("link.%s is 0; secure listener queue timeout disabled", key)
         return 0.0
     if not isinstance(raw, (int, float)):
-        log.warning(
-            "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
-            key,
-            raw,
-            warning_default,
-        )
-        return default
+        return warn_default()
     value = float(raw)
     if not (valid_min <= value <= valid_max):
-        log.warning(
-            "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
-            key,
-            raw,
-            warning_default,
-        )
-        return default
+        return warn_default()
     return value
 
 

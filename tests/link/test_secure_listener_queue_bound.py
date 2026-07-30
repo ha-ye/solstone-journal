@@ -553,6 +553,7 @@ async def test_timeout_reclaims_raced_permit_after_delivery_intercept(
         )
         assert status == 503
         assert invoked["count"] == 0
+        assert admission.snapshot()["active"]["total"] == 0
 
         real_deliver(captured["waiter"], captured["permit"])
         snapshot = await _wait_for_snapshot(

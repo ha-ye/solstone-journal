@@ -454,6 +454,8 @@ async def dispatch_stream(
                 ),
             )
         except ConnectionError:
+            # The peer has already reset the stream; there is no writer left for
+            # the refusal, but drain bookkeeping and the 503 result still apply.
             pass
         stream_writer.begin_drain(RESET_CTX_BODY_DISCARD_CANCELLATION)
         return DispatchResult(endpoint=endpoint, status=503)
