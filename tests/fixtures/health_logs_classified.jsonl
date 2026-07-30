@@ -45,3 +45,5 @@
 {"service":"segment_dream","stream":"stderr","line":"sol: solstone isn't running. Start it with 'journal up' and retry.","level":"error"}
 {"service":"heartbeat","stream":"log","line":"duration=549s outcome=success","level":"info"}
 {"service":"observe-transcribe","stream":"stderr","line":"DEBUG:speechbrain.utils.checkpoints:Registered checkpoint save hook for _speechbrain_save","level":"debug"}
+{"service":"cortex","stream":"stderr","line":"ERROR:openhands.sdk.conversation.impl.local_conversation:Agent reached maximum iterations limit (4).","level":"error"}
+{"service":"cortex","stream":"stderr","line":"INFO:openhands.sdk.conversation.impl.local_conversation:Agent reached maximum iterations limit (4).","level":"info"}

@@ -7,9 +7,14 @@ import asyncio
 import inspect
 import os
 import threading
+from pathlib import Path
 
 from pydantic import Field
 
+from solstone.think.providers.openhands import (
+    _OPENHANDS_CONVERSATION_LOGGER,
+    _OPENHANDS_MAX_ITERATIONS_PREFIX,
+)
 from tests._logging_isolation import preserve_global_logging
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
@@ -72,6 +77,18 @@ def test_local_conversation_methods_match_provider_await_sites(monkeypatch):
 
         assert inspect.iscoroutinefunction(LocalConversation.arun) is True
         assert inspect.iscoroutinefunction(LocalConversation.send_message) is False
+
+
+def test_local_conversation_logger_and_max_iterations_prefix_shape(monkeypatch):
+    monkeypatch.setenv("OPENHANDS_SUPPRESS_BANNER", "1")
+    with preserve_global_logging():
+        from openhands.sdk.conversation.impl import local_conversation
+
+        assert local_conversation.logger.name == _OPENHANDS_CONVERSATION_LOGGER
+        source_path = Path(local_conversation.__file__)
+        source = source_path.read_text(encoding="utf-8")
+
+    assert _OPENHANDS_MAX_ITERATIONS_PREFIX in source
 
 
 def _shape_tool(executor):

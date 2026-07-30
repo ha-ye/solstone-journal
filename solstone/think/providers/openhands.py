@@ -22,8 +22,9 @@ import tempfile
 import threading
 import traceback
 import uuid
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -100,6 +101,8 @@ _SHELL_STDOUT_CAP = 6000
 _SHELL_STDERR_CAP = 6000
 _SHELL_TIMEOUT_SECONDS = 30
 _COST_WARNING_TEXT = "Cost calculation failed"
+_OPENHANDS_CONVERSATION_LOGGER = "openhands.sdk.conversation.impl.local_conversation"
+_OPENHANDS_MAX_ITERATIONS_PREFIX = "Agent reached maximum iterations limit "
 _LOCAL_CONDENSER_KEEP_FIRST = 4
 _GENERATE_NUM_RETRIES = 2
 _GEMINI_MAX_OUTPUT_TOKENS = 65_535
@@ -1616,6 +1619,36 @@ def _suppress_litellm_cost_warnings() -> Any:
             logger.removeFilter(warning_filter)
 
 
+@dataclass
+class _DiagnosticMaxIterationsDemotionState:
+    demoted: bool = False
+
+
+@contextmanager
+def _demote_diagnostic_max_iterations_error() -> Iterator[
+    _DiagnosticMaxIterationsDemotionState
+]:
+    state = _DiagnosticMaxIterationsDemotionState()
+
+    class _MaxIterationsFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.levelno == logging.ERROR and record.getMessage().startswith(
+                _OPENHANDS_MAX_ITERATIONS_PREFIX
+            ):
+                record.levelno = logging.INFO
+                record.levelname = "INFO"
+                state.demoted = True
+            return True
+
+    logger = logging.getLogger(_OPENHANDS_CONVERSATION_LOGGER)
+    max_iterations_filter = _MaxIterationsFilter()
+    try:
+        logger.addFilter(max_iterations_filter)
+        yield state
+    finally:
+        logger.removeFilter(max_iterations_filter)
+
+
 def _conversation_execution_status(conversation: Any) -> str | None:
     try:
         state = conversation.state
@@ -1822,7 +1855,13 @@ async def run_cogitate(
         conversation.send_message(prompt_body)
         wall_clock_s = _wall_clock_deadline_s(timeout_seconds)
         wall_clock_exceeded = False
-        with _suppress_litellm_cost_warnings():
+        demotion_state = _DiagnosticMaxIterationsDemotionState()
+        with ExitStack() as stack:
+            stack.enter_context(_suppress_litellm_cost_warnings())
+            if diagnostic:
+                demotion_state = stack.enter_context(
+                    _demote_diagnostic_max_iterations_error()
+                )
             run_task = asyncio.ensure_future(conversation.arun())
             _done, pending = await asyncio.wait({run_task}, timeout=wall_clock_s)
             if run_task in pending:
@@ -1843,6 +1882,15 @@ async def run_cogitate(
                 # so re-raise here to keep the existing QuotaExhaustedError /
                 # generic except-Exception classification path unchanged.
                 run_task.result()
+
+        if demotion_state.demoted:
+            # Verbose-only at the default CLI log level; the demoted SDK line
+            # still renders.
+            LOG.info(
+                "Readiness probe reached the iteration limit derived from its "
+                "deliberate turn budget; the preceding SDK max-iterations line is "
+                "expected here and was recorded at INFO rather than ERROR."
+            )
 
         if sol_executor is not None:
             terminal_error = sol_executor.take_terminal_error()
