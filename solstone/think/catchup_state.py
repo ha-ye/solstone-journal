@@ -313,6 +313,48 @@ def day_eligible_to_drain(day: str, kind: str) -> bool:
     return read_raw_input_fingerprint(day) != record.get("fingerprint")
 
 
+def read_drain_hold_retry_at(day: str) -> float | None:
+    """Return the retry time only when ``day`` is positively held from draining.
+
+    ``None`` means "not provably held"; callers must fall through to status-quo
+    behavior. If any gated record is active, active dominates and this returns
+    ``None`` regardless of any other held record.
+    """
+    state = read_catchup_state()
+    entries = state["entries"]
+    records = []
+    for kind in (KIND_DAILY_CATCHUP, KIND_SEGMENT_REPAIR):
+        record = entries.get(_key(day, kind))
+        if isinstance(record, dict):
+            records.append(record)
+
+    if any(record.get("active") for record in records):
+        return None
+
+    now = time.time()
+    candidates = []
+    for record in records:
+        try:
+            retry_at = float(record.get("next_retry_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if now < retry_at:
+            candidates.append((record, retry_at))
+
+    if not candidates:
+        return None
+
+    fingerprint = read_raw_input_fingerprint(day)
+    held_retries = [
+        retry_at
+        for record, retry_at in candidates
+        if record.get("fingerprint") == fingerprint
+    ]
+    if not held_retries:
+        return None
+    return max(held_retries)
+
+
 def read_backoff_summary(day: str) -> dict | None:
     record = read_day_record(day, KIND_DAILY_CATCHUP)
     if record is None or record.get("entered_backoff_at") is None:

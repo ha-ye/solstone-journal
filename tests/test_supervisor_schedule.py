@@ -3,14 +3,18 @@
 
 """Test supervisor daily scheduling functionality."""
 
+import json
 import logging
 import os
+import time
 from datetime import date
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
 
 import solstone.think.supervisor as mod
+from solstone.think import catchup_state
+from solstone.think import utils as think_utils
 
 
 def _daily_think_calls(days):
@@ -203,6 +207,72 @@ def test_force_day_blocked_when_not_eligible(mock_callosum, monkeypatch, submit_
 
     assert submitted == ["20250101", "20250103"]
     assert submit_mock.call_args_list == _daily_think_calls(submitted)
+
+
+def test_force_day_blocked_by_real_catchup_state_when_not_eligible(
+    tmp_path, mock_callosum, monkeypatch, submit_mock
+):
+    day = "20250102"
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    think_utils._journal_path_cache = None
+    config = journal / "config" / "journal.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "setup": {"completed_at": 1700000000000},
+                "providers": {"active": {"provider": "openai"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    segment = journal / "chronicle" / day / "default" / "120000_300"
+    segment.mkdir(parents=True)
+    (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+    marker = journal / "chronicle" / day / "health" / "stream.updated"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    os.utime(marker, ns=(2_000_000_000, 2_000_000_000))
+    fingerprint = catchup_state.read_raw_input_fingerprint(day)
+    retry_at = time.time() + 3600
+    state_path = journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{catchup_state.KIND_DAILY_CATCHUP}": {
+                        "day": day,
+                        "command_kind": catchup_state.KIND_DAILY_CATCHUP,
+                        "attempts": 3,
+                        "consecutive_non_completion": 3,
+                        "last_attempt_at": 0,
+                        "last_outcome": "timeout",
+                        "next_retry_at": retry_at,
+                        "entered_backoff_at": retry_at - 600,
+                        "notified_at": retry_at - 600,
+                        "fingerprint": fingerprint,
+                        "active": None,
+                        "reason_code": None,
+                        "timeout_seconds": None,
+                        "bounded": None,
+                        "cleared": None,
+                        "remaining": None,
+                        "exit_reason": None,
+                        "daily_progress": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    submitted = mod.run_catchup_drain(force_days={day})
+
+    assert submitted == []
+    submit_mock.assert_not_called()
 
 
 def test_force_day_drains_when_eligible(mock_callosum, monkeypatch, submit_mock):

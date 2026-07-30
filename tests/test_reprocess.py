@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import reprocess
+from solstone.think import catchup_state, reprocess
 from tests.helpers.module_mocks import capturing_thread_constructor, module_mock
 
 DAY = "20250115"
@@ -50,6 +52,68 @@ def _touch_marker(journal: Path, day: str, name: str, ns: int) -> Path:
     marker.touch()
     os.utime(marker, ns=(ns, ns))
     return marker
+
+
+def _write_catchup_record(
+    journal: Path,
+    day: str,
+    kind: str,
+    *,
+    fingerprint: str | None,
+    next_retry_at: float,
+    active: dict | None = None,
+) -> None:
+    state_path = journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{kind}": {
+                        "day": day,
+                        "command_kind": kind,
+                        "attempts": 3,
+                        "consecutive_non_completion": 3,
+                        "last_attempt_at": 0,
+                        "last_outcome": "timeout",
+                        "next_retry_at": next_retry_at,
+                        "entered_backoff_at": next_retry_at - 600,
+                        "notified_at": next_retry_at - 600,
+                        "fingerprint": fingerprint,
+                        "active": active,
+                        "reason_code": None,
+                        "timeout_seconds": None,
+                        "bounded": None,
+                        "cleared": None,
+                        "remaining": None,
+                        "exit_reason": None,
+                        "daily_progress": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_format_retry_when_local_day_labels():
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    later = today + timedelta(days=2)
+
+    same_day = datetime(today.year, today.month, today.day, 20, 42)
+    next_day = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 20, 42)
+    midnight = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 3)
+    beyond_tomorrow = datetime(later.year, later.month, later.day, 20, 42)
+
+    assert reprocess._format_retry_when(same_day.timestamp()) == "today at 8:42pm"
+    assert reprocess._format_retry_when(next_day.timestamp()) == "tomorrow at 8:42pm"
+    assert reprocess._format_retry_when(midnight.timestamp()) == "tomorrow at 12:03am"
+    assert (
+        reprocess._format_retry_when(beyond_tomorrow.timestamp())
+        == f"{beyond_tomorrow:%b}".lower() + f" {later.day} at 8:42pm"
+    )
 
 
 class _ActiveTaskStub:
@@ -149,6 +213,38 @@ def test_process_now_complete_day_is_noop_and_preserves_markers(
     assert err == ""
     send.assert_not_called()
     assert (stream.stat().st_mtime_ns, daily.stat().st_mtime_ns) == before
+
+
+def test_process_now_held_by_backoff_prints_stdout_and_exits_zero(
+    tmp_path, monkeypatch, capsys
+):
+    journal = tmp_path / "journal"
+    segment = _seed_segment(journal)
+    (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    retry_at = time.time() + 3600
+    _write_catchup_record(
+        journal,
+        DAY,
+        catchup_state.KIND_DAILY_CATCHUP,
+        fingerprint=fingerprint,
+        next_retry_at=retry_at,
+    )
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    code, out, err = _invoke_reprocess(monkeypatch, capsys, journal, DAY)
+
+    assert code == 0
+    assert (
+        out == "day "
+        f"{DAY} is held until {reprocess._format_retry_when(retry_at)}; "
+        "use --from-scratch to start it over now\n"
+    )
+    assert err == ""
+    send.assert_not_called()
 
 
 def test_from_scratch_sends_request_and_preserves_marker(tmp_path, monkeypatch, capsys):
@@ -451,6 +547,111 @@ def test_reprocess_day_process_now_submitted(tmp_path, monkeypatch):
     _seed_segment(journal)
     _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_PROCESS_NOW)
+
+    assert outcome.code is reprocess.ReprocessCode.PROCESS_NOW_SUBMITTED
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+
+
+def test_reprocess_day_process_now_held_by_daily_backoff_returns_held_without_send(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path / "journal"
+    segment = _seed_segment(journal)
+    (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    retry_at = time.time() + 3600
+    _write_catchup_record(
+        journal,
+        DAY,
+        catchup_state.KIND_DAILY_CATCHUP,
+        fingerprint=fingerprint,
+        next_retry_at=retry_at,
+    )
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_PROCESS_NOW)
+
+    assert (outcome.code.value, send.call_args_list) == ("held_by_backoff", [])
+    assert outcome.when
+    assert outcome.when == reprocess._format_retry_when(retry_at)
+
+
+def test_reprocess_day_active_backoff_record_falls_through_and_sends(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path / "journal"
+    segment = _seed_segment(journal)
+    (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    _write_catchup_record(
+        journal,
+        DAY,
+        catchup_state.KIND_DAILY_CATCHUP,
+        fingerprint=fingerprint,
+        next_retry_at=time.time() + 3600,
+        active={"ref": "daily", "started_at": 1},
+    )
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_PROCESS_NOW)
+
+    assert outcome.code is reprocess.ReprocessCode.PROCESS_NOW_SUBMITTED
+    send.assert_called_once_with("supervisor", "drain", day=DAY)
+
+
+def test_reprocess_day_process_now_held_by_segment_repair_backoff(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path / "journal"
+    segment = _seed_segment(journal)
+    (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    retry_at = time.time() + 7200
+    _write_catchup_record(
+        journal,
+        DAY,
+        catchup_state.KIND_SEGMENT_REPAIR,
+        fingerprint=fingerprint,
+        next_retry_at=retry_at,
+    )
+    send = Mock(return_value=True)
+    monkeypatch.setattr(reprocess, "callosum_send", send)
+
+    outcome = reprocess.reprocess_day(DAY, reprocess.FLAVOR_PROCESS_NOW)
+
+    assert (outcome.code.value, send.call_args_list) == ("held_by_backoff", [])
+    assert outcome.when
+    assert outcome.when == reprocess._format_retry_when(retry_at)
+
+
+def test_reprocess_day_backoff_fingerprint_change_sends(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    segment = _seed_segment(journal)
+    raw = segment / "audio.jsonl"
+    raw.write_text("one\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 2_000_000_000)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    _write_catchup_record(
+        journal,
+        DAY,
+        catchup_state.KIND_DAILY_CATCHUP,
+        fingerprint=fingerprint,
+        next_retry_at=time.time() + 3600,
+    )
+    raw.write_text("two\n", encoding="utf-8")
     send = Mock(return_value=True)
     monkeypatch.setattr(reprocess, "callosum_send", send)
 

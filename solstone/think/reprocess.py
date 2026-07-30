@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 
 from solstone.think.callosum import callosum_send
+from solstone.think.catchup_state import read_drain_hold_retry_at
 from solstone.think.cluster import cluster_segments
 from solstone.think.streams import touch_stream_health_marker
 from solstone.think.utils import (
@@ -38,6 +39,7 @@ class ReprocessCode(Enum):
     FROM_SCRATCH_SUBMITTED = "from_scratch_submitted"
     MARK_UPDATED_SUBMITTED = "mark_updated_submitted"
     ALREADY_COMPLETE = "already_complete"
+    HELD_BY_BACKOFF = "held_by_backoff"
     PROCESS_NOW_SUBMITTED = "process_now_submitted"
     UNREACHABLE = "unreachable"
 
@@ -45,6 +47,7 @@ class ReprocessCode(Enum):
 @dataclass(frozen=True)
 class ReprocessOutcome:
     code: ReprocessCode
+    when: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,9 @@ _CLI_STDOUT = {
     ReprocessCode.ALREADY_COMPLETE: (
         "day {day} already complete; use --from-scratch to force a full re-run"
     ),
+    ReprocessCode.HELD_BY_BACKOFF: (
+        "day {day} is held until {when}; use --from-scratch to start it over now"
+    ),
 }
 
 _CLI_STDERR = {
@@ -75,6 +81,23 @@ _CLI_STDERR = {
     ReprocessCode.NO_DATA: "no data for day {day}",
     ReprocessCode.UNREACHABLE: UNREACHABLE_MESSAGE,
 }
+
+
+def _format_retry_clock(value: datetime) -> str:
+    return value.strftime("%I:%M%p").lstrip("0").lower()
+
+
+def _format_retry_when(epoch_seconds: float) -> str:
+    retry = datetime.fromtimestamp(epoch_seconds)
+    retry_day = retry.date()
+    today = date.today()
+    if retry_day == today:
+        label = "today"
+    elif retry_day == today + timedelta(days=1):
+        label = "tomorrow"
+    else:
+        label = f"{retry:%b}".lower() + f" {retry.day}"
+    return f"{label} at {_format_retry_clock(retry)}"
 
 
 def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
@@ -115,6 +138,12 @@ def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
 
     if day_is_complete(day):
         return ReprocessOutcome(ReprocessCode.ALREADY_COMPLETE)
+
+    retry_at = read_drain_hold_retry_at(day)
+    if retry_at is not None:
+        return ReprocessOutcome(
+            ReprocessCode.HELD_BY_BACKOFF, when=_format_retry_when(retry_at)
+        )
 
     ok = callosum_send("supervisor", "drain", day=day)
     return ReprocessOutcome(
@@ -274,7 +303,7 @@ def main() -> None:
     outcome = reprocess_day(args.day, flavor)
     code = outcome.code
     if code in _CLI_STDOUT:
-        print(_CLI_STDOUT[code].format(day=args.day))
+        print(_CLI_STDOUT[code].format(day=args.day, when=outcome.when))
         return
 
     print(_CLI_STDERR[code].format(day=args.day), file=sys.stderr)
