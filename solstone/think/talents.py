@@ -43,7 +43,12 @@ from solstone.think.pipeline_health import (
     read_terminal_states,
 )
 from solstone.think.providers.cli import QuotaExhaustedError
-from solstone.think.providers.shared import Event, classify_provider_error
+from solstone.think.providers.shared import Event, classify_provider_error, safe_raw
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS,
+    NON_RESPONSIVE_REASON_CODE,
+    NonResponsiveOutputError,
+)
 from solstone.think.talent import (
     get_output_path,
     get_talent_configs,
@@ -1383,22 +1388,37 @@ def _capture_runtime_fingerprint(config: dict) -> str | None:
     return expected_fingerprint_sha256
 
 
-def _emit_provider_response_invalid_terminal(
+def _non_responsive_raw(exc: Exception) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {"reason_code": NON_RESPONSIVE_REASON_CODE}
+    output = getattr(exc, "non_responsive_output", None)
+    if isinstance(output, str):
+        payload["non_responsive_output"] = output[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS]
+    matched_signal = getattr(exc, "non_responsive_matched_signal", None)
+    if matched_signal is not None:
+        payload["non_responsive_matched_signal"] = matched_signal
+    return safe_raw([payload])
+
+
+def _emit_terminal_generate_error(
     config: dict,
     emit_event: Callable[[dict], None],
     exc: Exception,
     *,
+    reason_code: str,
+    raw: list[dict[str, Any]] | None = None,
     retries: int = 0,
 ) -> None:
     _mark_terminal_error_evented(config)
     event: dict[str, Any] = {
         "event": "error",
         "error": str(exc),
-        "reason_code": "provider_response_invalid",
+        "reason_code": reason_code,
         "provider": config.get("provider"),
         "terminal": True,
         "ts": now_ms(),
     }
+    if raw is not None:
+        event["raw"] = raw
     if retries:
         event["retries"] = retries
     emit_event(event)
@@ -1592,7 +1612,21 @@ async def _execute_generate(
                 "generate",
                 expected_fingerprint_sha256=expected_fingerprint_sha256,
             )
-        _emit_provider_response_invalid_terminal(config, emit_event, exc)
+        _emit_terminal_generate_error(
+            config,
+            emit_event,
+            exc,
+            reason_code="provider_response_invalid",
+        )
+        return
+    except NonResponsiveOutputError as exc:
+        _emit_terminal_generate_error(
+            config,
+            emit_event,
+            exc,
+            reason_code=NON_RESPONSIVE_REASON_CODE,
+            raw=_non_responsive_raw(exc),
+        )
         return
     except Exception as exc:
         provider = config.get("provider", "google")
@@ -1653,10 +1687,21 @@ async def _execute_generate(
                         "generate",
                         expected_fingerprint_sha256=expected_fingerprint_sha256,
                     )
-                _emit_provider_response_invalid_terminal(
+                _emit_terminal_generate_error(
                     config,
                     emit_event,
                     retry_exc,
+                    reason_code="provider_response_invalid",
+                    retries=retries,
+                )
+                return
+            except NonResponsiveOutputError as retry_exc:
+                _emit_terminal_generate_error(
+                    config,
+                    emit_event,
+                    retry_exc,
+                    reason_code=NON_RESPONSIVE_REASON_CODE,
+                    raw=_non_responsive_raw(retry_exc),
                     retries=retries,
                 )
                 return

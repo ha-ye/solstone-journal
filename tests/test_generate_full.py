@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS,
+    NON_RESPONSIVE_REASON_CODE,
+)
 from solstone.think.utils import day_path
 from tests.conftest import copytree_tracked
 
@@ -52,6 +56,7 @@ MOCK_RESULT = {
     "text": "## Meeting Summary\n\nTeam standup at 9am with Alice and Bob discussing project status.",
     "usage": {"input_tokens": 100, "output_tokens": 50},
 }
+_NON_RESPONSIVE_REFUSAL = "I cannot describe this screen."
 _BRAIN_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
@@ -169,6 +174,36 @@ def _write_generator_file(
 
 def _write_schema_file(tmp_path: Path, name: str, schema: dict) -> None:
     (tmp_path / name).write_text(json.dumps(schema, indent=2), encoding="utf-8")
+
+
+def _non_responsive_generate_result(text: str = _NON_RESPONSIVE_REFUSAL) -> dict:
+    return {
+        "text": text,
+        "model": "provider-model",
+        "finish_reason": "stop",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
+
+
+def _install_generate_provider(
+    monkeypatch, outcome, *, provider: str = "google"
+) -> None:
+    from solstone.think import models
+
+    provider_module = MagicMock()
+    if isinstance(outcome, list):
+        provider_module.run_generate.side_effect = outcome
+    else:
+        provider_module.run_generate.return_value = outcome
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: (provider, "provider-model"),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: provider_module,
+    )
 
 
 def _run_generate_failure(
@@ -344,6 +379,103 @@ def test_execute_generate_provider_blank_records_runtime_failure(
     assert record["evidence"]["generate"]["reason_code"] == (
         "provider_response_invalid"
     )
+
+
+def test_execute_generate_non_responsive_emits_terminal_error(tmp_path, monkeypatch):
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.md"
+    output_path.write_text("old output", encoding="utf-8")
+    _install_generate_provider(monkeypatch, _non_responsive_generate_result())
+    events = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "name": "test_non_responsive",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["terminal"] is True
+    assert events[0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert output_path.read_text(encoding="utf-8") == "old output"
+
+
+def test_execute_generate_non_responsive_retry_emits_retries_one(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.talents import _execute_generate
+
+    capacity_error = RuntimeError("capacity exhausted")
+    capacity_error.reason_code = "local_capacity_exhausted"
+    output_path = tmp_path / "out.md"
+    _install_generate_provider(
+        monkeypatch,
+        [capacity_error, _non_responsive_generate_result()],
+        provider="local",
+    )
+    events = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "name": "test_non_responsive_retry",
+                "provider": "local",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert events[0]["retries"] == 1
+    assert not output_path.exists()
+
+
+def test_execute_generate_non_responsive_terminal_event_carries_safe_raw(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.talents import _execute_generate
+
+    raw_output = _NON_RESPONSIVE_REFUSAL + " " + ("overflow " * 200)
+    _install_generate_provider(
+        monkeypatch,
+        _non_responsive_generate_result(raw_output),
+    )
+    events = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "name": "test_non_responsive_raw",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(tmp_path / "out.md"),
+            },
+            events.append,
+        )
+    )
+
+    raw = events[0]["raw"]
+    assert isinstance(raw, list)
+    assert len(raw) == 1
+    assert raw[0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert (
+        raw[0]["non_responsive_output"]
+        == raw_output[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS]
+    )
+    assert raw[0]["non_responsive_matched_signal"] == "i cannot"
 
 
 def test_generate_model_not_found_records_runtime_failure(tmp_path, monkeypatch):
