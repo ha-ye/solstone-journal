@@ -427,7 +427,7 @@ def test_short_session_below_stability_threshold_keeps_backing_off(monkeypatch) 
     client = _managed_client(
         reconnect_initial_backoff=0.005,
         reconnect_max_backoff=0.04,
-        session_stable_after=0.06,
+        session_stable_after=0.6,
     )
     records, observed = _spy_lifecycle_failures(client, after=2)
     try:
@@ -439,7 +439,7 @@ def test_short_session_below_stability_threshold_keeps_backing_off(monkeypatch) 
             b"ok",
         )
         # This scaled hold is on the short-lived side of the stability threshold.
-        client._run(_finish_session_after(held[0], 0.035))
+        client._run(_finish_session_after(held[0], 0.35))
         assert observed.wait(timeout=1)
     finally:
         client.close()
