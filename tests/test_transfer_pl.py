@@ -123,7 +123,7 @@ def test_transfer_send_pl_posts_journal_segment_day_path(
         async def close(self) -> None:
             return None
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         return FakeTunnelSession()
 
     monkeypatch.setattr("solstone.think.link.dialer.open_tunnel", fake_open_tunnel)

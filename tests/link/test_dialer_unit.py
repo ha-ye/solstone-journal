@@ -152,6 +152,341 @@ def _managed_client(**kwargs) -> TunnelClient:
     )
 
 
+def _spy_lifecycle_failures(
+    client: TunnelClient,
+    *,
+    after: int,
+) -> tuple[list[tuple[str, str, float | None]], threading.Event]:
+    records: list[tuple[str, str, float | None]] = []
+    observed = threading.Event()
+    original = client._record_lifecycle_failure
+
+    async def record_spy(
+        reason: str,
+        detail: str,
+        *,
+        state: str,
+        next_retry_in: float | None = None,
+    ) -> None:
+        records.append((reason, detail, next_retry_in))
+        if len(records) >= after:
+            observed.set()
+        await original(
+            reason,
+            detail,
+            state=state,
+            next_retry_in=next_retry_in,
+        )
+
+    client._record_lifecycle_failure = record_spy
+    return records, observed
+
+
+async def _finish_session_after(session: _ManagedSession, delay: float) -> None:
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    def finish() -> None:
+        session._finish_closed()
+        if not done.done():
+            done.set_result(None)
+
+    loop.call_later(delay, finish)
+    await done
+
+
+def _remaining_deadline(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def test_connection_manager_passes_default_absolute_dial_deadline(monkeypatch) -> None:
+    deadlines: list[float | None] = []
+    called = threading.Event()
+
+    async def fake_open_tunnel(_identity, _relay_url, *, deadline=None, **_kwargs):
+        deadlines.append(deadline)
+        called.set()
+        return _ManagedSession()
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client()
+    try:
+        before = time.monotonic()
+        client.start()
+        assert called.wait(timeout=1)
+        after = time.monotonic()
+    finally:
+        client.close()
+
+    assert deadlines[0] is not None
+    assert before + dialer._DIAL_TIMEOUT_SECONDS <= deadlines[0]
+    assert deadlines[0] <= after + dialer._DIAL_TIMEOUT_SECONDS
+
+
+def test_connection_manager_dial_deadline_bounds_retries(monkeypatch) -> None:
+    seen: list[float | None] = []
+    calls = 0
+
+    async def fake_open_tunnel(_identity, _relay_url, *, deadline=None, **_kwargs):
+        nonlocal calls
+        calls += 1
+        seen.append(deadline)
+        if deadline is None:
+            raise AssertionError("dial received no deadline")
+        await asyncio.wait_for(
+            asyncio.sleep(3600),
+            timeout=_remaining_deadline(deadline),
+        )
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(
+        dial_timeout=0.01,
+        reconnect_initial_backoff=0.005,
+        reconnect_max_backoff=0.005,
+        request_session_wait=0.01,
+    )
+    records, observed = _spy_lifecycle_failures(client, after=2)
+    try:
+        client.start()
+        assert observed.wait(timeout=1)
+    finally:
+        client.close()
+
+    assert calls > 1
+    assert all(deadline is not None for deadline in seen)
+    assert any(reason == "TimeoutError" for reason, _detail, _retry in records)
+
+
+def test_connection_manager_adopts_session_inside_dial_bound(monkeypatch) -> None:
+    sessions: list[_ManagedSession] = []
+
+    async def fake_open_tunnel(_identity, _relay_url, *, deadline=None, **_kwargs):
+        if deadline is None:
+            raise AssertionError("dial received no deadline")
+        await asyncio.wait_for(
+            asyncio.sleep(0.01),
+            timeout=_remaining_deadline(deadline),
+        )
+        session = _ManagedSession()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(dial_timeout=0.2)
+    try:
+        assert client.request("GET", "/inside-bound") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
+        )
+    finally:
+        client.close()
+
+    assert len(sessions) == 1
+    assert sessions[0].requests == [("GET", "/inside-bound", {}, b"")]
+
+
+def test_connection_manager_passes_explicit_absolute_dial_deadline(monkeypatch) -> None:
+    dial_timeout = 0.123
+    deadlines: list[float | None] = []
+    called = threading.Event()
+
+    async def fake_open_tunnel(_identity, _relay_url, *, deadline=None, **_kwargs):
+        deadlines.append(deadline)
+        called.set()
+        return _ManagedSession()
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(dial_timeout=dial_timeout)
+    try:
+        before = time.monotonic()
+        client.start()
+        assert called.wait(timeout=1)
+        after = time.monotonic()
+    finally:
+        client.close()
+
+    assert deadlines[0] is not None
+    assert before + dial_timeout <= deadlines[0]
+    assert deadlines[0] <= after + dial_timeout
+
+
+@pytest.mark.asyncio
+async def test_open_tunnel_reports_direct_attempt_timeout_label(monkeypatch) -> None:
+    async def dial_direct(_host, _enrolled, *, port=7657):
+        _ = port
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(dialer.Client, "dial_direct", staticmethod(dial_direct))
+    identity = _identity(endpoints=({"ip": "10.0.0.1", "port": 7657},))
+
+    with pytest.raises(TlsError) as exc_info:
+        await dialer.open_tunnel(
+            identity,
+            None,
+            deadline=time.monotonic() + 0.01,
+        )
+
+    message = str(exc_info.value)
+    assert "lan-direct 10.0.0.1:7657" in message
+    assert "TimeoutError" in message
+
+
+def test_short_lived_sessions_increase_then_plateau_backoff(monkeypatch) -> None:
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
+        session = _ManagedSession()
+        session._finish_closed()
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(
+        reconnect_initial_backoff=0.005,
+        reconnect_max_backoff=0.04,
+    )
+    records, observed = _spy_lifecycle_failures(client, after=5)
+    try:
+        client.start()
+        assert observed.wait(timeout=1)
+    finally:
+        client.close()
+
+    assert [retry for _reason, _detail, retry in records[:5]] == [
+        0.005,
+        0.01,
+        0.02,
+        0.04,
+        0.04,
+    ]
+
+
+def test_stable_session_resets_recorded_retry_backoff(monkeypatch) -> None:
+    calls = 0
+    held: list[_ManagedSession] = []
+    held_ready = threading.Event()
+
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
+        nonlocal calls
+        calls += 1
+        session = _ManagedSession()
+        if calls <= 2:
+            session._finish_closed()
+        else:
+            held.append(session)
+            held_ready.set()
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(
+        reconnect_initial_backoff=0.005,
+        reconnect_max_backoff=0.04,
+        session_stable_after=0.02,
+    )
+    records, observed = _spy_lifecycle_failures(client, after=3)
+    try:
+        client.start()
+        assert held_ready.wait(timeout=1)
+        assert client.request("GET", "/stable") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
+        )
+        client._run(_finish_session_after(held[0], 0.03))
+        assert observed.wait(timeout=1)
+    finally:
+        client.close()
+
+    assert [retry for _reason, _detail, retry in records[:3]] == [
+        0.005,
+        0.01,
+        0.005,
+    ]
+
+
+def test_short_session_below_stability_threshold_keeps_backing_off(monkeypatch) -> None:
+    # Short-lived connect-then-die sessions can last long enough to pass small
+    # thresholds; keep the production default at a minute so they do not reset backoff.
+    assert dialer._SESSION_STABLE_AFTER_SECONDS >= 60
+
+    calls = 0
+    held: list[_ManagedSession] = []
+    held_ready = threading.Event()
+
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
+        nonlocal calls
+        calls += 1
+        session = _ManagedSession()
+        if calls == 1:
+            session._finish_closed()
+        else:
+            held.append(session)
+            held_ready.set()
+        return session
+
+    monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
+    client = _managed_client(
+        reconnect_initial_backoff=0.005,
+        reconnect_max_backoff=0.04,
+        session_stable_after=0.06,
+    )
+    records, observed = _spy_lifecycle_failures(client, after=2)
+    try:
+        client.start()
+        assert held_ready.wait(timeout=1)
+        assert client.request("GET", "/short") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
+        )
+        # This scaled hold is on the short-lived side of the stability threshold.
+        client._run(_finish_session_after(held[0], 0.035))
+        assert observed.wait(timeout=1)
+    finally:
+        client.close()
+
+    assert [retry for _reason, _detail, retry in records[:2]] == [0.005, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_relay_enrollment_timeout_reports_relay_attempt(monkeypatch) -> None:
+    identity = _identity(endpoints=())
+    entered = threading.Event()
+    release = threading.Event()
+    dial_called = False
+
+    def enroll_device(
+        _relay_url: str,
+        enrolled_identity: ClientIdentity,
+    ) -> EnrolledDevice:
+        entered.set()
+        release.wait()
+        return EnrolledDevice(device_token="token", identity=enrolled_identity)
+
+    async def dial(_relay_url: str, _enrolled: EnrolledDevice) -> object:
+        nonlocal dial_called
+        dial_called = True
+        raise AssertionError("dial should not run after enrollment timeout")
+
+    monkeypatch.setattr(dialer.Client, "enroll_device", staticmethod(enroll_device))
+    monkeypatch.setattr(dialer.Client, "dial", staticmethod(dial))
+
+    try:
+        with pytest.raises(TlsError) as exc_info:
+            await dialer.open_tunnel(
+                identity,
+                "https://relay.test",
+                deadline=time.monotonic() + 0.01,
+            )
+    finally:
+        release.set()
+
+    assert entered.wait(timeout=1)
+    message = str(exc_info.value)
+    assert "spl-relay" in message
+    assert "TimeoutError" in message
+    assert dial_called is False
+
+
 @pytest.mark.asyncio
 async def test_lan_direct_race_picks_first_and_cancels_loser(monkeypatch) -> None:
     identity = _identity(
@@ -393,7 +728,7 @@ def test_cached_session_drops_on_stream_reset(monkeypatch) -> None:
 
     sessions: list[ResetSession] = []
 
-    async def open_tunnel(_identity, _relay_url):
+    async def open_tunnel(_identity, _relay_url, **_kwargs):
         session = ResetSession()
         sessions.append(session)
         return session
@@ -522,7 +857,7 @@ class _HangingSession:
 def test_connection_manager_redials_after_remote_close(monkeypatch) -> None:
     sessions: list[_ManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = _ManagedSession()
         sessions.append(session)
         return session
@@ -565,7 +900,7 @@ def test_connection_manager_redials_after_remote_close(monkeypatch) -> None:
 def test_connection_manager_records_liveness_failure(monkeypatch) -> None:
     sessions: list[_ManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = _ManagedSession()
         sessions.append(session)
         return session
@@ -605,30 +940,43 @@ def test_connection_manager_records_liveness_failure(monkeypatch) -> None:
 
 
 def test_request_during_reconnect_fails_with_lifecycle_error(monkeypatch) -> None:
+    """Request wait and stalled dial timeout are bounded independently."""
     started = threading.Event()
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, *, deadline=None, **_kwargs):
         started.set()
-        await asyncio.sleep(3600)
+        if deadline is None:
+            raise AssertionError("dial received no deadline")
+        await asyncio.wait_for(
+            asyncio.sleep(3600),
+            timeout=_remaining_deadline(deadline),
+        )
         raise AssertionError("unreachable")
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
-    client = _managed_client(request_session_wait=0.02)
+    client = _managed_client(
+        dial_timeout=1.0,
+        request_session_wait=0.05,
+        reconnect_initial_backoff=0.005,
+    )
+    records, observed = _spy_lifecycle_failures(client, after=1)
     try:
         client.start()
         assert started.wait(timeout=1)
         with pytest.raises(TunnelLifecycleError) as exc_info:
             client.request("GET", "/during-reconnect")
+        assert observed.wait(timeout=2)
     finally:
         client.close()
 
     assert exc_info.value.state == "connecting"
     assert exc_info.value.retryable is True
     assert "no live tunnel session" in exc_info.value.detail
+    assert records[0][0] == "TimeoutError"
 
 
 def test_dead_manager_status_and_requests_fail_closed(monkeypatch) -> None:
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         await asyncio.sleep(3600)
         raise AssertionError("unreachable")
 
@@ -727,7 +1075,7 @@ def test_connection_manager_opens_session_for_request(monkeypatch) -> None:
     sessions: list[_ManagedSession] = []
     calls = 0
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         nonlocal calls
         calls += 1
         session = _ManagedSession()
@@ -753,7 +1101,7 @@ def test_connection_manager_opens_session_for_stream_request(monkeypatch) -> Non
     sessions: list[_ManagedSession] = []
     calls = 0
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         nonlocal calls
         calls += 1
         session = _ManagedSession()
@@ -776,7 +1124,7 @@ def test_connection_manager_reuses_live_session_without_redial(monkeypatch) -> N
     sessions: list[_ManagedSession] = []
     calls = 0
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         nonlocal calls
         calls += 1
         session = _ManagedSession()
@@ -807,7 +1155,7 @@ def test_connection_manager_reuses_live_session_without_redial(monkeypatch) -> N
 
 
 def test_failed_redial_queues_lifecycle_error(monkeypatch) -> None:
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         raise OSError("dial failed")
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
@@ -836,7 +1184,7 @@ def test_request_timeout_argument_can_loosen_constructor_bound(monkeypatch) -> N
             await asyncio.sleep(0.1)
             return 200, {"x-timeout": "loosened"}, b"ok"
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         return SlowRequestSession()
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
@@ -871,7 +1219,7 @@ def test_request_timeout_argument_can_tighten_large_constructor_bound(
 
     sessions: list[HangingManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = HangingManagedSession()
         sessions.append(session)
         return session
@@ -897,7 +1245,7 @@ def test_request_timeout_uses_constructor_when_argument_omitted(monkeypatch) -> 
 
     sessions: list[HangingManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = HangingManagedSession()
         sessions.append(session)
         return session
@@ -921,7 +1269,7 @@ def test_bare_stream_request_honors_per_request_timeout(monkeypatch) -> None:
         async def stream_request(self, *_args, **_kwargs):
             await asyncio.sleep(3600)
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         return HangingManagedSession()
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
@@ -943,7 +1291,7 @@ def test_proxy_stream_request_honors_per_request_timeout(monkeypatch) -> None:
 
     sessions: list[HangingManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = HangingManagedSession()
         sessions.append(session)
         return session
@@ -983,7 +1331,7 @@ def test_stream_request_timeout_does_not_cover_response_tail(monkeypatch) -> Non
             self.stream_requests.append((method, path, headers, body))
             return 200, {}, b"", SlowTailStream()
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         return SlowTailSession()
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
@@ -1013,7 +1361,7 @@ def test_proxy_stream_request_times_out_during_head_and_clears_session() -> None
 
     sessions: list[HangingManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = HangingManagedSession()
         sessions.append(session)
         return session
@@ -1042,7 +1390,7 @@ def test_bare_stream_request_times_out_during_head(monkeypatch) -> None:
         async def stream_request(self, *_args, **_kwargs):
             await asyncio.sleep(3600)
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         return HangingManagedSession()
 
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
@@ -1061,7 +1409,7 @@ def test_request_times_out_during_head_and_clears_session(monkeypatch) -> None:
 
     sessions: list[HangingManagedSession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = HangingManagedSession()
         sessions.append(session)
         return session
@@ -1087,7 +1435,7 @@ def test_request_timeout_is_not_armed_during_body_streaming() -> None:
 
     sessions: list[SlowBodySession] = []
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         session = SlowBodySession()
         sessions.append(session)
         return session
@@ -1115,7 +1463,7 @@ async def test_dead_session_redial_is_single_flight(monkeypatch) -> None:
     sessions: list[_ManagedSession] = []
     calls = 0
 
-    async def fake_open_tunnel(_identity, _relay_url):
+    async def fake_open_tunnel(_identity, _relay_url, **_kwargs):
         nonlocal calls
         calls += 1
         await asyncio.sleep(0)

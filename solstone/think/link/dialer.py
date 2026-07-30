@@ -32,8 +32,13 @@ from solstone.think.link.tls import TlsError
 _REQUEST_TIMEOUT_SECONDS = 180
 _QUEUE_PUT_TIMEOUT_SECONDS = 0.1
 _REQUEST_SESSION_WAIT_SECONDS = 5.0
+# Overall dial attempt bound, separate from request timeout and per-recv bounds.
+_DIAL_TIMEOUT_SECONDS = 30
 _RECONNECT_INITIAL_BACKOFF_SECONDS = 1.0
 _RECONNECT_MAX_BACKOFF_SECONDS = 30.0
+# Short-lived connect-then-die sessions can last long enough to pass small
+# thresholds; keep the default at a minute so they do not reset backoff.
+_SESSION_STABLE_AFTER_SECONDS = 60
 _SESSION_POLL_SECONDS = 0.25
 
 STATE_DISCONNECTED = "disconnected"
@@ -135,7 +140,12 @@ async def _dial_relay(
     identity: ClientIdentity,
     deadline: float | None = None,
 ) -> TunnelSession:
-    enrolled = await asyncio.to_thread(client.enroll_device, relay_url, identity)
+    # The worker thread cannot be cancelled, so it may outlive this timeout until
+    # requests returns; the manager loop still escapes and retries.
+    enrolled = await _with_deadline(
+        asyncio.to_thread(client.enroll_device, relay_url, identity),
+        deadline,
+    )
     return await _with_deadline(client.dial(relay_url, enrolled), deadline)
 
 
@@ -214,15 +224,19 @@ class TunnelClient:
         *,
         request_timeout: float = _REQUEST_TIMEOUT_SECONDS,
         request_session_wait: float = _REQUEST_SESSION_WAIT_SECONDS,
+        dial_timeout: float = _DIAL_TIMEOUT_SECONDS,
         reconnect_initial_backoff: float = _RECONNECT_INITIAL_BACKOFF_SECONDS,
         reconnect_max_backoff: float = _RECONNECT_MAX_BACKOFF_SECONDS,
+        session_stable_after: float = _SESSION_STABLE_AFTER_SECONDS,
     ) -> None:
         self._identity = identity
         self._relay_url = relay_url.rstrip("/") if relay_url else None
         self._request_timeout = request_timeout
         self._request_session_wait = request_session_wait
+        self._dial_timeout = dial_timeout
         self._reconnect_initial_backoff = reconnect_initial_backoff
         self._reconnect_max_backoff = reconnect_max_backoff
+        self._session_stable_after = session_stable_after
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._session: TunnelSession | None = None
@@ -293,7 +307,14 @@ class TunnelClient:
         while not self._closed:
             await self._set_lifecycle_state(STATE_CONNECTING)
             try:
-                session = await open_tunnel(self._identity, self._relay_url)
+                # _with_deadline expects an absolute monotonic instant. Passing a
+                # duration would clamp to zero on machines up longer than the bound.
+                deadline = time.monotonic() + self._dial_timeout
+                session = await open_tunnel(
+                    self._identity,
+                    self._relay_url,
+                    deadline=deadline,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -307,11 +328,14 @@ class TunnelClient:
                 backoff = min(self._reconnect_max_backoff, backoff * 2)
                 continue
 
-            backoff = self._reconnect_initial_backoff
+            adopted_at = time.monotonic()
             await self._adopt_session(session)
             await _wait_session_closed(session, is_closed=lambda: self._closed)
             if self._closed:
                 return
+            # Stability is about how long the adopted session survived, not which path cleared it.
+            if time.monotonic() - adopted_at >= self._session_stable_after:
+                backoff = self._reconnect_initial_backoff
             if self._session is session:
                 failure_reason = getattr(session, "failure_reason", None)
                 if callable(failure_reason):
