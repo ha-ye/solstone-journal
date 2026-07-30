@@ -92,6 +92,7 @@ from .utils import (
     pruned_segments,
     record_ingest_rejection,
     record_status_beacon,
+    resolve_ingest_identity,
     resolve_ingest_plan,
     resolve_observer_identity,
     revoke_observer_record,
@@ -1118,7 +1119,7 @@ def ingest_upload() -> Any:
     - "conflict": Sidecar/metadata conflicts with an existing segment
     - "failed": Upload rejected — contract-invalid, or no available segment slot after retries
     """
-    observer, key_prefix, error = resolve_observer_identity()
+    observer, key_prefix, error = resolve_ingest_identity("observer_ingest")
     if error is not None:
         return error
 
@@ -1313,7 +1314,7 @@ def ingest_event() -> Any:
     - event: Event name
     - ...additional fields
     """
-    observer, _key_prefix, error = resolve_observer_identity()
+    observer, _key_prefix, error = resolve_ingest_identity("observer_ingest_event")
     if error is not None:
         return error
 

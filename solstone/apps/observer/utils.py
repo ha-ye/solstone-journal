@@ -19,12 +19,17 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from solstone.apps.observer.auth_rejection_log import (
+    record_auth_rejection,
+    sweep_auth_rejection_bursts,
+)
 from solstone.apps.utils import get_app_storage_path, log_app_action
 from solstone.convey.reasons import (
     AUTH_KEY_INVALID,
     AUTH_REQUIRED,
     FEATURE_UNAVAILABLE,
     PL_REVOKED,
+    Reason,
 )
 from solstone.convey.utils import error_response
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
@@ -45,6 +50,13 @@ DISPOSITION_WRITTEN = "written"
 DISPOSITION_ALREADY_HELD = "already_held"
 DISPOSITION_RECEIVED_NOT_WRITTEN = "received_not_written"
 _MEDIA_CONTENT_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class ObserverIdentityRejection:
+    reason: Reason
+    detail: str
+    attempted_prefix: str | None
 
 
 def get_observers_dir(*, ensure_exists: bool = True) -> Path:
@@ -518,30 +530,81 @@ def _get_auth_key() -> str | None:
     return None
 
 
-def _auth_failure():
-    return error_response(AUTH_REQUIRED, detail="Authorization required")
-
-
-def _check_observer_enabled(observer: dict):
+def _disabled_observer_rejection(observer: dict) -> ObserverIdentityRejection | None:
     if observer.get("revoked", False):
-        return error_response(PL_REVOKED, detail="Observer revoked")
+        return ObserverIdentityRejection(
+            PL_REVOKED,
+            "Observer revoked",
+            observer["filename_prefix"],
+        )
     if not observer.get("enabled", True):
-        return error_response(FEATURE_UNAVAILABLE, detail="Observer disabled")
+        return ObserverIdentityRejection(
+            FEATURE_UNAVAILABLE,
+            "Observer disabled",
+            observer["filename_prefix"],
+        )
     return None
+
+
+def _rejection_response(rejection: ObserverIdentityRejection):
+    return error_response(rejection.reason, detail=rejection.detail)
+
+
+def _resolve_identity() -> tuple[
+    dict | None, str | None, ObserverIdentityRejection | None
+]:
+    handle = _get_auth_key()
+    if not handle:
+        return (
+            None,
+            None,
+            ObserverIdentityRejection(
+                AUTH_REQUIRED,
+                "Authorization required",
+                None,
+            ),
+        )
+
+    attempted_prefix = handle[:8]
+    observer = load_observer(handle)
+    if observer is None:
+        return (
+            None,
+            None,
+            ObserverIdentityRejection(
+                AUTH_KEY_INVALID,
+                "Invalid key",
+                attempted_prefix,
+            ),
+        )
+
+    rejection = _disabled_observer_rejection(observer)
+    if rejection is not None:
+        return None, None, rejection
+
+    return observer, observer["filename_prefix"], None
 
 
 def resolve_observer_identity():
     """Resolve an observer by its handle (X-Solstone-Observer, else Bearer)."""
-    handle = _get_auth_key()
-    if not handle:
-        return None, None, _auth_failure()
-    observer = load_observer(handle)
-    if observer is None:
-        return None, None, error_response(AUTH_KEY_INVALID, detail="Invalid key")
-    error = _check_observer_enabled(observer)
-    if error is not None:
-        return None, None, error
-    return observer, observer["filename_prefix"], None
+    observer, key_prefix, rejection = _resolve_identity()
+    if rejection is not None:
+        return None, None, _rejection_response(rejection)
+    return observer, key_prefix, None
+
+
+def resolve_ingest_identity(surface: str) -> tuple[dict | None, str | None, Any]:
+    """Resolve observer identity for data-bearing ingest surfaces and account rejects."""
+    sweep_auth_rejection_bursts()
+    observer, key_prefix, rejection = _resolve_identity()
+    if rejection is not None:
+        record_auth_rejection(
+            surface=surface,
+            reason=rejection.reason,
+            attempted_prefix=rejection.attempted_prefix,
+        )
+        return None, None, _rejection_response(rejection)
+    return observer, key_prefix, None
 
 
 def append_history_record(key_prefix: str, day: str, record: dict) -> None:
