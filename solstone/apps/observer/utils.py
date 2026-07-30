@@ -546,7 +546,7 @@ def _disabled_observer_rejection(observer: dict) -> ObserverIdentityRejection | 
     return None
 
 
-def _rejection_response(rejection: ObserverIdentityRejection):
+def _rejection_response(rejection: ObserverIdentityRejection) -> tuple[Any, int]:
     return error_response(rejection.reason, detail=rejection.detail)
 
 
