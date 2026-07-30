@@ -534,6 +534,9 @@ def _generate_component(
             thinking_budget=CANNED_GENERATE_THINKING_BUDGET,
             timeout_s=CANNED_GENERATE_TIMEOUT_S,
             num_retries=CANNED_GENERATE_NUM_RETRIES,
+            # Liveness probe: a reflexive refusal can still mean the lane is alive,
+            # while real talent runs keep the responsiveness gate enabled.
+            enforce_responsiveness=False,
         )
     except Exception as exc:
         reason = _component_reason_for_exception(

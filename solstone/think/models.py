@@ -20,10 +20,22 @@ from solstone.think.providers.local_endpoint import (
     resolve_local_endpoint_from_config,
 )
 from solstone.think.providers.shared import validate_generate_result_strict
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS,
+    NonResponsiveOutputError,
+    classify_output_responsiveness,
+)
 from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY, prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
 
 logger = logging.getLogger(__name__)
+
+
+class _GenerateResponsivenessRecord(NamedTuple):
+    non_responsive: bool
+    non_responsive_output: str | None
+    non_responsive_matched_signal: str | None
+
 
 # ---------------------------------------------------------------------------
 # Model constants
@@ -576,6 +588,8 @@ def log_token_usage(
     context: Optional[str] = None,
     segment: Optional[str] = None,
     type: Optional[str] = None,
+    non_responsive_output: str | None = None,
+    non_responsive_matched_signal: str | None = None,
 ) -> None:
     """Log token usage to journal with unified schema.
 
@@ -598,6 +612,10 @@ def log_token_usage(
         If None, falls back to SOL_SEGMENT environment variable.
     type : str, optional
         Token entry type (e.g., "generate", "cogitate").
+    non_responsive_output : str, optional
+        Capped visible model output when a generate response declines the request.
+    non_responsive_matched_signal : str, optional
+        Safe classifier signal that identified the non-responsive output.
     """
     from solstone.think.providers.shared import USAGE_KEYS
 
@@ -660,6 +678,10 @@ def log_token_usage(
             token_data["segment"] = segment_key
         if type:
             token_data["type"] = type
+        if non_responsive_output is not None:
+            token_data["non_responsive_output"] = non_responsive_output
+        if non_responsive_matched_signal is not None:
+            token_data["non_responsive_matched_signal"] = non_responsive_matched_signal
 
         # Save to journal/tokens/<YYYYMMDD>.jsonl (one file per day)
         tokens_dir = Path(journal) / "tokens"
@@ -674,6 +696,58 @@ def log_token_usage(
 
     except Exception:
         logger.warning("failed to log token usage", exc_info=True)
+
+
+def _record_generate_usage_and_responsiveness(
+    result: object,
+    *,
+    model: str,
+    context: str,
+    enforce_responsiveness: bool = True,
+) -> _GenerateResponsivenessRecord:
+    non_responsive_output: str | None = None
+    non_responsive_matched_signal: str | None = None
+
+    is_result_mapping = isinstance(result, Mapping)
+    if enforce_responsiveness and is_result_mapping:
+        text = result.get("text")
+        if isinstance(text, str) and text.strip():
+            verdict = classify_output_responsiveness(text)
+            if verdict.non_responsive:
+                non_responsive_output = text[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS]
+                non_responsive_matched_signal = verdict.matched_signal
+
+    has_usage = is_result_mapping and bool(result.get("usage"))
+    non_responsive = non_responsive_output is not None
+    if has_usage or non_responsive:
+        usage = result["usage"] if has_usage else {}
+        resolved_model = (result.get("model") or model) if is_result_mapping else model
+        log_kwargs: dict[str, Any] = {}
+        if non_responsive:
+            log_kwargs["non_responsive_output"] = non_responsive_output
+            log_kwargs["non_responsive_matched_signal"] = non_responsive_matched_signal
+        log_token_usage(
+            model=resolved_model,
+            usage=usage,
+            context=context,
+            type="generate",
+            **log_kwargs,
+        )
+
+    return _GenerateResponsivenessRecord(
+        non_responsive=non_responsive,
+        non_responsive_output=non_responsive_output,
+        non_responsive_matched_signal=non_responsive_matched_signal,
+    )
+
+
+def _raise_non_responsive_output(
+    responsiveness: _GenerateResponsivenessRecord,
+) -> None:
+    exc = NonResponsiveOutputError()
+    exc.non_responsive_output = responsiveness.non_responsive_output
+    exc.non_responsive_matched_signal = responsiveness.non_responsive_matched_signal
+    raise exc
 
 
 def _raise_if_no_brain(provider: str) -> None:
@@ -1239,21 +1313,21 @@ def generate(
         **provider_options,
     )
 
-    # Log token usage centrally (before validation so truncated responses
-    # still get their usage recorded)
-    if isinstance(result, dict) and result.get("usage"):
-        log_token_usage(
-            model=result.get("model") or model,
-            usage=result["usage"],
-            context=context,
-            type="generate",
-        )
+    # Log token usage centrally before validation so truncated responses
+    # still get their usage recorded.
+    responsiveness = _record_generate_usage_and_responsiveness(
+        result,
+        model=(result.get("model") or model) if isinstance(result, Mapping) else model,
+        context=context,
+    )
 
     validate_generate_result_strict(
         result,
         json_output=json_output,
         model=(result.get("model") or model) if isinstance(result, dict) else model,
     )
+    if responsiveness.non_responsive:
+        _raise_non_responsive_output(responsiveness)
 
     if json_schema is not None:
         text, validation = _validate_schema_with_annotations(
@@ -1280,6 +1354,7 @@ def generate_with_result(
     num_retries: int | None = None,
     inference_retry_index: int = 0,
     local_exclusive_admission: bool = False,
+    enforce_responsiveness: bool = True,
 ) -> dict:
     """Generate text and return full result with usage data.
 
@@ -1357,21 +1432,22 @@ def generate_with_result(
         **provider_options,
     )
 
-    # Log token usage centrally (before validation so truncated responses
-    # still get their usage recorded)
-    if isinstance(result, dict) and result.get("usage"):
-        log_token_usage(
-            model=result.get("model") or model,
-            usage=result["usage"],
-            context=context,
-            type="generate",
-        )
+    # Log token usage centrally before validation so truncated responses
+    # still get their usage recorded.
+    responsiveness = _record_generate_usage_and_responsiveness(
+        result,
+        model=(result.get("model") or model) if isinstance(result, Mapping) else model,
+        context=context,
+        enforce_responsiveness=enforce_responsiveness,
+    )
 
     validate_generate_result_strict(
         result,
         json_output=json_output,
         model=(result.get("model") or model) if isinstance(result, dict) else model,
     )
+    if responsiveness.non_responsive:
+        _raise_non_responsive_output(responsiveness)
 
     if json_schema is not None:
         text, validation = _validate_schema_with_annotations(
@@ -1425,19 +1501,19 @@ async def agenerate_with_result(
         **provider_options,
     )
 
-    if isinstance(result, dict) and result.get("usage"):
-        log_token_usage(
-            model=result.get("model") or model,
-            usage=result["usage"],
-            context=context,
-            type="generate",
-        )
+    responsiveness = _record_generate_usage_and_responsiveness(
+        result,
+        model=(result.get("model") or model) if isinstance(result, Mapping) else model,
+        context=context,
+    )
 
     validate_generate_result_strict(
         result,
         json_output=json_output,
         model=(result.get("model") or model) if isinstance(result, dict) else model,
     )
+    if responsiveness.non_responsive:
+        _raise_non_responsive_output(responsiveness)
 
     if json_schema is not None:
         text, validation = _validate_schema_with_annotations(
@@ -1528,21 +1604,21 @@ async def agenerate(
         **provider_options,
     )
 
-    # Log token usage centrally (before validation so truncated responses
-    # still get their usage recorded)
-    if isinstance(result, dict) and result.get("usage"):
-        log_token_usage(
-            model=result.get("model") or model,
-            usage=result["usage"],
-            context=context,
-            type="generate",
-        )
+    # Log token usage centrally before validation so truncated responses
+    # still get their usage recorded.
+    responsiveness = _record_generate_usage_and_responsiveness(
+        result,
+        model=(result.get("model") or model) if isinstance(result, Mapping) else model,
+        context=context,
+    )
 
     validate_generate_result_strict(
         result,
         json_output=json_output,
         model=(result.get("model") or model) if isinstance(result, dict) else model,
     )
+    if responsiveness.non_responsive:
+        _raise_non_responsive_output(responsiveness)
 
     if json_schema is not None:
         text, validation = _validate_schema_with_annotations(

@@ -6,6 +6,7 @@
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,9 +53,31 @@ from solstone.think.models import (
     model_supports,
     resolve_provider,
 )
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS,
+    NON_RESPONSIVE_REASON_CODE,
+    NonResponsiveOutputError,
+)
 from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 
 _FINISH_METADATA_MARKER = "zq7marker9x"
+_NON_RESPONSIVE_REFUSAL = "I cannot describe this screen."
+_RESPONSIVE_CHAT_FIXTURE = {
+    "message": "The release check passed and Noah owns the follow-up.",
+    "notes": "The owner asked about the release, so I summarized the check result.",
+    "talent_request": None,
+}
+_REFUSAL_CHAT_FIXTURE = {
+    "message": _NON_RESPONSIVE_REFUSAL,
+    "notes": "The owner asked about the release, so I summarized the check result.",
+    "talent_request": None,
+}
+_GENERATE_USAGE = {
+    "input_tokens": 11,
+    "output_tokens": 3,
+    "reasoning_tokens": 2,
+    "total_tokens": 16,
+}
 
 
 def _fresh_generate_result(text: str):
@@ -62,6 +85,38 @@ def _fresh_generate_result(text: str):
         return {"text": text, "finish_reason": "stop"}
 
     return make_result
+
+
+def _generate_result(
+    text: str,
+    *,
+    usage: dict | None = None,
+    finish_reason: str = "stop",
+    model: str = "provider-model",
+) -> dict:
+    result = {"text": text, "model": model, "finish_reason": finish_reason}
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
+def _provider_module_for_result(result: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        run_generate=MagicMock(return_value=result),
+        run_agenerate=AsyncMock(return_value=result),
+    )
+
+
+def _call_generate_entrypoint(entrypoint: str, **kwargs):
+    if entrypoint == "generate":
+        return generate("hello", "test.context", **kwargs)
+    if entrypoint == "generate_with_result":
+        return generate_with_result("hello", "test.context", **kwargs)
+    if entrypoint == "agenerate_with_result":
+        return asyncio.run(agenerate_with_result("hello", "test.context", **kwargs))
+    if entrypoint == "agenerate":
+        return asyncio.run(agenerate("hello", "test.context", **kwargs))
+    raise AssertionError(entrypoint)
 
 
 def test_calc_token_cost_basic():
@@ -1497,6 +1552,364 @@ class TestGenerateJsonSchemaPlumbing:
         exc = exc_info.value
         assert exc.reason == "unknown"
         _assert_exception_metadata_omits_marker(exc, marker)
+
+    @pytest.mark.parametrize(
+        "entrypoint",
+        ["generate", "generate_with_result", "agenerate_with_result", "agenerate"],
+    )
+    def test_all_generate_entrypoints_reject_bare_non_responsive_output(
+        self,
+        entrypoint,
+    ):
+        result = _generate_result(_NON_RESPONSIVE_REFUSAL, usage=_GENERATE_USAGE)
+        provider_module = _provider_module_for_result(result)
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+        ):
+            with pytest.raises(NonResponsiveOutputError) as exc_info:
+                _call_generate_entrypoint(entrypoint)
+
+        exc = exc_info.value
+        assert exc.reason_code == NON_RESPONSIVE_REASON_CODE
+        assert exc.non_responsive_output == _NON_RESPONSIVE_REFUSAL
+        assert exc.non_responsive_matched_signal == "i cannot"
+        mock_log_usage.assert_called_once_with(
+            model="provider-model",
+            usage=_GENERATE_USAGE,
+            context="test.context",
+            type="generate",
+            non_responsive_output=_NON_RESPONSIVE_REFUSAL,
+            non_responsive_matched_signal="i cannot",
+        )
+
+    @pytest.mark.parametrize(
+        "entrypoint",
+        ["generate", "generate_with_result", "agenerate_with_result", "agenerate"],
+    )
+    def test_all_generate_entrypoints_reject_chat_schema_message_refusal(
+        self,
+        entrypoint,
+    ):
+        provider_module = _provider_module_for_result(
+            _generate_result(json.dumps(_REFUSAL_CHAT_FIXTURE), usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage"),
+        ):
+            with pytest.raises(NonResponsiveOutputError) as exc_info:
+                _call_generate_entrypoint(entrypoint)
+
+        assert exc_info.value.non_responsive_output == json.dumps(_REFUSAL_CHAT_FIXTURE)
+
+    @pytest.mark.parametrize(
+        "entrypoint",
+        ["generate", "generate_with_result", "agenerate_with_result", "agenerate"],
+    )
+    def test_all_generate_entrypoints_accept_responsive_chat_schema_fixture(
+        self,
+        entrypoint,
+    ):
+        provider_module = _provider_module_for_result(
+            _generate_result(
+                json.dumps(_RESPONSIVE_CHAT_FIXTURE), usage=_GENERATE_USAGE
+            )
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+        ):
+            result = _call_generate_entrypoint(entrypoint)
+
+        text = result["text"] if isinstance(result, dict) else result
+        assert json.loads(text) == _RESPONSIVE_CHAT_FIXTURE
+        mock_log_usage.assert_called_once_with(
+            model="provider-model",
+            usage=_GENERATE_USAGE,
+            context="test.context",
+            type="generate",
+        )
+
+    def test_non_responsive_usage_log_carries_capped_raw_output(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        raw_output = _NON_RESPONSIVE_REFUSAL + " " + ("overflow " * 200)
+        provider_module = _provider_module_for_result(
+            _generate_result(raw_output, usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            pytest.raises(NonResponsiveOutputError),
+        ):
+            generate_with_result("hello", "test.context")
+
+        [entry] = list(iter_token_log(time.strftime("%Y%m%d")))
+        assert (
+            entry["non_responsive_output"]
+            == raw_output[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS]
+        )
+        assert (
+            len(entry["non_responsive_output"]) == NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS
+        )
+        assert raw_output not in json.dumps(entry)
+
+    def test_non_responsive_token_log_append_preserves_existing_bytes(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        token_dir = tmp_path / "tokens"
+        token_dir.mkdir()
+        log_file = token_dir / f"{time.strftime('%Y%m%d')}.jsonl"
+        prior_lines = [
+            b'{"old":1,"payload":"kept exactly"}\n',
+            b'{"old":2,"payload":"also kept"}\n',
+        ]
+        log_file.write_bytes(b"".join(prior_lines))
+        provider_module = _provider_module_for_result(
+            _generate_result(_NON_RESPONSIVE_REFUSAL, usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            pytest.raises(NonResponsiveOutputError),
+        ):
+            generate_with_result("hello", "test.context")
+
+        lines = log_file.read_bytes().splitlines(keepends=True)
+        assert lines[: len(prior_lines)] == prior_lines
+        assert len(lines) == len(prior_lines) + 1
+        appended = json.loads(lines[-1])
+        assert appended["non_responsive_output"] == _NON_RESPONSIVE_REFUSAL
+
+    def test_non_responsive_without_usage_logs_empty_usage_and_raw_output(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        provider_module = _provider_module_for_result(
+            _generate_result(_NON_RESPONSIVE_REFUSAL)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            pytest.raises(NonResponsiveOutputError),
+        ):
+            generate_with_result("hello", "test.context")
+
+        [entry] = list(iter_token_log(time.strftime("%Y%m%d")))
+        assert entry["usage"] == {}
+        assert entry["non_responsive_output"] == _NON_RESPONSIVE_REFUSAL
+
+    def test_non_responsive_token_log_survives_lone_surrogate_roundtrip(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        raw_output = f"{_NON_RESPONSIVE_REFUSAL}\ud800"
+
+        models_module.log_token_usage(
+            model="provider-model",
+            usage={},
+            context="test.context",
+            type="generate",
+            non_responsive_output=raw_output,
+        )
+
+        entries = list(iter_token_log(time.strftime("%Y%m%d")))
+        assert len(entries) == 1
+        assert entries[0]["non_responsive_output"] == raw_output
+
+    def test_truncation_wins_over_non_responsive_output(self):
+        provider_module = _provider_module_for_result(
+            _generate_result(
+                _NON_RESPONSIVE_REFUSAL,
+                usage=_GENERATE_USAGE,
+                finish_reason="length",
+            )
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage"),
+        ):
+            with pytest.raises(IncompleteJSONError):
+                generate_with_result("hello", "test.context", json_output=True)
+
+    def test_responsiveness_classifier_exception_surfaces_outside_token_logging(
+        self,
+        caplog,
+    ):
+        class ClassifierFailure(RuntimeError):
+            pass
+
+        provider_module = _provider_module_for_result(
+            _generate_result("ordinary visible text", usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch(
+                "solstone.think.models.classify_output_responsiveness",
+                side_effect=ClassifierFailure("classifier down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="solstone.think.models"),
+        ):
+            with pytest.raises(ClassifierFailure):
+                generate_with_result("hello", "test.context")
+
+        assert "failed to log token usage" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "entrypoint",
+        ["generate", "generate_with_result", "agenerate_with_result", "agenerate"],
+    )
+    def test_generate_entrypoints_keep_existing_log_call_for_responsive_outputs(
+        self,
+        entrypoint,
+    ):
+        provider_module = _provider_module_for_result(
+            _generate_result("The release check passed.", usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+        ):
+            _call_generate_entrypoint(entrypoint)
+
+        mock_log_usage.assert_called_once_with(
+            model="provider-model",
+            usage=_GENERATE_USAGE,
+            context="test.context",
+            type="generate",
+        )
+
+    def test_non_responsive_usage_log_omits_additive_keys_when_responsive(self):
+        result = _generate_result("The release check passed.", usage=_GENERATE_USAGE)
+        result["notes"] = _NON_RESPONSIVE_REFUSAL
+        provider_module = _provider_module_for_result(result)
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+        ):
+            assert generate_with_result("hello", "test.context") is result
+
+        kwargs = mock_log_usage.call_args.kwargs
+        assert "non_responsive_output" not in kwargs
+        assert "non_responsive_matched_signal" not in kwargs
+
+    def test_generate_with_result_can_disable_responsiveness_gate_for_brain_probe(self):
+        provider_module = _provider_module_for_result(
+            _generate_result(_NON_RESPONSIVE_REFUSAL, usage=_GENERATE_USAGE)
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider",
+                return_value=("fake", "requested-model"),
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models.log_token_usage") as mock_log_usage,
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                enforce_responsiveness=False,
+            )
+
+        assert result["text"] == _NON_RESPONSIVE_REFUSAL
+        mock_log_usage.assert_called_once_with(
+            model="provider-model",
+            usage=_GENERATE_USAGE,
+            context="test.context",
+            type="generate",
+        )
 
     @pytest.mark.parametrize("text", ["", "   ", None, 123])
     @pytest.mark.parametrize(
