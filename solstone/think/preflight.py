@@ -31,11 +31,11 @@ from solstone.think.probe import (
     check_result_to_json_dict,
     config_dir_readable_check,
     disk_space_check,
-    has_execution_error,
     local_bin_sol_reachable_check,
     make_result,
     platform_tag,
     python_version_check,
+    results_failed,
     run_check,
     solstone_core_rust_toolchain_check,
     status_label,
@@ -138,8 +138,4 @@ def main(argv: Sequence[str] | None = None) -> int:
         emit_json(results)
     else:
         emit_text(results, verbose=args.verbose)
-    blocker_failed = any(
-        result.severity == "blocker" and result.status == "fail" for result in results
-    )
-    execution_failed = any(has_execution_error(result) for result in results)
-    return 1 if execution_failed or blocker_failed else 0
+    return 1 if results_failed(results) else 0

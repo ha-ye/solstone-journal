@@ -70,6 +70,7 @@ from solstone.think.probe import (
     local_bin_sol_reachable_check,
     make_result,
     platform_tag,
+    results_failed,
     run_check,
     run_probe,
     status_label,
@@ -1678,11 +1679,7 @@ def solstone_version() -> str:
 
 
 def jsonl_summary_status(results: Sequence[CheckResult]) -> str:
-    if any(has_execution_error(result) for result in results):
-        return "failed"
-    if any(
-        result.severity == "blocker" and result.status == "fail" for result in results
-    ):
+    if results_failed(results):
         return "failed"
     if any(
         result.status == "warn"
@@ -1751,8 +1748,4 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         emit_text(results, verbose=args.verbose)
-    blocker_failed = any(
-        result.severity == "blocker" and result.status == "fail" for result in results
-    )
-    execution_failed = any(has_execution_error(result) for result in results)
-    return 1 if execution_failed or blocker_failed else 0
+    return 1 if results_failed(results) else 0

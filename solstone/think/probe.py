@@ -249,15 +249,19 @@ def run_check(
 def summary_counts(results: Sequence[CheckResult]) -> dict[str, int]:
     return {
         "total": len(results),
-        "failed": sum(
-            1
-            for result in results
-            if result.status == "fail" or has_execution_error(result)
-        ),
+        "failed": sum(1 for result in results if result.status == "fail"),
         "warnings": sum(1 for result in results if result.status == "warn"),
         "skipped": sum(1 for result in results if result.status == "skip"),
         "errors": sum(1 for result in results if has_execution_error(result)),
     }
+
+
+def results_failed(results: Sequence[CheckResult]) -> bool:
+    return any(
+        has_execution_error(result)
+        or (result.severity == "blocker" and result.status == "fail")
+        for result in results
+    )
 
 
 def status_label(result: CheckResult) -> str:

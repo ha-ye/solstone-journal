@@ -170,6 +170,45 @@ def test_main_isolates_execution_error_and_continues(preflight, monkeypatch, cap
     )
 
 
+def test_main_json_carries_structured_execution_error(preflight, monkeypatch, capsys):
+    before_check = preflight.Check("before_check", "blocker", ("linux", "darwin"))
+    raising_check = preflight.Check("raising_check", "advisory", ("linux", "darwin"))
+    after_check = preflight.Check("after_check", "blocker", ("linux", "darwin"))
+
+    def before(_args):
+        return preflight.make_result(before_check, "ok", "before complete")
+
+    def raising(_args):
+        raise RuntimeError("boom")
+
+    def after(_args):
+        return preflight.make_result(after_check, "ok", "after complete")
+
+    monkeypatch.setattr(
+        preflight,
+        "CHECKS",
+        [
+            (before_check, before),
+            (raising_check, raising),
+            (after_check, after),
+        ],
+    )
+
+    rc = preflight.main(["--json"])
+    payload = json.loads(capsys.readouterr().out)
+    by_name = {check["name"]: check for check in payload["checks"]}
+
+    assert rc == 1
+    assert by_name["raising_check"]["execution_error"] == {
+        "type": "RuntimeError",
+        "message": "boom",
+    }
+    assert by_name["before_check"]["execution_error"] is None
+    assert by_name["after_check"]["execution_error"] is None
+    assert payload["summary"]["errors"] == 1
+    assert payload["summary"]["errors"] <= payload["summary"]["failed"]
+
+
 def test_python_version_ok(preflight, probe, monkeypatch, tmp_path):
     repo = make_repo(tmp_path)
     monkeypatch.setattr(probe, "ROOT", repo)
