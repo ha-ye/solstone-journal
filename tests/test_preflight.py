@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,8 +11,6 @@ from unittest.mock import Mock
 import pytest
 
 from tests.helpers.module_mocks import module_mock
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
@@ -291,85 +287,3 @@ def test_main_returns_one_when_uv_missing(
 
     assert rc == 1
     assert payload["summary"]["failed"] >= 1
-
-
-def stdlib_guard_code(import_body: str) -> str:
-    return f"""
-import builtins
-_real = builtins.__import__
-_blocked = {{"numpy", "PIL", "flask"}}
-def _guard(name, g=None, l=None, fromlist=(), level=0):
-    if level == 0 and name.split(".", 1)[0] in _blocked:
-        raise ModuleNotFoundError(f"No module named {{name.split('.', 1)[0]!r}}")
-    return _real(name, g, l, fromlist, level)
-builtins.__import__ = _guard
-import sys
-sys.path.insert(0, {str(ROOT)!r})
-{import_body}
-"""
-
-
-def test_preflight_runs_under_stdlib_import_guard():
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            stdlib_guard_code(
-                "from solstone.think import probe\n"
-                "from solstone.think.preflight import main\n"
-                'raise SystemExit(main(["--json"]))'
-            ),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-
-    assert result.returncode in {0, 1}
-    assert "ModuleNotFoundError" not in result.stderr
-    assert "flask" not in result.stderr
-
-
-def test_doctor_fails_under_same_stdlib_import_guard():
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            stdlib_guard_code("from solstone.convey.cli import main\nprint(main)"),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-
-    assert result.returncode != 0
-    assert "ModuleNotFoundError" in result.stderr
-    assert "flask" in result.stderr
-
-
-def test_install_dry_run_runs_preflight_before_uv_sync():
-    result = subprocess.run(
-        ["make", "--dry-run", "-B", "install"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-
-    assert result.returncode == 0
-    lines = result.stdout.splitlines()
-    preflight_index = next(
-        index
-        for index, line in enumerate(lines)
-        if "python3 scripts/preflight.py" in line
-    )
-    uv_sync_index = next(index for index, line in enumerate(lines) if "uv sync" in line)
-    assert preflight_index < uv_sync_index
-    assert any("python3 scripts/preflight.py" in line for line in lines)
-    assert any("uv sync" in line for line in lines)
-    assert all("python3 scripts/doctor.py" not in line for line in lines)

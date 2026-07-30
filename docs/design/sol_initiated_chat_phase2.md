@@ -276,12 +276,10 @@ IIFE consumes it. Observer cards may also consume it later.
 
 Constants discipline:
 
-- `tests/test_sol_initiated_constants_locked.py:11-25` currently locks Python
-  and markdown literals only.
-- Extend it to scan `solstone/convey/static/sol_initiated_constants.js` as an
-  allowed contract file.
-- Add assertions that the JS literal values match
-  `solstone/convey/sol_initiated/copy.py:6-9` and that the tooltip literal has a
+- `solstone/convey/static/sol_initiated_constants.js` is the centralized
+  browser contract.
+- Keep its literal values aligned with
+  `solstone/convey/sol_initiated/copy.py:6-9`, with the tooltip literal in a
   single home.
 
 ### D8. CSS pulse animation
@@ -432,9 +430,6 @@ Add or extend:
 - `solstone/apps/observer/tests/test_sol_chat_filter.py` or
   `solstone/apps/observer/tests/test_observer_client_sse.py`: filter helper
   returns normalized payloads for four kinds and `None` for non-chat frames.
-- `tests/test_sol_initiated_constants_locked.py`: include
-  `solstone/convey/static/sol_initiated_constants.js` and assert JS/Python
-  constants match.
 - Manual smoke: sol-ping renders, pulse clears after the
   test clock advances, open navigates to `/app/chat/<day>#event-<idx>`, dismiss
   clears all tabs.
@@ -466,9 +461,8 @@ Add or extend:
    `solstone/apps/observer/workspace.html:604-616` and `696-720`.
 10. Observer-side filter helper normalizes four kinds:
     `solstone/observe/sol_chat_filter.py`.
-11. JS constants are centralized and locked:
-    `solstone/convey/static/sol_initiated_constants.js`,
-    `tests/test_sol_initiated_constants_locked.py`.
+11. JS constants are centralized:
+    `solstone/convey/static/sol_initiated_constants.js`.
 12. Offline pulse behavior has deterministic test path:
     `solstone/convey/static/app.css`,
     `solstone/convey/templates/app.html`,

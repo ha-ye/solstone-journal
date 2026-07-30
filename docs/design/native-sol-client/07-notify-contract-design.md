@@ -338,7 +338,7 @@ Exact repoints:
   from `notify message` to `check message`.
 - `core/crates/solstone-core/tests/version.rs:411`: update asserted argv from
   `<notify><message>` to `<check><message>`.
-- `tests/test_check_access_imports_clean.py:27,30,31`: use
+- `scripts/check_access_imports_clean.py`: use
   `solstone.think.check` and `sol check --help [solstone.think.check]`.
 - `tests/test_sol_compat_cli.py:183`: use bare command string `check`.
 - `tests/test_sol.py:286,290`: use existing module `solstone.think.check` for

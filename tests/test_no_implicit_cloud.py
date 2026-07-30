@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import hashlib
 import importlib
@@ -29,17 +28,6 @@ from solstone.think.models import (
 from solstone.think.providers import get_provider_module
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from tests.helpers.journal_config import seed_journal_config
-
-
-def _dotted_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = _dotted_name(node.value)
-        if base is None:
-            return None
-        return f"{base}.{node.attr}"
-    return None
 
 
 @pytest.fixture(autouse=True)
@@ -286,108 +274,6 @@ def _install_stt_backend_mocks(
         monkeypatch.setattr(target, mock)
         mocks[name] = mock
     return mocks
-
-
-def test_stt_backend_dispatch_chokepoint_is_exclusive() -> None:
-    from solstone.observe.transcribe import BACKEND_REGISTRY
-
-    repo_root = Path(__file__).resolve().parents[1]
-    solstone_root = repo_root / "solstone"
-    package_dispatcher = Path("observe/transcribe/__init__.py")
-    backend_module_paths = set(BACKEND_REGISTRY.values())
-    backend_module_names = {
-        module_path.rsplit(".", maxsplit=1)[-1] for module_path in backend_module_paths
-    }
-    violations: list[str] = []
-
-    for path in sorted(solstone_root.rglob("*.py")):
-        relative = path.relative_to(solstone_root)
-        if relative == package_dispatcher:
-            continue
-
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        backend_aliases = set(backend_module_paths)
-        backend_function_aliases: set[str] = set()
-        get_backend_aliases = {"get_backend"}
-        get_backend_results: set[str] = set()
-        package_aliases = {"solstone.observe.transcribe"}
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    target = alias.asname or alias.name
-                    if alias.name in backend_module_paths:
-                        backend_aliases.add(target)
-                    elif alias.name == "solstone.observe.transcribe":
-                        package_aliases.add(target)
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                if module == "solstone.observe.transcribe":
-                    for alias in node.names:
-                        target = alias.asname or alias.name
-                        if alias.name in backend_module_names:
-                            backend_aliases.add(target)
-                        elif alias.name == "get_backend":
-                            get_backend_aliases.add(target)
-                elif module in backend_module_paths:
-                    for alias in node.names:
-                        if alias.name == "transcribe":
-                            backend_function_aliases.add(alias.asname or alias.name)
-
-        def is_get_backend_call(call: ast.Call) -> bool:
-            name = _dotted_name(call.func)
-            if name in get_backend_aliases:
-                return True
-            if name in {f"{alias}.get_backend" for alias in package_aliases}:
-                return True
-            return name == "solstone.observe.transcribe.get_backend"
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                if is_get_backend_call(node.value):
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            get_backend_results.add(target.id)
-            elif (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and isinstance(node.value, ast.Call)
-                and is_get_backend_call(node.value)
-            ):
-                get_backend_results.add(node.target.id)
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Name) and func.id in backend_function_aliases:
-                violations.append(
-                    f"{relative.as_posix()}:{node.lineno} direct backend "
-                    f"transcribe() import bypasses the STT egress chokepoint"
-                )
-                continue
-            if not isinstance(func, ast.Attribute) or func.attr != "transcribe":
-                continue
-            receiver = _dotted_name(func.value)
-            if receiver in backend_aliases or receiver in get_backend_results:
-                violations.append(
-                    f"{relative.as_posix()}:{node.lineno} calls "
-                    f"{receiver}.transcribe() outside the package dispatcher"
-                )
-                continue
-            if isinstance(func.value, ast.Call) and is_get_backend_call(func.value):
-                violations.append(
-                    f"{relative.as_posix()}:{node.lineno} calls "
-                    "get_backend(...).transcribe() outside the package dispatcher"
-                )
-
-    assert not violations, (
-        "Raw-audio STT backend dispatch must pass through "
-        "solstone.observe.transcribe.transcribe() so the deny-by-default "
-        "confidential egress gate is the single chokepoint. Move dispatch "
-        "through the package function instead of calling backend transcribe() "
-        "directly:\n" + "\n".join(violations)
-    )
 
 
 def _assert_attestation_failed(

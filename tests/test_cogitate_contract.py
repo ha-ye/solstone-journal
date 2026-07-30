@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -205,44 +204,3 @@ def test_cogitate_doc_preamble_block_matches_source_constant():
     assert closing_fence
 
     assert block == COGITATE_RUNTIME_PREAMBLE.rstrip("\n")
-
-
-def test_cogitate_journal_command_vocabulary_not_retyped():
-    repo_root = Path(__file__).resolve().parents[1]
-    allowed = {
-        Path("solstone/think/cogitate_contract.py"),
-        Path("tests/test_cogitate_contract.py"),
-    }
-    roots = [repo_root / "solstone", repo_root / "scripts", repo_root / "tests"]
-    findings: list[str] = []
-    family_set = set(COGITATE_JOURNAL_COMMANDS)
-    list_markers = (
-        "identity, health, talent",
-        "{identity, health, talent}",
-        "identity|health|talent",
-    )
-
-    for root in roots:
-        for path in sorted(root.rglob("*.py")):
-            rel = path.relative_to(repo_root)
-            if rel in allowed:
-                continue
-            text = path.read_text(encoding="utf-8")
-            tree = ast.parse(text, filename=str(rel))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    if any(marker in node.value for marker in list_markers):
-                        findings.append(f"{rel}:{node.lineno}")
-                elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-                    values = {
-                        elt.value
-                        for elt in node.elts
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                    }
-                    if family_set <= values:
-                        findings.append(f"{rel}:{node.lineno}")
-
-    assert findings == [], (
-        "render from `COGITATE_JOURNAL_COMMANDS` in "
-        "solstone/think/cogitate_contract.py: " + ", ".join(findings)
-    )

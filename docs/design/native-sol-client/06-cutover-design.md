@@ -428,14 +428,10 @@ Modify:
 - `scripts/normalize_maturin_sdist.py`
 - `scripts/check_wheel_contents.py`
 - `scripts/check_rust_release_manifest.py`
-- `tests/test_render_packaging.py`
 - `tests/test_normalize_maturin_sdist.py`
-- `tests/test_check_wheel_contents.py`
 - `tests/test_release_candidate_driver.py`
 - `tests/test_release_install_smoke.py`
-- `tests/test_release_install_smoke_distribution_enumeration.py`
 - `tests/test_release_native_records.py`
-- `tests/test_check_rust_release_manifest.py`
 - `tests/integration/test_solstone_core_wheel_install.py`
 - `tests/helpers/release_wheel_fixtures.py`
 
@@ -481,7 +477,6 @@ Modify:
 - `core/crates/solstone-core-sol/src/main.rs`
 - `scripts/check_native_sol_no_python_spawn.py`
 - `scripts/check_access_imports_clean.py`
-- `tests/test_check_access_imports_clean.py`
 - `tests/test_access_imports_lazy.py`
 - `tests/test_sol_cli_help.py`
 - `tests/test_sol_service_hard_error.py`

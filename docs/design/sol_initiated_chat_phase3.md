@@ -58,9 +58,6 @@ Add constants for:
 - throttled-log empty and error states
 - APNs category `SOLSTONE_SOL_CHAT_REQUEST`
 
-`tests/test_sol_initiated_constants_locked.py` must add this design doc to
-`ALLOWED_PATHS`, because the doc necessarily names locked literals.
-
 ## D1: Per-Category Clear-Marker Schema
 
 Chosen option: clean rename.
@@ -290,11 +287,10 @@ Second-order consequences:
 
 ## File-By-File Change List
 
-Group 1 - constants + design doc + test allowlist:
+Group 1 - constants + design doc:
 
 - NEW `docs/design/sol_initiated_chat_phase3.md` (this doc)
 - EDIT `solstone/convey/sol_initiated/copy.py`: add phase-3 constants for every Jinja-rendered string in the new chat origin-tag UI, settings section, and provenance toggle. Enumerate them in the design doc.
-- EDIT `tests/test_sol_initiated_constants_locked.py`: add `docs/design/sol_initiated_chat_phase3.md` to ALLOWED_PATHS.
 
 Group 2 - settings schema rename:
 

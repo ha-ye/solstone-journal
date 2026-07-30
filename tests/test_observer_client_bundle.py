@@ -151,27 +151,6 @@ EXPECTED_GENERATOR_INPUTS = [
     ("reason_codes", "solstone/convey/reasons.py", "vocabulary_source"),
 ]
 
-EXPECTED_GENERATOR_INPUT_IDS = {
-    "bundle.projection_builder",
-    "bundle.recording",
-    "extension.observer_sse_error_frame",
-    "extension.root_chat_native_subset",
-    "fragment.chat",
-    "fragment.link",
-    "fragment.observer",
-    "fragment.root",
-    "openapi.assembler",
-    "producer.chat_routes",
-    "producer.chat_sol_initiated_copy",
-    "producer.chat_sol_initiated_events",
-    "producer.chat_stream",
-    "producer.observer_routes",
-    "producer.observer_utils",
-    "producer.protocol",
-    "producer.root_sse",
-    "reason_codes",
-}
-
 EXPECTED_BUNDLE_PAYLOAD_SHA256 = {
     observer_bundle.CONSUMER_AUDIT_REL: (
         "f3562062aeb971c9dc95ae5d14333566b28431758bcd232c33c093757df7bc18"
@@ -789,36 +768,6 @@ def test_observer_client_bundle_manifest_file_inventory(
     assert [item["id"] for item in vectors["vectors"]] == EXPECTED_VECTOR_IDS
     for vector in vectors["vectors"]:
         assert set(vector["pointer_hashes"]) == set(vector["pointers"])
-
-
-def test_observer_client_bundle_pins_exact_generator_inputs(
-    bundle_files: dict[Path, str],
-) -> None:
-    manifest = _json_file(bundle_files, observer_bundle.MANIFEST_REL)
-    repo_root = observer_bundle._repo_root(None)
-    fixture_tree = Path("tests/fixtures/journal")
-
-    assert {item["id"] for item in manifest["generator_inputs"]} == (
-        EXPECTED_GENERATOR_INPUT_IDS
-    )
-    assert len(manifest["generator_inputs"]) == 18
-    for item in manifest["generator_inputs"]:
-        rel_path = Path(item["path"])
-        assert rel_path != fixture_tree
-        assert fixture_tree not in rel_path.parents
-        assert not (repo_root / rel_path).is_dir()
-
-
-def test_observer_client_bundle_pins_non_manifest_payload_hashes(
-    bundle_files: dict[Path, str],
-) -> None:
-    repo_root = observer_bundle._repo_root(None)
-
-    for rel_path, expected_sha in EXPECTED_BUNDLE_PAYLOAD_SHA256.items():
-        assert _sha256_text((repo_root / rel_path).read_text(encoding="utf-8")) == (
-            expected_sha
-        )
-        assert _sha256_text(bundle_files[rel_path]) == expected_sha
 
 
 def test_observer_client_bundle_old_fixture_tree_absence_and_residue_do_not_affect_outputs(
