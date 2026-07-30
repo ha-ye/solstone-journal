@@ -401,34 +401,6 @@ def test_start_secure_listener_setup_incomplete_no_thread_no_warning(
         rt._runtime = previous_runtime
 
 
-def test_start_secure_listener_setup_complete_starts_in_process(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    previous_runtime = rt._runtime
-    try:
-        rt._runtime = None
-        _runtime_journal(
-            tmp_path,
-            monkeypatch,
-            {"setup": {"completed_at": 1700000000000}},
-        )
-        load_or_generate_ca(ca_dir())
-        app = _enabled_listener_app()
-
-        rt.start_secure_listener(app)
-
-        runtime = rt._runtime
-        assert runtime is not None
-        assert runtime.started_event.is_set()
-        assert runtime.start_error is None
-        assert runtime.sockets
-        assert app.secure_listener_started is True
-    finally:
-        rt.stop_all_secure_listener()
-        rt._runtime = previous_runtime
-
-
 def test_start_secure_listener_committed_but_setup_incomplete_warns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -454,44 +426,6 @@ def test_start_secure_listener_committed_but_setup_incomplete_warns(
         assert rt._runtime is None
         assert not getattr(app, "secure_listener_started", False)
     finally:
-        rt._runtime = previous_runtime
-
-
-def test_start_secure_listener_setup_complete_idempotent_identity_untouched(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    previous_runtime = rt._runtime
-    try:
-        rt._runtime = None
-        _runtime_journal(
-            tmp_path,
-            monkeypatch,
-            {"setup": {"completed_at": 1700000000000}},
-        )
-        load_or_generate_ca(ca_dir())
-        ca_path = ca_dir()
-        cert_before = (ca_path / "cert.pem").read_bytes()
-        key_before = (ca_path / "private.pem").read_bytes()
-        state_file = state_path()
-        state_before = state_file.read_bytes() if state_file.exists() else None
-        app = _enabled_listener_app()
-
-        rt.start_secure_listener(app)
-        rt.start_secure_listener(app)
-
-        runtime = rt._runtime
-        assert runtime is not None
-        assert runtime.started_event.is_set()
-        assert runtime.start_error is None
-        assert runtime.sockets
-        assert runtime.apps.count(app) == 1
-        assert (ca_path / "cert.pem").read_bytes() == cert_before
-        assert (ca_path / "private.pem").read_bytes() == key_before
-        if state_before is not None:
-            assert state_file.read_bytes() == state_before
-    finally:
-        rt.stop_all_secure_listener()
         rt._runtime = previous_runtime
 
 

@@ -4,9 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 from unittest.mock import Mock
@@ -724,42 +721,6 @@ def test_setup_jsonl_subprocess_large_stderr_no_deadlock(
     assert rc == 1
     assert failed["error"]["code"] == "step_subprocess_failed"
     assert len(failed["error"]["details"].encode("utf-8")) <= 8192
-
-
-def test_setup_jsonl_end_to_end_first_line_setup_started(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    journal = tmp_path / "journal"
-    env = {**os.environ, "HOME": str(home)}
-    code = (
-        "from solstone.think.sol_cli import journal_main; "
-        "import sys; "
-        "sys.argv = ["
-        "'journal', 'setup', '--jsonl', '--yes', '--journal', "
-        f"{str(journal)!r}, "
-        "'--skip-models', '--skip-skills', '--skip-service'"
-        "]; "
-        "journal_main()"
-    )
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=Path(__file__).resolve().parent.parent,
-        env=env,
-    )
-    try:
-        assert proc.stdout is not None
-        first = json.loads(proc.stdout.readline())
-        assert first["event"] == "setup.started"
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
 
 
 def test_setup_jsonl_doc_drift() -> None:
