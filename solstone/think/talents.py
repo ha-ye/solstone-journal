@@ -22,6 +22,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,8 @@ LOG = logging.getLogger("solstone.think.talents")
 # retry above this floor perturbs the sampler out of a repetition attractor.
 # This is a floor, not a base: talent-owned temperature above it is preserved.
 _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR = 0.7
+_GENERATE_PROGRESS_INTERVAL_S = 5.0
+_GENERATE_PROGRESS_JOIN_TIMEOUT_S = 1.0
 
 # Minimum content length for transcript-based generation
 MIN_INPUT_CHARS = 50
@@ -140,6 +143,7 @@ class JSONEventWriter:
         self.path = path
         self.file = None
         self._pipe_dead = False
+        self._emit_lock = threading.Lock()
         if path:
             try:
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -148,21 +152,27 @@ class JSONEventWriter:
                 LOG.warning("Failed to open JSON event sidecar %s: %s", path, exc)
 
     def emit(self, data: Event) -> None:
-        line = json.dumps(data, ensure_ascii=False)
-        if not self._pipe_dead:
-            try:
-                print(line)
-                sys.stdout.flush()  # Ensure immediate output for cortex
-            except (BrokenPipeError, OSError) as exc:
-                if not isinstance(exc, BrokenPipeError) and exc.errno != errno.EPIPE:
-                    raise
-                self._pipe_dead = True
-        if self.file:
-            try:
-                self.file.write(line + "\n")
-                self.file.flush()
-            except OSError as exc:
-                LOG.warning("Failed to write JSON event sidecar %s: %s", self.path, exc)
+        with self._emit_lock:
+            line = json.dumps(data, ensure_ascii=False)
+            if not self._pipe_dead:
+                try:
+                    print(line)
+                    sys.stdout.flush()  # Ensure immediate output for cortex
+                except (BrokenPipeError, OSError) as exc:
+                    if (
+                        not isinstance(exc, BrokenPipeError)
+                        and exc.errno != errno.EPIPE
+                    ):
+                        raise
+                    self._pipe_dead = True
+            if self.file:
+                try:
+                    self.file.write(line + "\n")
+                    self.file.flush()
+                except OSError as exc:
+                    LOG.warning(
+                        "Failed to write JSON event sidecar %s: %s", self.path, exc
+                    )
 
     def close(self) -> None:
         if self.file:
@@ -170,6 +180,81 @@ class JSONEventWriter:
                 self.file.close()
             except OSError as exc:
                 LOG.warning("Failed to close JSON event sidecar %s: %s", self.path, exc)
+
+
+class _GenerateProgressHeartbeat:
+    """Emit generation liveness events while synchronous provider calls block."""
+
+    def __init__(
+        self,
+        emit_event: Callable[[dict], None],
+        *,
+        talent_name: str,
+        day: object,
+        schedule: object,
+        interval_s: float | None = None,
+        join_timeout_s: float | None = None,
+    ) -> None:
+        self._emit_event = emit_event
+        self._talent_name = talent_name
+        self._day = day
+        self._schedule = schedule
+        self._interval_s = (
+            _GENERATE_PROGRESS_INTERVAL_S if interval_s is None else interval_s
+        )
+        self._join_timeout_s = (
+            _GENERATE_PROGRESS_JOIN_TIMEOUT_S
+            if join_timeout_s is None
+            else join_timeout_s
+        )
+        self._stop_event = threading.Event()
+        self._count_lock = threading.Lock()
+        self._count = 0
+        self._join_warning_logged = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"generate-progress-{talent_name}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop_and_join(self) -> None:
+        self._stop_event.set()
+        if not self._thread.is_alive():
+            return
+        self._thread.join(self._join_timeout_s)
+        if self._thread.is_alive() and not self._join_warning_logged:
+            self._join_warning_logged = True
+            # Do not raise here: preserving a successful generation beats
+            # protecting the diagnostics-only derived status from one late line.
+            LOG.error(
+                "generate progress heartbeat did not stop promptly talent=%s day=%s schedule=%s",
+                self._talent_name,
+                self._day,
+                self._schedule,
+            )
+
+    @property
+    def count(self) -> int:
+        with self._count_lock:
+            return self._count
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_s):
+            try:
+                self._emit_event({"event": "progress", "phase": "generate"})
+            except Exception:
+                LOG.exception(
+                    "generate progress heartbeat failed talent=%s day=%s schedule=%s",
+                    self._talent_name,
+                    self._day,
+                    self._schedule,
+                )
+                continue
+            with self._count_lock:
+                self._count += 1
 
 
 # =============================================================================
@@ -1282,19 +1367,22 @@ def _emit_terminal_hook_error(
     config: dict,
     emit_event: Callable[[dict], None],
     exc: TalentHookError,
+    *,
+    generate_progress_count: int | None = None,
 ) -> None:
     _mark_terminal_error_evented(config)
     setattr(exc, "_evented", True)
-    emit_event(
-        {
-            "event": "error",
-            "error": str(exc),
-            "reason_code": "hook_error",
-            "provider": config.get("provider"),
-            "terminal": True,
-            "ts": now_ms(),
-        }
-    )
+    event: dict[str, Any] = {
+        "event": "error",
+        "error": str(exc),
+        "reason_code": "hook_error",
+        "provider": config.get("provider"),
+        "terminal": True,
+        "ts": now_ms(),
+    }
+    if generate_progress_count is not None:
+        event["generate_progress_count"] = generate_progress_count
+    emit_event(event)
 
 
 from solstone.think.models import (
@@ -1407,6 +1495,7 @@ def _emit_terminal_generate_error(
     reason_code: str,
     raw: list[dict[str, Any]] | None = None,
     retries: int = 0,
+    generate_progress_count: int | None = None,
 ) -> None:
     _mark_terminal_error_evented(config)
     event: dict[str, Any] = {
@@ -1421,6 +1510,8 @@ def _emit_terminal_generate_error(
         event["raw"] = raw
     if retries:
         event["retries"] = retries
+    if generate_progress_count is not None:
+        event["generate_progress_count"] = generate_progress_count
     emit_event(event)
 
 
@@ -1593,123 +1684,146 @@ async def _execute_generate(
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
     retries = 0
     expected_fingerprint_sha256 = _capture_runtime_fingerprint(config)
+    heartbeat = _GenerateProgressHeartbeat(
+        emit_event,
+        talent_name=str(name),
+        day=config.get("day"),
+        schedule=config.get("schedule"),
+    )
+    heartbeat.start()
+
+    def _stop_generate_progress() -> int:
+        heartbeat.stop_and_join()
+        return heartbeat.count
+
     try:
-        gen_result = generate_with_result(
-            contents=contents,
-            context=context,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            thinking_budget=thinking_budget,
-            system_instruction=system_instruction,
-            json_output=is_json_output,
-            json_schema=runtime_json_schema,
-            timeout_s=timeout_s,
-        )
-    except ProviderResponseInvalidError as exc:
-        if _clean_stop_blank_response(exc):
-            _record_brain_runtime_failure(
-                "provider_response_invalid",
-                "generate",
-                expected_fingerprint_sha256=expected_fingerprint_sha256,
+        try:
+            gen_result = generate_with_result(
+                contents=contents,
+                context=context,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                thinking_budget=thinking_budget,
+                system_instruction=system_instruction,
+                json_output=is_json_output,
+                json_schema=runtime_json_schema,
+                timeout_s=timeout_s,
             )
-        _emit_terminal_generate_error(
-            config,
-            emit_event,
-            exc,
-            reason_code="provider_response_invalid",
-        )
-        return
-    except NonResponsiveOutputError as exc:
-        _emit_terminal_generate_error(
-            config,
-            emit_event,
-            exc,
-            reason_code=NON_RESPONSIVE_REASON_CODE,
-            raw=_non_responsive_raw(exc),
-        )
-        return
-    except Exception as exc:
-        provider = config.get("provider", "google")
-        if isinstance(exc, QuotaExhaustedError):
-            _record_brain_runtime_failure(
-                "provider_quota_exceeded",
-                "generate",
-                expected_fingerprint_sha256=expected_fingerprint_sha256,
+        except ProviderResponseInvalidError as exc:
+            if _clean_stop_blank_response(exc):
+                _record_brain_runtime_failure(
+                    "provider_response_invalid",
+                    "generate",
+                    expected_fingerprint_sha256=expected_fingerprint_sha256,
+                )
+            generate_progress_count = _stop_generate_progress()
+            _emit_terminal_generate_error(
+                config,
+                emit_event,
+                exc,
+                reason_code="provider_response_invalid",
+                generate_progress_count=generate_progress_count,
             )
-            exc._brain_runtime_recorded = True
-        if provider == NO_BRAIN_PROVIDER:
-            raise
-        if provider == "local":
-            reason_code = getattr(exc, "reason_code", None)
-            length_retry = (
-                isinstance(exc, IncompleteJSONError)
-                and reason_code == "incomplete_json_length"
+            return
+        except NonResponsiveOutputError as exc:
+            generate_progress_count = _stop_generate_progress()
+            _emit_terminal_generate_error(
+                config,
+                emit_event,
+                exc,
+                reason_code=NON_RESPONSIVE_REASON_CODE,
+                raw=_non_responsive_raw(exc),
+                generate_progress_count=generate_progress_count,
             )
-            capacity_retry = reason_code == "local_capacity_exhausted"
-            if not length_retry and not capacity_retry:
+            return
+        except Exception as exc:
+            provider = config.get("provider", "google")
+            if isinstance(exc, QuotaExhaustedError):
+                _record_brain_runtime_failure(
+                    "provider_quota_exceeded",
+                    "generate",
+                    expected_fingerprint_sha256=expected_fingerprint_sha256,
+                )
+                exc._brain_runtime_recorded = True
+            if provider == NO_BRAIN_PROVIDER:
                 raise
-            retries = 1
-            retry_temperature = temperature
-            retry_kwargs: dict[str, Any] = {"inference_retry_index": 1}
-            if length_retry:
-                LOG.warning(
-                    "Retrying local talent %s after incomplete JSON length limit "
-                    "(reason=%s)",
-                    name,
-                    exc.reason,
+            if provider == "local":
+                reason_code = getattr(exc, "reason_code", None)
+                length_retry = (
+                    isinstance(exc, IncompleteJSONError)
+                    and reason_code == "incomplete_json_length"
                 )
-                retry_temperature = max(
-                    temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR
-                )
-            else:
-                LOG.warning(
-                    "Retrying local talent %s after local capacity exhaustion",
-                    name,
-                )
-                retry_kwargs["local_exclusive_admission"] = True
-            try:
-                gen_result = generate_with_result(
-                    contents=contents,
-                    context=context,
-                    temperature=retry_temperature,
-                    max_output_tokens=max_output_tokens,
-                    thinking_budget=thinking_budget,
-                    system_instruction=system_instruction,
-                    json_output=is_json_output,
-                    json_schema=runtime_json_schema,
-                    timeout_s=timeout_s,
-                    **retry_kwargs,
-                )
-            except ProviderResponseInvalidError as retry_exc:
-                if _clean_stop_blank_response(retry_exc):
-                    _record_brain_runtime_failure(
-                        "provider_response_invalid",
-                        "generate",
-                        expected_fingerprint_sha256=expected_fingerprint_sha256,
+                capacity_retry = reason_code == "local_capacity_exhausted"
+                if not length_retry and not capacity_retry:
+                    raise
+                retries = 1
+                retry_temperature = temperature
+                retry_kwargs: dict[str, Any] = {"inference_retry_index": 1}
+                if length_retry:
+                    LOG.warning(
+                        "Retrying local talent %s after incomplete JSON length limit "
+                        "(reason=%s)",
+                        name,
+                        exc.reason,
                     )
-                _emit_terminal_generate_error(
-                    config,
-                    emit_event,
-                    retry_exc,
-                    reason_code="provider_response_invalid",
-                    retries=retries,
-                )
-                return
-            except NonResponsiveOutputError as retry_exc:
-                _emit_terminal_generate_error(
-                    config,
-                    emit_event,
-                    retry_exc,
-                    reason_code=NON_RESPONSIVE_REASON_CODE,
-                    raw=_non_responsive_raw(retry_exc),
-                    retries=retries,
-                )
-                return
-            except Exception as retry_exc:
-                retry_exc.retries = retries
+                    retry_temperature = max(
+                        temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR
+                    )
+                else:
+                    LOG.warning(
+                        "Retrying local talent %s after local capacity exhaustion",
+                        name,
+                    )
+                    retry_kwargs["local_exclusive_admission"] = True
+                try:
+                    gen_result = generate_with_result(
+                        contents=contents,
+                        context=context,
+                        temperature=retry_temperature,
+                        max_output_tokens=max_output_tokens,
+                        thinking_budget=thinking_budget,
+                        system_instruction=system_instruction,
+                        json_output=is_json_output,
+                        json_schema=runtime_json_schema,
+                        timeout_s=timeout_s,
+                        **retry_kwargs,
+                    )
+                except ProviderResponseInvalidError as retry_exc:
+                    if _clean_stop_blank_response(retry_exc):
+                        _record_brain_runtime_failure(
+                            "provider_response_invalid",
+                            "generate",
+                            expected_fingerprint_sha256=expected_fingerprint_sha256,
+                        )
+                    generate_progress_count = _stop_generate_progress()
+                    _emit_terminal_generate_error(
+                        config,
+                        emit_event,
+                        retry_exc,
+                        reason_code="provider_response_invalid",
+                        retries=retries,
+                        generate_progress_count=generate_progress_count,
+                    )
+                    return
+                except NonResponsiveOutputError as retry_exc:
+                    generate_progress_count = _stop_generate_progress()
+                    _emit_terminal_generate_error(
+                        config,
+                        emit_event,
+                        retry_exc,
+                        reason_code=NON_RESPONSIVE_REASON_CODE,
+                        raw=_non_responsive_raw(retry_exc),
+                        retries=retries,
+                        generate_progress_count=generate_progress_count,
+                    )
+                    return
+                except Exception as retry_exc:
+                    retry_exc.retries = retries
+                    raise
+            else:
                 raise
-        else:
-            raise
+    finally:
+        generate_progress_count = _stop_generate_progress()
 
     raw_result = gen_result["text"]
     if output_format == "md":
@@ -1728,7 +1842,12 @@ async def _execute_generate(
     try:
         result = _run_post_hooks(raw_result, config)
     except TalentHookError as exc:
-        _emit_terminal_hook_error(config, emit_event, exc)
+        _emit_terminal_hook_error(
+            config,
+            emit_event,
+            exc,
+            generate_progress_count=generate_progress_count,
+        )
         return
     if _expected_output_blank(config, raw_result, result):
         _mark_terminal_error_evented(config)
@@ -1740,6 +1859,7 @@ async def _execute_generate(
                 "provider": config.get("provider"),
                 "terminal": True,
                 "ts": now_ms(),
+                "generate_progress_count": generate_progress_count,
             }
         )
         return
@@ -1761,6 +1881,7 @@ async def _execute_generate(
             "provider": config.get("provider"),
             "terminal": True,
             "ts": now_ms(),
+            "generate_progress_count": generate_progress_count,
         }
         # Describes the raw provider text, not the post-hook candidate the gate
         # rejected: it can read valid=True when a hook produced invalid output.
@@ -1800,6 +1921,7 @@ async def _execute_generate(
         "cache_hit": False,
         "output_changed": output_changed,
         "completed_at_ms": completed_at_ms,
+        "generate_progress_count": generate_progress_count,
     }
     if usage_data:
         finish_event["usage"] = usage_data

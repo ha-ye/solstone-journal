@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -949,6 +950,72 @@ async def test_local_honest_retry_stays_same_provider(
     probe.assert_no_provider("google")
     probe.assert_no_provider("openai")
     probe.assert_no_provider("anthropic")
+
+
+@pytest.mark.asyncio
+async def test_local_honest_retry_heartbeat_spans_attempts_and_retry_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(talents_module, "_GENERATE_PROGRESS_INTERVAL_S", 0.01)
+    _write_test_config(
+        tmp_path,
+        provider="local",
+        model=LOCAL_MODEL,
+        interface="generate",
+        env={"GOOGLE_API_KEY": "test-google-key"},
+    )
+    windows: dict[str, float] = {}
+
+    def slow_warning(*_args: Any, **_kwargs: Any) -> None:
+        time.sleep(0.035)
+
+    monkeypatch.setattr(talents_module.LOG, "warning", slow_warning)
+
+    def active(count: int, _kwargs: dict[str, Any]) -> dict[str, Any]:
+        if count == 1:
+            windows["first_start"] = time.monotonic()
+            time.sleep(0.035)
+            windows["first_end"] = time.monotonic()
+            raise IncompleteJSONError("length", '{"partial":')
+        windows["second_start"] = time.monotonic()
+        time.sleep(0.035)
+        windows["second_end"] = time.monotonic()
+        return _result('{"ok": true}')
+
+    probe = _install_generate_probe(
+        monkeypatch,
+        active_provider="local",
+        active=active,
+    )
+    events: list[dict[str, Any]] = []
+    progress_times: list[float] = []
+
+    def emit_event(event: dict[str, Any]) -> None:
+        if event["event"] == "progress":
+            progress_times.append(time.monotonic())
+        events.append(event)
+
+    with _assert_config_unchanged(tmp_path):
+        await _execute_generate(
+            _generate_config(provider="local", model=LOCAL_MODEL),
+            emit_event,
+        )
+
+    assert probe.by_method("generate")[1].kwargs["inference_retry_index"] == 1
+    assert any(
+        windows["first_start"] <= ts <= windows["first_end"] for ts in progress_times
+    )
+    assert any(
+        windows["first_end"] <= ts <= windows["second_start"] for ts in progress_times
+    )
+    assert any(
+        windows["second_start"] <= ts <= windows["second_end"] for ts in progress_times
+    )
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["generate_progress_count"] == len(progress_times)
 
 
 @pytest.mark.asyncio

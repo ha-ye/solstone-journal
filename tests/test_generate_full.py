@@ -13,7 +13,10 @@ import asyncio
 import importlib
 import io
 import json
+import logging
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -112,6 +115,14 @@ def _write_ready_brain_record(
         _BRAIN_NOW,
         journal_path=tmp_path,
     )
+
+
+def _live_generate_progress_threads() -> list[threading.Thread]:
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("generate-progress-") and thread.is_alive()
+    ]
 
 
 def run_generator_with_config(mod, config: dict, monkeypatch) -> list[dict]:
@@ -326,6 +337,157 @@ def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     assert events[0]["reason_code"] == "no_output"
     assert events[0]["terminal"] is True
     assert output_path.read_text(encoding="utf-8") == "old output"
+
+
+def test_execute_generate_blocking_call_emits_progress_and_count(monkeypatch):
+    from solstone.convey import chat
+    from solstone.think import models, talents
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setattr(talents, "_GENERATE_PROGRESS_INTERVAL_S", 0.01)
+    assert (
+        talents._GENERATE_PROGRESS_INTERVAL_S
+        < min(chat._WATCHDOG_TIMEOUTS.values()) / 2
+    )
+
+    def slow_generate(**_kwargs):
+        time.sleep(0.035)
+        return {"text": "done", "usage": {"input_tokens": 1}}
+
+    monkeypatch.setattr(models, "generate_with_result", slow_generate)
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "progress_gen",
+                "prompt": "x",
+            },
+            events.append,
+        )
+    )
+
+    progress_events = [event for event in events if event["event"] == "progress"]
+    assert len(progress_events) >= 2
+    assert all(event["phase"] == "generate" for event in progress_events)
+    assert all("summary" not in event for event in progress_events)
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["generate_progress_count"] == len(progress_events)
+    assert not _live_generate_progress_threads()
+
+
+def test_execute_generate_heartbeat_thread_stops_on_terminal_and_raise_paths(
+    monkeypatch,
+):
+    from solstone.think import models, talents
+    from solstone.think.models import IncompleteJSONError, ProviderResponseInvalidError
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setattr(talents, "_GENERATE_PROGRESS_INTERVAL_S", 0.01)
+
+    async def run_case(config: dict, generate) -> list[dict]:
+        monkeypatch.setattr(models, "generate_with_result", generate)
+        events: list[dict] = []
+        try:
+            await _execute_generate(config, events.append)
+        finally:
+            assert not _live_generate_progress_threads()
+        return events
+
+    base_config = {
+        "provider": "google",
+        "model": "gemini-2.0-flash",
+        "name": "thread_cleanup",
+        "prompt": "x",
+    }
+
+    normal_events = asyncio.run(run_case(base_config, lambda **_kwargs: {"text": "ok"}))
+    assert normal_events[-1]["event"] == "finish"
+
+    def raise_runtime(**_kwargs):
+        raise RuntimeError("boom")
+
+    try:
+        asyncio.run(run_case(base_config, raise_runtime))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    def provider_invalid(**_kwargs):
+        raise ProviderResponseInvalidError("malformed", model="model")
+
+    provider_events = asyncio.run(run_case(base_config, provider_invalid))
+    assert provider_events[-1]["reason_code"] == "provider_response_invalid"
+
+    calls = 0
+
+    def retry_provider_invalid(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IncompleteJSONError("length", '{"partial":')
+        raise ProviderResponseInvalidError("malformed", model="model")
+
+    retry_events = asyncio.run(
+        run_case(
+            {
+                **base_config,
+                "provider": "local",
+                "model": "local-model",
+                "output": "json",
+            },
+            retry_provider_invalid,
+        )
+    )
+    assert retry_events[-1]["reason_code"] == "provider_response_invalid"
+    assert retry_events[-1]["retries"] == 1
+
+
+def test_execute_generate_heartbeat_emit_failure_is_logged_and_continues(
+    monkeypatch, caplog
+):
+    from solstone.think import models, talents
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setattr(talents, "_GENERATE_PROGRESS_INTERVAL_S", 0.01)
+
+    def slow_generate(**_kwargs):
+        time.sleep(0.035)
+        return {"text": "done"}
+
+    monkeypatch.setattr(models, "generate_with_result", slow_generate)
+    events: list[dict] = []
+    failed_once = False
+
+    def emit_event(event: dict) -> None:
+        nonlocal failed_once
+        if event["event"] == "progress" and not failed_once:
+            failed_once = True
+            raise RuntimeError("transient emit failure")
+        events.append(event)
+
+    caplog.set_level(logging.ERROR, logger="solstone.think.talents")
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "progress_failure",
+                "prompt": "x",
+            },
+            emit_event,
+        )
+    )
+
+    progress_events = [event for event in events if event["event"] == "progress"]
+    assert failed_once is True
+    assert progress_events
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["generate_progress_count"] == len(progress_events)
+    assert "generate progress heartbeat failed talent=progress_failure" in caplog.text
 
 
 def test_execute_generate_provider_blank_records_runtime_failure(
