@@ -205,6 +205,58 @@ def test_launch_process_records_service_state(monkeypatch):
     }
 
 
+def test_launch_process_records_uptime_without_restart(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    mod._SERVICE_STATE.clear()
+    mod._RESTART_POLICIES.clear()
+    monkeypatch.setattr(mod, "_supervisor_ref", None)
+    monkeypatch.setattr(mod, "_supervisor_start", None)
+    monkeypatch.setattr(mod, "_task_queue", None)
+    monkeypatch.setattr(mod, "_callosum_server", None)
+    monkeypatch.setattr(mod.scheduler, "collect_status", lambda: [])
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+
+    process = MagicMock()
+    process.pid = 12345
+    process.poll.return_value = None
+    managed = mod.RunnerManagedProcess(
+        process=process,
+        name="parakeet-server",
+        log_writer=MagicMock(),
+        cmd=["parakeet-server"],
+        _threads=[],
+        ref="ref-1",
+        _start_time=100.0,
+        _callosum=None,
+    )
+    monkeypatch.setattr(
+        mod.RunnerManagedProcess,
+        "spawn",
+        lambda *_args, **_kwargs: managed,
+    )
+
+    result = mod._launch_process(
+        "parakeet-server",
+        ["parakeet-server"],
+        restart=False,
+        ref="ref-1",
+    )
+    clock["now"] = 137.0
+
+    status = mod.collect_status([result])
+
+    assert status["services"] == [
+        {
+            "name": "parakeet-server",
+            "ref": "ref-1",
+            "pid": 12345,
+            "uptime_seconds": 37,
+        }
+    ]
+
+
 def test_parse_args_remote_flag():
     """Test that parse_args includes --remote flag."""
     mod = importlib.reload(importlib.import_module("solstone.think.supervisor"))

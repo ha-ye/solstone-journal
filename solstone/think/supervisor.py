@@ -1504,9 +1504,7 @@ def _launch_process(
     # NOTE: All child processes should include -v for verbose logging by default.
     # This ensures their output is captured in logs for debugging.
     """Launch process with automatic output logging and restart policy tracking."""
-    policy: RestartPolicy | None = None
-    if restart:
-        policy = _get_restart_policy(name)
+    policy = _get_restart_policy(name)
 
     # Generate ref if not provided
     ref = ref if ref else str(now_ms())
@@ -1520,8 +1518,7 @@ def _launch_process(
         logging.error(str(exc))
         raise
 
-    if policy:
-        policy.record_start()
+    policy.record_start()
     _SERVICE_STATE[name] = {
         "restart": restart,
         "shutdown_timeout": shutdown_timeout,
