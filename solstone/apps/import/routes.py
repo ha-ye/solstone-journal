@@ -158,16 +158,6 @@ SOURCE_METADATA = [
         "accept": ".zip",
     },
     {
-        "name": "granola",
-        "display_name": "Granola",
-        "icon": "mic",
-        "description": "import meeting transcripts from Granola via muesli",
-        "input_type": "path_input",
-        "upload_prompt": "path to muesli transcripts folder",
-        "has_guide": True,
-        "accept": "",
-    },
-    {
         "name": "recording",
         "display_name": "meeting audio",
         "icon": "mic",
@@ -890,41 +880,6 @@ def import_sources() -> Any:
     )
 
 
-@import_bp.route("/api/check-path/<source>")
-def import_check_path(source: str) -> Any:
-    """Check default path for a path_input source and return info."""
-    if source == "granola":
-        default_path = Path.home() / ".local" / "share" / "muesli" / "transcripts"
-        if default_path.is_dir():
-            count = sum(1 for f in default_path.glob("*.md"))
-            return jsonify(
-                {
-                    "found": True,
-                    "path": str(default_path),
-                    "count": count,
-                    "message": f"Found {count} Granola transcript{'s' if count != 1 else ''}.",
-                }
-            )
-        # Check if muesli is installed but no transcripts yet
-        muesli_dir = default_path.parent
-        if muesli_dir.is_dir():
-            return jsonify(
-                {
-                    "found": False,
-                    "path": str(default_path),
-                    "message": "Muesli is installed but no transcripts found. Run `muesli sync` first.",
-                }
-            )
-        return jsonify(
-            {
-                "found": False,
-                "path": "",
-                "message": "No muesli installation found. Follow the guide above to install.",
-            }
-        )
-    return jsonify({"found": False, "path": "", "message": ""}), 404
-
-
 @import_bp.route("/api/guide/<source>")
 def import_guide(source: str) -> Any:
     """Return export guide markdown for a given source."""
@@ -992,15 +947,22 @@ def import_content_list(timestamp: str) -> Any:
         return error_response(IMPORT_METADATA_FAILED, detail="Failed to read manifest")
 
     source_type = ""
+    persisted_source_display = ""
     imported_path = import_dir / "imported.json"
     if imported_path.exists():
         try:
             imported = json.loads(imported_path.read_text(encoding="utf-8"))
             source_type = imported.get("source_type", "")
+            persisted_source_display = imported.get("source_display", "")
         except (OSError, json.JSONDecodeError):
             pass
 
     source_meta = next((s for s in SOURCE_METADATA if s["name"] == source_type), None)
+    source_display = (
+        source_meta["display_name"]
+        if source_meta
+        else (persisted_source_display or source_type)
+    )
 
     month_counts: dict[str, int] = {}
     for item in items:
@@ -1044,9 +1006,7 @@ def import_content_list(timestamp: str) -> Any:
             "pages": (total + per_page - 1) // per_page if total > 0 else 0,
             "months": dict(sorted(month_counts.items())),
             "source_type": source_type,
-            "source_display": source_meta["display_name"]
-            if source_meta
-            else source_type,
+            "source_display": source_display,
             "source_icon_svg": lucide_svg(source_meta["icon"]) if source_meta else None,
         }
     )

@@ -28,7 +28,6 @@ IMPORT_PROPER_NOUNS = (
     "Google",
     "Google Calendar",
     "Google Takeout",
-    "Granola",
     "JPEG",
     "Kindle",
     "Logseq",
@@ -40,7 +39,6 @@ IMPORT_PROPER_NOUNS = (
     "TIFF",
     "WebP",
     # Default lowercase validation catches title case; entries pin spelling and errors.
-    "muesli",
     "sol",
 )
 
@@ -221,6 +219,20 @@ def test_import_sources_emit_icon_svg_not_emoji(client):
     assert "<svg" in by_name["quick"]["icon_svg"]
 
 
+def test_import_sources_omit_granola_and_keep_guide_counts(client):
+    response = client.get("/app/import/api/sources")
+
+    assert response.status_code == 200
+    sources = response.get_json()["items"]
+    names = {source["name"] for source in sources}
+    assert len(sources) == 11
+    assert "granola" not in names
+    assert sum(source["has_guide"] is True for source in sources) == 7
+    assert [
+        source["name"] for source in sources if source["input_type"] == "path_input"
+    ] == ["obsidian"]
+
+
 def test_import_list_source_display_matches_current_metadata(client):
     import importlib
 
@@ -287,6 +299,40 @@ def test_import_list_preserves_display_for_unknown_source_types(client):
     assert by_timestamp["20260101_120000"]["source_display"] == "Recorded Only"
 
 
+def test_import_content_list_preserves_display_for_retired_source(client):
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    journal = Path(import_routes.state.journal_root)
+    import_dir = journal / "imports" / "20260101_130000"
+    import_dir.mkdir(parents=True)
+    (import_dir / "imported.json").write_text(
+        json.dumps({"source_type": "granola", "source_display": "Granola"}) + "\n",
+        encoding="utf-8",
+    )
+    (import_dir / "content_manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "meeting-1",
+                "date": "20260101",
+                "title": "Meeting",
+                "preview": "Retired import source",
+                "segments": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/app/import/api/20260101_130000/content")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["source_type"] == "granola"
+    assert payload["source_display"] == "Granola"
+    assert payload["source_icon_svg"] is None
+
+
 def test_import_workspace_detail_static_wiring_and_deleted_tabs():
     workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
 
@@ -319,6 +365,27 @@ def test_import_workspace_detail_static_wiring_and_deleted_tabs():
     assert ".import-collision-callout" in workspace
 
 
+def test_import_guided_flow_removes_path_autodetect_but_keeps_path_input_wiring():
+    workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
+
+    for deleted in ("checkDefaultPath", "guidedPathStatus"):
+        assert workspace.count(deleted) == 0
+    for retained in (
+        "guidedStartBtn",
+        "startGuidedImport",
+        "guidedPathInput.addEventListener('input'",
+        'id="guidedPathInput"',
+    ):
+        assert retained in workspace
+
+
+def test_import_check_path_route_removed_no_alias(client):
+    rules = list(client.application.url_map.iter_rules())
+
+    assert not any(rule.rule == "/app/import/api/check-path/<source>" for rule in rules)
+    assert any(rule.rule == "/app/import/api/sources" for rule in rules)
+
+
 def test_source_metadata_descriptions_are_pinned_byte_for_byte():
     import importlib
 
@@ -347,7 +414,7 @@ def test_source_metadata_copy_is_lowercase_except_allowed_names():
         for field in ("display_name", "description", "upload_prompt")
     ]
 
-    assert len(found) >= 36
+    assert len(found) >= 33
     errors = [
         error
         for context, value in found
