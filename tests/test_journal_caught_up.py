@@ -424,7 +424,10 @@ def test_journal_caught_up_rides_existing_emission_paths(doctor, capsys):
     ok_result = doctor.make_result(doctor.JOURNAL_CAUGHT_UP_CHECK, "ok", "caught up")
 
     doctor.emit_json([warn_result])
-    assert "journal_caught_up" in capsys.readouterr().out
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["checks"][0]["name"] == "journal_caught_up"
+    assert payload["checks"][0]["execution_error"] is None
+    assert payload["summary"]["errors"] == 0
 
     doctor.emit_jsonl(
         [warn_result],
@@ -432,7 +435,11 @@ def test_journal_caught_up_rides_existing_emission_paths(doctor, capsys):
         duration_ms=0,
         summary_status="warning",
     )
-    assert "journal_caught_up" in capsys.readouterr().out
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    check_event = [event for event in events if event["event"] == "check.completed"][0]
+    assert check_event["name"] == "journal_caught_up"
+    assert check_event["execution_error"] is None
+    assert events[-1]["summary"]["errors"] == 0
 
     doctor.emit_text([ok_result], verbose=False)
     assert "journal_caught_up" not in capsys.readouterr().out

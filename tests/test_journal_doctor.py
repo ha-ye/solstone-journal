@@ -1693,6 +1693,54 @@ def test_unknown_topology_suppresses_only_service_lifecycle_fixes(
         assert token not in fix_text
 
 
+def test_supervisor_conflict_execution_error_uses_unknown_topology_policy(doctor):
+    conflict_check = doctor.Check(
+        doctor.SUPERVISOR_CONFLICT_CHECK.name,
+        doctor.SUPERVISOR_CONFLICT_CHECK.severity,
+        ("linux", "darwin"),
+    )
+    unsafe_check = doctor.Check("unsafe_fix", "blocker", ("linux", "darwin"))
+    unrelated_check = doctor.Check("unrelated_fix", "blocker", ("linux", "darwin"))
+    unrelated_fix = "pip install --upgrade solstone-journal"
+
+    def raising_conflict(_args):
+        raise RuntimeError("launchctl unavailable")
+
+    def unsafe(_args):
+        return doctor.make_result(
+            unsafe_check,
+            "fail",
+            "unsafe lifecycle fix",
+            "journal service restart",
+        )
+
+    def unrelated(_args):
+        return doctor.make_result(
+            unrelated_check,
+            "fail",
+            "unrelated fix",
+            unrelated_fix,
+        )
+
+    results = doctor.run_checks(
+        args(doctor),
+        checks=[
+            (conflict_check, raising_conflict),
+            (unsafe_check, unsafe),
+            (unrelated_check, unrelated),
+        ],
+    )
+
+    by_name = {result.name: result for result in results}
+    conflict = by_name["supervisor_conflict"]
+    assert conflict.status == "fail"
+    assert doctor.has_execution_error(conflict)
+    assert conflict.fix is None
+    assert by_name["unsafe_fix"].fix == doctor._SUPERVISOR_TOPOLOGY_WARN_POINTER
+    assert by_name["unrelated_fix"].fix == unrelated_fix
+    assert all("None" not in result.fix for result in results if result.fix)
+
+
 def test_unsafe_service_action_match_does_not_match_uninstall(doctor):
     assert not doctor._fix_mentions_unsafe_service_action("journal service uninstall")
     assert doctor._fix_mentions_unsafe_service_action("journal service install")

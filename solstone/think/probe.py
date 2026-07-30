@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence, TypeVar
 
 # See doctor.py's decision-log for the MIN_UV=0.7.12 and MIN_FREE_GIB=10
 # rationale.
@@ -37,6 +37,7 @@ Severity = Literal["blocker", "advisory"]
 Status = Literal["ok", "fail", "warn", "skip"]
 Platform = Literal["linux", "darwin"]
 CorePlatform = tuple[Platform, str]
+ArgsT = TypeVar("ArgsT")
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,18 @@ class Check:
 
 
 @dataclass(frozen=True)
+class ExecutionError:
+    type: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "type": self.type,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
 class CheckResult:
     name: str
     severity: Severity
@@ -54,6 +67,7 @@ class CheckResult:
     detail: str
     fix: str | None
     platform: str | None = None
+    execution_error: ExecutionError | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +208,7 @@ def make_result(
     fix: str | None = None,
     *,
     platform: str | None = None,
+    execution_error: ExecutionError | None = None,
 ) -> CheckResult:
     return CheckResult(
         name=check.name,
@@ -202,7 +217,66 @@ def make_result(
         detail=detail,
         fix=fix,
         platform=platform,
+        execution_error=execution_error,
     )
+
+
+def has_execution_error(result: CheckResult) -> bool:
+    return result.execution_error is not None
+
+
+def run_check(
+    check: Check,
+    runner: Callable[[ArgsT], CheckResult],
+    args: ArgsT,
+) -> CheckResult:
+    try:
+        return runner(args)
+    except Exception as exc:
+        message = truncate(str(exc), 512)
+        exc_type = type(exc).__name__
+        detail = f"check execution failed: {exc_type}"
+        if message:
+            detail = f"{detail}: {message}"
+        return make_result(
+            check,
+            "fail",
+            detail,
+            execution_error=ExecutionError(type=exc_type, message=message),
+        )
+
+
+def summary_counts(results: Sequence[CheckResult]) -> dict[str, int]:
+    return {
+        "total": len(results),
+        "failed": sum(
+            1
+            for result in results
+            if result.status == "fail" or has_execution_error(result)
+        ),
+        "warnings": sum(1 for result in results if result.status == "warn"),
+        "skipped": sum(1 for result in results if result.status == "skip"),
+        "errors": sum(1 for result in results if has_execution_error(result)),
+    }
+
+
+def status_label(result: CheckResult) -> str:
+    if has_execution_error(result):
+        return "ERROR"
+    return result.status.upper()
+
+
+def check_result_to_json_dict(result: CheckResult) -> dict[str, object]:
+    return {
+        "name": result.name,
+        "severity": result.severity,
+        "status": result.status,
+        "detail": result.detail,
+        "fix": result.fix,
+        "execution_error": (
+            result.execution_error.to_dict() if has_execution_error(result) else None
+        ),
+    }
 
 
 def truncate(text: str, limit: int) -> str:

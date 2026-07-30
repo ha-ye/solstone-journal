@@ -283,7 +283,13 @@ before `.venv`/`uv` exist, and `journal health` for the live supervisor status v
 
 ## Structured output: `journal setup --jsonl` and doctor `--jsonl`
 
-Use `--jsonl` when another process needs progress events as they happen. The contract is one JSON object per stdout line, flushed immediately; doctor `--jsonl` is mutually exclusive with doctor `--json`, and the existing doctor `--json` payload keeps its short statuses (`ok`, `warn`, `fail`, `skip`).
+Use `--jsonl` when another process needs progress events as they happen. The
+contract is one JSON object per stdout line, flushed immediately; doctor
+`--jsonl` is mutually exclusive with doctor `--json`, and the existing doctor
+`--json` payload keeps its short statuses (`ok`, `warn`, `fail`, `skip`). A
+per-check `execution_error` field is always present in doctor and preflight JSON:
+`null` when the check completed normally, or `{"type": "...", "message": "..."}`
+when the check runner raised an ordinary exception.
 
 | Event | Emitted by | When |
 |-------|------------|------|
@@ -296,6 +302,10 @@ Use `--jsonl` when another process needs progress events as they happen. The con
 | `doctor.started` | doctor `--jsonl` | Doctor diagnostics begin. |
 | `check.completed` | doctor `--jsonl` | One diagnostic check finishes. Status is long form: `ok`, `warning`, `failed`, or `skipped`. |
 | `doctor.completed` | doctor `--jsonl` | Doctor diagnostics finish with `status: "ok"`, `"warning"`, or `"failed"`. |
+
+An execution error fails the doctor or preflight aggregate independently of the
+check's severity. Summary `errors` are a subset of `failed`, so a consumer that
+wants completed health failures should compute `failed - errors`.
 
 | Code | When |
 |------|------|
@@ -322,7 +332,7 @@ the wrappers.
 
 ### Doctor pass-through
 
-`journal setup --jsonl` runs `journal doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the client readiness checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`, `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus `host_dependencies`, `default_stt_ready`, `feature:pdf-import`, `feature:pdf-export`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly.
+`journal setup --jsonl` runs `journal doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the client readiness checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`, `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus `host_dependencies`, `default_stt_ready`, `feature:pdf-import`, `feature:pdf-export`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly. Execution-error doctor failures remain `doctor_failed` step failures, not warnings.
 
 Example stream excerpt for setup readiness:
 
@@ -330,8 +340,8 @@ Example stream excerpt for setup readiness:
 {"event":"setup.started","ts":"2026-05-11T20:00:00Z","version":"0.0.0+source","mode":"non_interactive"}
 {"event":"step.started","ts":"2026-05-11T20:00:00Z","step":"doctor","index":1,"total":8}
 {"event":"doctor.started","ts":"2026-05-11T20:00:00Z","version":"0.0.0+source","port":5015,"feature":""}
-{"event":"check.completed","ts":"2026-05-11T20:00:01Z","name":"python_version","severity":"blocker","status":"ok","detail":"Python version ok","fix":""}
-{"event":"doctor.completed","ts":"2026-05-11T20:00:01Z","status":"ok","duration_ms":120,"summary":{"total":10,"failed":0,"warnings":0,"skipped":0}}
+{"event":"check.completed","ts":"2026-05-11T20:00:01Z","name":"python_version","severity":"blocker","status":"ok","detail":"Python version ok","fix":"","execution_error":null}
+{"event":"doctor.completed","ts":"2026-05-11T20:00:01Z","status":"ok","duration_ms":120,"summary":{"total":10,"failed":0,"warnings":0,"skipped":0,"errors":0}}
 {"event":"step.completed","ts":"2026-05-11T20:00:01Z","step":"doctor","outcome":"ok","duration_ms":121}
 {"event":"step.completed","ts":"2026-05-11T20:00:04Z","step":"service","outcome":"ok","duration_ms":900}
 {"event":"setup.completed","ts":"2026-05-11T20:00:04Z","status":"ok","duration_ms":4000}

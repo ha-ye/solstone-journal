@@ -7,8 +7,9 @@
 journal-less machine. `journal doctor` runs journal-host service, folder, and
 processing-health checks. `--readiness` runs the setup step-1 battery.
 
-Exit code `0` means no blocker failed; exit code `1` means at least one
-blocker-severity check failed.
+Exit code `0` means no blocker failed and no check raised during execution;
+exit code `1` means at least one blocker-severity check failed or any check
+raised during execution.
 
 Decision log:
 - Universal python check reads installed package metadata (with a static
@@ -61,13 +62,18 @@ from solstone.think.probe import (
     Check,
     CheckResult,
     Status,
+    check_result_to_json_dict,
     compare_versions,
     config_dir_readable_check,
     disk_space_check,
+    has_execution_error,
     local_bin_sol_reachable_check,
     make_result,
     platform_tag,
+    run_check,
     run_probe,
+    status_label,
+    summary_counts,
     truncate,
     version_text,
 )
@@ -1577,12 +1583,13 @@ def _apply_supervisor_conflict_fix_policy(
     if conflict is None or conflict.status not in {"fail", "warn"}:
         return results
 
+    conflict_execution_error = has_execution_error(conflict)
     updated: list[CheckResult] = []
     for result in results:
         if result.name == SUPERVISOR_CONFLICT_CHECK.name or not result.fix:
             updated.append(result)
             continue
-        if conflict.status == "fail":
+        if conflict.status == "fail" and not conflict_execution_error:
             pointer = _SUPERVISOR_CONFLICT_FIX_POINTER_TEMPLATE.format(fix=conflict.fix)
             updated.append(replace(result, fix=pointer))
             continue
@@ -1610,7 +1617,7 @@ def run_checks(
                     platform=current_platform,
                 )
             ]
-        return [runner(args)]
+        return [run_check(check, runner, args)]
 
     selected_checks = select_battery(args) if checks is None else checks
     results: list[CheckResult] = []
@@ -1625,24 +1632,15 @@ def run_checks(
                 )
             )
             continue
-        results.append(func(args))
+        results.append(run_check(check, func, args))
     return _apply_supervisor_conflict_fix_policy(results)
 
 
 def print_result_line(result: CheckResult) -> None:
-    label = result.status.upper()
+    label = status_label(result)
     print(f"  {label} {result.name} — {result.detail}")
     if result.fix:
         print(f"    → {result.fix}")
-
-
-def summary_counts(results: Sequence[CheckResult]) -> dict[str, int]:
-    return {
-        "total": len(results),
-        "failed": sum(1 for result in results if result.status == "fail"),
-        "warnings": sum(1 for result in results if result.status == "warn"),
-        "skipped": sum(1 for result in results if result.status == "skip"),
-    }
 
 
 def emit_text(results: Sequence[CheckResult], *, verbose: bool) -> None:
@@ -1659,22 +1657,14 @@ def emit_text(results: Sequence[CheckResult], *, verbose: bool) -> None:
         f"{summary['total']} checks, "
         f"{summary['failed']} failed, "
         f"{summary['warnings']} warnings, "
-        f"{summary['skipped']} skipped"
+        f"{summary['skipped']} skipped, "
+        f"{summary['errors']} errors"
     )
 
 
 def emit_json(results: Sequence[CheckResult]) -> None:
     payload = {
-        "checks": [
-            {
-                "name": result.name,
-                "severity": result.severity,
-                "status": result.status,
-                "detail": result.detail,
-                "fix": result.fix,
-            }
-            for result in results
-        ],
+        "checks": [check_result_to_json_dict(result) for result in results],
         "summary": summary_counts(results),
     }
     print(json.dumps(payload))
@@ -1688,6 +1678,8 @@ def solstone_version() -> str:
 
 
 def jsonl_summary_status(results: Sequence[CheckResult]) -> str:
+    if any(has_execution_error(result) for result in results):
+        return "failed"
     if any(
         result.severity == "blocker" and result.status == "fail" for result in results
     ):
@@ -1718,6 +1710,11 @@ def emit_jsonl(
             status=STATUS_TRANSLATION[result.status],
             detail=result.detail or "",
             fix=result.fix or "",
+            execution_error=(
+                result.execution_error.to_dict()
+                if has_execution_error(result)
+                else None
+            ),
         )
     emitter.emit(
         "doctor.completed",
@@ -1757,4 +1754,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     blocker_failed = any(
         result.severity == "blocker" and result.status == "fail" for result in results
     )
-    return 1 if blocker_failed else 0
+    execution_failed = any(has_execution_error(result) for result in results)
+    return 1 if execution_failed or blocker_failed else 0

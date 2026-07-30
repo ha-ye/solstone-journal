@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from solstone.think import install_guard
-from solstone.think.probe import ProbeOutput
+from solstone.think.probe import ExecutionError, ProbeOutput
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,8 +33,14 @@ def home_root(monkeypatch, tmp_path):
     return home
 
 
-def args(doctor, *, port: int = 5015):
-    return doctor.Args(verbose=False, json=False, jsonl=False, port=port)
+def args(doctor, *, port: int = 5015, feature: str | None = None):
+    return doctor.Args(
+        verbose=False,
+        json=False,
+        jsonl=False,
+        port=port,
+        feature=feature,
+    )
 
 
 def make_repo(tmp_path: Path, *, worktree: bool = False) -> Path:
@@ -1338,7 +1344,17 @@ class TestJsonAndExitCodes:
             "status",
             "detail",
             "fix",
+            "execution_error",
         }
+        assert payload["checks"][0]["execution_error"] is None
+        assert list(payload["summary"]) == [
+            "total",
+            "failed",
+            "warnings",
+            "skipped",
+            "errors",
+        ]
+        assert payload["summary"]["errors"] == 0
 
     def test_exit_code_matrix(self, doctor, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -1364,6 +1380,31 @@ class TestJsonAndExitCodes:
         )
         assert doctor.main([]) == 0
 
+    def test_advisory_execution_error_returns_nonzero(
+        self, doctor, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            doctor,
+            "run_checks",
+            lambda _args: [
+                doctor.CheckResult(
+                    "a",
+                    "advisory",
+                    "fail",
+                    "check execution failed: RuntimeError: boom",
+                    None,
+                    execution_error=ExecutionError("RuntimeError", "boom"),
+                )
+            ],
+        )
+
+        assert doctor.main([]) == 1
+        output = capsys.readouterr().out
+        assert "ERROR a" in output
+        assert output.rstrip().endswith(
+            "doctor: 1 checks, 1 failed, 0 warnings, 0 skipped, 1 errors"
+        )
+
     def test_summary_line_format(self, doctor, monkeypatch, capsys):
         monkeypatch.setattr(
             doctor,
@@ -1376,7 +1417,104 @@ class TestJsonAndExitCodes:
         )
         doctor.main([])
         output = capsys.readouterr().out.strip().splitlines()
-        assert output[-1] == "doctor: 3 checks, 1 failed, 1 warnings, 1 skipped"
+        assert (
+            output[-1] == "doctor: 3 checks, 1 failed, 1 warnings, 1 skipped, 0 errors"
+        )
+
+    def test_run_checks_isolates_exception_and_continues(self, doctor):
+        before_check = doctor.Check("before_check", "blocker", ("linux", "darwin"))
+        raising_check = doctor.Check("raising_check", "advisory", ("linux", "darwin"))
+        after_check = doctor.Check("after_check", "blocker", ("linux", "darwin"))
+        calls: list[str] = []
+
+        def before(_args):
+            calls.append("before")
+            return doctor.make_result(before_check, "ok", "before complete")
+
+        def raising(_args):
+            calls.append("raising")
+            raise RuntimeError("boom")
+
+        def after(_args):
+            calls.append("after")
+            return doctor.make_result(after_check, "ok", "after complete")
+
+        results = doctor.run_checks(
+            args(doctor),
+            checks=[
+                (before_check, before),
+                (raising_check, raising),
+                (after_check, after),
+            ],
+        )
+
+        assert [result.name for result in results] == [
+            "before_check",
+            "raising_check",
+            "after_check",
+        ]
+        assert calls == ["before", "raising", "after"]
+        error = results[1]
+        assert error.status == "fail"
+        assert error.severity == "advisory"
+        assert error.fix is None
+        assert error.execution_error == ExecutionError("RuntimeError", "boom")
+        assert "RuntimeError: boom" in error.detail
+        summary = doctor.summary_counts(results)
+        assert summary["errors"] == 1
+        assert summary["failed"] >= summary["errors"]
+
+    @pytest.mark.parametrize("exception", [KeyboardInterrupt(), SystemExit(7)])
+    def test_run_checks_propagates_base_exceptions(self, doctor, exception):
+        raising_check = doctor.Check("raising_check", "blocker", ("linux", "darwin"))
+
+        def raising(_args):
+            raise exception
+
+        with pytest.raises(type(exception)):
+            doctor.run_checks(args(doctor), checks=[(raising_check, raising)])
+
+    def test_run_checks_truncates_execution_error_without_traceback(self, doctor):
+        raising_check = doctor.Check("raising_check", "blocker", ("linux", "darwin"))
+        long_message = " ".join(["overflow"] * 120)
+
+        def raising(_args):
+            raise PermissionError(long_message)
+
+        result = doctor.run_checks(
+            args(doctor),
+            checks=[(raising_check, raising)],
+        )[0]
+
+        assert doctor.has_execution_error(result)
+        assert result.execution_error.type == "PermissionError"
+        assert len(result.execution_error.message) <= 512
+        assert result.execution_error.message.endswith("...")
+        for public_text in [result.detail, result.execution_error.message]:
+            assert "Traceback" not in public_text
+            assert "line " not in public_text
+            assert str(Path(__file__)) not in public_text
+
+    def test_feature_run_isolates_exception(self, doctor, monkeypatch):
+        feature_check = doctor.Check(
+            "feature:raising-feature", "advisory", ("linux", "darwin")
+        )
+
+        def raising(_args):
+            raise RuntimeError("feature boom")
+
+        monkeypatch.setitem(
+            doctor.FEATURE_CHECKS,
+            "raising-feature",
+            (feature_check, raising),
+        )
+
+        result = doctor.run_checks(args(doctor, feature="raising-feature"))[0]
+
+        assert result.name == "feature:raising-feature"
+        assert result.status == "fail"
+        assert result.severity == "advisory"
+        assert result.execution_error == ExecutionError("RuntimeError", "feature boom")
 
     def test_doctor_jsonl_emits_started_and_completed(
         self, doctor, monkeypatch, capsys
@@ -1394,6 +1532,7 @@ class TestJsonAndExitCodes:
         assert events[0]["event"] == "doctor.started"
         assert events[-1]["event"] == "doctor.completed"
         assert events[-1]["status"] == "ok"
+        assert events[-1]["summary"]["errors"] == 0
 
     def test_doctor_jsonl_emits_check_completed_per_check(
         self, doctor, monkeypatch, capsys
@@ -1412,6 +1551,7 @@ class TestJsonAndExitCodes:
 
         checks = [event for event in events if event["event"] == "check.completed"]
         assert len(checks) == len(doctor.UNIVERSAL_CHECKS)
+        assert all(check["execution_error"] is None for check in checks)
 
     def test_doctor_jsonl_status_translates_short_to_long(
         self, doctor, monkeypatch, capsys
@@ -1443,6 +1583,42 @@ class TestJsonAndExitCodes:
             "skip": "skipped",
         }
         assert events[-1]["status"] == "warning"
+        assert events[-1]["summary"]["errors"] == 0
+
+    def test_doctor_jsonl_execution_error_fails_terminal_status(
+        self, doctor, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            doctor,
+            "run_checks",
+            lambda _args: [
+                doctor.CheckResult(
+                    "advisory_error",
+                    "advisory",
+                    "fail",
+                    "check execution failed: RuntimeError: boom",
+                    None,
+                    execution_error=ExecutionError("RuntimeError", "boom"),
+                )
+            ],
+        )
+
+        rc = doctor.main(["--jsonl"])
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+        completed = [event for event in events if event["event"] == "check.completed"][
+            0
+        ]
+        terminal = events[-1]
+        assert rc == 1
+        assert completed["status"] == "failed"
+        assert completed["execution_error"] == {
+            "type": "RuntimeError",
+            "message": "boom",
+        }
+        assert terminal["event"] == "doctor.completed"
+        assert terminal["status"] == "failed"
+        assert terminal["summary"]["errors"] == 1
 
     def test_doctor_jsonl_json_and_jsonl_mutually_exclusive(self, doctor):
         with pytest.raises(SystemExit) as raised:
@@ -1466,6 +1642,7 @@ class TestJsonAndExitCodes:
 
         assert rc == 0
         assert payload["checks"][0]["status"] == "warn"
+        assert payload["checks"][0]["execution_error"] is None
 
     def test_doctor_jsonl_subprocess_e2e(self):
         result = subprocess.run(
@@ -1611,6 +1788,26 @@ def test_journal_doctor_readiness_subprocess_json_shape():
     payload = json.loads(result.stdout)
     assert "checks" in payload and isinstance(payload["checks"], list)
     assert "summary" in payload and isinstance(payload["summary"], dict)
+    assert list(payload["summary"]) == [
+        "total",
+        "failed",
+        "warnings",
+        "skipped",
+        "errors",
+    ]
+    assert payload["summary"]["errors"] <= payload["summary"]["failed"]
+    assert all(
+        set(check)
+        == {
+            "name",
+            "severity",
+            "status",
+            "detail",
+            "fix",
+            "execution_error",
+        }
+        for check in payload["checks"]
+    )
     from solstone.think import doctor as doctor_module
 
     assert {check["name"] for check in payload["checks"]} == {

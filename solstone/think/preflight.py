@@ -6,8 +6,9 @@
 This battery can run before `.venv` or `uv` exist. It composes the stdlib-only
 checks from `solstone.think.probe`.
 
-Exit code `0` means no blocker-severity check failed; exit code `1` means at
-least one blocker-severity check failed.
+Exit code `0` means no blocker-severity check failed and no check raised during
+execution; exit code `1` means at least one blocker-severity check failed or any
+check raised during execution.
 """
 
 from __future__ import annotations
@@ -27,13 +28,18 @@ from solstone.think.probe import (
     VENV_CONSISTENT_CHECK,
     Check,
     CheckResult,
+    check_result_to_json_dict,
     config_dir_readable_check,
     disk_space_check,
+    has_execution_error,
     local_bin_sol_reachable_check,
     make_result,
     platform_tag,
     python_version_check,
+    run_check,
     solstone_core_rust_toolchain_check,
+    status_label,
+    summary_counts,
     uv_installed_check,
     venv_consistent_check,
 )
@@ -87,24 +93,15 @@ def run_checks(args: Args) -> list[CheckResult]:
                 )
             )
             continue
-        results.append(func(args))
+        results.append(run_check(check, func, args))
     return results
 
 
 def print_result_line(result: CheckResult) -> None:
-    label = result.status.upper()
+    label = status_label(result)
     print(f"  {label} {result.name} — {result.detail}")
     if result.fix:
         print(f"    → {result.fix}")
-
-
-def summary_counts(results: Sequence[CheckResult]) -> dict[str, int]:
-    return {
-        "total": len(results),
-        "failed": sum(1 for result in results if result.status == "fail"),
-        "warnings": sum(1 for result in results if result.status == "warn"),
-        "skipped": sum(1 for result in results if result.status == "skip"),
-    }
 
 
 def emit_text(results: Sequence[CheckResult], *, verbose: bool) -> None:
@@ -121,22 +118,14 @@ def emit_text(results: Sequence[CheckResult], *, verbose: bool) -> None:
         f"{summary['total']} checks, "
         f"{summary['failed']} failed, "
         f"{summary['warnings']} warnings, "
-        f"{summary['skipped']} skipped"
+        f"{summary['skipped']} skipped, "
+        f"{summary['errors']} errors"
     )
 
 
 def emit_json(results: Sequence[CheckResult]) -> None:
     payload = {
-        "checks": [
-            {
-                "name": result.name,
-                "severity": result.severity,
-                "status": result.status,
-                "detail": result.detail,
-                "fix": result.fix,
-            }
-            for result in results
-        ],
+        "checks": [check_result_to_json_dict(result) for result in results],
         "summary": summary_counts(results),
     }
     print(json.dumps(payload))
@@ -152,4 +141,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     blocker_failed = any(
         result.severity == "blocker" and result.status == "fail" for result in results
     )
-    return 1 if blocker_failed else 0
+    execution_failed = any(has_execution_error(result) for result in results)
+    return 1 if execution_failed or blocker_failed else 0

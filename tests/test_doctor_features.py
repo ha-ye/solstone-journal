@@ -83,4 +83,6 @@ def test_emit_json_filtered_summary(doctor, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["summary"]["total"] == 1
+    assert payload["summary"]["errors"] == 0
     assert len(payload["checks"]) == 1
+    assert payload["checks"][0]["execution_error"] is None

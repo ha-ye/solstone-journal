@@ -61,13 +61,20 @@ def doctor_ok_lines() -> list[dict]:
             "status": "ok",
             "detail": "fine",
             "fix": "",
+            "execution_error": None,
         },
         {
             "event": "doctor.completed",
             "ts": "2026-05-11T00:00:00Z",
             "status": "ok",
             "duration_ms": 1,
-            "summary": {"total": 1, "failed": 0, "warnings": 0, "skipped": 0},
+            "summary": {
+                "total": 1,
+                "failed": 0,
+                "warnings": 0,
+                "skipped": 0,
+                "errors": 0,
+            },
         },
     ]
 
@@ -83,13 +90,20 @@ def doctor_non_port_warning_lines() -> list[dict]:
             "status": "warning",
             "detail": ".local/bin/sol is not reachable",
             "fix": "uv tool install solstone",
+            "execution_error": None,
         },
         {
             "event": "doctor.completed",
             "ts": "2026-05-11T00:00:00Z",
             "status": "warning",
             "duration_ms": 1,
-            "summary": {"total": 1, "failed": 0, "warnings": 1, "skipped": 0},
+            "summary": {
+                "total": 1,
+                "failed": 0,
+                "warnings": 1,
+                "skipped": 0,
+                "errors": 0,
+            },
         },
     ]
 
@@ -105,13 +119,20 @@ def stale_alias_warning_lines() -> list[dict]:
             "status": "warning",
             "detail": "~/.local/bin/sol is a legacy uv-tool install",
             "fix": "run journal setup",
+            "execution_error": None,
         },
         {
             "event": "doctor.completed",
             "ts": "2026-05-11T00:00:00Z",
             "status": "warning",
             "duration_ms": 1,
-            "summary": {"total": 1, "failed": 0, "warnings": 1, "skipped": 0},
+            "summary": {
+                "total": 1,
+                "failed": 0,
+                "warnings": 1,
+                "skipped": 0,
+                "errors": 0,
+            },
         },
     ]
 
@@ -130,13 +151,52 @@ def host_dependency_failed_lines() -> list[dict]:
                 "the journal host is not installed or is incomplete."
             ),
             "fix": doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE,
+            "execution_error": None,
         },
         {
             "event": "doctor.completed",
             "ts": "2026-05-11T00:00:00Z",
             "status": "failed",
             "duration_ms": 1,
-            "summary": {"total": 1, "failed": 1, "warnings": 0, "skipped": 0},
+            "summary": {
+                "total": 1,
+                "failed": 1,
+                "warnings": 0,
+                "skipped": 0,
+                "errors": 0,
+            },
+        },
+    ]
+
+
+def doctor_execution_error_lines() -> list[dict]:
+    return [
+        doctor_ok_lines()[0],
+        {
+            "event": "check.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "name": "local_bin_sol_reachable",
+            "severity": "advisory",
+            "status": "failed",
+            "detail": "check execution failed: RuntimeError: boom",
+            "fix": "",
+            "execution_error": {
+                "type": "RuntimeError",
+                "message": "boom",
+            },
+        },
+        {
+            "event": "doctor.completed",
+            "ts": "2026-05-11T00:00:00Z",
+            "status": "failed",
+            "duration_ms": 1,
+            "summary": {
+                "total": 1,
+                "failed": 1,
+                "warnings": 0,
+                "skipped": 0,
+                "errors": 1,
+            },
         },
     ]
 
@@ -318,6 +378,48 @@ def test_setup_jsonl_host_dependency_blocker_fails_doctor_step(
     assert completed["failed_step"] == "doctor"
     assert started_steps == ["doctor"]
     assert "Traceback" not in out
+
+
+def test_setup_jsonl_doctor_execution_error_fails_doctor_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    doctor_lines = doctor_execution_error_lines()
+    expected_failed_check = json.dumps(doctor_lines[1])
+
+    rc, events, out = run_setup_jsonl(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--skip-models", "--skip-skills", "--skip-service"],
+        doctor_lines=doctor_lines,
+    )
+
+    for line in out.splitlines():
+        json.loads(line)
+    failed = [event for event in events if event["event"] == "step.failed"][-1]
+    completed = [event for event in events if event["event"] == "setup.completed"][-1]
+    terminal_doctor = [
+        event for event in events if event["event"] == "doctor.completed"
+    ][-1]
+
+    assert rc == 1
+    assert expected_failed_check in out.splitlines()
+    assert failed["step"] == "doctor"
+    assert failed["error"]["code"] == "doctor_failed"
+    assert completed["status"] == "failed"
+    assert terminal_doctor["summary"]["errors"] == 1
+    assert not [
+        event
+        for event in events
+        if event["event"] == "step.warning" and event.get("step") == "doctor"
+    ]
+    assert not [
+        event
+        for event in events
+        if event["event"] == "step.completed" and event.get("step") == "doctor"
+    ]
 
 
 def test_setup_jsonl_translates_doctor_advisories_to_step_warning(

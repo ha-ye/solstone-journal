@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from solstone.think.probe import ExecutionError
 from tests.helpers.module_mocks import module_mock
 
 
@@ -106,8 +107,67 @@ def test_main_json_passes_when_blockers_pass(
 
     assert rc == 0
     assert payload["summary"]["failed"] == 0
+    assert payload["summary"]["errors"] == 0
+    assert list(payload["summary"]) == [
+        "total",
+        "failed",
+        "warnings",
+        "skipped",
+        "errors",
+    ]
     assert isinstance(payload["checks"], list)
+    assert all(check["execution_error"] is None for check in payload["checks"])
     assert isinstance(payload["summary"], dict)
+
+
+def test_main_isolates_execution_error_and_continues(preflight, monkeypatch, capsys):
+    before_check = preflight.Check("before_check", "blocker", ("linux", "darwin"))
+    raising_check = preflight.Check("raising_check", "advisory", ("linux", "darwin"))
+    after_check = preflight.Check("after_check", "blocker", ("linux", "darwin"))
+    calls: list[str] = []
+
+    def before(_args):
+        calls.append("before")
+        return preflight.make_result(before_check, "ok", "before complete")
+
+    def raising(_args):
+        calls.append("raising")
+        raise RuntimeError("boom")
+
+    def after(_args):
+        calls.append("after")
+        return preflight.make_result(after_check, "ok", "after complete")
+
+    monkeypatch.setattr(
+        preflight,
+        "CHECKS",
+        [
+            (before_check, before),
+            (raising_check, raising),
+            (after_check, after),
+        ],
+    )
+
+    results = preflight.run_checks(args(preflight))
+
+    assert [result.name for result in results] == [
+        "before_check",
+        "raising_check",
+        "after_check",
+    ]
+    assert calls == ["before", "raising", "after"]
+    assert results[1].execution_error == ExecutionError("RuntimeError", "boom")
+
+    calls.clear()
+    rc = preflight.main([])
+    output = capsys.readouterr().out
+
+    assert rc == 1
+    assert calls == ["before", "raising", "after"]
+    assert "ERROR raising_check" in output
+    assert output.rstrip().endswith(
+        "preflight: 3 checks, 1 failed, 0 warnings, 0 skipped, 1 errors"
+    )
 
 
 def test_python_version_ok(preflight, probe, monkeypatch, tmp_path):
@@ -287,3 +347,4 @@ def test_main_returns_one_when_uv_missing(
 
     assert rc == 1
     assert payload["summary"]["failed"] >= 1
+    assert payload["summary"]["errors"] == 0
