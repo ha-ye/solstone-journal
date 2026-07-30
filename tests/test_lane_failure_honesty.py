@@ -835,6 +835,79 @@ async def test_explicit_local_not_ready_does_not_consult_cloud(
     probe.assert_no_provider("anthropic")
 
 
+@pytest.mark.parametrize("interface", ["generate", "cogitate"])
+@pytest.mark.asyncio
+async def test_explicit_local_loading_does_not_consult_cloud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interface: str,
+):
+    from solstone.think.providers import local_server
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_test_config(
+        tmp_path,
+        provider="local",
+        model=LOCAL_MODEL,
+        interface=interface,
+        env={
+            "GOOGLE_API_KEY": "test-google-key",
+            "ANTHROPIC_API_KEY": "test-anthropic-key",
+        },
+    )
+    monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "_fetch_health",
+        lambda port: (local_server.STATE_LOADING, None, None),
+    )
+    connect_calls = 0
+    original_connect = local_server.connect
+
+    def spy_connect() -> Any:
+        nonlocal connect_calls
+        connect_calls += 1
+        return original_connect()
+
+    monkeypatch.setattr(local_server, "connect", spy_connect)
+
+    if interface == "generate":
+        probe = _install_cloud_generate_tripwires(monkeypatch)
+
+        with _assert_config_unchanged(tmp_path):
+            with pytest.raises(LocalProviderError) as exc_info:
+                await _execute_generate(
+                    _generate_config(provider="local", model=LOCAL_MODEL),
+                    lambda _event: None,
+                )
+
+        assert exc_info.value.reason_code == "local_model_loading"
+        assert connect_calls == 1
+        assert probe.observations == []
+        return
+
+    probe = _install_cogitate_probe(
+        monkeypatch,
+        active_provider="local",
+        patch_local=False,
+    )
+
+    with _assert_config_unchanged(tmp_path):
+        with pytest.raises(LocalProviderError) as exc_info:
+            await _execute_with_tools(
+                _cogitate_config(provider="local", model=LOCAL_MODEL),
+                lambda _event: None,
+            )
+
+    assert exc_info.value.reason_code == "local_model_loading"
+    assert connect_calls == 1
+    assert all(obs.provider == "local" for obs in probe.observations)
+    probe.assert_no_provider("google")
+    probe.assert_no_provider("openai")
+    probe.assert_no_provider("anthropic")
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_reason_code"),
     [

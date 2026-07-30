@@ -306,6 +306,8 @@ def connect() -> LocalServerInfo:
     if port is None:
         raise LocalProviderError("local_model_not_ready", LOCAL_MODEL_NOT_READY_COPY)
     state, _, body = _fetch_health(port)
+    if state == STATE_LOADING:
+        raise LocalProviderError("local_model_loading", LOCAL_MODEL_NOT_READY_COPY)
     if state != STATE_READY:
         raise LocalProviderError("local_model_not_ready", LOCAL_MODEL_NOT_READY_COPY)
     served_model_id = _resolve_served_model_id(body)

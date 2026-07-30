@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             results.append(run_case(case))
         except LocalProviderError as exc:
-            if exc.reason_code == "local_model_not_ready":
+            if exc.reason_code in {"local_model_not_ready", "local_model_loading"}:
                 print(LOCAL_NOT_READY, file=sys.stderr)
                 return 2
             raise

@@ -289,6 +289,49 @@ def test_schema_eval_main_requires_active_local_provider(
     assert captured.out == ""
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    ["local_model_not_ready", "local_model_loading"],
+)
+def test_schema_eval_main_handles_local_startup_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason_code: str,
+) -> None:
+    monkeypatch.setattr(
+        eval_schemas.models,
+        "type_default_is_local",
+        lambda agent_type: True,
+    )
+    monkeypatch.setattr(
+        eval_schemas,
+        "load_cases",
+        lambda _path: [{"name": "startup"}],
+    )
+
+    def raise_startup_error(_case: dict[str, Any]) -> dict[str, Any]:
+        raise eval_schemas.LocalProviderError(reason_code, "local not ready")
+
+    monkeypatch.setattr(eval_schemas, "run_case", raise_startup_error)
+    out_dir = tmp_path / "out"
+
+    exit_code = eval_schemas.main(
+        [
+            "--cases",
+            str(tmp_path / "cases.jsonl"),
+            "--out",
+            str(out_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert eval_schemas.LOCAL_NOT_READY in captured.err
+    assert captured.out == ""
+    assert not out_dir.exists()
+
+
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic", "fake"])
 def test_prepare_provider_schema_is_pure_and_idempotent(
     bounded_schema: dict[str, Any], provider: str

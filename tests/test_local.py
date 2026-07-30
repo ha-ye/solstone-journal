@@ -4758,13 +4758,32 @@ def test_local_server_connect_failed_health_raises_named_copy(monkeypatch):
 
     monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
     monkeypatch.setattr(
-        local_server, "_fetch_health", lambda port: ("starting", None, None)
+        local_server,
+        "_fetch_health",
+        lambda port: (local_server.STATE_FAILED, None, None),
     )
 
     with pytest.raises(local_server.LocalProviderError) as exc:
         local_server.connect()
 
     assert exc.value.reason_code == "local_model_not_ready"
+    assert str(exc.value) == local_server.LOCAL_MODEL_NOT_READY_COPY
+
+
+def test_local_server_connect_loading_health_raises_named_copy(monkeypatch):
+    from solstone.think.providers import local_server
+
+    monkeypatch.setattr(local_server, "read_service_port", lambda service: 2468)
+    monkeypatch.setattr(
+        local_server,
+        "_fetch_health",
+        lambda port: (local_server.STATE_LOADING, None, None),
+    )
+
+    with pytest.raises(local_server.LocalProviderError) as exc:
+        local_server.connect()
+
+    assert exc.value.reason_code == "local_model_loading"
     assert str(exc.value) == local_server.LOCAL_MODEL_NOT_READY_COPY
 
 
