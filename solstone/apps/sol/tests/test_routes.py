@@ -152,6 +152,56 @@ def test_api_index_is_read_only(sol_env):
     assert _talents_snapshot(sol_env.journal) == before
 
 
+def test_api_run_omits_non_responsive_raw_output(sol_env, monkeypatch):
+    use_id = "1700000000011"
+    raw_output = "I cannot describe this screen."
+    talent_dir = sol_env.journal / "talents" / "default"
+    talent_dir.mkdir(parents=True)
+    (talent_dir / f"{use_id}.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "event": "request",
+                    "ts": 1700000000011,
+                    "use_id": use_id,
+                    "name": "default",
+                    "prompt": "Describe the screen",
+                    "provider": "openai",
+                    "day": "20260304",
+                },
+                {
+                    "event": "error",
+                    "ts": 1700000000200,
+                    "use_id": use_id,
+                    "error": "The requested work was not completed.",
+                    "reason_code": "non_responsive",
+                    "terminal": True,
+                    "raw": [
+                        {
+                            "reason_code": "non_responsive",
+                            "non_responsive_output": raw_output,
+                        }
+                    ],
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_end_state",
+        lambda _use_id: "error",
+    )
+
+    response = sol_env.client.get(f"/app/sol/api/run/{use_id}")
+
+    assert response.status_code == 200
+    serialized = json.dumps(response.get_json())
+    assert raw_output not in serialized
+    assert '"raw"' not in serialized
+
+
 def test_segment_summary_talent_meta_uses_declared_copy():
     from solstone.apps.sol import routes as sol_routes
 

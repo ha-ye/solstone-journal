@@ -4,6 +4,8 @@
 import datetime as dt
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image
@@ -13,6 +15,7 @@ from solstone.think.importers.file_importer import (
     FILE_IMPORTER_REGISTRY,
     get_file_importer,
 )
+from solstone.think.responsiveness import NonResponsiveOutputError
 
 
 def _configure_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,6 +164,42 @@ def test_process_vision_failure_propagates_before_success_entry(tmp_path, monkey
         mod.importer.process(image_path, tmp_path, import_id="20260115_120000")
 
     assert not list((tmp_path / "chronicle").glob("**/import.image"))
+
+
+def test_non_responsive_image_import_leaves_no_artifacts(tmp_path, monkeypatch):
+    import solstone.think.providers as providers_package
+    from solstone.think import models
+
+    mod = __import__("solstone.think.importers.images", fromlist=["importer"])
+    _configure_journal(tmp_path, monkeypatch)
+    image_path = tmp_path / "shot.png"
+    _write_png(image_path)
+    import_id = "20260115_120000"
+    provider_module = SimpleNamespace(
+        run_generate=MagicMock(
+            return_value={
+                "text": "I cannot describe this screen.",
+                "model": "provider-model",
+                "finish_reason": "stop",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: ("fake", "provider-model"),
+    )
+    monkeypatch.setattr(
+        providers_package,
+        "get_provider_module",
+        lambda _provider: provider_module,
+    )
+
+    with pytest.raises(NonResponsiveOutputError):
+        mod.importer.process(image_path, tmp_path, import_id=import_id)
+
+    assert not list((tmp_path / "chronicle").glob("**/import.image"))
+    assert not (tmp_path / "imports" / import_id / "content_manifest.jsonl").exists()
 
 
 def test_process_real_encoder_failure_leaves_no_image_artifacts(tmp_path, monkeypatch):

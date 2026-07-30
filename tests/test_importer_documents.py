@@ -11,6 +11,8 @@ import os
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from solstone.observe.pdf_worker import (
     PdfWorkerEncryptedError,
@@ -19,6 +21,7 @@ from solstone.observe.pdf_worker import (
 )
 from solstone.think.importers.file_importer import FILE_IMPORTER_REGISTRY
 from solstone.think.models import NoBrainConfiguredError
+from solstone.think.responsiveness import NON_RESPONSIVE_OUTPUT_MESSAGE
 from tests.pdf_worker_fixtures import (
     IMAGE_TEXT_SENTINEL,
     MIXED_TEXT_SENTINEL,
@@ -361,6 +364,44 @@ def test_vision_extraction_failure_marks_one_scanned_page_unavailable(
     assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=2) in transcript
     assert (segment_dir / "pages" / "page-0001.png").is_file()
     assert (segment_dir / "pages" / "page-0002.png").is_file()
+
+
+def test_non_responsive_document_description_uses_unavailable_marker_without_raw_refusal(
+    tmp_path, monkeypatch
+):
+    import solstone.think.providers as providers_package
+    from solstone.think import models
+
+    mod = _mod()
+    pdf = write_image_only_fixture(tmp_path / "scan.pdf")
+    _fixed_mtime(pdf)
+    provider_module = SimpleNamespace(
+        run_generate=MagicMock(
+            return_value={
+                "text": "I cannot describe this screen.",
+                "model": "provider-model",
+                "finish_reason": "stop",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: ("fake", "provider-model"),
+    )
+    monkeypatch.setattr(
+        providers_package,
+        "get_provider_module",
+        lambda _provider: provider_module,
+    )
+
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    transcript = _transcript(tmp_path, result)
+    assert "I cannot describe this screen." not in transcript
+    assert NON_RESPONSIVE_OUTPUT_MESSAGE in transcript
+    assert "2 model-extracted, 0 unavailable" not in transcript
+    assert "0 model-extracted, 2 unavailable" in transcript
 
 
 def test_description_failure_keeps_full_text_and_uses_description_marker(

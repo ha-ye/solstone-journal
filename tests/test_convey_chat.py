@@ -2770,6 +2770,47 @@ def test_talent_log_endpoint_returns_completed_run(chat_client, tmp_path):
     assert "raw" not in payload["events"][1]
 
 
+def test_talent_log_endpoint_omits_non_responsive_raw_output(chat_client, tmp_path):
+    use_id = "1700000000010"
+    raw_output = "I cannot describe this screen."
+    _write_talent_log(
+        tmp_path / "journal",
+        "default",
+        f"{use_id}.jsonl",
+        [
+            {
+                "event": "request",
+                "ts": 1700000000010,
+                "use_id": use_id,
+                "prompt": "Describe the screen",
+                "name": "default",
+                "provider": "openai",
+            },
+            {
+                "event": "error",
+                "ts": 1700000000100,
+                "use_id": use_id,
+                "error": "The requested work was not completed.",
+                "reason_code": "non_responsive",
+                "terminal": True,
+                "raw": [
+                    {
+                        "reason_code": "non_responsive",
+                        "non_responsive_output": raw_output,
+                    }
+                ],
+            },
+        ],
+    )
+
+    response = chat_client.get(f"/api/chat/talent-log/{use_id}")
+
+    assert response.status_code == 200
+    serialized = json.dumps(response.get_json())
+    assert raw_output not in serialized
+    assert '"raw"' not in serialized
+
+
 def test_talent_log_endpoint_returns_running_active_run(chat_client, tmp_path):
     use_id = "1700000000002"
     _write_talent_log(
