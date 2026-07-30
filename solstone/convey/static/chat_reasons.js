@@ -166,6 +166,10 @@
       "template": "I didn't get a response",
       "action": null
     },
+    "non_responsive": {
+      "template": "the thinking engine isn't answering requests",
+      "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}
+    },
     "token_budget_exceeded": {
       "template": "this run reached its resource budget before finishing",
       "action": null

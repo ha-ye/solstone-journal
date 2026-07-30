@@ -10,6 +10,11 @@ from solstone.think.providers.local_endpoint import (
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
 )
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_READINESS_DETAIL,
+    NON_RESPONSIVE_READINESS_SUMMARY,
+    NON_RESPONSIVE_REASON_CODE,
+)
 
 
 @dataclass(frozen=True)
@@ -353,6 +358,12 @@ _ENTRIES: dict[str, _Entry] = {
         summary="I didn't get a response",
         detail="Try again or choose another provider.",
         recovery_action=None,
+    ),
+    NON_RESPONSIVE_REASON_CODE: _Entry(
+        klass="generic",
+        summary=NON_RESPONSIVE_READINESS_SUMMARY,
+        detail=NON_RESPONSIVE_READINESS_DETAIL,
+        recovery_action=_THINKING_ACTION,
     ),
     "token_budget_exceeded": _Entry(
         klass="generic",

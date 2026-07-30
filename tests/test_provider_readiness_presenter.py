@@ -16,6 +16,11 @@ from solstone.convey.provider_readiness import (
 from solstone.think.providers import shared
 from solstone.think.providers.local import ContextBudgetExceeded, LocalCapacityExhausted
 from solstone.think.providers.local_admission import LocalAdmissionTimeout
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_READINESS_DETAIL,
+    NON_RESPONSIVE_READINESS_SUMMARY,
+    NON_RESPONSIVE_REASON_CODE,
+)
 
 
 def local_provider_error_codes() -> set[str]:
@@ -67,6 +72,23 @@ def test_explicit_extra_codes_are_mapped():
     mapped = mapped_reason_codes()
     assert "chat_pipeline_unavailable" in mapped
     assert "no_output" in mapped
+
+
+def test_non_responsive_readiness_copy_is_generic_actionable():
+    view = present_for_reason(
+        NON_RESPONSIVE_REASON_CODE,
+        provider="google",
+        model="test-model",
+        status="blocked",
+    )
+
+    assert view.summary == NON_RESPONSIVE_READINESS_SUMMARY
+    assert view.detail == NON_RESPONSIVE_READINESS_DETAIL
+    assert view.recovery_action is not None
+    assert view.recovery_action.label == "Open Thinking"
+    assert view.recovery_action.target == "/app/thinking/#main"
+    assert is_blocking_reason(NON_RESPONSIVE_REASON_CODE) is False
+    assert backlog_reason_category(NON_RESPONSIVE_REASON_CODE) == "generic"
 
 
 def test_local_runtime_exception_codes_are_registered():

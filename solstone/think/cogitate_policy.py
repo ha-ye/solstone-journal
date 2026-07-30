@@ -16,6 +16,7 @@ from solstone.think.cogitate_contract import (
     COGITATE_READ_TOOL_NAMES,
     capabilities_for_access_tier,
 )
+from solstone.think.responsiveness import NON_RESPONSIVE_REASON_CODE
 
 MAX_TURNS = 60
 DEFAULT_RUN_COST_CAP_USD = 1.00
@@ -44,6 +45,7 @@ DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
         "max_turns_exhausted",
         "model_not_found",
         "no_output",
+        NON_RESPONSIVE_REASON_CODE,
         "provider_request_rejected",
         "schema_invalid",
         "token_budget_exceeded",
@@ -65,6 +67,7 @@ DETERMINISTIC_FAILURE_CAPS: dict[str, int] = {
     "max_turns_exhausted": 2,
     "model_not_found": 1,
     "no_output": 2,
+    NON_RESPONSIVE_REASON_CODE: 2,
     "provider_request_rejected": 1,
     "schema_invalid": 3,
     "token_budget_exceeded": 2,

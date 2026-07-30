@@ -50,6 +50,7 @@ EXPECTED_CODES = {
     "incomplete_text_length",
     "max_turns_exhausted",
     "no_output",
+    "non_responsive",
     "token_budget_exceeded",
     "wall_clock_exceeded",
     "unknown",
