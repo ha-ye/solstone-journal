@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -62,13 +63,23 @@ def test_load_sync_state_corrupt_json(tmp_path):
     assert load_sync_state(tmp_path, "plaud") is None
 
 
-def test_get_syncable_backends():
-    """Discovers plaud backend."""
-    from solstone.think.importers.sync import get_syncable_backends
+def test_syncable_registry_exposes_only_supported_backends(caplog):
+    """Discovers only supported syncable backends without loader warnings."""
+    from solstone.think.importers.sync import SYNCABLE_REGISTRY, get_syncable_backends
 
+    expected = {"plaud", "obsidian", "audio", "oura"}
+    caplog.set_level(logging.WARNING, logger="solstone.think.importers.sync")
+    assert set(SYNCABLE_REGISTRY) == expected
     backends = get_syncable_backends()
-    names = [b.name for b in backends]
-    assert "plaud" in names
+    names = {b.name for b in backends}
+    assert names == expected
+    assert len(backends) == 4
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "solstone.think.importers.sync"
+        and record.levelno >= logging.WARNING
+    ]
 
 
 def test_plaud_protocol_conformance():
@@ -88,8 +99,8 @@ def test_plaud_sync_requires_token(tmp_path, monkeypatch):
         PlaudBackend().sync(tmp_path)
 
 
-def test_backends_cli_flag(capsys, monkeypatch):
-    """sol import --backends lists plaud."""
+def test_backends_cli_flag_lists_supported_backends_only(capsys, monkeypatch):
+    """sol import --backends lists supported syncable backends."""
     import sys
 
     from solstone.think.importers.cli import main
@@ -98,7 +109,28 @@ def test_backends_cli_flag(capsys, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", "/tmp/test-journal")
     main()
     captured = capsys.readouterr()
-    assert "plaud" in captured.out
+    expected = {"plaud", "obsidian", "audio", "oura"}
+    listed = {
+        line.strip()
+        for line in captured.out.splitlines()
+        if line.strip() and not line.strip().endswith(":")
+    }
+    assert listed == expected
+    assert "granola" not in captured.out
+
+
+def test_sync_granola_reports_unknown_backend(monkeypatch, tmp_path):
+    """Granola sync uses the generic unknown-backend path."""
+    from solstone.think.importers.cli import _run_sync
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    with pytest.raises(SystemExit) as exc_info:
+        _run_sync("granola", dry_run=True)
+
+    assert (
+        str(exc_info.value) == "Unknown sync backend: granola\n"
+        "Available backends: plaud, obsidian, audio, oura"
+    )
 
 
 # ---------------------------------------------------------------------------
