@@ -308,7 +308,6 @@ def test_update_sync_preserves_unrelated_schedule_entry(settings_env):
         "/app/settings/api/sync",
         json={
             "plaud": {"enabled": True},
-            "granola": {"enabled": True},
             "obsidian": {"enabled": True},
         },
     )
@@ -321,25 +320,81 @@ def test_update_sync_preserves_unrelated_schedule_entry(settings_env):
         "every": "hourly",
         "enabled": True,
     }
-    assert raw["sync:granola"] == {
-        "cmd": ["journal", "importer", "--sync", "granola", "--save"],
-        "every": "hourly",
-        "enabled": True,
-    }
     assert raw["sync:obsidian"] == {
         "cmd": ["journal", "importer", "--sync", "obsidian", "--save"],
         "every": "hourly",
         "enabled": True,
     }
+    assert "sync:granola" not in raw
 
     payload = response.get_json()
-    assert set(payload) == {"plaud", "granola", "obsidian"}
+    assert set(payload) == {"plaud", "obsidian"}
     assert set(payload["plaud"]) == {"available", "enabled", "configured"}
-    assert set(payload["granola"]) == {"enabled", "configured"}
     assert set(payload["obsidian"]) == {"available", "enabled", "configured"}
     assert payload["plaud"]["enabled"] is True
     assert payload["plaud"]["configured"] is True
-    assert payload["granola"]["enabled"] is True
-    assert payload["granola"]["configured"] is True
     assert payload["obsidian"]["enabled"] is True
     assert payload["obsidian"]["configured"] is True
+
+
+def test_get_sync_ignores_legacy_granola_schedule_entry(settings_env, monkeypatch):
+    monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
+    journal, client = _settings_client(settings_env)
+    schedules_path = journal / "config" / "schedules.json"
+    legacy_granola = {
+        "cmd": ["journal", "importer", "--sync", "granola", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }
+    schedules_path.write_text(
+        json.dumps({"sync:granola": legacy_granola}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/app/settings/api/sync")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "plaud": {"available": False, "enabled": False, "configured": False},
+        "obsidian": {"available": True, "enabled": False, "configured": False},
+    }
+    raw = json.loads(schedules_path.read_text(encoding="utf-8"))
+    assert raw["sync:granola"] == legacy_granola
+
+
+def test_update_sync_ignores_granola_request_and_preserves_legacy_entry(
+    settings_env,
+    monkeypatch,
+):
+    monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
+    journal, client = _settings_client(settings_env)
+    schedules_path = journal / "config" / "schedules.json"
+    legacy_granola = {
+        "cmd": ["journal", "importer", "--sync", "granola", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }
+    schedules_path.write_text(
+        json.dumps({"sync:granola": legacy_granola}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.put(
+        "/app/settings/api/sync",
+        json={
+            "granola": {"enabled": False},
+            "obsidian": {"enabled": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert set(payload) == {"plaud", "obsidian"}
+    assert "granola" not in payload
+    raw = json.loads(schedules_path.read_text(encoding="utf-8"))
+    assert raw["sync:granola"] == legacy_granola
+    assert raw["sync:obsidian"] == {
+        "cmd": ["journal", "importer", "--sync", "obsidian", "--save"],
+        "every": "hourly",
+        "enabled": True,
+    }

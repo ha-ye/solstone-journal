@@ -1779,7 +1779,6 @@ def get_sync() -> Any:
                 schedules = json.load(f)
 
         plaud_entry = schedules.get("sync:plaud", {})
-        granola_entry = schedules.get("sync:granola", {})
         obsidian_entry = schedules.get("sync:obsidian", {})
 
         # Check token availability from journal config / runtime env
@@ -1797,12 +1796,6 @@ def get_sync() -> Any:
                         plaud_entry.get("enabled", True) if plaud_entry else False
                     ),
                     "configured": bool(plaud_entry),
-                },
-                "granola": {
-                    "enabled": (
-                        granola_entry.get("enabled", True) if granola_entry else False
-                    ),
-                    "configured": bool(granola_entry),
                 },
                 "obsidian": {
                     "available": True,
@@ -1861,42 +1854,6 @@ def update_sync() -> Any:
                     schedules["sync:plaud"]["enabled"] = enabled
                     changed_fields["plaud.enabled"] = enabled
                     changed_entries["sync:plaud"] = schedules["sync:plaud"]
-
-        # Handle granola sync toggle
-        if "granola" in request_data:
-            granola_data = request_data["granola"]
-            if not isinstance(granola_data, dict):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail="granola must be an object",
-                )
-
-            if "enabled" in granola_data:
-                enabled = granola_data["enabled"]
-                if not isinstance(enabled, bool):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="granola.enabled must be a boolean",
-                    )
-
-                old_entry = schedules.get("sync:granola", {})
-                old_enabled = old_entry.get("enabled", True) if old_entry else False
-
-                if enabled != old_enabled:
-                    if "sync:granola" not in schedules:
-                        schedules["sync:granola"] = {
-                            "cmd": [
-                                "journal",
-                                "importer",
-                                "--sync",
-                                "granola",
-                                "--save",
-                            ],
-                            "every": "hourly",
-                        }
-                    schedules["sync:granola"]["enabled"] = enabled
-                    changed_fields["granola.enabled"] = enabled
-                    changed_entries["sync:granola"] = schedules["sync:granola"]
 
         # Handle obsidian sync toggle
         if "obsidian" in request_data:
