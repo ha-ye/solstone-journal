@@ -82,8 +82,8 @@ _NON_RESPONSIVE_NEGATION_HEADS = (
 _NON_RESPONSIVE_CONTINUATION_MARKERS = (
     ", so ",
     ", but ",
-    # "though" is the exact contrastive already carried by corpus row R3
-    # (tests/test_responsiveness.py:187); missing real content is costlier.
+    # "though" is the exact contrastive carried by tests/test_responsiveness.py
+    # row R3 / test_r3_describe_incidental_hedge; missing real content is costlier.
     ", though ",
 )
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]")
