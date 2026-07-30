@@ -34,7 +34,7 @@ For each facet, ask about key people, companies, projects, and tools:
 ### offer imports
 
 After setup, offer to bring in history from existing tools:
-- Calendar (ics), ChatGPT (chatgpt), Claude (claude), Gemini (gemini), Granola (granola), Notes (obsidian), Kindle (kindle)
+- Calendar (ics), ChatGPT (chatgpt), Claude (claude), Gemini (gemini), Notes (obsidian), Kindle (kindle)
 - Read guide: `solstone/apps/import/guides/{source}.md`
 - Navigate: `journal navigate "/app/import#guide/{source}"`
 - If declined: `sol call awareness imports --declined`
