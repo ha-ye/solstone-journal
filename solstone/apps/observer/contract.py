@@ -216,7 +216,8 @@ OPERATIONS: list[OperationSpec] = [
             _json_error(
                 403,
                 ("local_request_only",),
-                "Register caller was not trusted localhost or paired link.",
+                "Register request lacked the verified device pairing required "
+                "for the observer stream.",
             ),
             _json_error(
                 500,

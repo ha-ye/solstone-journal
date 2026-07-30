@@ -110,7 +110,13 @@ def test_register_extension_origin_without_device_proof_mints_nothing(observer_e
     )
 
     assert resp.status_code == 403
-    assert resp.get_json()["reason_code"] == "local_request_only"
+    body = resp.get_json()
+    assert body["reason_code"] == "local_request_only"
+    assert body["error"] == (
+        "I couldn't register that observer because it needs a verified pairing "
+        "with this device."
+    )
+    assert "local requests only" not in body["error"]
     _assert_no_observer_records(env.journal)
 
 

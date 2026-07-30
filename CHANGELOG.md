@@ -15,6 +15,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 ### Fixed
 
 - `journal observer create` no longer ends in an unexplained error. observers register themselves over a private link, so there is nothing to create by hand. the command now says that, and points you at pairing the device instead.
+- a refused observer registration now says why. it used to claim your journal only takes local requests, which stopped being the rule once registration started requiring a paired device. it now says a verified pairing with the device is what's missing.
 - your journal now records what it turns away. when something arrives from a device your journal does not recognise, it is refused, and until now that left no trace anywhere: no way to see that it happened, or how much. your journal now records a refusal while it is happening, and again once it stops, with how many were turned away.
 - an import started while another one is running now waits its turn. it used to report that it started and then never run, and the file it came from could not be started again afterwards. an import that failed or never ran can now be started again, and a start that cannot be handed off to run says so instead of reporting success.
 - a slow reply in chat is no longer cut short. when the model was busy, a reply still being written could be ended with an error, and the answer that arrived moments later was thrown away. your journal can now tell that a reply is still being written, so slow is no longer read as stopped.

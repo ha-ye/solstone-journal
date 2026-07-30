@@ -190,7 +190,8 @@ BACKUP_UNAVAILABLE = Reason(
 )
 LOCAL_REQUEST_ONLY = Reason(
     "local_request_only",
-    "I couldn't register that observer because this endpoint serves local requests only.",
+    "I couldn't register that observer because it needs a verified pairing "
+    "with this device.",
     403,
 )
 

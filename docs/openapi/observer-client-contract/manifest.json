@@ -14,7 +14,7 @@
     }
   ],
   "bundle_schema_identity": "solstone.observer-client-contract-bundle.schema.v1",
-  "bundle_semver": "5.0.2",
+  "bundle_semver": "5.0.3",
   "component_closure": [
     "CallosumEvent",
     "Error",
@@ -42,7 +42,7 @@
     },
     {
       "path": "projection.openapi.json",
-      "sha256": "73678260e54851a2393a116932c874c7f19d68763bbb7d76423acfc8e690b391"
+      "sha256": "b96506dd3dbf564637a76ed8b32ea794bca945cb8616e3a5d6b7a8495923b703"
     },
     {
       "path": "vectors.json",
@@ -55,7 +55,7 @@
       "id": "bundle.projection_builder",
       "path": "solstone/convey/contract/observer_bundle.py",
       "role": "projection_builder",
-      "sha256": "df8521375f664238acf7fedc859a98072158e2dbb5dcb6c5759077f9ab5341d5"
+      "sha256": "55eabb45113df9f9adaf8303ae3e6090b17497adfedc984f6ff4adc9154f216b"
     },
     {
       "id": "bundle.recording",
@@ -67,7 +67,7 @@
       "id": "extension.observer_sse_error_frame",
       "path": "solstone/apps/observer/contract.py",
       "role": "code_adjacent_extension",
-      "sha256": "bf4813fbb2623a9dcb12e06534481b5c8fbeb5ba9f0e63ca089ac7a991c4e5a9"
+      "sha256": "5bd81bc2d112397fc33621567d303772647f6f19c547658cea49a47915921982"
     },
     {
       "id": "extension.root_chat_native_subset",
@@ -91,7 +91,7 @@
       "id": "fragment.observer",
       "path": "solstone/apps/observer/contract.py",
       "role": "code_adjacent_fragment",
-      "sha256": "bf4813fbb2623a9dcb12e06534481b5c8fbeb5ba9f0e63ca089ac7a991c4e5a9"
+      "sha256": "5bd81bc2d112397fc33621567d303772647f6f19c547658cea49a47915921982"
     },
     {
       "id": "fragment.root",
@@ -157,7 +157,7 @@
       "id": "reason_codes",
       "path": "solstone/convey/reasons.py",
       "role": "vocabulary_source",
-      "sha256": "d12ed799a61ab6a4c53c23ba06f18eafebda01c32daa7d1aaf59d32f2bb93639"
+      "sha256": "a6ea66247ff25adc2e4571ffe473f1e195c5bb7f7f9fb4b421ddd54c609e196f"
     }
   ],
   "observer_protocol_version": 2,
