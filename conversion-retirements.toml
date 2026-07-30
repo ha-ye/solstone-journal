@@ -1,0 +1,28 @@
+schema_version = 1
+dependency_files = [
+  "pyproject.toml",
+  "packages/*/pyproject.toml",
+]
+content_roots = [
+  "Makefile",
+  "packages",
+  "scripts",
+  "solstone",
+]
+content_exclusions = [
+  "scripts/check_conversion_retirements.py",
+  "scripts/check_convey_bind_imports_clean.py",
+  "scripts/check_wheel_contents.py",
+]
+
+[[waves]]
+id = "W1b-discovery-kernel"
+status = "done"
+distribution = "scikit-learn"
+python_roots = []
+import_roots = ["sklearn"]
+# The frozen differential oracle remains a developer test dependency. It is
+# outside every built or shipped package and may not be widened to an extra.
+test_only_dependency_locations = [
+  "pyproject.toml:dependency-groups.dev",
+]

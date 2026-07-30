@@ -582,6 +582,9 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Running rust release-manifest check ==="
 	@$(MAKE) check-rust-release-manifest
+	@echo ""
+	@echo "=== Checking conversion-wave retirements ==="
+	@$(MAKE) check-conversion-retirements
 	@echo "=== Running access-imports-clean check ==="
 	@$(MAKE) check-access-imports-clean
 	@echo ""
@@ -785,6 +788,10 @@ check-schema-bounds: .installed
 # Rust release-manifest schema, semantic, determinism, and transaction gate
 check-rust-release-manifest: .installed
 	$(VENV_BIN)/python scripts/check_rust_release_manifest.py
+
+# Conversion-wave Python and package retirement gate
+check-conversion-retirements:
+	python3 scripts/check_conversion_retirements.py
 
 # Package dependency and script ownership consistency gate
 check-extras-consistency: .installed
