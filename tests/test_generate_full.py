@@ -339,16 +339,25 @@ def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     assert output_path.read_text(encoding="utf-8") == "old output"
 
 
-def test_execute_generate_blocking_call_emits_progress_and_count(monkeypatch):
+def test_generate_progress_interval_stays_below_half_watchdog_cap():
     from solstone.convey import chat
+    from solstone.think import talents
+
+    assert (
+        talents._GENERATE_PROGRESS_INTERVAL_S
+        < min(chat._WATCHDOG_TIMEOUTS.values()) / 2
+    ), (
+        "generate progress heartbeat must stay strictly below half of the "
+        "shortest watchdog timeout so one missed tick cannot trip the cap; "
+        "strictly less than the cap is insufficient"
+    )
+
+
+def test_execute_generate_blocking_call_emits_progress_and_count(monkeypatch):
     from solstone.think import models, talents
     from solstone.think.talents import _execute_generate
 
     monkeypatch.setattr(talents, "_GENERATE_PROGRESS_INTERVAL_S", 0.01)
-    assert (
-        talents._GENERATE_PROGRESS_INTERVAL_S
-        < min(chat._WATCHDOG_TIMEOUTS.values()) / 2
-    )
 
     def slow_generate(**_kwargs):
         time.sleep(0.035)

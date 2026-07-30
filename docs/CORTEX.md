@@ -124,7 +124,6 @@ the receive thread and terminalizes the use with an error carrying `reason_code`
 ```json
 {
   "event": "cancel",
-  "ts": 1234567890123,
   "use_id": "1234567890123",
   "reason_code": "chat_watchdog_cancelled"
 }
