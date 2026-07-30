@@ -13,6 +13,13 @@
   - Opt-in via `make test-integration`; excluded from `make test` and `make ci`
   - Real local processes/builds and persisted-index contracts
   - Still use disposable `tmp_path` state and never the owner's journal
+- **Release Tests**: marked `@pytest.mark.release`
+  - Run serially via `make test-release`; excluded from development `make test`
+    and `make ci`
+  - Cover release transactions, release entrypoints, packaging/install probes,
+    and release-host tool contracts
+  - `make release-checks` combines them with the real advisory-policy liveness
+    and minisign gates; candidate construction runs that target automatically
 - **Naming**: Files `test_*.py`, functions `test_*`
 - **Fixtures**: Shared fixtures in `tests/conftest.py`
 
@@ -35,6 +42,9 @@ test that writes, scans, or rebuilds journal/index state must use the
 - `make test` runs all unit tests — `tests/` + every `solstone/apps/*/tests/`, in one parallel run
 - `make test-cov` — the same suite with coverage reporting
 - `make test-integration` — opt-in real local build/process and persisted-index contracts
+- `make test-release` — serial release transactions and release-host probes
+- `make release-checks` — complete candidate-host validation, including the
+  release tests, advisory-policy liveness, and real minisign signing
 - `make test-app APP=<name>` and `make test-only TEST=path` are the focused development loop
 - `make coverage` to generate a coverage report
 - `make ci` once on the settled final tree before merge or release (install checks plus the full unit suite)

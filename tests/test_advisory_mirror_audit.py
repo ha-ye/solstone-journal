@@ -312,6 +312,7 @@ def _inventory(root: Path) -> dict[str, tuple[str, int]]:
     return result
 
 
+@pytest.mark.release
 def test_green_packet_emits_exact_success_json_and_uses_bound_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -350,6 +351,7 @@ def test_green_packet_emits_exact_success_json_and_uses_bound_snapshot(
     assert "maximum-db-staleness" not in config_text
 
 
+@pytest.mark.release
 def test_green_packet_with_real_git_bundle_materialization(tmp_path: Path) -> None:
     output, runner, _root, _bundle, _receipt, _pubkey = _invoke_green(tmp_path)
 
@@ -363,6 +365,7 @@ def test_green_packet_with_real_git_bundle_materialization(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("missing", ["bundle", "receipt", "pubkey", "locator"])
+@pytest.mark.release
 def test_required_inputs_fail_before_git_or_cargo(tmp_path: Path, missing: str) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -399,6 +402,7 @@ def test_required_inputs_fail_before_git_or_cargo(tmp_path: Path, missing: str) 
 
 
 @pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+@pytest.mark.release
 def test_adjacent_signature_is_required_and_regular_before_git_or_cargo(
     tmp_path: Path,
     kind: str,
@@ -435,6 +439,7 @@ def test_adjacent_signature_is_required_and_regular_before_git_or_cargo(
 
 @pytest.mark.parametrize("target_name", ["bundle", "receipt", "pubkey"])
 @pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+@pytest.mark.release
 def test_unsafe_input_paths_and_symlinks_fail_before_git_or_cargo(
     tmp_path: Path,
     target_name: str,
@@ -527,6 +532,7 @@ def test_validate_locator_q3_oracle(locator: str, accepted: bool) -> None:
         b'{"max_age":86400,"synced_commit":"{commit}","utc":"2026-07-24T11:30:00Z","x":1}\n',
     ],
 )
+@pytest.mark.release
 def test_receipt_body_requires_canonical_bytes(tmp_path: Path, raw: bytes) -> None:
     _repo, commit, _bundle = _advisory_repo(tmp_path)
     receipt = tmp_path / "freshness.json"
@@ -562,6 +568,7 @@ def test_receipt_fields_are_strict(tmp_path: Path, payload: dict[str, Any]) -> N
         audit._read_receipt_authority(receipt)
 
 
+@pytest.mark.release
 def test_trusted_comment_mismatch_fails(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -587,6 +594,7 @@ def test_trusted_comment_mismatch_fails(tmp_path: Path) -> None:
     assert "trusted comment mismatch" in exc.value.failures[0].error
 
 
+@pytest.mark.release
 def test_pubkey_sha256_mismatch_fails_before_minisign(tmp_path: Path) -> None:
     _repo, commit, _bundle = _advisory_repo(tmp_path)
     _receipt, _signature, pubkey, _pubkey_sha, _fake = _write_packet(
@@ -635,6 +643,7 @@ def test_pubkey_blob_shape_is_strict(tmp_path: Path, raw: bytes) -> None:
         )
 
 
+@pytest.mark.release
 def test_signature_mutation_fails(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -664,6 +673,7 @@ def test_signature_mutation_fails(tmp_path: Path) -> None:
     "utc",
     ["2026-07-24T12:06:00Z", "2026-07-23T11:59:59Z"],
 )
+@pytest.mark.release
 def test_receipt_future_and_stale_times_fail(tmp_path: Path, utc: str) -> None:
     _repo, commit, _bundle = _advisory_repo(tmp_path)
     receipt = tmp_path / "freshness.json"
@@ -718,6 +728,7 @@ def test_minisign_preflight_uses_product_binary_check(
     assert calls[2][0] == "verify"
 
 
+@pytest.mark.release
 def test_bundle_verify_failure_stops_before_clone_and_cargo(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -758,6 +769,7 @@ def test_bundle_heads_must_be_exact_head_and_main(stdout: str) -> None:
         audit._parse_bundle_heads(stdout, synced_commit="a" * 40)
 
 
+@pytest.mark.release
 def test_clone_head_must_match_receipt_commit(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -781,6 +793,7 @@ def test_clone_head_must_match_receipt_commit(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.release
 def test_zero_advisory_clone_fails_before_cargo(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path, advisory_count=0)
@@ -805,6 +818,7 @@ def test_zero_advisory_clone_fails_before_cargo(tmp_path: Path) -> None:
     assert runner.check_count == 0
 
 
+@pytest.mark.release
 def test_discovery_run_nonzero_is_expected_when_debug_line_present(
     tmp_path: Path,
 ) -> None:
@@ -831,6 +845,7 @@ def test_discovery_path_must_be_direct_child_of_temp_parent(
         audit._assert_direct_child(scanned, parent)
 
 
+@pytest.mark.release
 def test_discovered_path_must_not_preexist(tmp_path: Path) -> None:
     root = _audit_root(tmp_path)
     _repo, commit, bundle = _advisory_repo(tmp_path)
@@ -858,6 +873,7 @@ def test_discovered_path_must_not_preexist(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.release
 def test_alternate_or_ambient_database_substitution_is_rejected(tmp_path: Path) -> None:
     runner = HybridRunner(final_scanned_path=tmp_path / "other-db")
 
@@ -866,6 +882,7 @@ def test_alternate_or_ambient_database_substitution_is_rejected(tmp_path: Path) 
     assert exc.value.failures[0].actual == "redacted"
 
 
+@pytest.mark.release
 def test_runner_never_sees_remote_git_or_cargo_fetch_operations(tmp_path: Path) -> None:
     _output, runner, _root, _bundle, _receipt, _pubkey = _invoke_green(tmp_path)
     flattened = [" ".join(command) for command in runner.events]
@@ -877,6 +894,7 @@ def test_runner_never_sees_remote_git_or_cargo_fetch_operations(tmp_path: Path) 
     assert not any("github.com" in item for item in flattened)
 
 
+@pytest.mark.release
 def test_final_cargo_deny_failure_is_redacted_and_no_success(tmp_path: Path) -> None:
     runner = HybridRunner(
         final_exit=1,
@@ -907,6 +925,7 @@ def test_child_output_redaction_masks_locator_temp_path_and_token_canaries() -> 
     assert audit.validate_public_evidence_text("child-output", redacted) == []
 
 
+@pytest.mark.release
 def test_cleanup_failure_suppresses_success_and_combines_errors(tmp_path: Path) -> None:
     def fail_cleanup(_path: Path) -> None:
         raise OSError("cleanup failed")
@@ -935,6 +954,7 @@ def test_cleanup_failure_suppresses_success_and_combines_errors(tmp_path: Path) 
     )
 
 
+@pytest.mark.release
 def test_cleanup_failure_combines_with_primary_error(tmp_path: Path) -> None:
     def fail_cleanup(_path: Path) -> None:
         raise OSError("cleanup failed")
@@ -964,6 +984,7 @@ def test_cleanup_failure_combines_with_primary_error(tmp_path: Path) -> None:
     assert any("cleanup failed" in error for error in errors)
 
 
+@pytest.mark.release
 def test_exact_success_schema_and_witness_binding(tmp_path: Path) -> None:
     output, _runner, root, _bundle, _receipt, _pubkey = _invoke_green(tmp_path)
     payload = json.loads(output)
@@ -986,6 +1007,7 @@ def test_exact_success_schema_and_witness_binding(tmp_path: Path) -> None:
     assert b"mirror.example.invalid" not in output
 
 
+@pytest.mark.release
 def test_success_inventory_is_non_destructive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1030,6 +1052,7 @@ def test_success_inventory_is_non_destructive(
     "stage",
     ["input", "locator", "pubkey", "signature", "time", "bundle", "cargo", "cleanup"],
 )
+@pytest.mark.release
 def test_failure_inventory_is_non_destructive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

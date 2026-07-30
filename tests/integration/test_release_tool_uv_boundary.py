@@ -11,7 +11,7 @@ import pytest
 import scripts.check_release_preflight as preflight
 import scripts.release_tool_pins as pins
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.release]
 
 
 def test_real_uv_banner_parses_and_compares_strictly() -> None:

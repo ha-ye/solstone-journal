@@ -17,7 +17,7 @@ import pytest
 import scripts.check_wheel_contents as checker
 
 ROOT = Path(__file__).resolve().parents[2]
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.release]
 
 
 @pytest.mark.skipif(

@@ -12,9 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.release_build_host import BuildHostError, ExternalBuildHostChannel
-
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.release
 RETAINED_ROOTS = (
     Path("dist") / "release-candidate",
     Path("target") / "release-evidence",
@@ -63,6 +62,8 @@ def _reachability_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 (str(sentinel_dir), str(interpreter_dir), "/usr/bin", "/bin")
             ),
             "HOME": str(tmp_path / "home"),
+            "PYTEST_CURRENT_TEST": os.environ["PYTEST_CURRENT_TEST"],
+            "SOLSTONE_RELEASE_TEST_RAIL": "1",
         },
         log,
     )
@@ -115,31 +116,35 @@ def _assert_no_external_seam(log: Path) -> None:
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
 
 
-def test_candidate_validates_build_host_before_destructive_cleanup() -> None:
-    """The candidate reachability test depends on this pre-cleanup validation."""
-    driver_text = (ROOT / "scripts" / "release_candidate_driver.py").read_text(
-        encoding="utf-8"
+def test_candidate_runs_release_checks_before_driver(tmp_path: Path) -> None:
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    make_record = tmp_path / "make-record"
+    python_record = tmp_path / "python-record"
+    make = shim_dir / "make"
+    make.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" > {make_record}\nexit 73\n',
+        encoding="utf-8",
     )
-    start = driver_text.index("def run_candidate(")
-    end = driver_text.index("\ndef ", start + 1)
-    run_candidate_body = driver_text[start:end]
-    default_services_call = "default_services("
-    retained_guard_call = "_retained_candidate_presence("
-    cleanup_call = ".clean_outputs("
+    make.chmod(0o755)
+    python = shim_dir / "python3"
+    python.write_text(
+        f"#!/bin/sh\ntouch {python_record}\nexit 99\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
 
-    assert default_services_call in run_candidate_body
-    assert retained_guard_call in run_candidate_body
-    assert cleanup_call in run_candidate_body
-    assert run_candidate_body.index(default_services_call) < run_candidate_body.index(
-        cleanup_call
+    result = _run_release(
+        ["bash", "scripts/release.sh", "--candidate"],
+        {
+            "PATH": os.pathsep.join((str(shim_dir), "/usr/bin", "/bin")),
+            "HOME": str(tmp_path / "home"),
+        },
     )
-    assert run_candidate_body.index(retained_guard_call) < run_candidate_body.index(
-        cleanup_call
-    )
-    with pytest.raises(BuildHostError) as exc:
-        ExternalBuildHostChannel.from_env({})
-    assert exc.value.failures[0].error == "build-host channel is not configured"
-    assert exc.value.failures[0].expected == "RELEASE_BUILD_HOST_CHANNEL command"
+
+    assert result.returncode == 73
+    assert make_record.read_text(encoding="utf-8") == "release-checks\n"
+    assert not python_record.exists()
 
 
 def test_candidate_entrypoint_reaches_driver_build_host_validation(
@@ -241,6 +246,8 @@ def _dispatch_env(tmp_path: Path, record_path: Path) -> tuple[dict[str, str], Pa
         "RELEASE_ADVISORY_SOURCE_NAME": "dispatch-source",
         "RELEASE_ADVISORY_DB_URL": "file:///dispatch-db",
         "RELEASE_ADVISORY_DB_ROOT": str(tmp_path / "advisory-db"),
+        "PYTEST_CURRENT_TEST": os.environ["PYTEST_CURRENT_TEST"],
+        "SOLSTONE_RELEASE_TEST_RAIL": "1",
     }
     return env, log
 

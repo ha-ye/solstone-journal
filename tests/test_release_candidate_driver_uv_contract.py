@@ -29,6 +29,8 @@ import pytest
 
 import scripts.release_candidate_driver as driver
 
+pytestmark = pytest.mark.release
+
 OPTION_DEFINITION_RE = re.compile(
     r"^(?: {6}| {2}-[A-Za-z], )(?P<flag>--[A-Za-z0-9][A-Za-z0-9-]*)\b"
 )

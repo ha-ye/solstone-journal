@@ -841,6 +841,7 @@ def _record_by_role(records: Sequence[dict[str, Any]], role: str) -> dict[str, A
     return next(record for record in records if record.get("role") == role)
 
 
+@pytest.mark.release
 def test_fake_all_host_candidate_and_recovery_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -975,6 +976,7 @@ def test_revalidate_macos_wheels_rejects_unsigned_member_set_mismatch(
     )
 
 
+@pytest.mark.release
 def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
     tmp_path: Path,
 ) -> None:
@@ -996,6 +998,7 @@ def test_recovery_uses_explicit_selector_and_preserves_retained_bytes(
     assert _structural_snapshot(report.evidence_dir) == before_evidence
 
 
+@pytest.mark.release
 def test_recovery_ignores_current_release_metadata_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1022,6 +1025,7 @@ def test_recovery_ignores_current_release_metadata_drift(
     assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
 
 
+@pytest.mark.release
 def test_candidate_pair_promote_rejects_publication_prerequisite_in_staging(
     tmp_path: Path,
 ) -> None:
@@ -1049,6 +1053,7 @@ def test_candidate_pair_promote_rejects_publication_prerequisite_in_staging(
     )
 
 
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_publication_prerequisite_after_promotion(
     tmp_path: Path,
 ) -> None:
@@ -1077,6 +1082,7 @@ def test_candidate_final_recheck_rejects_publication_prerequisite_after_promotio
     )
 
 
+@pytest.mark.release
 def test_recovery_accepts_absent_publication_prerequisite(tmp_path: Path) -> None:
     root, _report = _real_candidate(tmp_path)
 
@@ -1088,6 +1094,7 @@ def test_recovery_accepts_absent_publication_prerequisite(tmp_path: Path) -> Non
     assert payload["publication_prerequisite_inventory"] == []
 
 
+@pytest.mark.release
 def test_recovery_v2_retained_candidate_reports_current_heading(tmp_path: Path) -> None:
     root, _report = _real_candidate(tmp_path)
 
@@ -1098,6 +1105,7 @@ def test_recovery_v2_retained_candidate_reports_current_heading(tmp_path: Path) 
     assert payload["retained_ledger_schema_version"] == 2
 
 
+@pytest.mark.release
 def test_recovery_accepts_valid_publication_prerequisite_and_reports_inventory_without_mutation(
     tmp_path: Path,
 ) -> None:
@@ -1123,6 +1131,7 @@ def test_recovery_accepts_valid_publication_prerequisite_and_reports_inventory_w
 
 
 @pytest.mark.parametrize("derive_v1", (False, True))
+@pytest.mark.release
 def test_recovery_tombstone_allowance_is_unchanged_for_registered_versions(
     tmp_path: Path,
     derive_v1: bool,
@@ -1142,6 +1151,7 @@ def test_recovery_tombstone_allowance_is_unchanged_for_registered_versions(
     assert payload["publication_prerequisite_inventory"]
 
 
+@pytest.mark.release
 def test_evidence_inventory_accepts_prerequisite_for_historical_retained_version(
     tmp_path: Path,
 ) -> None:
@@ -1162,6 +1172,7 @@ def test_evidence_inventory_accepts_prerequisite_for_historical_retained_version
     assert failures == []
 
 
+@pytest.mark.release
 def test_evidence_inventory_rejects_current_version_prerequisite_for_historical_retained_version(
     tmp_path: Path,
 ) -> None:
@@ -1186,6 +1197,7 @@ def test_evidence_inventory_rejects_current_version_prerequisite_for_historical_
     )
 
 
+@pytest.mark.release
 def test_recovery_resolves_v1_ledger_before_inventory_requires_nvattest(
     tmp_path: Path,
 ) -> None:
@@ -1205,6 +1217,7 @@ def test_recovery_resolves_v1_ledger_before_inventory_requires_nvattest(
     assert not (report.evidence_dir / "support").exists()
 
 
+@pytest.mark.release
 def test_report_missing_ledger_fails_with_named_error(tmp_path: Path) -> None:
     root, report = _real_candidate(tmp_path)
     _ledger_path(report).unlink()
@@ -1229,6 +1242,7 @@ def test_report_missing_ledger_fails_with_named_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("entry", ("nvattest", "support"))
+@pytest.mark.release
 def test_pre_nvattest_v1_evidence_inventory_rejects_stray_nvattest_family(
     tmp_path: Path,
     entry: str,
@@ -1252,6 +1266,7 @@ def test_pre_nvattest_v1_evidence_inventory_rejects_stray_nvattest_family(
     )
 
 
+@pytest.mark.release
 def test_pre_nvattest_v1_consumers_fail_loudly_by_version(
     tmp_path: Path,
 ) -> None:
@@ -1358,6 +1373,7 @@ def test_pre_nvattest_v1_consumers_fail_loudly_by_version(
         ),
     ],
 )
+@pytest.mark.release
 def test_recovery_rejects_publication_prerequisite_metadata_mutations_without_reading(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1411,6 +1427,7 @@ def test_recovery_rejects_publication_prerequisite_metadata_mutations_without_re
         ),
     ],
 )
+@pytest.mark.release
 def test_recovery_rejects_publication_prerequisite_read_parse_and_schema_failures_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1453,6 +1470,7 @@ def test_recovery_rejects_publication_prerequisite_read_parse_and_schema_failure
         ("wrong-proof-name-set", "release proof inventory is not exact"),
     ],
 )
+@pytest.mark.release
 def test_recovery_mode_does_not_weaken_rest_of_evidence_gate(
     tmp_path: Path,
     mutation: str,
@@ -1486,6 +1504,7 @@ def test_recovery_mode_does_not_weaken_rest_of_evidence_gate(
     assert any(failure.error == expected_error for failure in exc.value.failures)
 
 
+@pytest.mark.release
 def test_recovery_rejects_publication_prerequisite_in_payload_directory(
     tmp_path: Path,
 ) -> None:
@@ -1501,6 +1520,7 @@ def test_recovery_rejects_publication_prerequisite_in_payload_directory(
     )
 
 
+@pytest.mark.release
 def test_recovery_identity_is_invariant_across_absent_and_present_prerequisite(
     tmp_path: Path,
 ) -> None:
@@ -1539,6 +1559,7 @@ def test_recovery_identity_is_invariant_across_absent_and_present_prerequisite(
     assert absent_payload == present_payload
 
 
+@pytest.mark.release
 def test_transparency_snapshot_recovery_accepts_prerequisite_without_staging_it(
     tmp_path: Path,
 ) -> None:
@@ -1573,6 +1594,7 @@ def test_transparency_snapshot_recovery_accepts_prerequisite_without_staging_it(
     )
 
 
+@pytest.mark.release
 def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
     tmp_path: Path,
 ) -> None:
@@ -1596,6 +1618,7 @@ def test_fresh_cleanup_preserves_other_retained_versions_and_recovery(
     assert recovered.heading == driver.RETAINED_CANDIDATE_VALID_HEADING
 
 
+@pytest.mark.release
 def test_candidate_refuses_published_retained_payload_and_evidence_before_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -1641,6 +1664,7 @@ def test_candidate_refuses_published_retained_payload_and_evidence_before_cleanu
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_allows_unpublished_retained_evidence_with_soft_authorization(
     tmp_path: Path,
 ) -> None:
@@ -1670,6 +1694,7 @@ def test_candidate_allows_unpublished_retained_evidence_with_soft_authorization(
     assert services.call_counts["clean_outputs"] == 1
 
 
+@pytest.mark.release
 def test_candidate_refuses_published_retained_payload_only(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     version = checker._current_version()
@@ -1688,6 +1713,7 @@ def test_candidate_refuses_published_retained_payload_only(tmp_path: Path) -> No
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_refuses_published_retained_evidence_only(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     version = checker._current_version()
@@ -1706,6 +1732,7 @@ def test_candidate_refuses_published_retained_evidence_only(tmp_path: Path) -> N
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_refuses_discard_authorization_for_other_version(
     tmp_path: Path,
 ) -> None:
@@ -1763,6 +1790,7 @@ def test_candidate_refuses_discard_authorization_for_other_version(
         _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_soft_authorization_does_not_clear_published_tag_tier(
     tmp_path: Path,
 ) -> None:
@@ -1782,6 +1810,7 @@ def test_candidate_soft_authorization_does_not_clear_published_tag_tier(
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_hard_authorization_satisfies_unpublished_soft_tier(
     tmp_path: Path,
 ) -> None:
@@ -1798,6 +1827,7 @@ def test_candidate_hard_authorization_satisfies_unpublished_soft_tier(
     assert services.call_counts["clean_outputs"] == 1
 
 
+@pytest.mark.release
 def test_candidate_refuses_undeterminable_retained_path_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1827,6 +1857,7 @@ def test_candidate_refuses_undeterminable_retained_path_state(
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_refuses_undeterminable_tag_lookup(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     version = checker._current_version()
@@ -1851,6 +1882,7 @@ def test_candidate_refuses_undeterminable_tag_lookup(tmp_path: Path) -> None:
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_candidate_default_fixture_refuses_retained_path_without_authorization(
     tmp_path: Path,
 ) -> None:
@@ -1866,6 +1898,7 @@ def test_candidate_default_fixture_refuses_retained_path_without_authorization(
     _assert_no_post_guard_service_calls(services)
 
 
+@pytest.mark.release
 def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     driver.run_candidate(root, _env(), _services(root))
@@ -1896,6 +1929,7 @@ def test_recovery_rejects_absent_or_mutated_selector(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_garbage_retained_advisory_identity(
     tmp_path: Path,
 ) -> None:
@@ -1915,6 +1949,7 @@ def test_recovery_rejects_garbage_retained_advisory_identity(
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_impossible_retained_policy_timestamp(
     tmp_path: Path,
 ) -> None:
@@ -1940,6 +1975,7 @@ def test_recovery_has_no_service_surface() -> None:
     assert parameters == {"root", "version", "source_commit"}
 
 
+@pytest.mark.release
 def test_machine_report_is_canonical_sorted_and_not_publication_authorization(
     tmp_path: Path,
 ) -> None:
@@ -1974,6 +2010,7 @@ def test_machine_report_is_canonical_sorted_and_not_publication_authorization(
             assert entry["sha256"] == payload["nvattest_sha256"][target]
 
 
+@pytest.mark.release
 def test_candidate_cleanup_receives_release_zig_cache_root(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     services = _services(root)
@@ -2003,6 +2040,7 @@ def test_candidate_cleanup_receives_release_zig_cache_root(tmp_path: Path) -> No
     assert not cache_root.exists()
 
 
+@pytest.mark.release
 def test_candidate_source_bundle_does_not_preexist_build_host_output(
     tmp_path: Path,
 ) -> None:
@@ -2157,6 +2195,7 @@ def test_main_uses_generic_fallback_for_invalid_failure_records(
         ("between-renames", SystemExit),
     ],
 )
+@pytest.mark.release
 def test_candidate_transaction_rolls_back_payload_and_evidence_at_each_rename_point(
     tmp_path: Path,
     point: str,
@@ -2188,6 +2227,7 @@ def test_candidate_transaction_rolls_back_payload_and_evidence_at_each_rename_po
     )
 
 
+@pytest.mark.release
 def test_candidate_transaction_aggregates_cleanup_errors(
     tmp_path: Path,
 ) -> None:
@@ -2219,6 +2259,7 @@ def test_candidate_transaction_aggregates_cleanup_errors(
 
 
 @pytest.mark.parametrize("mutation", ["nested", "extra", "missing", "symlink"])
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_payload_inventory_mutations(
     tmp_path: Path,
     mutation: str,
@@ -2257,6 +2298,7 @@ def test_candidate_final_recheck_rejects_payload_inventory_mutations(
 
 
 @pytest.mark.parametrize("mutation", ["extra", "temp", "directory", "proof-symlink"])
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_evidence_inventory_mutations(
     tmp_path: Path,
     mutation: str,
@@ -2310,6 +2352,7 @@ def test_candidate_final_recheck_rejects_evidence_inventory_mutations(
         "native_summary",
     ],
 )
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_deep_ledger_binding_mutations(
     tmp_path: Path,
     mutation: str,
@@ -2356,6 +2399,7 @@ def test_candidate_final_recheck_rejects_deep_ledger_binding_mutations(
     _assert_no_ready_cohort(root)
 
 
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_clean_status_drift_and_rolls_back(
     tmp_path: Path,
 ) -> None:
@@ -2376,6 +2420,7 @@ def test_candidate_final_recheck_rejects_clean_status_drift_and_rolls_back(
     assert exc.value.failures[0].error == "release source tree is not clean"
 
 
+@pytest.mark.release
 def test_candidate_final_recheck_rejects_core_lock_drift_and_rolls_back(
     tmp_path: Path,
 ) -> None:
@@ -2396,6 +2441,7 @@ def test_candidate_final_recheck_rejects_core_lock_drift_and_rolls_back(
     assert exc.value.failures[0].error == "core lock hash changed before finalization"
 
 
+@pytest.mark.release
 def test_recovery_rejects_swapped_replayed_or_mutated_proofs(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     report = driver.run_candidate(root, _env(), _services(root))
@@ -2423,6 +2469,7 @@ def test_recovery_rejects_swapped_replayed_or_mutated_proofs(tmp_path: Path) -> 
         ("make", "release-test"),
     ],
 )
+@pytest.mark.release
 def test_publication_entrypoints_fail_closed_before_external_seams(
     tmp_path: Path, argv: Sequence[str]
 ) -> None:
@@ -2469,6 +2516,7 @@ def test_publication_entrypoints_fail_closed_before_external_seams(
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
 
 
+@pytest.mark.release
 def test_deleted_all_hosts_mode_is_unknown_without_external_seams(
     tmp_path: Path,
 ) -> None:
@@ -2499,6 +2547,7 @@ def test_deleted_all_hosts_mode_is_unknown_without_external_seams(
     assert not log.exists()
 
 
+@pytest.mark.release
 def test_make_release_targets_have_no_prerequisites() -> None:
     makefile = (Path(__file__).resolve().parent.parent / "Makefile").read_text(
         encoding="utf-8"
@@ -2511,6 +2560,7 @@ def test_make_release_targets_have_no_prerequisites() -> None:
         assert before_comment == f"{target}: "
 
 
+@pytest.mark.release
 def test_candidate_rejects_models_and_identity_drift(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     env = _env()
@@ -2537,6 +2587,7 @@ def test_default_services_have_no_fixture_lane_evidence() -> None:
     )
 
 
+@pytest.mark.release
 def test_tool_skew_is_rejected_before_any_build(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     build_called = False
@@ -2572,6 +2623,7 @@ def test_drift_model_version_is_not_a_publishable_version() -> None:
     assert "-" not in DRIFT_MODEL_VERSION
 
 
+@pytest.mark.release
 def test_models_decision_is_bound_in_ledger_and_recovery(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     env = _env()
@@ -3554,6 +3606,7 @@ def test_speakers_analyze_linux_maturin_contract_rejects_missing_or_wrong_tokens
         "wheel_hash",
     ],
 )
+@pytest.mark.release
 def test_candidate_rejects_native_record_mismatches(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -3563,6 +3616,7 @@ def test_candidate_rejects_native_record_mismatches(
         driver.run_candidate(root, _env(), _services(root, native_mutation=mutation))
 
 
+@pytest.mark.release
 def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
     tmp_path: Path,
 ) -> None:
@@ -3596,6 +3650,7 @@ def test_candidate_revalidates_macos_wheel_bytes_after_copy_before_ledger(
     )
 
 
+@pytest.mark.release
 def test_candidate_rejects_poisoned_core_wheel_content(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     base_services = _services(root)
@@ -3623,6 +3678,7 @@ def test_candidate_rejects_poisoned_core_wheel_content(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.release
 def test_candidate_rejects_coordinator_sourced_macos_tool_evidence(
     tmp_path: Path,
 ) -> None:
@@ -3646,6 +3702,7 @@ def test_candidate_rejects_coordinator_sourced_macos_tool_evidence(
     )
 
 
+@pytest.mark.release
 def test_candidate_rejects_forged_host_macos_tool_evidence(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     services = _services(root)
@@ -3673,6 +3730,7 @@ def test_candidate_rejects_forged_host_macos_tool_evidence(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.release
 def test_candidate_derives_manifest_evidence_from_single_frozen_tool_observation(
     tmp_path: Path,
 ) -> None:
@@ -3709,6 +3767,7 @@ def test_candidate_derives_manifest_evidence_from_single_frozen_tool_observation
     assert manifest["native_tools"]["uv"] == pins.UV_LINUX_FIXTURE_BANNER
 
 
+@pytest.mark.release
 def test_recovery_rejects_native_member_path_mutation_with_matching_hash(
     tmp_path: Path,
 ) -> None:
@@ -3781,6 +3840,7 @@ def test_proof_binding_surfaces_target_install_parse_failure(tmp_path: Path) -> 
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_empty_linux_native_member_set(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     report = driver.run_candidate(root, _env(), _services(root))
@@ -3798,6 +3858,7 @@ def test_recovery_rejects_empty_linux_native_member_set(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_self_consistent_native_member_forgery(
     tmp_path: Path,
 ) -> None:
@@ -3837,6 +3898,7 @@ def test_recovery_rejects_self_consistent_native_member_forgery(
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_self_consistent_nvattest_authority_forgery(
     tmp_path: Path,
 ) -> None:
@@ -3882,6 +3944,7 @@ def test_recovery_rejects_self_consistent_nvattest_authority_forgery(
     )
 
 
+@pytest.mark.release
 def test_recovery_success_preserves_retained_tree_and_uses_no_seams(
     tmp_path: Path,
 ) -> None:
@@ -3900,6 +3963,7 @@ def test_recovery_success_preserves_retained_tree_and_uses_no_seams(
     _assert_service_call_counts_zero(services)
 
 
+@pytest.mark.release
 def test_recovery_failure_preserves_retained_tree_and_uses_no_seams(
     tmp_path: Path,
 ) -> None:
@@ -3928,6 +3992,7 @@ def test_recovery_failure_preserves_retained_tree_and_uses_no_seams(
         ("noncanonical", "nvattest proof bytes are not canonical"),
     ],
 )
+@pytest.mark.release
 def test_recovery_rejects_retained_nvattest_receipt_mutations(
     tmp_path: Path,
     mutation: str,
@@ -3986,6 +4051,7 @@ def test_recovery_rejects_retained_nvattest_receipt_mutations(
     _assert_fails_with_error(root, expected_error)
 
 
+@pytest.mark.release
 def test_recovery_rejects_retained_nvattest_wrong_challenge(
     tmp_path: Path,
 ) -> None:
@@ -4001,6 +4067,7 @@ def test_recovery_rejects_retained_nvattest_wrong_challenge(
     _assert_fails_with_error(root, "retained ledger nvattest challenge is invalid")
 
 
+@pytest.mark.release
 def test_recovery_rejects_retained_nvattest_support_wheel_byte_mutation(
     tmp_path: Path,
 ) -> None:
@@ -4015,6 +4082,7 @@ def test_recovery_rejects_retained_nvattest_support_wheel_byte_mutation(
     )
 
 
+@pytest.mark.release
 def test_recovery_rejects_retained_nvattest_support_declaration_mutation(
     tmp_path: Path,
 ) -> None:

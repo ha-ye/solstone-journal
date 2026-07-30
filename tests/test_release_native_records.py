@@ -128,6 +128,7 @@ def _speakers_analyze_facts(script: bytes, dylib: bytes) -> dict:
     }
 
 
+@pytest.mark.release
 def test_native_record_cli_and_makefile_use_package_module() -> None:
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -411,6 +412,7 @@ def test_record_writer_removes_atomic_temp_on_success_and_failure(
     assert not (tmp_path / ".bad.json.tmp").exists()
 
 
+@pytest.mark.release
 def test_signing_helper_removes_arbitrary_identity_override() -> None:
     source = Path("scripts/sign-and-notarize-helper.sh").read_text(encoding="utf-8")
 
@@ -418,6 +420,7 @@ def test_signing_helper_removes_arbitrary_identity_override() -> None:
     assert "MACOS_SIGNER_IDENTITY" in source
 
 
+@pytest.mark.release
 def test_signing_helper_records_tool_observations_not_pin_constants() -> None:
     source = Path("scripts/sign-and-notarize-helper.sh").read_text(encoding="utf-8")
 

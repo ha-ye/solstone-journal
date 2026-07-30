@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts.transparency_core import HEAD_LOG, PRODUCT, canonical_json_bytes
 from scripts.transparency_head_log import (
     HeadLogRow,
@@ -65,6 +67,7 @@ def test_append_head_row_preserves_prior_bytes(tmp_path: Path) -> None:
     assert path.read_bytes() == prior + expected_new
 
 
+@pytest.mark.release
 def test_git_witness_status_committed(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     append_head_row(tmp_path, _row(1))
@@ -85,6 +88,7 @@ def test_git_witness_status_committed(tmp_path: Path) -> None:
     assert status.state == "written-and-committed"
 
 
+@pytest.mark.release
 def test_git_witness_status_tracked_but_modified(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     append_head_row(tmp_path, _row(1))
@@ -106,6 +110,7 @@ def test_git_witness_status_tracked_but_modified(tmp_path: Path) -> None:
     assert status.state == "written-uncommitted"
 
 
+@pytest.mark.release
 def test_git_witness_status_untracked(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     append_head_row(tmp_path, _row(1))

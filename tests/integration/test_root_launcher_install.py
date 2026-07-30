@@ -24,7 +24,11 @@ from packaging.utils import canonicalize_name
 import scripts.check_wheel_contents as wheel_checker
 
 ROOT = Path(__file__).resolve().parents[2]
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.release,
+    pytest.mark.timeout(900),
+]
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,7 @@ ESCAPED_INCLUDE_ARGUMENT = "../../../../../../missing-outside-extracted-root.txt
 
 
 @pytest.mark.integration
+@pytest.mark.release
 @pytest.mark.timeout(900)
 def test_core_sdist_compile_inputs_are_required_by_real_wheel_build(
     tmp_path: Path,
@@ -183,7 +184,7 @@ def _pinned_toolchain() -> str:
 
 
 def _require_build_tools() -> None:
-    for tool in ("uv", "cargo", "zig", "maturin", "rustup"):
+    for tool in ("uv", "cargo", "zig", "rustup"):
         if shutil.which(tool) is None:
             pytest.skip(f"{tool} is not installed")
     result = subprocess.run(

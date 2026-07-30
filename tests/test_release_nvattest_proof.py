@@ -518,6 +518,7 @@ def test_default_run_smoke_uses_payload_library_path_offline(tmp_path: Path) -> 
 
 
 @pytest.mark.integration
+@pytest.mark.release
 def test_default_run_smoke_uses_payload_library_path_for_real_linux_archive(
     tmp_path: Path,
 ) -> None:

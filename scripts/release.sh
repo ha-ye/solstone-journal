@@ -17,20 +17,21 @@
 # and that version's stale payload/evidence before policy or build work.
 #
 # Candidate flow:
-#   1. Verify the expected source commit, clean source tree, and core lock.
-#   2. Delete prior raw outputs and stale retained payload/evidence for the
+#   1. Run the serial release test and release-host tool rail.
+#   2. Verify the expected source commit, clean source tree, and core lock.
+#   3. Delete prior raw outputs and stale retained payload/evidence for the
 #      version being constructed.
-#   3. Build local artifacts and receive macOS artifacts through the externally
+#   4. Build local artifacts and receive macOS artifacts through the externally
 #      configured build-host channel.
-#   4. Generate a fresh proof challenge, extract the nvattest authority from the
+#   5. Generate a fresh proof challenge, extract the nvattest authority from the
 #      candidate's own root wheels and require every target to agree, and
 #      materialize the locked support-wheel set, verifying it against uv.lock.
 #      All of this happens before the ledger is written and before any proof
 #      host is contacted.
-#   5. Collect a per-target receipt pair through configured proof-host channels
+#   6. Collect a per-target receipt pair through configured proof-host channels
 #      -- the install/smoke proof and a challenge-bound nvattest proof -- then
 #      pair-promote payload and evidence.
-#   6. Revalidate payload, manifests, ledger, retained support wheels, and both
+#   7. Revalidate payload, manifests, ledger, retained support wheels, and both
 #      receipt classes, then print canonical local readiness JSON. This is not
 #      publication authorization.
 #
@@ -183,6 +184,17 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+if [[ "$MODE" == "candidate" ]]; then
+    if [[ "${SOLSTONE_RELEASE_TEST_RAIL:-}" == "1" ]]; then
+        if [[ -z "${PYTEST_CURRENT_TEST:-}" ]]; then
+            echo "SOLSTONE_RELEASE_TEST_RAIL is reserved for pytest release-entrypoint probes" >&2
+            exit 2
+        fi
+    else
+        make release-checks
+    fi
+fi
 
 if [[ "$MODE" == "recover" ]]; then
     exec python3 scripts/release_candidate_driver.py recover \

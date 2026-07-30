@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.integration
+@pytest.mark.release
 @pytest.mark.timeout(300)
 def test_speakers_analyze_wheel_installs_and_runs_real_inference(
     tmp_path: Path,
@@ -29,9 +30,29 @@ def test_speakers_analyze_wheel_installs_and_runs_real_inference(
         timeout=300,
     )
     assert build.returncode == 0, build.stderr or build.stdout
+    models_build = subprocess.run(
+        [
+            "uv",
+            "build",
+            "--package",
+            "solstone-journal-models",
+            "--wheel",
+            "--out-dir",
+            "dist",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    assert models_build.returncode == 0, models_build.stderr or models_build.stdout
     wheels = sorted(ROOT.glob("dist/solstone_core_speakers_analyze-*.whl"))
     assert wheels
     wheel = wheels[-1]
+    models_wheels = sorted(ROOT.glob("dist/solstone_journal_models-*.whl"))
+    assert models_wheels
+    models_wheel = models_wheels[-1]
 
     env_root = tmp_path / "venv"
     venv.EnvBuilder(with_pip=True, symlinks=False).create(env_root)
@@ -45,6 +66,7 @@ def test_speakers_analyze_wheel_installs_and_runs_real_inference(
             "--no-index",
             "--no-deps",
             str(wheel),
+            str(models_wheel),
         ],
         capture_output=True,
         text=True,
@@ -54,9 +76,11 @@ def test_speakers_analyze_wheel_installs_and_runs_real_inference(
     assert install.returncode == 0, install.stderr or install.stdout
 
     executable = env_root / "bin" / "solstone-core-speakers-analyze"
+    request_text, request_error = smoke._speakers_analyze_request(env_root, python)
+    assert request_text is not None, request_error
     run = subprocess.run(
         [str(executable)],
-        input=smoke._speakers_analyze_request(env_root),
+        input=request_text,
         capture_output=True,
         text=True,
         check=False,

@@ -68,6 +68,7 @@ def _git_repo(tmp_path: Path) -> tuple[Path, str]:
     return repo, _run_git(repo, ["rev-parse", "HEAD"])
 
 
+@pytest.mark.release
 def test_source_bundle_uses_head_and_materializes_from_real_git(
     tmp_path: Path,
 ) -> None:

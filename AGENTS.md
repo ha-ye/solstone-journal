@@ -113,6 +113,8 @@ Verified against `Makefile`. Grouped by use.
 | `make test` | Full unit suite — `tests/` + every `solstone/apps/*/tests/`, one parallel run. Format-check runs first; failures block tests. |
 | `make test-cov` | Same suite with full-repo terminal coverage; used by `make verify`. |
 | `make test-integration` | Opt-in real local build/process and persisted-index contracts. Never part of `make ci`. |
+| `make test-release` | Serial release transaction, entrypoint, packaging, and release-host tool-contract tests. Never part of development `make ci`. |
+| `make release-checks` | Full release-host gate: `test-release`, advisory-policy liveness, and real minisign signing. Candidate construction runs this automatically. |
 | `make test-app APP=<name>` | Run a single app's tests (focus helper). |
 | `make test-only TEST=<path-or-pattern>` | Run a specific test file or pytest node id (`TEST="-k test_name"` also works). |
 | `make coverage` | HTML coverage report under `htmlcov/`. Occasional. |
@@ -155,12 +157,13 @@ seek green.
 ### Release rail
 
 DESTRUCTIVE: `bash scripts/release.sh --candidate` is fresh construction; before
-policy or build work it deletes prior raw build/dist outputs and that version's
-stale payload/evidence. It verifies the expected source commit and lock state,
-gathers target evidence through configured build/proof-host channels,
-pair-promotes payload and evidence, and prints canonical local readiness JSON.
-This is candidate evidence only, not publication authorization. Advisory acquisition
-is a separate operator operation documented in `scripts/release_advisory_policy.py`.
+policy or build work it first runs `make release-checks`, then deletes prior raw
+build/dist outputs and that version's stale payload/evidence. It verifies the
+expected source commit and lock state, gathers target evidence through
+configured build/proof-host channels, pair-promotes payload and evidence, and
+prints canonical local readiness JSON. This is candidate evidence only, not
+publication authorization. Advisory acquisition is a separate operator
+operation documented in `scripts/release_advisory_policy.py`.
 If retained `dist/release-candidate/<version>` or `target/release-evidence/<version>` bytes already exist, `--candidate` refuses before cleanup unless the operator sets `RELEASE_CANDIDATE_DISCARD_RETAINED=<version>` for an unpublished version or `RELEASE_CANDIDATE_DISCARD_PUBLISHED_TAG=<version>+<tag>` for a tagged version; undeterminable retained state is not authorizable.
 
 Every candidate attempt generates a fresh proof challenge and requires, for each
@@ -307,7 +310,7 @@ sets only the local verification path and may use any local filename.
 - **Fixture journal:** `tests/fixtures/journal/` — immutable mock input with facets, entities, segments, and index state. The autouse `set_test_journal_path` fixture in `tests/conftest.py` points unit tests at it. Tests that write, scan, or rebuild journal/index state must use `journal_copy` or a smaller `tmp_path` journal (see §8).
 - **Run one test:** `make test-only TEST=tests/test_utils.py::test_foo` or `TEST="-k test_foo"`. **One app:** `make test-app APP=<name>`.
 - **`make test` runs everything** — `tests/` and every `solstone/apps/*/tests/` in one parallel run. App tests are not a separate step.
-- **`make test` / `make ci` are strict unit/component rails** — mock process, thread, clock, network, and repository boundaries; no real browser, live network, API keys, heavyweight builds, or writes to shared fixture state. Real local build/process and persisted-index contracts use `@pytest.mark.integration` and run only through `make test-integration`. Live product verification uses `make sandbox`.
+- **`make test` / `make ci` are strict unit/component rails** — mock process, thread, clock, network, and repository boundaries; no real browser, live network, API keys, heavyweight builds, or writes to shared fixture state. Real local build/process and persisted-index contracts use `@pytest.mark.integration` and run only through `make test-integration`. Release transactions and release-host contracts use `@pytest.mark.release`, run serially through `make test-release`, and join the real release-host gates under `make release-checks`. Live product verification uses `make sandbox`.
 - **After editing `solstone/convey/` or `solstone/apps/`:** `journal restart-convey` to reload code in a running stack.
 - **`make dev` + `make sandbox`** both write runtime artifacts into the fixtures journal; `tests/fixtures/journal/.gitignore` covers those — never commit them.
 - **Test invariants, not snapshots.** A test asserts what must hold in *every* valid state of the system — not what happens to be true today. Never pin a test to hand-edited prose (CHANGELOG / README / docs), to a value the system is *designed* to change (a version, a date, a growing count), or to a transient state. The tell: if doing the correct next thing — cut a release, rename a label, graduate a shipped changelog entry — turns the test red, the test is wrong, not the system. And test the code that *produces* a fact, never the rendered text about it. (A `[Unreleased]`-pinned changelog test was exactly this anti-pattern — its pass condition required the release process to *not* run; removed 2026-05-30.)

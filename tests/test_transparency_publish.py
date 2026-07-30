@@ -661,6 +661,7 @@ def test_archive_channel_rejects_declared_file_mismatch(
     )
 
 
+@pytest.mark.release
 def test_publish_genesis_uploads_fixed_layout_and_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -755,6 +756,7 @@ def test_publish_genesis_uploads_fixed_layout_and_order(
     )
 
 
+@pytest.mark.release
 def test_publish_and_resign_accept_lexicographically_inverted_version_chain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -808,6 +810,7 @@ def test_publish_and_resign_accept_lexicographically_inverted_version_chain(
     assert resigned.version == "0.11.0"
 
 
+@pytest.mark.release
 def test_genesis_retry_adopts_orphan_latest_signature(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -871,6 +874,7 @@ def test_publish_config_repr_does_not_expose_secret(tmp_path: Path) -> None:
     assert "SECRET_TEST" not in repr(_config(tmp_path))
 
 
+@pytest.mark.release
 def test_public_immutable_verification_failure_prevents_mutable_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -942,6 +946,7 @@ def test_immutable_put_412_foreign_bytes_fail_closed(
     )
 
 
+@pytest.mark.release
 def test_immutable_put_412_matching_bytes_are_adopted_and_publish_resumes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1001,6 +1006,7 @@ def test_missing_archive_channel_fails_before_upload(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.release
 def test_archive_channel_failure_and_digest_mismatch_fail_before_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1219,6 +1225,7 @@ def _prepare_stale_stage(
     return config, signer, transport, stage, first
 
 
+@pytest.mark.release
 def test_stale_stage_fails_poisoned_version_before_mutable_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1261,6 +1268,7 @@ def test_stale_stage_fails_poisoned_version_before_mutable_write(
     assert mutable_puts == []
 
 
+@pytest.mark.release
 def test_stale_stage_without_remote_prefix_reports_local_staging_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1288,6 +1296,7 @@ def test_stale_stage_without_remote_prefix_reports_local_staging_dir(
     assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
+@pytest.mark.release
 def test_stale_stage_with_parseable_remote_entry_reports_permanent_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1343,6 +1352,7 @@ def test_stale_stage_with_parseable_remote_entry_reports_permanent_version(
     )
 
 
+@pytest.mark.release
 def test_extending_stage_with_byte_identical_remote_prefix_resumes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1393,6 +1403,7 @@ def test_extending_stage_with_byte_identical_remote_prefix_resumes(
     assert result.entry_sha256 == stage.entry_sha256
 
 
+@pytest.mark.release
 def test_extending_stage_with_conflicting_remote_prefix_fails_before_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1445,6 +1456,7 @@ def test_extending_stage_with_conflicting_remote_prefix_fails_before_archive(
     assert all(call["op"] != "ARCHIVE" for call in transport.call_log)
 
 
+@pytest.mark.release
 def test_publish_blocks_before_archive_when_head_witness_baseline_untracked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1504,6 +1516,7 @@ def test_publish_blocks_before_archive_when_head_witness_baseline_untracked(
     assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
+@pytest.mark.release
 def test_candidate_revalidation_failure_stops_before_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1534,6 +1547,7 @@ def test_candidate_revalidation_failure_stops_before_upload(
     assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
+@pytest.mark.release
 def test_stale_proofs_fail_closed_before_signing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1648,6 +1662,7 @@ def test_staged_nvattest_public_evidence_contains_no_private_reach_details(
         )
 
 
+@pytest.mark.release
 def test_dirty_retained_manifest_fails_closed_before_signing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1673,6 +1688,7 @@ def test_dirty_retained_manifest_fails_closed_before_signing(
     )
 
 
+@pytest.mark.release
 def test_existing_version_with_matching_digest_is_noop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1718,6 +1734,7 @@ def test_existing_version_with_matching_digest_is_noop(
     assert all(call["op"] not in {"ARCHIVE", "PUT"} for call in transport.call_log)
 
 
+@pytest.mark.release
 def test_existing_version_with_mismatched_digest_is_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2385,6 +2402,7 @@ def _pointer_pair_state(
         "latest-signature-restore-put",
     ),
 )
+@pytest.mark.release
 def test_crash_injection_classifies_pointer_pair_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2532,6 +2550,7 @@ def test_crash_injection_classifies_pointer_pair_state(
         assert signature_puts[-1]["if_match"] is not None
 
 
+@pytest.mark.release
 def test_pre_pointer_recheck_failure_stops_before_pointer_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2568,6 +2587,7 @@ def test_pre_pointer_recheck_failure_stops_before_pointer_write(
     assert previous.sha256
 
 
+@pytest.mark.release
 def test_resign_pointer_preserves_chain_length_tip_and_version(tmp_path: Path) -> None:
     signer = FakeTransparencySigner()
     transport = DirectoryTransparencyTransport(tmp_path / "remote")
@@ -2595,6 +2615,7 @@ def test_resign_pointer_preserves_chain_length_tip_and_version(tmp_path: Path) -
     assert latest.pointer["valid_until"] == "2026-08-07T00:00:00Z"
 
 
+@pytest.mark.release
 def test_resign_pointer_failure_restores_old_signature_conditionally(
     tmp_path: Path,
 ) -> None:
@@ -2629,6 +2650,7 @@ def test_resign_pointer_failure_restores_old_signature_conditionally(
     assert signature_puts[-1]["if_match"] is not None
 
 
+@pytest.mark.release
 def test_resign_pointer_ambiguous_committed_put_reports_success(tmp_path: Path) -> None:
     signer = FakeTransparencySigner()
     transport = AmbiguousLatestPointerPutTransport(tmp_path / "remote")

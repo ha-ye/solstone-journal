@@ -16,6 +16,8 @@ from scripts.stage_speakers_analyze_runtime import (
 from scripts.stage_speakers_analyze_runtime import ROOT as STAGE_ROOT
 from scripts.stage_speakers_analyze_runtime import TARGETS as STAGE_TARGETS
 
+pytestmark = pytest.mark.release
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = REPO_ROOT / "Makefile"
 STAGE_SCRIPT_ARGV = ("python3", "scripts/stage_speakers_analyze_runtime.py")

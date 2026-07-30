@@ -15,6 +15,7 @@ resolution path that failed in the release build stack.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -24,12 +25,16 @@ import pytest
 
 import scripts.release_candidate_driver as driver
 
+pytestmark = pytest.mark.release
+
 ZIG_STRING_RE = re.compile(r"\.(?P<key>[A-Za-z_]+)\s*=\s*\"(?P<value>[^\"]*)\"")
 
 
 def _zig_or_skip() -> str:
     zig = shutil.which("zig")
     if zig is None:
+        if os.environ.get("SOLSTONE_RELEASE_TEST_RAIL") == "1":
+            pytest.fail("zig is required on the release test host")
         pytest.skip(
             "zig is not installed; release-driver Zig env contract needs real zig"
         )

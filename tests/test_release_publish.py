@@ -1122,6 +1122,7 @@ def test_config_wraps_malformed_ledger(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.release
 def test_test_mode_clean_upload_verify_never_invokes_git_or_gh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1142,6 +1143,7 @@ def test_test_mode_clean_upload_verify_never_invokes_git_or_gh(
     assert result.witness_status.state == "test-skipped"
 
 
+@pytest.mark.release
 def test_production_clean_path_orders_upload_verify_tag_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1178,6 +1180,7 @@ def test_production_clean_path_orders_upload_verify_tag_witness(
     assert result.witness_status.state == "created"
 
 
+@pytest.mark.release
 def test_production_accepts_published_tombstone_with_empty_base_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1208,6 +1211,7 @@ def test_production_accepts_published_tombstone_with_empty_base_index(
     assert result.reused_files == ()
 
 
+@pytest.mark.release
 def test_test_mode_real_recovery_without_prerequisite_reaches_index_and_upload(
     tmp_path: Path,
 ) -> None:
@@ -1234,6 +1238,7 @@ def test_test_mode_real_recovery_without_prerequisite_reaches_index_and_upload(
     )
 
 
+@pytest.mark.release
 def test_test_mode_real_recovery_with_valid_prerequisite_reaches_index_and_upload(
     tmp_path: Path,
 ) -> None:
@@ -1261,6 +1266,7 @@ def test_test_mode_real_recovery_with_valid_prerequisite_reaches_index_and_uploa
     )
 
 
+@pytest.mark.release
 def test_test_mode_real_recovery_rejects_invalid_prerequisite_before_seams(
     tmp_path: Path,
 ) -> None:
@@ -1289,6 +1295,7 @@ def test_test_mode_real_recovery_rejects_invalid_prerequisite_before_seams(
     assert calls == []
 
 
+@pytest.mark.release
 def test_production_real_recovery_requires_prerequisite_before_transport(
     tmp_path: Path,
 ) -> None:
@@ -1311,6 +1318,7 @@ def test_production_real_recovery_requires_prerequisite_before_transport(
     assert calls == ["source-check"]
 
 
+@pytest.mark.release
 def test_production_real_recovery_rejects_invalid_prerequisite_before_source_check(
     tmp_path: Path,
 ) -> None:
@@ -1338,6 +1346,7 @@ def test_production_real_recovery_rejects_invalid_prerequisite_before_source_che
     assert calls == []
 
 
+@pytest.mark.release
 def test_production_real_recovery_with_valid_prerequisite_never_uploads_it(
     tmp_path: Path,
 ) -> None:
@@ -1376,6 +1385,7 @@ def test_production_real_recovery_with_valid_prerequisite_never_uploads_it(
     )
 
 
+@pytest.mark.release
 def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1445,6 +1455,7 @@ def test_upload_seam_receives_ledger_pypi_set_with_matching_digests(
         )
 
 
+@pytest.mark.release
 def test_reused_models_are_downloaded_and_matched_before_train_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1509,6 +1520,7 @@ def test_reused_models_are_downloaded_and_matched_before_train_upload(
     )
 
 
+@pytest.mark.release
 def test_reused_models_exact_digest_short_circuits_download(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1557,6 +1569,7 @@ def test_reused_models_exact_digest_short_circuits_download(
     )
 
 
+@pytest.mark.release
 def test_reused_models_idempotent_train_full_rerun_skips_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1595,6 +1608,7 @@ def test_reused_models_idempotent_train_full_rerun_skips_upload(
     assert result.reused_project == f"{publisher.MODEL_PROJECT}=={_models_version()}"
 
 
+@pytest.mark.release
 def test_model_absent_uses_legacy_uniform_index_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1622,6 +1636,7 @@ def test_model_absent_uses_legacy_uniform_index_rule(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_manifest_mismatch_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1664,6 +1679,7 @@ def test_reused_model_manifest_mismatch_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_fetched_digest_mismatch_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1704,6 +1720,7 @@ def test_reused_model_fetched_digest_mismatch_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_missing_archive_url_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1748,6 +1765,7 @@ def test_reused_model_missing_archive_url_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_partial_published_set_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1779,6 +1797,7 @@ def test_reused_model_partial_published_set_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_extra_published_set_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1813,6 +1832,7 @@ def test_reused_model_extra_published_set_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_train_divergence_refuses_before_late_seams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1847,6 +1867,7 @@ def test_reused_model_train_divergence_refuses_before_late_seams(
     late_seams.assert_zero()
 
 
+@pytest.mark.release
 def test_reused_model_second_observation_mismatch_refuses_before_tag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1906,6 +1927,7 @@ def test_reused_model_second_observation_mismatch_refuses_before_tag(
     assert "witness" not in calls
 
 
+@pytest.mark.release
 def test_byte_divergence_from_recover_prevents_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1927,6 +1949,7 @@ def test_byte_divergence_from_recover_prevents_transport(
     "heading",
     ("not-ready", RETAINED_PRE_NVATTEST_CANDIDATE_VALID_HEADING),
 )
+@pytest.mark.release
 def test_recover_heading_must_be_retained_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, heading: str
 ) -> None:
@@ -1943,6 +1966,7 @@ def test_recover_heading_must_be_retained_valid(
 
 
 @pytest.mark.parametrize("mode", ("production", "test"))
+@pytest.mark.release
 def test_recovery_failure_short_circuits_before_publisher_seams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1977,6 +2001,7 @@ def test_recovery_failure_short_circuits_before_publisher_seams(
 
 
 @pytest.mark.parametrize("mode", ("production", "test"))
+@pytest.mark.release
 def test_retained_authority_binding_failure_short_circuits_before_publisher_seams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2008,6 +2033,7 @@ def test_retained_authority_binding_failure_short_circuits_before_publisher_seam
 
 
 @pytest.mark.parametrize("mode", ("production", "test"))
+@pytest.mark.release
 def test_checkout_authority_divergence_short_circuits_before_publisher_seams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2034,6 +2060,7 @@ def test_checkout_authority_divergence_short_circuits_before_publisher_seams(
     assert late_calls == []
 
 
+@pytest.mark.release
 def test_unknown_asset_class_prevents_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2051,6 +2078,7 @@ def test_unknown_asset_class_prevents_transport(
     assert calls == []
 
 
+@pytest.mark.release
 def test_models_decision_gate_requires_models_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2076,6 +2104,7 @@ def test_models_decision_gate_requires_models_artifacts(
     assert calls == []
 
 
+@pytest.mark.release
 def test_checkout_version_mismatch_refuses_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2093,6 +2122,7 @@ def test_checkout_version_mismatch_refuses_before_transport(
     assert calls == []
 
 
+@pytest.mark.release
 def test_retained_ledger_version_mismatch_refuses_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2130,6 +2160,7 @@ def test_retained_ledger_version_mismatch_refuses_before_transport(
     assert calls == []
 
 
+@pytest.mark.release
 def test_already_published_skips_upload_and_verifies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2147,6 +2178,7 @@ def test_already_published_skips_upload_and_verifies(
     assert result.verified is True
 
 
+@pytest.mark.release
 def test_already_published_digest_divergence_refuses_before_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2162,6 +2194,7 @@ def test_already_published_digest_divergence_refuses_before_upload(
     assert calls == ["index"]
 
 
+@pytest.mark.release
 def test_partially_published_base_index_refuses_before_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2177,6 +2210,7 @@ def test_partially_published_base_index_refuses_before_upload(
     assert calls == ["index"]
 
 
+@pytest.mark.release
 def test_upload_failure_is_classified_and_redacts_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2208,6 +2242,7 @@ def test_upload_failure_is_classified_and_redacts_token(
     assert calls == ["index", "upload"]
 
 
+@pytest.mark.release
 def test_verify_timeout_stops_before_tag_and_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2234,6 +2269,7 @@ def test_verify_timeout_stops_before_tag_and_witness(
     assert "witness" not in calls
 
 
+@pytest.mark.release
 def test_production_source_commit_missing_refuses_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2257,6 +2293,7 @@ def test_production_source_commit_missing_refuses_before_transport(
     assert calls == ["source-check"]
 
 
+@pytest.mark.release
 def test_production_requires_core_unsupported_tombstone_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2281,6 +2318,7 @@ def test_production_requires_core_unsupported_tombstone_before_transport(
     assert calls == ["source-check"]
 
 
+@pytest.mark.release
 def test_production_missing_changelog_refuses_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2304,6 +2342,7 @@ def test_production_missing_changelog_refuses_before_transport(
     assert calls == ["source-check", "changelog"]
 
 
+@pytest.mark.release
 def test_remote_tag_at_same_commit_skips_push_but_records_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2334,6 +2373,7 @@ def test_remote_tag_at_same_commit_skips_push_but_records_witness(
     assert result.tag_state == "remote-already-correct"
 
 
+@pytest.mark.release
 def test_remote_tag_at_different_commit_refuses_without_push_or_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2357,6 +2397,7 @@ def test_remote_tag_at_different_commit_refuses_without_push_or_witness(
     assert calls == ["source-check", "changelog", "index", "index", "tag-check"]
 
 
+@pytest.mark.release
 def test_local_tag_at_different_commit_refuses_without_push_or_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2387,6 +2428,7 @@ def test_local_tag_at_different_commit_refuses_without_push_or_witness(
     ]
 
 
+@pytest.mark.release
 def test_tag_push_failure_names_resume_and_skips_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2418,6 +2460,7 @@ def test_tag_push_failure_names_resume_and_skips_witness(
     ]
 
 
+@pytest.mark.release
 def test_witness_failure_records_gap_and_exits_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -2443,6 +2486,7 @@ def test_witness_failure_records_gap_and_exits_success(
     assert calls[-1] == "witness"
 
 
+@pytest.mark.release
 def test_missing_gh_records_gap_and_exits_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
