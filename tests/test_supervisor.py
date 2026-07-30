@@ -745,6 +745,33 @@ def test_command_partition_matches_task_queue_get_command_name(cmd):
     assert runner._command_partition(cmd) == mod.TaskQueue.get_command_name(cmd)
 
 
+def test_command_partition_groups_importer_paths():
+    runner = importlib.import_module("solstone.think.runner")
+
+    assert (
+        runner._command_partition(
+            [
+                "journal",
+                "importer",
+                "/tmp/imports/first/source.m4a",
+                "20260101_120000",
+            ]
+        )
+        == "importer"
+    )
+    assert (
+        runner._command_partition(
+            [
+                "journal",
+                "importer",
+                "/tmp/imports/second/source.m4a",
+                "20260101_121500",
+            ]
+        )
+        == "importer"
+    )
+
+
 def _fresh_task_queue(mod, *, on_queue_change=None):
     mod._task_queue = mod.TaskQueue(on_queue_change=on_queue_change)
     mod._supervisor_callosum = None
@@ -2950,6 +2977,51 @@ def test_handle_task_request_opt_in_queues_differing_active_command(monkeypatch)
     assert spawned == []
 
 
+def test_handle_task_request_importer_opt_in_queues_different_file(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    spawned = _capture_thread_starts(monkeypatch, mod)
+    active_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_120000/source.m4a",
+        "20260101_120000",
+    ]
+    incoming_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_121500/source.m4a",
+        "20260101_121500",
+    ]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": incoming_cmd,
+            "ref": "requested-ref",
+            "queue_if_active_cmd_differs": True,
+        }
+    )
+
+    assert queue._queues.get(partition) == [
+        {
+            "refs": ["requested-ref"],
+            "cmd": incoming_cmd,
+            "day": None,
+            "scheduler_name": None,
+        }
+    ]
+    assert spawned == []
+
+
 def test_handle_task_request_opt_in_skips_identical_active_command(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = _fresh_task_queue(mod)
@@ -3032,6 +3104,141 @@ def test_handle_task_request_without_opt_in_skips_differing_active_command(monke
     )
     assert queue._queues == {}
     assert spawned == []
+
+
+def test_handle_task_request_importer_without_opt_in_skips_different_file(
+    monkeypatch,
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    spawned = _capture_thread_starts(monkeypatch, mod)
+    active_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_120000/source.m4a",
+        "20260101_120000",
+    ]
+    incoming_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_121500/source.m4a",
+        "20260101_121500",
+    ]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+    queue.set_cap(partition, 50)
+    callosum = MagicMock()
+
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
+    monkeypatch.setattr(mod.time, "time", lambda: 150.0)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": incoming_cmd,
+            "ref": "requested-ref",
+        }
+    )
+
+    callosum.emit.assert_called_once_with(
+        "supervisor",
+        "skipped",
+        reason="still_running",
+        ref="requested-ref",
+        active_ref="active-ref",
+        cmd=incoming_cmd,
+        scheduler_name=None,
+    )
+    assert queue._queues == {}
+    assert spawned == []
+
+
+def test_handle_task_request_active_skip_logs_one_warning(caplog, monkeypatch):
+    """Pre-fix baseline had zero warning records for this branch.
+
+    Command:
+    `hop check make test-only TEST="tests/test_supervisor.py -k opt_in_skips_identical"`
+    """
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = _fresh_task_queue(mod)
+    active_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_120000/source.m4a",
+        "20260101_120000",
+    ]
+    incoming_cmd = [
+        "journal",
+        "importer",
+        "/tmp/imports/20260101_121500/source.m4a",
+        "20260101_121500",
+    ]
+    partition = mod.TaskQueue.get_command_name(active_cmd)
+    queue._active["active-ref"] = _TaskManagedStub(cmd=active_cmd, start_time=100.0)
+    queue._running[partition] = {
+        "ref": "active-ref",
+        "thread": None,
+        "scheduler_name": None,
+    }
+    queue.set_cap(partition, 50)
+
+    monkeypatch.setattr(mod.time, "time", lambda: 150.0)
+    caplog.set_level(logging.WARNING)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": incoming_cmd,
+            "ref": "requested-ref",
+            "scheduler_name": "import-start",
+        }
+    )
+
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "cmd_name=importer" in message
+    assert "ref=requested-ref" in message
+    assert "active_ref=active-ref" in message
+    assert "reason=still_running" in message
+    assert "scheduler_name=import-start" in message
+
+
+def test_handle_task_request_without_task_queue_logs_one_warning(caplog, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setattr(mod, "_task_queue", None)
+    caplog.set_level(logging.WARNING)
+
+    mod._handle_task_request(
+        {
+            "tract": "supervisor",
+            "event": "request",
+            "cmd": ["journal", "importer", "/tmp/source.m4a", "20260101_120000"],
+            "ref": "requested-ref",
+            "scheduler_name": "import-start",
+        }
+    )
+
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "task_queue_unavailable" in message
+    assert "ref=requested-ref" in message
+    assert "scheduler_name=import-start" in message
+    assert (
+        "cmd=['journal', 'importer', '/tmp/source.m4a', '20260101_120000']" in message
+    )
 
 
 def test_handle_task_request_skips_still_running(monkeypatch):

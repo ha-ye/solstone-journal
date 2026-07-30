@@ -1731,6 +1731,16 @@ def _handle_task_request(message: dict) -> None:
                 return
             runtime = time.time() - managed.start_time if managed else 0
             reason = "wedged" if runtime > 2 * cap else "still_running"
+            logging.warning(
+                "Refusing supervisor task request: cmd_name=%s ref=%s active_ref=%s "
+                "reason=%s scheduler_name=%s cmd=%s",
+                cmd_name,
+                ref,
+                active_ref,
+                reason,
+                scheduler_name,
+                cmd,
+            )
             if _supervisor_callosum:
                 _supervisor_callosum.emit(
                     "supervisor",
@@ -1743,6 +1753,14 @@ def _handle_task_request(message: dict) -> None:
                 )
             return
         _task_queue.submit(cmd, ref, day=day, scheduler_name=scheduler_name)
+    else:
+        logging.warning(
+            "Refusing supervisor task request: task_queue_unavailable ref=%s "
+            "scheduler_name=%s cmd=%s",
+            ref,
+            scheduler_name,
+            cmd,
+        )
 
 
 def _restart_service(service: str) -> bool:
