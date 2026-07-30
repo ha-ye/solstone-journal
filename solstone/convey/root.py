@@ -162,8 +162,8 @@ def _is_trusted_observer_extension_request() -> bool:
     Origin (and may send ``Sec-Fetch-Site: cross-site``) on its loopback
     observer POSTs. Grant exactly the pinned extension id, and only on the
     ``/app/observer`` path namespace, an exemption from the browser
-    CSRF/Origin checks. The observer route's own direct-loopback gate
-    (``_is_trusted_register_caller``) remains the real authorization.
+    CSRF/Origin checks. The observer routes' own device identity checks remain
+    the real authorization.
     """
     path = request.path
     if not (path == "/app/observer" or path.startswith("/app/observer/")):

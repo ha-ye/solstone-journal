@@ -25,9 +25,15 @@ from solstone.convey.contract.observer_bundle import (
     _sha256_text,
     render_json,
 )
+from solstone.convey.secure_listener import ConveyIdentity
 from solstone.observe import protocol
 from solstone.observe.processing_record import HANDLER_TRANSCRIBE, STATE_EMPTY
 from solstone.observe.processing_record import SCHEMA as PROCESSING_SCHEMA
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
+
+_RECORDING_FINGERPRINT = "sha256:" + ("1" * 64)
+_RECORDING_LABEL = "Observer Contract Recorder"
 
 
 def build_fixture_and_vector_payloads(
@@ -151,8 +157,15 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
             from solstone.apps.observer import routes as observer_routes
             from solstone.convey import bridge as convey_bridge
             from solstone.convey import create_app
+            from solstone.convey import root as convey_root
 
-            with _temporary_attr(observer_routes, "now_ms", lambda: 1700000000000):
+            authorized = AuthorizedClients(authorized_clients_path())
+            with (
+                _temporary_attr(observer_routes, "now_ms", lambda: 1700000000000),
+                _temporary_attr(
+                    convey_root, "get_authorized_clients", lambda: authorized
+                ),
+            ):
                 app = create_app(journal=str(journal.resolve()))
                 app.config["TESTING"] = True
                 client = app.test_client()
@@ -164,7 +177,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.auth.bearer.segments",
                     vector_id="observer.auth.bearer",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250103",
                         headers={
                             "Authorization": f"Bearer {auth_key}",
@@ -180,7 +194,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.auth.handle.segments",
                     vector_id="observer.auth.handle",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250103",
                         headers={
                             protocol.OBSERVER_HANDLE_HEADER: auth_key,
@@ -198,7 +213,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.segments.legacy.absent_header",
                     vector_id="observer.ingestSegments.legacy_array.absent_header",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250103",
                         headers={"Authorization": f"Bearer {segments_key}"},
                     ),
@@ -213,7 +229,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                         "observer.ingestSegments.legacy_array.unparseable_header"
                     ),
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250103",
                         headers={
                             "Authorization": f"Bearer {segments_key}",
@@ -229,7 +246,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.segments.v2.envelope",
                     vector_id="observer.ingestSegments.v2_envelope",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250103",
                         headers={
                             "Authorization": f"Bearer {segments_key}",
@@ -377,7 +395,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.segments.submitted_name_omitted",
                     vector_id="observer.ingestSegments.submitted_name_fallback",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250108",
                         headers={
                             "Authorization": f"Bearer {fallback_key}",
@@ -412,7 +431,8 @@ def _record_behavior_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any
                     fixture_id="recorded.segments.custody_statuses",
                     vector_id="observer.ingestSegments.custody_statuses",
                     operation_id="observer.ingestSegments",
-                    response=client.get(
+                    response=_observer_get(
+                        client,
                         "/app/observer/ingest/segments/20250109",
                         headers={
                             "Authorization": f"Bearer {custody_key}",
@@ -505,7 +525,8 @@ def _record_sse_vectors(
         root_response.close()
 
     sse_key = _register_observer(client, "vector-sse")
-    observer_response = client.get(
+    observer_response = _observer_get(
+        client,
         "/app/observer/callosum",
         headers={"Authorization": f"Bearer {sse_key}"},
         buffered=False,
@@ -542,7 +563,8 @@ def _record_sse_vectors(
         observer_response.close()
 
     error_key = _register_observer(client, "vector-sse-error")
-    error_response = client.get(
+    error_response = _observer_get(
+        client,
         "/app/observer/callosum",
         headers={protocol.OBSERVER_HANDLE_HEADER: error_key},
         buffered=False,
@@ -1053,8 +1075,16 @@ def _fixture_id(
 
 
 def _register_observer(client: Any, name: str) -> str:
+    AuthorizedClients(authorized_clients_path()).add(
+        _RECORDING_FINGERPRINT,
+        _RECORDING_LABEL,
+        "observer-contract-recorder",
+        paired_at="2026-01-01T00:00:00Z",
+        client_label=name,
+    )
     response = client.post(
         "/app/observer/register",
+        environ_base={"pl.identity": _recording_pl_identity()},
         json={
             "hostname": name,
             "platform": "linux",
@@ -1072,6 +1102,24 @@ def _register_observer(client: Any, name: str) -> str:
     return str(body["key"])
 
 
+def _recording_pl_identity() -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-via-spl",
+        fingerprint=_RECORDING_FINGERPRINT,
+        device_label=_RECORDING_LABEL,
+        paired_at="2026-01-01T00:00:00Z",
+        session_id="observer-contract-recorder",
+    )
+
+
+def _observer_get(client: Any, path: str, **kwargs: Any) -> Any:
+    return client.get(
+        path,
+        environ_overrides={"pl.identity": _recording_pl_identity()},
+        **kwargs,
+    )
+
+
 def _upload(
     client: Any,
     key: str,
@@ -1081,6 +1129,7 @@ def _upload(
 ) -> Any:
     return client.post(
         "/app/observer/ingest",
+        environ_overrides={"pl.identity": _recording_pl_identity()},
         headers={"Authorization": f"Bearer {key}"},
         data={
             "day": day,

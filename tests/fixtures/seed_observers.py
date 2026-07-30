@@ -16,6 +16,8 @@ from pathlib import Path
 
 from solstone.apps.observer.utils import list_observers, save_observer
 from solstone.convey import state
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import get_journal, now_ms
 
 SEEDS: list[tuple[str, int | None]] = [
@@ -28,6 +30,10 @@ SEEDS: list[tuple[str, int | None]] = [
 
 def _seed_key(name: str) -> str:
     return hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
+def _seed_fingerprint(name: str) -> str:
+    return "sha256:" + hashlib.sha256(f"device:{name}".encode("utf-8")).hexdigest()
 
 
 def seed_observers() -> int:
@@ -58,12 +64,25 @@ def seed_observers() -> int:
 
     current_now = now_ms()
     written = 0
+    authorized = AuthorizedClients(authorized_clients_path())
     for name, offset_ms in SEEDS:
         existing_record = existing_by_name.get(name, {})
         last_seen = None if offset_ms is None else current_now - offset_ms
+        fingerprint = _seed_fingerprint(name)
+        authorized.add(
+            fingerprint,
+            name,
+            "sandbox-observer-fixture",
+            paired_at="2026-01-01T00:00:00Z",
+            client_label=name,
+        )
         record = {
             "key": _seed_key(name),
             "name": name,
+            "device_binding": {
+                "device": fingerprint,
+                "kind": "cert",
+            },
             "created_at": existing_record.get("created_at", current_now),
             "last_seen": last_seen,
             "last_segment": None,

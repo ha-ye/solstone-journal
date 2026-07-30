@@ -108,15 +108,28 @@ REGISTER_OBSERVER_PAYLOAD = {
 }
 
 PUSH_FINGERPRINT = "sha256:" + ("a" * 64)
+OBSERVER_FINGERPRINT = "sha256:" + ("b" * 64)
 
 
 @pytest.fixture
-def contract_app(tmp_path: Path):
+def contract_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     journal = prepare_isolated_journal(tmp_path / "journal")
     mark_setup_complete(journal)
     with isolated_app_env(journal):
         app = create_app(journal=str(journal.resolve()))
         app.config["TESTING"] = True
+        from solstone.convey import root as convey_root
+        from solstone.think.link.auth import AuthorizedClients
+        from solstone.think.link.paths import authorized_clients_path
+
+        authorized = AuthorizedClients(authorized_clients_path())
+        authorized.add(
+            OBSERVER_FINGERPRINT,
+            "contract-observer",
+            "instance-1",
+            paired_at="2026-05-20T00:00:00Z",
+        )
+        monkeypatch.setattr(convey_root, "get_authorized_clients", lambda: authorized)
         yield app, app.test_client(), journal
 
 
@@ -163,11 +176,25 @@ def _assert_structured_error(body: dict[str, Any], document: dict[str, Any]) -> 
 
 
 def _register_observer(client) -> str:
-    response = client.post("/app/observer/register", json=REGISTER_OBSERVER_PAYLOAD)
+    response = client.post(
+        "/app/observer/register",
+        json=REGISTER_OBSERVER_PAYLOAD,
+        environ_overrides={"pl.identity": _observer_identity()},
+    )
     assert response.status_code == 200, response.get_data(as_text=True)
     body = response.get_json()
     assert isinstance(body, dict)
     return str(body["key"])
+
+
+def _observer_identity() -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-via-spl",
+        fingerprint=OBSERVER_FINGERPRINT,
+        device_label="contract-observer",
+        paired_at="2026-05-20T00:00:00Z",
+        session_id="observer-contract-test",
+    )
 
 
 def _push_identity() -> ConveyIdentity:
@@ -230,10 +257,12 @@ def test_observer_auth_both_header_forms(contract_app):
         client.get(
             "/app/observer/ingest/manifest",
             headers={"Authorization": f"Bearer {key}"},
+            environ_overrides={"pl.identity": _observer_identity()},
         ),
         client.get(
             "/app/observer/ingest/manifest",
             headers={"X-Solstone-Observer": key},
+            environ_overrides={"pl.identity": _observer_identity()},
         ),
     ]
 
@@ -251,6 +280,7 @@ def test_segments_protocol_version_shape(contract_app):
     legacy = client.get(
         "/app/observer/ingest/segments/20250103",
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _observer_identity()},
     )
     assert legacy.status_code == 200
     assert isinstance(legacy.get_json(), list)
@@ -261,6 +291,7 @@ def test_segments_protocol_version_shape(contract_app):
             "Authorization": f"Bearer {key}",
             "X-Solstone-Protocol-Version": "2",
         },
+        environ_overrides={"pl.identity": _observer_identity()},
     )
     assert current.status_code == 200
     body = current.get_json()
@@ -286,6 +317,7 @@ def test_segment_file_status_enum_matches_live_day_listing(contract_app):
             "files": (io.BytesIO(b"contract upload"), "audio.flac"),
         },
         content_type="multipart/form-data",
+        environ_overrides={"pl.identity": _observer_identity()},
     )
     assert upload.status_code == 200
 
@@ -295,6 +327,7 @@ def test_segment_file_status_enum_matches_live_day_listing(contract_app):
             "Authorization": f"Bearer {key}",
             "X-Solstone-Protocol-Version": "2",
         },
+        environ_overrides={"pl.identity": _observer_identity()},
     )
     items = listing.get_json()["items"]
     statuses = [file_info["status"] for item in items for file_info in item["files"]]
@@ -315,6 +348,7 @@ def test_multipart_and_json_parsing(contract_app):
             "files": (io.BytesIO(b"contract upload"), "audio.flac"),
         },
         content_type="multipart/form-data",
+        environ_overrides={"pl.identity": _observer_identity()},
     )
     assert upload.status_code != 415
     upload_body = upload.get_json()

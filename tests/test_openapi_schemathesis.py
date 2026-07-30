@@ -16,6 +16,7 @@ from schemathesis import GenerationMode
 
 import solstone.think.utils as think_utils
 from solstone.convey import create_app
+from solstone.convey.secure_listener.identity import ConveyIdentity
 from solstone.think.convey_client import resolve_base_url
 from solstone.think.utils import get_journal
 from tests._baseline_harness import (
@@ -92,6 +93,7 @@ REGISTER_OBSERVER_PAYLOAD = {
     "stream_type": "desktop",
     "version": "1",
 }
+OBSERVER_FINGERPRINT = "sha256:" + ("c" * 64)
 
 
 def _load_schema() -> schemathesis.schemas.BaseSchema:
@@ -112,6 +114,16 @@ class ContractTarget:
     observer_key: str
 
 
+class _ObserverIdentityMiddleware:
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def __call__(self, environ: dict[str, Any], start_response: Any) -> Any:
+        if environ.get("HTTP_X_SOLSTONE_OBSERVER"):
+            environ["pl.identity"] = _observer_identity()
+        return self._app(environ, start_response)
+
+
 def _resolved_operation_ids(schema: schemathesis.schemas.BaseSchema) -> set[str]:
     operation_ids: set[str] = set()
     for result in schema.get_all_operations():
@@ -120,8 +132,22 @@ def _resolved_operation_ids(schema: schemathesis.schemas.BaseSchema) -> set[str]
     return operation_ids
 
 
+def _observer_identity() -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-via-spl",
+        fingerprint=OBSERVER_FINGERPRINT,
+        device_label="schemathesis-observer",
+        paired_at="2026-05-20T00:00:00Z",
+        session_id="observer-schemathesis-test",
+    )
+
+
 def _register_observer_wsgi(client: Any) -> str:
-    response = client.post("/app/observer/register", json=REGISTER_OBSERVER_PAYLOAD)
+    response = client.post(
+        "/app/observer/register",
+        json=REGISTER_OBSERVER_PAYLOAD,
+        environ_overrides={"pl.identity": _observer_identity()},
+    )
     assert response.status_code == 200, response.get_data(as_text=True)
     body = response.get_json()
     assert isinstance(body, dict)
@@ -184,6 +210,19 @@ def contract_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     with isolated_app_env(journal):
         app = create_app(journal=str(journal.resolve()))
         app.config["TESTING"] = True
+        from solstone.convey import root as convey_root
+        from solstone.think.link.auth import AuthorizedClients
+        from solstone.think.link.paths import authorized_clients_path
+
+        authorized = AuthorizedClients(authorized_clients_path())
+        authorized.add(
+            OBSERVER_FINGERPRINT,
+            "schemathesis-observer",
+            "instance-1",
+            paired_at="2026-05-20T00:00:00Z",
+        )
+        monkeypatch.setattr(convey_root, "get_authorized_clients", lambda: authorized)
+        app.wsgi_app = _ObserverIdentityMiddleware(app.wsgi_app)
         observer_key = _register_observer_wsgi(app.test_client())
         yield ContractTarget(app=app, base_url=None, observer_key=observer_key)
 
