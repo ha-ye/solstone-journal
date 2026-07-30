@@ -44,6 +44,8 @@ from solstone.think.talent import get_output_path
 from solstone.think.talents import TALENT_EXECUTION_MODULE
 from solstone.think.utils import get_journal, get_rev, now_ms
 
+_CANCEL_REASON_CODE = "chat_watchdog_cancelled"
+
 
 class TalentProcess:
     """Manages a running talent subprocess."""
@@ -657,8 +659,10 @@ class CortexService:
         self.stop_event = threading.Event()
         self.shutdown_requested = threading.Event()
         self.spawn_queue: queue.Queue = queue.Queue()
+        self.cancel_queue: queue.Queue = queue.Queue()
         self._pending_spawns: int = 0
         self._spawn_worker: threading.Thread | None = None
+        self._cancel_worker: threading.Thread | None = None
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._wait = wait or self.stop_event.wait
         self._spp_renewal_controller: SppRenewalController | None = None
@@ -810,6 +814,12 @@ class CortexService:
             daemon=True,
         )
         self._spawn_worker.start()
+        self._cancel_worker = threading.Thread(
+            target=self._run_cancel_worker,
+            name="cortex-cancel-worker",
+            daemon=True,
+        )
+        self._cancel_worker.start()
         self._start_spp_renewal_controller()
 
         self.logger.info("Cortex service started, listening for talent requests")
@@ -864,15 +874,30 @@ class CortexService:
         """Handle incoming Callosum messages (callback)."""
         if self._spp_renewal_controller is not None:
             self._spp_renewal_controller.handle_supervisor_message(message)
-        # Filter for cortex tract and request event
-        if message.get("tract") != "cortex" or message.get("event") != "request":
+        # Filter for cortex tract and inbound work events.
+        event = message.get("event")
+        if message.get("tract") != "cortex" or event not in {"request", "cancel"}:
             return
 
         # Handle the request
         try:
-            self._handle_request(message)
+            if event == "request":
+                self._handle_request(message)
+            else:
+                self._handle_cancel(message)
         except Exception as e:
-            self.logger.exception(f"Error handling request: {e}")
+            self.logger.exception(f"Error handling {event}: {e}")
+
+    def _handle_cancel(self, message: Dict[str, Any]) -> None:
+        """Queue cancellation for a running talent use without blocking callosum."""
+        use_id = message.get("use_id")
+        if not isinstance(use_id, str) or not use_id:
+            self.logger.debug("Ignoring cortex cancel without use_id")
+            return
+        reason_code = message.get("reason_code")
+        if not isinstance(reason_code, str) or not reason_code:
+            reason_code = _CANCEL_REASON_CODE
+        self.cancel_queue.put({"use_id": use_id, "reason_code": reason_code})
 
     def _handle_request(self, request: Dict[str, Any]) -> None:
         """Handle a new talent request from Callosum.
@@ -950,6 +975,23 @@ class CortexService:
                 with self.lock:
                     self._pending_spawns -= 1
                 self.spawn_queue.task_done()
+
+    def _run_cancel_worker(self) -> None:
+        """Drain the cancel queue on a single dedicated thread (FIFO)."""
+        while not self.stop_event.is_set():
+            try:
+                item = self.cancel_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._cancel_talent_use(
+                    str(item.get("use_id") or ""),
+                    str(item.get("reason_code") or _CANCEL_REASON_CODE),
+                )
+            except Exception as e:
+                self.logger.exception(f"Cancel worker error: {e}")
+            finally:
+                self.cancel_queue.task_done()
 
     def _is_idle(self) -> bool:
         """True when nothing is running, queued, or mid-spawn on the worker."""
@@ -1092,6 +1134,35 @@ class CortexService:
         error_event = self._create_error_event(
             use_id, f"Talent timed out after {timeout_seconds} seconds"
         )
+        self._append_use_event(use_id, agent.log_path, error_event)
+
+        # Broadcast to callosum so wait_for_uses detects immediately
+        try:
+            event_copy = error_event.copy()
+            event_type = event_copy.pop("event", "error")
+            self.callosum.emit("cortex", event_type, **event_copy)
+        except Exception:
+            pass
+
+        agent.stop()
+        self._complete_use_file(use_id, agent.log_path)
+        self._clear_request(use_id)
+
+    def _cancel_talent_use(self, use_id: str, reason_code: str) -> None:
+        """Terminalize and stop a running talent use cancelled by a caller."""
+        if not use_id:
+            return
+        with self.lock:
+            agent = self.running_uses.get(use_id)
+        if agent is None or not self._claim_finalize(use_id):
+            return
+
+        self.logger.warning("Talent %s cancelled by cortex cancel event", use_id)
+        error_event = self._create_error_event(
+            use_id,
+            "Talent cancelled by chat watchdog",
+        )
+        error_event["reason_code"] = reason_code
         self._append_use_event(use_id, agent.log_path, error_event)
 
         # Broadcast to callosum so wait_for_uses detects immediately
@@ -1483,6 +1554,11 @@ class CortexService:
         # worker's 0.5s get-timeout guarantees it observes stop_event promptly).
         if self._spawn_worker is not None:
             self._spawn_worker.join(timeout=2.0)
+
+        # Let the cancel worker finish its current item and exit (~2s bound; the
+        # worker's 0.5s get-timeout guarantees it observes stop_event promptly).
+        if self._cancel_worker is not None:
+            self._cancel_worker.join(timeout=2.0)
 
         # Terminalize any claims still queued. The worker has exited, so no other
         # thread pulls these concurrently.

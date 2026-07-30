@@ -69,6 +69,33 @@ def _completed_path(journal_path: Path, use_id: str, name: str = "chat") -> Path
     return journal_path / "talents" / name.replace(":", "--") / f"{use_id}.jsonl"
 
 
+def _make_live_agent(
+    cortex_service, journal_path: Path, use_id: str, *, name: str = "chat"
+):
+    from solstone.think.cortex import TalentProcess
+
+    talent_dir = journal_path / "talents" / name.replace(":", "--")
+    talent_dir.mkdir(exist_ok=True)
+    active_path = talent_dir / f"{use_id}_active.jsonl"
+    request = {
+        "event": "request",
+        "use_id": use_id,
+        "ts": 1000,
+        "name": name,
+        "day": "20260410",
+    }
+    active_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+    mock_process = MagicMock()
+    mock_process.pid = 24680
+    mock_process.wait.return_value = 0
+    mock_process.stdout = MockPipe([])
+    mock_process.stderr = MockPipe([])
+    agent = TalentProcess(use_id, mock_process, active_path)
+    cortex_service.running_uses[use_id] = agent
+    cortex_service.use_requests[use_id] = request
+    return agent, active_path
+
+
 class _FakeClock:
     def __init__(self, now: datetime):
         self.now = now
@@ -1599,6 +1626,42 @@ def test_slow_spawn_does_not_block_request_callback(cortex_service, mock_journal
         cortex_service._spawn_worker.join(timeout=1)
 
 
+def test_cancel_callback_queues_without_blocking_stop(cortex_service):
+    block = threading.Event()
+    started = threading.Event()
+    cancelled: list[str] = []
+
+    def slow_cancel(use_id: str, _reason_code: str) -> None:
+        cancelled.append(use_id)
+        started.set()
+        block.wait(timeout=5)
+
+    with patch.object(cortex_service, "_cancel_talent_use", side_effect=slow_cancel):
+        cortex_service._cancel_worker = threading.Thread(
+            target=cortex_service._run_cancel_worker,
+            daemon=True,
+        )
+        cortex_service._cancel_worker.start()
+
+        before = time.monotonic()
+        cortex_service._handle_callosum_message(
+            {
+                "tract": "cortex",
+                "event": "cancel",
+                "use_id": "cancel_slow_1",
+            }
+        )
+        elapsed = time.monotonic() - before
+
+        assert elapsed < 0.5
+        assert started.wait(1)
+        assert cancelled == ["cancel_slow_1"]
+
+        cortex_service.stop_event.set()
+        block.set()
+        cortex_service._cancel_worker.join(timeout=1)
+
+
 def test_claim_latency_independent_of_queue_depth(cortex_service, mock_journal):
     """AC2: request handling claims and queues without spawning inline."""
     with patch.object(cortex_service, "_spawn_subprocess") as mock_spawn:
@@ -2220,6 +2283,200 @@ def test_timeout_finalize_claim_beats_late_stdout_cleanup(cortex_service, mock_j
         if line.strip()
     ]
     assert [summary["use_id"] for summary in summaries].count(use_id) == 1
+
+
+def test_cancel_edge_cases_are_idempotent_without_spawning(
+    cortex_service, mock_journal
+):
+    cortex_service.callosum = MagicMock()
+    with patch.object(cortex_service, "_spawn_subprocess") as mock_spawn:
+        cortex_service._cancel_talent_use("unknown_use", "chat_watchdog_cancelled")
+        cortex_service._handle_callosum_message({"tract": "cortex", "event": "cancel"})
+        cortex_service._handle_callosum_message(
+            {"tract": "cortex", "event": "cancel", "use_id": {"bad": "shape"}}
+        )
+
+        completed_dir = mock_journal / "talents" / "chat"
+        completed_dir.mkdir()
+        finalized = completed_dir / "already_done.jsonl"
+        finalized.write_text('{"event":"finish","use_id":"already_done"}\n')
+        before_finalized = finalized.read_bytes()
+        cortex_service._cancel_talent_use("already_done", "chat_watchdog_cancelled")
+
+        agent, active_path = _make_live_agent(
+            cortex_service, mock_journal, "live_cancel_twice"
+        )
+        with patch.object(agent, "_signal_process_group"):
+            cortex_service._cancel_talent_use(
+                "live_cancel_twice", "chat_watchdog_cancelled"
+            )
+            cortex_service._cancel_talent_use(
+                "live_cancel_twice", "chat_watchdog_cancelled"
+            )
+
+    completed_path = _completed_path(mock_journal, "live_cancel_twice")
+    rows = _read_jsonl(completed_path)
+    terminal_errors = [row for row in rows if row.get("event") == "error"]
+    assert not _active_path(mock_journal, "unknown_use").exists()
+    assert finalized.read_bytes() == before_finalized
+    assert not active_path.exists()
+    assert len(terminal_errors) == 1
+    assert terminal_errors[0]["reason_code"] == "chat_watchdog_cancelled"
+    mock_spawn.assert_not_called()
+
+
+def test_cancel_reason_code_does_not_change_timeout_reason_shape(
+    cortex_service, mock_journal
+):
+    cortex_service.callosum = MagicMock()
+    cancel_agent, _cancel_active_path = _make_live_agent(
+        cortex_service, mock_journal, "reason_cancel"
+    )
+    with patch.object(cancel_agent, "_signal_process_group"):
+        cortex_service._cancel_talent_use("reason_cancel", "chat_watchdog_cancelled")
+
+    timeout_agent, _timeout_active_path = _make_live_agent(
+        cortex_service, mock_journal, "reason_timeout"
+    )
+    with patch.object(timeout_agent, "_signal_process_group"):
+        cortex_service._timeout_talent("reason_timeout", timeout_agent, 1)
+
+    cancel_error = [
+        row
+        for row in _read_jsonl(_completed_path(mock_journal, "reason_cancel"))
+        if row.get("event") == "error"
+    ][0]
+    timeout_error = [
+        row
+        for row in _read_jsonl(_completed_path(mock_journal, "reason_timeout"))
+        if row.get("event") == "error"
+    ][0]
+    assert cancel_error["reason_code"] == "chat_watchdog_cancelled"
+    assert "reason_code" not in timeout_error
+
+
+def test_cancel_racing_real_finish_completes_once(cortex_service, mock_journal):
+    cortex_service.callosum = MagicMock()
+    use_id = "cancel_race_finish"
+    agent, active_path = _make_live_agent(cortex_service, mock_journal, use_id)
+    agent.process.stdout = MockPipe(
+        [
+            json.dumps(
+                {
+                    "event": "finish",
+                    "use_id": use_id,
+                    "ts": 1001,
+                    "result": "already emitted",
+                }
+            )
+            + "\n"
+        ]
+    )
+    finish_appended = threading.Event()
+    release_finish = threading.Event()
+    original_append = cortex_service._append_use_event
+
+    def append_spy(use_id_arg, active_path_arg, event):
+        appended = original_append(use_id_arg, active_path_arg, event)
+        if event.get("event") == "finish":
+            finish_appended.set()
+            release_finish.wait(timeout=1)
+        return appended
+
+    monitor = threading.Thread(target=cortex_service._monitor_stdout, args=(agent,))
+    with patch.object(cortex_service, "_append_use_event", side_effect=append_spy):
+        monitor.start()
+        assert finish_appended.wait(1)
+        with patch.object(agent, "_signal_process_group"):
+            cortex_service._cancel_talent_use(use_id, "chat_watchdog_cancelled")
+        release_finish.set()
+        monitor.join(timeout=1)
+
+    assert not monitor.is_alive()
+
+    completed_path = _completed_path(mock_journal, use_id)
+    rows = _read_jsonl(completed_path)
+    day_index = mock_journal / "talents" / "20260410.jsonl"
+    assert completed_path.exists()
+    assert not active_path.exists()
+    assert sum(1 for row in rows if row.get("event") == "finish") == 1
+    terminal_errors = [row for row in rows if row.get("event") == "error"]
+    assert len(terminal_errors) == 1
+    assert terminal_errors[0]["reason_code"] == "chat_watchdog_cancelled"
+    assert len(day_index.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_cancel_claim_first_then_late_finish_appends_before_complete(
+    cortex_service, mock_journal
+):
+    from solstone.think.cortex_client import get_use_end_state
+
+    cortex_service.callosum = MagicMock()
+    use_id = "cancel_claim_first_late_finish"
+    agent, active_path = _make_live_agent(cortex_service, mock_journal, use_id)
+    agent.process.stdout = MockPipe(
+        [
+            json.dumps(
+                {
+                    "event": "finish",
+                    "use_id": use_id,
+                    "ts": 1002,
+                    "result": "late emitted",
+                }
+            )
+            + "\n"
+        ]
+    )
+    cancel_error_appended = threading.Event()
+    allow_cancel_complete = threading.Event()
+    cancel_done = threading.Event()
+    original_append = cortex_service._append_use_event
+
+    def append_spy(use_id_arg, active_path_arg, event):
+        appended = original_append(use_id_arg, active_path_arg, event)
+        if (
+            event.get("event") == "error"
+            and event.get("reason_code") == "chat_watchdog_cancelled"
+        ):
+            cancel_error_appended.set()
+            allow_cancel_complete.wait(timeout=1)
+        return appended
+
+    def cancel_use():
+        try:
+            cortex_service._cancel_talent_use(use_id, "chat_watchdog_cancelled")
+        finally:
+            cancel_done.set()
+
+    cancel_thread = threading.Thread(target=cancel_use)
+    with patch.object(cortex_service, "_append_use_event", side_effect=append_spy):
+        with patch.object(agent, "_signal_process_group"):
+            cancel_thread.start()
+            try:
+                assert cancel_error_appended.wait(1)
+                assert use_id not in cortex_service.running_uses
+                assert active_path.exists()
+                cortex_service._monitor_stdout(agent)
+            finally:
+                allow_cancel_complete.set()
+                cancel_thread.join(timeout=1)
+
+    assert cancel_done.is_set()
+    assert not cancel_thread.is_alive()
+
+    completed_path = _completed_path(mock_journal, use_id)
+    rows = _read_jsonl(completed_path)
+    day_index = mock_journal / "talents" / "20260410.jsonl"
+    day_rows = _read_jsonl(day_index)
+    assert completed_path.exists()
+    assert not active_path.exists()
+    assert [row.get("event") for row in rows] == ["request", "error", "finish"]
+    assert rows[1]["reason_code"] == "chat_watchdog_cancelled"
+    assert rows[2]["result"] == "late emitted"
+    assert cortex_service._has_finish_event(completed_path) is True
+    assert get_use_end_state(use_id) == "finish"
+    assert len(day_rows) == 1
+    assert day_rows[0]["status"] == "completed"
 
 
 def test_monitor_stderr_after_completion_does_not_resurrect_active_log(

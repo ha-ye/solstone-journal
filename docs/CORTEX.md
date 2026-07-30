@@ -118,6 +118,18 @@ The initial spawn request (first line of file, written by client).
 }
 ```
 
+### cancel
+Inbound request to stop a running talent use. Cortex queues cancellation work off
+the receive thread and terminalizes the use with an error carrying `reason_code`.
+```json
+{
+  "event": "cancel",
+  "ts": 1234567890123,
+  "use_id": "1234567890123",
+  "reason_code": "chat_watchdog_cancelled"
+}
+```
+
 ### start
 Emitted when a talent run begins.
 ```json
@@ -171,6 +183,18 @@ Emitted when the model produces reasoning/thinking content (model-dependent, pri
 }
 ```
 
+### progress
+Emitted by synchronous generator runs as a liveness heartbeat while provider work
+is still in flight. It intentionally carries no `summary`.
+```json
+{
+  "event": "progress",
+  "ts": 1234567890123,
+  "use_id": "1234567890123",
+  "phase": "generate"
+}
+```
+
 ### talent_updated
 Emitted when control is handed off to a different agent (multi-agent scenarios).
 ```json
@@ -189,7 +213,8 @@ Emitted when the talent run completes successfully.
   "event": "finish",
   "ts": 1234567890123,
   "use_id": "1234567890123",
-  "result": "Final response text to the owner"
+  "result": "Final response text to the owner",
+  "generate_progress_count": 3
 }
 ```
 
@@ -201,7 +226,8 @@ Emitted when an error occurs during execution.
   "ts": 1234567890123,
   "use_id": "1234567890123",
   "error": "Error message",
-  "trace": "Full stack trace..."
+  "trace": "Full stack trace...",
+  "generate_progress_count": 3
 }
 ```
 
