@@ -454,6 +454,52 @@ def test_suggest_unknown_recurring_kernel_failure_uses_discovery_issue(
     )
 
 
+def test_suggest_first_generator_failure_still_aggregates_later_item(
+    speakers_env,
+    monkeypatch,
+):
+    speakers_env()
+    later_item = {
+        "type": "import_linkable",
+        "name": "Romeo Montague",
+        "entity_id": "romeo",
+        "meetings_mentioned": 1,
+        "meeting_days": ["20240101"],
+    }
+
+    def fail_discovery():
+        raise SpeakerDiscoveryKernelError(stage="invoke", reason="timeout")
+
+    def later_generator():
+        return [later_item]
+
+    def empty_generator():
+        return []
+
+    monkeypatch.setattr(suggest_module, "_discovery_helpers", lambda: fail_discovery)
+    monkeypatch.setattr(suggest_module, "_import_linkable", later_generator)
+    monkeypatch.setattr(suggest_module, "_name_variant", empty_generator)
+    monkeypatch.setattr(suggest_module, "_candidate_pair_review", empty_generator)
+    monkeypatch.setattr(suggest_module, "_low_confidence_review", empty_generator)
+
+    result = suggest_opportunities()
+
+    assert set(result) == {"status", "items", "issues", "markdown"}
+    assert result["status"] == "degraded"
+    assert result["items"] == [later_item]
+    assert len(result["issues"]) == 1
+    issue = result["issues"][0]
+    assert set(issue) == {"reason_code", "generator", "message"}
+    assert issue["reason_code"] == "speaker_discovery_failed"
+    assert issue["generator"] == "_unknown_recurring"
+    assert issue["message"] == "i couldn't look for new voices right now."
+    markdown = result["markdown"]
+    assert "Import linkable: Romeo Montague (romeo)" in markdown
+    assert "some speaker suggestions are incomplete:" in markdown
+    assert "i couldn't look for new voices right now. (_unknown_recurring)" in markdown
+    assert "No speaker curation suggestions found" not in markdown
+
+
 def test_suggest_every_invoked_generator_failed_returns_failed(
     speakers_env,
     monkeypatch,
