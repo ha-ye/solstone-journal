@@ -1983,10 +1983,10 @@ def test_workspace_day_discovery_degraded_notice_keeps_clusters_and_empty_scan()
           const withCluster = makeWorkspaceContext('day');
           await flush();
           await flush();
-          resolveFetch(withCluster.queues.discovery[0], discoveryOk([]));
+          resolveFetch(withCluster.queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
           await flush();
           await flush();
-          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([discoveryCluster(7, 'Cluster A')], 2));
+          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([], 2));
           await flush();
           await flush();
           assertDiscoveryCluster(withCluster.document, 'day', '7');
@@ -2025,10 +2025,10 @@ def test_workspace_overview_discovery_degraded_notice_keeps_clusters_and_empty_s
             corrections_window_count: 0,
           });
           resolveFetch(withCluster.queues.known[0], { speakers: [] });
-          resolveFetch(withCluster.queues.discovery[0], discoveryOk([]));
+          resolveFetch(withCluster.queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
           await flush();
           await flush();
-          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([discoveryCluster(7, 'Cluster A')], 2));
+          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([], 2));
           await flush();
           await flush();
           assertDiscoveryCluster(withCluster.document, 'overview', '7');

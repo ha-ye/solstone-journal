@@ -2388,7 +2388,7 @@
     return window.apiJson('/app/speakers/api/discovery/scan', { method: 'POST' })
       .then(data => {
         if (activeSeq !== dayDiscoveryRequestSeq) return false;
-        dayDiscoveryClusters = discoveryClusters(data);
+        dayDiscoveryClusters = discoveryRefreshClusters(data, dayDiscoveryClusters);
         dayDiscoveryNotice = discoveryNoticeFromScan(data, SPK_COPY);
         renderDayDiscoveryBanner();
         return true;
@@ -2404,6 +2404,14 @@
 
   function discoveryClusters(data) {
     return Array.isArray(data?.clusters) ? data.clusters : [];
+  }
+
+  function discoveryRefreshClusters(data, currentClusters) {
+    const clusters = discoveryClusters(data);
+    if (data?.status === 'degraded' && !clusters.length && currentClusters.length) {
+      return currentClusters;
+    }
+    return clusters;
   }
 
   function discoveryIssueCount(issue) {
@@ -4161,6 +4169,14 @@
     return Array.isArray(data?.clusters) ? data.clusters : [];
   }
 
+  function discoveryRefreshClusters(data, currentClusters) {
+    const clusters = discoveryClusters(data);
+    if (data?.status === 'degraded' && !clusters.length && currentClusters.length) {
+      return currentClusters;
+    }
+    return clusters;
+  }
+
   function discoveryIssueCount(issue) {
     const count = Number(issue?.count || 0);
     return Number.isFinite(count) ? count : 0;
@@ -4287,7 +4303,13 @@
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         if (overviewHandoffSheetOpen) return false;
         overviewDiscoveryNotice = discoveryNoticeFromScan(data);
-        renderDiscovery(data);
+        renderDiscovery({
+          ...data,
+          clusters: discoveryRefreshClusters(
+            data,
+            Array.from(discoveryClustersById.values()),
+          ),
+        });
         return true;
       })
       .catch((err) => {
