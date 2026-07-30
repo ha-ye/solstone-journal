@@ -8,7 +8,7 @@ import json
 import os
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +168,23 @@ RESPONSIVENESS_CORPUS = [
         True,
         MESSAGING_SCHEMA,
     ),
+    CorpusCase(
+        "N9",
+        _json_payload(
+            {
+                "message": EXEMPLAR_2,
+                "notes": "I don't have access to third-party tools, so I declined.",
+                "talent_request": None,
+            }
+        ),
+        True,
+        CHAT_SCHEMA,
+    ),
+    CorpusCase(
+        "N10",
+        "I cannot process this image. You may want to contact the app team for help.",
+        True,
+    ),
     CorpusCase("R1", "A terminal window showing a green test run.", False),
     CorpusCase(
         "R2",
@@ -276,6 +293,49 @@ RESPONSIVENESS_CORPUS = [
         MESSAGING_SCHEMA,
     ),
     CorpusCase("R10", "The test run passed.", False),
+    CorpusCase(
+        "R12",
+        _json_payload(
+            {
+                "message": (
+                    "You met with Jack and Ryan at Enterprise Coworking from 10am "
+                    "to 4pm."
+                ),
+                "notes": (
+                    "I don't have access to that day's segments, so I answered "
+                    "from the summary."
+                ),
+                "talent_request": None,
+            }
+        ),
+        False,
+        CHAT_SCHEMA,
+        expected_empty_corpus=False,
+    ),
+    CorpusCase(
+        "R13",
+        _json_payload(
+            {
+                "message": "Your first commit that day was at 9:14am.",
+                "notes": (
+                    "I cannot see the raw audio, so I used the transcript index."
+                ),
+                "talent_request": None,
+            }
+        ),
+        False,
+        CHAT_SCHEMA,
+        expected_empty_corpus=False,
+    ),
+    CorpusCase(
+        "R14",
+        (
+            "I cannot read the tiny toolbar labels, but the screen shows a "
+            "terminal with a passing test run."
+        ),
+        False,
+        expected_empty_corpus=False,
+    ),
 ]
 
 R11_GARBAGE_INPUTS = [
@@ -339,6 +399,35 @@ def test_n8_nested_messaging_refusal():
     _assert_case("N8")
 
 
+def test_n9_chat_message_refusal_with_hedge_notes():
+    verdict = _assert_case("N9")
+
+    assert verdict.matched_signal == "i cannot"
+
+
+def test_n9_notes_first_still_uses_message_refusal():
+    payload = json.dumps(
+        {
+            "notes": "I don't have access to third-party tools, so I declined.",
+            "message": EXEMPLAR_2,
+            "talent_request": None,
+        }
+    )
+    Draft202012Validator(_load_schema(CHAT_SCHEMA)).validate(json.loads(payload))
+
+    verdict = responsiveness.classify_output_responsiveness(payload)
+
+    assert verdict.non_responsive is True
+    assert verdict.matched_signal == "i cannot"
+    assert verdict.empty_corpus is False
+
+
+def test_n10_next_sentence_handoff_is_not_continuation():
+    verdict = _assert_case("N10")
+
+    assert verdict.matched_signal == "i cannot"
+
+
 def test_r1_real_description():
     _assert_case("R1")
 
@@ -387,6 +476,18 @@ def test_r11_garbage_inputs_raise_nothing_and_are_responsive():
         assert verdict.empty_corpus is expected_empty, reason
 
 
+def test_r12_chat_answer_with_segments_access_hedge_notes():
+    _assert_case("R12")
+
+
+def test_r13_chat_answer_with_raw_audio_hedge_notes():
+    _assert_case("R13")
+
+
+def test_r14_opening_position_hedge_then_work():
+    _assert_case("R14")
+
+
 def test_regression_json_string_scalar_refusal_is_seen():
     verdict = responsiveness.classify_output_responsiveness(
         json.dumps("I cannot view images.")
@@ -421,6 +522,29 @@ def test_regression_lead_in_only_leaf_sets_empty_corpus():
     assert verdict.non_responsive is False
     assert verdict.matched_signal is None
     assert verdict.empty_corpus is True
+
+
+def test_regression_lode_a1_internal_notes_hedge_does_not_veto_real_answer():
+    payloads = [
+        (
+            '{"message": "You met with Jack and Ryan at Enterprise Coworking from '
+            '10am to 4pm.", "notes": "I don\'t have access to that day\'s segments, '
+            'so I answered from the summary.", "talent_request": null}'
+        ),
+        (
+            '{"message": "Your first commit that day was at 9:14am.", "notes": '
+            '"I cannot see the raw audio, so I used the transcript index.", '
+            '"talent_request": null}'
+        ),
+    ]
+    schema = _load_schema(CHAT_SCHEMA)
+    for payload in payloads:
+        Draft202012Validator(schema).validate(json.loads(payload))
+        verdict = responsiveness.classify_output_responsiveness(payload)
+
+        assert verdict.non_responsive is False
+        assert verdict.matched_signal is None
+        assert verdict.empty_corpus is False
 
 
 def test_ac1_module_imports_no_solstone_modules_by_ast():
@@ -554,6 +678,100 @@ def test_ac5_signal_table_identifiers_exist_in_one_module():
     assert hits == {
         identifier: {"solstone/think/responsiveness.py"} for identifier in identifiers
     }
+
+
+def test_schema_field_names_are_not_payload_data():
+    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"), filename=str(MODULE_PATH))
+    field_names = {
+        "message",
+        "notes",
+        "talent_request",
+        "target",
+        "task",
+        "context",
+        "visual_description",
+        "primary",
+        "secondary",
+        "overlap",
+        "app",
+        "thread",
+        "view",
+        "messages",
+        "sender",
+        "timestamp",
+        "subject",
+        "text",
+        "headline",
+        "summary_sentence",
+        "suggested_action",
+    }
+
+    docstring_ids = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            docstring_ids.add(id(node.body[0].value))
+
+    all_ids = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, ast.List):
+            for item in node.value.elts:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    all_ids.add(id(item))
+
+    collisions = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        # Docstring words are prose documentation, not parsed payload fields.
+        if id(node) in docstring_ids:
+            continue
+        # __all__ strings are own-module export names, not schema field data.
+        if id(node) in all_ids:
+            continue
+        tokens = {
+            token for token in re.split(r"[^a-z0-9]+", node.value.lower()) if token
+        }
+        overlap = sorted(tokens & field_names)
+        if overlap:
+            collisions.append((node.lineno, node.value, overlap))
+
+    string_subscripts = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ]
+    get_string_calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+
+    assert collisions == []
+    assert string_subscripts == []
+    assert get_string_calls == []
 
 
 def test_ac6_all_corpus_rows_match_expected_verdicts():
@@ -733,3 +951,29 @@ def test_public_all_exact_surface():
         "ResponsivenessVerdict",
         "classify_output_responsiveness",
     ]
+
+
+def test_public_surface_contracts():
+    assert [field.name for field in fields(responsiveness.ResponsivenessVerdict)] == [
+        "non_responsive",
+        "matched_signal",
+        "empty_corpus",
+    ]
+    assert responsiveness.NonResponsiveOutputError.__bases__ == (RuntimeError,)
+    assert (
+        responsiveness.NonResponsiveOutputError.reason_code
+        == responsiveness.NON_RESPONSIVE_REASON_CODE
+    )
+    assert responsiveness.NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS == 512
+
+    copy_names = (
+        "NON_RESPONSIVE_OUTPUT_MESSAGE",
+        "NON_RESPONSIVE_OUTPUT_FRAGMENT",
+        "NON_RESPONSIVE_READINESS_SUMMARY",
+        "NON_RESPONSIVE_READINESS_DETAIL",
+    )
+    copies = tuple(getattr(responsiveness, name) for name in copy_names)
+
+    assert all(name in responsiveness.__all__ for name in copy_names)
+    assert all(isinstance(copy, str) and copy for copy in copies)
+    assert len(set(copies)) == len(copies)

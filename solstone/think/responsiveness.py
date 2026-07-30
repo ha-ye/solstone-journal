@@ -3,10 +3,13 @@
 
 """Detect talent outputs that decline the requested work.
 
-Non-responsive means the first prose sentence in a leaf that is not purely an
-apology lead-in opens with a first-person capability negation, after explicit
-short lead-in markers are stripped; JSON outputs are walked recursively and bare
-text is one leaf, with sentence boundaries split only on `.`, `!`, and `?`.
+Non-responsive means the first substantive prose opening in any string leaf
+opens with a first-person capability negation after explicit apology lead-ins
+are stripped, unless that same opening continues after the matched negation head
+with a comma-plus-connective marker from this module's continuation table
+followed by prose-like text. JSON outputs are walked recursively and every prose
+leaf remains eligible to veto, so a hedge only skips that leaf and scanning
+continues, with sentence boundaries split only on `.`, `!`, and `?`.
 
 The broader spec also names "answers a question that was not asked"; that arm
 is out of reach for a non-model detector and is deliberately not implemented.
@@ -76,6 +79,13 @@ _NON_RESPONSIVE_NEGATION_HEADS = (
     "i don't have the ability",
     "as an ai",
 )
+_NON_RESPONSIVE_CONTINUATION_MARKERS = (
+    ", so ",
+    ", but ",
+    # "though" is the exact contrastive already carried by corpus row R3
+    # (tests/test_responsiveness.py:187); missing real content is costlier.
+    ", though ",
+)
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -113,7 +123,7 @@ def classify_output_responsiveness(output: object) -> ResponsivenessVerdict:
             continue
         evaluated_any = True
         signal = _matched_negation_head(opening)
-        if signal is not None:
+        if signal is not None and not _continues_past_negation(opening, signal):
             return ResponsivenessVerdict(
                 non_responsive=True,
                 matched_signal=signal,
@@ -162,6 +172,15 @@ def _is_prose_like(text: str) -> bool:
     return any(char.isalpha() for char in text) and (
         any(char.isspace() for char in text) or any(char in ".!?" for char in text)
     )
+
+
+def _continues_past_negation(opening: str, head: str) -> bool:
+    tail = opening.lower()[len(head) :]
+    for marker in _NON_RESPONSIVE_CONTINUATION_MARKERS:
+        _, found, remainder = tail.partition(marker)
+        if found and _is_prose_like(remainder.strip()):
+            return True
+    return False
 
 
 def _first_substantive_opening(text: str) -> str | None:
