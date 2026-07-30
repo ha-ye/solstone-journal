@@ -1324,6 +1324,24 @@ class TestStaleAliasSymlink:
         assert "1 warnings" in capsys.readouterr().out
 
 
+def test_capture_health_check_reports_unbound_degradation(doctor, monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "get_capture_health",
+        lambda: {
+            "status": "degraded",
+            "observers": [{"name": "desktop", "status": "degraded", "unbound": True}],
+        },
+    )
+
+    result = doctor.capture_health_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "rollup=degraded" in result.detail
+    assert "desktop=degraded (unbound)" in result.detail
+    assert result.fix == doctor._CAPTURE_HEALTH_FIX
+
+
 class TestJsonAndExitCodes:
     def test_json_output(self, doctor, monkeypatch, capsys):
         monkeypatch.setattr(

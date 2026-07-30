@@ -29,6 +29,7 @@ from solstone.apps.observer.utils import (
     get_hist_dir,
     list_observers,
     load_history,
+    observer_device_binding,
     observer_filename_prefix,
     pruned_segments,
     revoke_observer_record,
@@ -52,6 +53,8 @@ def _status_label(observer: dict) -> str:
     """Get human-readable connection status."""
     if observer.get("revoked", False):
         return "revoked"
+    if observer_device_binding(observer) is None:
+        return "unbound"
     last_seen = observer.get("last_seen")
     if last_seen is None:
         return "disconnected"
@@ -457,9 +460,11 @@ def _status_all(json_output: bool = False) -> int:
         print("No observers registered.")
         return 0
 
-    connected = sum(1 for r in observers if _status_label(r) == "connected")
-    disconnected = sum(1 for r in observers if _status_label(r) == "disconnected")
-    revoked = sum(1 for r in observers if _status_label(r) == "revoked")
+    labels = [_status_label(r) for r in observers]
+    connected = labels.count("connected")
+    unbound = labels.count("unbound")
+    disconnected = labels.count("disconnected")
+    revoked = labels.count("revoked")
     total_segments = sum(
         r.get("stats", {}).get("segments_received", 0) for r in observers
     )
@@ -471,6 +476,7 @@ def _status_all(json_output: bool = False) -> int:
                 {
                     "total": len(observers),
                     "connected": connected,
+                    "unbound": unbound,
                     "disconnected": disconnected,
                     "revoked": revoked,
                     "total_segments": total_segments,
@@ -495,6 +501,7 @@ def _status_all(json_output: bool = False) -> int:
 
     print(f"Observers: {len(observers)} total")
     print(f"  Connected:    {connected}")
+    print(f"  Unbound:      {unbound}")
     print(f"  Disconnected: {disconnected}")
     print(f"  Revoked:      {revoked}")
     print(f"  Total segments: {total_segments}")

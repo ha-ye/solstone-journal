@@ -43,6 +43,11 @@ MAINT_QUALIFIED = f"{MAINT_APP}:{MAINT_TASK}"
 DOCTOR_NOW_MS = 2_000_000_000_000
 MINUTE_MS = 60_000
 HOUR_MS = 60 * MINUTE_MS
+TEST_DEVICE_BINDING = {"device": "sha256:" + ("e" * 64), "kind": "cert"}
+
+
+def bound_observer(**fields):
+    return {"device_binding": dict(TEST_DEVICE_BINDING), **fields}
 
 
 def maint_state_file(journal: Path) -> Path:
@@ -270,28 +275,28 @@ def test_capture_health_check_maps_every_rollup_status(doctor, monkeypatch):
         (
             "active",
             "ok",
-            [{"name": "desktop", "last_seen": now}],
+            [bound_observer(name="desktop", last_seen=now)],
             "rollup=active; observers reaching the journal",
             True,
         ),
         (
             "stale",
             "warn",
-            [{"name": "desktop", "last_seen": now - MINUTE_MS}],
+            [bound_observer(name="desktop", last_seen=now - MINUTE_MS)],
             "rollup=stale; observers: desktop=stale",
             True,
         ),
         (
             "offline",
             "warn",
-            [{"name": "desktop"}],
+            [bound_observer(name="desktop")],
             "rollup=offline; observers: desktop=offline",
             False,
         ),
         (
             "degraded",
             "warn",
-            [{"name": "desktop", "health": {"ingest_rejection": {}}}],
+            [bound_observer(name="desktop", health={"ingest_rejection": {}})],
             "rollup=degraded; observers: desktop=degraded",
             False,
         ),
@@ -337,13 +342,13 @@ def test_capture_health_check_maps_every_rollup_status(doctor, monkeypatch):
 def test_lockstep_stale_stamps_warn_on_capture_health_only(doctor, monkeypatch):
     now = DOCTOR_NOW_MS
     stale_stamp = now - (7 * HOUR_MS)
-    observer = {
-        "name": "desktop",
-        "last_seen": stale_stamp,
-        "last_segment_received_at": stale_stamp,
-        "enabled": True,
-        "stats": {},
-    }
+    observer = bound_observer(
+        name="desktop",
+        last_seen=stale_stamp,
+        last_segment_received_at=stale_stamp,
+        enabled=True,
+        stats={},
+    )
     monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
     # doctor.now_ms is the clock seam for observer_delivery_stall_check.
     monkeypatch.setattr(doctor, "now_ms", lambda: now)

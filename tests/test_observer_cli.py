@@ -38,6 +38,8 @@ from solstone.think.streams import (
 )
 from solstone.think.utils import iter_segments
 
+_DEFAULT_DEVICE_BINDING = object()
+
 
 @pytest.fixture
 def observer_cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -64,6 +66,7 @@ def _observer(
     last_segment_received_at: object = None,
     last_segment_day: object = None,
     include_last_segment_freshness: bool = True,
+    device_binding: object = _DEFAULT_DEVICE_BINDING,
 ) -> dict:
     record = {
         "key": key,
@@ -77,6 +80,13 @@ def _observer(
     if include_last_segment_freshness:
         record["last_segment_received_at"] = last_segment_received_at
         record["last_segment_day"] = last_segment_day
+    if device_binding is _DEFAULT_DEVICE_BINDING:
+        record["device_binding"] = {
+            "device": "sha256:" + ("a" * 64),
+            "kind": "cert",
+        }
+    elif device_binding is not None:
+        record["device_binding"] = device_binding
     return record
 
 
@@ -639,6 +649,88 @@ def test_cmd_list_json_includes_prefix_and_status(
     assert rows["desktop"]["prefix"] == "abcdefgh"
     assert rows["desktop"]["status"] == "disconnected"
     assert "mode" not in rows["desktop"]
+
+
+def test_unbound_status_surfaces_in_list_and_status(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = 2_000_000_000_000
+    monkeypatch.setattr(observer_cli, "now_ms", lambda: now)
+    assert save_observer(
+        _observer(
+            name="unbound",
+            key="unbound12345678",
+            last_seen=now - 1_000,
+            device_binding=None,
+        )
+    )
+    revoked = _observer(
+        name="revoked",
+        key="revoked12345678",
+        last_seen=now - 1_000,
+        device_binding=None,
+    )
+    revoked["revoked"] = True
+    assert save_observer(revoked)
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=True))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    rows = {row["name"]: row for row in json.loads(captured.out)}
+    assert rows["unbound"]["status"] == "unbound"
+    assert rows["revoked"]["status"] == "revoked"
+
+    rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
+        "unbound"
+    )
+    assert _table_cell(captured.out, _table_row(captured.out, "revoked"), "Status") == (
+        "revoked"
+    )
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="unbound", json_output=True)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out)["status"] == "unbound"
+
+    rc = observer_cli.cmd_status(
+        argparse.Namespace(identifier="unbound", json_output=False)
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "  Status:       unbound\n" in captured.out
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=True))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    assert payload["unbound"] == 1
+    assert payload["revoked"] == 1
+    assert payload["connected"] == 0
+    assert {row["name"]: row["status"] for row in payload["observers"]} == {
+        "unbound": "unbound",
+        "revoked": "revoked",
+    }
+
+    rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "  Unbound:      1\n" in captured.out
+    assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
+        "unbound"
+    )
 
 
 def test_fmt_compact_age_units_and_guards(

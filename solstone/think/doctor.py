@@ -1078,9 +1078,10 @@ def brain_check(args: Args) -> CheckResult:
 def _capture_health_observer_summary(observers: list[dict]) -> str:
     summaries = []
     for observer in observers[:3]:
-        summaries.append(
-            f"{observer.get('name', 'unknown')}={observer.get('status', 'unknown')}"
-        )
+        status = observer.get("status", "unknown")
+        if observer.get("unbound"):
+            status = f"{status} (unbound)"
+        summaries.append(f"{observer.get('name', 'unknown')}={status}")
     if len(observers) > 3:
         summaries.append(f"+{len(observers) - 3} more")
     return ", ".join(summaries) if summaries else "none"
