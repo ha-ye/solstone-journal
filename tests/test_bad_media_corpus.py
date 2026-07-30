@@ -56,6 +56,7 @@ DAY = "20990501"
 STREAM = "default"
 SEGMENT = "120000_300"
 FIXED_NOW = "2026-06-30T12:00:00Z"
+TEST_PL_FINGERPRINT = "sha256:" + ("d" * 64)
 
 
 def _generate_result(text: str, finish_reason: str = "stop") -> dict[str, Any]:
@@ -87,8 +88,19 @@ def observer_env(tmp_path, monkeypatch):
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
         from solstone.convey import create_app
+        from solstone.convey import root as convey_root
+        from solstone.think.link.auth import AuthorizedClients
+        from solstone.think.link.paths import authorized_clients_path
 
         app = create_app(journal=str(journal))
+        authorized = AuthorizedClients(authorized_clients_path())
+        authorized.add(
+            TEST_PL_FINGERPRINT,
+            "bad-media-observer",
+            "instance-1",
+            paired_at="2026-05-20T00:00:00Z",
+        )
+        monkeypatch.setattr(convey_root, "get_authorized_clients", lambda: authorized)
 
         class Env:
             def __init__(self):
@@ -474,7 +486,30 @@ def _create_observer(env, name: str) -> str:
         content_type="application/json",
     )
     assert response.status_code == 200
-    return response.get_json()["key"]
+    key = response.get_json()["key"]
+
+    from solstone.apps.observer.utils import load_observer, save_observer
+
+    observer = load_observer(key)
+    assert observer is not None
+    observer["device_binding"] = {
+        "device": TEST_PL_FINGERPRINT,
+        "kind": "cert",
+    }
+    assert save_observer(observer)
+    return key
+
+
+def _pl_identity():
+    from solstone.convey.secure_listener import ConveyIdentity
+
+    return ConveyIdentity(
+        mode="pl-via-spl",
+        fingerprint=TEST_PL_FINGERPRINT,
+        device_label="bad-media-observer",
+        paired_at="2026-05-20T00:00:00Z",
+        session_id="session-1",
+    )
 
 
 def test_ac1_ingest_drops_zero_byte_keeps_valid_media(observer_env):
@@ -496,6 +531,7 @@ def test_ac1_ingest_drops_zero_byte_keeps_valid_media(observer_env):
                 (io.BytesIO(valid_data), "audio.flac"),
             ],
         },
+        environ_overrides={"pl.identity": _pl_identity()},
     )
 
     assert response.status_code == 200

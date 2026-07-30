@@ -6,18 +6,35 @@ from __future__ import annotations
 import pytest
 from flask import Flask, g
 
+import solstone.convey.root as root_module
+from solstone.apps.observer.routes import OBSERVER_CALLOSUM_SSE_ROUTE
 from solstone.apps.observer.utils import (
     resolve_observer_identity,
     save_observer,
 )
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from solstone.think.utils import now_ms
 
 DL_KEY = "dlkey123456789"
 HEADER_HANDLE = "headerhandle123456789"
 FINGERPRINT = "sha256:" + ("c" * 64)
 OTHER_FINGERPRINT = "sha256:" + ("d" * 64)
+BROWSER_FINGERPRINT = "sha256:" + ("e" * 64)
+
+
+ROUTE_CASES = (
+    ("callosum_sse", "GET", OBSERVER_CALLOSUM_SSE_ROUTE),
+    ("delete_source", "DELETE", "/app/observer/source/screen"),
+    ("ingest_upload", "POST", "/app/observer/ingest"),
+    ("ingest_manifest", "GET", "/app/observer/ingest/manifest"),
+    ("ingest_manifest_day", "GET", "/app/observer/ingest/manifest/20250103"),
+    ("ingest_event", "POST", "/app/observer/ingest/event"),
+    ("ingest_health", "POST", "/app/observer/health"),
+    ("ingest_segments", "GET", "/app/observer/ingest/segments/20250103"),
+)
 
 
 @pytest.fixture
@@ -47,25 +64,97 @@ def _pl_identity(fingerprint: str) -> ConveyIdentity:
     )
 
 
-def _save_observer(handle: str, name: str) -> None:
-    assert save_observer(
-        {
-            "key": handle,
-            "name": name,
-            "created_at": now_ms(),
-            "enabled": True,
-            "stats": {
-                "segments_received": 0,
-                "bytes_received": 0,
-            },
-        }
+def _save_observer(
+    handle: str,
+    name: str,
+    *,
+    device_binding: dict[str, str] | None = None,
+) -> None:
+    record = {
+        "key": handle,
+        "name": name,
+        "created_at": now_ms(),
+        "enabled": True,
+        "stats": {
+            "segments_received": 0,
+            "bytes_received": 0,
+        },
+    }
+    if device_binding is not None:
+        record["device_binding"] = device_binding
+    assert save_observer(record)
+
+
+def _authorize_cert(fingerprint: str = FINGERPRINT) -> None:
+    AuthorizedClients(authorized_clients_path()).add(
+        fingerprint,
+        "observer",
+        "instance-1",
     )
 
 
+def _save_cert_observer(
+    handle: str,
+    name: str,
+    *,
+    fingerprint: str = FINGERPRINT,
+) -> None:
+    _authorize_cert(fingerprint)
+    _save_observer(
+        handle,
+        name,
+        device_binding={"device": fingerprint, "kind": "cert"},
+    )
+
+
+def _authorize_browser(
+    *,
+    fingerprint: str = BROWSER_FINGERPRINT,
+    observer_handle: str = HEADER_HANDLE,
+) -> None:
+    AuthorizedClients(authorized_clients_path()).add_browser(
+        fingerprint=fingerprint,
+        device_label="browser",
+        instance_id="instance-1",
+        pubkey_spki="30aa",
+        observer_handle=observer_handle,
+    )
+
+
+def _route_response(client, route_case, handle: str, *, identity=None):
+    _route_name, method, path = route_case
+    kwargs = {"headers": {OBSERVER_HANDLE_HEADER: handle}}
+    if identity is not None:
+        kwargs["environ_overrides"] = {"pl.identity": identity}
+    if method == "GET":
+        if path == OBSERVER_CALLOSUM_SSE_ROUTE:
+            kwargs["buffered"] = False
+        return client.get(path, **kwargs)
+    if method == "DELETE":
+        return client.delete(path, **kwargs)
+    if path == "/app/observer/ingest/event":
+        kwargs["json"] = {"tract": "observe", "event": "status"}
+    elif path == "/app/observer/health":
+        kwargs["json"] = {"status": "ok"}
+    else:
+        kwargs["data"] = {}
+    return client.post(path, **kwargs)
+
+
+def _assert_route_reason(response, *, status: int, reason_code: str) -> None:
+    try:
+        assert response.status_code == status
+        body = response.get_json()
+        assert body["reason_code"] == reason_code
+    finally:
+        response.close()
+
+
 def test_resolve_dl_success_from_bearer(app_env):
-    _save_observer(DL_KEY, "dl")
+    _save_cert_observer(DL_KEY, "dl")
 
     with app_env.test_request_context(headers={"Authorization": f"Bearer {DL_KEY}"}):
+        g.identity = _pl_identity(FINGERPRINT)
         observer, prefix, error = resolve_observer_identity()
 
     assert error is None
@@ -75,11 +164,12 @@ def test_resolve_dl_success_from_bearer(app_env):
 
 def test_resolve_dl_uses_bearer_key(app_env):
     header_key = "headerkey123456789"
-    _save_observer(header_key, "header")
+    _save_cert_observer(header_key, "header")
 
     with app_env.test_request_context(
         headers={"Authorization": f"Bearer {header_key}"}
     ):
+        g.identity = _pl_identity(FINGERPRINT)
         observer, prefix, error = resolve_observer_identity()
 
     assert error is None
@@ -135,9 +225,10 @@ def test_resolve_dl_disabled(app_env):
 
 
 def test_resolve_handle_success_from_header(app_env):
-    _save_observer(HEADER_HANDLE, "header")
+    _save_cert_observer(HEADER_HANDLE, "header")
 
     with app_env.test_request_context(headers={OBSERVER_HANDLE_HEADER: HEADER_HANDLE}):
+        g.identity = _pl_identity(FINGERPRINT)
         observer, prefix, error = resolve_observer_identity()
 
     assert error is None
@@ -148,11 +239,12 @@ def test_resolve_handle_success_from_header(app_env):
 
 def test_resolve_handle_success_from_bearer(app_env):
     bearer_handle = "bearerhandle123456789"
-    _save_observer(bearer_handle, "bearer")
+    _save_cert_observer(bearer_handle, "bearer")
 
     with app_env.test_request_context(
         headers={"Authorization": f"Bearer {bearer_handle}"}
     ):
+        g.identity = _pl_identity(FINGERPRINT)
         observer, prefix, error = resolve_observer_identity()
 
     assert error is None
@@ -162,7 +254,7 @@ def test_resolve_handle_success_from_bearer(app_env):
 
 
 def test_resolve_header_takes_precedence_over_bearer(app_env):
-    _save_observer("headerfirst123456789", "header-first")
+    _save_cert_observer("headerfirst123456789", "header-first")
     _save_observer("bearersecond123456789", "bearer-second")
 
     with app_env.test_request_context(
@@ -171,6 +263,7 @@ def test_resolve_header_takes_precedence_over_bearer(app_env):
             "Authorization": "Bearer bearersecond123456789",
         }
     ):
+        g.identity = _pl_identity(FINGERPRINT)
         observer, prefix, error = resolve_observer_identity()
 
     assert error is None
@@ -191,7 +284,7 @@ def test_resolve_pl_phone_without_handle_is_auth_required(app_env):
 
 
 def test_resolve_pl_identity_with_header_uses_named_observer(app_env):
-    _save_observer(HEADER_HANDLE, "named-observer")
+    _save_cert_observer(HEADER_HANDLE, "named-observer")
 
     with app_env.test_request_context(headers={OBSERVER_HANDLE_HEADER: HEADER_HANDLE}):
         g.identity = _pl_identity(FINGERPRINT)
@@ -203,8 +296,8 @@ def test_resolve_pl_identity_with_header_uses_named_observer(app_env):
     assert prefix == HEADER_HANDLE[:8]
 
 
-def test_resolve_handle_is_independent_of_pl_fingerprint(app_env):
-    _save_observer(HEADER_HANDLE, "stable-observer")
+def test_resolve_bound_cert_requires_matching_pl_fingerprint(app_env):
+    _save_cert_observer(HEADER_HANDLE, "stable-observer")
 
     with app_env.test_request_context(headers={OBSERVER_HANDLE_HEADER: HEADER_HANDLE}):
         g.identity = _pl_identity(FINGERPRINT)
@@ -214,8 +307,78 @@ def test_resolve_handle_is_independent_of_pl_fingerprint(app_env):
         observer_again, prefix_again, error_again = resolve_observer_identity()
 
     assert error is None
-    assert error_again is None
+    payload, status = _error_payload(error_again)
+    assert status == 403
+    assert payload["reason_code"] == "pl_revoked"
     assert observer["name"] == "stable-observer"
-    assert observer_again["name"] == "stable-observer"
+    assert observer_again is None
     assert prefix == HEADER_HANDLE[:8]
-    assert prefix_again == HEADER_HANDLE[:8]
+    assert prefix_again is None
+
+
+@pytest.mark.parametrize(
+    "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
+)
+def test_all_device_routes_refuse_unbound_record(observer_env, route_case):
+    env = observer_env()
+    _save_observer(HEADER_HANDLE, "unbound-observer")
+
+    response = _route_response(env.client, route_case, HEADER_HANDLE)
+
+    _assert_route_reason(response, status=401, reason_code="auth_required")
+
+
+@pytest.mark.parametrize(
+    "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
+)
+def test_all_device_routes_refuse_missing_matching_device_identity(
+    observer_env,
+    route_case,
+    monkeypatch,
+):
+    env = observer_env()
+    _authorize_cert(FINGERPRINT)
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    _save_observer(
+        HEADER_HANDLE,
+        "cert-observer",
+        device_binding={"device": FINGERPRINT, "kind": "cert"},
+    )
+
+    response = _route_response(
+        env.client,
+        route_case,
+        HEADER_HANDLE,
+        identity=_pl_identity(OTHER_FINGERPRINT),
+    )
+
+    _assert_route_reason(response, status=403, reason_code="pl_revoked")
+
+
+@pytest.mark.parametrize(
+    "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
+)
+@pytest.mark.parametrize("mismatch", ("wrong_kind", "wrong_handle"))
+def test_all_device_routes_refuse_browser_kind_or_handle_mismatch(
+    observer_env,
+    route_case,
+    mismatch,
+):
+    env = observer_env()
+    _save_observer(
+        HEADER_HANDLE,
+        "browser-observer",
+        device_binding={"device": BROWSER_FINGERPRINT, "kind": "browser"},
+    )
+    if mismatch == "wrong_kind":
+        _authorize_cert(BROWSER_FINGERPRINT)
+    else:
+        _authorize_browser(observer_handle="other-browser-handle")
+
+    response = _route_response(env.client, route_case, HEADER_HANDLE)
+
+    _assert_route_reason(response, status=403, reason_code="pl_revoked")

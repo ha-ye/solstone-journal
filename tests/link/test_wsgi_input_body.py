@@ -218,7 +218,7 @@ def _observer_key(name: str, *, include_marker: bool = False) -> str:
     return f"{marker}-{digest}"
 
 
-def _save_observer(key: str, stream: str) -> None:
+def _save_observer(key: str, stream: str, fingerprint: str) -> None:
     assert save_observer(
         {
             "key": key,
@@ -229,6 +229,7 @@ def _save_observer(key: str, stream: str) -> None:
             "label": None,
             "version": "test",
             "stream": stream,
+            "device_binding": {"device": fingerprint, "kind": "cert"},
             "created_at": 1_700_000_000_000,
             "last_seen": None,
             "last_segment": None,
@@ -268,7 +269,7 @@ async def _run_mux_ingest(
     fingerprint = "sha256:" + hashlib.sha256(name.encode("utf-8")).hexdigest()
     _authorize_fingerprint(monkeypatch, fingerprint)
     resolved_key = key or _observer_key(name, include_marker=include_credential_marker)
-    _save_observer(resolved_key, fixture.stream)
+    _save_observer(resolved_key, fixture.stream, fingerprint)
 
     emitted: list[dict[str, Any]] = []
     monkeypatch.setattr(

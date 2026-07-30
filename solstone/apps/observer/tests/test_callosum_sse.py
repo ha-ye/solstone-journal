@@ -13,13 +13,20 @@ import pytest
 
 import solstone.apps.observer.routes as routes_module
 import solstone.convey.bridge as convey_bridge
+import solstone.convey.root as root_module
 from solstone.apps.observer.routes import OBSERVER_CALLOSUM_SSE_ROUTE
 from solstone.apps.observer.utils import (
     load_observer,
     save_observer,
 )
+from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
+
+DEVICE_FINGERPRINT = "sha256:" + ("c" * 64)
+BROWSER_FINGERPRINT = "sha256:" + ("b" * 64)
 
 
 @pytest.fixture(autouse=True)
@@ -34,14 +41,60 @@ def clear_sse_subscribers() -> Iterator[None]:
 
 
 def _create_observer(env, name: str = "sse-test") -> tuple[str, str]:
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": name},
-        content_type="application/json",
+    key = f"{name}-key-123456789"
+    assert save_observer(
+        {
+            "key": key,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "device_binding": {"device": BROWSER_FINGERPRINT, "kind": "browser"},
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
     )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    return data["key"], data["prefix"]
+    AuthorizedClients(authorized_clients_path()).add_browser(
+        fingerprint=BROWSER_FINGERPRINT,
+        device_label="sse-browser",
+        instance_id="instance-1",
+        pubkey_spki="30aa",
+        observer_handle=key,
+    )
+    return key, key[:8]
+
+
+def _pl_identity(fingerprint: str = DEVICE_FINGERPRINT) -> ConveyIdentity:
+    return ConveyIdentity(
+        mode="pl-direct",
+        fingerprint=fingerprint,
+        device_label="sse-device",
+        paired_at="2026-07-01T00:00:00Z",
+        session_id=None,
+    )
+
+
+def _authorize_device(fingerprint: str = DEVICE_FINGERPRINT) -> None:
+    AuthorizedClients(authorized_clients_path()).add(
+        fingerprint,
+        "sse-device",
+        "instance-1",
+    )
+
+
+def _create_bound_observer(env, name: str = "sse-bound") -> tuple[str, str]:
+    key = f"{name}-key-123456789"
+    assert save_observer(
+        {
+            "key": key,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "device_binding": {"device": DEVICE_FINGERPRINT, "kind": "cert"},
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
+    )
+    return key, key[:8]
 
 
 def _route() -> str:
@@ -218,6 +271,9 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
     env = observer_env()
     key, _key_prefix = _create_observer(env, "handle-sse")
     monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        routes_module, "_SSE_DEVICE_RECHECK_SECONDS", 0.01, raising=False
+    )
 
     resp = env.client.get(
         _route(),
@@ -237,6 +293,48 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
         data = _parse_sse_data(chunk)
         assert data["reason_code"] == "pl_revoked"
         assert data["detail"] == "Observer revoked"
+    finally:
+        resp.close()
+
+
+def test_busy_sse_closes_when_bound_device_removed(observer_env, monkeypatch):
+    env = observer_env()
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _key_prefix = _create_bound_observer(env, "busy-sse")
+    monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 60)
+    monkeypatch.setattr(
+        routes_module, "_SSE_DEVICE_RECHECK_SECONDS", 0.01, raising=False
+    )
+
+    resp = env.client.get(
+        _route(),
+        headers={OBSERVER_HANDLE_HEADER: key},
+        environ_overrides={"pl.identity": _pl_identity()},
+        buffered=False,
+    )
+    try:
+        assert resp.status_code == 200
+        assert _next_chunk(resp) == ": heartbeat\n\n"
+        AuthorizedClients(authorized_clients_path()).remove(DEVICE_FINGERPRINT)
+        time.sleep(0.02)
+        convey_bridge._broadcast_callosum_event(
+            {"tract": "test", "event": "busy", "ts": 1}
+        )
+
+        chunk = _next_chunk(resp)
+        assert chunk.startswith("event: error\n")
+        data = _parse_sse_data(chunk)
+        assert data["reason_code"] == "pl_revoked"
+
+        observer = load_observer(key)
+        assert observer is not None
+        assert observer.get("revoked") is False
+        assert observer.get("enabled") is True
     finally:
         resp.close()
 

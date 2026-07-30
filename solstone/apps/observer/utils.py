@@ -50,6 +50,10 @@ DISPOSITION_WRITTEN = "written"
 DISPOSITION_ALREADY_HELD = "already_held"
 DISPOSITION_RECEIVED_NOT_WRITTEN = "received_not_written"
 _MEDIA_CONTENT_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+DEVICE_BINDING_FIELD = "device_binding"
+DEVICE_BINDING_KIND_CERT = "cert"
+DEVICE_BINDING_KIND_BROWSER = "browser"
+DEVICE_BINDING_KINDS = {DEVICE_BINDING_KIND_CERT, DEVICE_BINDING_KIND_BROWSER}
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,35 @@ class ObserverIdentityRejection:
     reason: Reason
     detail: str
     attempted_prefix: str | None
+
+
+def _is_sha256_device(value: str) -> bool:
+    if not value.startswith("sha256:"):
+        return False
+    hex_part = value.removeprefix("sha256:")
+    return len(hex_part) == 64 and all(char in "0123456789abcdef" for char in hex_part)
+
+
+def _normalize_device_binding(raw: object) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("device_binding must be an object")
+    device = raw.get("device")
+    kind = raw.get("kind")
+    if not isinstance(device, str) or not _is_sha256_device(device):
+        raise ValueError("device_binding.device must be sha256:<64 lowercase hex>")
+    if kind not in DEVICE_BINDING_KINDS:
+        raise ValueError("device_binding.kind must be cert or browser")
+    return {"device": device, "kind": kind}
+
+
+def observer_device_binding(record: dict[str, Any]) -> dict[str, str] | None:
+    """Return a valid device binding from a loaded observer record, if present."""
+    try:
+        return _normalize_device_binding(record.get(DEVICE_BINDING_FIELD))
+    except ValueError:
+        return None
 
 
 def get_observers_dir(*, ensure_exists: bool = True) -> Path:
@@ -293,10 +326,14 @@ def _validate_observer_record(record: dict[str, Any], path: Path) -> dict | None
         return None
     try:
         prefix = observer_filename_prefix(record)
+        binding = _normalize_device_binding(record.get(DEVICE_BINDING_FIELD))
     except ValueError as exc:
         logger.warning("Skipping invalid observer record %s: %s", path, exc)
         return None
-    return _augment_record(record, prefix)
+    clean = dict(record)
+    if binding is not None:
+        clean[DEVICE_BINDING_FIELD] = binding
+    return _augment_record(clean, prefix)
 
 
 class ObserverRegistry:
@@ -553,6 +590,11 @@ def _rejection_response(rejection: ObserverIdentityRejection) -> tuple[Any, int]
 def _resolve_identity() -> tuple[
     dict | None, str | None, ObserverIdentityRejection | None
 ]:
+    from flask import g
+
+    from solstone.think.link.auth import AuthorizedClients
+    from solstone.think.link.paths import authorized_clients_path
+
     handle = _get_auth_key()
     if not handle:
         return (
@@ -581,6 +623,56 @@ def _resolve_identity() -> tuple[
     rejection = _disabled_observer_rejection(observer)
     if rejection is not None:
         return None, None, rejection
+
+    binding = observer_device_binding(observer)
+    if binding is None:
+        return (
+            None,
+            None,
+            ObserverIdentityRejection(
+                AUTH_REQUIRED,
+                "Observer device binding required",
+                observer["filename_prefix"],
+            ),
+        )
+
+    entry = AuthorizedClients(authorized_clients_path()).get(binding["device"])
+    if entry is None or entry.kind != binding["kind"]:
+        return (
+            None,
+            None,
+            ObserverIdentityRejection(
+                PL_REVOKED,
+                "Paired device revoked",
+                observer["filename_prefix"],
+            ),
+        )
+
+    if binding["kind"] == DEVICE_BINDING_KIND_CERT:
+        identity = getattr(g, "identity", None)
+        if (
+            getattr(identity, "mode", None) not in {"pl-direct", "pl-via-spl"}
+            or getattr(identity, "fingerprint", None) != binding["device"]
+        ):
+            return (
+                None,
+                None,
+                ObserverIdentityRejection(
+                    PL_REVOKED,
+                    "Paired device revoked",
+                    observer["filename_prefix"],
+                ),
+            )
+    elif entry.observer_handle != handle:
+        return (
+            None,
+            None,
+            ObserverIdentityRejection(
+                PL_REVOKED,
+                "Paired device revoked",
+                observer["filename_prefix"],
+            ),
+        )
 
     return observer, observer["filename_prefix"], None
 

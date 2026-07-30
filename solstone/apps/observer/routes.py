@@ -20,6 +20,7 @@ import platform
 import queue
 import re
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,9 @@ from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 from .processing_proof import has_terminal_processing_proof
 from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
+    DEVICE_BINDING_FIELD,
+    DEVICE_BINDING_KIND_BROWSER,
+    DEVICE_BINDING_KIND_CERT,
     DISPOSITION_RECEIVED_NOT_WRITTEN,
     MAX_INGEST_SEGMENT_ATTEMPTS,
     IngestFile,
@@ -88,6 +92,7 @@ from .utils import (
     get_observers_dir,
     list_observers,
     load_history,
+    observer_device_binding,
     observer_filename_prefix,
     pruned_segments,
     record_ingest_rejection,
@@ -117,6 +122,7 @@ KEY_BYTES = 32
 ACTIVE_THRESHOLD_MS = 30_000
 STALE_THRESHOLD_MS = 120_000
 FUTURE_CLOCK_DRIFT_TOLERANCE_MS = 5 * 60 * 1000
+_SSE_DEVICE_RECHECK_SECONDS = 5.0
 
 OBSERVER_STATE_LABELS = {
     "connected": "connected",
@@ -356,45 +362,89 @@ def api_list() -> Any:
 @observer_bp.route(_OBSERVER_CALLOSUM_SSE_RULE, methods=["GET"])
 def callosum_sse() -> Any:
     """Stream Callosum events to an authenticated observer process."""
-    _observer, key_prefix, error = resolve_observer_identity()
+    observer, key_prefix, error = resolve_observer_identity()
     if error is not None:
         return error
 
+    binding = observer_device_binding(observer)
+    bound_device = binding["device"] if binding is not None else ""
+    bound_kind = binding["kind"] if binding is not None else ""
+    observer_handle = observer["key"]
     handle = convey_bridge.register_sse_subscriber(key_prefix)
 
     def current_observer() -> dict | None:
         return ObserverRegistry.singleton().by_prefix(key_prefix)
 
+    def current_observer_rejection() -> tuple[Reason, str] | None:
+        observer_now = current_observer()
+        if not observer_now:
+            return AUTH_REQUIRED, "Authorization required"
+        if observer_now.get("revoked", False):
+            return PL_REVOKED, "Observer revoked"
+        if not observer_now.get("enabled", True):
+            return FEATURE_UNAVAILABLE, "Observer disabled"
+        return None
+
+    def current_device_rejection() -> tuple[Reason, str] | None:
+        entry = AuthorizedClients(authorized_clients_path()).get(bound_device)
+        if entry is None or entry.kind != bound_kind:
+            return PL_REVOKED, "Paired device revoked"
+        if (
+            bound_kind == DEVICE_BINDING_KIND_BROWSER
+            and entry.observer_handle != observer_handle
+        ):
+            return PL_REVOKED, "Paired device revoked"
+        return None
+
+    def current_rejection() -> tuple[Reason, str] | None:
+        return current_observer_rejection() or current_device_rejection()
+
     def generate():
         try:
+            next_heartbeat_at = time.monotonic() + _SSE_HEARTBEAT_SECONDS
+            next_device_check_at = time.monotonic() + _SSE_DEVICE_RECHECK_SECONDS
             yield ": heartbeat\n\n"
             while True:
                 if handle.dropped.is_set():
                     return
+                now = time.monotonic()
+                if now >= next_device_check_at:
+                    rejection = current_rejection()
+                    if rejection is not None:
+                        reason, detail = rejection
+                        yield _sse_error_event(reason, detail=detail)
+                        return
+                    next_device_check_at = now + _SSE_DEVICE_RECHECK_SECONDS
+                timeout = max(
+                    0.0,
+                    min(next_heartbeat_at, next_device_check_at) - time.monotonic(),
+                )
                 try:
-                    serialized_message = handle.queue.get(
-                        timeout=_SSE_HEARTBEAT_SECONDS
-                    )
+                    serialized_message = handle.queue.get(timeout=timeout)
                 except queue.Empty:
-                    observer_now = current_observer()
-                    if not observer_now:
-                        yield _sse_error_event(
-                            AUTH_REQUIRED, detail="Authorization required"
-                        )
-                        return
-                    if observer_now.get("revoked", False):
-                        yield _sse_error_event(PL_REVOKED, detail="Observer revoked")
-                        return
-                    if not observer_now.get("enabled", True):
-                        yield _sse_error_event(
-                            FEATURE_UNAVAILABLE, detail="Observer disabled"
-                        )
-                        return
-                    yield ": heartbeat\n\n"
+                    now = time.monotonic()
+                    if now >= next_device_check_at:
+                        rejection = current_rejection()
+                        if rejection is not None:
+                            reason, detail = rejection
+                            yield _sse_error_event(reason, detail=detail)
+                            return
+                        next_device_check_at = now + _SSE_DEVICE_RECHECK_SECONDS
+                    if now >= next_heartbeat_at:
+                        yield ": heartbeat\n\n"
+                        next_heartbeat_at = now + _SSE_HEARTBEAT_SECONDS
                     continue
 
                 if handle.dropped.is_set():
                     return
+                now = time.monotonic()
+                if now >= next_device_check_at:
+                    rejection = current_rejection()
+                    if rejection is not None:
+                        reason, detail = rejection
+                        yield _sse_error_event(reason, detail=detail)
+                        return
+                    next_device_check_at = now + _SSE_DEVICE_RECHECK_SECONDS
                 yield f"data: {serialized_message}\n\n"
         finally:
             convey_bridge.unregister_sse_subscriber(handle)
@@ -462,30 +512,64 @@ def api_create() -> Any:
 _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
 
 
-def _is_trusted_localhost() -> bool:
-    """Direct-loopback check for observer-local endpoints."""
-    is_localhost = request.remote_addr in ("127.0.0.1", "::1", "localhost")
-    proxy_headers = (
-        request.headers.get("X-Forwarded-For")
-        or request.headers.get("X-Real-IP")
-        or request.headers.get("X-Forwarded-Host")
-    )
-    return is_localhost and not proxy_headers
-
-
-def _is_authorized_pl_identity() -> bool:
-    """Return True when the request arrived through a currently authorized PL."""
+def _authorized_pl_entry():
+    """Return the authorized cert-class PL entry for this request, if any."""
     identity = getattr(g, "identity", None)
     if getattr(identity, "mode", None) not in {"pl-direct", "pl-via-spl"}:
-        return False
+        return None
     fingerprint = getattr(identity, "fingerprint", None)
     if not isinstance(fingerprint, str) or not fingerprint:
-        return False
-    return AuthorizedClients(authorized_clients_path()).is_authorized(fingerprint)
+        return None
+    entry = AuthorizedClients(authorized_clients_path()).get(fingerprint)
+    if entry is None or entry.kind != DEVICE_BINDING_KIND_CERT:
+        return None
+    return entry
 
 
-def _is_trusted_register_caller() -> bool:
-    return _is_trusted_localhost() or _is_authorized_pl_identity()
+def _browser_register_token(data: dict[str, Any]) -> str | None:
+    if data.get("platform") != "browser" or data.get("stream_type") != "browser":
+        return None
+    hostname = data.get("hostname")
+    if not isinstance(hostname, str):
+        return None
+    token = hostname.strip().rsplit("-", 1)[-1]
+    if not re.fullmatch(r"[0-9a-f]{12}", token):
+        return None
+    return token
+
+
+def _pending_browser_entry(data: dict[str, Any]):
+    token = _browser_register_token(data)
+    if token is None:
+        return None
+    matches = [
+        entry
+        for entry in AuthorizedClients(authorized_clients_path()).snapshot()
+        if entry.kind == DEVICE_BINDING_KIND_BROWSER
+        and entry.observer_handle is None
+        and entry.fingerprint.removeprefix("sha256:").startswith(token)
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _device_binding_for_entry(entry) -> dict[str, str]:
+    return {"device": entry.fingerprint, "kind": entry.kind}
+
+
+def _resolve_register_device_binding(data: dict[str, Any]) -> dict[str, str] | None:
+    entry = _authorized_pl_entry()
+    if entry is not None:
+        return _device_binding_for_entry(entry)
+    entry = _pending_browser_entry(data)
+    if entry is not None:
+        return _device_binding_for_entry(entry)
+    return None
+
+
+def _is_trusted_register_caller(data: dict[str, Any]) -> bool:
+    return _resolve_register_device_binding(data) is not None
 
 
 def _register_descriptor(record: dict) -> dict:
@@ -504,20 +588,22 @@ def _register_descriptor(record: dict) -> dict:
 def register() -> Any:
     """Self-register a local or through-link observer and lock stream identity.
 
-    The in-handler guard is the sole gate: direct loopback, or a request that
-    arrived through an authorized PL identity. The route is require_access-exempt
-    so an observer can register before setup completes. Mints the DL handle,
-    locks a stream onto the record, and returns the pinned descriptor response.
+    The in-handler guard is the sole gate: a request must carry an authorized
+    cert-class PL identity or match one pending browser-class ledger entry. The
+    route is require_access-exempt so an observer can register before setup
+    completes. Mints the DL handle, locks a stream onto the record, and returns
+    the pinned descriptor response.
     """
-    # Register guard FIRST — untrusted callers mint nothing.
-    if not _is_trusted_register_caller():
-        return error_response(
-            LOCAL_REQUEST_ONLY,
-            detail="Observer registration requires a direct localhost or paired-link request.",
-        )
-
     parsed = request.get_json(force=True, silent=True)
     data = parsed if isinstance(parsed, dict) else {}
+    device_binding = _resolve_register_device_binding(data)
+
+    # Register guard runs before field-specific validation; untrusted callers mint nothing.
+    if device_binding is None:
+        return error_response(
+            LOCAL_REQUEST_ONLY,
+            detail="Observer registration requires a verified device pairing.",
+        )
 
     for field in _REGISTER_REQUIRED_FIELDS:
         value = data.get(field)
@@ -536,6 +622,11 @@ def register() -> Any:
 
     existing = find_oldest_unrevoked_by_name(stream)
     if existing is not None:
+        if observer_device_binding(existing) != device_binding:
+            return error_response(
+                LOCAL_REQUEST_ONLY,
+                detail="Observer stream is bound to a different device.",
+            )
         # Idempotent re-register: reuse the prior key/record, refresh the
         # mutable descriptor fields, preserve key/created_at/stats/last_seen.
         existing["platform"] = data["platform"].strip()
@@ -571,6 +662,7 @@ def register() -> Any:
         "last_segment_received_at": None,
         "last_segment_day": None,
         "enabled": True,
+        DEVICE_BINDING_FIELD: device_binding,
         "stats": {
             "segments_received": 0,
             "bytes_received": 0,

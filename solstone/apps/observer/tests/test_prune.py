@@ -14,12 +14,15 @@ from solstone.apps.observer.utils import (
     load_history,
     save_observer,
 )
+from solstone.think.link.auth import AuthorizedClients
+from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import read_segment_stream, write_segment_stream
 
 DAY = "20250103"
 STREAM = "field"
 AUDIO = b"observer prune upload bytes"
 KEY = "field-prune-key"
+FINGERPRINT = "sha256:" + ("c" * 64)
 
 
 def _sha(data: bytes) -> str:
@@ -29,10 +32,17 @@ def _sha(data: bytes) -> str:
 
 
 def _observer() -> dict:
+    AuthorizedClients(authorized_clients_path()).add(
+        FINGERPRINT,
+        "prune-device",
+        "instance-1",
+        paired_at="2026-05-20T00:00:00Z",
+    )
     return {
         "key": KEY,
         "name": STREAM,
         "stream": STREAM,
+        "device_binding": {"device": FINGERPRINT, "kind": "cert"},
         "created_at": 1,
         "last_seen": None,
         "enabled": True,

@@ -51,7 +51,13 @@ def _observer_records(journal):
 
 def _register(client, **overrides):
     payload = {**VALID_REGISTER_PAYLOAD, **overrides}
-    return client.post("/app/observer/register", json=payload)
+    _authorize_pl()
+    return client.post(
+        "/app/observer/register",
+        json=payload,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
 
 
 def _pl_identity(fingerprint: str = PL_FINGERPRINT) -> ConveyIdentity:
@@ -76,7 +82,7 @@ def _assert_no_observer_records(journal) -> None:
     assert _observer_paths(journal) == []
 
 
-def test_register_loopback_returns_pinned_response(observer_env):
+def test_register_authorized_pl_returns_pinned_response(observer_env):
     env = observer_env()
 
     resp = _register(env.client)
@@ -91,7 +97,7 @@ def test_register_loopback_returns_pinned_response(observer_env):
     assert data["protocol_version"] == 2
 
 
-def test_register_extension_origin_returns_pinned_response(observer_env):
+def test_register_extension_origin_without_device_proof_mints_nothing(observer_env):
     env = observer_env()
 
     resp = env.client.post(
@@ -103,10 +109,9 @@ def test_register_extension_origin_returns_pinned_response(observer_env):
         },
     )
 
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert set(data) == {"key", "prefix", "name", "ingest_url", "protocol_version"}
-    assert data["name"] == "fedora.tmux"
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "local_request_only"
+    _assert_no_observer_records(env.journal)
 
 
 def test_register_same_stream_twice_reuses_key(observer_env):
@@ -234,8 +239,14 @@ def test_register_skips_revoked_record_and_mints_fresh(observer_env):
 def test_register_requires_descriptor_fields(observer_env, field):
     env = observer_env()
     payload = {**VALID_REGISTER_PAYLOAD, field: " "}
+    _authorize_pl()
 
-    resp = env.client.post("/app/observer/register", json=payload)
+    resp = env.client.post(
+        "/app/observer/register",
+        json=payload,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
 
     assert resp.status_code == 400
     body = resp.get_json()
@@ -311,6 +322,26 @@ def test_register_authorized_pl_identity_from_non_loopback(observer_env):
     records = _observer_records(env.journal)
     assert len(records) == 1
     assert records[0]["stream"] == "fedora.tmux"
+
+
+def test_register_authorized_pl_mints_bound_record(observer_env):
+    env = observer_env()
+    _authorize_pl()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
+
+    assert resp.status_code == 200
+    records = _observer_records(env.journal)
+    assert len(records) == 1
+    assert records[0]["device_binding"] == {
+        "device": PL_FINGERPRINT,
+        "kind": "cert",
+    }
 
 
 def test_register_reuse_over_authorized_pl_path(observer_env):
@@ -435,7 +466,7 @@ def test_registered_observer_segments_legacy_record_uses_locked_stream(observer_
     # fields are ignored.
 
 
-def test_legacy_key_only_observer_still_honors_meta_stream(observer_env):
+def test_unbound_key_only_observer_refuses_meta_stream(observer_env):
     env = observer_env()
     key = "legacy" + ("a" * 58)
     assert save_observer(
@@ -466,10 +497,10 @@ def test_legacy_key_only_observer_still_honors_meta_stream(observer_env):
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 401
+    assert resp.get_json()["reason_code"] == "auth_required"
     expected_file = _day_dir(env) / "foo" / "120000_300" / "audio.flac"
-    assert expected_file.exists()
-    assert expected_file.read_bytes() == test_data
+    assert not expected_file.exists()
 
 
 def test_keyless_manifest_routes_accept_bearer_key(observer_env):
