@@ -3,6 +3,7 @@
 
 import json
 import threading
+import time
 
 from solstone.think.talents import JSONEventWriter
 
@@ -24,6 +25,12 @@ class _CollectingStdout:
         self.chunks: list[str] = []
 
     def write(self, text: str) -> int:
+        # Force a GIL switch between print()'s two writes (payload, then
+        # newline). Without it this double is too fast to ever interleave, so
+        # the concurrency test below passed with the emit lock removed - a gate
+        # that could not fail. Verified both directions: lock removed -> red,
+        # lock present -> green.
+        time.sleep(0)
         self.chunks.append(text)
         return len(text)
 
