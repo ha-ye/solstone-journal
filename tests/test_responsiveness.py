@@ -283,7 +283,7 @@ R11_GARBAGE_INPUTS = [
     ("", True, "empty text is not prose-like"),
     ("  \n\t  ", True, "whitespace-only text is not prose-like"),
     ("[]", True, "parsed JSON array has no leaves"),
-    ("42", True, "parsed JSON scalar is not walked"),
+    ("42", True, "parsed non-string JSON scalar yields no leaves"),
     (
         '{"message": "I cannot finish"',
         False,
@@ -413,6 +413,14 @@ def test_regression_lead_in_only_first_sentence_refusal_is_seen():
     assert verdict.non_responsive is True
     assert verdict.matched_signal == "i cannot"
     assert verdict.empty_corpus is False
+
+
+def test_regression_lead_in_only_leaf_sets_empty_corpus():
+    verdict = responsiveness.classify_output_responsiveness("Sorry.")
+
+    assert verdict.non_responsive is False
+    assert verdict.matched_signal is None
+    assert verdict.empty_corpus is True
 
 
 def test_ac1_module_imports_no_solstone_modules_by_ast():

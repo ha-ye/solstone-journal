@@ -22,8 +22,9 @@ anti-asks keep those files closed.
 
 This module is pure stdlib and never calls a model, since the local-lane grader
 would be the same model that just declined. Prose-likeness is deliberately loose:
-it gates only the empty-corpus flag and never a verdict, so a short token like a
-timestamp being counted as prose is harmless by design.
+it only selects candidate leaves; the empty-corpus flag means no substantive
+opening was evaluated, so a short token like a timestamp being counted as prose
+is harmless by design.
 """
 
 from __future__ import annotations
@@ -34,9 +35,9 @@ from dataclasses import dataclass
 
 NON_RESPONSIVE_REASON_CODE = "non_responsive"
 # Existing diagnostic previews commonly use 100 chars, e.g.
-# solstone/think/detect_transcript.py:212 logs response_text[:100]. A refusal
-# opening needs little context, so this cap leaves room for surrounding signal
-# without approaching full raw-output logging.
+# solstone/think/detect_transcript.py:212 logs response_text[:100]. A 512-char
+# cap keeps the negation opening plus enough following text to distinguish a
+# refusal from a hedge, while staying far below full raw-output logging.
 NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS = 512
 
 # Placeholder copy in constant-first shape: VPX rewords after the copy gate, and
@@ -105,10 +106,12 @@ def classify_output_responsiveness(output: object) -> ResponsivenessVerdict:
         if (normalized := _normalize_text(leaf)) and _is_prose_like(normalized)
     ]
 
+    evaluated_any = False
     for leaf in prose_leaves:
         opening = _first_substantive_opening(leaf)
         if opening is None:
             continue
+        evaluated_any = True
         signal = _matched_negation_head(opening)
         if signal is not None:
             return ResponsivenessVerdict(
@@ -120,7 +123,7 @@ def classify_output_responsiveness(output: object) -> ResponsivenessVerdict:
     return ResponsivenessVerdict(
         non_responsive=False,
         matched_signal=None,
-        empty_corpus=not prose_leaves,
+        empty_corpus=not evaluated_any,
     )
 
 
