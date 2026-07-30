@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use crate::command::{CommandContext, CommandOutput};
 use crate::decode::decode_response;
 use crate::error::{ClientError, SERVICE_DOWN_MESSAGE};
-use crate::json_format::json_pretty_ascii;
+use crate::json_format::{json_pretty_ascii, json_pretty_utf8};
 use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
 
 const REPORT_ONLY: &str = "REPORT ONLY — pass --commit to persist.\n";
@@ -444,6 +444,7 @@ pub fn discover(ctx: CommandContext<'_>) -> CommandOutput {
         Ok(parsed) => parsed,
         Err(error) => return stderr(error),
     };
+    let json_output = parsed.flag("--json");
     let result = match request_json(
         ctx,
         HttpMethod::Post,
@@ -452,47 +453,49 @@ pub fn discover(ctx: CommandContext<'_>) -> CommandOutput {
         None,
     ) {
         Ok(result) => result,
-        Err(error) => return speaker_error(error),
+        Err(error) => return discovery_error(error, json_output),
     };
-    if parsed.flag("--json") {
+    if json_output {
         return stdout_json(&result);
     }
     let clusters = array_field(&result, "clusters");
-    if clusters.is_empty() {
-        return stdout_line("No recurring unknown speakers found.");
-    }
     let mut out = String::new();
-    emit(
-        &mut out,
-        format!("Found {} unknown speaker cluster(s):\n", clusters.len()),
-    );
-    for cluster in clusters {
+    if clusters.is_empty() {
+        emit(&mut out, "No recurring unknown speakers found.");
+    } else {
         emit(
             &mut out,
-            format!(
-                "  Cluster {}: {} samples across {} segments",
-                value_to_string(cluster.get("cluster_id")),
-                value_to_string(cluster.get("size")),
-                value_to_string(cluster.get("segment_count")),
-            ),
+            format!("Found {} unknown speaker cluster(s):\n", clusters.len()),
         );
-        for sample in array_field(cluster, "samples") {
-            let text = string_field(sample, "text").unwrap_or_default();
-            let preview = text.chars().take(60).collect::<String>();
+        for cluster in clusters {
             emit(
                 &mut out,
                 format!(
-                    "    - {}/{}/{} sid={}: {}",
-                    value_to_string(sample.get("day")),
-                    value_to_string(sample.get("stream")),
-                    value_to_string(sample.get("segment_key")),
-                    value_to_string(sample.get("sentence_id")),
-                    preview,
+                    "  Cluster {}: {} samples across {} segments",
+                    value_to_string(cluster.get("cluster_id")),
+                    value_to_string(cluster.get("size")),
+                    value_to_string(cluster.get("segment_count")),
                 ),
             );
+            for sample in array_field(cluster, "samples") {
+                let text = string_field(sample, "text").unwrap_or_default();
+                let preview = text.chars().take(60).collect::<String>();
+                emit(
+                    &mut out,
+                    format!(
+                        "    - {}/{}/{} sid={}: {}",
+                        value_to_string(sample.get("day")),
+                        value_to_string(sample.get("stream")),
+                        value_to_string(sample.get("segment_key")),
+                        value_to_string(sample.get("sentence_id")),
+                        preview,
+                    ),
+                );
+            }
+            emit(&mut out, "");
         }
-        emit(&mut out, "");
     }
+    render_discovery_warnings(&mut out, &result);
     CommandOutput::success(out)
 }
 
@@ -796,7 +799,7 @@ pub fn suggest(ctx: CommandContext<'_>) -> CommandOutput {
         Err(error) => return speaker_error(error),
     };
     if parsed.flag("--json") {
-        return stdout_json(&body.get("items").cloned().unwrap_or(Value::Array(vec![])));
+        return stdout_json(&body);
     }
     stdout_line(string_field(&body, "markdown").unwrap_or_default())
 }
@@ -1309,6 +1312,35 @@ fn speaker_error(error: ClientError) -> CommandOutput {
     }
 }
 
+fn discovery_error(error: ClientError, json_output: bool) -> CommandOutput {
+    if let ClientError::ReasonRejected { payload, .. } = &error
+        && !payload.is_null()
+    {
+        if json_output {
+            return CommandOutput {
+                stdout: String::new(),
+                stderr: format!("{}\n", json_pretty_utf8(payload)),
+                exit: 1,
+            };
+        }
+        let mut err = String::new();
+        emit(&mut err, error.message());
+        if payload
+            .get("retryable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            emit(&mut err, "try again");
+        }
+        return CommandOutput {
+            stdout: String::new(),
+            stderr: err,
+            exit: 1,
+        };
+    }
+    speaker_error(error)
+}
+
 fn speaker_error_preserving_stdout(stdout: String, error: ClientError) -> CommandOutput {
     let stderr = match error {
         ClientError::Unreachable { .. } => format!("{SERVICE_DOWN_MESSAGE}\n"),
@@ -1382,6 +1414,22 @@ fn stderr(value: impl AsRef<str>) -> CommandOutput {
 fn emit(out: &mut String, line: impl AsRef<str>) {
     out.push_str(line.as_ref());
     out.push('\n');
+}
+
+fn render_discovery_warnings(out: &mut String, result: &Value) {
+    for issue in array_field(result, "issues") {
+        let reason_code = string_field(issue, "reason_code").unwrap_or_default();
+        let message = string_field(issue, "message").unwrap_or_default();
+        let count = issue.get("count").and_then(Value::as_i64).unwrap_or(0);
+        if count == 0 {
+            emit(out, format!("Warning: {reason_code}: {message}"));
+        } else {
+            emit(
+                out,
+                format!("Warning: {reason_code}: {message} count={count}"),
+            );
+        }
+    }
 }
 
 fn render_bootstrap_stats(out: &mut String, stats: &Value) {
