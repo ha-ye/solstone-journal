@@ -1836,7 +1836,9 @@ def test_workspace_day_discovery_stale_failure_does_not_hide_newer_success() -> 
     )
 
 
-def test_workspace_overview_discovery_stale_failure_does_not_hide_newer_success() -> None:
+def test_workspace_overview_discovery_stale_failure_does_not_hide_newer_success() -> (
+    None
+):
     _run_workspace_node(
         """
         (async () => {

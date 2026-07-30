@@ -13,9 +13,7 @@ SPEAKER_DISCOVERY_INVALID_EMBEDDINGS = "speaker_discovery_invalid_embeddings"
 SPEAKER_DISCOVERY_INVALID_EMBEDDINGS_MESSAGE = (
     "i skipped some voice samples because they were not usable."
 )
-SPEAKER_DISCOVERY_OWNER_VOICE_UNAVAILABLE = (
-    "speaker_discovery_owner_voice_unavailable"
-)
+SPEAKER_DISCOVERY_OWNER_VOICE_UNAVAILABLE = "speaker_discovery_owner_voice_unavailable"
 SPEAKER_DISCOVERY_OWNER_VOICE_UNAVAILABLE_MESSAGE = (
     "i need your voice set up before looking for new voices."
 )
