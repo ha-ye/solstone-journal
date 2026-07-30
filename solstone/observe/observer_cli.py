@@ -8,6 +8,7 @@ observer registrations. Operates directly on the journal filesystem — no
 dependency on the Convey web server.
 
 Usage:
+    journal observer create [name]           Explain retired manual observer creation
     journal observer list                    List all registered observers
     journal observer rename <old> <new>      Rename an observer
     journal observer revoke <name-or-prefix> Revoke an observer registration
@@ -47,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 # Connected threshold: last_seen within 2 minutes (matches web UI)
 CONNECTED_THRESHOLD_MS = 2 * 60 * 1000
+
+CREATE_RETIRED_MESSAGE = (
+    "journal observer create is retired. observers register themselves over "
+    "a private link.\n"
+    "pair the device instead:  sol call link pair --device-label <name>\n"
+    "if a device was re-paired and its stream is stuck, clear the old record first:\n"
+    "  journal observer revoke <name>\n"
+)
 
 
 def _status_label(observer: dict) -> str:
@@ -162,6 +171,12 @@ def reconcile_observers(*, dry_run: bool) -> list[dict]:
 
 
 # === Subcommands ===
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    """Explain that manual observer creation is retired."""
+    print(CREATE_RETIRED_MESSAGE, file=sys.stderr, end="")
+    return 2
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -541,6 +556,18 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command")
 
+    # create
+    p_create = sub.add_parser("create", help="Explain retired manual observer creation")
+    p_create.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="Name for the observer",
+    )
+    p_create.add_argument(
+        "--json", action="store_true", dest="json_output", help="Output as JSON"
+    )
+
     # list
     sub.add_parser("list", help="List all registered observers")
 
@@ -615,6 +642,9 @@ def main() -> None:
     )
 
     args = setup_cli(parser)
+
+    if args.command == "create":
+        sys.exit(cmd_create(args))
 
     # Keep app helpers aligned with the active CLI journal.
     convey_state.journal_root = get_journal()

@@ -40,6 +40,14 @@ from solstone.think.utils import iter_segments
 
 _DEFAULT_DEVICE_BINDING = object()
 
+CREATE_RETIRED_MESSAGE = (
+    "journal observer create is retired. observers register themselves over "
+    "a private link.\n"
+    "pair the device instead:  sol call link pair --device-label <name>\n"
+    "if a device was re-paired and its stream is stuck, clear the old record first:\n"
+    "  journal observer revoke <name>\n"
+)
+
 
 @pytest.fixture
 def observer_cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -55,6 +63,36 @@ def observer_cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     convey_state.journal_root = ""
     return SimpleNamespace(home=home, journal=journal)
+
+
+def _observer_record_paths(journal: Path) -> list[Path]:
+    return sorted((journal / "apps" / "observer" / "observers").glob("*.json"))
+
+
+def _observer_create_actions(journal: Path) -> list[dict]:
+    actions_dir = journal / "config" / "actions"
+    if not actions_dir.exists():
+        return []
+    actions: list[dict] = []
+    for path in sorted(actions_dir.glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("action") == "observer_create":
+                actions.append(record)
+    return actions
+
+
+def _run_observer_main(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> tuple[int, pytest.CaptureResult[str]]:
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as exc:
+        observer_cli.main()
+    return int(exc.value.code), capsys.readouterr()
 
 
 def _observer(
@@ -418,25 +456,95 @@ def _last_segment_cell(output: str, row: str) -> str:
     return _table_cell(output, row, "Last Segment")
 
 
-def test_create_command_is_retired_by_argparse(
+def test_create_command_refuses_with_pairing_guidance_and_writes_nothing(
     observer_cli_env,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["journal observer", "create", "archon"])
-
-    with pytest.raises(SystemExit) as exc:
-        observer_cli.main()
-
-    captured = capsys.readouterr()
-    assert exc.value.code == 2
-    assert captured.out == ""
-    assert captured.err.encode() == (
-        b"usage: journal observer [-h] [--json] [-v] [-d]\n"
-        b"                        {list,rename,revoke,status,reconcile,prune} ...\n"
-        b"journal observer: error: argument command: invalid choice: 'create' "
-        b"(choose from list, rename, revoke, status, reconcile, prune)\n"
+    code, captured = _run_observer_main(
+        ["journal observer", "create", "archon"],
+        monkeypatch,
+        capsys,
     )
+
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.encode() == CREATE_RETIRED_MESSAGE.encode()
+    assert _observer_record_paths(observer_cli_env.journal) == []
+    assert _observer_create_actions(observer_cli_env.journal) == []
+
+
+def test_create_command_accepts_json_flag_but_keeps_retired_stderr_contract(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, captured = _run_observer_main(
+        ["journal observer", "create", "archon", "--json"],
+        monkeypatch,
+        capsys,
+    )
+
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.encode() == CREATE_RETIRED_MESSAGE.encode()
+    assert _observer_record_paths(observer_cli_env.journal) == []
+    assert _observer_create_actions(observer_cli_env.journal) == []
+
+
+def test_bare_create_command_refuses_without_argparse_dump(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, captured = _run_observer_main(
+        ["journal observer", "create"],
+        monkeypatch,
+        capsys,
+    )
+
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.encode() == CREATE_RETIRED_MESSAGE.encode()
+
+
+def test_create_command_is_listed_in_help(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, captured = _run_observer_main(
+        ["journal observer", "--help"],
+        monkeypatch,
+        capsys,
+    )
+
+    assert code == 0
+    assert "create" in captured.out
+    assert "Explain retired manual observer creation" in captured.out
+    assert captured.err == ""
+
+
+def test_create_command_short_circuits_before_solstone_requirement(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_require_solstone() -> None:
+        raise AssertionError("require_solstone should not be called for create")
+
+    monkeypatch.delenv("SOL_SKIP_SUPERVISOR_CHECK", raising=False)
+    monkeypatch.setattr(observer_cli, "require_solstone", fail_require_solstone)
+
+    code, captured = _run_observer_main(
+        ["journal observer", "create", "archon"],
+        monkeypatch,
+        capsys,
+    )
+
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.encode() == CREATE_RETIRED_MESSAGE.encode()
 
 
 def test_reconcile_collapses_duplicates_oldest_survives(observer_cli_env) -> None:
