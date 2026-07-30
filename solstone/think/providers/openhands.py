@@ -75,6 +75,12 @@ from solstone.think.providers.shared import (
     safe_raw,
     validate_generate_result_strict,
 )
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_OUTPUT_FRAGMENT,
+    NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS,
+    NON_RESPONSIVE_REASON_CODE,
+    classify_output_responsiveness,
+)
 from solstone.think.utils import get_journal, get_project_root, now_ms
 
 LOG = logging.getLogger("solstone.think.providers.openhands")
@@ -1390,6 +1396,18 @@ def _raw_event(event: Any) -> list[dict[str, Any]]:
     return safe_raw([{"type": event.__class__.__name__, "repr": repr(event)}])
 
 
+def _non_responsive_raw_payload(
+    output: str, matched_signal: str | None
+) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {
+        "reason_code": NON_RESPONSIVE_REASON_CODE,
+        "non_responsive_output": output[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS],
+    }
+    if matched_signal is not None:
+        payload["non_responsive_matched_signal"] = matched_signal
+    return safe_raw([payload])
+
+
 def _tool_arguments(event: Any) -> dict[str, Any]:
     tool_call = getattr(event, "tool_call", None)
     raw_arguments = getattr(tool_call, "arguments", None)
@@ -1833,31 +1851,49 @@ async def run_cogitate(
                 raise terminal_error
 
         result = translator.result()
+        non_responsive = False
+        non_responsive_raw: list[dict[str, Any]] | None = None
+        if isinstance(result, str) and result.strip():
+            responsiveness = classify_output_responsiveness(result)
+            if responsiveness.non_responsive:
+                non_responsive = True
+                non_responsive_raw = _non_responsive_raw_payload(
+                    result[:NON_RESPONSIVE_RAW_OUTPUT_CAP_CHARS],
+                    responsiveness.matched_signal,
+                )
+                result = None
         usage = _usage_delta(usage_start, llm)
         if wall_clock_exceeded:
             has_partial = bool(result and result.strip())
-            error_text = (
-                "wall_clock_exceeded: cogitate run exceeded its wall-clock "
-                "deadline and was force-finished with a partial result preserved"
-                if has_partial
-                else "wall_clock_exceeded: cogitate run exceeded its wall-clock "
-                "deadline and was force-finished before emitting a final result"
-            )
+            if non_responsive:
+                error_text = (
+                    "wall_clock_exceeded: cogitate run exceeded its wall-clock "
+                    f"deadline after producing {NON_RESPONSIVE_OUTPUT_FRAGMENT}"
+                )
+            else:
+                error_text = (
+                    "wall_clock_exceeded: cogitate run exceeded its wall-clock "
+                    "deadline and was force-finished with a partial result preserved"
+                    if has_partial
+                    else "wall_clock_exceeded: cogitate run exceeded its wall-clock "
+                    "deadline and was force-finished before emitting a final result"
+                )
             conversation.close()
-            callback.emit(
-                {
-                    "event": "error",
-                    "error": error_text,
-                    "reason_code": "wall_clock_exceeded",
-                    "provider": provider,
-                    "result": result,
-                    "usage": usage,
-                    "terminal": True,
-                    "cli_session_id": str(conversation_id),
-                    "ts": now_ms(),
-                }
-            )
-            return result
+            error_event: dict[str, Any] = {
+                "event": "error",
+                "error": error_text,
+                "reason_code": "wall_clock_exceeded",
+                "provider": provider,
+                "result": result,
+                "usage": usage,
+                "terminal": True,
+                "cli_session_id": str(conversation_id),
+                "ts": now_ms(),
+            }
+            if non_responsive_raw is not None:
+                error_event["raw"] = non_responsive_raw
+            callback.emit(error_event)
+            return None if non_responsive else result
         if translator._cost_force_stopped or translator.max_turns_exhausted:
             reason_code = (
                 "token_budget_exceeded"
@@ -1865,7 +1901,18 @@ async def run_cogitate(
                 else "max_turns_exhausted"
             )
             has_partial = bool(result and result.strip())
-            if reason_code == "token_budget_exceeded":
+            if non_responsive:
+                if reason_code == "token_budget_exceeded":
+                    error_text = (
+                        "token_budget_exceeded: cogitate run reached its per-run "
+                        f"resource budget after producing {NON_RESPONSIVE_OUTPUT_FRAGMENT}"
+                    )
+                else:
+                    error_text = (
+                        "max_turns_exhausted: cogitate run reached its turn budget "
+                        f"after producing {NON_RESPONSIVE_OUTPUT_FRAGMENT}"
+                    )
+            elif reason_code == "token_budget_exceeded":
                 error_text = (
                     "token_budget_exceeded: cogitate run reached its per-run "
                     "resource budget and was force-finished with a partial result "
@@ -1884,45 +1931,71 @@ async def run_cogitate(
                     "and was force-finished before emitting a final result"
                 )
             conversation.close()
-            callback.emit(
-                {
-                    "event": "error",
-                    "error": error_text,
-                    "reason_code": reason_code,
-                    "provider": provider,
-                    "result": result,
-                    "usage": usage,
-                    "terminal": True,
-                    "cli_session_id": str(conversation_id),
-                    "ts": now_ms(),
-                }
-            )
-            return result
+            error_event = {
+                "event": "error",
+                "error": error_text,
+                "reason_code": reason_code,
+                "provider": provider,
+                "result": result,
+                "usage": usage,
+                "terminal": True,
+                "cli_session_id": str(conversation_id),
+                "ts": now_ms(),
+            }
+            if non_responsive_raw is not None:
+                error_event["raw"] = non_responsive_raw
+            callback.emit(error_event)
+            return None if non_responsive else result
         execution_status = _conversation_execution_status(conversation)
         if execution_status in {"stuck", "paused"}:
             has_partial = bool(result and result.strip())
-            error_text = (
-                "agent_stuck: cogitate run was interrupted/stuck with a partial "
-                "result preserved"
-                if has_partial
-                else "agent_stuck: cogitate run was interrupted/stuck before "
-                "emitting a final result"
-            )
+            if non_responsive:
+                error_text = (
+                    "agent_stuck: cogitate run was interrupted/stuck after producing "
+                    f"{NON_RESPONSIVE_OUTPUT_FRAGMENT}"
+                )
+            else:
+                error_text = (
+                    "agent_stuck: cogitate run was interrupted/stuck with a partial "
+                    "result preserved"
+                    if has_partial
+                    else "agent_stuck: cogitate run was interrupted/stuck before "
+                    "emitting a final result"
+                )
             conversation.close()
+            error_event = {
+                "event": "error",
+                "error": error_text,
+                "reason_code": "agent_stuck",
+                "provider": provider,
+                "result": result,
+                "usage": usage,
+                "terminal": True,
+                "cli_session_id": str(conversation_id),
+                "ts": now_ms(),
+            }
+            if non_responsive_raw is not None:
+                error_event["raw"] = non_responsive_raw
+            callback.emit(error_event)
+            return None if non_responsive else result
+        if non_responsive:
             callback.emit(
                 {
                     "event": "error",
-                    "error": error_text,
-                    "reason_code": "agent_stuck",
+                    "error": (
+                        f"{NON_RESPONSIVE_REASON_CODE}: cogitate run produced "
+                        f"{NON_RESPONSIVE_OUTPUT_FRAGMENT}"
+                    ),
+                    "reason_code": NON_RESPONSIVE_REASON_CODE,
                     "provider": provider,
-                    "result": result,
                     "usage": usage,
                     "terminal": True,
                     "cli_session_id": str(conversation_id),
                     "ts": now_ms(),
+                    "raw": non_responsive_raw,
                 }
             )
-            return result
+            return None
         if wants_emit_final and not (result and result.strip()):
             callback.emit(
                 {

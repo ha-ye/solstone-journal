@@ -20,6 +20,10 @@ from solstone.think.cogitate_policy import (
 from solstone.think.providers import openhands
 from solstone.think.providers.local_admission import LocalAdmissionTimeout
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_OUTPUT_FRAGMENT,
+    NON_RESPONSIVE_REASON_CODE,
+)
 from solstone.think.talent import get_talent, get_talent_configs
 from tests.openhands_fakes import _REGISTERED_TOOLS, install_fake_openhands
 
@@ -689,6 +693,56 @@ def test_run_cogitate_emits_finish_when_emit_final_has_content(
     ] == ["finish"]
 
 
+def test_run_cogitate_non_responsive_finish_emits_terminal_error(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    refusal = "I cannot describe this screen."
+
+    async def emit_final_with_usage(conversation):
+        _seed_usage(conversation)
+        for callback in conversation.callbacks:
+            callback(_emit_final_action(fake_openhands, refusal))
+
+    fake_openhands.Conversation.arun_impl = emit_final_with_usage
+    config = _run_config(monkeypatch, tmp_path, output_path=str(tmp_path / "out.md"))
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result is None
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["usage"]["total_tokens"] > 0
+    assert NON_RESPONSIVE_OUTPUT_FRAGMENT in error_events[0]["error"]
+    assert error_events[0]["raw"][0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert error_events[0]["raw"][0]["non_responsive_output"] == refusal
+    assert [event for event in events if event["event"] == "finish"] == []
+
+
+def test_run_cogitate_non_responsive_does_not_write_output_path(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    _install_emit_final_arun(fake_openhands, "I cannot describe this screen.")
+    output_path = tmp_path / "out.md"
+    config = _run_config(monkeypatch, tmp_path, output_path=str(output_path))
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result is None
+    assert not output_path.exists()
+    assert [event for event in events if event["event"] == "finish"] == []
+    assert [event for event in events if event["event"] == "error"][0][
+        "reason_code"
+    ] == NON_RESPONSIVE_REASON_CODE
+
+
 def test_run_cogitate_daily_no_output_finishes_when_emit_final_has_content(
     fake_openhands,
     monkeypatch,
@@ -862,6 +916,42 @@ def test_run_cogitate_force_stop_emits_token_budget_exceeded(
     assert error_events[0]["usage"]["total_tokens"] > 0
     assert fake_openhands.Conversation.instances[0].closed is True
     assert [event for event in events if event.get("reason_code") == "no_output"] == []
+    assert [event for event in events if event["event"] == "finish"] == []
+
+
+def test_run_cogitate_non_responsive_budget_exit_keeps_budget_reason(
+    fake_openhands,
+    fixed_time,
+    monkeypatch,
+    tmp_path,
+):
+    refusal = "I cannot describe this screen."
+
+    async def hit_cost_cap_with_refusal(conversation):
+        _seed_usage(conversation)
+        conversation.agent.llm.metrics.accumulated_cost = DEFAULT_RUN_COST_CAP_USD
+        for callback in conversation.callbacks:
+            callback(_agent_message(fake_openhands, refusal))
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c1"))
+        for callback in conversation.callbacks:
+            callback(_sol_action(fake_openhands, "c2"))
+
+    fake_openhands.Conversation.arun_impl = hit_cost_cap_with_refusal
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    result = asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert result is None
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "token_budget_exceeded"
+    assert error_events[0]["terminal"] is True
+    assert error_events[0]["result"] is None
+    assert error_events[0]["raw"][0]["reason_code"] == NON_RESPONSIVE_REASON_CODE
+    assert error_events[0]["raw"][0]["non_responsive_output"] == refusal
+    assert NON_RESPONSIVE_OUTPUT_FRAGMENT in error_events[0]["error"]
     assert [event for event in events if event["event"] == "finish"] == []
 
 

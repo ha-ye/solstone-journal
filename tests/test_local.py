@@ -23,6 +23,7 @@ from solstone.think.models import (
     get_model_provider,
 )
 from solstone.think.providers.artifact_proof import ReadinessOutcome
+from solstone.think.responsiveness import NON_RESPONSIVE_REASON_CODE
 from solstone.think.schema_prep import SCHEMA_TRUNCATE_KEY
 from solstone.think.talents import TalentHookError
 
@@ -3571,6 +3572,46 @@ def test_run_cogitate_byo_acquires_permit_and_records_no_telemetry(monkeypatch):
     assert records == []
     with local_admission.acquire_local_slot(1, 0.1) as permit:
         assert permit.slot_index == 0
+
+
+def test_run_cogitate_local_delegated_non_responsive_single_event(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    terminal_event = {
+        "event": "error",
+        "error": "non-responsive output",
+        "reason_code": NON_RESPONSIVE_REASON_CODE,
+        "provider": "local",
+        "terminal": True,
+        "raw": [{"reason_code": NON_RESPONSIVE_REASON_CODE}],
+    }
+
+    async def fake_cogitate(*_args, on_event=None, slot_lease=None, **_kwargs):
+        assert slot_lease is not None
+        on_event(terminal_event)
+        return None
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fake_cogitate,
+    )
+    events: list[dict] = []
+
+    result = asyncio.run(
+        provider.run_cogitate(
+            {"model": LOCAL_MODEL, "timeout_seconds": 1},
+            on_event=events.append,
+        )
+    )
+
+    assert result is None
+    assert events == [terminal_event]
 
 
 def test_run_cogitate_byo_keeps_permit_for_non_sol_work(monkeypatch):
