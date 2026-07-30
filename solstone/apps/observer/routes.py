@@ -568,10 +568,6 @@ def _resolve_register_device_binding(data: dict[str, Any]) -> dict[str, str] | N
     return None
 
 
-def _is_trusted_register_caller(data: dict[str, Any]) -> bool:
-    return _resolve_register_device_binding(data) is not None
-
-
 def _register_descriptor(record: dict) -> dict:
     """Build the pinned register/ingest response body from a saved record."""
     key = record["key"]
