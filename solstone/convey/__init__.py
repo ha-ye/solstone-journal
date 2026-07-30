@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -12,9 +13,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from flask import Flask
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "create_app",
     "emit",
+    "install_api_error_handlers",
 ]
 
 
@@ -51,6 +55,41 @@ def install_identity_stamper(app: Flask) -> None:
         )
 
 
+def install_api_error_handlers(app: Flask) -> None:
+    """Guarantee JSON error envelopes for every API path."""
+    from flask import g, request
+    from werkzeug.exceptions import HTTPException, InternalServerError
+
+    from solstone.think.utils import CorruptConfigError
+
+    from .reasons import CORRUPT_CONFIG, HTTP_ERROR, INTERNAL_ERROR
+    from .utils import error_response
+
+    def _is_api_request() -> bool:
+        return "api" in request.path.strip("/").split("/")
+
+    @app.errorhandler(CorruptConfigError)
+    def _handle_corrupt_config(exc: CorruptConfigError):
+        return error_response(CORRUPT_CONFIG, detail=str(exc))
+
+    @app.errorhandler(HTTPException)
+    def _handle_http_exception(exc: HTTPException):
+        if not _is_api_request():
+            return exc
+
+        if isinstance(exc, InternalServerError) and exc.original_exception is not None:
+            original = exc.original_exception
+            logger.error(
+                "unhandled API exception request_id=%s path=%s",
+                getattr(g, "request_id", ""),
+                request.path,
+                exc_info=(type(original), original, original.__traceback__),
+            )
+            return error_response(INTERNAL_ERROR)
+
+        return error_response(HTTP_ERROR, status=exc.code or HTTP_ERROR.status)
+
+
 def create_app(journal: str = "") -> Flask:
     """Create and configure the Convey Flask application."""
     from flask import Flask
@@ -82,14 +121,7 @@ def create_app(journal: str = "") -> Flask:
         static_folder=os.path.join(os.path.dirname(__file__), "static"),
     )
 
-    from solstone.think.utils import CorruptConfigError
-
-    from .reasons import CORRUPT_CONFIG
-    from .utils import error_response
-
-    @app.errorhandler(CorruptConfigError)
-    def _handle_corrupt_config(exc: CorruptConfigError):
-        return error_response(CORRUPT_CONFIG, detail=str(exc))
+    install_api_error_handlers(app)
 
     # Add apps directory to template search path so apps can have their templates
     # in apps/{name}/workspace.html instead of needing a templates/ subfolder

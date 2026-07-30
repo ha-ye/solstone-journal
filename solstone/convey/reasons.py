@@ -11,6 +11,18 @@ class Reason:
     status: int = 400
 
 
+# request boundary
+HTTP_ERROR = Reason(
+    "http_error",
+    "I couldn't complete that request.",
+    400,
+)
+INTERNAL_ERROR = Reason(
+    "internal_error",
+    "I couldn't complete that request.",
+    500,
+)
+
 # auth
 AUTH_REQUIRED = Reason("auth_required", "I couldn't verify this request.", 401)
 AUTH_KEY_INVALID = Reason("auth_key_invalid", "I couldn't verify that key.", 401)
