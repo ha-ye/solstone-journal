@@ -12,11 +12,17 @@ from datetime import time
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.speakers.discovery import SpeakerDiscoveryKernelError
+from solstone.apps.speakers.issues import (
+    speaker_discovery_failed_suggestion_issue,
+    speaker_suggestion_generator_failed_issue,
+)
 from solstone.think.speaker_keep_separate import name_variant_pair_suppressed
 from solstone.think.speaker_review_candidates import detection_count_for_pair
 from solstone.think.utils import day_dirs, get_journal, iter_segments, segment_parse
 
 logger = logging.getLogger(__name__)
+INCOMPLETE_SUGGESTIONS_HEADER = "some speaker suggestions are incomplete:"
 
 _MEETING_LINE_RE = re.compile(r"^-\s+(\d{2}:\d{2})\s+(.*)")
 _PARTICIPANTS_RE = re.compile(
@@ -360,8 +366,10 @@ def _candidate_pair_review() -> list[dict[str, Any]]:
     return results
 
 
-def suggest_opportunities(limit: int = 5) -> list[dict[str, Any]]:
+def suggest_opportunities(limit: int = 5) -> dict[str, Any]:
     suggestions: list[dict[str, Any]] = []
+    issues: list[dict[str, str]] = []
+    completed_generators = 0
     for generator in [
         _unknown_recurring,
         _import_linkable,
@@ -373,13 +381,46 @@ def suggest_opportunities(limit: int = 5) -> list[dict[str, Any]]:
             break
         try:
             suggestions.extend(generator())
-        except Exception:
+            completed_generators += 1
+        except Exception as exc:
             logger.exception("Suggestion generator %s failed", generator.__name__)
-    return suggestions[:limit]
+            if generator is _unknown_recurring and isinstance(
+                exc, SpeakerDiscoveryKernelError
+            ):
+                issues.append(
+                    speaker_discovery_failed_suggestion_issue(
+                        generator=generator.__name__
+                    )
+                )
+            else:
+                issues.append(
+                    speaker_suggestion_generator_failed_issue(
+                        generator=generator.__name__
+                    )
+                )
+
+    items = suggestions[:limit]
+    if not issues:
+        status = "ok"
+    elif completed_generators:
+        status = "degraded"
+    else:
+        status = "failed"
+    return {
+        "status": status,
+        "items": items,
+        "issues": issues,
+        "markdown": format_suggestions(items, issues=issues),
+    }
 
 
-def format_suggestions(suggestions: list[dict[str, Any]]) -> str:
-    if not suggestions:
+def format_suggestions(
+    suggestions: list[dict[str, Any]],
+    *,
+    issues: list[dict[str, str]] | None = None,
+) -> str:
+    issues = issues or []
+    if not suggestions and not issues:
         return "No speaker curation suggestions found."
 
     lines: list[str] = []
@@ -428,5 +469,12 @@ def format_suggestions(suggestions: list[dict[str, Any]]) -> str:
                 f"{suggestion['medium_or_null_count']} of "
                 f"{suggestion['total_labels']} labels are medium/unresolved"
             )
+
+    if issues:
+        if lines:
+            lines.append("")
+        lines.append(INCOMPLETE_SUGGESTIONS_HEADER)
+        for issue in issues:
+            lines.append(f"- {issue['message']} ({issue['generator']})")
 
     return "\n".join(lines)

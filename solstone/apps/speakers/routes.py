@@ -51,7 +51,9 @@ from solstone.apps.speakers.copy import (
     speaker_copy_payload,
 )
 from solstone.apps.speakers.discovery import (
+    SpeakerDiscoveryKernelError,
     discover_unknown_speakers,
+    discovery_kernel_failure_http_result,
     get_cluster_presence,
     identify_cluster,
     load_discovery_cache,
@@ -86,7 +88,7 @@ from solstone.apps.speakers.owner import (
 )
 from solstone.apps.speakers.quality import get_speaker_quality_status
 from solstone.apps.speakers.status import get_speakers_status
-from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
+from solstone.apps.speakers.suggest import suggest_opportunities
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
 from solstone.convey.date_nav import build_date_nav_index
@@ -105,6 +107,7 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     SPEAKER_ATTRIBUTION_STATE_INVALID,
     SPEAKER_COMMAND_FAILED,
+    SPEAKER_DISCOVERY_FAILED,
     SPEAKER_IDENTIFY_CONFLICT,
     SPEAKER_IDENTIFY_OPERATION_NOT_FOUND,
     SPEAKER_IDENTIFY_RECOVERABLE,
@@ -2363,7 +2366,16 @@ def api_owner_classify() -> Any:
 @speakers_bp.route("/api/discovery/scan", methods=["POST"])
 def api_discovery_scan() -> Any:
     """Scan for recurring unknown speaker clusters."""
-    result = discover_unknown_speakers()
+    try:
+        result = discover_unknown_speakers()
+    except SpeakerDiscoveryKernelError as exc:
+        status, retryable = discovery_kernel_failure_http_result(exc.stage)
+        return error_response(
+            SPEAKER_DISCOVERY_FAILED,
+            status=status,
+            detail="",
+            extra={"retryable": retryable},
+        )
     return jsonify(result)
 
 
@@ -2818,8 +2830,7 @@ def api_cli_suggest() -> Any:
             INVALID_REQUEST_VALUE,
             detail="Invalid limit parameter",
         )
-    items = suggest_opportunities(limit=limit)
-    return jsonify({"items": items, "markdown": format_suggestions(items)})
+    return jsonify(suggest_opportunities(limit=limit))
 
 
 @speakers_bp.route("/api/discovery/identify-cli", methods=["POST"])

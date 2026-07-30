@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from solstone.apps.speakers import suggest as suggest_module
+from solstone.apps.speakers.discovery import SpeakerDiscoveryKernelError
 from solstone.apps.speakers.suggest import (
     _parse_meetings,
     format_suggestions,
@@ -57,7 +59,12 @@ def _write_voiceprints(entity_dir: Path, embeddings: list[np.ndarray]) -> None:
 def test_suggest_empty_journal(speakers_env):
     speakers_env()
 
-    assert suggest_opportunities() == []
+    assert suggest_opportunities() == {
+        "status": "ok",
+        "items": [],
+        "issues": [],
+        "markdown": "No speaker curation suggestions found.",
+    }
 
 
 def test_suggest_low_confidence_review(speakers_env):
@@ -77,8 +84,12 @@ def test_suggest_low_confidence_review(speakers_env):
             )
         env.create_speaker_labels("20240101", segment_key, labels)
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert set(result) == {"status", "items", "issues", "markdown"}
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     low_conf = [item for item in results if item["type"] == "low_confidence_review"]
     assert len(low_conf) == 2
     for suggestion in low_conf:
@@ -113,8 +124,11 @@ def test_suggest_low_confidence_below_threshold(speakers_env):
             ],
         )
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     assert all(item["type"] != "low_confidence_review" for item in results)
 
 
@@ -128,8 +142,11 @@ def test_suggest_name_variant(speakers_env):
     _write_voiceprints(alice_dir, [base, similar])
     _write_voiceprints(alice_test_dir, [similar, base])
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     suggestion = next(item for item in results if item["type"] == "name_variant")
     assert suggestion["source"] == {"id": "alice", "name": "Alice"}
     assert suggestion["target"] == {"id": "alice_test", "name": "Alice Test"}
@@ -154,8 +171,11 @@ def test_suggest_name_variant_respects_keep_separate(speakers_env):
         detection_count=1,
     )
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     assert all(item["type"] != "name_variant" for item in results)
 
 
@@ -175,7 +195,8 @@ def test_suggest_speaker_candidate_pair_and_formats_it(speakers_env):
         target_samples=[],
     )
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
     suggestion = next(
         item for item in results if item["type"] == "speaker_candidate_pair"
     )
@@ -197,8 +218,11 @@ def test_suggest_import_linkable(speakers_env):
         "# Meetings\n\n- 10:00 Strategy Call with Romeo and Juliet\n",
     )
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     suggestion = next(item for item in results if item["type"] == "import_linkable")
     assert suggestion["entity_id"] == "romeo_montague"
     assert suggestion["name"] == "Romeo Montague"
@@ -216,8 +240,11 @@ def test_suggest_import_linkable_with_voiceprint_excluded(speakers_env):
         "# Meetings\n\n- 10:00 Strategy Call with Romeo and Juliet\n",
     )
 
-    results = suggest_opportunities()
+    result = suggest_opportunities()
+    results = result["items"]
 
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     assert all(
         not (
             item["type"] == "import_linkable" and item["entity_id"] == "romeo_montague"
@@ -255,8 +282,12 @@ def test_suggest_limit(speakers_env):
             ],
         )
 
-    results = suggest_opportunities(limit=1)
+    result = suggest_opportunities(limit=1)
+    results = result["items"]
 
+    assert set(result) == {"status", "items", "issues", "markdown"}
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     assert len(results) == 1
 
 
@@ -289,8 +320,12 @@ def test_suggest_priority_order(speakers_env):
             ],
         )
 
-    results = suggest_opportunities(limit=3)
+    result = suggest_opportunities(limit=3)
+    results = result["items"]
 
+    assert set(result) == {"status", "items", "issues", "markdown"}
+    assert result["status"] == "ok"
+    assert result["issues"] == []
     assert [item["type"] for item in results] == [
         "import_linkable",
         "name_variant",
@@ -342,3 +377,128 @@ def test_parse_meetings_missing_file(tmp_path):
 
 def test_format_suggestions_empty():
     assert format_suggestions([]) == "No speaker curation suggestions found."
+
+
+def test_suggest_partial_generator_failure_with_empty_success_is_degraded(
+    speakers_env,
+    monkeypatch,
+    caplog,
+):
+    speakers_env()
+
+    def fail_discovery():
+        raise RuntimeError("first generator failed")
+
+    def empty_generator():
+        return []
+
+    monkeypatch.setattr(suggest_module, "_discovery_helpers", lambda: fail_discovery)
+    monkeypatch.setattr(suggest_module, "_import_linkable", empty_generator)
+    monkeypatch.setattr(suggest_module, "_name_variant", empty_generator)
+    monkeypatch.setattr(suggest_module, "_candidate_pair_review", empty_generator)
+    monkeypatch.setattr(suggest_module, "_low_confidence_review", empty_generator)
+    caplog.set_level("ERROR")
+
+    result = suggest_opportunities()
+
+    assert result == {
+        "status": "degraded",
+        "items": [],
+        "issues": [
+            {
+                "reason_code": "speaker_suggestion_generator_failed",
+                "generator": "_unknown_recurring",
+                "message": "i couldn't finish part of the speaker suggestions.",
+            }
+        ],
+        "markdown": (
+            "some speaker suggestions are incomplete:\n"
+            "- i couldn't finish part of the speaker suggestions. (_unknown_recurring)"
+        ),
+    }
+    assert "Suggestion generator _unknown_recurring failed" in caplog.text
+
+
+def test_suggest_unknown_recurring_kernel_failure_uses_discovery_issue(
+    speakers_env,
+    monkeypatch,
+):
+    speakers_env()
+
+    def fail_discovery():
+        raise SpeakerDiscoveryKernelError(stage="invoke", reason="timeout")
+
+    def empty_generator():
+        return []
+
+    monkeypatch.setattr(suggest_module, "_discovery_helpers", lambda: fail_discovery)
+    monkeypatch.setattr(suggest_module, "_import_linkable", empty_generator)
+    monkeypatch.setattr(suggest_module, "_name_variant", empty_generator)
+    monkeypatch.setattr(suggest_module, "_candidate_pair_review", empty_generator)
+    monkeypatch.setattr(suggest_module, "_low_confidence_review", empty_generator)
+
+    result = suggest_opportunities()
+
+    assert result["status"] == "degraded"
+    assert result["items"] == []
+    assert result["issues"] == [
+        {
+            "reason_code": "speaker_discovery_failed",
+            "generator": "_unknown_recurring",
+            "message": "i couldn't look for new voices right now.",
+        }
+    ]
+    assert result["markdown"] == (
+        "some speaker suggestions are incomplete:\n"
+        "- i couldn't look for new voices right now. (_unknown_recurring)"
+    )
+
+
+def test_suggest_every_invoked_generator_failed_returns_failed(
+    speakers_env,
+    monkeypatch,
+):
+    speakers_env()
+
+    def fail_generator(name: str):
+        def fail():
+            raise RuntimeError(f"{name} failed")
+
+        fail.__name__ = name
+        return fail
+
+    for name in (
+        "_unknown_recurring",
+        "_import_linkable",
+        "_name_variant",
+        "_candidate_pair_review",
+        "_low_confidence_review",
+    ):
+        monkeypatch.setattr(suggest_module, name, fail_generator(name))
+
+    result = suggest_opportunities()
+
+    assert result["status"] == "failed"
+    assert result["items"] == []
+    assert result["issues"] == [
+        {
+            "reason_code": "speaker_suggestion_generator_failed",
+            "generator": name,
+            "message": "i couldn't finish part of the speaker suggestions.",
+        }
+        for name in (
+            "_unknown_recurring",
+            "_import_linkable",
+            "_name_variant",
+            "_candidate_pair_review",
+            "_low_confidence_review",
+        )
+    ]
+    assert result["markdown"] == (
+        "some speaker suggestions are incomplete:\n"
+        "- i couldn't finish part of the speaker suggestions. (_unknown_recurring)\n"
+        "- i couldn't finish part of the speaker suggestions. (_import_linkable)\n"
+        "- i couldn't finish part of the speaker suggestions. (_name_variant)\n"
+        "- i couldn't finish part of the speaker suggestions. (_candidate_pair_review)\n"
+        "- i couldn't finish part of the speaker suggestions. (_low_confidence_review)"
+    )

@@ -161,7 +161,7 @@ def test_run_discovery_scan_noops_without_owner(speakers_env, monkeypatch):
     monkeypatch.setattr(
         speakers_maintenance,
         "discover_unknown_speakers",
-        lambda: calls.append(True) or {"clusters": []},
+        lambda: calls.append(True) or {"status": "ok", "clusters": [], "issues": []},
     )
 
     assert run_discovery_scan([]) == 0
@@ -212,6 +212,40 @@ def test_run_discovery_scan_returns_two_on_kernel_failure(
 
     assert run_discovery_scan([]) == 2
     assert "stage=response reason=schema-mismatch" in caplog.text
+
+
+def test_run_discovery_scan_logs_degraded_issue_and_keeps_zero_exit(
+    speakers_env,
+    monkeypatch,
+    caplog,
+):
+    from solstone.apps.speakers import maintenance as speakers_maintenance
+
+    env = speakers_env()
+    owner_dir = env.create_entity("Self Person", is_principal=True)
+    (owner_dir / "owner_centroid.npz").write_bytes(b"centroid")
+    monkeypatch.setattr(
+        speakers_maintenance,
+        "discover_unknown_speakers",
+        lambda: {
+            "status": "degraded",
+            "clusters": [],
+            "issues": [
+                {
+                    "reason_code": "speaker_discovery_invalid_embeddings",
+                    "message": "i skipped some voice samples because they were not usable.",
+                    "count": 2,
+                }
+            ],
+        },
+    )
+    caplog.set_level("WARNING")
+
+    assert run_discovery_scan([]) == 0
+    assert (
+        "speaker discovery degraded: "
+        "reason_code=speaker_discovery_invalid_embeddings dropped_count=2"
+    ) in caplog.text
 
 
 def test_run_consolidation_merges_dense_pool(speakers_env):
@@ -347,7 +381,7 @@ def test_run_name_variants_bypasses_suggest_limit_starvation(speakers_env):
     _write_voiceprints(alias_dir, embedding)
     _write_voiceprints(canonical_dir, embedding, offset=10)
 
-    limited = suggest_opportunities(limit=1)
+    limited = suggest_opportunities(limit=1)["items"]
     assert [item["type"] for item in limited] == ["import_linkable"]
 
     assert run_name_variants([]) == 0

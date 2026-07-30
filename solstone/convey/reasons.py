@@ -424,6 +424,10 @@ SPEAKER_COMMAND_FAILED = Reason(
     "I couldn't finish that speaker command.",
     400,
 )
+SPEAKER_DISCOVERY_FAILED = Reason(
+    "speaker_discovery_failed",
+    "i couldn't look for new voices right now.",
+)
 SPEAKER_IDENTIFY_RECOVERABLE = Reason(
     "speaker_identify_recoverable",
     "I couldn't finish that speaker identify operation, but it can be retried.",

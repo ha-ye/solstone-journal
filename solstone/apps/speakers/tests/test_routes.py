@@ -1703,7 +1703,11 @@ def test_api_suggest_filters_keep_separate_name_variant(speakers_env):
     response = client.get("/app/speakers/api/suggest")
 
     assert response.status_code == 200
-    assert all(item["type"] != "name_variant" for item in response.get_json()["items"])
+    body = response.get_json()
+    assert set(body) == {"status", "items", "issues", "markdown"}
+    assert body["status"] == "ok"
+    assert body["issues"] == []
+    assert all(item["type"] != "name_variant" for item in body["items"])
 
 
 def test_workspace_discovery_renders_who_is_this_triggers_without_freeform_create():
@@ -1956,6 +1960,116 @@ def test_discovery_cache_route_reads_visible_cached_clusters_without_mutating(
     assert payload["clusters"][0]["size"] == 1
     assert payload["clusters"][0]["segment_count"] == 1
     assert _changed_paths(before, after) == set()
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_status", "retryable"),
+    [
+        ("invoke", 503, True),
+        ("response", 500, False),
+        ("parse", 500, False),
+        ("request", 500, False),
+        ("payload", 500, False),
+        ("helper-owned-stage", 500, False),
+    ],
+)
+def test_discovery_scan_kernel_errors_return_total_public_error_contract(
+    speakers_env,
+    monkeypatch,
+    stage,
+    expected_status,
+    retryable,
+):
+    from solstone.apps.speakers import routes
+    from solstone.apps.speakers.discovery import SpeakerDiscoveryKernelError
+
+    env = speakers_env()
+
+    def fail_scan():
+        raise SpeakerDiscoveryKernelError(
+            stage=stage,
+            reason="helper-owned-reason",
+            native_exit_code=9,
+        )
+
+    monkeypatch.setattr(routes, "discover_unknown_speakers", fail_scan)
+    client = _convey_client(env.journal)
+
+    response = client.post("/app/speakers/api/discovery/scan")
+
+    assert response.status_code == expected_status
+    body = response.get_json()
+    assert set(body) == {"error", "reason_code", "detail", "retryable"}
+    assert body["error"] == "i couldn't look for new voices right now."
+    assert body["reason_code"] == "speaker_discovery_failed"
+    assert body["detail"] == ""
+    assert body["retryable"] is retryable
+    body_text = json.dumps(body, sort_keys=True)
+    assert "speaker discovery kernel failed" not in body_text
+    assert "/tmp/" not in body_text
+    assert stage not in body_text
+    assert "helper-owned-reason" not in body_text
+
+
+def test_discovery_scan_kernel_failure_preserves_cached_clusters(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import routes
+    from solstone.apps.speakers.discovery import SpeakerDiscoveryKernelError
+
+    env = speakers_env()
+    _write_discovery_cluster(env, 40, "112500_300")
+    client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
+
+    def fail_scan():
+        raise SpeakerDiscoveryKernelError(stage="response", reason="schema-mismatch")
+
+    monkeypatch.setattr(routes, "discover_unknown_speakers", fail_scan)
+
+    response = client.post("/app/speakers/api/discovery/scan")
+    after = _journal_file_hashes(env.journal)
+    cached = client.get("/app/speakers/api/discovery/cache")
+
+    assert response.status_code == 500
+    assert response.get_json()["reason_code"] == "speaker_discovery_failed"
+    assert _changed_paths(before, after) == set()
+    assert cached.status_code == 200
+    cached_payload = cached.get_json()
+    assert cached_payload["status"] == "ok"
+    assert [cluster["cluster_id"] for cluster in cached_payload["clusters"]] == [40]
+
+
+def test_discovery_scan_owner_voice_unavailable_preserves_cached_clusters(
+    speakers_env,
+):
+    env = speakers_env()
+    _write_discovery_cluster(env, 40, "112500_300")
+    client = _convey_client(env.journal)
+    before = _journal_file_hashes(env.journal)
+
+    response = client.post("/app/speakers/api/discovery/scan")
+    after = _journal_file_hashes(env.journal)
+    cached = client.get("/app/speakers/api/discovery/cache")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "degraded",
+        "clusters": [],
+        "issues": [
+            {
+                "reason_code": "speaker_discovery_owner_voice_unavailable",
+                "message": "i need your voice set up before looking for new voices.",
+                "count": 0,
+            }
+        ],
+    }
+    assert _changed_paths(before, after) == set()
+    assert cached.status_code == 200
+    cached_payload = cached.get_json()
+    assert cached_payload["status"] == "ok"
+    assert [cluster["cluster_id"] for cluster in cached_payload["clusters"]] == [40]
 
 
 def test_resolve_statement_cluster_route_returns_resolution(speakers_env, monkeypatch):

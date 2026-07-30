@@ -83,6 +83,12 @@ def run_discovery_scan(args: list[str]) -> int:
         "speaker discovery refreshed: clusters=%d",
         len(result.get("clusters", [])),
     )
+    for issue in result.get("issues", []):
+        logger.warning(
+            "speaker discovery degraded: reason_code=%s dropped_count=%d",
+            issue.get("reason_code"),
+            int(issue.get("count") or 0),
+        )
     return 0
 
 

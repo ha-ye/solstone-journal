@@ -494,7 +494,17 @@ def test_discover_no_owner_centroid(speakers_env):
 
     result = _discover_with_grouping_double()
 
-    assert result == {"clusters": []}
+    assert result == {
+        "status": "degraded",
+        "clusters": [],
+        "issues": [
+            {
+                "reason_code": "speaker_discovery_owner_voice_unavailable",
+                "message": "i need your voice set up before looking for new voices.",
+                "count": 0,
+            }
+        ],
+    }
 
 
 def test_discover_no_unmatched(speakers_env):
@@ -513,7 +523,7 @@ def test_discover_no_unmatched(speakers_env):
 
     result = _discover_with_grouping_double()
 
-    assert result == {"clusters": []}
+    assert result == {"status": "ok", "clusters": [], "issues": []}
 
 
 def test_discover_clusters_found(speakers_env):
@@ -524,10 +534,45 @@ def test_discover_clusters_found(speakers_env):
 
     result = _discover_with_grouping_double()
 
-    assert len(result["clusters"]) == 1
+    assert result["status"] == "ok"
+    assert result["issues"] == []
+    expected_samples = [
+        {
+            "day": day,
+            "stream": "test",
+            "segment_key": "090000_300",
+            "source": "audio",
+            "sentence_id": 5,
+            "audio_url": f"/app/speakers/api/serve_audio/{day}/test/090000_300/audio.flac",
+            "text": "This is sentence 5.",
+        }
+        for day in ("20240104", "20240103", "20240102")
+    ]
+    assert result["clusters"] == [
+        {
+            "cluster_id": 0,
+            "size": 20,
+            "segment_count": 4,
+            "samples": expected_samples,
+        }
+    ]
     cluster = result["clusters"][0]
+    cache_path = _discovery_cache_path()
+    cache_bytes = cache_path.read_bytes()
+    cache_payload = json.loads(cache_bytes)
+    assert set(cache_payload) == {"version", "clusters"}
+    assert cache_payload["clusters"] == {
+        "0": [
+            _cluster_record(day, "090000_300", sentence_id=sentence_id)
+            for day in ("20240104", "20240103", "20240102", "20240101")
+            for sentence_id in range(5, 0, -1)
+        ]
+    }
+    assert cache_bytes == json.dumps(cache_payload, indent=2).encode("utf-8")
+    assert b'"status"' not in cache_bytes
+    assert b'"issues"' not in cache_bytes
     assert cluster["size"] == 20
-    assert cluster["segment_count"] >= 3
+    assert cluster["segment_count"] == 4
     assert len(cluster["samples"]) == 3
 
 
@@ -579,7 +624,7 @@ def test_discover_filters_attributed(speakers_env):
 
     result = _discover_with_grouping_double()
 
-    assert result == {"clusters": []}
+    assert result == {"status": "ok", "clusters": [], "issues": []}
 
 
 def test_discover_sample_shape_stays_scan_stable(speakers_env):
@@ -938,6 +983,15 @@ def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
 
     result = _discover_with_grouping_double()
 
+    assert set(result) == {"status", "clusters", "issues"}
+    assert result["status"] == "degraded"
+    assert result["issues"] == [
+        {
+            "reason_code": "speaker_discovery_invalid_embeddings",
+            "message": "i skipped some voice samples because they were not usable.",
+            "count": 2,
+        }
+    ]
     assert result["clusters"][0]["size"] == 20
     assert "dropped_invalid_embeddings=2" in caplog.text
     cache = load_discovery_cache()
@@ -948,6 +1002,58 @@ def test_discovery_admission_filter_drops_nonfinite_and_nonunit_rows(
         for member in members
         if member["day"] == "20240101"
     } == {("20240101", sid) for sid in range(1, 6)}
+
+
+def test_discovery_admission_filter_all_rejected_reports_degraded_empty(
+    speakers_env,
+    monkeypatch,
+):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    invalid = np.tile(np.array([[2.0] + [0.0] * 255], dtype=np.float32), (5, 1))
+    env.create_segment("20240101", "090000_300", ["audio"], embeddings=invalid)
+
+    original_helpers = discovery_module._routes_helpers()
+    original_normalize = original_helpers[2]
+
+    def patched_routes_helpers():
+        (
+            load_embeddings_file,
+            load_speaker_labels,
+            _normalize_embedding,
+            scan_segment_embeddings,
+            check_owner_contamination,
+        ) = original_helpers
+
+        def normalize_for_test(emb: np.ndarray) -> np.ndarray | None:
+            if np.isfinite(emb).all() and np.isclose(float(emb[0]), 2.0):
+                return emb.astype(np.float32)
+            return original_normalize(emb)
+
+        return (
+            load_embeddings_file,
+            load_speaker_labels,
+            normalize_for_test,
+            scan_segment_embeddings,
+            check_owner_contamination,
+        )
+
+    monkeypatch.setattr(discovery_module, "_routes_helpers", patched_routes_helpers)
+
+    result = _discover_with_grouping_double()
+
+    assert result == {
+        "status": "degraded",
+        "clusters": [],
+        "issues": [
+            {
+                "reason_code": "speaker_discovery_invalid_embeddings",
+                "message": "i skipped some voice samples because they were not usable.",
+                "count": 5,
+            }
+        ],
+    }
+    assert load_discovery_cache() is None
 
 
 def test_discovery_temp_dirs_are_reaped_by_speakers_analyze_sweeper(

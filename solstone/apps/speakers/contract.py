@@ -214,6 +214,16 @@ OPERATIONS: list[OperationSpec] = [
                 free_form=True,
                 raw_schema=_OPEN_OBJECT,
             ),
+            ResponseSpec(
+                status=503,
+                description="Speaker discovery scan failed.",
+                reason_codes=("speaker_discovery_failed",),
+            ),
+            ResponseSpec(
+                status=500,
+                description="Speaker discovery scan failed.",
+                reason_codes=("speaker_discovery_failed",),
+            ),
         ),
     ),
     OperationSpec(

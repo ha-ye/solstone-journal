@@ -32,6 +32,10 @@ from solstone.apps.speakers.eligibility import (
     principal_name_collision,
     speaker_attach_rejection_reason,
 )
+from solstone.apps.speakers.issues import (
+    invalid_embeddings_issue,
+    owner_voice_unavailable_issue,
+)
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.journal_io import atomic_replace
 from solstone.think.speakers_analyze_installation import (
@@ -99,6 +103,21 @@ class SpeakerDiscoveryKernelError(RuntimeError):
                 self.native_exit_code
             )
         return fields
+
+
+_KERNEL_FAILURE_HTTP_RESULTS: dict[str, tuple[int, bool]] = {
+    "invoke": (503, True),
+    "response": (500, False),
+    "parse": (500, False),
+    "request": (500, False),
+    "payload": (500, False),
+}
+_KERNEL_FAILURE_HTTP_DEFAULT = (500, False)
+
+
+def discovery_kernel_failure_http_result(stage: str) -> tuple[int, bool]:
+    """Return the public HTTP status and retryability for a kernel failure stage."""
+    return _KERNEL_FAILURE_HTTP_RESULTS.get(stage, _KERNEL_FAILURE_HTTP_DEFAULT)
 
 
 def create_discovery_cluster_temp_dir() -> Path:
@@ -444,6 +463,17 @@ def _clear_discovery_cache() -> None:
     _discovery_resolved_path().unlink(missing_ok=True)
 
 
+def _discovery_scan_result(
+    clusters: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "status": "degraded" if issues else "ok",
+        "clusters": clusters,
+        "issues": issues,
+    }
+
+
 def discover_unknown_speakers(
     *,
     helper_locator: DiscoveryHelperLocator = speakers_analyze_path_for_executable,
@@ -464,13 +494,13 @@ def discover_unknown_speakers(
 
     centroid_data = load_owner_centroid()
     if centroid_data is None:
-        _clear_discovery_cache()
-        return {"clusters": []}
+        return _discovery_scan_result([], [owner_voice_unavailable_issue()])
 
     owner_centroid = centroid_data.centroid
     owner_threshold = centroid_data.threshold
     embedding_chunks: list[np.ndarray] = []
     provenance: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
 
     for day in sorted(day_dirs().keys()):
         for segment in scan_segment_embeddings(day):
@@ -521,7 +551,7 @@ def discover_unknown_speakers(
 
     if not embedding_chunks:
         _clear_discovery_cache()
-        return {"clusters": []}
+        return _discovery_scan_result([], [])
 
     embeddings_matrix = np.vstack(embedding_chunks)
     finite_mask = np.isfinite(embeddings_matrix).all(axis=1)
@@ -535,6 +565,7 @@ def discover_unknown_speakers(
             "speaker discovery admission filtered: dropped_invalid_embeddings=%d",
             dropped_count,
         )
+        issues.append(invalid_embeddings_issue(dropped_count))
         embeddings_matrix = embeddings_matrix[admission_mask]
         provenance = [
             row for row, keep in zip(provenance, admission_mask, strict=True) if keep
@@ -553,7 +584,7 @@ def discover_unknown_speakers(
 
     if len(embeddings_matrix) < MIN_CLUSTER_SIZE:
         _clear_discovery_cache()
-        return {"clusters": []}
+        return _discovery_scan_result([], issues)
 
     labels = _cluster_discovery_embeddings_native(
         embeddings_matrix,
@@ -563,7 +594,7 @@ def discover_unknown_speakers(
     )
     if np.all(labels == -1):
         _clear_discovery_cache()
-        return {"clusters": []}
+        return _discovery_scan_result([], issues)
 
     cache_clusters: dict[str, list[dict[str, Any]]] = {}
 
@@ -592,7 +623,7 @@ def discover_unknown_speakers(
 
     if not cache_clusters:
         _clear_discovery_cache()
-        return {"clusters": []}
+        return _discovery_scan_result([], issues)
 
     cache_path = _discovery_cache_path(create=True)
     tmp_path = cache_path.with_suffix(".tmp")
@@ -607,7 +638,10 @@ def discover_unknown_speakers(
         )
     tmp_path.rename(cache_path)
 
-    return _serialize_discovery_clusters(cache_clusters)
+    return _discovery_scan_result(
+        _serialize_discovery_clusters(cache_clusters)["clusters"],
+        issues,
+    )
 
 
 def _conversation_key(
