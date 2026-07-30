@@ -187,6 +187,10 @@ Observer health has three distinct signals:
 - The journal can record an active `health.ingest_rejection` when an upload
   fails the ingest contract. Capture health surfaces an active rejection as
   `degraded`.
+- Observer auth rejections on data-bearing ingest surfaces also emit
+  in-memory rate-limited operational logs: a periodic warning while the
+  rejection burst is live, and one close error with the burst count after it
+  goes quiet.
 
 Missing beacons are not a failure; legacy observers without `health.beacon` use
 normal liveness only. A later valid upload, including a duplicate after it passes
