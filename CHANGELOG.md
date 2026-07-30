@@ -769,7 +769,7 @@ uv tool uninstall solstone && uv tool install solstone-journal && uv tool instal
 
 ### removed
 - `sol <service-cmd>` paths typed by a human now redirect to `journal <cmd>` with a clear error and exit non-zero. Service units still pointing at the old paths self-migrate; nothing on disk breaks.
-- the built-in `sol observer install` command is gone. linux and tmux observers now install from their own published packages: `pipx install solstone-linux` (or `solstone-tmux`), `solstone-linux install-service` (or `solstone-tmux install-service`), then `sol observer create <name>` mints a key you give the observer. the macOS observer continues to come from the signed app bundle at solstone.app/observers.
+- the built-in `sol observer install` command is gone. linux and tmux observers now install from their own published packages: `pipx install solstone-linux` (or `solstone-tmux`), then `solstone-linux install-service` (or `solstone-tmux install-service`) pairs with the running journal. the macOS observer continues to come from the signed app bundle at solstone.app/observers.
 - the bundled per-provider install commands are gone — `sol call settings providers install` now accepts `local` only (cogitate runs out of the box for hosted providers with a key set), and `uninstall`/`disable`/`enable`/`validate-key` are removed entirely. local install continues to work via `sol call settings providers install local`.
 
 ## [0.3.10] — 2026-05-26

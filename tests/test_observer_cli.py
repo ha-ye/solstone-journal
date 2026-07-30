@@ -8,6 +8,7 @@ import inspect
 import json
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -407,178 +408,25 @@ def _last_segment_cell(output: str, row: str) -> str:
     return _table_cell(output, row, "Last Segment")
 
 
-def test_create_observer_record_reuses_existing_without_create_side_effects(
+def test_create_command_is_retired_by_argparse(
     observer_cli_env,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    existing = _observer()
-    assert save_observer(existing)
-    monkeypatch.setattr(
-        observer_cli,
-        "_generate_key",
-        lambda: pytest.fail("reuse must not generate a new key"),
-    )
-    monkeypatch.setattr(
-        observer_cli,
-        "save_observer",
-        lambda _data: pytest.fail("reuse must not save"),
-    )
-    monkeypatch.setattr(
-        observer_cli,
-        "log_app_action",
-        lambda **_kwargs: pytest.fail("reuse must not log observer_create"),
-    )
-
-    record, key, reused = observer_cli.create_observer_record(
-        "archon", reuse_existing=True
-    )
-
-    assert record["key"] == existing["key"]
-    assert record["name"] == existing["name"]
-    assert record["filename_prefix"] == "existing"
-    assert key == "existing-key-abcdef"
-    assert reused is True
-    assert list_observers() == [record]
-
-
-def test_create_observer_record_fresh_create_returns_reused_false_and_logs(
-    observer_cli_env,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    logs = []
-    monkeypatch.setattr(observer_cli, "_generate_key", lambda: "fresh-key-abcdef")
-    monkeypatch.setattr(
-        observer_cli, "log_app_action", lambda **kwargs: logs.append(kwargs)
-    )
-
-    record, key, reused = observer_cli.create_observer_record("archon")
-
-    assert key == "fresh-key-abcdef"
-    assert reused is False
-    assert record["name"] == "archon"
-    assert list_observers()[0]["key"] == "fresh-key-abcdef"
-    assert logs == [
-        {
-            "app": "observer",
-            "facet": None,
-            "action": "observer_create",
-            "params": {"name": "archon", "key_prefix": "fresh-ke"},
-        }
-    ]
-
-
-def test_create_observer_record_duplicate_without_reuse_still_fails(
-    observer_cli_env,
-) -> None:
-    assert save_observer(_observer())
-
-    with pytest.raises(ValueError, match="observer already exists: archon"):
-        observer_cli.create_observer_record("archon")
-
-
-def test_cmd_create_duplicate_without_reuse_exits_one(
-    observer_cli_env,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert save_observer(_observer())
-    args = argparse.Namespace(
-        name="archon",
-        json_output=False,
-        reuse_existing=False,
-    )
+    monkeypatch.setattr(sys, "argv", ["journal observer", "create", "archon"])
 
-    rc = observer_cli.cmd_create(args)
+    with pytest.raises(SystemExit) as exc:
+        observer_cli.main()
 
     captured = capsys.readouterr()
-    assert rc == 1
+    assert exc.value.code == 2
     assert captured.out == ""
-    assert captured.err == "Error: observer 'archon' already exists\n"
-
-
-def test_cmd_create_reuse_existing_json_shape(
-    observer_cli_env,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    existing = _observer()
-    assert save_observer(existing)
-    args = argparse.Namespace(
-        name="archon",
-        json_output=True,
-        reuse_existing=True,
+    assert captured.err.encode() == (
+        b"usage: journal observer [-h] [--json] [-v] [-d]\n"
+        b"                        {list,rename,revoke,status,reconcile,prune} ...\n"
+        b"journal observer: error: argument command: invalid choice: 'create' "
+        b"(choose from list, rename, revoke, status, reconcile, prune)\n"
     )
-
-    rc = observer_cli.cmd_create(args)
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert captured.err == ""
-    assert captured.out == (
-        json.dumps(
-            {
-                "name": "archon",
-                "key": "existing-key-abcdef",
-                "prefix": "existing",
-            }
-        )
-        + "\n"
-    )
-
-
-def test_cmd_create_reuse_existing_human_header(
-    observer_cli_env,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    existing = _observer()
-    assert save_observer(existing)
-    args = argparse.Namespace(
-        name="archon",
-        json_output=False,
-        reuse_existing=True,
-    )
-
-    rc = observer_cli.cmd_create(args)
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert captured.err == ""
-    assert "Reusing existing observer:" in captured.out
-    assert "Observer created:" not in captured.out
-    assert "  api key:     existing-key-abcdef" in captured.out
-
-
-def test_cmd_create_reuse_existing_creates_normally_when_absent(
-    observer_cli_env,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    logs = []
-    monkeypatch.setattr(observer_cli, "_generate_key", lambda: "fresh-key-abcdef")
-    monkeypatch.setattr(
-        observer_cli, "log_app_action", lambda **kwargs: logs.append(kwargs)
-    )
-    args = argparse.Namespace(
-        name="archon",
-        json_output=False,
-        reuse_existing=True,
-    )
-
-    rc = observer_cli.cmd_create(args)
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert captured.err == ""
-    assert "Observer created:" in captured.out
-    assert "Reusing existing observer:" not in captured.out
-    assert "  api key:     fresh-key-abcdef" in captured.out
-    assert list_observers()[0]["key"] == "fresh-key-abcdef"
-    assert logs == [
-        {
-            "app": "observer",
-            "facet": None,
-            "action": "observer_create",
-            "params": {"name": "archon", "key_prefix": "fresh-ke"},
-        }
-    ]
 
 
 def test_reconcile_collapses_duplicates_oldest_survives(observer_cli_env) -> None:

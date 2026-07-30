@@ -117,17 +117,15 @@ your journal needs sol alongside it — sol takes in your day on each device and
 ```bash
 pipx install solstone-linux
 solstone-linux install-service
-journal observer create laptop      # mint a key for this observer
 ```
 
-`solstone-linux install-service` walks you through pointing the observer at the key you just minted. swap `laptop` for any name you'd like to identify this machine by.
+`solstone-linux install-service` walks you through pairing the observer with your running journal. choose any name you'd like to identify this machine by.
 
 **tmux terminal sessions:**
 
 ```bash
 pipx install solstone-tmux
 solstone-tmux install-service
-journal observer create tmux-laptop
 ```
 
 (for observer packages, `uv tool install solstone-tmux` is also fine if you prefer uv.)

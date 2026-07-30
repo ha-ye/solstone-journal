@@ -18,9 +18,6 @@ Observers are independent capture agents that upload segments to solstone via `P
 # List all registered observers
 journal observer list
 
-# Register a new observer
-journal observer create <name>
-
 # Check observer status
 journal observer status <name>
 

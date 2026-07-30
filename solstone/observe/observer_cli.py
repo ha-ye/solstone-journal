@@ -3,12 +3,11 @@
 
 """CLI for observer management.
 
-Provides commands for creating, listing, renaming, revoking, and checking status
-of observer registrations. Operates directly on the journal
-filesystem — no dependency on the Convey web server.
+Provides commands for listing, renaming, revoking, and checking status of
+observer registrations. Operates directly on the journal filesystem — no
+dependency on the Convey web server.
 
 Usage:
-    journal observer create <name>           Create a new observer
     journal observer list                    List all registered observers
     journal observer rename <old> <new>      Rename an observer
     journal observer revoke <name-or-prefix> Revoke an observer registration
@@ -18,11 +17,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import base64
 import datetime
 import json
 import logging
-import secrets
 import sys
 
 import solstone.convey.state as convey_state
@@ -47,16 +44,8 @@ from solstone.think.utils import (
 
 logger = logging.getLogger(__name__)
 
-# Key: 256 bits = 32 bytes, URL-safe base64 (same as web API)
-KEY_BYTES = 32
-
 # Connected threshold: last_seen within 2 minutes (matches web UI)
 CONNECTED_THRESHOLD_MS = 2 * 60 * 1000
-
-
-def _generate_key() -> str:
-    """Generate a URL-safe key for observer authentication."""
-    return base64.urlsafe_b64encode(secrets.token_bytes(KEY_BYTES)).decode().rstrip("=")
 
 
 def _status_label(observer: dict) -> str:
@@ -129,51 +118,6 @@ def _aggregate_stats(records: list[dict]) -> dict:
     return totals
 
 
-def create_observer_record(
-    name: str,
-    *,
-    permit_duplicate_name: bool = False,
-    reuse_existing: bool = False,
-) -> tuple[dict, str, bool]:
-    """Create and save an observer record, returning record, raw key, and reused flag."""
-    existing_active = [
-        observer
-        for observer in list_observers()
-        if observer.get("name") == name and not observer.get("revoked", False)
-    ]
-    if existing_active and reuse_existing:
-        return existing_active[0], existing_active[0]["key"], True
-    if existing_active and not permit_duplicate_name:
-        raise ValueError(f"observer already exists: {name}")
-
-    key = _generate_key()
-    observer_data = {
-        "key": key,
-        "name": name,
-        "created_at": now_ms(),
-        "last_seen": None,
-        "last_segment": None,
-        "last_segment_received_at": None,
-        "last_segment_day": None,
-        "enabled": True,
-        "stats": {
-            "segments_received": 0,
-            "bytes_received": 0,
-        },
-    }
-
-    if not save_observer(observer_data):
-        raise RuntimeError("failed to save observer")
-
-    log_app_action(
-        app="observer",
-        facet=None,
-        action="observer_create",
-        params={"name": name, "key_prefix": key[:8]},
-    )
-    return observer_data, key, False
-
-
 def reconcile_observers(*, dry_run: bool) -> list[dict]:
     """Collapse duplicate unrevoked observer records, oldest survives.
 
@@ -215,33 +159,6 @@ def reconcile_observers(*, dry_run: bool) -> list[dict]:
 
 
 # === Subcommands ===
-
-
-def cmd_create(args: argparse.Namespace) -> int:
-    """Create a new observer registration."""
-    name = args.name
-
-    try:
-        observer_data, key, reused = create_observer_record(
-            name, reuse_existing=args.reuse_existing
-        )
-    except ValueError:
-        print(f"Error: observer '{name}' already exists", file=sys.stderr)
-        return 1
-    except RuntimeError:
-        print("Error: failed to save observer", file=sys.stderr)
-        return 1
-
-    if args.json_output:
-        print(json.dumps({"name": name, "key": key, "prefix": key[:8]}))
-        return 0
-
-    print("Reusing existing observer:" if reused else "Observer created:")
-    print(f"  Name:       {name}")
-    print(f"  Prefix:     {key[:8]}")
-    print("  server url:  (set during server configuration)")
-    print(f"  api key:     {key}")
-    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -617,16 +534,6 @@ def main() -> None:
 
     sub = parser.add_subparsers(dest="command")
 
-    # create
-    p_create = sub.add_parser("create", help="Create a new observer")
-    p_create.add_argument("name", help="Name for the observer")
-    p_create.add_argument(
-        "--reuse-existing",
-        action="store_true",
-        dest="reuse_existing",
-        help="Reuse an active observer with this name instead of failing.",
-    )
-
     # list
     sub.add_parser("list", help="List all registered observers")
 
@@ -712,7 +619,6 @@ def main() -> None:
         sys.exit(1)
 
     handlers = {
-        "create": cmd_create,
         "list": cmd_list,
         "prune": cmd_prune,
         "rename": cmd_rename,
