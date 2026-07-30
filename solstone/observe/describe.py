@@ -59,6 +59,7 @@ from solstone.think.journal_io import install_file
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
 from solstone.think.providers import fanout_policy
+from solstone.think.providers.shared import is_non_retryable_generate_reason
 from solstone.think.utils import (
     day_from_path,
     get_config,
@@ -1067,7 +1068,13 @@ class VideoProcessor:
                         work_key=work_key,
                         batch=batch,
                     )
-                if has_error and req.retry_count < 4:
+                if (
+                    has_error
+                    and req.retry_count < 4
+                    and not is_non_retryable_generate_reason(
+                        getattr(req, "reason_code", None)
+                    )
+                ):
                     req.retry_count += 1
                     total_frames -= 1  # Don't count retries
                     batch.add(req)
@@ -1396,7 +1403,13 @@ class VideoProcessor:
                         work_key=work_key,
                         batch=batch,
                     )
-                if has_error and req.retry_count < 4:
+                if (
+                    has_error
+                    and req.retry_count < 4
+                    and not is_non_retryable_generate_reason(
+                        getattr(req, "reason_code", None)
+                    )
+                ):
                     req.retry_count += 1
                     batch.add(req)
                     logger.info(

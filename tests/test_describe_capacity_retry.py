@@ -7,11 +7,16 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
 
 from solstone.observe import describe as describe_module
+from solstone.think.responsiveness import (
+    NON_RESPONSIVE_OUTPUT_MESSAGE,
+    NON_RESPONSIVE_REASON_CODE,
+)
 
 
 def _video_path(tmp_path: Path) -> Path:
@@ -165,6 +170,50 @@ def _install_fakes(monkeypatch, *, mode: str) -> None:
     monkeypatch.setattr(describe_module, "callosum_send", lambda *args, **kwargs: True)
 
 
+def _install_real_batch_provider(monkeypatch, outcomes: list[dict]) -> SimpleNamespace:
+    import solstone.think.providers as providers_package
+    from solstone.think import batch as batch_module
+    from solstone.think import models
+
+    provider_module = SimpleNamespace(
+        run_agenerate=AsyncMock(side_effect=outcomes),
+    )
+    monkeypatch.setattr(models, "resolve_provider", lambda _interface: ("fake", "m"))
+    monkeypatch.setattr(
+        batch_module, "resolve_provider", lambda _interface: ("fake", "m")
+    )
+    monkeypatch.setattr(
+        providers_package,
+        "get_provider_module",
+        lambda _provider: provider_module,
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *args, **kwargs: True)
+    return provider_module
+
+
+def _non_responsive_result() -> dict:
+    return {
+        "text": "I cannot describe this screen.",
+        "model": "provider-model",
+        "finish_reason": "stop",
+    }
+
+
+def _describe_result(primary: str) -> dict:
+    return {
+        "text": json.dumps(
+            {
+                "visual_description": "A code editor is open.",
+                "primary": primary,
+                "secondary": "none",
+                "overlap": True,
+            }
+        ),
+        "model": "provider-model",
+        "finish_reason": "stop",
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["phase1", "phase3"])
 async def test_capacity_class_describe_errors_retry_and_promote_output(
@@ -229,6 +278,111 @@ async def test_capacity_class_exhausted_frame_with_successful_sibling_marks_fail
     succeeded = next(row for row in rows[1:] if row["frame_id"] == 2)
     assert "error" in failed
     assert succeeded["analysis"]["primary"] == "code"
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_describe_non_responsive_phase1_does_not_retry(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path, [_frame(1, frame_bytes), _frame(2, frame_bytes)], monkeypatch
+    )
+    provider_module = _install_real_batch_provider(
+        monkeypatch,
+        [_non_responsive_result(), _describe_result("code")],
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    assert provider_module.run_agenerate.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_describe_non_responsive_single_frame_decline_preserves_other_frames(
+    tmp_path, monkeypatch
+):
+    from solstone.convey.provider_readiness import is_blocking_reason
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path, [_frame(1, frame_bytes), _frame(2, frame_bytes)], monkeypatch
+    )
+    _install_real_batch_provider(
+        monkeypatch,
+        [_non_responsive_result(), _describe_result("code")],
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    assert is_blocking_reason(NON_RESPONSIVE_REASON_CODE) is False
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    assert rows[0]["_solstone_processing"]["reason_code"] == "analysis_failed"
+    declined = next(row for row in rows[1:] if row["frame_id"] == 1)
+    sibling = next(row for row in rows[1:] if row["frame_id"] == 2)
+    assert NON_RESPONSIVE_OUTPUT_MESSAGE in declined["error"]
+    assert sibling["analysis"]["primary"] == "code"
+    assert "error" not in sibling
+    assert output_path.exists()
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_describe_non_responsive_phase3_does_not_retry_and_does_not_block(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(video_path, [_frame(1, frame_bytes)], monkeypatch)
+    provider_module = _install_real_batch_provider(
+        monkeypatch,
+        [_describe_result("code"), _non_responsive_result()],
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [1],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert provider_module.run_agenerate.await_count == 2
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    row = rows[1]
+    assert row["frame_id"] == 1
+    assert row["enhanced"] is True
+    assert row["content"] == {}
+    assert NON_RESPONSIVE_OUTPUT_MESSAGE in row["error"]
+    assert "retries" not in row["requests"][-1]
     _assert_no_describe_temp(output_path.parent)
 
 

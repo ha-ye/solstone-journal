@@ -4,12 +4,14 @@
 """Tests for the Batch async batch processor."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from solstone.think.batch import Batch, BatchRequest
 from solstone.think.models import GEMINI_FLASH, SchemaValidationError
+from solstone.think.responsiveness import NON_RESPONSIVE_REASON_CODE
 
 
 def _result(text: str = "Response", finish_reason: str = "stop", **extra):
@@ -659,3 +661,51 @@ async def test_batch_full_result_schema_invalid_stays_hard_failure(mock_agenerat
     assert len(results) == 1
     assert results[0].response is None
     assert "schema validation" in results[0].error
+
+
+@pytest.mark.asyncio
+async def test_batch_preserves_non_responsive_exception_reason_code(monkeypatch):
+    import solstone.think.providers as providers_package
+    from solstone.think import batch as batch_module
+    from solstone.think import models
+
+    provider_module = SimpleNamespace(
+        run_agenerate=AsyncMock(
+            return_value={
+                "text": "I cannot describe this screen.",
+                "model": "provider-model",
+                "finish_reason": "stop",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: ("fake", "provider-model"),
+    )
+    monkeypatch.setattr(
+        providers_package,
+        "get_provider_module",
+        lambda _provider: provider_module,
+    )
+    monkeypatch.setattr(
+        batch_module,
+        "resolve_provider",
+        lambda _interface: ("fake", "provider-model"),
+    )
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(
+        contents="Test prompt",
+        context="observe.describe.frame",
+        json_output=True,
+    )
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert results[0].response is None
+    assert results[0].reason_code == NON_RESPONSIVE_REASON_CODE

@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal, Mapping, Optional, Union
 from typing_extensions import Required, TypedDict
 
 from solstone.think.providers import is_cloud_provider
+from solstone.think.responsiveness import NON_RESPONSIVE_REASON_CODE
 from solstone.think.utils import now_ms
 
 # ---------------------------------------------------------------------------
@@ -269,6 +270,17 @@ RUNTIME_REASON_CODES = frozenset(
         "unknown",
     }
 )
+
+
+def is_non_retryable_generate_reason(reason_code: str | None) -> bool:
+    """Return True when retrying the same generate request cannot change outcome.
+
+    Members are failures deterministic for the same request, so another attempt
+    only burns quota. `schema_invalid` is deliberately not a member: the model
+    may produce valid JSON on retry, preserving that high-volume retry path.
+    """
+
+    return reason_code == NON_RESPONSIVE_REASON_CODE
 
 
 PROVIDER_ERROR_TEXT_CAP_CHARS = 4096
@@ -727,6 +739,7 @@ __all__ = [
     "classify_provider_error",
     "exception_chain",
     "is_cloud_model_not_found",
+    "is_non_retryable_generate_reason",
     "mark_cloud_model_request",
     "safe_raw",
 ]
