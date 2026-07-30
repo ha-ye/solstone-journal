@@ -66,6 +66,7 @@
               "file_read_failed",
               "health_report_failed",
               "host_not_allowed",
+              "http_error",
               "identity_busy",
               "identity_not_locked",
               "import_client_id_conflict",
@@ -76,6 +77,7 @@
               "ingest_no_files",
               "ingest_sidecar_conflict",
               "ingest_storage_failed",
+              "internal_error",
               "invalid_config_value",
               "invalid_day",
               "invalid_entity_type",
@@ -111,6 +113,7 @@
               "settings_operation_failed",
               "speaker_attribution_state_invalid",
               "speaker_command_failed",
+              "speaker_discovery_failed",
               "speaker_identify_conflict",
               "speaker_identify_operation_not_found",
               "speaker_identify_recoverable",
@@ -11323,6 +11326,32 @@
               }
             },
             "description": "Speaker command result."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker discovery scan failed.",
+            "x-reason-codes": [
+              "speaker_discovery_failed"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Speaker discovery scan failed.",
+            "x-reason-codes": [
+              "speaker_discovery_failed"
+            ]
           }
         },
         "summary": "Speakers discover",
