@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
+from solstone.apps.observer.utils import load_observer
 from solstone.think.link import browser_pairing
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.browser_pairing import PAIR_LABEL, register_browser
@@ -123,6 +124,12 @@ async def test_browser_pairing_registers_observer_and_returns_attestation(
     assert entry.device_label == "Browser Label"
     assert entry.pubkey_spki == ext_spki.hex()
     assert entry.observer_handle
+    observer = load_observer(entry.observer_handle)
+    assert observer is not None
+    assert observer["device_binding"] == {
+        "device": "sha256:" + _sha256(ext_spki).hex(),
+        "kind": "browser",
+    }
     assert register_payloads[0]["label"] == "Browser Label"
     assert register_payloads[0]["hostname"].startswith("browser-label-")
     assert NonceStore(nonces_path()).consume(s.hex()) is None

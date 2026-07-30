@@ -20,7 +20,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from solstone.apps.observer.prune import run_prune
-from solstone.apps.observer.utils import append_history_record, observer_filename_prefix
+from solstone.apps.observer.utils import (
+    append_history_record,
+    observer_filename_prefix,
+    save_observer,
+)
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import LinkState, authorized_clients_path
@@ -99,6 +103,10 @@ class AdvancingBlobWs(BlobWs):
         raise ConnectionClosed(None, None)
 
 
+def _browser_register_hostname(host: str, sender_fp: bytes) -> str:
+    return f"{host}-{sender_fp.hex()[:12]}"
+
+
 def _setup_browser_receiver(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -124,25 +132,29 @@ def _setup_browser_receiver(
     sender_fp = hashes.Hash(hashes.SHA256())
     sender_fp.update(ext_spki)
     sender_fp_bytes = sender_fp.finalize()
+    sender_fingerprint = "sha256:" + sender_fp_bytes.hex()
+    browser_hostname = _browser_register_hostname(host, sender_fp_bytes)
 
+    store = AuthorizedClients(authorized_clients_path())
+    store.add_browser(
+        fingerprint=sender_fingerprint,
+        device_label=host,
+        instance_id=state.instance_id,
+        pubkey_spki=ext_spki.hex(),
+        observer_handle=None,
+    )
     register = client.post(
         "/app/observer/register",
         json={
             "platform": "browser",
-            "hostname": host,
+            "hostname": browser_hostname,
             "stream_type": "browser",
             "version": "spl-browser-blob-v1",
         },
     )
     assert register.status_code == 200
     observer_handle = register.get_json()["key"]
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint="sha256:" + sender_fp_bytes.hex(),
-        device_label=host,
-        instance_id=state.instance_id,
-        pubkey_spki=ext_spki.hex(),
-        observer_handle=observer_handle,
-    )
+    assert store.attach_observer_handle(sender_fingerprint, observer_handle) is True
 
     responses: list[dict[str, Any]] = []
 
@@ -181,8 +193,9 @@ def _setup_browser_receiver(
         "home_spki": home_key.public_spki_der,
         "ext_private": ext_private,
         "sender_fp_bytes": sender_fp_bytes,
-        "sender_fp": "sha256:" + sender_fp_bytes.hex(),
+        "sender_fp": sender_fingerprint,
         "observer_handle": observer_handle,
+        "observer_stream": f"{browser_hostname}.browser",
         "ingest_post": ingest_post,
         "responses": responses,
     }
@@ -277,6 +290,19 @@ def _append_browser_upload_history(
     )
 
 
+def _save_browser_observer(handle: str, name: str, fingerprint: str) -> None:
+    assert save_observer(
+        {
+            "key": handle,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "device_binding": {"device": fingerprint, "kind": "browser"},
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observer(
     tmp_path: Path,
@@ -301,12 +327,22 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
     sender_fp = hashes.Hash(hashes.SHA256())
     sender_fp.update(ext_spki)
     sender_fp_bytes = sender_fp.finalize()
+    sender_fingerprint = "sha256:" + sender_fp_bytes.hex()
+    browser_hostname = _browser_register_hostname("browserhost", sender_fp_bytes)
 
+    store = AuthorizedClients(authorized_clients_path())
+    store.add_browser(
+        fingerprint=sender_fingerprint,
+        device_label="browserhost",
+        instance_id=state.instance_id,
+        pubkey_spki=ext_spki.hex(),
+        observer_handle=None,
+    )
     register = client.post(
         "/app/observer/register",
         json={
             "platform": "browser",
-            "hostname": "browserhost",
+            "hostname": browser_hostname,
             "stream_type": "browser",
             "version": "spl-browser-blob-v1",
         },
@@ -314,13 +350,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
     assert register.status_code == 200
     observer_handle = register.get_json()["key"]
     handles_seen: list[str] = []
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint="sha256:" + sender_fp_bytes.hex(),
-        device_label="browserhost",
-        instance_id=state.instance_id,
-        pubkey_spki=ext_spki.hex(),
-        observer_handle=observer_handle,
-    )
+    assert store.attach_observer_handle(sender_fingerprint, observer_handle) is True
 
     async def ingest_post(
         day: str,
@@ -374,7 +404,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         journal
         / "chronicle"
         / "20260704"
-        / "browserhost.browser"
+        / f"{browser_hostname}.browser"
         / "120000_300"
         / "browser_browserhost.jsonl"
     )
@@ -396,7 +426,11 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
     assert second_ws.sent[1][22:38] == _ack_tag(second_k_ack, 0x01, second_blob_id)
     assert (
         len(
-            list((journal / "chronicle" / "20260704" / "browserhost.browser").iterdir())
+            list(
+                (
+                    journal / "chronicle" / "20260704" / f"{browser_hostname}.browser"
+                ).iterdir()
+            )
         )
         == 1
     )
@@ -422,15 +456,13 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         journal
         / "chronicle"
         / "20260704"
-        / "browserhost.browser"
+        / f"{browser_hostname}.browser"
         / "120500_300"
         / "browser_browserhost.jsonl"
     ).read_bytes() == second_payload
     assert handles_seen == [observer_handle, observer_handle, observer_handle]
 
-    AuthorizedClients(authorized_clients_path()).remove(
-        "sha256:" + sender_fp_bytes.hex()
-    )
+    AuthorizedClients(authorized_clients_path()).remove(sender_fingerprint)
     rejected_ws, _k_ack, _blob_id = _sealed_blob_ws(
         state.instance_id,
         home_key.public_spki_der,
@@ -456,23 +488,31 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
     late_fingerprint = "sha256:" + late_sender_fp_bytes.hex()
     live_store = blob_receiver._authorized_store()
     assert live_store.get(late_fingerprint) is None
+    late_hostname = _browser_register_hostname("latebrowser", late_sender_fp_bytes)
+    AuthorizedClients(authorized_clients_path()).add_browser(
+        fingerprint=late_fingerprint,
+        device_label="latebrowser",
+        instance_id=state.instance_id,
+        pubkey_spki=late_spki.hex(),
+        observer_handle=None,
+    )
     late_register = client.post(
         "/app/observer/register",
         json={
             "platform": "browser",
-            "hostname": "latebrowser",
+            "hostname": late_hostname,
             "stream_type": "browser",
             "version": "spl-browser-blob-v1",
         },
     )
     assert late_register.status_code == 200
     late_handle = late_register.get_json()["key"]
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint=late_fingerprint,
-        device_label="latebrowser",
-        instance_id=state.instance_id,
-        pubkey_spki=late_spki.hex(),
-        observer_handle=late_handle,
+    assert (
+        AuthorizedClients(authorized_clients_path()).attach_observer_handle(
+            late_fingerprint,
+            late_handle,
+        )
+        is True
     )
     late_ws, late_k_ack, late_blob_id = _sealed_blob_ws(
         state.instance_id,
@@ -492,6 +532,131 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
     assert late_ws.sent[1][0:6] == b"SBA1\x01\x00"
     assert late_ws.sent[1][22:38] == _ack_tag(late_k_ack, 0x00, late_blob_id)
     assert handles_seen[-1] == late_handle
+
+
+@pytest.mark.asyncio
+async def test_browser_blob_refuses_missing_wrong_kind_or_mismatched_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    mark_setup_complete(journal)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    from solstone.convey import create_app
+
+    app = create_app(journal=str(journal))
+    client = app.test_client()
+    state = LinkState.load_or_create()
+    home_key = load_or_generate_upload_key()
+    ext_private = ec.generate_private_key(ec.SECP256R1())
+    ext_spki = ext_private.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    sender_fp = hashes.Hash(hashes.SHA256())
+    sender_fp.update(ext_spki)
+    sender_fp_bytes = sender_fp.finalize()
+    sender_fingerprint = "sha256:" + sender_fp_bytes.hex()
+
+    async def route_ingest_post(
+        day: str,
+        segment: str,
+        host: str,
+        meta: dict[str, Any],
+        files: list[tuple[str, bytes, str]],
+        observer_handle_arg: str,
+    ) -> dict[str, Any]:
+        response = client.post(
+            "/app/observer/ingest",
+            headers={OBSERVER_HANDLE_HEADER: observer_handle_arg},
+            data={
+                "day": day,
+                "segment": segment,
+                "host": host,
+                "platform": "browser",
+                "meta": json.dumps(meta, separators=(",", ":")),
+                "files": [
+                    (io.BytesIO(content), filename)
+                    for filename, content, _content_type in files
+                ],
+            },
+        )
+        return response.get_json()
+
+    missing_ws, _missing_k_ack, _missing_blob_id = _sealed_blob_ws(
+        state.instance_id,
+        home_key.public_spki_der,
+        ext_private,
+        sender_fp_bytes,
+        _browser_payload("missing", 21),
+    )
+    await blob_receiver.receive_blob(
+        BufferedWsReader(missing_ws),
+        missing_ws,
+        ingest_post=route_ingest_post,
+    )
+    assert missing_ws.sent == [b"SBR1\x01\x01"]
+
+    AuthorizedClients(authorized_clients_path()).add(
+        sender_fingerprint,
+        "browserhost",
+        state.instance_id,
+    )
+    wrong_kind_ws, _wrong_kind_k_ack, _wrong_kind_blob_id = _sealed_blob_ws(
+        state.instance_id,
+        home_key.public_spki_der,
+        ext_private,
+        sender_fp_bytes,
+        _browser_payload("wrong-kind", 22),
+        segment="120500_300",
+    )
+    await blob_receiver.receive_blob(
+        BufferedWsReader(wrong_kind_ws),
+        wrong_kind_ws,
+        ingest_post=route_ingest_post,
+    )
+    assert wrong_kind_ws.sent == [b"SBR1\x01\x01"]
+
+    intended_handle = "intended-browser-handle"
+    wrong_handle = "wrong-browser-handle"
+    _save_browser_observer(intended_handle, "intended.browser", sender_fingerprint)
+    _save_browser_observer(
+        wrong_handle,
+        "wrong.browser",
+        "sha256:" + ("f" * 64),
+    )
+    AuthorizedClients(authorized_clients_path()).add_browser(
+        fingerprint=sender_fingerprint,
+        device_label="browserhost",
+        instance_id=state.instance_id,
+        pubkey_spki=ext_spki.hex(),
+        observer_handle=wrong_handle,
+    )
+    mismatched_ws, _mismatched_k_ack, _mismatched_blob_id = _sealed_blob_ws(
+        state.instance_id,
+        home_key.public_spki_der,
+        ext_private,
+        sender_fp_bytes,
+        _browser_payload("mismatch", 23),
+        segment="121000_300",
+    )
+    await blob_receiver.receive_blob(
+        BufferedWsReader(mismatched_ws),
+        mismatched_ws,
+        ingest_post=route_ingest_post,
+    )
+    assert mismatched_ws.sent == [b"SBR1\x01\x00"]
+    assert mismatched_ws.closed is True
+    assert not (
+        journal
+        / "chronicle"
+        / "20260704"
+        / "wrong.browser"
+        / "121000_300"
+        / "browser_browserhost.jsonl"
+    ).exists()
 
 
 @pytest.mark.asyncio
@@ -829,7 +994,7 @@ async def test_lost_ack_retry_resolves_duplicate_via_prune_survivor(
 ) -> None:
     harness = _setup_browser_receiver(tmp_path, monkeypatch)
     day = "20260704"
-    stream = "browserhost.browser"
+    stream = harness["observer_stream"]
     filename = "browser_browserhost.jsonl"
     content = _browser_payload("lost-ack", 17)
     prefix = observer_filename_prefix({"key": harness["observer_handle"]})

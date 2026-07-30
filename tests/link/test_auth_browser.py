@@ -45,6 +45,32 @@ def test_browser_entry_survives_unrelated_cert_round_trip(tmp_path: Path) -> Non
     assert browser_payload["observer_handle"] == "handle123"
 
 
+def test_browser_entry_can_attach_observer_handle_after_pending_add(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+    fingerprint = "sha256:" + "aa" * 32
+
+    pending = store.add_browser(
+        fingerprint=fingerprint,
+        device_label="Browser",
+        instance_id="inst-1",
+        pubkey_spki="30aa",
+        paired_at="2026-07-01T00:00:00Z",
+    )
+
+    assert pending.kind == "browser"
+    assert pending.observer_handle is None
+    payload = json.loads(path.read_text("utf-8"))
+    assert "observer_handle" not in payload[0]
+
+    assert store.attach_observer_handle(fingerprint, "handle123") is True
+    reloaded = AuthorizedClients(path).get(fingerprint)
+    assert reloaded is not None
+    assert reloaded.observer_handle == "handle123"
+
+
 def test_old_cert_entry_defaults_to_cert_kind(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     path.write_text(

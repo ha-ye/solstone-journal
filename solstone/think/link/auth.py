@@ -141,7 +141,7 @@ class AuthorizedClients:
         device_label: str,
         instance_id: str,
         pubkey_spki: str,
-        observer_handle: str,
+        observer_handle: str | None = None,
         paired_at: str | None = None,
         network: str | None = None,
     ) -> ClientEntry:
@@ -166,6 +166,21 @@ class AuthorizedClients:
                 self._write(current)
                 self._entries = current
         return entry
+
+    def attach_observer_handle(self, fingerprint: str, observer_handle: str) -> bool:
+        normalized = observer_handle.strip()
+        if not normalized:
+            raise ValueError("observer_handle must not be empty")
+        with self._lock:
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                existing = current.get(fingerprint)
+                if existing is None or existing.kind != "browser":
+                    return False
+                current[fingerprint] = replace(existing, observer_handle=normalized)
+                self._write(current)
+                self._entries = current
+                return True
 
     def remove(self, fingerprint: str) -> bool:
         with self._lock:

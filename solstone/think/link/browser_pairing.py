@@ -104,18 +104,21 @@ async def register_browser(
         ledger_label = consumed.device_label or device_label
         sender_fp = hashlib.sha256(ext_pub_spki).digest()
         fingerprint = "sha256:" + sender_fp.hex()
+        authorized = AuthorizedClients(authorized_clients_path())
+        authorized.add_browser(
+            fingerprint=fingerprint,
+            device_label=ledger_label,
+            instance_id=state.instance_id,
+            pubkey_spki=ext_pub_spki.hex(),
+            observer_handle=None,
+        )
         observer_handle = await _register_observer(
             register_post or _default_register_post,
             ledger_label,
             sender_fp,
         )
-        AuthorizedClients(authorized_clients_path()).add_browser(
-            fingerprint=fingerprint,
-            device_label=ledger_label,
-            instance_id=state.instance_id,
-            pubkey_spki=ext_pub_spki.hex(),
-            observer_handle=observer_handle,
-        )
+        if not authorized.attach_observer_handle(fingerprint, observer_handle):
+            raise ValueError("browser pair ledger entry unavailable")
         attestation = mint_attestation(ca, state.instance_id, fingerprint)
         reply = seal_base(
             ext_pub_spki,
