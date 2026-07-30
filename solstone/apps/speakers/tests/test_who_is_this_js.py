@@ -382,6 +382,18 @@ function response(payload) {
   };
 }
 
+function apiError(payload, status = 503) {
+  const error = new Error(payload?.error || payload?.message || `Request failed (HTTP ${status})`);
+  error.name = 'ApiError';
+  error.status = status;
+  error.statusText = '';
+  error.serverMessage = payload?.error || payload?.message || error.message;
+  error.reasonCode = payload?.reason_code || null;
+  error.rawDetail = payload?.detail ?? null;
+  error.payload = payload;
+  return error;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -683,6 +695,10 @@ function resolveApi(item, payload) {
   item.resolve(payload);
 }
 
+function rejectApi(item, error) {
+  item.reject(error);
+}
+
 function queueApiResponse(queues, name, url) {
   const item = deferred();
   item.url = url;
@@ -714,6 +730,9 @@ function assertOwnerBannerHidden(document) {
 function speakerCopy() {
   return {
     SPK_ACTION_WHO_IS_THIS: 'who',
+    SPK_ACTION_RETRY: 'try again',
+    SPK_DISCOVERY_ERROR: 'discovery error',
+    SPK_DISCOVERY_DEGRADED_TEMPLATE: 'degraded {count}',
     SPK_GRID_BODY: 'grid',
     SPK_OVERVIEW_TODAY_LINK_LABEL: 'today',
     SPK_OVERVIEW_KNOWN_VOICES_SORTS: ['recent'],
@@ -785,6 +804,85 @@ function reviewPayload(name = '') {
   };
 }
 
+function discoveryCluster(clusterId, name = `Cluster ${clusterId}`) {
+  return {
+    cluster_id: clusterId,
+    suggested_name: name,
+    size: 1,
+    segment_count: 1,
+    samples: [{ text: name }],
+  };
+}
+
+function discoveryOk(clusters) {
+  return { status: 'ok', clusters, issues: [] };
+}
+
+function discoveryDegraded(clusters, count = 2) {
+  return {
+    status: 'degraded',
+    clusters,
+    issues: [{
+      reason_code: 'speaker_discovery_invalid_embeddings',
+      message: 'backend degraded message',
+      count,
+    }],
+  };
+}
+
+function discoveryFailure(message = 'scan failed', retryable = true) {
+  return apiError({
+    error: message,
+    reason_code: 'speaker_discovery_failed',
+    detail: '',
+    retryable,
+  }, retryable ? 503 : 500);
+}
+
+function discoverySurface(document, kind) {
+  return kind === 'overview'
+    ? document.getElementById('spkNewVoicesSection')
+    : document.getElementById('spkDiscoveryBanner');
+}
+
+function discoveryClusterHost(document, kind) {
+  return kind === 'overview'
+    ? document.getElementById('spkDiscoveryClusters')
+    : document.getElementById('spkDiscoveryBanner');
+}
+
+function discoveryNoticeHost(document, kind) {
+  return kind === 'overview'
+    ? document.getElementById('spkOverviewDiscoveryNotice')
+    : document.getElementById('spkDiscoveryBanner');
+}
+
+function discoveryRetryButton(document, kind) {
+  const host = discoveryNoticeHost(document, kind);
+  return host.querySelector(`#${kind === 'overview' ? 'spkOverviewDiscoveryRetry' : 'spkDayDiscoveryRetry'}`);
+}
+
+function assertDiscoveryCluster(document, kind, clusterId) {
+  assert(discoveryClusterHost(document, kind).querySelector(`[data-cluster-id="${clusterId}"]`));
+}
+
+function assertNoDiscoveryCluster(document, kind, clusterId) {
+  assert.strictEqual(discoveryClusterHost(document, kind).querySelector(`[data-cluster-id="${clusterId}"]`), null);
+}
+
+function assertDiscoveryNotice(document, kind, expectedText, expectsRetry = false) {
+  const host = discoveryNoticeHost(document, kind);
+  if (kind === 'overview') assert.strictEqual(host.hidden, false);
+  assert(host.textContent.includes(expectedText));
+  if (expectsRetry) assert(discoveryRetryButton(document, kind));
+}
+
+function assertNoDiscoveryNotice(document, kind, textValue) {
+  const host = discoveryNoticeHost(document, kind);
+  assert(!host.textContent.includes(textValue));
+  assert.strictEqual(discoveryRetryButton(document, kind), null);
+}
+
 function matchedSpeakers(name = '') {
   return {
     matched: name ? [{ entity_name: name, detected_name: name }] : [],
@@ -824,6 +922,7 @@ function makeWorkspaceContext(kind, options = {}) {
         'spkKnownSort',
         'spkNewVoicesSection',
         'spkStatementHandoffNotice',
+        'spkOverviewDiscoveryNotice',
         'spkDiscoveryClusters',
         'spkTodayReview',
         'spkDayGridCard',
@@ -930,14 +1029,16 @@ function makeWorkspaceContext(kind, options = {}) {
     if (url.includes(`/api/speakers/${day}/`)) return queueResponse(queues, 'speakers', url);
     throw new Error(`unexpected fetch ${url}`);
   };
-  window.apiJson = (url) => {
-    apiCalls.push({ url });
+  window.apiJson = (url, options = {}) => {
+    apiCalls.push({ url, options });
     if (url.includes('/api/owner/status')) {
       if (config.deferOwnerStatus) return queueApiResponse(queues, 'ownerStatus', url);
       if (config.ownerStatusError) return Promise.reject(config.ownerStatusError);
       return Promise.resolve(ownerStatus);
     }
     if (url.includes('/api/owner/detect')) return Promise.resolve({});
+    if (url.includes('/api/discovery/cache')) return queueResponse(queues, 'discovery', url).then((r) => r.json());
+    if (url.includes('/api/discovery/scan')) return queueResponse(queues, 'scan', url).then((r) => r.json());
     if (url.includes('/api/review/')) return queueResponse(queues, 'review', url).then((r) => r.json());
     if (url.includes('/api/segments/')) return queueResponse(queues, 'segments', url).then((r) => r.json());
     throw new Error(`unexpected api ${url}`);
@@ -1593,6 +1694,363 @@ def test_workspace_day_full_undo_refreshes_discovery_segments_and_active_review(
           assert.strictEqual(discoveryBanner.querySelector('[data-cluster-id="99"]'), null);
           assert(!document.getElementById('spkSpeakers').innerHTML.includes('Undone Person'));
           assert(!document.getElementById('spkSentences').innerHTML.includes('Undone Person'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_discovery_failure_retry_preserves_cached_clusters() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '7');
+          assert.strictEqual(queues.scan.length, 1);
+
+          rejectApi(queues.scan[0], discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '7');
+          assertDiscoveryNotice(document, 'day', 'discovery error', true);
+
+          document.getElementById('spkDiscoveryBanner').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+          assert.strictEqual(queues.discovery.length, 2);
+          resolveFetch(queues.discovery[1], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '7');
+          assertDiscoveryNotice(document, 'day', 'discovery error', true);
+
+          discoveryRetryButton(document, 'day').click();
+          await flush();
+          await flush();
+          resolveFetch(queues.scan[queues.scan.length - 1], discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+
+          assertNoDiscoveryCluster(document, 'day', '7');
+          assertDiscoveryCluster(document, 'day', '8');
+          assertNoDiscoveryNotice(document, 'day', 'discovery error');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_discovery_failure_retry_preserves_cached_clusters() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assert.strictEqual(queues.scan.length, 1);
+
+          rejectApi(queues.scan[0], discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+
+          document.getElementById('spkDiscoveryClusters').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+          assert.strictEqual(queues.discovery.length, 2);
+          resolveFetch(queues.discovery[1], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+
+          discoveryRetryButton(document, 'overview').click();
+          await flush();
+          await flush();
+          resolveFetch(queues.scan[queues.scan.length - 1], discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+
+          assertNoDiscoveryCluster(document, 'overview', '7');
+          assertDiscoveryCluster(document, 'overview', '8');
+          assertNoDiscoveryNotice(document, 'overview', 'discovery error');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_discovery_stale_failure_does_not_hide_newer_success() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          const staleScan = queues.scan[0];
+          document.getElementById('spkDiscoveryBanner').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[1], discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+          resolveFetch(queues.scan[1], discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '8');
+          assertNoDiscoveryNotice(document, 'day', 'discovery error');
+
+          rejectApi(staleScan, discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '8');
+          assertNoDiscoveryNotice(document, 'day', 'discovery error');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_discovery_stale_failure_does_not_hide_newer_success() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          const staleScan = queues.scan[0];
+          document.getElementById('spkDiscoveryClusters').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+
+          rejectApi(queues.discovery[1], discoveryFailure('cache failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+          discoveryRetryButton(document, 'overview').click();
+          await flush();
+          await flush();
+          resolveFetch(queues.scan[1], discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '8');
+          assertNoDiscoveryNotice(document, 'overview', 'discovery error');
+
+          rejectApi(staleScan, discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '8');
+          assertNoDiscoveryNotice(document, 'overview', 'discovery error');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_discovery_stale_success_does_not_erase_newer_error() -> None:
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('day');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          const staleScan = queues.scan[0];
+          document.getElementById('spkDiscoveryBanner').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+
+          resolveFetch(queues.discovery[1], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          rejectApi(queues.scan[1], discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '7');
+          assertDiscoveryNotice(document, 'day', 'discovery error', true);
+
+          resolveFetch(staleScan, discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'day', '7');
+          assertNoDiscoveryCluster(document, 'day', '8');
+          assertDiscoveryNotice(document, 'day', 'discovery error', true);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_discovery_stale_success_does_not_erase_newer_error() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          const harness = makeWorkspaceContext('overview');
+          const { document, queues, sheets } = harness;
+          await flush();
+          await flush();
+
+          resolveFetch(queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(queues.known[0], { speakers: [] });
+          resolveFetch(queues.discovery[0], discoveryOk([discoveryCluster(7, 'Cluster A')]));
+          await flush();
+          await flush();
+          const staleScan = queues.scan[0];
+          document.getElementById('spkDiscoveryClusters').querySelector('.spk-who-trigger').click();
+          sheets[0].onFullyRestoredUndo().catch(() => false);
+          await flush();
+          await flush();
+
+          rejectApi(queues.discovery[1], discoveryFailure('cache failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+          discoveryRetryButton(document, 'overview').click();
+          await flush();
+          await flush();
+          rejectApi(queues.scan[1], discoveryFailure('scan failed', true));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+
+          resolveFetch(staleScan, discoveryOk([discoveryCluster(8, 'Cluster B')]));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(document, 'overview', '7');
+          assertNoDiscoveryCluster(document, 'overview', '8');
+          assertDiscoveryNotice(document, 'overview', 'discovery error', true);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_day_discovery_degraded_notice_keeps_clusters_and_empty_scan() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          const withCluster = makeWorkspaceContext('day');
+          await flush();
+          await flush();
+          resolveFetch(withCluster.queues.discovery[0], discoveryOk([]));
+          await flush();
+          await flush();
+          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([discoveryCluster(7, 'Cluster A')], 2));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(withCluster.document, 'day', '7');
+          assertDiscoveryNotice(withCluster.document, 'day', 'degraded 2', false);
+          assert.strictEqual(discoveryRetryButton(withCluster.document, 'day'), null);
+
+          const empty = makeWorkspaceContext('day');
+          await flush();
+          await flush();
+          resolveFetch(empty.queues.discovery[0], discoveryOk([]));
+          await flush();
+          await flush();
+          resolveFetch(empty.queues.scan[0], discoveryDegraded([], 3));
+          await flush();
+          await flush();
+          assertDiscoveryNotice(empty.document, 'day', 'degraded 3', false);
+          assert.strictEqual(empty.document.getElementById('spkDiscoveryBanner').style.display, 'block');
+          assertNoDiscoveryCluster(empty.document, 'day', '7');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_workspace_overview_discovery_degraded_notice_keeps_clusters_and_empty_scan() -> (
+    None
+):
+    _run_workspace_node(
+        """
+        (async () => {
+          const withCluster = makeWorkspaceContext('overview');
+          await flush();
+          await flush();
+          resolveFetch(withCluster.queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(withCluster.queues.known[0], { speakers: [] });
+          resolveFetch(withCluster.queues.discovery[0], discoveryOk([]));
+          await flush();
+          await flush();
+          resolveFetch(withCluster.queues.scan[0], discoveryDegraded([discoveryCluster(7, 'Cluster A')], 2));
+          await flush();
+          await flush();
+          assertDiscoveryCluster(withCluster.document, 'overview', '7');
+          assertDiscoveryNotice(withCluster.document, 'overview', 'degraded 2', false);
+          assert.strictEqual(discoveryRetryButton(withCluster.document, 'overview'), null);
+
+          const empty = makeWorkspaceContext('overview');
+          await flush();
+          await flush();
+          resolveFetch(empty.queues.quality[0], {
+            owner_voice: { bootstrap_state: 'ready' },
+            tier_histogram: {},
+            corrections_window_count: 0,
+          });
+          resolveFetch(empty.queues.known[0], { speakers: [] });
+          resolveFetch(empty.queues.discovery[0], discoveryOk([]));
+          await flush();
+          await flush();
+          resolveFetch(empty.queues.scan[0], discoveryDegraded([], 3));
+          await flush();
+          await flush();
+          assertDiscoveryNotice(empty.document, 'overview', 'degraded 3', false);
+          assert.strictEqual(empty.document.getElementById('spkNewVoicesSection').hidden, false);
+          assertNoDiscoveryCluster(empty.document, 'overview', '7');
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )

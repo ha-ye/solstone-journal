@@ -451,6 +451,46 @@
   color: #991b1b;
 }
 
+.spk-discovery-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.spk-discovery-notice-text {
+  display: grid;
+  gap: 4px;
+}
+
+.spk-discovery-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.spk-discovery-retry {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.spk-discovery-retry:hover,
+.spk-discovery-retry:focus {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.spk-discovery-retry:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .spk-status-dismiss {
   background: none;
   border: none;
@@ -1394,6 +1434,8 @@
   let ownerTeachHandoffGeneration = 0;
   let ownerStatusRequestSeq = 0;
   let dayDiscoveryRequestSeq = 0;
+  let dayDiscoveryClusters = [];
+  let dayDiscoveryNotice = null;
   let segmentsRequestSeq = 0;
   let segmentSpeakersRequestSeq = 0;
   let reviewRequestSeq = 0;
@@ -1535,11 +1577,8 @@
   }
 
   function removeDiscoveryCluster(clusterId) {
-    const card = discoveryBanner.querySelector(`[data-cluster-id="${clusterId}"]`);
-    if (card) card.remove();
-    if (!discoveryBanner.querySelector('.spk-discovery-cluster')) {
-      hideDiscovery();
-    }
+    dayDiscoveryClusters = dayDiscoveryClusters.filter((cluster) => String(cluster.cluster_id) !== String(clusterId));
+    renderDayDiscoveryBanner();
   }
 
   async function refreshWhoIsThisDayContext() {
@@ -2323,8 +2362,7 @@
     dayDiscoveryRequestSeq = requestSeq;
     discoveryBanner.style.display = 'block';
     discoveryBanner.innerHTML = '<div class="spk-discovery-panel"><div class="spk-discovery-title"><span class="spk-spinner"></span> Discovering new voices…</div></div>';
-    return fetch('/app/speakers/api/discovery/cache', { cache: 'no-store' })
-      .then(r => r.json())
+    return window.apiJson('/app/speakers/api/discovery/cache', { cache: 'no-store' })
       .then(data => {
         if (requestSeq !== dayDiscoveryRequestSeq) return false;
         renderDiscoveryPayload(data);
@@ -2332,65 +2370,126 @@
       })
       .catch((err) => {
         if (requestSeq !== dayDiscoveryRequestSeq) return false;
-        hideDiscovery();
+        dayDiscoveryNotice = dayDiscoveryErrorNotice();
+        renderDayDiscoveryBanner();
         if (throwOnError) throw err;
         return false;
       });
   }
 
   function renderDiscoveryPayload(data) {
-    if (data.clusters && data.clusters.length > 0) {
-      renderDiscovery(data.clusters);
-    } else {
-      hideDiscovery();
-    }
+    dayDiscoveryClusters = discoveryClusters(data);
+    renderDayDiscoveryBanner();
   }
 
-  function refreshDayDiscoveryScan({ requestSeq, throwOnError }) {
-    return fetch('/app/speakers/api/discovery/scan', { method: 'POST' })
-      .then(r => {
-        if (!r.ok) throw new Error('scan failed');
-        return r.json();
-      })
+  function refreshDayDiscoveryScan({ requestSeq, throwOnError } = {}) {
+    const activeSeq = requestSeq || dayDiscoveryRequestSeq + 1;
+    dayDiscoveryRequestSeq = activeSeq;
+    return window.apiJson('/app/speakers/api/discovery/scan', { method: 'POST' })
       .then(data => {
-        if (requestSeq !== dayDiscoveryRequestSeq) return false;
-        renderDiscoveryPayload(data);
+        if (activeSeq !== dayDiscoveryRequestSeq) return false;
+        dayDiscoveryClusters = discoveryClusters(data);
+        dayDiscoveryNotice = discoveryNoticeFromScan(data, SPK_COPY);
+        renderDayDiscoveryBanner();
         return true;
       })
       .catch((err) => {
-        if (requestSeq !== dayDiscoveryRequestSeq) return false;
-        hideDiscovery();
+        if (activeSeq !== dayDiscoveryRequestSeq) return false;
+        dayDiscoveryNotice = dayDiscoveryErrorNotice();
+        renderDayDiscoveryBanner();
         if (throwOnError) throw err;
         return false;
       });
   }
 
-  function renderDiscovery(clusters) {
+  function discoveryClusters(data) {
+    return Array.isArray(data?.clusters) ? data.clusters : [];
+  }
+
+  function discoveryIssueCount(issue) {
+    const count = Number(issue?.count || 0);
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  function discoveryIssueMessage(issue, copy) {
+    const count = discoveryIssueCount(issue);
+    if (count > 0 && copy.SPK_DISCOVERY_DEGRADED_TEMPLATE) {
+      return copy.SPK_DISCOVERY_DEGRADED_TEMPLATE.replace('{count}', String(count));
+    }
+    return issue?.message || (copy.SPK_DISCOVERY_DEGRADED_TEMPLATE || '').replace('{count}', String(count));
+  }
+
+  function discoveryNoticeFromScan(data, copy) {
+    const issues = Array.isArray(data?.issues) ? data.issues : [];
+    if (data?.status !== 'degraded' || !issues.length) return null;
+    return {
+      type: 'degraded',
+      messages: issues.map((issue) => discoveryIssueMessage(issue, copy)).filter(Boolean),
+      retry: false,
+    };
+  }
+
+  function dayDiscoveryErrorNotice() {
+    return {
+      type: 'error',
+      messages: [SPK_COPY.SPK_DISCOVERY_ERROR || ''],
+      retry: true,
+    };
+  }
+
+  function renderDayDiscoveryNotice(notice) {
+    if (!notice) return '';
+    const statusClass = notice.type === 'error' ? 'spk-status-error' : 'spk-status-info';
+    const retry = notice.retry
+      ? `<button id="spkDayDiscoveryRetry" class="spk-discovery-retry" type="button">${escapeHtml(SPK_COPY.SPK_ACTION_RETRY || '')}</button>`
+      : '';
+    return `
+      <div class="spk-status ${statusClass} spk-discovery-notice" role="alert">
+        <div class="spk-discovery-notice-text">
+          ${(notice.messages || []).map((message) => `<div>${escapeHtml(message)}</div>`).join('')}
+        </div>
+        <div class="spk-discovery-notice-actions">
+          ${retry}
+          <button id="spkDayDiscoveryDismiss" class="spk-status-dismiss" type="button" aria-label="dismiss">&times;</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDayDiscoveryBanner() {
+    const clusters = dayDiscoveryClusters;
+    if (!clusters.length && !dayDiscoveryNotice) {
+      hideDiscovery();
+      return;
+    }
     discoveryBanner.style.display = 'block';
     discoveryBanner.innerHTML = `
       <div class="spk-discovery-panel">
-        <div class="spk-discovery-title">new speakers found</div>
-        <div class="spk-discovery-copy">
-          sol found ${clusters.length} recurring voice pattern${clusters.length > 1 ? 's' : ''} that ${clusters.length > 1 ? "don't" : "doesn't"} match anyone you've named. listen to a few samples and name them.
-        </div>
-        <div class="spk-discovery-clusters">
-          ${clusters.map(cluster => `
-            <div class="spk-discovery-cluster" data-cluster-id="${escapeHtml(cluster.cluster_id)}">
-              <div class="spk-discovery-cluster-title">
-                Unknown speaker <span style="font-weight: 400">&middot; ${cluster.size} samples &middot; ${cluster.segment_count} segments</span>
-              </div>
-              ${cluster.samples.map(sample => `
-                <div class="spk-discovery-sample">
-                  <div class="spk-discovery-sample-text">${escapeHtml(sample.text || '(no transcript)')}</div>
-                  ${sample.audio_url ? `<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>` : ''}
+        ${renderDayDiscoveryNotice(dayDiscoveryNotice)}
+        ${clusters.length ? `
+          <div class="spk-discovery-title">new speakers found</div>
+          <div class="spk-discovery-copy">
+            sol found ${clusters.length} recurring voice pattern${clusters.length > 1 ? 's' : ''} that ${clusters.length > 1 ? "don't" : "doesn't"} match anyone you've named. listen to a few samples and name them.
+          </div>
+          <div class="spk-discovery-clusters">
+            ${clusters.map(cluster => `
+              <div class="spk-discovery-cluster" data-cluster-id="${escapeHtml(cluster.cluster_id)}">
+                <div class="spk-discovery-cluster-title">
+                  Unknown speaker <span style="font-weight: 400">&middot; ${cluster.size} samples &middot; ${cluster.segment_count} segments</span>
                 </div>
-              `).join('')}
-              <button type="button" class="spk-discovery-btn spk-who-trigger" aria-haspopup="dialog" aria-expanded="false">
-                ${escapeHtml(SPK_COPY.SPK_ACTION_WHO_IS_THIS || '')}
-              </button>
-            </div>
-          `).join('')}
-        </div>
+                ${(cluster.samples || []).map(sample => `
+                  <div class="spk-discovery-sample">
+                    <div class="spk-discovery-sample-text">${escapeHtml(sample.text || '(no transcript)')}</div>
+                    ${sample.audio_url ? `<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>` : ''}
+                  </div>
+                `).join('')}
+                <button type="button" class="spk-discovery-btn spk-who-trigger" aria-haspopup="dialog" aria-expanded="false">
+                  ${escapeHtml(SPK_COPY.SPK_ACTION_WHO_IS_THIS || '')}
+                </button>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
       </div>
     `;
 
@@ -2402,9 +2501,18 @@
         trigger.addEventListener('click', () => openWhoIsThis(cluster, trigger));
       }
     });
+    document.getElementById('spkDayDiscoveryRetry')?.addEventListener('click', () => {
+      refreshDayDiscoveryScan({ requestSeq: dayDiscoveryRequestSeq + 1, throwOnError: false });
+    });
+    document.getElementById('spkDayDiscoveryDismiss')?.addEventListener('click', () => {
+      dayDiscoveryNotice = null;
+      renderDayDiscoveryBanner();
+    });
   }
 
   function hideDiscovery() {
+    dayDiscoveryClusters = [];
+    dayDiscoveryNotice = null;
     discoveryBanner.style.display = 'none';
     discoveryBanner.innerHTML = '';
   }
@@ -3443,6 +3551,14 @@
   font-size: 14px;
 }
 
+.spk-overview-discovery-notice {
+  margin: 0 0 16px;
+}
+
+.spk-overview-discovery-notice[hidden] {
+  display: none;
+}
+
 .spk-overview-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3615,6 +3731,7 @@
       <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_NEW_VOICES_HEADER"></h2>
     </div>
     <div id="spkStatementHandoffNotice" class="spk-overview-muted" hidden></div>
+    <div id="spkOverviewDiscoveryNotice" class="spk-overview-discovery-notice" hidden></div>
     <div id="spkDiscoveryClusters" class="spk-discovery-clusters"></div>
   </section>
 
@@ -3637,6 +3754,7 @@
   const sortSelect = document.getElementById('spkKnownSort');
   const discoverySection = document.getElementById('spkNewVoicesSection');
   const statementHandoffNotice = document.getElementById('spkStatementHandoffNotice');
+  const overviewDiscoveryNoticeNode = document.getElementById('spkOverviewDiscoveryNotice');
   const discoveryContainer = document.getElementById('spkDiscoveryClusters');
   const todayLink = document.getElementById('spkTodayReview');
   const dayGridCard = document.getElementById('spkDayGridCard');
@@ -3650,6 +3768,7 @@
   let qualityRequestSeq = 0;
   let knownRequestSeq = 0;
   let overviewDiscoveryRequestSeq = 0;
+  let overviewDiscoveryNotice = null;
   let overviewHandoffSheetOpen = false;
   const overviewYourVoiceSection = document.getElementById('spkOverviewYourVoiceSection');
 
@@ -3967,7 +4086,7 @@
     const card = discoveryContainer.querySelector(`[data-cluster-id="${clusterId}"]`);
     if (card) card.remove();
     if (!discoveryContainer.querySelector('.spk-discovery-card')) {
-      discoverySection.hidden = true;
+      discoverySection.hidden = !overviewDiscoveryNotice;
     }
   }
 
@@ -4038,12 +4157,83 @@
     discoverySection.hidden = false;
   }
 
+  function discoveryClusters(data) {
+    return Array.isArray(data?.clusters) ? data.clusters : [];
+  }
+
+  function discoveryIssueCount(issue) {
+    const count = Number(issue?.count || 0);
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  function discoveryIssueMessage(issue) {
+    const count = discoveryIssueCount(issue);
+    if (count > 0 && COPY.SPK_DISCOVERY_DEGRADED_TEMPLATE) {
+      return COPY.SPK_DISCOVERY_DEGRADED_TEMPLATE.replace('{count}', String(count));
+    }
+    return issue?.message || (COPY.SPK_DISCOVERY_DEGRADED_TEMPLATE || '').replace('{count}', String(count));
+  }
+
+  function discoveryNoticeFromScan(data) {
+    const issues = Array.isArray(data?.issues) ? data.issues : [];
+    if (data?.status !== 'degraded' || !issues.length) return null;
+    return {
+      type: 'degraded',
+      messages: issues.map((issue) => discoveryIssueMessage(issue)).filter(Boolean),
+      retry: false,
+    };
+  }
+
+  function overviewDiscoveryErrorNotice() {
+    return {
+      type: 'error',
+      messages: [COPY.SPK_DISCOVERY_ERROR || ''],
+      retry: true,
+    };
+  }
+
+  function renderOverviewDiscoveryNotice() {
+    if (!overviewDiscoveryNotice) {
+      overviewDiscoveryNoticeNode.hidden = true;
+      overviewDiscoveryNoticeNode.innerHTML = '';
+      return;
+    }
+    const statusClass = overviewDiscoveryNotice.type === 'error' ? 'spk-status-error' : 'spk-status-info';
+    const retry = overviewDiscoveryNotice.retry
+      ? `<button id="spkOverviewDiscoveryRetry" class="spk-discovery-retry" type="button">${escapeHtml(COPY.SPK_ACTION_RETRY || '')}</button>`
+      : '';
+    overviewDiscoveryNoticeNode.hidden = false;
+    overviewDiscoveryNoticeNode.innerHTML = `
+      <div class="spk-status ${statusClass} spk-discovery-notice" role="alert">
+        <div class="spk-discovery-notice-text">
+          ${(overviewDiscoveryNotice.messages || []).map((message) => `<div>${escapeHtml(message)}</div>`).join('')}
+        </div>
+        <div class="spk-discovery-notice-actions">
+          ${retry}
+          <button id="spkOverviewDiscoveryDismiss" class="spk-status-dismiss" type="button" aria-label="dismiss">&times;</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('spkOverviewDiscoveryRetry')?.addEventListener('click', () => {
+      refreshDiscoveryScan({ requestSeq: overviewDiscoveryRequestSeq + 1, throwOnError: false });
+    });
+    document.getElementById('spkOverviewDiscoveryDismiss')?.addEventListener('click', () => {
+      overviewDiscoveryNotice = null;
+      renderOverviewDiscoveryNotice();
+      if (!discoveryContainer.querySelector('.spk-discovery-card') && statementHandoffNotice.hidden) {
+        discoverySection.hidden = true;
+      }
+    });
+  }
+
   function renderDiscovery(data) {
-    const clusters = data.clusters || [];
+    const clusters = discoveryClusters(data);
     hideStatementHandoffNotice();
+    renderOverviewDiscoveryNotice();
     discoveryClustersById = new Map(clusters.map((cluster) => [String(cluster.cluster_id), cluster]));
     if (!clusters.length) {
-      discoverySection.hidden = true;
+      discoveryContainer.innerHTML = '';
+      discoverySection.hidden = !overviewDiscoveryNotice;
       return;
     }
     discoverySection.hidden = false;
@@ -4069,11 +4259,7 @@
     const throwOnError = Boolean(options?.throwOnError);
     const requestSeq = overviewDiscoveryRequestSeq + 1;
     overviewDiscoveryRequestSeq = requestSeq;
-    return fetch('/app/speakers/api/discovery/cache', {cache: 'no-store'})
-      .then((response) => {
-        if (!response.ok) throw new Error('discovery cache failed');
-        return response.json();
-      })
+    return window.apiJson('/app/speakers/api/discovery/cache', { cache: 'no-store' })
       .then((data) => {
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         renderDiscovery(data);
@@ -4081,7 +4267,9 @@
       })
       .catch((err) => {
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
-        discoverySection.hidden = true;
+        overviewDiscoveryNotice = overviewDiscoveryErrorNotice();
+        renderOverviewDiscoveryNotice();
+        discoverySection.hidden = false;
         if (throwOnError) throw err;
         return false;
       });
@@ -4092,23 +4280,22 @@
       return Promise.resolve(false);
     }
     const throwOnError = Boolean(options?.throwOnError);
-    const requestSeq = overviewDiscoveryRequestSeq + 1;
+    const requestSeq = options?.requestSeq || overviewDiscoveryRequestSeq + 1;
     overviewDiscoveryRequestSeq = requestSeq;
-    return fetch('/app/speakers/api/discovery/scan', {method: 'POST'})
-      .then((response) => {
-        if (!response.ok) throw new Error('scan failed');
-        return response.json();
-      })
+    return window.apiJson('/app/speakers/api/discovery/scan', { method: 'POST' })
       .then((data) => {
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         if (overviewHandoffSheetOpen) return false;
+        overviewDiscoveryNotice = discoveryNoticeFromScan(data);
         renderDiscovery(data);
         return true;
       })
       .catch((err) => {
         if (requestSeq !== overviewDiscoveryRequestSeq) return false;
         if (overviewHandoffSheetOpen) return false;
-        discoverySection.hidden = true;
+        overviewDiscoveryNotice = overviewDiscoveryErrorNotice();
+        renderOverviewDiscoveryNotice();
+        discoverySection.hidden = false;
         if (throwOnError) throw err;
         return false;
       });

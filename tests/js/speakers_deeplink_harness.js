@@ -557,6 +557,18 @@ function responseText(text, status = 200) {
   };
 }
 
+function apiError(payload, status = 503) {
+  const error = new Error(payload?.error || payload?.message || `Request failed (HTTP ${status})`);
+  error.name = 'ApiError';
+  error.status = status;
+  error.statusText = '';
+  error.serverMessage = payload?.error || payload?.message || error.message;
+  error.reasonCode = payload?.reason_code || null;
+  error.rawDetail = payload?.detail ?? null;
+  error.payload = payload;
+  return error;
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -607,6 +619,8 @@ function speakerCopy() {
     'SPK_CHECK_NAME_ERROR',
     'SPK_SAMPLE_UNAVAILABLE',
     'SPK_ACTION_RETRY',
+    'SPK_DISCOVERY_ERROR',
+    'SPK_DISCOVERY_DEGRADED_TEMPLATE',
     'SPK_OVERVIEW_CARD_SEGMENTS_LABEL',
     'SPK_OVERVIEW_CARD_SAMPLES_LABEL',
     'SPK_OVERVIEW_CARD_LAST_HEARD_PREFIX',
@@ -866,6 +880,15 @@ async function runRoute(scenario) {
     });
     if (url === '/api/shell') return shell;
     if (String(url).startsWith('/app/speakers/api/state')) return statePayload();
+    if (url === '/app/speakers/api/discovery/cache') {
+      return scenario.cachePayload || { status: 'ok', clusters: [] };
+    }
+    if (url === '/app/speakers/api/discovery/scan') {
+      scanCalled = true;
+      const payload = scenario.scanPayload || { clusters: [clusterPayload(3)] };
+      if (payload === null) throw apiError({ error: 'scan failed' }, 500);
+      return payload;
+    }
     if (String(url).startsWith('/app/speakers/api/discovery/resolve-statement')) {
       if (scenario.resolveStatement === 'dynamic-cache-hit-before-scan') {
         return scanCalled
@@ -967,8 +990,9 @@ async function runRoute(scenario) {
   const renderedClusterIds = document
     .querySelectorAll('.spk-discovery-card')
     .map((node) => String(node.dataset.clusterId || ''));
-  const discoveryCall = fetchCalls.find((call) => call.url === '/app/speakers/api/discovery/scan');
-  const discoveryCacheCall = fetchCalls.find((call) => call.url === '/app/speakers/api/discovery/cache');
+  const transportCalls = [...fetchCalls, ...apiCalls];
+  const discoveryCall = transportCalls.find((call) => call.url === '/app/speakers/api/discovery/scan');
+  const discoveryCacheCall = transportCalls.find((call) => call.url === '/app/speakers/api/discovery/cache');
   const presenceClusterIds = apiCalls
     .map((call) => String(call.url || '').match(/^\/app\/speakers\/api\/discovery\/cluster\/([^/]+)\/presence/))
     .filter(Boolean)
