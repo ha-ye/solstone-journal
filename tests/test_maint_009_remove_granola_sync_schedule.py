@@ -250,6 +250,7 @@ def test_second_run_is_noop_and_does_not_rewrite_schedules_file(tmp_path):
         pytest.param(None, "no file", id="missing-file"),
         pytest.param(b"", "empty file", id="empty-file"),
         pytest.param(b"{not json", "unparseable", id="non-json"),
+        pytest.param(b"\xff\xfe\x00", "unparseable", id="invalid-utf8"),
         pytest.param(b"[]", "unparseable", id="non-dict"),
     ],
 )

@@ -85,7 +85,7 @@ def run_migration(*, dry_run: bool) -> MigrationSummary:
 
     try:
         raw = json.loads(raw_bytes)
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         summary.skipped_reason = "unparseable"
         return summary
 
