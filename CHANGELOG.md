@@ -14,6 +14,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ### Fixed
 
+- your journal now records what it turns away. when something arrives from a device your journal does not recognise, it is refused, and until now that left no trace anywhere: no way to see that it happened, or how much. your journal now records a refusal while it is happening, and again once it stops, with how many were turned away.
+- an import started while another one is running now waits its turn. it used to report that it started and then never run, and the file it came from could not be started again afterwards. an import that failed or never ran can now be started again, and a start that cannot be handed off to run says so instead of reporting success.
+- a slow reply in chat is no longer cut short. when the model was busy, a reply still being written could be ended with an error, and the answer that arrived moments later was thrown away. your journal can now tell that a reply is still being written, so slow is no longer read as stopped.
+- a routine check that sol is ready to think no longer leaves an error behind. the check passed, but a line from software your journal runs on was recorded as an error, so it showed up in your journal's error list and in the diagnostics attached to a support request. that line is now recorded at its real level, with a plain note of what actually happened.
 - setting up sol on a Mac no longer installs a second background launcher when sol already keeps your journal. setup leaves the existing launcher alone and still prepares the rest of the journal. `journal service install` is still there if you want to install one yourself.
 - daily processing no longer skips the repair step after your journal is already running. that repair now shares the startup work that checked your local voice tools, so a day that needs cleanup can continue instead of stopping at the first audio file.
 - media sent from a paired device now lands in your journal byte-for-byte. a relay read could add two blank-line bytes to the front of a file while still saying the transfer finished.
