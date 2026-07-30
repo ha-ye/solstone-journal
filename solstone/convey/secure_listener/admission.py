@@ -21,13 +21,23 @@ log = logging.getLogger("convey.secure_listener.admission")
 
 DEFAULT_SECURE_LISTENER_CAPACITY: Final[int] = 16
 DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY: Final[int] = 8
+DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS: Final[float] = 120.0
+SECURE_LISTENER_QUEUE_WARN_SECONDS: Final[float] = 60.0
 MAX_SECURE_LISTENER_CAPACITY: Final[int] = 128
+MAX_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS: Final[float] = 600.0
 
 _PermitKind = Literal["total", "streaming", "streaming_over_budget"]
+_DepartureReason = Literal["granted", "cancelled", "timed_out"]
 
 
 class SecureListenerAdmissionRejected(Exception):
     """The listener refused admission before executor submission."""
+
+
+class SecureListenerQueueTimeout(SecureListenerAdmissionRejected):
+    """A queued listener request exceeded the admission wait deadline."""
+
+    reason_code = "secure_listener_queue_timeout"
 
 
 @dataclass(frozen=True)
@@ -35,6 +45,7 @@ class SecureListenerAdmissionConfig:
     capacity: int = DEFAULT_SECURE_LISTENER_CAPACITY
     streaming_capacity: int = DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY
     refuse_when_full: bool = False
+    queue_timeout_seconds: float = DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS
 
     @property
     def queue_limit(self) -> int:
@@ -146,10 +157,19 @@ def resolve_admission_config() -> SecureListenerAdmissionConfig:
         default=False,
         warning_default="false",
     )
+    queue_timeout_seconds = _resolve_float(
+        link_cfg,
+        "secure_listener_queue_timeout_seconds",
+        default=DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS,
+        valid_min=1.0,
+        valid_max=MAX_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS,
+        warning_default="120.0",
+    )
     return SecureListenerAdmissionConfig(
         capacity=capacity,
         streaming_capacity=streaming_capacity,
         refuse_when_full=refuse_when_full,
+        queue_timeout_seconds=queue_timeout_seconds,
     )
 
 
@@ -198,6 +218,47 @@ def _resolve_bool(
     return raw
 
 
+def _resolve_float(
+    link_cfg: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    valid_min: float,
+    valid_max: float,
+    warning_default: str,
+) -> float:
+    raw = link_cfg.get(key, default)
+    if isinstance(raw, bool):
+        log.warning(
+            "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
+            key,
+            raw,
+            warning_default,
+        )
+        return default
+    if raw == 0:
+        log.info("link.%s is 0; secure listener queue timeout disabled", key)
+        return 0.0
+    if not isinstance(raw, (int, float)):
+        log.warning(
+            "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
+            key,
+            raw,
+            warning_default,
+        )
+        return default
+    value = float(raw)
+    if not (valid_min <= value <= valid_max):
+        log.warning(
+            "Invalid link.%s in journal config: %r \u2014 defaulting to %s",
+            key,
+            raw,
+            warning_default,
+        )
+        return default
+    return value
+
+
 class SecureListenerAdmission:
     """Admission, queueing, and content-free telemetry for listener work."""
 
@@ -220,6 +281,7 @@ class SecureListenerAdmission:
         self._active_streaming_over_budget = 0
         self._rejected_total = 0
         self._rejected_streaming = 0
+        self._rejected_queue_timeout = 0
         self._admitted_streaming_over_budget = 0
 
     async def acquire(self) -> SecureListenerPermit:
@@ -241,15 +303,35 @@ class SecureListenerAdmission:
                 queued_at=started,
             )
             self._waiters.append(waiter)
+            queue_timeout_seconds = self.config.queue_timeout_seconds
 
+        departure_reason: _DepartureReason = "cancelled"
         try:
-            return await waiter.future
+            if queue_timeout_seconds > 0.0:
+                permit = await asyncio.wait_for(
+                    waiter.future,
+                    timeout=queue_timeout_seconds,
+                )
+            else:
+                permit = await waiter.future
+        except TimeoutError as exc:
+            departure_reason = "timed_out"
+            self._reclaim_abandoned_waiter(waiter)
+            self._record_queue_timeout_rejection()
+            raise SecureListenerQueueTimeout from exc
         except BaseException:
-            if self._cancel_waiter(waiter):
-                raise
-            if waiter.permit is not None:
-                waiter.permit.release()
+            departure_reason = "cancelled"
+            self._reclaim_abandoned_waiter(waiter)
             raise
+        else:
+            departure_reason = "granted"
+            return permit
+        finally:
+            self._warn_if_slow_waiter_departure(
+                waiter,
+                departure_reason,
+                queue_timeout_seconds,
+            )
 
     async def submit(
         self,
@@ -340,6 +422,7 @@ class SecureListenerAdmission:
                 "rejected": {
                     "total": self._rejected_total,
                     "streaming": self._rejected_streaming,
+                    "queue_timeout": self._rejected_queue_timeout,
                 },
                 "admitted_over_budget": {
                     "streaming": self._admitted_streaming_over_budget,
@@ -385,6 +468,40 @@ class SecureListenerAdmission:
             except ValueError:
                 return False
             return True
+
+    def _reclaim_abandoned_waiter(self, waiter: _QueuedWaiter) -> None:
+        if self._cancel_waiter(waiter):
+            return
+        if waiter.permit is not None:
+            waiter.permit.release()
+
+    def _record_queue_timeout_rejection(self) -> None:
+        with self._lock:
+            self._rejected_total += 1
+            self._rejected_queue_timeout += 1
+
+    def _warn_if_slow_waiter_departure(
+        self,
+        waiter: _QueuedWaiter,
+        reason: _DepartureReason,
+        queue_timeout_seconds: float,
+    ) -> None:
+        waiter_age_s = time.monotonic() - waiter.queued_at
+        if waiter_age_s <= SECURE_LISTENER_QUEUE_WARN_SECONDS:
+            return
+        with self._lock:
+            active_total = self._active_total
+            queue_depth = len(self._waiters)
+        log.warning(
+            "Secure listener admission waiter departed departure_reason=%s "
+            "waiter_age_s=%.3f active_total=%d queue_depth=%d "
+            "queue_timeout_seconds=%.3f",
+            reason,
+            waiter_age_s,
+            active_total,
+            queue_depth,
+            queue_timeout_seconds,
+        )
 
     def _wake_waiters_locked(self) -> None:
         while self._waiters and self._active_total < self.config.capacity:

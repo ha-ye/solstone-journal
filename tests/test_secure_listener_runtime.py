@@ -24,6 +24,7 @@ from solstone.convey.secure_listener.accept import (
 )
 from solstone.convey.secure_listener.admission import (
     DEFAULT_SECURE_LISTENER_CAPACITY,
+    DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS,
     DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY,
     SecureListenerAdmission,
     SecureListenerAdmissionConfig,
@@ -134,6 +135,7 @@ def test_stop_all_after_loop_closed_does_not_raise():
 def test_secure_listener_admission_config_defaults_to_current_capacity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _runtime_journal(
         tmp_path,
@@ -141,12 +143,18 @@ def test_secure_listener_admission_config_defaults_to_current_capacity(
         {"setup": {"completed_at": 1700000000000}},
     )
 
-    config = resolve_admission_config()
+    with caplog.at_level(
+        logging.INFO,
+        logger="convey.secure_listener.admission",
+    ):
+        config = resolve_admission_config()
 
     assert config.capacity == DEFAULT_SECURE_LISTENER_CAPACITY == 16
     assert config.streaming_capacity == DEFAULT_SECURE_LISTENER_STREAMING_CAPACITY == 8
     assert config.refuse_when_full is False
+    assert config.queue_timeout_seconds == DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS
     assert config.queue_limit == 32
+    assert not caplog.records
 
 
 def test_secure_listener_admission_config_reads_link_namespace(
@@ -162,6 +170,7 @@ def test_secure_listener_admission_config_reads_link_namespace(
                 "secure_listener_capacity": 24,
                 "secure_listener_streaming_capacity": 6,
                 "secure_listener_refuse_when_full": True,
+                "secure_listener_queue_timeout_seconds": 30.5,
             },
         },
     )
@@ -171,7 +180,110 @@ def test_secure_listener_admission_config_reads_link_namespace(
     assert config.capacity == 24
     assert config.streaming_capacity == 6
     assert config.refuse_when_full is True
+    assert config.queue_timeout_seconds == 30.5
     assert config.queue_limit == 48
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (120, 120.0),
+        (1.0, 1.0),
+        (600, 600.0),
+    ],
+)
+def test_secure_listener_admission_config_queue_timeout_accepts_numbers_silently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    raw: object,
+    expected: float,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {
+            "setup": {"completed_at": 1700000000000},
+            "link": {"secure_listener_queue_timeout_seconds": raw},
+        },
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="convey.secure_listener.admission",
+    ):
+        config = resolve_admission_config()
+
+    assert config.queue_timeout_seconds == expected
+    assert not caplog.records
+
+
+def test_secure_listener_admission_config_queue_timeout_zero_disables_at_info(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {
+            "setup": {"completed_at": 1700000000000},
+            "link": {"secure_listener_queue_timeout_seconds": 0},
+        },
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="convey.secure_listener.admission",
+    ):
+        config = resolve_admission_config()
+
+    assert config.queue_timeout_seconds == 0.0
+    assert [record.levelno for record in caplog.records] == [logging.INFO]
+    assert (
+        "link.secure_listener_queue_timeout_seconds is 0; "
+        "secure listener queue timeout disabled"
+    ) in caplog.text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        601,
+        False,
+        True,
+        -1,
+        0.5,
+        "abc",
+    ],
+)
+def test_secure_listener_admission_config_queue_timeout_warns_and_falls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    raw: object,
+) -> None:
+    _runtime_journal(
+        tmp_path,
+        monkeypatch,
+        {
+            "setup": {"completed_at": 1700000000000},
+            "link": {"secure_listener_queue_timeout_seconds": raw},
+        },
+    )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="convey.secure_listener.admission",
+    ):
+        config = resolve_admission_config()
+
+    assert config.queue_timeout_seconds == DEFAULT_SECURE_LISTENER_QUEUE_TIMEOUT_SECONDS
+    assert [record.levelno for record in caplog.records] == [logging.WARNING]
+    assert (
+        "Invalid link.secure_listener_queue_timeout_seconds in journal config: "
+        f"{raw!r} \u2014 defaulting to 120.0"
+    ) in caplog.text
 
 
 def test_secure_listener_admission_config_warns_and_falls_back(

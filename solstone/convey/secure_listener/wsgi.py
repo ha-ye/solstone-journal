@@ -20,7 +20,11 @@ from werkzeug.exceptions import HTTPException
 
 from solstone.think.link.window import window_open
 
-from .admission import SecureListenerAdmission, SecureListenerAdmissionRejected
+from .admission import (
+    SecureListenerAdmission,
+    SecureListenerAdmissionRejected,
+    SecureListenerQueueTimeout,
+)
 from .identity import ConveyIdentity
 from .mux import (
     RESET_CTX_APP_CANCELLATION,
@@ -430,19 +434,27 @@ async def dispatch_stream(
         wsgi_input = environ["wsgi.input"]
         if wsgi_input.remaining > 0:
             stream_writer.begin_drain(RESET_CTX_APP_CANCELLATION)
-    except SecureListenerAdmissionRejected:
-        await write_json_response(
-            stream_writer,
-            503,
-            "Service Unavailable",
-            {"error": "secure listener capacity is full"},
-            extra_headers=(
-                (
-                    "Retry-After",
-                    str(SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS),
-                ),
-            ),
+    except SecureListenerAdmissionRejected as exc:
+        body = (
+            {"error": "secure listener queue timeout"}
+            if isinstance(exc, SecureListenerQueueTimeout)
+            else {"error": "secure listener capacity is full"}
         )
+        try:
+            await write_json_response(
+                stream_writer,
+                503,
+                "Service Unavailable",
+                body,
+                extra_headers=(
+                    (
+                        "Retry-After",
+                        str(SECURE_LISTENER_REFUSAL_RETRY_AFTER_SECONDS),
+                    ),
+                ),
+            )
+        except ConnectionError:
+            pass
         stream_writer.begin_drain(RESET_CTX_BODY_DISCARD_CANCELLATION)
         return DispatchResult(endpoint=endpoint, status=503)
     except asyncio.CancelledError:

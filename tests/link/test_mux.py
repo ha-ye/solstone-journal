@@ -2301,7 +2301,7 @@ async def test_capacity_snapshot_is_readable_while_workers_are_occupied(
         }
         assert set(payload["limit"]) == {"total", "streaming", "queue"}
         assert set(payload["queued"]) == {"total"}
-        assert set(payload["rejected"]) == {"total", "streaming"}
+        assert set(payload["rejected"]) == {"total", "streaming", "queue_timeout"}
         assert set(payload["admitted_over_budget"]) == {"streaming"}
         assert payload["active"]["total"] == admission.config.capacity
         assert payload["limit"]["total"] == admission.config.capacity

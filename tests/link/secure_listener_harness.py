@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,22 @@ from solstone.convey.secure_listener.tls import (
     issue_server_cert,
 )
 from solstone.think.link.auth import AuthorizedClients
-from solstone.think.link.ca import LoadedCa, load_or_generate_ca
+from solstone.think.link.ca import LoadedCa, cert_fingerprint, load_or_generate_ca
+from solstone.think.link.client import (
+    ClientIdentity,
+    TunnelSession,
+    _open_tunnel_session,
+    _TcpEncryptedTransport,
+)
 from solstone.think.link.nonces import NonceStore
 from solstone.think.link.paths import authorized_clients_path, ca_dir, nonces_path
-from tests.link.certless_helpers import make_convey_app
+from tests.link.certless_helpers import (
+    DirectPairCandidate,
+    DirectPairRequest,
+    build_csr,
+    make_convey_app,
+    post_pair_framed,
+)
 
 
 @dataclass
@@ -45,6 +58,7 @@ class SecureListenerHarness:
         monkeypatch: pytest.MonkeyPatch,
         *,
         link: dict[str, Any] | None = None,
+        admission_config: SecureListenerAdmissionConfig | None = None,
     ) -> SecureListenerHarness:
         app, journal = make_convey_app(
             tmp_path,
@@ -67,7 +81,8 @@ class SecureListenerHarness:
             authorized,
         )
         admission = SecureListenerAdmission(
-            SecureListenerAdmissionConfig(
+            admission_config
+            or SecureListenerAdmissionConfig(
                 capacity=4,
                 streaming_capacity=4,
                 refuse_when_full=False,
@@ -120,3 +135,44 @@ class SecureListenerHarness:
 
     def pair_url(self, nonce: str, *, path: str = "/app/network/pair") -> str:
         return f"https://{self.host}:{self.port}{path}?token={nonce}"
+
+
+async def pair_and_open_session(
+    harness: SecureListenerHarness,
+    *,
+    nonce: str,
+    label: str,
+) -> TunnelSession:
+    private_key, private_key_pem, csr_pem = build_csr(label)
+    harness.seed_nonce(nonce, label)
+    response = await asyncio.to_thread(
+        post_pair_framed,
+        DirectPairRequest(
+            candidates=(DirectPairCandidate(harness.host, harness.port),),
+            path=f"/app/network/pair?token={nonce}",
+            ca_fingerprint_pin=harness.ca.fingerprint_sha256(),
+        ),
+        {"csr": csr_pem, "device_label": label},
+        private_key,
+    )
+    identity = ClientIdentity(
+        private_key_pem=private_key_pem.decode("ascii"),
+        client_cert_pem=response.client_cert,
+        ca_chain_pem="".join(response.ca_chain),
+        fingerprint=cert_fingerprint(response.client_cert),
+        home_instance_id=response.instance_id,
+        home_label=response.home_label,
+        home_attestation=response.home_attestation,
+        local_endpoints=tuple(response.local_endpoints),
+    )
+    reader, writer = await asyncio.open_connection(harness.host, harness.port)
+    try:
+        return await _open_tunnel_session(
+            _TcpEncryptedTransport(reader, writer),
+            identity,
+        )
+    except BaseException:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        raise
