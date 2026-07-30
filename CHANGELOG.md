@@ -6,6 +6,12 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Changed
+
+- importing from Granola is gone. Granola removed the local file access this import read from, and every
+  remaining route to that data needs a paid Granola plan and a network call, which this import never
+  made. Granola transcripts already in your journal stay exactly as they are, searchable and readable.
+
 ### Fixed
 
 - setting up sol on a Mac no longer installs a second background launcher when sol already keeps your journal. setup leaves the existing launcher alone and still prepares the rest of the journal. `journal service install` is still there if you want to install one yourself.
