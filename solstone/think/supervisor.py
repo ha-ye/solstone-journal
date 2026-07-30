@@ -130,6 +130,7 @@ MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 CONVEY_READY_WINDOW_SECONDS = 60.0
 PROVIDER_STARTUP_GATE_WINDOW_SECONDS = CONVEY_READY_WINDOW_SECONDS
+PROVIDER_STARTUP_GATE_CEILING_SECONDS = 330.0
 REALISTIC_COLD_BIND_SECONDS = 40.0
 HANDLE_SHUTDOWN_REAP_S = 3.0
 APP_SUPERVISED_SHUTDOWN_CEILING_S = 10.0
@@ -1350,8 +1351,10 @@ class ProviderRuntimeState:
 class ProviderStartupGate:
     started_at: float
     required: set[ProviderName]
-    terminal: set[ProviderName] = field(default_factory=set)
-    released: bool = False
+    terminal: set[ProviderName]
+    attempted: dict[ProviderName, LaunchOutcomeStatus]
+    first_start_at: float | None
+    released: bool
 
 
 # State for provider recovery nudges. Only local consumes this to nudge catchup.
@@ -4765,23 +4768,70 @@ def _finish_provider_startup_condition(
             gate.terminal.add(state.provider)
 
 
+def _provider_startup_gate_in_flight_providers(
+    gate: ProviderStartupGate,
+) -> list[ProviderName]:
+    providers: list[ProviderName] = []
+    for provider in gate.required:
+        future = _provider_runtime_states[provider].start_future
+        if future is not None and not future.done():
+            providers.append(provider)
+    return sorted(providers)
+
+
+def _provider_startup_gate_attempted_outcomes(gate: ProviderStartupGate) -> list[str]:
+    return sorted(
+        f"{provider}={gate.attempted[provider]}"
+        for provider in gate.required
+        if provider in gate.attempted
+    )
+
+
 def _release_provider_startup_gate_if_ready() -> None:
     gate = _provider_startup_gate
     if gate is None or gate.released or _task_queue is None:
         return
-    if gate.required.issubset(gate.terminal):
+    attempted_names = set(gate.attempted.keys())
+    satisfied = gate.terminal | attempted_names
+    if gate.required.issubset(satisfied):
         gate.released = True
         _task_queue.set_ready()
-        logging.info("provider startup gate released after terminal provider state")
+        if not gate.required - gate.terminal:
+            logger.info("provider startup gate released after terminal provider state")
+        else:
+            logger.info(
+                "provider startup gate released after first launch attempts concluded: "
+                "outcomes=%s terminal_providers=%s",
+                _provider_startup_gate_attempted_outcomes(gate),
+                sorted(gate.required & gate.terminal),
+            )
         return
+    if gate.first_start_at is not None:
+        elapsed_since_first_start = time.monotonic() - gate.first_start_at
+        if elapsed_since_first_start >= PROVIDER_STARTUP_GATE_CEILING_SECONDS:
+            gate.released = True
+            _task_queue.set_ready()
+            logger.warning(
+                "provider startup gate released after %.1fs provider launch ceiling "
+                "with unsatisfied providers: %s; in_flight providers: %s; attempted "
+                "outcomes: %s",
+                PROVIDER_STARTUP_GATE_CEILING_SECONDS,
+                sorted(gate.required - satisfied),
+                _provider_startup_gate_in_flight_providers(gate),
+                _provider_startup_gate_attempted_outcomes(gate),
+            )
+            return
     elapsed = time.monotonic() - gate.started_at
     if elapsed >= PROVIDER_STARTUP_GATE_WINDOW_SECONDS:
+        if _provider_startup_gate_in_flight_providers(gate):
+            return
         gate.released = True
         _task_queue.set_ready()
-        logging.warning(
-            "provider startup gate released after %.1fs window with pending providers: %s",
+        logger.warning(
+            "provider startup gate released after %.1fs window with pending providers: "
+            "%s; launch_in_flight=false",
             PROVIDER_STARTUP_GATE_WINDOW_SECONDS,
-            sorted(gate.required - gate.terminal),
+            sorted(gate.required - satisfied),
         )
 
 
@@ -4803,6 +4853,10 @@ def _initialize_provider_startup_gate() -> None:
     _provider_startup_gate = ProviderStartupGate(
         started_at=time.monotonic(),
         required=required,
+        terminal=set(),
+        attempted={},
+        first_start_at=None,
+        released=False,
     )
     if not required:
         _release_provider_startup_gate_if_ready()
@@ -5222,6 +5276,13 @@ def _submit_provider_start_if_needed(
         fence,
         cancel_event,
     )
+    gate = _provider_startup_gate
+    if (
+        gate is not None
+        and state.provider in gate.required
+        and gate.first_start_at is None
+    ):
+        gate.first_start_at = time.monotonic()
 
 
 def _handle_provider_start_result(
@@ -5259,6 +5320,13 @@ def _handle_provider_start_result(
             detail={"slot": "start", "fence": fence.__dict__},
         )
         return True
+    gate = _provider_startup_gate
+    if (
+        gate is not None
+        and state.provider in gate.required
+        and state.provider not in gate.attempted
+    ):
+        gate.attempted[state.provider] = outcome.status
     if (
         cancel_event is not None
         and cancel_event.is_set()
@@ -5653,7 +5721,6 @@ async def _reconcile_provider_runtime(
         _submit_provider_start_if_needed(state, procs)
     _submit_provider_probe_if_needed(state)
     _submit_provider_truth_if_needed(state)
-    _release_provider_startup_gate_if_ready()
 
 
 async def _reconcile_local_provider_runtime(
@@ -6283,6 +6350,11 @@ async def supervise(
                     "reconcile_parakeet_provider_runtime",
                     lambda: _reconcile_parakeet_provider_runtime(procs),
                 )
+
+            _guarded_tick_step(
+                "release_provider_startup_gate",
+                _release_provider_startup_gate_if_ready,
+            )
 
             # Emit status every 5 seconds
             now = time.time()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import concurrent.futures
+import logging
 import subprocess
 import sys
 import threading
@@ -122,6 +123,9 @@ class _FakeTaskQueue:
 
     def submit(self, cmd: list[str], *args: Any, **kwargs: Any) -> None:
         self.submitted.append((cmd, args, kwargs))
+
+    def enforce_deadlines(self, _now: float) -> None:
+        return None
 
 
 class _FakeReservation:
@@ -2747,6 +2751,7 @@ def test_unresolvable_cleanup_stays_owned_visible_and_blocks_start(
 
 def test_cancelled_ready_cleanup_failure_is_adopted(monkeypatch) -> None:
     plan = _local_plan()
+    queue = _FakeTaskQueue()
     state = supervisor._provider_runtime_states["local"]
     state.latest_phase = "starting"
     state.latest_plan = plan
@@ -2767,6 +2772,19 @@ def test_cancelled_ready_cleanup_failure_is_adopted(monkeypatch) -> None:
             managed=managed,
         )
     )
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
     monkeypatch.setattr(
         supervisor,
         "_terminate_cleanup_handle",
@@ -2778,6 +2796,7 @@ def test_cancelled_ready_cleanup_failure_is_adopted(monkeypatch) -> None:
     assert state.latest_phase == "cleanup-failed"
     assert state.pending_stop_request is not None
     assert state.pending_stop_request.managed is managed
+    assert supervisor._provider_startup_gate.attempted == {"local": "ready"}
 
 
 def test_missing_ready_port_cleanup_failure_is_adopted(monkeypatch) -> None:
@@ -3871,6 +3890,388 @@ def test_retry_cadence_exhausts_after_six_attempts(monkeypatch):
     assert state.latest_phase == "failed"
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ready",
+        "not-ready",
+        "host-blocked",
+        "exited",
+        "warmup-timeout",
+        "launch-failed",
+    ],
+)
+def test_start_result_marks_required_attempt_for_every_outcome_status(
+    monkeypatch, status: supervisor.LaunchOutcomeStatus
+) -> None:
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status=status,
+            reason_code="launch-failed",
+            detail={"status": status},
+        )
+    )
+    monkeypatch.setattr(supervisor, "_task_queue", _FakeTaskQueue())
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert supervisor._provider_startup_gate.attempted == {"local": status}
+
+
+def test_superseded_start_result_does_not_mark_attempted_or_release_gate(
+    monkeypatch,
+) -> None:
+    queue = _FakeTaskQueue()
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.generation = 2
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="warmup-timeout",
+            reason_code="warmup-timeout",
+            detail={"backend": plan.backend},
+        )
+    )
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert read_runtime_health("local")["reason_code"] == "stale-result-ignored"
+    assert "local" not in supervisor._provider_startup_gate.attempted
+    assert queue.ready_calls == 0
+    assert supervisor._provider_startup_gate.released is False
+
+
+def test_startup_gate_releases_on_first_attempt_concluded_before_window(
+    caplog, monkeypatch
+):
+    now = 10.0
+    queue = _FakeTaskQueue()
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="warmup-timeout",
+            reason_code="warmup-timeout",
+            detail={"backend": plan.backend},
+        )
+    )
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    with caplog.at_level(logging.INFO, logger=supervisor.logger.name):
+        assert supervisor._handle_provider_start_result(state, []) is True
+        supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 1
+    assert any(
+        "provider startup gate released after first launch attempts concluded"
+        in record.message
+        and "local=warmup-timeout" in record.message
+        for record in caplog.records
+    )
+
+
+def test_startup_gate_releases_for_mixed_terminal_and_attempted_required_providers(
+    monkeypatch,
+) -> None:
+    queue = _FakeTaskQueue()
+    local = supervisor._provider_runtime_states["local"]
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local", "parakeet"},
+            terminal=set(),
+            attempted={"parakeet": "warmup-timeout"},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+
+    supervisor._finish_provider_startup_condition(local, "ready")
+    supervisor._release_provider_startup_gate_if_ready()
+    supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 1
+    assert supervisor._provider_startup_gate.released is True
+
+
+def test_startup_gate_window_waits_for_sibling_launch_in_flight(monkeypatch):
+    now = supervisor.PROVIDER_STARTUP_GATE_WINDOW_SECONDS + 1.0
+    queue = _FakeTaskQueue()
+    pending: concurrent.futures.Future = concurrent.futures.Future()
+    supervisor._provider_runtime_states["parakeet"].start_future = pending
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local", "parakeet"},
+            terminal=set(),
+            attempted={"local": "warmup-timeout"},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 0
+    assert supervisor._provider_startup_gate.released is False
+
+
+def test_provider_startup_gate_ceiling_bounds_worker_warmup_timeouts() -> None:
+    slack = 30.0
+
+    assert (
+        supervisor.PROVIDER_STARTUP_GATE_CEILING_SECONDS
+        >= supervisor.LOCAL_SERVER_READY_TIMEOUT_S + slack
+    )
+    assert (
+        supervisor.PROVIDER_STARTUP_GATE_CEILING_SECONDS
+        >= supervisor.PARAKEET_SERVER_READY_TIMEOUT_S + slack
+    )
+    assert supervisor.PROVIDER_STARTUP_GATE_CEILING_SECONDS <= 420.0
+
+
+def test_startup_gate_ceiling_uses_first_start_submission_time(monkeypatch):
+    first_start_at = 120.0
+    now = first_start_at + supervisor.PROVIDER_STARTUP_GATE_CEILING_SECONDS - 1.0
+    queue = _FakeTaskQueue()
+    pending: concurrent.futures.Future = concurrent.futures.Future()
+    supervisor._provider_runtime_states["local"].start_future = pending
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=first_start_at,
+            released=False,
+        ),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 0
+    assert supervisor._provider_startup_gate.released is False
+
+
+def test_startup_gate_window_release_logs_unsatisfied_and_no_in_flight(
+    caplog, monkeypatch
+) -> None:
+    now = supervisor.PROVIDER_STARTUP_GATE_WINDOW_SECONDS + 1.0
+    queue = _FakeTaskQueue()
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local", "parakeet"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    with caplog.at_level(logging.WARNING, logger=supervisor.logger.name):
+        supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 1
+    assert any(
+        "provider startup gate released after 60.0s window with pending providers: "
+        "['local', 'parakeet']"
+        in record.message
+        and "launch_in_flight=false" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("release_mode", ["window", "ceiling"])
+def test_supervise_releases_startup_gate_when_provider_reconcile_steps_raise(
+    monkeypatch, release_mode: str
+) -> None:
+    queue = _FakeTaskQueue()
+    procs = [_FakeManaged("supervise-test")]
+    calls: list[str] = []
+    if release_mode == "window":
+        now = supervisor.PROVIDER_STARTUP_GATE_WINDOW_SECONDS + 1.0
+        first_start_at = None
+    else:
+        first_start_at = 20.0
+        now = first_start_at + supervisor.PROVIDER_STARTUP_GATE_CEILING_SECONDS + 1.0
+        supervisor._provider_runtime_states[
+            "local"
+        ].start_future = concurrent.futures.Future()
+        supervisor._provider_runtime_states[
+            "parakeet"
+        ].start_future = concurrent.futures.Future()
+    monkeypatch.setattr(supervisor, "shutdown_requested", False)
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(supervisor, "_supervisor_callosum", None)
+    monkeypatch.setattr(supervisor, "_last_tick_step_failure", None)
+    monkeypatch.setattr(supervisor, "reset_display_powersave_monitor", lambda: None)
+    monkeypatch.setattr(supervisor, "_check_segment_flush", lambda: None)
+    monkeypatch.setattr(supervisor, "_run_sync_tick", lambda _now: True)
+
+    async def handle_runner_exits_noop(_procs):
+        return None
+
+    monkeypatch.setattr(supervisor, "handle_runner_exits", handle_runner_exits_noop)
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local", "parakeet"},
+            terminal=set(),
+            attempted={},
+            first_start_at=first_start_at,
+            released=False,
+        ),
+    )
+
+    def fail_retry_token(state: supervisor.ProviderRuntimeState) -> None:
+        calls.append(state.provider)
+        raise RuntimeError(f"{state.provider} reconcile boom")
+
+    async def stop_after_tick(_seconds: float) -> None:
+        supervisor.shutdown_requested = True
+
+    monkeypatch.setattr(supervisor, "_handle_provider_retry_token", fail_retry_token)
+    monkeypatch.setattr(supervisor.asyncio, "sleep", stop_after_tick)
+
+    asyncio.run(supervisor.supervise(daily=False, schedule=False, procs=procs))
+
+    assert calls == ["local", "parakeet"]
+    assert queue.ready_calls == 1
+    assert supervisor._provider_startup_gate.released is True
+
+
+def test_startup_gate_attempted_survives_retry_backoff(monkeypatch) -> None:
+    now = 100.0
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="launch-failed",
+            reason_code="launch-failed",
+            detail={"attempt": 1},
+        )
+    )
+    monkeypatch.setattr(supervisor, "_task_queue", _FakeTaskQueue())
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+    assert state.latest_phase == "backoff"
+    assert supervisor._provider_startup_gate.attempted == {"local": "launch-failed"}
+
+    now = state.retry.next_at
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda *_args: supervisor.ProviderLaunchOutcome(
+            status="warmup-timeout",
+            reason_code="warmup-timeout",
+            detail={"attempt": 2},
+        ),
+    )
+
+    supervisor._submit_provider_start_if_needed(state, [])
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert state.latest_phase == "backoff"
+    assert supervisor._provider_startup_gate.attempted == {"local": "launch-failed"}
+
+
 def test_startup_gate_releases_on_window_and_reconciler_keeps_retrying(monkeypatch):
     now = supervisor.PROVIDER_STARTUP_GATE_WINDOW_SECONDS + 1.0
     queue = _FakeTaskQueue()
@@ -3887,7 +4288,14 @@ def test_startup_gate_releases_on_window_and_reconciler_keeps_retrying(monkeypat
     monkeypatch.setattr(
         supervisor,
         "_provider_startup_gate",
-        supervisor.ProviderStartupGate(started_at=0.0, required={"local"}),
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
     )
     monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
     monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
@@ -3927,7 +4335,14 @@ def test_startup_gate_releases_on_terminal_provider_state(
     monkeypatch.setattr(
         supervisor,
         "_provider_startup_gate",
-        supervisor.ProviderStartupGate(started_at=0.0, required={"local"}),
+        supervisor.ProviderStartupGate(
+            started_at=0.0,
+            required={"local"},
+            terminal=set(),
+            attempted={},
+            first_start_at=None,
+            released=False,
+        ),
     )
     monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1.0)
 
