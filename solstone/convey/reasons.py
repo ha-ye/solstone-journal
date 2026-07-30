@@ -506,3 +506,9 @@ REPROCESS_ALREADY_COMPLETE = Reason(
     "this day's already done. want to redo it from scratch?",
     200,
 )
+# Success-payload reason like REPROCESS_ALREADY_COMPLETE.
+REPROCESS_HELD_BY_BACKOFF = Reason(
+    "reprocess_held_by_backoff",
+    "sol's not retrying this day until {when}. to start it over right now, use redo from scratch.",
+    200,
+)

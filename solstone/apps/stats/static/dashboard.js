@@ -617,7 +617,7 @@ const Dashboard = (function() {
       body: JSON.stringify({day, flavor})
     })
       .then(result => {
-        if (result && result.status === 'already_complete') {
+        if (result && (result.status === 'already_complete' || result.status === 'held_by_backoff')) {
           statusEl.textContent = result.message || '';
           buttons.forEach(button => { button.disabled = false; });
           return;

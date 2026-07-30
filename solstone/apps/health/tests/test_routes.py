@@ -11,6 +11,8 @@ from datetime import date, timedelta
 from solstone.apps.health import routes as health_routes
 from solstone.convey import backlog_copy
 from solstone.convey.reasons import REPROCESS_ALREADY_COMPLETE
+from solstone.think import catchup_state
+from solstone.think import reprocess as reprocess_mod
 from solstone.think.brain_health import HEADLINES
 from solstone.think.talent_runs import AgentFailure, AgentFailureScan
 
@@ -69,6 +71,48 @@ def _touch_reprocess_marker(journal, day, name, ns):
     marker.touch()
     os.utime(marker, ns=(ns, ns))
     return marker
+
+
+def _write_reprocess_catchup_record(
+    journal,
+    day,
+    kind,
+    *,
+    fingerprint,
+    next_retry_at,
+):
+    state_path = journal / "health" / "catchup-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": catchup_state.STATE_VERSION,
+                "entries": {
+                    f"{day}:{kind}": {
+                        "day": day,
+                        "command_kind": kind,
+                        "attempts": 3,
+                        "consecutive_non_completion": 3,
+                        "last_attempt_at": 0,
+                        "last_outcome": "timeout",
+                        "next_retry_at": next_retry_at,
+                        "entered_backoff_at": next_retry_at - 600,
+                        "notified_at": next_retry_at - 600,
+                        "fingerprint": fingerprint,
+                        "active": None,
+                        "reason_code": None,
+                        "timeout_seconds": None,
+                        "bounded": None,
+                        "cleared": None,
+                        "remaining": None,
+                        "exit_reason": None,
+                        "daily_progress": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class TestLogRoute:
@@ -514,6 +558,51 @@ class TestReprocessRoute:
             "reason_code": REPROCESS_ALREADY_COMPLETE.code,
         }
         assert calls == []
+
+    def test_reprocess_held_by_backoff_returns_success_payload(
+        self, health_env, monkeypatch
+    ):
+        env = health_env()
+        segment = _seed_reprocess_segment(env.journal)
+        (segment / "audio.jsonl").write_text("one\n", encoding="utf-8")
+        _touch_reprocess_marker(env.journal, DAY, "stream.updated", 2_000_000_000)
+        fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+        retry_at = time.time() + 3600
+        _write_reprocess_catchup_record(
+            env.journal,
+            DAY,
+            catchup_state.KIND_DAILY_CATCHUP,
+            fingerprint=fingerprint,
+            next_retry_at=retry_at,
+        )
+        calls = []
+        monkeypatch.setattr(
+            "solstone.think.reprocess.callosum_send",
+            lambda tract, event, **fields: calls.append((tract, event, fields)) or True,
+        )
+
+        response = env.client.post(
+            "/app/health/api/reprocess",
+            json={"day": DAY, "flavor": "process-now"},
+        )
+
+        payload = response.get_json()
+        assert (
+            response.status_code,
+            payload.get("status"),
+            payload.get("reason_code"),
+            calls,
+        ) == (200, "held_by_backoff", "reprocess_held_by_backoff", [])
+        assert payload == {
+            "status": "held_by_backoff",
+            "day": DAY,
+            "message": (
+                "sol's not retrying this day until "
+                f"{reprocess_mod._format_retry_when(retry_at)}. "
+                "to start it over right now, use redo from scratch."
+            ),
+            "reason_code": "reprocess_held_by_backoff",
+        }
 
     def test_reprocess_today_returns_past_only(self, health_env, monkeypatch):
         env = health_env()

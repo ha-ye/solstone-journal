@@ -21,6 +21,7 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
     OBSERVER_RESTART_FAILED,
     REPROCESS_ALREADY_COMPLETE,
+    REPROCESS_HELD_BY_BACKOFF,
     REPROCESS_PAST_ONLY,
     REPROCESS_UNREACHABLE,
 )
@@ -264,6 +265,13 @@ def reprocess():
             day=day,
             message=REPROCESS_ALREADY_COMPLETE.message,
             reason_code=REPROCESS_ALREADY_COMPLETE.code,
+        )
+    if code is ReprocessCode.HELD_BY_BACKOFF:
+        return jsonify(
+            status="held_by_backoff",
+            day=day,
+            message=REPROCESS_HELD_BY_BACKOFF.message.format(when=outcome.when),
+            reason_code=REPROCESS_HELD_BY_BACKOFF.code,
         )
     if code is ReprocessCode.PAST_ONLY:
         return error_response(REPROCESS_PAST_ONLY)
