@@ -213,6 +213,45 @@ def get_health_beacon(record: dict) -> dict | None:
     return beacon if isinstance(beacon, dict) else None
 
 
+def _usable_observer_stamp(value: Any, *, current_ms: int) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > current_ms:
+        return None
+    return value
+
+
+def get_delivery_divergence(
+    record: dict, *, now_ms: int, reachable_within_ms: int
+) -> dict | None:
+    """Return delivery freshness facts for a reachable observer record.
+
+    This is read-only and never mutates ``record``. Every unusable stamp resolves
+    to ``None`` rather than an exception. The caller supplies the reachability
+    window so this helper does not own a second freshness threshold.
+    """
+    last_seen = _usable_observer_stamp(record.get("last_seen"), current_ms=now_ms)
+    if last_seen is None:
+        return None
+    last_segment_received_at = _usable_observer_stamp(
+        record.get("last_segment_received_at"), current_ms=now_ms
+    )
+    if last_segment_received_at is None:
+        return None
+
+    last_seen_age_ms = now_ms - last_seen
+    if last_seen_age_ms >= reachable_within_ms:
+        return None
+
+    return {
+        "name": record.get("name", "unknown"),
+        "last_seen_age_ms": last_seen_age_ms,
+        "last_segment_received_age_ms": now_ms - last_segment_received_at,
+    }
+
+
 def _observer_filename(record: dict[str, Any]) -> str:
     return f"{observer_filename_prefix(record)}.json"
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import plistlib
@@ -39,6 +40,9 @@ def args(doctor):
 MAINT_APP = "sol"
 MAINT_TASK = "000_migrate_agent_layout"
 MAINT_QUALIFIED = f"{MAINT_APP}:{MAINT_TASK}"
+DOCTOR_NOW_MS = 2_000_000_000_000
+MINUTE_MS = 60_000
+HOUR_MS = 60 * MINUTE_MS
 
 
 def maint_state_file(journal: Path) -> Path:
@@ -257,6 +261,551 @@ def test_observer_ingest_health_ok_and_skip(doctor, monkeypatch):
     result = doctor.observer_ingest_health_check(args(doctor))
 
     assert result.status == "skip"
+
+
+def test_capture_health_check_maps_every_rollup_status(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+
+    cases = [
+        (
+            "active",
+            "ok",
+            [{"name": "desktop", "last_seen": now}],
+            "rollup=active; observers reaching the journal",
+            True,
+        ),
+        (
+            "stale",
+            "warn",
+            [{"name": "desktop", "last_seen": now - MINUTE_MS}],
+            "rollup=stale; observers: desktop=stale",
+            True,
+        ),
+        (
+            "offline",
+            "warn",
+            [{"name": "desktop"}],
+            "rollup=offline; observers: desktop=offline",
+            False,
+        ),
+        (
+            "degraded",
+            "warn",
+            [{"name": "desktop", "health": {"ingest_rejection": {}}}],
+            "rollup=degraded; observers: desktop=degraded",
+            False,
+        ),
+        (
+            "no_observers",
+            "skip",
+            [],
+            "rollup=no_observers; no registered observers",
+            False,
+        ),
+    ]
+
+    for rollup, expected_status, observers, detail, needs_clock in cases:
+        if needs_clock:
+            monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+        monkeypatch.setattr(
+            "solstone.apps.observer.utils.list_observers",
+            lambda observers=observers: observers,
+        )
+
+        result = doctor.capture_health_check(args(doctor))
+
+        assert result.name == "capture_health"
+        assert result.status == expected_status, rollup
+        assert result.detail == detail
+        if expected_status == "warn":
+            assert result.fix == doctor._CAPTURE_HEALTH_FIX
+
+    def raise_at_call_time() -> list[dict]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        raise_at_call_time,
+    )
+
+    result = doctor.capture_health_check(args(doctor))
+
+    assert result.status == "skip"
+    assert result.detail == "rollup=unknown; observer records unavailable"
+
+
+def test_lockstep_stale_stamps_warn_on_capture_health_only(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    stale_stamp = now - (7 * HOUR_MS)
+    observer = {
+        "name": "desktop",
+        "last_seen": stale_stamp,
+        "last_segment_received_at": stale_stamp,
+        "enabled": True,
+        "stats": {},
+    }
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [observer],
+    )
+
+    capture_result = doctor.capture_health_check(args(doctor))
+    delivery_result = doctor.observer_delivery_stall_check(args(doctor))
+
+    # Lockstep staleness is what a wedged upload path produces, and it is check 1
+    # reachability staleness that reports it.
+    assert capture_result.status == "warn"
+    assert "rollup=offline" in capture_result.detail
+    assert delivery_result.status == "ok"
+    assert delivery_result.detail == "delivery could not be assessed for any observer"
+
+
+def test_observer_delivery_stall_warns_when_reachable_but_delivery_is_old(
+    doctor, monkeypatch
+):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "desktop",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "observer desktop is reaching the journal" in result.detail
+    assert "last reach 1m ago" in result.detail
+    assert "last upload landed 420m ago" in result.detail
+    assert result.fix == doctor._OBSERVER_DELIVERY_STALL_FIX
+
+
+def test_observer_delivery_stall_names_duplicate_evidence(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "desktop",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {"duplicates_rejected": 2},
+            }
+        ],
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "prior duplicate responses=2" in result.detail
+    assert "repeated uploads may be landing without a newer upload" in result.detail
+
+
+def test_observer_delivery_stall_names_beacon_evidence_without_duplicate_counter(
+    doctor, monkeypatch
+):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "desktop",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+                "health": {
+                    "beacon": {
+                        "received_at": now - MINUTE_MS,
+                        "pending_queue_depth": 4,
+                    }
+                },
+            }
+        ],
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "pending queue depth 4" in result.detail
+    assert "uploads may not be landing" in result.detail
+
+
+def test_observer_delivery_stall_silent_when_observer_is_not_reaching_the_journal(
+    doctor, monkeypatch
+):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "desktop",
+                "last_seen": now - (3 * MINUTE_MS),
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "delivery could not be assessed for any observer"
+
+
+def test_observer_delivery_stall_tolerates_unusable_stamps(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    records = [
+        {
+            "name": "missing-reach",
+            "last_seen": None,
+            "last_segment_received_at": now - (7 * HOUR_MS),
+            "enabled": True,
+            "stats": {},
+        },
+        {
+            "name": "missing-delivery",
+            "last_seen": now - MINUTE_MS,
+            "last_segment_received_at": None,
+            "enabled": True,
+            "stats": {},
+        },
+        {
+            "name": "missing-both",
+            "last_seen": None,
+            "last_segment_received_at": None,
+            "enabled": True,
+            "stats": {},
+        },
+        {
+            "name": "bad-value",
+            "last_seen": "x",
+            "last_segment_received_at": now - (7 * HOUR_MS),
+            "enabled": True,
+            "stats": {},
+        },
+    ]
+
+    for record in records:
+        monkeypatch.setattr(
+            "solstone.apps.observer.utils.list_observers",
+            lambda record=record: [record],
+        )
+
+        result = doctor.observer_delivery_stall_check(args(doctor))
+
+        assert result.status == "ok"
+        assert result.detail == "delivery could not be assessed for any observer"
+
+
+def test_new_checks_complete_the_narrow_battery_with_unusable_stamps(
+    doctor, monkeypatch
+):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "bad-value",
+                "last_seen": "x",
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+
+    # This narrow battery exists because run_checks appends func(args) without a
+    # per-check guard at doctor.py:1469.
+    results = doctor.run_checks(
+        args(doctor),
+        checks=[
+            (doctor.CAPTURE_HEALTH_CHECK, doctor.capture_health_check),
+            (
+                doctor.OBSERVER_DELIVERY_STALL_CHECK,
+                doctor.observer_delivery_stall_check,
+            ),
+        ],
+    )
+
+    assert [result.name for result in results] == [
+        "capture_health",
+        "observer_delivery_stall",
+    ]
+
+
+def test_observer_delivery_stall_delivery_threshold_boundary_pair(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "inside",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - doctor._OBSERVER_DELIVERY_STALL_MS,
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+    inside = doctor.observer_delivery_stall_check(args(doctor))
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "outside",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now
+                - doctor._OBSERVER_DELIVERY_STALL_MS
+                - MINUTE_MS,
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+    outside = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert inside.status == "ok"
+    assert inside.detail == "every observer is delivering"
+    assert outside.status == "warn"
+
+
+def test_observer_delivery_stall_reachability_window_boundary_pair(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "inside",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+    inside = doctor.observer_delivery_stall_check(args(doctor))
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "outside",
+                "last_seen": now - doctor._STALE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "stats": {},
+            }
+        ],
+    )
+    outside = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert inside.status == "warn"
+    assert outside.status == "ok"
+    assert outside.detail == "delivery could not be assessed for any observer"
+
+
+def test_observer_delivery_stall_population_and_skip_semantics(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    # doctor.now_ms is the clock seam for observer_delivery_stall_check.
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {
+                "name": "revoked",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": True,
+                "revoked": True,
+                "stats": {},
+            },
+            {
+                "name": "disabled",
+                "last_seen": now - MINUTE_MS,
+                "last_segment_received_at": now - (7 * HOUR_MS),
+                "enabled": False,
+                "stats": {},
+            },
+        ],
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "skip"
+    assert result.detail == "no registered observers"
+
+    def raise_at_call_time() -> list[dict]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        raise_at_call_time,
+    )
+
+    result = doctor.observer_delivery_stall_check(args(doctor))
+
+    assert result.status == "skip"
+    assert result.detail == "observer records unavailable: RuntimeError: boom"
+
+
+def test_new_doctor_checks_are_registered(doctor):
+    assert (
+        doctor.CAPTURE_HEALTH_CHECK,
+        doctor.capture_health_check,
+    ) in doctor.JOURNAL_CHECKS
+    assert (
+        doctor.OBSERVER_DELIVERY_STALL_CHECK,
+        doctor.observer_delivery_stall_check,
+    ) in doctor.JOURNAL_CHECKS
+    assert doctor.CAPTURE_HEALTH_CHECK.severity == "advisory"
+    assert doctor.CAPTURE_HEALTH_CHECK.platforms == ("linux", "darwin")
+    assert doctor.OBSERVER_DELIVERY_STALL_CHECK.severity == "advisory"
+    assert doctor.OBSERVER_DELIVERY_STALL_CHECK.platforms == ("linux", "darwin")
+
+
+def test_get_delivery_divergence_returns_none_for_unusable_last_seen(doctor):
+    from solstone.apps.observer.utils import get_delivery_divergence
+
+    now = DOCTOR_NOW_MS
+    unusable = [
+        {},
+        {"last_seen": None},
+        {"last_seen": True},
+        {"last_seen": "x"},
+        {"last_seen": 1.5},
+        {"last_seen": -1},
+        {"last_seen": now + 1},
+    ]
+
+    for partial in unusable:
+        record = {
+            "name": "desktop",
+            "last_segment_received_at": now - MINUTE_MS,
+            **partial,
+        }
+
+        result = get_delivery_divergence(
+            record,
+            now_ms=now,
+            reachable_within_ms=doctor._STALE_MS,
+        )
+
+        assert result is None
+
+
+def test_get_delivery_divergence_returns_none_for_unusable_last_segment_received_at(
+    doctor,
+):
+    from solstone.apps.observer.utils import get_delivery_divergence
+
+    now = DOCTOR_NOW_MS
+    unusable = [
+        {},
+        {"last_segment_received_at": None},
+        {"last_segment_received_at": True},
+        {"last_segment_received_at": "x"},
+        {"last_segment_received_at": 1.5},
+        {"last_segment_received_at": -1},
+        {"last_segment_received_at": now + 1},
+    ]
+
+    for partial in unusable:
+        record = {
+            "name": "desktop",
+            "last_seen": now - MINUTE_MS,
+            **partial,
+        }
+
+        result = get_delivery_divergence(
+            record,
+            now_ms=now,
+            reachable_within_ms=doctor._STALE_MS,
+        )
+
+        assert result is None
+
+
+def test_get_delivery_divergence_returns_none_outside_reachability_window(doctor):
+    from solstone.apps.observer.utils import get_delivery_divergence
+
+    now = DOCTOR_NOW_MS
+    record = {
+        "name": "desktop",
+        "last_seen": now - doctor._STALE_MS,
+        "last_segment_received_at": now - MINUTE_MS,
+    }
+
+    result = get_delivery_divergence(
+        record,
+        now_ms=now,
+        reachable_within_ms=doctor._STALE_MS,
+    )
+
+    assert result is None
+
+
+def test_get_delivery_divergence_returns_facts_without_mutating_the_record(doctor):
+    from solstone.apps.observer.utils import get_delivery_divergence
+
+    now = DOCTOR_NOW_MS
+    record = {
+        "name": "desktop",
+        "last_seen": now - MINUTE_MS,
+        "last_segment_received_at": now - (7 * HOUR_MS),
+        "stats": {"duplicates_rejected": 1},
+    }
+    before = copy.deepcopy(record)
+
+    result = get_delivery_divergence(
+        record,
+        now_ms=now,
+        reachable_within_ms=doctor._STALE_MS,
+    )
+    second = get_delivery_divergence(
+        record,
+        now_ms=now,
+        reachable_within_ms=doctor._STALE_MS,
+    )
+
+    assert result == {
+        "name": "desktop",
+        "last_seen_age_ms": MINUTE_MS,
+        "last_segment_received_age_ms": 7 * HOUR_MS,
+    }
+    assert second == result
+    assert record == before
 
 
 def test_orphan_segment_pdf_check_warns_for_pdf_without_transcript(

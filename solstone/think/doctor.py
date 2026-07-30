@@ -47,6 +47,7 @@ from typing import IO, Callable, Sequence
 
 from solstone.think import features as _features
 from solstone.think import maint, parakeet_readiness
+from solstone.think.capture_health import _STALE_MS, get_capture_health
 from solstone.think.health_cli import fetch_supervisor_status
 from solstone.think.media import PDF_EXTENSIONS
 from solstone.think.probe import (
@@ -148,8 +149,12 @@ _COREML_MODEL_FIX = (
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
 JOURNAL_MAINT_TASKS_CHECK = Check("journal_maint_tasks", "blocker", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
+CAPTURE_HEALTH_CHECK = Check("capture_health", "advisory", ("linux", "darwin"))
 OBSERVER_INGEST_HEALTH_CHECK = Check(
     "observer_ingest_health", "advisory", ("linux", "darwin")
+)
+OBSERVER_DELIVERY_STALL_CHECK = Check(
+    "observer_delivery_stall", "advisory", ("linux", "darwin")
 )
 ORPHAN_SEGMENT_PDF_CHECK = Check("orphan_segment_pdf", "advisory", ("linux", "darwin"))
 BRAIN_CHECK = Check("brain", "advisory", ("linux", "darwin"))
@@ -169,6 +174,14 @@ _TASK_PACE_FIX = (
 _OBSERVER_INGEST_FIX = (
     "update or restart the observer, then confirm a valid upload clears the rejection"
 )
+_CAPTURE_HEALTH_FIX = "open /app/health to inspect observer health"
+_OBSERVER_DELIVERY_STALL_FIX = "restart the observer, then confirm a new upload lands"
+# Reachability beacons can arrive every few seconds and segment keys are normally
+# bounded at five minutes, but a reachable laptop can be awake while delivery is
+# intentionally quiet. Use a generous six-hour window so doctor warns only when
+# uploads have not landed for a sustained period. See solstone/observe/sense.py:
+# 974-978 and solstone/observe/protocol.schema.json:17,:52.
+_OBSERVER_DELIVERY_STALL_MS = 6 * 60 * 60 * 1000
 _ORPHAN_SEGMENT_PDF_FIX = (
     "journal maint --force settings:007_migrate_pdf_extractions, "
     "then re-run journal doctor"
@@ -1055,6 +1068,150 @@ def brain_check(args: Args) -> CheckResult:
     return make_result(check, "warn", detail)
 
 
+def _capture_health_observer_summary(observers: list[dict]) -> str:
+    summaries = []
+    for observer in observers[:3]:
+        summaries.append(
+            f"{observer.get('name', 'unknown')}={observer.get('status', 'unknown')}"
+        )
+    if len(observers) > 3:
+        summaries.append(f"+{len(observers) - 3} more")
+    return ", ".join(summaries) if summaries else "none"
+
+
+def capture_health_check(args: Args) -> CheckResult:
+    del args
+    check = CAPTURE_HEALTH_CHECK
+    result = get_capture_health()
+    status = result["status"]
+    if status == "active":
+        return make_result(
+            check,
+            "ok",
+            "rollup=active; observers reaching the journal",
+        )
+    if status in {"stale", "offline", "degraded"}:
+        detail = (
+            f"rollup={status}; observers: "
+            f"{_capture_health_observer_summary(result['observers'])}"
+        )
+        return make_result(check, "warn", truncate(detail, 400), _CAPTURE_HEALTH_FIX)
+    if status == "no_observers":
+        return make_result(
+            check,
+            "skip",
+            "rollup=no_observers; no registered observers",
+        )
+    return make_result(
+        check,
+        "skip",
+        f"rollup={status}; observer records unavailable",
+    )
+
+
+def _observer_delivery_stall_clause(
+    observer: dict,
+    facts: dict,
+) -> str:
+    name = facts["name"]
+    last_seen_minutes = facts["last_seen_age_ms"] // 60_000
+    last_segment_minutes = facts["last_segment_received_age_ms"] // 60_000
+    clause = (
+        f"observer {name} is reaching the journal; last reach "
+        f"{last_seen_minutes}m ago, last upload landed {last_segment_minutes}m ago"
+    )
+
+    stats = observer.get("stats")
+    duplicates = stats.get("duplicates_rejected") if isinstance(stats, dict) else None
+    if (
+        isinstance(duplicates, int)
+        and not isinstance(duplicates, bool)
+        and duplicates > 0
+    ):
+        return (
+            f"{clause}; prior duplicate responses={duplicates}, so repeated uploads "
+            "may be landing without a newer upload"
+        )
+
+    health = observer.get("health")
+    beacon = health.get("beacon") if isinstance(health, dict) else None
+    if isinstance(beacon, dict):
+        pending = beacon.get("pending_queue_depth")
+        if isinstance(pending, int) and not isinstance(pending, bool):
+            return (
+                f"{clause}; pending queue depth {pending}, so uploads may not be "
+                "landing"
+            )
+
+    return f"{clause}; uploads may not be landing"
+
+
+def observer_delivery_stall_check(args: Args) -> CheckResult:
+    del args
+    check = OBSERVER_DELIVERY_STALL_CHECK
+    try:
+        from solstone.apps.observer.utils import (
+            get_delivery_divergence,
+            list_observers,
+        )
+
+        observers = list_observers()
+    except Exception as exc:
+        return make_result(
+            check,
+            "skip",
+            f"observer records unavailable: {type(exc).__name__}: {exc}",
+        )
+    enabled = [
+        observer
+        for observer in observers
+        if not observer.get("revoked", False) and observer.get("enabled", True)
+    ]
+    if not enabled:
+        return make_result(check, "skip", "no registered observers")
+
+    current_ms = now_ms()
+    facts_by_observer = [
+        (
+            observer,
+            get_delivery_divergence(
+                observer,
+                now_ms=current_ms,
+                reachable_within_ms=_STALE_MS,
+            ),
+        )
+        for observer in enabled
+    ]
+    assessed = [
+        (observer, facts)
+        for observer, facts in facts_by_observer
+        if isinstance(facts, dict)
+    ]
+    failing = [
+        (observer, facts)
+        for observer, facts in assessed
+        if facts["last_segment_received_age_ms"] > _OBSERVER_DELIVERY_STALL_MS
+    ]
+    if not failing:
+        if assessed:
+            return make_result(check, "ok", "every observer is delivering")
+        return make_result(
+            check,
+            "ok",
+            "delivery could not be assessed for any observer",
+        )
+
+    detail = "; ".join(
+        _observer_delivery_stall_clause(observer, facts) for observer, facts in failing
+    )
+    return make_result(
+        check,
+        "warn",
+        truncate(detail, 400),
+        _OBSERVER_DELIVERY_STALL_FIX,
+    )
+
+
 def observer_ingest_health_check(args: Args) -> CheckResult:
     del args
     check = OBSERVER_INGEST_HEALTH_CHECK
@@ -1311,6 +1468,8 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (JOURNAL_MAINT_TASKS_CHECK, journal_maint_tasks_check),
     (TASK_PACE_CHECK, task_pace_check),
     (BRAIN_CHECK, brain_check),
+    (CAPTURE_HEALTH_CHECK, capture_health_check),
+    (OBSERVER_DELIVERY_STALL_CHECK, observer_delivery_stall_check),
     (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
     (ORPHAN_SEGMENT_PDF_CHECK, orphan_segment_pdf_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
