@@ -8,6 +8,7 @@ import logging
 from importlib import import_module
 
 import solstone.apps.network.routes as link_routes
+from solstone.apps.observer.utils import load_observer, save_observer
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 
@@ -20,6 +21,7 @@ PAIRED_AT = "2026-05-20T00:00:00Z"
 PHONE_FINGERPRINT = "sha256:" + ("a" * 64)
 PEER_FINGERPRINT = "sha256:" + ("c" * 64)
 UNKNOWN_ROLE_FINGERPRINT = "sha256:" + ("d" * 64)
+OTHER_FINGERPRINT = "sha256:" + ("e" * 64)
 
 
 def _short(fingerprint: str) -> str:
@@ -37,6 +39,20 @@ def _add_authorized(fingerprint: str, device_label: str, *, role: str = "") -> N
         "inst-1",
         role=role,
         paired_at=PAIRED_AT,
+    )
+
+
+def _save_bound_observer(handle: str, name: str, fingerprint: str) -> None:
+    assert save_observer(
+        {
+            "key": handle,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "device_binding": {"device": fingerprint, "kind": "cert"},
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
     )
 
 
@@ -65,6 +81,50 @@ def test_unpair_phone_by_fingerprint_removes_authorized(link_env) -> None:
     assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
     assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
     assert load_journal_source_by_fingerprint(PHONE_FINGERPRINT) is None
+
+
+def test_unpair_phone_revokes_bound_observer_records(link_env) -> None:
+    env = link_env()
+    _add_authorized(PHONE_FINGERPRINT, "phone")
+    _save_bound_observer("phone-a-observer", "phone-a", PHONE_FINGERPRINT)
+    _save_bound_observer("phone-b-observer", "phone-b", PHONE_FINGERPRINT)
+    _save_bound_observer("other-observer", "other", OTHER_FINGERPRINT)
+
+    response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
+    assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
+    assert load_observer("phone-a-observer")["revoked"] is True
+    assert load_observer("phone-b-observer")["revoked"] is True
+    assert load_observer("other-observer")["revoked"] is False
+
+
+def test_unpair_cascade_runs_after_authorized_removal(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    _add_authorized(PHONE_FINGERPRINT, "phone")
+    authorized_present_during_cascade: list[bool] = []
+
+    def record_cascade_order(fingerprint: str) -> list[dict]:
+        authorized_present_during_cascade.append(
+            _authorized().is_authorized(fingerprint)
+        )
+        return []
+
+    monkeypatch.setattr(
+        link_routes,
+        "revoke_observers_bound_to_device",
+        record_cascade_order,
+    )
+
+    response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
+    assert authorized_present_during_cascade == [False]
 
 
 def test_unpair_unknown_role_removes_authorized_without_warning(

@@ -55,6 +55,7 @@ from solstone.apps.network.relay_link import (
     derive_rk,
     encode_pair_window_link,
 )
+from solstone.apps.observer.utils import revoke_observers_bound_to_device
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.bridge import get_cached_state
@@ -1049,6 +1050,7 @@ def unpair() -> Any:
         authorized.remove(fingerprint)
     else:
         authorized.remove(fingerprint)
+    revoke_observers_bound_to_device(fingerprint)
     return jsonify({"unpaired": fingerprint})
 
 

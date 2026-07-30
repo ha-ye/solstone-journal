@@ -515,6 +515,33 @@ def revoke_observer_record(identifier: str) -> dict:
     return observer
 
 
+def revoke_observers_bound_to_device(device: str) -> list[dict]:
+    """Revoke all observer records bound to a paired-device identity."""
+    revoked: list[dict] = []
+    revoked_at = now_ms()
+    for observer in list_observers():
+        binding = observer_device_binding(observer)
+        if (
+            binding is None
+            or binding.get("device") != device
+            or observer.get("revoked", False)
+        ):
+            continue
+        observer["revoked"] = True
+        observer["revoked_at"] = revoked_at
+        if not save_observer(observer):
+            raise RuntimeError("failed to save observer")
+        key_prefix = observer_filename_prefix(observer)
+        log_app_action(
+            app="observer",
+            facet=None,
+            action="observer_revoke",
+            params={"name": observer.get("name", ""), "key_prefix": key_prefix},
+        )
+        revoked.append(observer)
+    return revoked
+
+
 def list_observers() -> list[dict]:
     """List all registered observers.
 
