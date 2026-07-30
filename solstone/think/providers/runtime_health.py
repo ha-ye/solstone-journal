@@ -54,6 +54,7 @@ ReasonCode = Literal[
     "host-admission-blocked",
     "platform-unsupported",
     "package-unavailable",
+    "openmp-runtime-unavailable",
     "ram-insufficient",
     "gpu-probe-failed",
     "gpu-unavailable",

@@ -457,6 +457,57 @@ class TestParakeetCppSttReady:
         assert result.detail == "parakeet-server not reachable: no port"
         assert result.fix == doctor._PARAKEET_CPP_START_FIX
 
+    def test_warns_with_openmp_fix_before_server_probe(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        from solstone.think.providers import parakeet_server
+
+        journal = tmp_path / "journal"
+        artifact_key = "x86_64-unknown-linux-gnu"
+        cache_root = doctor.parakeet_readiness.parakeet_cpp_cache_root(journal)
+        self.make_ready_files(doctor, cache_root, artifact_key)
+        monkeypatch.setattr(
+            doctor, "_resolve_configured_backend", lambda: "parakeet-cpp"
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "_platform_info",
+            lambda: ("linux", "x86_64"),
+        )
+        monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "probe_parakeet_cpp_binary",
+            lambda _path: doctor.parakeet_readiness.ParakeetCppProbe(
+                runnable=False,
+                reason_code="openmp_runtime_unavailable",
+                detail=(
+                    "error while loading shared libraries: libgomp.so.1: "
+                    "cannot open shared object file"
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness.platform,
+            "freedesktop_os_release",
+            lambda: {"ID": "fedora"},
+        )
+        monkeypatch.setattr(
+            parakeet_server,
+            "probe_state",
+            lambda: pytest.fail("server probe must follow binary readiness"),
+        )
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "warn"
+        assert result.detail == (
+            "parakeet-cpp cannot start: OpenMP runtime unavailable (libgomp.so.1)"
+        )
+        assert result.fix == (
+            "install the OpenMP runtime with: sudo dnf install libgomp"
+        )
+
     def test_ok_when_files_present_and_server_ready(
         self, doctor, monkeypatch, tmp_path
     ):

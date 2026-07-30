@@ -48,7 +48,6 @@ from solstone.think.utils import get_journal
 
 LOG = logging.getLogger(__name__)
 PARAKEET_PROVIDER_NAME = "parakeet"
-_PROBE_TIMEOUT_SECONDS = 10
 
 PARAKEET_SERVER_PINS: dict[tuple[str, str], dict[str, str]] = {
     ("x86_64-unknown-linux-gnu", "vulkan"): {
@@ -410,33 +409,6 @@ def _chmod_executable(path: Path) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def probe_binary_runnable(binary_path: str | Path) -> tuple[bool, str | None]:
-    import subprocess
-
-    try:
-        completed = subprocess.run(
-            [str(binary_path), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=_PROBE_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {_PROBE_TIMEOUT_SECONDS}s"
-    except Exception as exc:
-        return False, str(exc)
-
-    if completed.returncode == 0:
-        return True, None
-
-    detail = (
-        (completed.stderr or "").strip()
-        or (completed.stdout or "").strip()
-        or f"exited with status {completed.returncode}"
-    )
-    return False, detail
-
-
 def _install_parakeet_server_unlocked(
     backend: str,
     journal_path: str | Path | None = None,
@@ -749,6 +721,19 @@ def inspect_readiness(journal_path: str | Path | None = None) -> ReadinessOutcom
     binary_status, binary_reason_code = _combined_artifact_status(
         cpu_payload, vulkan_payload
     )
+    runtime_probe = None
+    host: dict[str, Any] = {}
+    if readiness_status == "ready":
+        runtime_probe = parakeet_readiness.probe_parakeet_cpp_binary(cpu_path)
+        host["binary_runtime"] = {
+            "backend": "cpu",
+            "runnable": runtime_probe.runnable,
+            "reason_code": runtime_probe.reason_code,
+            "detail": runtime_probe.detail,
+        }
+        if not runtime_probe.runnable:
+            readiness_status = "host-ineligible"
+            reason_code = runtime_probe.reason_code
     return ReadinessOutcome(
         provider=PARAKEET_PROVIDER_NAME,
         status=readiness_status,  # type: ignore[arg-type]
@@ -767,11 +752,12 @@ def inspect_readiness(journal_path: str | Path | None = None) -> ReadinessOutcom
             "last_transition_at": status["last_transition_at"],
             "last_progress_at": status["last_progress_at"],
         },
-        host={},
+        host=host,
         artifacts={
             "binary_installed": cpu_proof.ready and vulkan_proof.ready,
             "binary_cpu_installed": cpu_proof.ready,
             "binary_vulkan_installed": vulkan_proof.ready,
+            "binary_runnable": runtime_probe.runnable if runtime_probe else False,
             "model_installed": model_proof.ready,
             "binary_path_cpu": str(cpu_path),
             "binary_path_vulkan": str(vulkan_path),
@@ -803,6 +789,11 @@ def ensure_artifacts_installed(
         )
     if not readiness.artifacts["model_installed"]:
         raise ParakeetProviderError("model_missing", "Parakeet model is not installed.")
+    if not readiness.artifacts["binary_runnable"]:
+        raise ParakeetProviderError(
+            str(readiness.reason_code),
+            "Parakeet server cannot start on this host.",
+        )
     return Path(readiness.artifacts[f"binary_path_{backend}"]), Path(
         readiness.artifacts["model_path"]
     )
@@ -826,5 +817,4 @@ __all__ = [
     "model_dir",
     "model_path",
     "parakeet_server_artifact_key",
-    "probe_binary_runnable",
 ]

@@ -1026,6 +1026,8 @@ def test_readiness_block_table_maps_artifact_and_proof_statuses(
     [
         ("platform_unsupported", "platform-unsupported"),
         ("package_unavailable", "package-unavailable"),
+        ("binary_not_runnable", "package-unavailable"),
+        ("openmp_runtime_unavailable", "openmp-runtime-unavailable"),
         ("ram_insufficient", "ram-insufficient"),
         ("gpu_probe_failed", "gpu-probe-failed"),
         ("gpu_unavailable", "gpu-unavailable"),

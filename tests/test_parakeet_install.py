@@ -66,8 +66,9 @@ def _server_tarball(tmp_path: Path, backend: str) -> Path:
     )
     fixture_root = tmp_path / f"fixture-{backend}" / inner_name
     fixture_root.mkdir(parents=True)
-    (fixture_root / parakeet_readiness.PARAKEET_CPP_BINARY_NAME).write_bytes(
-        f"fake {parakeet_readiness.PARAKEET_CPP_BINARY_NAME} {backend}".encode()
+    (fixture_root / parakeet_readiness.PARAKEET_CPP_BINARY_NAME).write_text(
+        f"#!/bin/sh\nprintf 'fake {parakeet_readiness.PARAKEET_CPP_BINARY_NAME} {backend}\\n'\n",
+        encoding="utf-8",
     )
     (fixture_root / "LICENSE").write_text("license\n", encoding="utf-8")
     (fixture_root / "README.md").write_text("readme\n", encoding="utf-8")
@@ -84,7 +85,7 @@ def _stage_ready_files() -> tuple[Path, Path, Path]:
     model = parakeet_install.model_path()
     for path in (cpu, vulkan):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("server\n", encoding="utf-8")
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_text("model\n", encoding="utf-8")
@@ -189,9 +190,8 @@ def test_install_parakeet_server_relocates_and_chmods_binary(
     final_path = parakeet_install.binary_path("cpu")
     assert result["install_state"] == "verifying"
     assert final_path.exists()
-    assert (
-        final_path.read_bytes()
-        == f"fake {parakeet_readiness.PARAKEET_CPP_BINARY_NAME} cpu".encode()
+    assert final_path.read_text(encoding="utf-8") == (
+        f"#!/bin/sh\nprintf 'fake {parakeet_readiness.PARAKEET_CPP_BINARY_NAME} cpu\\n'\n"
     )
     assert os.access(final_path, os.X_OK)
     assert (install_dir / "LICENSE").is_file()
@@ -457,6 +457,44 @@ def test_ensure_artifacts_installed_resolves_requested_backend(
 
     assert parakeet_install.ensure_artifacts_installed("cpu") == (cpu, model)
     assert parakeet_install.ensure_artifacts_installed("vulkan") == (vulkan, model)
+
+
+def test_inspect_readiness_names_missing_openmp_runtime(tmp_path, monkeypatch) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _stage_ready_files()
+    monkeypatch.setattr(
+        parakeet_readiness,
+        "probe_parakeet_cpp_binary",
+        lambda _path: parakeet_readiness.ParakeetCppProbe(
+            runnable=False,
+            reason_code="openmp_runtime_unavailable",
+            detail=(
+                "error while loading shared libraries: libgomp.so.1: "
+                "cannot open shared object file"
+            ),
+        ),
+    )
+
+    readiness = parakeet_install.inspect_readiness()
+
+    assert readiness.status == "host-ineligible"
+    assert readiness.reason_code == "openmp_runtime_unavailable"
+    assert readiness.host == {
+        "binary_runtime": {
+            "backend": "cpu",
+            "runnable": False,
+            "reason_code": "openmp_runtime_unavailable",
+            "detail": (
+                "error while loading shared libraries: libgomp.so.1: "
+                "cannot open shared object file"
+            ),
+        }
+    }
+
+    with pytest.raises(parakeet_install.ParakeetProviderError) as exc:
+        parakeet_install.ensure_artifacts_installed("cpu")
+
+    assert exc.value.reason_code == "openmp_runtime_unavailable"
 
 
 def test_ensure_artifacts_installed_reports_missing_binary_and_model(

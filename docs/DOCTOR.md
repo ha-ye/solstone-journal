@@ -60,6 +60,7 @@ Use the diagnostic command that matches the question:
 | `journal_sync` | blocker | Concurrent-writer conflict check. |
 | `stale_alias_symlink` | blocker | Checks only the `journal` wrapper; stale aliases warn, never block, and `journal setup` repairs them. |
 | `launchd_stale_plist` | advisory | macOS only; stale legacy service plists should be removed with `journal service uninstall`, then repaired with `journal service install` only on a confirmed headless host. |
+| `default_stt_ready` / `parakeet_cpp_stt_ready` | advisory | Linux Parakeet artifacts, binary loader readiness, model, and running server. A missing `libgomp.so.1` is reported as “OpenMP runtime unavailable” with the distro install command, before the supervisor can collapse it to a generic process exit. |
 | `feature:pdf-import`, `feature:pdf-export`, `feature:whisper` | advisory | Optional extras with exact install commands. |
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
@@ -72,6 +73,12 @@ identity mismatch, crash loops, systemd failed state, and journal-sync conflicts
 are blocker failures. An installed service with no supervisor socket is a
 warning when the OS unit is not failed. Host dependency and feature checks report
 missing journal-host packaging pieces directly.
+
+On Linux, Parakeet uses the host's GCC OpenMP runtime. Install it with
+`sudo apt install libgomp1` on Ubuntu/Debian, `sudo dnf install libgomp` on
+Fedora/RHEL, or `sudo pacman -S libgomp` on Arch. The readiness check executes
+the pinned CPU binary, so file presence and executable bits alone cannot
+produce a false-ready result.
 
 On macOS, `supervisor_conflict` fails when `journal.app` is running while the
 legacy `org.solpbc.solstone` LaunchAgent is installed or loaded, or when a

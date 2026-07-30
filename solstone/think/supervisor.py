@@ -2265,6 +2265,8 @@ def parakeet_physical_thread_count() -> int:
 _HOST_READINESS_REASON_MAP: dict[str, ReasonCode] = {
     "platform_unsupported": "platform-unsupported",
     "package_unavailable": "package-unavailable",
+    "binary_not_runnable": "package-unavailable",
+    "openmp_runtime_unavailable": "openmp-runtime-unavailable",
     "ram_insufficient": "ram-insufficient",
     "gpu_probe_failed": "gpu-probe-failed",
     "gpu_unavailable": "gpu-unavailable",

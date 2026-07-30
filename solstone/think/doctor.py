@@ -1173,9 +1173,24 @@ def _parakeet_cpp_ready_result(check: Check) -> CheckResult:
     except RuntimeError as exc:
         return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
     try:
-        parakeet_readiness.check_parakeet_cpp_files(cache_root, artifact_key)
+        paths = parakeet_readiness.check_parakeet_cpp_files(cache_root, artifact_key)
     except RuntimeError as exc:
         return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
+    binary_probe = parakeet_readiness.probe_parakeet_cpp_binary(paths["binary_cpu"])
+    if not binary_probe.runnable:
+        if binary_probe.reason_code == parakeet_readiness.OPENMP_RUNTIME_UNAVAILABLE:
+            return make_result(
+                check,
+                "warn",
+                "parakeet-cpp cannot start: OpenMP runtime unavailable (libgomp.so.1)",
+                parakeet_readiness.openmp_runtime_install_guidance(),
+            )
+        return make_result(
+            check,
+            "warn",
+            "parakeet-cpp binary cannot start",
+            _PARAKEET_CPP_INSTALL_FIX,
+        )
     from solstone.think.providers import parakeet_server
 
     state, error = parakeet_server.probe_state()

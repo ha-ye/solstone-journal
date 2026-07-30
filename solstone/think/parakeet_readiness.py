@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import os
 import platform
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,16 @@ PARAKEET_CPP_BINARY_BACKENDS = ("cpu", "vulkan")
 PARAKEET_CPP_MODEL_REPO = "mudler/parakeet-cpp-gguf"
 PARAKEET_CPP_MODEL_FILENAME = "tdt-0.6b-v3-q8_0.gguf"
 PARAKEET_CPP_MODEL_REVISION = "bf0af9f425fa01809cadec671b3cb672709d13e9"
+PARAKEET_CPP_PROBE_TIMEOUT_SECONDS = 10
+OPENMP_RUNTIME_UNAVAILABLE = "openmp_runtime_unavailable"
+BINARY_NOT_RUNNABLE = "binary_not_runnable"
+
+
+@dataclass(frozen=True)
+class ParakeetCppProbe:
+    runnable: bool
+    reason_code: str
+    detail: str | None
 
 
 def _platform_info() -> tuple[str, str]:
@@ -110,6 +122,71 @@ def check_parakeet_cpp_files(cache_root: Path, artifact_key: str) -> dict[str, P
     if not model_path.is_file():
         raise RuntimeError(f"parakeet-cpp check failed: model missing at {model_path}")
     return paths
+
+
+def probe_parakeet_cpp_binary(binary_path: Path) -> ParakeetCppProbe:
+    """Run the pinned binary so dynamic-loader failures become readiness facts."""
+    try:
+        completed = subprocess.run(
+            [str(binary_path), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=PARAKEET_CPP_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ParakeetCppProbe(
+            runnable=False,
+            reason_code=BINARY_NOT_RUNNABLE,
+            detail=f"timed out after {PARAKEET_CPP_PROBE_TIMEOUT_SECONDS}s",
+        )
+    except OSError as exc:
+        return ParakeetCppProbe(
+            runnable=False,
+            reason_code=BINARY_NOT_RUNNABLE,
+            detail=str(exc),
+        )
+
+    if completed.returncode == 0:
+        return ParakeetCppProbe(runnable=True, reason_code="ready", detail=None)
+
+    detail = (
+        (completed.stderr or "").strip()
+        or (completed.stdout or "").strip()
+        or f"exited with status {completed.returncode}"
+    )
+    reason_code = (
+        OPENMP_RUNTIME_UNAVAILABLE if "libgomp.so.1" in detail else BINARY_NOT_RUNNABLE
+    )
+    return ParakeetCppProbe(
+        runnable=False,
+        reason_code=reason_code,
+        detail=detail,
+    )
+
+
+def openmp_runtime_install_guidance() -> str:
+    """Return verified distro guidance without making package install a side effect."""
+    try:
+        release = platform.freedesktop_os_release()
+    except OSError:
+        release = {}
+    distro_ids = {
+        str(release.get("ID", "")).lower(),
+        *str(release.get("ID_LIKE", "")).lower().split(),
+    }
+    if distro_ids & {"debian", "ubuntu"}:
+        return "install the OpenMP runtime with: sudo apt install libgomp1"
+    if distro_ids & {"fedora", "rhel", "centos"}:
+        return "install the OpenMP runtime with: sudo dnf install libgomp"
+    if "arch" in distro_ids:
+        return "install the OpenMP runtime with: sudo pacman -S libgomp"
+    return (
+        "install the system OpenMP runtime that provides libgomp.so.1, "
+        "then rerun journal doctor"
+    )
 
 
 def _sentinel_path(variant: str) -> Path:

@@ -91,3 +91,69 @@ def test_check_parakeet_cpp_files_reports_missing_and_ready(tmp_path: Path) -> N
         "binary_vulkan": vulkan,
         "model": model,
     }
+
+
+def test_probe_parakeet_cpp_binary_runs_real_executable(tmp_path: Path) -> None:
+    binary = tmp_path / "parakeet-server"
+    binary.write_text("#!/bin/sh\nprintf 'parakeet.cpp test\\n'\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    result = parakeet_readiness.probe_parakeet_cpp_binary(binary)
+
+    assert result.runnable is True
+    assert result.reason_code == "ready"
+    assert result.detail is None
+
+
+def test_probe_parakeet_cpp_binary_names_missing_openmp_runtime(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "parakeet-server"
+    binary.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'error while loading shared libraries: "
+        "libgomp.so.1: cannot open shared object file' >&2\n"
+        "exit 127\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+
+    result = parakeet_readiness.probe_parakeet_cpp_binary(binary)
+
+    assert result.runnable is False
+    assert result.reason_code == "openmp_runtime_unavailable"
+    assert result.detail == (
+        "error while loading shared libraries: libgomp.so.1: "
+        "cannot open shared object file"
+    )
+
+
+@pytest.mark.parametrize(
+    ("release", "expected"),
+    [
+        (
+            {"ID": "ubuntu", "ID_LIKE": "debian"},
+            "install the OpenMP runtime with: sudo apt install libgomp1",
+        ),
+        (
+            {"ID": "fedora"},
+            "install the OpenMP runtime with: sudo dnf install libgomp",
+        ),
+        (
+            {"ID": "arch"},
+            "install the OpenMP runtime with: sudo pacman -S libgomp",
+        ),
+    ],
+)
+def test_openmp_runtime_install_guidance_names_verified_distro_package(
+    monkeypatch: pytest.MonkeyPatch,
+    release: dict[str, str],
+    expected: str,
+) -> None:
+    monkeypatch.setattr(
+        parakeet_readiness.platform,
+        "freedesktop_os_release",
+        lambda: release,
+    )
+
+    assert parakeet_readiness.openmp_runtime_install_guidance() == expected

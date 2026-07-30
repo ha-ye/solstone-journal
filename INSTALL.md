@@ -19,7 +19,15 @@ if solstone is running and healthy, skip to [install sol on your devices](#insta
 
 ### prerequisites
 
-linux: install `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and `ripgrep` (`rg`) from your distro package manager.
+linux: install `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`),
+`ripgrep` (`rg`), and the system OpenMP runtime used by the default local
+Parakeet transcription provider:
+
+```bash
+sudo apt install libgomp1      # Ubuntu/Debian
+sudo dnf install libgomp       # Fedora/RHEL
+sudo pacman -S libgomp         # Arch
+```
 
 macOS: install xcode command line tools (`xcode-select --install`) and homebrew (https://brew.sh), then `brew install uv ripgrep`.
 
@@ -74,7 +82,13 @@ this runs the setup readiness doctor battery, confirms the journal directory at 
 
 let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and choosing how sol thinks — local by default (the bundled model runs right in the journal), or their own provider key if the machine can't run a local model.
 
-a `solstone-journal` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
+a `solstone-journal` install bundles the Python and native artifacts a journal
+host needs — PDF rendering, whisper, and the default CPU transcription stack
+are included; `journal setup` downloads the transcription model. on Linux, the
+host supplies the small system OpenMP runtime listed in prerequisites.
+`journal doctor --readiness` runs the actual Parakeet binary before reporting
+it ready and gives the exact package-manager command when that runtime is
+missing.
 
 Pick one of `solstone-journal` or `solstone-journal-cuda` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime, native speaker-analysis helper, and bundled models are ready.
 
