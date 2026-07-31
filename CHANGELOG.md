@@ -6,24 +6,23 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+## [1.0.20] - 2026-07-30
+
+### Added
+
+- `journal reprocess <start> --through <end> --from-scratch --yes` redoes a range of days rather than one at a time. days queue oldest first and run one at a time, so a long range can take hours and the current day waits until it finishes. `journal top` and `journal health` show where it is.
+
 ### Changed
 
-- importing from Granola is gone. Granola removed the local file access this import read from, and every
-  remaining route to that data needs a paid Granola plan and a network call, which this import never
-  made. Granola transcripts already in your journal stay exactly as they are, searchable and readable.
+- importing from Granola is gone. Granola removed the local file access this import read from, and every remaining route to that data needs a paid Granola plan and a network call, which this import never made. a scheduled Granola sync goes with it, so nothing is left retrying every hour. Granola transcripts already in your journal stay exactly as they are, searchable and readable.
 
 ### Fixed
 
-- `journal observer create` no longer ends in an unexplained error. observers register themselves, either from this machine directly or from a paired device, so there is nothing to create by hand. the command now says that, and keeps the pairing and revoke hints for remote devices and stuck streams.
-- observer registration now keeps the old local path and enforces paired devices only where a stream is already tied to one. an observer already in your journal can be claimed by the device that pairs with it, keeping its history; another device cannot take over that stream, and a refusal now says what is actually wrong.
-- your journal now records what it turns away. when something arrives from a device your journal does not recognise, it is refused, and until now that left no trace anywhere: no way to see that it happened, or how much. your journal now records a refusal while it is happening, and again once it stops, with how many were turned away.
+- an upload your journal turns away now leaves a trace. something can arrive carrying a key your journal does not know, or one that has since been withdrawn, and it is refused. until now that left no sign anywhere: no way to see it had happened, or how often. a refusal is now noted while it is going on, and again once it stops, with how many were turned away.
+- what sol takes in on a paired device reaches your journal byte-for-byte. a read over the link could add two stray bytes to the front of a file while still reporting that the transfer finished.
+- a day that stalled on a local model moves again. work could be handed to a model that was still loading and fail there, and in chat a reply that was still being written could be ended with an error while the answer arrived moments later. queued work now waits for the models it needs to finish starting instead of waiting on a timer, and a reply still being written is no longer read as a stopped one. when a day is held back for a retry, process now says so instead of reporting it queued.
+- a model that declines a piece of work no longer has its refusal kept as the answer. text along the lines of "I cannot view images" could be written into your journal as a screen description, or come back in chat as a reply. that now ends with a stated reason and nothing written, and a model that keeps declining the same frame is no longer asked over and over.
 - an import started while another one is running now waits its turn. it used to report that it started and then never run, and the file it came from could not be started again afterwards. an import that failed or never ran can now be started again, and a start that cannot be handed off to run says so instead of reporting success.
-- a slow reply in chat is no longer cut short. when the model was busy, a reply still being written could be ended with an error, and the answer that arrived moments later was thrown away. your journal can now tell that a reply is still being written, so slow is no longer read as stopped.
-- a routine check that sol is ready to think no longer leaves an error behind. the check passed, but a line from software your journal runs on was recorded as an error, so it showed up in your journal's error list and in the diagnostics attached to a support request. that line is now recorded at its real level, with a plain note of what actually happened.
-- setting up sol on a Mac no longer installs a second background launcher when sol already keeps your journal. setup leaves the existing launcher alone and still prepares the rest of the journal. `journal service install` is still there if you want to install one yourself.
-- daily processing no longer skips the repair step after your journal is already running. that repair now shares the startup work that checked your local voice tools, so a day that needs cleanup can continue instead of stopping at the first audio file.
-- media sent from a paired device now lands in your journal byte-for-byte. a relay read could add two blank-line bytes to the front of a file while still saying the transfer finished.
-- publishing a solstone release can now reuse the already-published journal model package when its wheel and source archive still contain the same files, modes, and bytes. the train-owned packages are still uploaded and checked by exact digest, and the reused model index is checked again before the release is tagged.
 
 ## [1.0.19] - 2026-07-29
 
