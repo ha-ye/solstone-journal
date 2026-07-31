@@ -36,10 +36,6 @@ def _write(repo: Path, rel_path: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _read(repo: Path, rel_path: str) -> str:
-    return (repo / rel_path).read_text(encoding="utf-8")
-
-
 def _replace(repo: Path, rel_path: str, old: str, new: str) -> None:
     path = repo / rel_path
     source = path.read_text(encoding="utf-8")
@@ -165,6 +161,24 @@ def test_valid_repo_passes_with_derived_second_tag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repo = _write_valid_repo(tmp_path, tag=SECOND_TAG, commit=BASE_COMMIT)
+
+    exit_code = _run_guard(repo)
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+
+
+def test_member_workspace_inheritance_with_rename_is_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _write_valid_repo(tmp_path)
+    # The local rename inherits the workspace pin; W and L still govern source, tag, and lock binding.
+    _append(
+        repo,
+        "core/crates/member/Cargo.toml",
+        'myspl = { package = "spl-core", workspace = true }\n',
+    )
 
     exit_code = _run_guard(repo)
 
