@@ -34,6 +34,13 @@ from typing import TypeAlias
 #   tests/test_openapi_schemathesis.py has 6 unmarked default-selected tests
 #   that rewrite .hypothesis/unicode_data/15.1.0/codec-utf-8.json.gz on every
 #   run, which is otherwise a regular-file change at repo root.
+# - tmp: gitignored scratch at the repo root. tests/test_speaker_differential.py
+#   deliberately creates tmp/speaker-differential-cache-race-<pid>-<uuid> inside
+#   the repository, because proving this oracle ignores concurrent __pycache__
+#   churn requires an in-repo location. Under xdist that directory appears and
+#   disappears inside an unrelated consumer's before/after window. The no-write
+#   invariant it would otherwise cover is asserted directly and separately by
+#   the harness's own in-repo-destination refusal test.
 # - target / dist: build outputs, not repository source. cargo and uv rewrite
 #   them constantly, and on a working clone core/target alone carries ~23k files
 #   (~7 GB), which is enough to push a nine-case before/after inventory past
@@ -49,6 +56,7 @@ EXCLUDED_RUNTIME_DIR_NAMES: frozenset[str] = frozenset(
         ".hypothesis",
         "target",
         "dist",
+        "tmp",
     }
 )
 
