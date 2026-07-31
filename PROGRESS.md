@@ -62,6 +62,12 @@
   frames to 64 KiB, writes local EOF after a WS close, and cancels the opposite direction on
   first completion. Its 93-SPL/17-HPKE crate gate is green; the complete relay client,
   dispatch handoff, and live seam tests remain unaccepted.
+- The delegated U5 service supervisor loop is accepted after fresh-eyes review. Its injected
+  runtime seam covers 5-second production polling, exact posture/token startup, asymmetric
+  posture read failures, the resettable one-shot missing-token notice, fatal unexpected run
+  completion, and stop→abort/await cleanup plus the final Callosum hook. The actual strict SPL
+  clippy command and the 101-test crate gate are green. It awaits the concrete U4 relay client
+  factory and real service process wiring; neither is claimed complete.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
