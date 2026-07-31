@@ -13,7 +13,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from solstone.apps.speakers.encoder_config import ENCODER_ID, WESPEAKER_EMBEDDING_WIDTH
+from solstone.apps.speakers.encoder_config import (
+    ENCODER_ID,
+    SPEAKERS_ANALYZE_DTYPE,
+    SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
+    WESPEAKER_EMBEDDING_WIDTH,
+)
 from solstone.observe.transcribe.speakers_analyze_adapter import (
     RESPONSE_SCHEMA,
     TEMP_PREFIX,
@@ -65,9 +70,9 @@ def _response(
         "statement_embeddings": {
             "audio_buffer": "full",
             "encoder": ENCODER_ID,
-            "payload_format": "f32le",
+            "payload_format": SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
             "payload_path": "__filled_by_test__",
-            "dtype": "float32",
+            "dtype": SPEAKERS_ANALYZE_DTYPE,
             "statement_ids": statement_ids,
             "durations_s": [0.5 for _ in statement_ids]
             if durations_s is None
@@ -190,6 +195,19 @@ def test_success_maps_request_response_payload_and_cleans_temp_dir(tmp_path: Pat
     assert result.overlap_fraction == 0.25
 
 
+def test_helper_shaped_wire_literals_are_accepted(tmp_path: Path):
+    response = _response()
+    assert (
+        response["statement_embeddings"]["payload_format"]
+        == SPEAKERS_ANALYZE_PAYLOAD_FORMAT
+    )
+    assert response["statement_embeddings"]["dtype"] == SPEAKERS_ANALYZE_DTYPE
+
+    result, _request, _temp_dir = _run_adapter(tmp_path, response=response)
+
+    assert result.embeddings_data is not None
+
+
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [
@@ -248,6 +266,14 @@ def test_success_maps_request_response_payload_and_cleans_temp_dir(tmp_path: Pat
         (
             lambda r: r["diarization"].update(statement_labels=[1]),
             "statement-label-count-mismatch",
+        ),
+        (
+            lambda r: r["statement_embeddings"].update(payload_format="f32le"),
+            "invalid-payload-format",
+        ),
+        (
+            lambda r: r["statement_embeddings"].update(dtype="float32"),
+            "invalid-dtype",
         ),
     ],
 )

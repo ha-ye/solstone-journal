@@ -38,7 +38,11 @@ from scripts.check_wheel_contents import (
 )
 from scripts.release_digest import file_sha256_size
 from scripts.release_public_evidence import validate_public_evidence_tree
-from solstone.apps.speakers.encoder_config import WESPEAKER_EMBEDDING_WIDTH
+from solstone.apps.speakers.encoder_config import (
+    SPEAKERS_ANALYZE_DTYPE,
+    SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
+    WESPEAKER_EMBEDDING_WIDTH,
+)
 from solstone.think.model_assets import (
     PYANNOTE_SEGMENTATION_MODEL_FILENAME,
     WESPEAKER_MODEL_FILENAME,
@@ -1035,10 +1039,10 @@ def _speakers_analyze_stdout_payload(
             ("statement_embeddings", "byte_count"),
             _expected_speakers_analyze_byte_count(),
         ),
-        (("statement_embeddings", "dtype"), "float32-le"),
+        (("statement_embeddings", "dtype"), SPEAKERS_ANALYZE_DTYPE),
         (
             ("statement_embeddings", "payload_format"),
-            "raw-f32le-row-major-v1",
+            SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
         ),
         (("statement_embeddings", "payload_path"), expected_payload_path),
     )

@@ -22,6 +22,8 @@ import numpy as np
 
 from solstone.apps.speakers.encoder_config import (
     ENCODER_ID,
+    SPEAKERS_ANALYZE_DTYPE,
+    SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
     WESPEAKER_EMBEDDING_WIDTH,
 )
 from solstone.apps.speakers.evidence import (
@@ -480,9 +482,13 @@ def _accepted_result_from_response(
     statement_embeddings = _required_object(response, "statement_embeddings")
     _require_equal(statement_embeddings, "audio_buffer", {"full", "reduced"})
     _require_value(statement_embeddings, "encoder", ENCODER_ID)
-    _require_value(statement_embeddings, "payload_format", "f32le")
+    _require_value(
+        statement_embeddings,
+        "payload_format",
+        SPEAKERS_ANALYZE_PAYLOAD_FORMAT,
+    )
     _require_value(statement_embeddings, "payload_path", str(payload_path))
-    _require_value(statement_embeddings, "dtype", "float32")
+    _require_value(statement_embeddings, "dtype", SPEAKERS_ANALYZE_DTYPE)
     statement_ids = _required_int_list(statement_embeddings, "statement_ids")
     if len(statement_ids) != len(set(statement_ids)):
         raise NativePayloadError("payload", "duplicate-statement-id")

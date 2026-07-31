@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Encoder-specific calibration constants governed by operator spec signoff."""
+"""Encoder calibration constants and native speakers-analyze wire literals.
+
+Calibration thresholds are governed by operator spec signoff. The wire
+literals mirror the values declared by
+``core/crates/solstone-core-speakers-analyze/src/lib.rs`` and are pinned to that
+source by ``tests/test_speakers_analyze_wire_constants.py``.
+"""
 
 import math
 
 ENCODER_ID: str = "wespeaker-resnet34-256"
+SPEAKERS_ANALYZE_PAYLOAD_FORMAT: str = "raw-f32le-row-major-v1"
+SPEAKERS_ANALYZE_DTYPE: str = "float32-le"
 WESPEAKER_EMBEDDING_WIDTH: int = 256
 WESPEAKER_MODEL_SHA256: str = (
     "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
