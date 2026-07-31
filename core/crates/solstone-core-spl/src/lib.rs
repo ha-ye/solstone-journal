@@ -25,6 +25,7 @@ mod service_shutdown;
 mod service_transition;
 mod tunnel_route;
 mod ws_buffer;
+mod ws_sink;
 
 pub use admission::BlobAdmissionGate;
 pub use authenticated_blob::{
@@ -69,3 +70,4 @@ pub use service_transition::{
 };
 pub use tunnel_route::{TunnelRoute, route_tunnel_prefix};
 pub use ws_buffer::{BufferedWsReader, WsBufferError, WsByteSource, WsClosed};
+pub use ws_sink::WsByteSink;

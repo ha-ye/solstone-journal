@@ -39,6 +39,9 @@
   error classes. Resume U2 via delegated sink, receiver, and CLI framing units. AC-4 fixture
   generation is supervisor-owned; U6 remains blocked until the supervisor supplies its fixture
   commit.
+- The delegated U2 `WsByteSink` sibling is accepted after its returned strict-lint correction.
+  It uses the accepted U3 `impl Future + Send` public trait shape with no waiver, preserving
+  the read-only reader boundary for `receive_blob` and U4's concurrent pipe.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -67,6 +70,10 @@
   before legacy fallback. Integration then exposed a direct unused import and test-only
   `assert!(false)` arms under the crate's no-panic clippy gate. This is a contract-review
   catch plus a brief defect: the initial unit brief did not require the crate gate.
+- **U2 split write half — returned.** The first return used public `async fn` trait methods
+  verbatim from the frozen illustrative signature. Strict clippy rejected the implicit future
+  bounds. The return must match U3's public `impl Future + Send` seam with no lint waiver.
+  This is a lane-brief omission caught by review, not supervisor contract rework.
 
 ### Explained twice
 
