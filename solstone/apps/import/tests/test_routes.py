@@ -520,6 +520,9 @@ def test_import_detail_module_runs_with_real_drawer_under_node():
     node = _node_or_skip()
     clean = {
         "timestamp": "20260101_090000",
+        "status": "success",
+        "error": None,
+        "error_stage": None,
         "import_json": {
             "original_filename": "calendar-export.zip",
             "upload_datetime": "2026-01-01T09:00:00",
@@ -591,6 +594,9 @@ def test_import_detail_module_runs_with_real_drawer_under_node():
     }
     error_payload = {
         **clean,
+        "status": "failed",
+        "error": "bad <archive>",
+        "error_stage": "writing",
         "imported_json": {
             "processing_started": "2026-01-01T09:00:00",
             "processing_failed": "2026-01-01T09:02:00",
@@ -607,16 +613,22 @@ def test_import_detail_module_runs_with_real_drawer_under_node():
     }
     pending = {
         "timestamp": "20260101_090000",
+        "status": "pending",
+        "error": None,
+        "error_stage": None,
         "import_json": {
             "original_filename": "pending.txt",
             "upload_datetime": "2026-01-01T09:00:00",
         },
         "imported_json": None,
     }
-    started_without_result = {
+    running_without_result = {
         "timestamp": "20260101_090000",
+        "status": "running",
+        "error": None,
+        "error_stage": None,
         "import_json": {
-            "original_filename": "stalled.txt",
+            "original_filename": "in-progress.txt",
             "upload_datetime": "2026-01-01T09:00:00",
             "task_id": "123",
         },
@@ -640,7 +652,7 @@ def test_import_detail_module_runs_with_real_drawer_under_node():
             f"const collision = {json.dumps(collision)};",
             f"const errorPayload = {json.dumps(error_payload)};",
             f"const pending = {json.dumps(pending)};",
-            f"const startedWithoutResult = {json.dumps(started_without_result)};",
+            f"const runningWithoutResult = {json.dumps(running_without_result)};",
             f"const partial = {json.dumps(partial)};",
             """
 function drawerLineHtml(line) {
@@ -662,7 +674,7 @@ assert(Object.keys(window.ImportDetail).join(",") === "renderDetail,renderMeta,d
 assert(window.ImportDetail.composeDrawerLine(clean) === "2 files created · 5 entries · completed in 10 minutes", "clean line follows grammar");
 assert(window.ImportDetail.composeDrawerLine(collision) === "0 files created · 1 entry · completed in under a minute · owner identity differs", "collision line follows grammar");
 assert(window.ImportDetail.composeDrawerLine(errorPayload) === "failed while processing", "error line hides counts and duration");
-assert(window.ImportDetail.composeDrawerLine(startedWithoutResult) === "failed while processing", "task id without result derives failed line");
+assert(window.ImportDetail.composeDrawerLine(runningWithoutResult) === "processing…", "task id without result yet derives processing line");
 assert(window.ImportDetail.composeDrawerLine(pending) === "processing…", "pending line is processing ellipsis");
 assert(window.ImportDetail.composeDrawerLine(partial) === "2 files created", "partial line omits missing clauses");
 
@@ -692,9 +704,9 @@ assert(window.ImportDetail.kvRow("entries", "").length === 0, "kv row omits empt
 assert(window.ImportDetail.deriveStatus(clean).status === "completed", "completed status");
 assert(window.ImportDetail.deriveStatus(errorPayload).chipTone === "danger", "error danger chip");
 assert(window.ImportDetail.deriveStatus(collision).chipTone === "warn", "collision warn chip");
-assert(window.ImportDetail.deriveStatus({...collision, imported_json: {...collision.imported_json, error: "bad"}}).chipTone === "danger", "error wins over collision");
+assert(window.ImportDetail.deriveStatus({...collision, status: "failed", error: "bad", imported_json: {...collision.imported_json, error: "bad"}}).chipTone === "danger", "error wins over collision");
 assert(window.ImportDetail.deriveStatus(pending).status === "pending", "pending status");
-assert(window.ImportDetail.deriveStatus(startedWithoutResult).status === "failed", "task id no result status failed");
+assert(window.ImportDetail.deriveStatus(runningWithoutResult).status === "running", "task id without a result yet is running, not failed");
 
 assert(window.ImportDetail.resolveDay(clean) === "20260101", "resolveDay follows fixture day");
 assert(window.ImportDetail.resolveDay({imported_json: {date_range: ["20260101", "20260101"], target_day: "20260102"}}) === "20260102", "target_day wins over date_range");

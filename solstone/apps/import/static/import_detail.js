@@ -52,6 +52,7 @@
     completed: 'completed',
     failed: 'failed',
     pending: 'pending',
+    running: 'running',
     processing: 'processing…',
     failed_line: 'failed while processing',
     completed_in: 'completed in',
@@ -191,15 +192,16 @@
   function statusClass(status) {
     if (status === strings.completed) return 'success';
     if (status === strings.failed) return 'failed';
+    if (status === strings.running) return 'running';
     return 'pending';
   }
 
   function deriveStatus(data) {
-    const importJson = asObject(data?.import_json);
     const importedJson = asObject(data?.imported_json);
     const principalCollision = asObject(importedJson?.principal_collision);
+    const canonicalStatus = data?.status;
 
-    if (importedJson && hasValue(importedJson.error)) {
+    if (canonicalStatus === 'failed') {
       return {
         status: strings.failed,
         chipText: strings.failed,
@@ -207,7 +209,7 @@
         open: true
       };
     }
-    if (importedJson) {
+    if (canonicalStatus === 'success') {
       if (principalCollision) {
         return {
           status: strings.completed,
@@ -218,13 +220,8 @@
       }
       return { status: strings.completed, chipText: '', chipTone: '', open: false };
     }
-    if (hasValue(importJson?.task_id)) {
-      return {
-        status: strings.failed,
-        chipText: strings.failed,
-        chipTone: 'danger',
-        open: true
-      };
+    if (canonicalStatus === 'running') {
+      return { status: strings.running, chipText: '', chipTone: '', open: false };
     }
     return { status: strings.pending, chipText: '', chipTone: '', open: false };
   }
@@ -235,7 +232,9 @@
     const derived = deriveStatus(data);
 
     if (derived.status === strings.failed) return strings.failed_line;
-    if (derived.status === strings.pending) return strings.processing;
+    if (derived.status === strings.running || derived.status === strings.pending) {
+      return strings.processing;
+    }
 
     const clauses = [];
     const files = numberValue(importedJson?.total_files_created);
@@ -349,8 +348,8 @@
       kvRow(strings.files, formatCount(importedJson.total_files_created, strings.file, strings.files)),
       kvRow(strings.completed_at, formatDateTime(importedJson.processing_completed)),
       kvRow(strings.failed_at, formatDateTime(importedJson.processing_failed)),
-      kvRow(strings.failed_stage, importedJson.error_stage),
-      kvRow(strings.error, importedJson.error)
+      kvRow(strings.failed_stage, data?.error_stage),
+      kvRow(strings.error, data?.error)
     ]);
   }
 

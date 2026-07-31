@@ -2520,6 +2520,12 @@ function initImportDetail() {
 
   loadImportDetail();
 
+  window.appEvents.listen('importer', { correlationKey: 'import_id' }, eventData => {
+    if (!IMPORT_ROW_EVENTS.has(eventData.event)) return;
+    if (eventData.import_id !== importDetailTimestamp) return;
+    loadImportDetail();
+  });
+
   if (window.location.hash === '#content') {
     tabs.forEach(t => t.classList.toggle('active', t.dataset.target === 'content'));
     contents.forEach(c => c.classList.toggle('active', c.id === 'content'));
