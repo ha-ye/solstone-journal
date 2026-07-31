@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+[package]
+name = "solstone-core-spl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+flate2 = "1.1.9"
+hpke = { workspace = true }
+p256 = { version = "0.14.0", default-features = false, features = ["pkcs8", "std"] }
+regex = "1.12.3"
+serde_json = { workspace = true }
+solstone-core-spl-hpke = { workspace = true }
+tar = "0.4.45"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "rt", "macros", "sync", "time"] }
+
+[lints]
+workspace = true
