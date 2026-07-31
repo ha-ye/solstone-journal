@@ -3,13 +3,32 @@
 
 use std::ffi::{OsStr, OsString};
 
-pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n";
+pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n  solstone-core spl hpke <open-base | seal-base>\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Version,
     JournalPath(JournalPathOptions),
     Indexer(IndexerOptions),
+    Spl(SplCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplCommand {
+    Service(ServiceOptions),
+    Hpke(HpkeCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceOptions {
+    pub verbose: bool,
+    pub debug: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HpkeCommand {
+    OpenBase,
+    SealBase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +59,52 @@ pub fn evaluate_args(args: &[OsString]) -> Result<Command, UsageError> {
         [command, rest @ ..] if command == OsStr::new("indexer") => {
             parse_indexer(rest).map(Command::Indexer)
         }
+        [command, rest @ ..] if command == OsStr::new("spl") => parse_spl(rest).map(Command::Spl),
         _ => Err(UsageError),
     }
+}
+
+fn parse_spl(args: &[OsString]) -> Result<SplCommand, UsageError> {
+    match args {
+        [command, rest @ ..] if command == OsStr::new("service") => {
+            parse_service(rest).map(SplCommand::Service)
+        }
+        [command, operation]
+            if command == OsStr::new("hpke") && operation == OsStr::new("open-base") =>
+        {
+            Ok(SplCommand::Hpke(HpkeCommand::OpenBase))
+        }
+        [command, operation]
+            if command == OsStr::new("hpke") && operation == OsStr::new("seal-base") =>
+        {
+            Ok(SplCommand::Hpke(HpkeCommand::SealBase))
+        }
+        _ => Err(UsageError),
+    }
+}
+
+fn parse_service(args: &[OsString]) -> Result<ServiceOptions, UsageError> {
+    let mut verbose = false;
+    let mut debug = false;
+    for argument in args {
+        let argument = argument.as_os_str();
+        if argument == OsStr::new("-v") || argument == OsStr::new("--verbose") {
+            if verbose {
+                return Err(UsageError);
+            }
+            verbose = true;
+            continue;
+        }
+        if argument == OsStr::new("-d") || argument == OsStr::new("--debug") {
+            if debug {
+                return Err(UsageError);
+            }
+            debug = true;
+            continue;
+        }
+        return Err(UsageError);
+    }
+    Ok(ServiceOptions { verbose, debug })
 }
 
 fn parse_journal_path(args: &[OsString]) -> Result<JournalPathOptions, UsageError> {
@@ -237,6 +300,140 @@ mod tests {
     }
 
     #[test]
+    fn accepts_spl_service() {
+        assert_eq!(
+            evaluate_args(&args(&["spl", "service"])),
+            Ok(Command::Spl(SplCommand::Service(ServiceOptions {
+                verbose: false,
+                debug: false,
+            })))
+        );
+    }
+
+    #[test]
+    fn accepts_spl_service_verbose_and_debug_flags_in_either_order() {
+        assert_eq!(
+            evaluate_args(&args(&["spl", "service", "-v", "--debug"])),
+            Ok(Command::Spl(SplCommand::Service(ServiceOptions {
+                verbose: true,
+                debug: true,
+            })))
+        );
+        assert_eq!(
+            evaluate_args(&args(&["spl", "service", "-d", "--verbose"])),
+            Ok(Command::Spl(SplCommand::Service(ServiceOptions {
+                verbose: true,
+                debug: true,
+            })))
+        );
+    }
+
+    #[test]
+    fn accepts_each_spl_service_flag() {
+        for (flag, expected) in [
+            (
+                "-v",
+                ServiceOptions {
+                    verbose: true,
+                    debug: false,
+                },
+            ),
+            (
+                "--verbose",
+                ServiceOptions {
+                    verbose: true,
+                    debug: false,
+                },
+            ),
+            (
+                "-d",
+                ServiceOptions {
+                    verbose: false,
+                    debug: true,
+                },
+            ),
+            (
+                "--debug",
+                ServiceOptions {
+                    verbose: false,
+                    debug: true,
+                },
+            ),
+        ] {
+            assert_eq!(
+                evaluate_args(&args(&["spl", "service", flag])),
+                Ok(Command::Spl(SplCommand::Service(expected))),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_or_unknown_spl_service_flags() {
+        for values in [
+            &["spl", "service", "-v", "-v"][..],
+            &["spl", "service", "--verbose", "--verbose"][..],
+            &["spl", "service", "-v", "--verbose"][..],
+            &["spl", "service", "-d", "-d"][..],
+            &["spl", "service", "--debug", "--debug"][..],
+            &["spl", "service", "-d", "--debug"][..],
+            &["spl", "service", "--unknown"][..],
+        ] {
+            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_spl_service_extra_args() {
+        for values in [
+            &["spl", "service", "extra"][..],
+            &["spl", "service", "service"][..],
+        ] {
+            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_spl_hpke_flags() {
+        for values in [
+            &["spl", "hpke", "open-base", "-v"][..],
+            &["spl", "hpke", "open-base", "--verbose"][..],
+            &["spl", "hpke", "seal-base", "-d"][..],
+            &["spl", "hpke", "seal-base", "--debug"][..],
+        ] {
+            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_spl_hpke_base_operations() {
+        assert_eq!(
+            evaluate_args(&args(&["spl", "hpke", "open-base"])),
+            Ok(Command::Spl(SplCommand::Hpke(HpkeCommand::OpenBase)))
+        );
+        assert_eq!(
+            evaluate_args(&args(&["spl", "hpke", "seal-base"])),
+            Ok(Command::Spl(SplCommand::Hpke(HpkeCommand::SealBase)))
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_unknown_and_extra_spl_args() {
+        for values in [
+            &["spl"][..],
+            &["spl", "hpke"][..],
+            &["spl", "hpke", "unknown"][..],
+            &["spl", "hpke", "open-base", "extra"][..],
+            &["spl", "hpke", "open-base", "open-base"][..],
+            &["spl", "hpke", "seal-base", "extra"][..],
+            &["spl", "hpke", "seal-base", "seal-base"][..],
+            &["spl", "unknown"][..],
+        ] {
+            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
+        }
+    }
+
+    #[test]
     fn accepts_indexer_rescan_full_reset_and_override() {
         assert_eq!(
             evaluate_args(&args(&[
@@ -409,7 +606,7 @@ mod tests {
     fn usage_lists_supported_commands() {
         assert_eq!(
             USAGE,
-            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n"
+            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n  solstone-core spl hpke <open-base | seal-base>\n"
         );
     }
 }
