@@ -68,6 +68,10 @@
   completion, and stop→abort/await cleanup plus the final Callosum hook. The actual strict SPL
   clippy command and the 101-test crate gate are green. It awaits the concrete U4 relay client
   factory and real service process wiring; neither is claimed complete.
+- The delegated U4 Tokio WebSocket adapter is accepted after fresh-eyes review. It preserves
+  the required token query plus bearer header, has no protocol-library size cap, splits once
+  into U3/U2-compatible byte halves, preserves binary/text bytes, and reduces all connection
+  errors to token-free classes. The exact strict clippy, iOS, and 103-test SPL gates are green.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -140,6 +144,12 @@ the seam's PKCS#8/SPKI boundary. This was a brief defect, not code rework.
   close-to-local-EOF behavior but cannot classify those two causes without changing an accepted
   U3 seam. This is logged rather than silently expanded; no owner-visible behavior requires a
   distinction today.
+- **U4↔U2 blob dependencies — unresolved frozen seam:** `receive_blob` correctly requires a
+  ledger, home upload private key, and observer-ingest implementation through `BlobDeps`, but
+  the frozen `RelayClientConfig`/constructor lists no journal root, upload-key source, or ingest
+  seam. U4 cannot truthfully dispatch `SBO1` without silently extending that constructor or
+  guessing file/process ownership. The transport adapter is accepted; full relay-client dispatch
+  is stopped at this explicit contract gap pending supervisor direction.
 
 ### Contract rework
 

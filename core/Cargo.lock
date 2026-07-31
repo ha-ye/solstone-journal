@@ -1661,6 +1661,7 @@ version = "1.0.20"
 dependencies = [
  "bytes",
  "flate2",
+ "futures-util",
  "hpke",
  "p256",
  "regex",
@@ -1669,6 +1670,7 @@ dependencies = [
  "tar",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1723,7 +1725,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
- "webpki-roots",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -1922,6 +1924,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -2147,6 +2150,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

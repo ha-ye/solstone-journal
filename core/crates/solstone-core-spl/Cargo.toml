@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 flate2 = "1.1.9"
+futures-util = { version = "0.3.33", default-features = false, features = ["sink", "std"] }
 hpke = { workspace = true }
 p256 = { version = "0.14.0", default-features = false, features = ["pkcs8", "std"] }
 regex = "1.12.3"
@@ -19,7 +20,8 @@ serde_json = { workspace = true }
 solstone-core-spl-hpke = { workspace = true }
 tar = "0.4.45"
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "rt", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "rt", "macros", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.26.2", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 
 [lints]
 workspace = true

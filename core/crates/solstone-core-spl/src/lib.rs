@@ -22,6 +22,7 @@ mod reconnect_backoff;
 mod relay_control;
 mod relay_health;
 mod relay_status_failure;
+mod relay_websocket;
 mod service;
 mod service_shutdown;
 mod service_transition;
@@ -72,6 +73,9 @@ pub use relay_control::{
 };
 pub use relay_health::{RelayHealth, RelayHealthState, RelayTunnelFailure};
 pub use relay_status_failure::{RelayTunnelFailureSignal, classify_relay_tunnel_failure};
+pub use relay_websocket::{
+    RelayWebSocket, RelayWebSocketError, RelayWebSocketReader, RelayWebSocketWriter,
+};
 pub use service::{
     POSTURE_POLL_INTERVAL, RelayRunTask, RelayServiceToken, ServiceDeps, ServiceError, ServicePoll,
     StartedRelay, run_service,
