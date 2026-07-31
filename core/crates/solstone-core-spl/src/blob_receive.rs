@@ -16,7 +16,12 @@
 //! receiver outcomes. This preserves that known U2 health-observability hole:
 //! the sole event here is the required `admission_saturated` accounting event.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -24,9 +29,8 @@ use solstone_core_spl_hpke::{BlobFrameError, OFFER_LEN, P256Secret, ack, parse_o
 use thiserror::Error;
 
 use crate::{
-    AuthorizedClientLedger, BlobAdmissionGate, BrowserLedgerLookup, BufferedWsReader,
-    PreparedAuthenticatedBlob, ValidatedBlobArchive, WsByteSink, WsByteSource,
-    prepare_authenticated_blob,
+    BlobAdmissionGate, BufferedWsReader, PreparedAuthenticatedBlob, ValidatedBlobArchive,
+    WsByteSink, WsByteSource, prepare_authenticated_blob,
 };
 
 const ENC_LEN: usize = 65;
@@ -60,37 +64,87 @@ impl Default for BlobReceiveTiming {
     }
 }
 
-/// Immutable dependencies held by the U2 blob-receive boundary.
-pub struct BlobDeps<'a> {
-    /// Fresh, fail-closed authorization ledger reader.
-    pub ledger: &'a AuthorizedClientLedger,
-    /// P-256 recipient key used only to authenticate an accepted offer.
-    pub recipient_private_key: &'a P256Secret,
-    /// The exact 16-byte home instance ID bound into the HPKE info string.
-    pub instance_id: [u8; 16],
-    /// The only side-effecting ingest seam after archive validation.
-    pub ingestor: &'a dyn BlobIngest,
-    /// Receiver timing policy, defaulting to the Python contract values.
-    pub timing: BlobReceiveTiming,
+/// Immutable, owned dependencies held by the U2 blob-receive boundary.
+///
+/// These trait objects are constructed once by the service and transferred to
+/// the relay client. The authorization ledger itself performs its required
+/// freshness check on every lookup; putting it in an [`Arc`] is not a cache.
+pub struct BlobDeps {
+    /// Fresh, fail-closed browser authorization ledger reader.
+    pub ledger: Arc<dyn BrowserLedger>,
+    /// Load-only home upload HPKE key source.
+    pub upload_key: Arc<dyn UploadKeySource>,
+    /// The only side-effecting observer-ingest seam after archive validation.
+    pub ingest: Arc<dyn BlobIngest>,
 }
 
-impl<'a> BlobDeps<'a> {
-    /// Builds dependencies with the contract's default timing policy.
+impl BlobDeps {
+    /// Builds owned U2 dependencies for relay-client construction.
     #[must_use]
     pub fn new(
-        ledger: &'a AuthorizedClientLedger,
-        recipient_private_key: &'a P256Secret,
-        instance_id: [u8; 16],
-        ingestor: &'a dyn BlobIngest,
+        ledger: Arc<dyn BrowserLedger>,
+        upload_key: Arc<dyn UploadKeySource>,
+        ingest: Arc<dyn BlobIngest>,
     ) -> Self {
         Self {
             ledger,
-            recipient_private_key,
-            instance_id,
-            ingestor,
-            timing: BlobReceiveTiming::default(),
+            upload_key,
+            ingest,
         }
     }
+}
+
+/// One freshly read browser authorization record.
+///
+/// `None` from [`BrowserLedger::lookup`] means no browser authorizes that
+/// fingerprint. A present row deliberately retains independently-null fields:
+/// Python writes the observer handle in a second pass after registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LedgerRow {
+    /// Hex-encoded browser sender SPKI, if the registration has written it.
+    pub pubkey_spki_hex: Option<String>,
+    /// Observer-side ingest handle, attached by Python after registration.
+    pub observer_handle: Option<String>,
+}
+
+/// Class-only failure from an authorization ledger lookup.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LedgerError {
+    /// The backing ledger could not be statted or read.
+    #[error("browser authorization ledger unavailable")]
+    Unavailable,
+    /// The backing ledger was not a valid JSON list.
+    #[error("browser authorization ledger malformed")]
+    Malformed,
+}
+
+/// Fresh, fail-closed browser ledger access.
+pub trait BrowserLedger: Send + Sync {
+    /// Re-checks the backing file mtime and reads any changed content on every
+    /// lookup. `None` is absent or non-browser; a row with empty fields is
+    /// intentionally distinct and denotes an incomplete Python registration.
+    fn lookup(&self, fingerprint: &str) -> Result<Option<LedgerRow>, LedgerError>;
+}
+
+/// Class-only failure from load-only upload-key access.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum KeyError {
+    /// The configured upload key could not be read.
+    #[error("home upload private key unavailable")]
+    Unavailable,
+    /// The configured upload key was not an unencrypted P-256 PKCS#8 PEM key.
+    #[error("home upload private key invalid")]
+    Invalid,
+}
+
+/// Load-only access to the existing home upload HPKE private key.
+///
+/// This seam intentionally has no generation operation. Browser pairing owns
+/// the distinct load-or-generate path; receiving a blob must fail if its key is
+/// absent rather than minting an incompatible replacement.
+pub trait UploadKeySource: Send + Sync {
+    /// Loads the provisioned P-256 upload key without creating any file.
+    fn private_key(&self) -> Result<P256Secret, KeyError>;
 }
 
 /// The stable response categories returned by observer ingestion.
@@ -109,9 +163,15 @@ pub enum BlobIngestStatus {
 /// It intentionally carries no remote response, URL, token, or plaintext.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum BlobIngestError {
-    /// The observer ingest endpoint did not produce a recognized result.
+    /// The observer ingest endpoint failed before it returned a response.
     #[error("blob ingestion failed")]
     Failed,
+    /// Convey returned a status outside `ok`, `duplicate`, or `collision`.
+    ///
+    /// This is deliberately an error rather than a default acknowledgement:
+    /// the receiver closes without an ACK just as Python's `_ack_status` does.
+    #[error("blob ingestion returned an unexpected status")]
+    UnexpectedStatus,
 }
 
 /// The object-safe asynchronous observer-ingestion seam.
@@ -127,6 +187,20 @@ pub trait BlobIngest: Send + Sync {
 /// The boxed, sendable future returned by [`BlobIngest`].
 pub type BlobIngestFuture<'a> =
     Pin<Box<dyn Future<Output = Result<BlobIngestStatus, BlobIngestError>> + Send + 'a>>;
+
+/// Maps an observer ingest response onto the closed acknowledgement vocabulary.
+///
+/// Concrete convey adapters must use this rather than defaulting unknown JSON
+/// to [`BlobIngestStatus::Ok`]. Keeping the unknown case as an error preserves
+/// the no-ack failure path in Python's `_ack_status`.
+pub fn parse_convey_ingest_status(response: &Value) -> Result<BlobIngestStatus, BlobIngestError> {
+    match response.get("status").and_then(Value::as_str) {
+        Some("ok") => Ok(BlobIngestStatus::Ok),
+        Some("duplicate") => Ok(BlobIngestStatus::Duplicate),
+        Some("collision") => Ok(BlobIngestStatus::Collision),
+        _ => Err(BlobIngestError::UnexpectedStatus),
+    }
+}
 
 /// Synchronous Callosum emission needed for the admission-saturation event.
 pub trait CallosumEmit: Send + Sync {

@@ -154,12 +154,12 @@ the seam's PKCS#8/SPKI boundary. This was a brief defect, not code rework.
   close-to-local-EOF behavior but cannot classify those two causes without changing an accepted
   U3 seam. This is logged rather than silently expanded; no owner-visible behavior requires a
   distinction today.
-- **U4↔U2 blob dependencies — unresolved frozen seam:** `receive_blob` correctly requires a
-  ledger, home upload private key, and observer-ingest implementation through `BlobDeps`, but
-  the frozen `RelayClientConfig`/constructor lists no journal root, upload-key source, or ingest
-  seam. U4 cannot truthfully dispatch `SBO1` without silently extending that constructor or
-  guessing file/process ownership. The transport adapter is accepted; full relay-client dispatch
-  is stopped at this explicit contract gap pending supervisor direction.
+- **U4↔U2 blob dependencies — resolved by supervisor:** U5 builds the owned three-field
+  `BlobDeps` once at service start and passes it to `RelayClient::new` as the fourth argument.
+  `RelayClient::new` parses `cfg.instance_id` once, retaining its string form for the relay URL
+  and passing the resulting `[u8; 16]` explicitly to `receive_blob`; the ID is not copied into
+  `BlobDeps`. The U2 trait/adapter rework is checkpointed but remains unaccepted until its
+  receiver signature, concrete adapters, and tests are complete.
 
 ### Contract rework
 
@@ -179,6 +179,13 @@ the seam's PKCS#8/SPKI boundary. This was a brief defect, not code rework.
   the lane stopped rather than inventing an escape hatch or wire format. Both are contract
   rework (ledger row 3), not delegate rejections; the U4 concurrent pipe makes the split
   independently necessary.
+- **BlobDeps ownership and instance binding:** the supervisor supplied the previously missing
+  owned `BlobDeps` traits and `RelayClient::new` supplier. A subsequent contradiction between
+  its literal three-field shape and U2's required HPKE instance ID was resolved explicitly:
+  `receive_blob` accepts `[u8; 16]` from `RelayClient`, which parses the configuration UUID at
+  construction once. U2 now has an unaccepted recovery checkpoint for the owned dependencies,
+  load-only key/error vocabulary, and unknown-ingest-status mapping; it does not add an ID to
+  `BlobDeps` or re-read `LinkState`.
 
 ### Surgical direct fixes
 
