@@ -62,6 +62,44 @@ def test_derive_helper_pin_rejects_zero_helper_pins() -> None:
         installer.derive_helper_pin(["onnxruntime>=1.25.0"])
 
 
+def test_derive_helper_pin_reports_invalid_requirement() -> None:
+    raw = f"{installer.HELPER_DIST_NAME} =="
+
+    with pytest.raises(installer.SpeakersAnalyzeHelperInstallError) as exc_info:
+        installer.derive_helper_pin([raw])
+
+    message = str(exc_info.value)
+    assert "project.dependencies contains invalid requirement" in message
+    assert repr(raw) in message
+
+
+def test_read_project_dependencies_reports_missing_dependencies(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "fixture"\n', encoding="utf-8")
+
+    with pytest.raises(installer.SpeakersAnalyzeHelperInstallError) as exc_info:
+        installer.read_project_dependencies(pyproject)
+
+    message = str(exc_info.value)
+    assert "project.dependencies must be a list of strings" in message
+    assert "found NoneType: None" in message
+
+
+def test_read_project_dependencies_reports_non_string_entry(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\ndependencies = ["onnxruntime>=1.25.0", 42]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(installer.SpeakersAnalyzeHelperInstallError) as exc_info:
+        installer.read_project_dependencies(pyproject)
+
+    message = str(exc_info.value)
+    assert "project.dependencies must be a list of strings" in message
+    assert "found non-string entry int: 42" in message
+
+
 def test_uncovered_environment_skips_without_uv(tmp_path: Path, capsys) -> None:
     root = tmp_path / "repo"
     _write_leaf_pyproject(
@@ -137,6 +175,18 @@ def test_install_uses_no_config_no_deps_target_python_and_derived_pin(
     ]
 
 
+def test_running_python_mismatch_reports_expected_and_actual(tmp_path: Path) -> None:
+    target_python = _venv_python(tmp_path / "repo")
+    running_python = tmp_path / "other" / "python"
+
+    with pytest.raises(installer.SpeakersAnalyzeHelperInstallError) as exc_info:
+        installer.ensure_running_target_python(running_python, target_python)
+
+    message = str(exc_info.value)
+    assert str(target_python.resolve()) in message
+    assert str(running_python.resolve()) in message
+
+
 def test_missing_uv_fails_loudly(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     _write_leaf_pyproject(root, [_covered_pin()])
@@ -164,6 +214,23 @@ def test_assert_helper_installed_reports_version_mismatch(tmp_path: Path) -> Non
             python=_venv_python(tmp_path),
             version_reader=lambda _dist_name: "0.0.1",
         )
+
+
+def test_assert_helper_installed_reports_invalid_pin_requirement(
+    tmp_path: Path,
+) -> None:
+    pin = f"{installer.HELPER_DIST_NAME} =="
+
+    with pytest.raises(installer.SpeakersAnalyzeHelperInstallError) as exc_info:
+        installer.assert_helper_installed(
+            pin,
+            python=_venv_python(tmp_path),
+            version_reader=lambda _dist_name: "7.8.9",
+        )
+
+    message = str(exc_info.value)
+    assert "installed helper pin contains invalid requirement" in message
+    assert repr(pin) in message
 
 
 def test_assert_helper_installed_reports_missing_binary(tmp_path: Path) -> None:

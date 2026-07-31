@@ -17,7 +17,7 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 from packaging.markers import Marker, default_environment
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 
 from solstone.think.speakers_analyze_installation import (
     HELPER_DIST_NAME,
@@ -56,12 +56,17 @@ def read_project_dependencies(pyproject_path: Path) -> list[str]:
             f"missing package metadata: {pyproject_path}"
         ) from exc
     dependencies = data.get("project", {}).get("dependencies")
-    if not isinstance(dependencies, list) or not all(
-        isinstance(item, str) for item in dependencies
-    ):
+    if not isinstance(dependencies, list):
         raise SpeakersAnalyzeHelperInstallError(
-            f"{pyproject_path} project.dependencies must be a list of strings"
+            f"{pyproject_path} project.dependencies must be a list of strings; "
+            f"found {type(dependencies).__name__}: {dependencies!r}"
         )
+    for item in dependencies:
+        if not isinstance(item, str):
+            raise SpeakersAnalyzeHelperInstallError(
+                f"{pyproject_path} project.dependencies must be a list of strings; "
+                f"found non-string entry {type(item).__name__}: {item!r}"
+            )
     return dependencies
 
 
@@ -73,7 +78,12 @@ def derive_helper_pin(
     markers: list[Marker] = []
 
     for raw in dependencies:
-        requirement = Requirement(raw)
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement as exc:
+            raise SpeakersAnalyzeHelperInstallError(
+                f"{dependency_label} contains invalid requirement {raw!r}"
+            ) from exc
         if requirement.name != HELPER_DIST_NAME:
             continue
         raw_requirements.append(raw)
@@ -248,7 +258,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _expected_version(pin: str, *, dependency_label: str) -> str:
-    requirement = Requirement(pin)
+    try:
+        requirement = Requirement(pin)
+    except InvalidRequirement as exc:
+        raise SpeakersAnalyzeHelperInstallError(
+            f"{dependency_label} contains invalid requirement {pin!r}"
+        ) from exc
     specifiers = tuple(requirement.specifier)
     if (
         requirement.name != HELPER_DIST_NAME
