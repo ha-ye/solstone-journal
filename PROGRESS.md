@@ -42,6 +42,9 @@
 - The delegated U2 `WsByteSink` sibling is accepted after its returned strict-lint correction.
   It uses the accepted U3 `impl Future + Send` public trait shape with no waiver, preserving
   the read-only reader boundary for `receive_blob` and U4's concurrent pipe.
+- The delegated U1 pure HPKE CLI framing unit is accepted after workspace formatting and crate
+  gates: bounded u32be fields, fixed operation counts, PKCS#8/SPKI key boundaries, and
+  class-only error output are ready for binary dispatch without secret-bearing process I/O.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -74,6 +77,9 @@
   verbatim from the frozen illustrative signature. Strict clippy rejected the implicit future
   bounds. The return must match U3's public `impl Future + Send` seam with no lint waiver.
   This is a lane-brief omission caught by review, not supervisor contract rework.
+- **U1 HPKE CLI framing — returned.** The first return used standalone formatting that did not
+  follow workspace import ordering. The workspace formatter and strict crate gates are required
+  before acceptance; this is a lane-brief omission, not contract rework.
 
 ### Explained twice
 

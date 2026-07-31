@@ -6,6 +6,7 @@
 mod auth;
 mod base;
 mod blob_frame;
+mod cli_framing;
 
 pub use auth::{OpenedHpke, open_auth};
 pub use base::{HpkeError, P256Secret, SealedHpke, open_base, seal_base};
@@ -13,3 +14,4 @@ pub use blob_frame::{
     ACK_LEN, BLOB_ID_LEN, BlobFrameError, MAX_CIPHERTEXT_LEN, MalformedOffer, OFFER_LEN, Offer,
     READY_LEN, SENDER_FINGERPRINT_LEN, ack, parse_offer, ready,
 };
+pub use cli_framing::{HpkeCliError, HpkeCliOperation, run_hpke_framed};
