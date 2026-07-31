@@ -34,8 +34,8 @@ PL_FINGERPRINT = "sha256:" + ("c" * 64)
 PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
 BROWSER_FINGERPRINT = "sha256:" + ("e" * 64)
 LOCAL_REQUEST_ERROR = (
-    "I couldn't register that observer because the request didn't come from this "
-    "device or the device paired to that stream."
+    "I couldn't register that observer because this request isn't authorized for "
+    "that stream."
 )
 
 

@@ -49,10 +49,10 @@ logger = logging.getLogger(__name__)
 CONNECTED_THRESHOLD_MS = 2 * 60 * 1000
 
 CREATE_RETIRED_MESSAGE = (
-    "journal observer create is retired. observers register themselves over "
-    "a private link.\n"
-    "pair the device instead:  sol call link pair --device-label <name>\n"
-    "if a device was re-paired and its stream is stuck, clear the old record first:\n"
+    "journal observer create is retired. observers register themselves: from "
+    "this machine directly, or from a paired device.\n"
+    "for a remote device, pair it first:  sol call link pair --device-label <name>\n"
+    "if a device was re-paired and its stream is stuck, clear the old observer first:\n"
     "  journal observer revoke <name>\n"
 )
 
