@@ -1260,7 +1260,7 @@
                 }
               }
             },
-            "description": "Register request lacked the verified device pairing required for the observer stream.",
+            "description": "Register request did not satisfy local/device admission or targeted a stream already bound to another device.",
             "x-reason-codes": [
               "local_request_only"
             ]
