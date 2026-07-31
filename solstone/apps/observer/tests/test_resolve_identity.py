@@ -36,6 +36,19 @@ ROUTE_CASES = (
     ("ingest_segments", "GET", "/app/observer/ingest/segments/20250103"),
 )
 
+# These are post-admission outcomes for the request shapes below; they prove
+# identity resolution succeeded and the route handler body ran.
+ADMITTED_ROUTE_OUTCOMES = {
+    "callosum_sse": (200, None),
+    "delete_source": (400, "invalid_segment_or_stream"),
+    "ingest_upload": (400, "missing_required_field"),
+    "ingest_manifest": (200, None),
+    "ingest_manifest_day": (200, None),
+    "ingest_event": (200, None),
+    "ingest_health": (200, None),
+    "ingest_segments": (200, None),
+}
+
 
 @pytest.fixture
 def app_env(tmp_path, monkeypatch):
@@ -319,13 +332,21 @@ def test_resolve_bound_cert_requires_matching_pl_fingerprint(app_env):
 @pytest.mark.parametrize(
     "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
 )
-def test_all_device_routes_refuse_unbound_record(observer_env, route_case):
+def test_all_device_routes_admit_unbound_record(observer_env, route_case):
     env = observer_env()
     _save_observer(HEADER_HANDLE, "unbound-observer")
+    route_name, _method, _path = route_case
+    expected_status, expected_reason_code = ADMITTED_ROUTE_OUTCOMES[route_name]
 
     response = _route_response(env.client, route_case, HEADER_HANDLE)
 
-    _assert_route_reason(response, status=401, reason_code="auth_required")
+    try:
+        assert response.status_code == expected_status
+        if expected_reason_code is not None:
+            body = response.get_json()
+            assert body["reason_code"] == expected_reason_code
+    finally:
+        response.close()
 
 
 @pytest.mark.parametrize(

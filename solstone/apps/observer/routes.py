@@ -367,8 +367,6 @@ def callosum_sse() -> Any:
         return error
 
     binding = observer_device_binding(observer)
-    bound_device = binding["device"] if binding is not None else ""
-    bound_kind = binding["kind"] if binding is not None else ""
     observer_handle = observer["key"]
     handle = convey_bridge.register_sse_subscriber(key_prefix)
 
@@ -386,6 +384,10 @@ def callosum_sse() -> Any:
         return None
 
     def current_device_rejection() -> tuple[Reason, str] | None:
+        if binding is None:
+            return None
+        bound_device = binding["device"]
+        bound_kind = binding["kind"]
         entry = AuthorizedClients(authorized_clients_path()).get(bound_device)
         if entry is None or entry.kind != bound_kind:
             return PL_REVOKED, "Paired device revoked"
@@ -510,6 +512,33 @@ def api_create() -> Any:
 
 
 _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")
+_REGISTER_LOOPBACK_REMOTE_ADDRS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _is_trusted_localhost() -> bool:
+    """Direct-loopback check for observer-local endpoints."""
+    is_localhost = request.remote_addr in _REGISTER_LOOPBACK_REMOTE_ADDRS
+    proxy_headers = (
+        request.headers.get("X-Forwarded-For")
+        or request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-Host")
+    )
+    return is_localhost and not proxy_headers
+
+
+def _is_authorized_pl_identity() -> bool:
+    """Return True when the request arrived through a currently authorized PL."""
+    identity = getattr(g, "identity", None)
+    if getattr(identity, "mode", None) not in {"pl-direct", "pl-via-spl"}:
+        return False
+    fingerprint = getattr(identity, "fingerprint", None)
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return False
+    return AuthorizedClients(authorized_clients_path()).is_authorized(fingerprint)
+
+
+def _is_trusted_register_caller() -> bool:
+    return _is_trusted_localhost() or _is_authorized_pl_identity()
 
 
 def _authorized_pl_entry():
@@ -582,24 +611,29 @@ def _register_descriptor(record: dict) -> dict:
 
 @observer_bp.route("/register", methods=["POST"])
 def register() -> Any:
-    """Self-register a local or through-link observer and lock stream identity.
+    """Self-register an observer after local or device admission.
 
-    The in-handler guard is the sole gate: a request must carry an authorized
-    cert-class PL identity or match one pending browser-class ledger entry. The
-    route is require_access-exempt so an observer can register before setup
+    The in-handler guard admits trusted loopback callers and currently
+    authorized PL identities. A device binding is attached only when the caller
+    resolves to a cert-class entry or one pending browser-class ledger entry.
+    The route is require_access-exempt so an observer can register before setup
     completes. Mints the DL handle, locks a stream onto the record, and returns
     the pinned descriptor response.
     """
     parsed = request.get_json(force=True, silent=True)
     data = parsed if isinstance(parsed, dict) else {}
-    device_binding = _resolve_register_device_binding(data)
 
     # Register guard runs before field-specific validation; untrusted callers mint nothing.
-    if device_binding is None:
+    if not _is_trusted_register_caller():
         return error_response(
             LOCAL_REQUEST_ONLY,
-            detail="Observer registration requires a verified device pairing.",
+            detail=(
+                "Observer registration requires a trusted local caller or "
+                "authorized device identity."
+            ),
         )
+
+    device_binding = _resolve_register_device_binding(data)
 
     for field in _REGISTER_REQUIRED_FIELDS:
         value = data.get(field)
@@ -618,7 +652,10 @@ def register() -> Any:
 
     existing = find_oldest_unrevoked_by_name(stream)
     if existing is not None:
-        if observer_device_binding(existing) != device_binding:
+        existing_binding = observer_device_binding(existing)
+        if existing_binding is None and device_binding is not None:
+            existing[DEVICE_BINDING_FIELD] = device_binding
+        elif existing_binding != device_binding:
             return error_response(
                 LOCAL_REQUEST_ONLY,
                 detail="Observer stream is bound to a different device.",
@@ -658,12 +695,13 @@ def register() -> Any:
         "last_segment_received_at": None,
         "last_segment_day": None,
         "enabled": True,
-        DEVICE_BINDING_FIELD: device_binding,
         "stats": {
             "segments_received": 0,
             "bytes_received": 0,
         },
     }
+    if device_binding is not None:
+        observer_data[DEVICE_BINDING_FIELD] = device_binding
 
     if not save_observer(observer_data):
         return error_response(

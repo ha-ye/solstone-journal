@@ -216,8 +216,8 @@ OPERATIONS: list[OperationSpec] = [
             _json_error(
                 403,
                 ("local_request_only",),
-                "Register request lacked the verified device pairing required "
-                "for the observer stream.",
+                "Register request did not satisfy local/device admission or "
+                "targeted a stream already bound to another device.",
             ),
             _json_error(
                 500,

@@ -14,6 +14,7 @@ import pytest
 
 from solstone.apps.observer.utils import (
     append_history_record,
+    load_history,
     load_observer,
     save_observer,
 )
@@ -31,6 +32,11 @@ VALID_REGISTER_PAYLOAD = {
 }
 PL_FINGERPRINT = "sha256:" + ("c" * 64)
 PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
+BROWSER_FINGERPRINT = "sha256:" + ("e" * 64)
+LOCAL_REQUEST_ERROR = (
+    "I couldn't register that observer because the request didn't come from this "
+    "device or the device paired to that stream."
+)
 
 
 def _day_dir(env, day: str = "20250103"):
@@ -78,8 +84,46 @@ def _authorize_pl(fingerprint: str = PL_FINGERPRINT) -> None:
     )
 
 
+def _authorize_browser(
+    *,
+    fingerprint: str = BROWSER_FINGERPRINT,
+    observer_handle: str | None = None,
+) -> None:
+    AuthorizedClients(authorized_clients_path()).add_browser(
+        fingerprint=fingerprint,
+        device_label="browser",
+        instance_id="instance-1",
+        pubkey_spki="30aa",
+        observer_handle=observer_handle,
+    )
+
+
 def _assert_no_observer_records(journal) -> None:
     assert _observer_paths(journal) == []
+
+
+def _seed_unbound_observer(
+    *,
+    key: str,
+    stream: str,
+    created_at: int = 1704312345000,
+    stats: dict | None = None,
+) -> dict:
+    record = {
+        "key": key,
+        "name": stream,
+        "created_at": created_at,
+        "last_seen": None,
+        "last_segment": None,
+        "last_segment_received_at": None,
+        "last_segment_day": None,
+        "enabled": True,
+        "stats": stats or {"segments_received": 7, "bytes_received": 70},
+    }
+    assert save_observer(record)
+    loaded = load_observer(key)
+    assert loaded is not None
+    return loaded
 
 
 def test_register_authorized_pl_returns_pinned_response(observer_env):
@@ -97,7 +141,7 @@ def test_register_authorized_pl_returns_pinned_response(observer_env):
     assert data["protocol_version"] == 2
 
 
-def test_register_extension_origin_without_device_proof_mints_nothing(observer_env):
+def test_register_extension_origin_loopback_mints_unbound_record(observer_env):
     env = observer_env()
 
     resp = env.client.post(
@@ -109,15 +153,12 @@ def test_register_extension_origin_without_device_proof_mints_nothing(observer_e
         },
     )
 
-    assert resp.status_code == 403
+    assert resp.status_code == 200
     body = resp.get_json()
-    assert body["reason_code"] == "local_request_only"
-    assert body["error"] == (
-        "I couldn't register that observer because it needs a verified pairing "
-        "with this device."
-    )
-    assert "local requests only" not in body["error"]
-    _assert_no_observer_records(env.journal)
+    assert body["name"] == "fedora.tmux"
+    records = _observer_records(env.journal)
+    assert len(records) == 1
+    assert "device_binding" not in records[0]
 
 
 def test_register_same_stream_twice_reuses_key(observer_env):
@@ -311,6 +352,34 @@ def test_register_loopback_proxy_header_mints_nothing(observer_env):
     _assert_no_observer_records(env.journal)
 
 
+def test_register_loopback_real_ip_header_mints_nothing(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        headers={"X-Real-IP": "1.2.3.4"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "local_request_only"
+    _assert_no_observer_records(env.journal)
+
+
+def test_register_loopback_forwarded_host_header_mints_nothing(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        headers={"X-Forwarded-Host": "example.invalid"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.get_json()["reason_code"] == "local_request_only"
+    _assert_no_observer_records(env.journal)
+
+
 def test_register_authorized_pl_identity_from_non_loopback(observer_env):
     env = observer_env()
     _authorize_pl()
@@ -350,6 +419,39 @@ def test_register_authorized_pl_mints_bound_record(observer_env):
     }
 
 
+def test_register_loopback_without_pl_mints_unbound_record_that_can_ingest(
+    observer_env,
+):
+    env = observer_env()
+
+    register_resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+    )
+
+    assert register_resp.status_code == 200
+    key = register_resp.get_json()["key"]
+    stored = _observer_records(env.journal)
+    assert len(stored) == 1
+    assert "device_binding" not in stored[0]
+
+    ingest_resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(b"loopback content"), "tmux.jsonl"),
+        },
+        environ_overrides={"pl.identity": None},
+    )
+
+    assert ingest_resp.status_code == 200
+    observer = load_observer(key)
+    assert observer is not None
+    assert observer["stats"]["segments_received"] == 1
+
+
 def test_register_reuse_over_authorized_pl_path(observer_env):
     env = observer_env()
     _authorize_pl()
@@ -370,6 +472,147 @@ def test_register_reuse_over_authorized_pl_path(observer_env):
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r1.get_json()["key"] == r2.get_json()["key"]
+    assert len(_observer_records(env.journal)) == 1
+
+
+def test_register_adopts_cert_binding_for_existing_unbound_stream(observer_env):
+    env = observer_env()
+    key = "adoptcert123456789"
+    created_at = 1704312345000
+    stats = {"segments_received": 3, "bytes_received": 44}
+    history_record = {
+        "ts": 1704312345001,
+        "segment": "115959_300",
+        "stream": "fedora.tmux",
+        "files": [],
+    }
+    _seed_unbound_observer(
+        key=key,
+        stream="fedora.tmux",
+        created_at=created_at,
+        stats=stats,
+    )
+    append_history_record(key[:8], "20250103", history_record)
+    _authorize_pl()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity()},
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["key"] == key
+    observer = load_observer(key)
+    assert observer is not None
+    assert observer["created_at"] == created_at
+    assert observer["stats"] == stats
+    assert load_history(key[:8], "20250103") == [history_record]
+    assert observer["device_binding"] == {
+        "device": PL_FINGERPRINT,
+        "kind": "cert",
+    }
+
+
+def test_register_adopts_browser_binding_for_existing_unbound_stream(observer_env):
+    env = observer_env()
+    key = "adoptbrowser123456789"
+    token = BROWSER_FINGERPRINT.removeprefix("sha256:")[:12]
+    hostname = f"browser-label-{token}"
+    payload = {
+        "platform": "browser",
+        "hostname": hostname,
+        "stream_type": "browser",
+        "version": "spl-browser-blob-v1",
+    }
+    stream = f"{hostname}.browser"
+    created_at = 1704312355000
+    stats = {"segments_received": 5, "bytes_received": 90}
+    _seed_unbound_observer(
+        key=key,
+        stream=stream,
+        created_at=created_at,
+        stats=stats,
+    )
+    _authorize_browser()
+
+    resp = env.client.post("/app/observer/register", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.get_json()["key"] == key
+    observer = load_observer(key)
+    assert observer is not None
+    assert observer["created_at"] == created_at
+    assert observer["stats"] == stats
+    assert observer["device_binding"] == {
+        "device": BROWSER_FINGERPRINT,
+        "kind": "browser",
+    }
+
+
+def test_register_reuses_existing_unbound_stream_without_binding(observer_env):
+    env = observer_env()
+    key = "reuseunbound123456789"
+    created_at = 1704312365000
+    stats = {"segments_received": 2, "bytes_received": 8}
+    _seed_unbound_observer(
+        key=key,
+        stream="fedora.tmux",
+        created_at=created_at,
+        stats=stats,
+    )
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["key"] == key
+    observer = load_observer(key)
+    assert observer is not None
+    assert observer["created_at"] == created_at
+    assert observer["stats"] == stats
+    assert "device_binding" not in observer
+
+
+def test_register_bound_stream_refuses_different_device(observer_env):
+    env = observer_env()
+    first = _register(env.client)
+    assert first.status_code == 200
+    _authorize_pl(PL_FINGERPRINT_2)
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        environ_base={"REMOTE_ADDR": "192.168.1.5"},
+        environ_overrides={"pl.identity": _pl_identity(PL_FINGERPRINT_2)},
+    )
+
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["reason_code"] == "local_request_only"
+    assert body["error"] == LOCAL_REQUEST_ERROR
+    assert body["detail"] == "Observer stream is bound to a different device."
+    assert len(_observer_records(env.journal)) == 1
+
+
+def test_register_bound_stream_refuses_loopback_without_device_identity(observer_env):
+    env = observer_env()
+    first = _register(env.client)
+    assert first.status_code == 200
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+    )
+
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["reason_code"] == "local_request_only"
+    assert body["error"] == LOCAL_REQUEST_ERROR
+    assert body["detail"] == "Observer stream is bound to a different device."
     assert len(_observer_records(env.journal)) == 1
 
 
@@ -472,26 +715,17 @@ def test_registered_observer_segments_legacy_record_uses_locked_stream(observer_
     # fields are ignored.
 
 
-def test_unbound_key_only_observer_refuses_meta_stream(observer_env):
+def test_unbound_key_only_observer_ignores_conflicting_meta_stream(observer_env):
     env = observer_env()
-    key = "legacy" + ("a" * 58)
-    assert save_observer(
-        {
-            "key": key,
-            "name": "legacy-observer",
-            "created_at": 1704312345000,
-            "last_seen": None,
-            "last_segment": None,
-            "enabled": True,
-            "stats": {
-                "segments_received": 0,
-                "bytes_received": 0,
-            },
-        }
+    register_resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
     )
+    assert register_resp.status_code == 200
+    key = register_resp.get_json()["key"]
     assert load_observer(key) is not None
 
-    test_data = b"legacy meta stream content"
+    test_data = b"meta stream content"
     resp = env.client.post(
         "/app/observer/ingest",
         headers={"Authorization": f"Bearer {key}"},
@@ -501,12 +735,15 @@ def test_unbound_key_only_observer_refuses_meta_stream(observer_env):
             "meta": json.dumps({"stream": "foo"}),
             "files": (io.BytesIO(test_data), "audio.flac"),
         },
+        environ_overrides={"pl.identity": None},
     )
 
-    assert resp.status_code == 401
-    assert resp.get_json()["reason_code"] == "auth_required"
-    expected_file = _day_dir(env) / "foo" / "120000_300" / "audio.flac"
-    assert not expected_file.exists()
+    assert resp.status_code == 200
+    expected_file = _day_dir(env) / "fedora.tmux" / "120000_300" / "audio.flac"
+    wrong_file = _day_dir(env) / "foo" / "120000_300" / "audio.flac"
+    assert expected_file.exists()
+    assert expected_file.read_bytes() == test_data
+    assert not wrong_file.exists()
 
 
 def test_keyless_manifest_routes_accept_bearer_key(observer_env):

@@ -97,6 +97,21 @@ def _create_bound_observer(env, name: str = "sse-bound") -> tuple[str, str]:
     return key, key[:8]
 
 
+def _create_unbound_observer(env, name: str = "sse-unbound") -> tuple[str, str]:
+    key = f"{name}-key-123456789"
+    assert save_observer(
+        {
+            "key": key,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
+    )
+    return key, key[:8]
+
+
 def _route() -> str:
     return OBSERVER_CALLOSUM_SSE_ROUTE
 
@@ -293,6 +308,64 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
         data = _parse_sse_data(chunk)
         assert data["reason_code"] == "pl_revoked"
         assert data["detail"] == "Observer revoked"
+    finally:
+        resp.close()
+
+
+def test_unbound_callosum_sse_survives_device_rechecks(observer_env, monkeypatch):
+    env = observer_env()
+    key, _key_prefix = _create_unbound_observer(env, "unbound-steady-sse")
+    monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        routes_module, "_SSE_DEVICE_RECHECK_SECONDS", 0.01, raising=False
+    )
+
+    resp = env.client.get(
+        _route(),
+        headers={OBSERVER_HANDLE_HEADER: key},
+        buffered=False,
+    )
+    try:
+        assert resp.status_code == 200
+        assert _next_chunk(resp) == ": heartbeat\n\n"
+        for _ in range(2):
+            chunk = _next_chunk(resp)
+            assert not chunk.startswith("event: error\n")
+    finally:
+        resp.close()
+
+
+def test_unbound_callosum_sse_revoked_record_closes_midstream(
+    observer_env,
+    monkeypatch,
+):
+    env = observer_env()
+    key, _key_prefix = _create_unbound_observer(env, "unbound-revoked-sse")
+    monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 60)
+    monkeypatch.setattr(
+        routes_module, "_SSE_DEVICE_RECHECK_SECONDS", 0.01, raising=False
+    )
+
+    resp = env.client.get(
+        _route(),
+        headers={OBSERVER_HANDLE_HEADER: key},
+        buffered=False,
+    )
+    try:
+        assert resp.status_code == 200
+        assert _next_chunk(resp) == ": heartbeat\n\n"
+        observer = load_observer(key)
+        assert observer is not None
+        observer["revoked"] = True
+        assert save_observer(observer)
+
+        chunk = _next_chunk(resp)
+        assert chunk.startswith("event: error\n")
+        data = _parse_sse_data(chunk)
+        assert data["reason_code"] == "pl_revoked"
+        assert data["detail"] == "Observer revoked"
+        with pytest.raises(StopIteration):
+            next(iter(resp.response))
     finally:
         resp.close()
 

@@ -653,15 +653,7 @@ def _resolve_identity() -> tuple[
 
     binding = observer_device_binding(observer)
     if binding is None:
-        return (
-            None,
-            None,
-            ObserverIdentityRejection(
-                AUTH_REQUIRED,
-                "Observer device binding required",
-                observer["filename_prefix"],
-            ),
-        )
+        return observer, observer["filename_prefix"], None
 
     entry = AuthorizedClients(authorized_clients_path()).get(binding["device"])
     if entry is None or entry.kind != binding["kind"]:
