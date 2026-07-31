@@ -51,6 +51,12 @@
   authenticated ACK mappings for `ok`/`collision`/`duplicate`. The focused SPL crate gate is
   green with 91 tests. U4's focused split WS-to-loopback pipe function is in review next; the
   full relay client and U5 supervisor composition remain unaccepted.
+- AC-4's supervisor-generated parity corpus is committed in its own pre-cutover commit. It was
+  generated from `adf2e9c5f`; the Python oracle sources are byte-identical at that commit, this
+  lane base, and `c3b7cc6e5`. The static vectors prove Python-sealed → Rust-opens only because
+  HPKE sealing is randomized; the reverse remains the supervisor's live differential. The
+  short/long header rows are parser vectors, never socket-wire vectors. U6 may use the corpus
+  when U1–U5 are accepted, but remains blocked on those orchestration units.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
