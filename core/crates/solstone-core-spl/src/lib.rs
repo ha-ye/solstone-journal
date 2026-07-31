@@ -13,6 +13,7 @@ mod authorized_client_ledger;
 mod authorized_clients;
 mod blob_archive;
 mod blob_content_type;
+mod blob_receive;
 mod health;
 mod link_state_files;
 mod loopback_pipe;
@@ -41,6 +42,10 @@ pub use blob_archive::{
     parse_blob_archive,
 };
 pub use blob_content_type::blob_content_type;
+pub use blob_receive::{
+    BlobDeps, BlobError, BlobIngest, BlobIngestError, BlobIngestFuture, BlobIngestStatus,
+    BlobReceiveTiming, CallosumEmit, receive_blob,
+};
 pub use health::{
     LINK_HEALTH_EVENT, OFFLINE_TUNNEL_REASONS, REASON_HOME_MISSING_MOBILE,
     REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE, REASON_RELAY_ADMISSION_SATURATED,

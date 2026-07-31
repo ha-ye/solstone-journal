@@ -45,6 +45,12 @@
 - The delegated U1 pure HPKE CLI framing unit is accepted after workspace formatting and crate
   gates: bounded u32be fields, fixed operation counts, PKCS#8/SPKI key boundaries, and
   class-only error output are ready for binary dispatch without secret-bearing process I/O.
+- The delegated U2 split-transport receiver is accepted after fresh-eyes review and its
+  returned product-path test addition. It preserves all three refusal wire shapes, fresh
+  fail-closed ledger lookup, per-sender release, real auth-HPKE/archive ingestion, and exact
+  authenticated ACK mappings for `ok`/`collision`/`duplicate`. The focused SPL crate gate is
+  green with 91 tests. U4's focused split WS-to-loopback pipe function is in review next; the
+  full relay client and U5 supervisor composition remain unaccepted.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -80,6 +86,11 @@
 - **U1 HPKE CLI framing — returned.** The first return used standalone formatting that did not
   follow workspace import ordering. The workspace formatter and strict crate gates are required
   before acceptance; this is a lane-brief omission, not contract rework.
+- **U2 blob receive — returned.** The first receiver return correctly covered its refusal
+  shapes and admission release, but did not exercise an authenticated, archive-valid accepted
+  transfer or either observable ACK status. Fresh-eyes review caught the omission; the delegate
+  added an auth-mode HPKE end-to-end test for `ok`/`collision` → `ACK(0x00)` and
+  `duplicate` → `ACK(0x01)`. This is a delegate test-coverage omission, not contract rework.
 
 ### Explained twice
 
