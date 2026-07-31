@@ -910,16 +910,17 @@ def import_detail_api(timestamp: str) -> Any:
             journal_root=Path(state.journal_root),
             timestamp=timestamp,
         )
+        # Resolve status the same way the history list does, so an in-progress
+        # import (task_id present, no imported.json yet) reads as "running"
+        # rather than falling through to "failed". Both filesystem reads stay
+        # inside the guard: an import removed between them is not found, not a 500.
+        import_data = build_import_info(
+            journal_root=Path(state.journal_root),
+            timestamp=timestamp,
+        )
     except FileNotFoundError:
         return error_response(IMPORT_NOT_FOUND, detail="Import not found")
 
-    # Resolve status the same way the history list does, so an in-progress
-    # import (task_id present, no imported.json yet) reads as "running"
-    # rather than falling through to "failed".
-    import_data = build_import_info(
-        journal_root=Path(state.journal_root),
-        timestamp=timestamp,
-    )
     resolution = resolve_import_status(import_data)
     result["status"] = resolution.status
     result["error"] = resolution.error

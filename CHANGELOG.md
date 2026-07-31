@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Fixed
+
+- an import you open while it is still working now says it is running. the import history listed it correctly, but opening that same import showed it as failed until it finished — on every file type, and most noticeable on longer imports. the page now also keeps up on its own while the import runs, instead of waiting for a reload. reported and fixed by ha-ye.
+
 ## [1.0.20] - 2026-07-30
 
 ### Added

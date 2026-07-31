@@ -189,6 +189,60 @@ def test_import_missing_detail_api_still_returns_not_found(client):
     assert response.get_json()["reason_code"] == "import_not_found"
 
 
+def _seed_import_json(journal: Path, timestamp: str, payload: dict) -> None:
+    import_dir = journal / "imports" / timestamp
+    import_dir.mkdir(parents=True, exist_ok=True)
+    (import_dir / "import.json").write_text(
+        json.dumps(payload) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_import_detail_api_reports_running_for_an_unfinished_import(client):
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    journal = Path(import_routes.state.journal_root)
+    _seed_import_json(
+        journal,
+        "20260101_120000",
+        {"original_filename": "in-progress.pdf", "task_id": "123"},
+    )
+
+    response = client.get("/app/import/api/20260101_120000")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "running"
+    assert body["error"] is None
+    assert body["error_stage"] is None
+
+
+def test_import_detail_api_reports_failed_with_error_and_stage(client):
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    journal = Path(import_routes.state.journal_root)
+    _seed_import_json(
+        journal,
+        "20260101_130000",
+        {"original_filename": "broken.pdf", "task_id": "456"},
+    )
+    _seed_imported_json(
+        journal,
+        "20260101_130000",
+        {"error": "bad <archive>", "error_stage": "writing"},
+    )
+
+    response = client.get("/app/import/api/20260101_130000")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "failed"
+    assert body["error"] == "bad <archive>"
+    assert body["error_stage"] == "writing"
+
+
 def test_import_detail_api_path_resolves(client):
     adapter = client.application.url_map.bind("localhost")
 
