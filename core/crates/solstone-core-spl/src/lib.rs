@@ -55,7 +55,9 @@ pub use link_state_files::{
     LinkServiceToken, LinkServiceTokenRead, LinkState, LinkStateRead, load_link_service_token,
     load_link_state,
 };
-pub use loopback_pipe::pipe_loopback;
+pub use loopback_pipe::{
+    TCP_TO_WS_READ_MAX, TunnelPipeError, TunnelPipeProgress, pipe_loopback, pipe_tunnel,
+};
 pub use posture_gate::{
     PostureGate, PostureInput, RelayBlocked, RelayDecision, RelayPermit, ServiceToken, TokenInput,
 };

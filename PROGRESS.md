@@ -57,6 +57,11 @@
   HPKE sealing is randomized; the reverse remains the supervisor's live differential. The
   short/long header rows are parser vectors, never socket-wire vectors. U6 may use the corpus
   when U1–U5 are accepted, but remains blocked on those orchestration units.
+- The delegated U4 split WS-to-loopback pipe is accepted after fresh-eyes review. It replays
+  `drain_buffer()` before forwarding, uses the transport halves concurrently, limits TCP→WS
+  frames to 64 KiB, writes local EOF after a WS close, and cancels the opposite direction on
+  first completion. Its 93-SPL/17-HPKE crate gate is green; the complete relay client,
+  dispatch handoff, and live seam tests remain unaccepted.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -124,6 +129,11 @@ the seam's PKCS#8/SPKI boundary. This was a brief defect, not code rework.
   read and write halves. `BufferedWsReader<R>` retains its accepted read-only ownership and U2
   receives a sibling `WsByteSink` for `READY`/`ACK`/close. This was a contract defect, not a
   delegate rejection.
+- **U3 source-close taxonomy:** `WsByteSource` exposes one `WsClosed` outcome for both clean
+  EOF and a source-side read failure. U4's split pipe can therefore preserve the shared
+  close-to-local-EOF behavior but cannot classify those two causes without changing an accepted
+  U3 seam. This is logged rather than silently expanded; no owner-visible behavior requires a
+  distinction today.
 
 ### Contract rework
 
