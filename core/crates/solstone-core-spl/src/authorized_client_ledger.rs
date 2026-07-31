@@ -6,7 +6,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{AuthorizedClients, BrowserUploadAuthorization, parse_authorized_clients};
+use crate::{
+    AuthorizedClients, BrowserLedger, LedgerError, LedgerRow, LedgerStatus,
+    parse_authorized_clients,
+};
 
 /// An owned result from a browser authorization lookup.
 ///
@@ -57,36 +60,67 @@ impl AuthorizedClientLedger {
     /// Resolves a browser sender's authorization from a freshly read ledger.
     #[must_use]
     pub fn lookup_browser(&self, sender_fingerprint: &[u8; 32]) -> BrowserLedgerLookup {
-        let ledger = self.read_fresh();
-        match ledger.browser_upload_authorization(sender_fingerprint) {
-            BrowserUploadAuthorization::LedgerUnavailable => BrowserLedgerLookup::LedgerUnavailable,
-            BrowserUploadAuthorization::NotAuthorized => BrowserLedgerLookup::NotAuthorized,
-            BrowserUploadAuthorization::Incomplete => BrowserLedgerLookup::Incomplete,
-            BrowserUploadAuthorization::Authorized {
-                pubkey_spki,
-                observer_handle,
-            } => BrowserLedgerLookup::Authorized {
-                pubkey_spki: pubkey_spki.to_owned(),
-                observer_handle: observer_handle.to_owned(),
+        let fingerprint = fingerprint_key(sender_fingerprint);
+        match self.lookup(&fingerprint) {
+            Err(_) => BrowserLedgerLookup::LedgerUnavailable,
+            Ok(None) => BrowserLedgerLookup::NotAuthorized,
+            Ok(Some(row)) => match (
+                row.pubkey_spki_hex.filter(|value| !value.is_empty()),
+                row.observer_handle.filter(|value| !value.is_empty()),
+            ) {
+                (Some(pubkey_spki), Some(observer_handle)) => BrowserLedgerLookup::Authorized {
+                    pubkey_spki,
+                    observer_handle,
+                },
+                _ => BrowserLedgerLookup::Incomplete,
             },
         }
     }
 
-    fn read_fresh(&self) -> AuthorizedClients {
-        // Read metadata on every call before opening the file. Unlike a
-        // last-good cache, a failed stat or read cannot preserve authorization.
-        if fs::metadata(&self.path)
+    fn read_fresh(&self) -> Result<AuthorizedClients, LedgerError> {
+        // The Python pairing process is the only writer. Stat before every
+        // lookup, then read from disk instead of retaining a last-good cache:
+        // a write made between browser offers is visible immediately, and a
+        // disappeared or unreadable file revokes authorization fail-closed.
+        fs::metadata(&self.path)
             .and_then(|metadata| metadata.modified())
-            .is_err()
-        {
-            return AuthorizedClients::unavailable();
+            .map_err(|_| LedgerError::Unavailable)?;
+        let bytes = fs::read(&self.path).map_err(|_| LedgerError::Unavailable)?;
+        let ledger = parse_authorized_clients(&bytes);
+        if ledger.status() == LedgerStatus::Unavailable {
+            return Err(LedgerError::Malformed);
+        }
+        Ok(ledger)
+    }
+}
+
+impl BrowserLedger for AuthorizedClientLedger {
+    fn lookup(&self, fingerprint: &str) -> Result<Option<LedgerRow>, LedgerError> {
+        let ledger = self.read_fresh()?;
+        let Some(entry) = ledger.entries().get(fingerprint) else {
+            return Ok(None);
+        };
+        if entry.kind != "browser" {
+            return Ok(None);
         }
 
-        match fs::read(&self.path) {
-            Ok(bytes) => parse_authorized_clients(&bytes),
-            Err(_) => AuthorizedClients::unavailable(),
-        }
+        Ok(Some(LedgerRow {
+            pubkey_spki_hex: entry.pubkey_spki.clone(),
+            observer_handle: entry.observer_handle.clone(),
+        }))
     }
+}
+
+fn fingerprint_key(sender_fingerprint: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut fingerprint = String::with_capacity("sha256:".len() + sender_fingerprint.len() * 2);
+    fingerprint.push_str("sha256:");
+    for &byte in sender_fingerprint {
+        fingerprint.push(char::from(HEX[usize::from(byte >> 4)]));
+        fingerprint.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    fingerprint
 }
 
 #[cfg(test)]
@@ -98,6 +132,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{AuthorizedClientLedger, BrowserLedgerLookup};
+    use crate::{BrowserLedger, LedgerRow};
 
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -140,6 +175,13 @@ mod tests {
             ledger.lookup_browser(&fingerprint),
             BrowserLedgerLookup::Incomplete
         );
+        assert_eq!(
+            ledger.lookup(&format!("sha256:{}", "a5".repeat(32)))?,
+            Some(LedgerRow {
+                pubkey_spki_hex: Some("30aa".to_owned()),
+                observer_handle: None,
+            })
+        );
 
         fs::write(
             journal.ledger_path(),
@@ -151,6 +193,13 @@ mod tests {
                 pubkey_spki: "30aa".to_owned(),
                 observer_handle: "observer-handle".to_owned(),
             }
+        );
+        assert_eq!(
+            ledger.lookup(&format!("sha256:{}", "a5".repeat(32)))?,
+            Some(LedgerRow {
+                pubkey_spki_hex: Some("30aa".to_owned()),
+                observer_handle: Some("observer-handle".to_owned()),
+            })
         );
 
         Ok(())

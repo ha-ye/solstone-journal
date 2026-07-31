@@ -16,12 +16,7 @@
 //! receiver outcomes. This preserves that known U2 health-observability hole:
 //! the sole event here is the required `admission_saturated` accounting event.
 
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    time::Duration,
-};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -231,6 +226,12 @@ pub enum BlobError {
     Acknowledgement,
 }
 
+struct AuthorizedBlobOffer {
+    offer: solstone_core_spl_hpke::Offer,
+    sender_public_key_hex: String,
+    observer_handle: String,
+}
+
 /// Receives, authenticates, validates, and ingests one browser blob offer.
 ///
 /// `R` is the immutable read half and `W` the separate write half of the
@@ -241,12 +242,34 @@ pub enum BlobError {
 pub async fn receive_blob<R: WsByteSource, W: WsByteSink>(
     reader: &mut BufferedWsReader<R>,
     sink: &mut W,
-    deps: &BlobDeps<'_>,
+    deps: &BlobDeps,
+    instance_id: [u8; 16],
+    gate: &BlobAdmissionGate,
+    emit: &dyn CallosumEmit,
+) -> Result<(), BlobError> {
+    receive_blob_with_timing(
+        reader,
+        sink,
+        deps,
+        instance_id,
+        BlobReceiveTiming::default(),
+        gate,
+        emit,
+    )
+    .await
+}
+
+async fn receive_blob_with_timing<R: WsByteSource, W: WsByteSink>(
+    reader: &mut BufferedWsReader<R>,
+    sink: &mut W,
+    deps: &BlobDeps,
+    instance_id: [u8; 16],
+    timing: BlobReceiveTiming,
     gate: &BlobAdmissionGate,
     emit: &dyn CallosumEmit,
 ) -> Result<(), BlobError> {
     let header = match reader
-        .read_exactly_bounded(OFFER_LEN, deps.timing.offer_deadline)
+        .read_exactly_bounded(OFFER_LEN, timing.offer_deadline)
         .await
     {
         Ok(header) => header,
@@ -260,19 +283,18 @@ pub async fn receive_blob<R: WsByteSource, W: WsByteSink>(
         Err(BlobFrameError::AckKey) => return close_sink(sink).await,
     };
 
-    let (sender_public_key_hex, observer_handle) =
-        match deps.ledger.lookup_browser(&offer.sender_fingerprint) {
-            BrowserLedgerLookup::LedgerUnavailable | BrowserLedgerLookup::NotAuthorized => {
-                return send_ready_then_close(sink, 0x01).await;
-            }
-            BrowserLedgerLookup::Incomplete => return send_ready_then_close(sink, 0x01).await,
-            BrowserLedgerLookup::Authorized {
-                pubkey_spki,
-                observer_handle,
-            } => (pubkey_spki, observer_handle),
-        };
-
     let sender = sender_fingerprint_key(&offer.sender_fingerprint);
+    let row = match deps.ledger.lookup(&sender) {
+        Err(_) | Ok(None) => return send_ready_then_close(sink, 0x01).await,
+        Ok(Some(row)) => row,
+    };
+    let (Some(sender_public_key_hex), Some(observer_handle)) = (
+        row.pubkey_spki_hex.filter(|value| !value.is_empty()),
+        row.observer_handle.filter(|value| !value.is_empty()),
+    ) else {
+        return send_ready_then_close(sink, 0x01).await;
+    };
+
     if !gate.try_acquire_sender(&sender) {
         emit.emit(
             "admission_saturated",
@@ -288,9 +310,13 @@ pub async fn receive_blob<R: WsByteSource, W: WsByteSink>(
         reader,
         sink,
         deps,
-        offer,
-        &sender_public_key_hex,
-        &observer_handle,
+        instance_id,
+        timing,
+        AuthorizedBlobOffer {
+            offer,
+            sender_public_key_hex,
+            observer_handle,
+        },
     )
     .await;
     gate.release_sender(&sender);
@@ -300,32 +326,32 @@ pub async fn receive_blob<R: WsByteSource, W: WsByteSink>(
 async fn receive_permitted<R: WsByteSource, W: WsByteSink>(
     reader: &mut BufferedWsReader<R>,
     sink: &mut W,
-    deps: &BlobDeps<'_>,
-    offer: solstone_core_spl_hpke::Offer,
-    sender_public_key_hex: &str,
-    observer_handle: &str,
+    deps: &BlobDeps,
+    instance_id: [u8; 16],
+    timing: BlobReceiveTiming,
+    authorized_offer: AuthorizedBlobOffer,
 ) -> Result<(), BlobError> {
     if let Err(error) = send_ready(sink, 0x00).await {
         return close_after_error(sink, error).await;
     }
 
     let encapsulated_key = match reader
-        .read_exactly_bounded(ENC_LEN, deps.timing.enc_deadline)
+        .read_exactly_bounded(ENC_LEN, timing.enc_deadline)
         .await
     {
         Ok(encapsulated_key) => encapsulated_key,
         Err(_) => return close_sink(sink).await,
     };
-    let ciphertext_len = match usize::try_from(offer.ciphertext_len) {
+    let ciphertext_len = match usize::try_from(authorized_offer.offer.ciphertext_len) {
         Ok(ciphertext_len) => ciphertext_len,
         Err(_) => return close_after_error(sink, BlobError::CiphertextLength).await,
     };
     let ciphertext = match reader
         .read_exactly_progress(
             ciphertext_len,
-            deps.timing.ciphertext_deadline,
-            deps.timing.ciphertext_progress_window,
-            deps.timing.ciphertext_min_bytes_per_window,
+            timing.ciphertext_deadline,
+            timing.ciphertext_progress_window,
+            timing.ciphertext_min_bytes_per_window,
         )
         .await
     {
@@ -333,28 +359,33 @@ async fn receive_permitted<R: WsByteSource, W: WsByteSink>(
         Err(_) => return close_sink(sink).await,
     };
 
-    let sender_public_key_der = match decode_sender_public_key(sender_public_key_hex) {
-        Ok(sender_public_key_der) => sender_public_key_der,
-        Err(error) => {
-            close_sink(sink).await?;
-            return Err(error);
-        }
+    let sender_public_key_der =
+        match decode_sender_public_key(&authorized_offer.sender_public_key_hex) {
+            Ok(sender_public_key_der) => sender_public_key_der,
+            Err(error) => {
+                close_sink(sink).await?;
+                return Err(error);
+            }
+        };
+    let recipient_private_key = match deps.upload_key.private_key() {
+        Ok(private_key) => private_key,
+        Err(_) => return close_sink(sink).await,
     };
     let prepared = match prepare_authenticated_blob(
-        offer,
+        authorized_offer.offer,
         &encapsulated_key,
         &ciphertext,
-        deps.recipient_private_key,
+        &recipient_private_key,
         &sender_public_key_der,
-        &deps.instance_id,
+        &instance_id,
     ) {
         Ok(prepared) => prepared,
         Err(_) => return close_sink(sink).await,
     };
 
     let status = match deps
-        .ingestor
-        .ingest(&prepared.archive, observer_handle)
+        .ingest
+        .ingest(&prepared.archive, &authorized_offer.observer_handle)
         .await
     {
         Ok(status) => status,
@@ -468,7 +499,7 @@ mod tests {
         io::Cursor,
         path::PathBuf,
         sync::{
-            Mutex,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::{SystemTime, UNIX_EPOCH},
@@ -490,7 +521,7 @@ mod tests {
 
     use super::{
         BlobDeps, BlobIngest, BlobIngestError, BlobIngestFuture, BlobIngestStatus, CallosumEmit,
-        receive_blob,
+        KeyError, UploadKeySource, parse_convey_ingest_status, receive_blob,
     };
     use crate::{
         AuthorizedClientLedger, BlobAdmissionGate, BufferedWsReader, ValidatedBlobArchive,
@@ -580,6 +611,26 @@ mod tests {
         status: BlobIngestStatus,
     }
 
+    struct FixedUploadKeySource(P256Secret);
+
+    impl UploadKeySource for FixedUploadKeySource {
+        fn private_key(&self) -> Result<P256Secret, KeyError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn blob_deps(
+        ledger: AuthorizedClientLedger,
+        private_key: P256Secret,
+        ingestor: impl BlobIngest + 'static,
+    ) -> BlobDeps {
+        BlobDeps::new(
+            Arc::new(ledger),
+            Arc::new(FixedUploadKeySource(private_key)),
+            Arc::new(ingestor),
+        )
+    }
+
     impl BlobIngest for StatusIngest {
         fn ingest<'a>(
             &'a self,
@@ -587,6 +638,26 @@ mod tests {
             _observer_handle: &'a str,
         ) -> BlobIngestFuture<'a> {
             Box::pin(future::ready(Ok(self.status)))
+        }
+    }
+
+    struct ConveyResponseIngest(Value);
+
+    impl BlobIngest for ConveyResponseIngest {
+        fn ingest<'a>(
+            &'a self,
+            _archive: &'a ValidatedBlobArchive,
+            _observer_handle: &'a str,
+        ) -> BlobIngestFuture<'a> {
+            Box::pin(future::ready(parse_convey_ingest_status(&self.0)))
+        }
+    }
+
+    struct MissingUploadKeySource;
+
+    impl UploadKeySource for MissingUploadKeySource {
+        fn private_key(&self) -> Result<P256Secret, KeyError> {
+            Err(KeyError::Unavailable)
         }
     }
 
@@ -625,7 +696,7 @@ mod tests {
         let ledger = AuthorizedClientLedger::new(&journal.root);
         let private_key = recipient_private_key()?;
         let ingestor = UnusedIngest;
-        let deps = BlobDeps::new(&ledger, &private_key, [0_u8; 16], &ingestor);
+        let deps = blob_deps(ledger, private_key, ingestor);
         let gate = BlobAdmissionGate::default();
         let emitter = Emitter::default();
 
@@ -639,6 +710,7 @@ mod tests {
             &mut malformed_reader,
             &mut malformed_sink,
             &deps,
+            [0_u8; 16],
             &gate,
             &emitter,
         )
@@ -655,6 +727,7 @@ mod tests {
             &mut nonmagic_reader,
             &mut nonmagic_sink,
             &deps,
+            [0_u8; 16],
             &gate,
             &emitter,
         )
@@ -665,12 +738,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_and_incomplete_ledgers_refuse_with_ready() -> Result<(), Box<dyn Error>> {
+    async fn unavailable_absent_and_incomplete_ledgers_refuse_with_ready()
+    -> Result<(), Box<dyn Error>> {
         let journal = TestJournal::create()?;
         let ledger = AuthorizedClientLedger::new(&journal.root);
         let private_key = recipient_private_key()?;
         let ingestor = UnusedIngest;
-        let deps = BlobDeps::new(&ledger, &private_key, [0_u8; 16], &ingestor);
+        let deps = blob_deps(ledger, private_key, ingestor);
         let gate = BlobAdmissionGate::default();
         let emitter = Emitter::default();
 
@@ -682,11 +756,29 @@ mod tests {
             &mut unavailable_reader,
             &mut unavailable_sink,
             &deps,
+            [0_u8; 16],
             &gate,
             &emitter,
         )
         .await?;
         assert_eq!(unavailable_sink.sent, [Bytes::from_static(b"SBR1\x01\x01")]);
+
+        journal.write_ledger("[]")?;
+        let mut absent_reader = BufferedWsReader::new(Frames::with_frames([Bytes::from(
+            valid_offer_header(0).to_vec(),
+        )]));
+        let mut absent_sink = Sink::default();
+        receive_blob(
+            &mut absent_reader,
+            &mut absent_sink,
+            &deps,
+            [0_u8; 16],
+            &gate,
+            &emitter,
+        )
+        .await?;
+        assert_eq!(absent_sink.sent, [Bytes::from_static(b"SBR1\x01\x01")]);
+        assert_eq!(absent_sink.closes, 1);
 
         journal.write_ledger(&browser_entry(None))?;
         let mut incomplete_reader = BufferedWsReader::new(Frames::with_frames([Bytes::from(
@@ -697,6 +789,7 @@ mod tests {
             &mut incomplete_reader,
             &mut incomplete_sink,
             &deps,
+            [0_u8; 16],
             &gate,
             &emitter,
         )
@@ -713,7 +806,7 @@ mod tests {
         let ledger = AuthorizedClientLedger::new(&journal.root);
         let private_key = recipient_private_key()?;
         let ingestor = UnusedIngest;
-        let deps = BlobDeps::new(&ledger, &private_key, [0_u8; 16], &ingestor);
+        let deps = blob_deps(ledger, private_key, ingestor);
         let gate = BlobAdmissionGate::new(2, 1);
         let sender = sender_key_for_test();
         assert!(gate.try_acquire_sender(&sender));
@@ -723,7 +816,7 @@ mod tests {
         )]));
         let mut sink = Sink::default();
 
-        receive_blob(&mut reader, &mut sink, &deps, &gate, &emitter).await?;
+        receive_blob(&mut reader, &mut sink, &deps, [0_u8; 16], &gate, &emitter).await?;
 
         assert!(sink.sent.is_empty());
         assert_eq!(sink.closes, 1);
@@ -754,7 +847,7 @@ mod tests {
         let ledger = AuthorizedClientLedger::new(&journal.root);
         let private_key = recipient_private_key()?;
         let ingestor = UnusedIngest;
-        let deps = BlobDeps::new(&ledger, &private_key, [0_u8; 16], &ingestor);
+        let deps = blob_deps(ledger, private_key, ingestor);
         let gate = BlobAdmissionGate::new(2, 1);
         let emitter = Emitter::default();
         let mut reader = BufferedWsReader::new(Frames::with_frames([Bytes::from(
@@ -762,7 +855,7 @@ mod tests {
         )]));
         let mut sink = Sink::default();
 
-        receive_blob(&mut reader, &mut sink, &deps, &gate, &emitter).await?;
+        receive_blob(&mut reader, &mut sink, &deps, [0_u8; 16], &gate, &emitter).await?;
 
         assert_eq!(sink.sent, [Bytes::from_static(b"SBR1\x01\x00")]);
         assert_eq!(sink.closes, 1);
@@ -774,7 +867,7 @@ mod tests {
     async fn authenticated_ingest_statuses_send_exact_acks_and_close() -> Result<(), Box<dyn Error>>
     {
         let recipient_private_key = recipient_private_key()?;
-        let transfer = authenticated_transfer(&recipient_private_key)?;
+        let transfer = authenticated_transfer(&recipient_private_key, [0_u8; 16])?;
 
         for (ingest_status, acknowledgement_status) in [
             (BlobIngestStatus::Ok, 0x00),
@@ -790,7 +883,7 @@ mod tests {
             let ingestor = StatusIngest {
                 status: ingest_status,
             };
-            let deps = BlobDeps::new(&ledger, &recipient_private_key, [0_u8; 16], &ingestor);
+            let deps = blob_deps(ledger, recipient_private_key.clone(), ingestor);
             let gate = BlobAdmissionGate::new(2, 1);
             let emitter = Emitter::default();
             let expected_acknowledgement = ack(
@@ -805,7 +898,7 @@ mod tests {
             ]));
             let mut sink = Sink::default();
 
-            receive_blob(&mut reader, &mut sink, &deps, &gate, &emitter).await?;
+            receive_blob(&mut reader, &mut sink, &deps, [0_u8; 16], &gate, &emitter).await?;
 
             assert_eq!(
                 sink.sent,
@@ -817,6 +910,131 @@ mod tests {
             assert_eq!(sink.closes, 1);
             assert_eq!(gate.sender_count(&sender_key_for_test()), 0);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_upload_key_closes_after_ready_without_ack() -> Result<(), Box<dyn Error>> {
+        let recipient_private_key = recipient_private_key()?;
+        let transfer = authenticated_transfer(&recipient_private_key, [0_u8; 16])?;
+        let journal = TestJournal::create()?;
+        journal.write_ledger(&browser_entry_with_sender_key(
+            Some("observer-handle"),
+            &transfer.sender_public_key_hex,
+        ))?;
+        let deps = BlobDeps::new(
+            Arc::new(AuthorizedClientLedger::new(&journal.root)),
+            Arc::new(MissingUploadKeySource),
+            Arc::new(StatusIngest {
+                status: BlobIngestStatus::Ok,
+            }),
+        );
+        let mut reader = BufferedWsReader::new(Frames::with_frames([
+            Bytes::copy_from_slice(&transfer.offer.header),
+            Bytes::copy_from_slice(&transfer.encapsulated_key),
+            Bytes::copy_from_slice(&transfer.ciphertext),
+        ]));
+        let mut sink = Sink::default();
+        let gate = BlobAdmissionGate::default();
+        let emitter = Emitter::default();
+
+        receive_blob(&mut reader, &mut sink, &deps, [0_u8; 16], &gate, &emitter).await?;
+
+        assert_eq!(sink.sent, [Bytes::from_static(b"SBR1\x01\x00")]);
+        assert_eq!(sink.closes, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unexpected_ingest_status_closes_without_ack() -> Result<(), Box<dyn Error>> {
+        let recipient_private_key = recipient_private_key()?;
+        let transfer = authenticated_transfer(&recipient_private_key, [0_u8; 16])?;
+        let journal = TestJournal::create()?;
+        journal.write_ledger(&browser_entry_with_sender_key(
+            Some("observer-handle"),
+            &transfer.sender_public_key_hex,
+        ))?;
+        let deps = blob_deps(
+            AuthorizedClientLedger::new(&journal.root),
+            recipient_private_key,
+            ConveyResponseIngest(json!({"status":"not-a-convey-status"})),
+        );
+        let mut reader = BufferedWsReader::new(Frames::with_frames([
+            Bytes::copy_from_slice(&transfer.offer.header),
+            Bytes::copy_from_slice(&transfer.encapsulated_key),
+            Bytes::copy_from_slice(&transfer.ciphertext),
+        ]));
+        let mut sink = Sink::default();
+        let gate = BlobAdmissionGate::default();
+        let emitter = Emitter::default();
+
+        receive_blob(&mut reader, &mut sink, &deps, [0_u8; 16], &gate, &emitter).await?;
+
+        assert_eq!(sink.sent, [Bytes::from_static(b"SBR1\x01\x00")]);
+        assert_eq!(sink.closes, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn convey_status_parser_rejects_unknown_missing_and_non_string_values() {
+        assert_eq!(
+            parse_convey_ingest_status(&json!({"status":"ok"})),
+            Ok(BlobIngestStatus::Ok)
+        );
+        assert_eq!(
+            parse_convey_ingest_status(&json!({"status":"duplicate"})),
+            Ok(BlobIngestStatus::Duplicate)
+        );
+        assert_eq!(
+            parse_convey_ingest_status(&json!({"status":"collision"})),
+            Ok(BlobIngestStatus::Collision)
+        );
+        for response in [json!({}), json!({"status":"other"}), json!({"status":7})] {
+            assert_eq!(
+                parse_convey_ingest_status(&response),
+                Err(BlobIngestError::UnexpectedStatus)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supplied_instance_id_is_bound_into_authenticated_open() -> Result<(), Box<dyn Error>> {
+        let recipient_private_key = recipient_private_key()?;
+        let instance_id = [0x71_u8; 16];
+        let transfer = authenticated_transfer(&recipient_private_key, instance_id)?;
+        let journal = TestJournal::create()?;
+        journal.write_ledger(&browser_entry_with_sender_key(
+            Some("observer-handle"),
+            &transfer.sender_public_key_hex,
+        ))?;
+        let deps = blob_deps(
+            AuthorizedClientLedger::new(&journal.root),
+            recipient_private_key,
+            StatusIngest {
+                status: BlobIngestStatus::Ok,
+            },
+        );
+        let expected_acknowledgement =
+            ack(&transfer.offer.blob_id, 0x00, &transfer.acknowledgement_key)?;
+        let mut reader = BufferedWsReader::new(Frames::with_frames([
+            Bytes::copy_from_slice(&transfer.offer.header),
+            Bytes::copy_from_slice(&transfer.encapsulated_key),
+            Bytes::copy_from_slice(&transfer.ciphertext),
+        ]));
+        let mut sink = Sink::default();
+        let gate = BlobAdmissionGate::default();
+        let emitter = Emitter::default();
+
+        receive_blob(&mut reader, &mut sink, &deps, instance_id, &gate, &emitter).await?;
+
+        assert_eq!(
+            sink.sent,
+            [
+                Bytes::from_static(b"SBR1\x01\x00"),
+                Bytes::copy_from_slice(&expected_acknowledgement),
+            ]
+        );
+        assert_eq!(sink.closes, 1);
         Ok(())
     }
 
@@ -859,6 +1077,7 @@ mod tests {
 
     fn authenticated_transfer(
         recipient_private_key: &P256Secret,
+        instance_id: [u8; 16],
     ) -> Result<AuthenticatedTransfer, Box<dyn Error>> {
         let sender_private_key = P256Secret::from_slice(&[0x43; 32])?;
         let sender_public_key_der = sender_private_key
@@ -873,7 +1092,7 @@ mod tests {
         let offer = parse_offer(&valid_offer_header(ciphertext_len))?;
         let mut info = Vec::with_capacity(b"spl-blob-v1".len() + 16 + 32);
         info.extend_from_slice(b"spl-blob-v1");
-        info.extend_from_slice(&[0_u8; 16]);
+        info.extend_from_slice(&instance_id);
         info.extend_from_slice(&offer.sender_fingerprint);
 
         let recipient_public_key = hpke_public_key(recipient_private_key)?;

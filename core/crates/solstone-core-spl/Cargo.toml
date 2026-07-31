@@ -14,7 +14,7 @@ bytes = { workspace = true }
 flate2 = "1.1.9"
 futures-util = { version = "0.3.33", default-features = false, features = ["sink", "std"] }
 hpke = { workspace = true }
-p256 = { version = "0.14.0", default-features = false, features = ["pkcs8", "std"] }
+p256 = { version = "0.14.0", default-features = false, features = ["pem", "pkcs8", "std"] }
 regex = "1.12.3"
 serde_json = { workspace = true }
 solstone-core-spl-hpke = { workspace = true }

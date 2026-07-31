@@ -27,6 +27,7 @@ mod service;
 mod service_shutdown;
 mod service_transition;
 mod tunnel_route;
+mod upload_key_source;
 mod ws_buffer;
 mod ws_sink;
 
@@ -46,7 +47,8 @@ pub use blob_archive::{
 pub use blob_content_type::blob_content_type;
 pub use blob_receive::{
     BlobDeps, BlobError, BlobIngest, BlobIngestError, BlobIngestFuture, BlobIngestStatus,
-    BlobReceiveTiming, CallosumEmit, receive_blob,
+    BlobReceiveTiming, BrowserLedger, CallosumEmit, KeyError, LedgerError, LedgerRow,
+    UploadKeySource, parse_convey_ingest_status, receive_blob,
 };
 pub use health::{
     LINK_HEALTH_EVENT, OFFLINE_TUNNEL_REASONS, REASON_HOME_MISSING_MOBILE,
@@ -85,5 +87,6 @@ pub use service_transition::{
     PostureObservation, ServiceAction, ServiceLifecycle, TokenObservation, transition,
 };
 pub use tunnel_route::{TunnelRoute, route_tunnel_prefix};
+pub use upload_key_source::JournalUploadKeySource;
 pub use ws_buffer::{BufferedWsReader, WsBufferError, WsByteSource, WsClosed};
 pub use ws_sink::WsByteSink;
