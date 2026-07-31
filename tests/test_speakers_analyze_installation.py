@@ -154,6 +154,46 @@ def test_helper_path_is_sibling_of_python_executable(tmp_path: Path):
     )
 
 
+def test_packaged_repair_text_preserves_existing_plain_prose(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(installation, "is_source_checkout", lambda: False)
+
+    assert installation.speakers_analyze_repair_text() == (
+        "Repair: reinstall the journal host stack with solstone-journal, or "
+        "solstone-journal-cuda on NVIDIA hosts, and restart the journal."
+    )
+
+
+def test_source_checkout_repair_text_names_make_targets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(installation, "is_source_checkout", lambda: True)
+
+    text = installation.speakers_analyze_repair_text()
+
+    assert "make speakers-analyze-helper" in text
+    assert "make install" in text
+    assert "`" not in text
+
+
+def test_result_message_resolves_repair_text_at_access_time(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = installation.SpeakersAnalyzeInstallationResult(
+        "asset-missing", "wespeaker"
+    )
+    monkeypatch.setattr(installation, "is_source_checkout", lambda: False)
+    packaged = result.message
+
+    monkeypatch.setattr(installation, "is_source_checkout", lambda: True)
+    source = result.message
+
+    assert installation.PACKAGED_SPEAKERS_ANALYZE_REPAIR_TEXT in packaged
+    assert installation.SOURCE_CHECKOUT_SPEAKERS_ANALYZE_REPAIR_TEXT in source
+    assert packaged != source
+
+
 def test_missing_helper_distribution_metadata(tmp_path: Path):
     def version_reader(dist_name: str) -> str:
         if dist_name == installation.ROOT_DIST_NAME:

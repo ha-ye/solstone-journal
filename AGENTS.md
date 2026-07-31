@@ -90,6 +90,7 @@ Verified against `Makefile`. Grouped by use.
 | Target | When to use |
 |--------|-------------|
 | `make install` | First setup and whenever `pyproject.toml` or `uv.lock` changes. Creates `.venv/`, syncs deps, runs `make skills`. |
+| `make speakers-analyze-helper` | Reinstall the published speakers-analyze helper into `.venv` after a source-checkout `uv sync` prunes it. Normally run by `make install`; useful after manual syncs. |
 | `make skills` | Regenerate generated router references, then rewrite the `sol` + `journal` router skill symlinks into `journal/`. (`make install` depends on this; rarely run alone.) |
 | `make update` | Upgrade all deps to latest, regenerate `uv.lock`. Expect test churn. |
 | `make update-prices` | Refresh genai-prices model-cost data when adding a new provider model or when pricing tests fail. |

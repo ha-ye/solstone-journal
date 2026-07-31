@@ -2874,12 +2874,12 @@ def test_main_speakers_analyze_failure_prints_canonical_message_once(
 ):
     from solstone.observe import sense
     from solstone.think.speakers_analyze_installation import (
-        SPEAKERS_ANALYZE_REPAIR_TEXT,
+        speakers_analyze_repair_text,
     )
 
     message = (
         "Speakers-analyze installation is incomplete "
-        f"(asset-missing: wespeaker). {SPEAKERS_ANALYZE_REPAIR_TEXT}"
+        f"(asset-missing: wespeaker). {speakers_analyze_repair_text()}"
     )
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
