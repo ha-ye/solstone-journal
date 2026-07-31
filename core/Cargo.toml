@@ -9,6 +9,8 @@ members = [
     "crates/solstone-core-sol-client",
     "crates/solstone-core-sol-client-cli",
     "crates/solstone-core-sol-link",
+    "crates/solstone-core-spl",
+    "crates/solstone-core-spl-hpke",
     "crates/solstone-core-speakers",
     "crates/solstone-core-speakers-analyze",
     "crates/solstone-core-speakers-onnx",
@@ -33,6 +35,9 @@ solstone-core-sol = { path = "crates/solstone-core-sol" }
 solstone-core-sol-client = { path = "crates/solstone-core-sol-client" }
 solstone-core-sol-client-cli = { path = "crates/solstone-core-sol-client-cli" }
 solstone-core-sol-link = { path = "crates/solstone-core-sol-link" }
+solstone-core-spl = { path = "crates/solstone-core-spl" }
+solstone-core-spl-hpke = { path = "crates/solstone-core-spl-hpke" }
+bytes = "1.12.1"
 solstone-core-speakers = { path = "crates/solstone-core-speakers" }
 solstone-core-speakers-analyze = { path = "crates/solstone-core-speakers-analyze" }
 solstone-core-speakers-onnx = { path = "crates/solstone-core-speakers-onnx" }
@@ -40,6 +45,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
 glob = "0.3.3"
 hdbscan = { version = "0.12.0", default-features = false, features = ["serial"] }
+hpke = { version = "0.14.0", default-features = false, features = ["alloc", "nistp", "aes", "getrandom"] }
 md5 = "0.8.1"
 nix = { version = "0.30.1", default-features = false, features = ["fs"] }
 ort = { version = "=2.0.0-rc.12", default-features = false }
@@ -52,6 +58,7 @@ serde_json = { version = "1.0.150", features = ["preserve_order", "float_roundtr
 spl-core = { git = "https://github.com/solpbc/spl-rust", tag = "v0.4.1" }
 spl-transport = { git = "https://github.com/solpbc/spl-rust", tag = "v0.4.1" }
 tokio = { version = "1", default-features = false }
+thiserror = "2.0.19"
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
 unicode-normalization = "0.1.25"
 unidecode = "0.3.0"
