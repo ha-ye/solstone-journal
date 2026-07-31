@@ -1544,6 +1544,7 @@ dependencies = [
  "solstone-core-indexer-store",
  "solstone-core-journal",
  "solstone-core-sol",
+ "solstone-core-spl-hpke",
 ]
 
 [[package]]

@@ -72,6 +72,11 @@
   the required token query plus bearer header, has no protocol-library size cap, splits once
   into U3/U2-compatible byte halves, preserves binary/text bytes, and reduces all connection
   errors to token-free classes. The exact strict clippy, iOS, and 103-test SPL gates are green.
+- The delegated U1 process-I/O dispatch is accepted after fresh-eyes review. `spl hpke` now
+  uses the frozen u32be framed request/response protocol over standard I/O with a 480 MiB total
+  input cap plus one-byte overflow refusal, class-only stderr failures, and no key material on
+  argv. `spl service` intentionally remains a fixed `spl: unavailable` / exit-69 interim path:
+  it is not service composition and must never be treated as cutover completion.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -112,6 +117,11 @@
   transfer or either observable ACK status. Fresh-eyes review caught the omission; the delegate
   added an auth-mode HPKE end-to-end test for `ok`/`collision` → `ACK(0x00)` and
   `duplicate` → `ACK(0x01)`. This is a delegate test-coverage omission, not contract rework.
+- **U1 HPKE process I/O — returned.** The first runner used an unbounded `read_to_end`, which
+  could exhaust process memory before the field parser applied its cap. Fresh-eyes review
+  returned it; the delegate replaced it with bounded chunked reads and an `EndlessReader` test
+  proving it refuses the first byte beyond the aggregate limit. This is a delegate security
+  correction, not contract rework.
 
 ### Explained twice
 

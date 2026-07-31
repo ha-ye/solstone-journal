@@ -15,3 +15,4 @@ solstone-core-cli.workspace = true
 solstone-core-indexer-store.workspace = true
 solstone-core-journal.workspace = true
 solstone-core-sol.workspace = true
+solstone-core-spl-hpke.workspace = true
