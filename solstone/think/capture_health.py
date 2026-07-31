@@ -35,7 +35,6 @@ def get_capture_health() -> dict:
         get_active_ingest_rejection,
         get_health_beacon,
         list_observers,
-        observer_device_binding,
     )
 
     try:
@@ -75,11 +74,6 @@ def get_capture_health() -> dict:
                 "last_seen": last_seen,
                 "status": obs_status,
             }
-
-            if observer_device_binding(o) is None:
-                obs_status = CAPTURE_STATUS_DEGRADED
-                summary["status"] = obs_status
-                summary["unbound"] = True
 
             rejection = get_active_ingest_rejection(o)
             if rejection is not None:

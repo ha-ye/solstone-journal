@@ -1324,7 +1324,7 @@ class TestStaleAliasSymlink:
         assert "1 warnings" in capsys.readouterr().out
 
 
-def test_capture_health_check_reports_unbound_degradation(doctor, monkeypatch):
+def test_capture_health_check_omits_unbound_suffix(doctor, monkeypatch):
     monkeypatch.setattr(
         doctor,
         "get_capture_health",
@@ -1338,7 +1338,8 @@ def test_capture_health_check_reports_unbound_degradation(doctor, monkeypatch):
 
     assert result.status == "warn"
     assert "rollup=degraded" in result.detail
-    assert "desktop=degraded (unbound)" in result.detail
+    assert "desktop=degraded" in result.detail
+    assert "(unbound)" not in result.detail
     assert result.fix == doctor._CAPTURE_HEALTH_FIX
 
 

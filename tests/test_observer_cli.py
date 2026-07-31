@@ -759,7 +759,7 @@ def test_cmd_list_json_includes_prefix_and_status(
     assert "mode" not in rows["desktop"]
 
 
-def test_unbound_status_surfaces_in_list_and_status(
+def test_missing_binding_uses_connection_status_in_list_and_status(
     observer_cli_env,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -788,7 +788,7 @@ def test_unbound_status_surfaces_in_list_and_status(
     captured = capsys.readouterr()
     assert rc == 0
     rows = {row["name"]: row for row in json.loads(captured.out)}
-    assert rows["unbound"]["status"] == "unbound"
+    assert rows["unbound"]["status"] == "connected"
     assert rows["revoked"]["status"] == "revoked"
 
     rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
@@ -796,7 +796,7 @@ def test_unbound_status_surfaces_in_list_and_status(
     captured = capsys.readouterr()
     assert rc == 0
     assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
-        "unbound"
+        "connected"
     )
     assert _table_cell(captured.out, _table_row(captured.out, "revoked"), "Status") == (
         "revoked"
@@ -808,7 +808,7 @@ def test_unbound_status_surfaces_in_list_and_status(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert json.loads(captured.out)["status"] == "unbound"
+    assert json.loads(captured.out)["status"] == "connected"
 
     rc = observer_cli.cmd_status(
         argparse.Namespace(identifier="unbound", json_output=False)
@@ -816,18 +816,18 @@ def test_unbound_status_surfaces_in_list_and_status(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "  Status:       unbound\n" in captured.out
+    assert "  Status:       connected\n" in captured.out
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=True))
 
     captured = capsys.readouterr()
     assert rc == 0
     payload = json.loads(captured.out)
-    assert payload["unbound"] == 1
     assert payload["revoked"] == 1
-    assert payload["connected"] == 0
+    assert payload["connected"] == 1
+    assert "unbound" not in payload
     assert {row["name"]: row["status"] for row in payload["observers"]} == {
-        "unbound": "unbound",
+        "unbound": "connected",
         "revoked": "revoked",
     }
 
@@ -835,9 +835,9 @@ def test_unbound_status_surfaces_in_list_and_status(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "  Unbound:      1\n" in captured.out
+    assert "  Unbound:" not in captured.out
     assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
-        "unbound"
+        "connected"
     )
 
 

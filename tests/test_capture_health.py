@@ -126,7 +126,7 @@ def test_legacy_observer_not_failed(monkeypatch):
     assert result["observers"][0]["beacon"]["version"] == "0.3.1"
 
 
-def test_unbound_observer_escalates_to_degraded(monkeypatch):
+def test_unbound_observer_uses_freshness_status(monkeypatch):
     monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: 1000)
     monkeypatch.setattr(
         "solstone.apps.observer.utils.list_observers",
@@ -135,7 +135,7 @@ def test_unbound_observer_escalates_to_degraded(monkeypatch):
 
     result = get_capture_health()
 
-    assert result["status"] == "degraded"
+    assert result["status"] == "active"
     observer = result["observers"][0]
-    assert observer["status"] == "degraded"
-    assert observer["unbound"] is True
+    assert observer["status"] == "active"
+    assert "unbound" not in observer
