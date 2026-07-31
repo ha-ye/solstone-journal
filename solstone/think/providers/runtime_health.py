@@ -228,6 +228,7 @@ REASON_CODE_GROUPS: dict[str, frozenset[str]] = {
     ),
 }
 REASON_CODES: frozenset[str] = frozenset().union(*REASON_CODE_GROUPS.values())
+ADMISSION_ONLY_REASON_CODES: frozenset[str] = frozenset({"ram-insufficient"})
 
 if RUNTIME_PHASES & REASON_CODES:
     raise RuntimeError("runtime health phase and reason-code vocabularies overlap")
@@ -1021,6 +1022,7 @@ def _validate_record_kind(value: object) -> RecordKind:
 
 
 __all__ = [
+    "ADMISSION_ONLY_REASON_CODES",
     "InspectionStatus",
     "REASON_CODE_GROUPS",
     "REASON_CODES",

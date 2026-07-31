@@ -77,6 +77,7 @@ from solstone.think.providers.install_state import (
 from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.providers.runtime_health import (
+    ADMISSION_ONLY_REASON_CODES,
     ReasonCode,
     RuntimeHealthConflictError,
     RuntimeHealthMalformedError,
@@ -5142,6 +5143,28 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             process=_current_provider_process_record(state.provider),
         )
         _finish_provider_startup_condition(state, observation.phase)
+        return True
+    if (
+        not fingerprint_changed
+        and observation.phase == "host-blocked"
+        and observation.reason_code in ADMISSION_ONLY_REASON_CODES
+        and state.latest_phase in {"ready", "ready-proof-unavailable"}
+    ):
+        # Available-RAM headroom is an admission gate, not a liveness signal: the
+        # running provider's own resident footprint has already been subtracted
+        # from the reading the floor is compared against. Re-applying it here would
+        # make a successful model load the thing that evicts the model.
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={
+                "slot": "truth",
+                "latched_phase": observation.phase,
+                "latched_reason_code": observation.reason_code,
+            },
+            process=_current_provider_process_record(state.provider),
+        )
         return True
     if observation.phase in {"not-desired", "host-blocked"} and state.latest_phase in {
         "ready",

@@ -32,6 +32,7 @@ from solstone.think.providers.runtime_health import (
     RUNTIME_PHASES,
     ReasonCode,
     RuntimeHealthRecord,
+    RuntimeHealthUnavailableError,
     RuntimePhase,
     read_retry_token,
     read_runtime_health,
@@ -1949,6 +1950,189 @@ def test_owned_local_host_blocked_defers_admission_exclusive_stop() -> None:
     assert state.latest_phase == "stop-deferred"
     assert state.pending_stop_admission_exclusive is True
     assert state.pending_stop_target_phase == "host-blocked"
+
+
+def _local_host_blocked_observation(
+    plan: supervisor.LocalServerLaunchPlan,
+    reason_code: ReasonCode,
+) -> supervisor.ProviderTruthObservation:
+    return supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="host-blocked",
+        reason_code=reason_code,
+        detail={"host": {"reason": reason_code}},
+        desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+        boot_required=True,
+    )
+
+
+def test_ready_local_ram_insufficient_host_blocked_does_not_defer_stop() -> None:
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    _set_provider_ready("local", state, plan)
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(
+        _local_host_blocked_observation(plan, "ram-insufficient")
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    assert state.latest_phase == "ready"
+    assert state.pending_stop_admission_exclusive is False
+    assert state.pending_stop_target_phase == "stopped"
+    assert state.pending_stop_request is None
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "platform-unsupported",
+        "package-unavailable",
+        "openmp-runtime-unavailable",
+        "gpu-probe-failed",
+        "gpu-unavailable",
+        "host-admission-blocked",
+    ],
+)
+def test_ready_local_liveness_host_blocked_still_defers_admission_exclusive_stop(
+    reason_code: ReasonCode,
+) -> None:
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    _set_provider_ready("local", state, plan)
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(
+        _local_host_blocked_observation(plan, reason_code)
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    assert state.latest_phase == "stop-deferred"
+    assert state.pending_stop_admission_exclusive is True
+    assert state.pending_stop_target_phase == "host-blocked"
+    assert state.pending_stop_target_reason_code == reason_code
+
+
+def test_ready_local_ram_insufficient_decline_preserves_plan_and_process() -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    process = {
+        "name": managed.name,
+        "pid": managed.process.pid,
+        "ref": managed.ref,
+        "port": 45678,
+    }
+    _set_provider_ready("local", state, plan)
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint=plan.desired_fingerprint_sha256,
+            generation=state.generation,
+            attempt=state.retry.attempt_count,
+            process=process,
+        )
+    )
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(
+        _local_host_blocked_observation(plan, "ram-insufficient")
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    health = read_runtime_health("local")
+    assert state.latest_phase == "ready"
+    assert state.latest_plan is plan
+    assert health["process"] == process
+    assert health["reason_code"] == "stale-result-ignored"
+    assert health["detail"]["slot"] == "truth"
+    assert health["detail"]["latched_phase"] == "host-blocked"
+    assert health["detail"]["latched_reason_code"] == "ram-insufficient"
+
+
+def test_ready_local_ram_insufficient_decline_still_submits_probe(monkeypatch) -> None:
+    class _RecordingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Any, tuple[Any, ...]]] = []
+            self.future: concurrent.futures.Future = concurrent.futures.Future()
+
+        def submit(self, fn, *args):
+            self.calls.append((fn, args))
+            return self.future
+
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    _set_provider_ready("local", state, plan)
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(
+        _local_host_blocked_observation(plan, "ram-insufficient")
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+    assert state.latest_phase == "ready"
+
+    executor = _RecordingExecutor()
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: executor)
+    monkeypatch.setattr(supervisor, "read_service_port", lambda _service: 45678)
+
+    supervisor._submit_provider_probe_if_needed(state)
+
+    assert state.probe_future is executor.future
+    assert state.probe_fence is not None
+    assert len(executor.calls) == 1
+    fn, args = executor.calls[0]
+    assert fn is supervisor._provider_probe_worker
+    assert args == ("local", 45678, state.probe_fence)
+
+
+def test_ready_local_ram_insufficient_decline_write_unavailable_does_not_defer_stop(
+    monkeypatch,
+) -> None:
+    """The error path must not re-enter the FALL-THROUGH trap.
+
+    The plan is preserved, the process record is preserved, no stop is deferred,
+    and the phase is the honest pre-existing write-failure latch rather than a
+    false host-blocked.
+    """
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    process = {
+        "name": managed.name,
+        "pid": managed.process.pid,
+        "ref": managed.ref,
+        "port": 45678,
+    }
+    _set_provider_ready("local", state, plan)
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint=plan.desired_fingerprint_sha256,
+            generation=state.generation,
+            attempt=state.retry.attempt_count,
+            process=process,
+        )
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise RuntimeHealthUnavailableError("runtime health write unavailable")
+
+    monkeypatch.setattr(supervisor, "write_runtime_health", fail_write)
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(
+        _local_host_blocked_observation(plan, "ram-insufficient")
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    assert state.pending_stop_request is None
+    assert state.pending_stop_admission_exclusive is False
+    assert state.pending_stop_target_phase == "stopped"
+    assert state.latest_plan is plan
+    assert read_runtime_health("local")["process"] == process
+    assert state.latest_phase == "state-unavailable"
 
 
 def test_parakeet_stt_admission_latch_survives_ready_probe_and_restart(

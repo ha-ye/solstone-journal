@@ -1245,3 +1245,45 @@ def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> Non
     supervisor._submit_provider_start_if_needed(state, [])
 
     assert launches == [plan]
+
+
+def test_ready_parakeet_host_admission_blocked_still_defers_admission_exclusive_stop(
+    monkeypatch,
+) -> None:
+    """Pin deliberately-unchanged parakeet host-blocked stop deferral."""
+    state = supervisor.ProviderRuntimeState("parakeet")
+    plan = _parakeet_plan("cpu")
+    state.latest_phase = "ready"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    monkeypatch.setattr(
+        supervisor, "_write_provider_runtime", lambda *_args, **_kwargs: None
+    )
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    state.truth_future = _InlineExecutor().submit(
+        lambda: supervisor.ProviderTruthObservation(
+            provider="parakeet",
+            phase="host-blocked",
+            reason_code="host-admission-blocked",
+            detail={"host": {"reason": "stt admission pressure"}},
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            boot_required=True,
+        )
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    assert state.latest_phase == "stop-deferred"
+    assert state.pending_stop_admission_exclusive is True
+    assert state.pending_stop_target_phase == "host-blocked"
+    assert state.pending_stop_target_reason_code == "host-admission-blocked"

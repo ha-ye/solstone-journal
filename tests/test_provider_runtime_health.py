@@ -98,6 +98,26 @@ def test_phase_and_reason_code_vocabularies_are_disjoint() -> None:
     )
 
 
+def test_admission_only_reason_codes_are_intentional() -> None:
+    assert runtime_health.ADMISSION_ONLY_REASON_CODES == frozenset({"ram-insufficient"})
+    assert not (
+        runtime_health.ADMISSION_ONLY_REASON_CODES
+        & {
+            "platform-unsupported",
+            "package-unavailable",
+            "openmp-runtime-unavailable",
+            "gpu-probe-failed",
+            "gpu-unavailable",
+            "host-admission-blocked",
+        }
+    )
+
+
+def test_admission_only_reason_codes_are_known_reason_codes() -> None:
+    # Guard snake pre-map spelling against kebab post-map spelling mismatches.
+    assert runtime_health.ADMISSION_ONLY_REASON_CODES <= runtime_health.REASON_CODES
+
+
 def test_invalid_provider_rejected_on_entry_points(tmp_path: Path) -> None:
     for call in (
         lambda: runtime_health_path("mlx", journal_path=tmp_path),
