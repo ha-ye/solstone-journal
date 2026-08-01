@@ -85,3 +85,16 @@ def test_local_endpoints_non_loopback_404(link_client) -> None:
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "header",
+    ("X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host"),
+)
+def test_local_endpoints_proxy_headers_404(link_client, header: str) -> None:
+    response = link_client.get(
+        "/app/network/local-endpoints",
+        headers={header: "1.2.3.4"},
+    )
+
+    assert response.status_code == 404

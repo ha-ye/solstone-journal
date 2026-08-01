@@ -65,6 +65,7 @@ from solstone.convey.reasons import (
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
+    LOCAL_REQUEST_ONLY,
     MISSING_REQUIRED_FIELD,
     OPERATION_NO_LONGER_AVAILABLE,
     PAIRED_DEVICE_NOT_FOUND,
@@ -184,8 +185,13 @@ def _rough_network(mode: str) -> str:
     return "anywhere" if mode == "pl-via-spl" else "network"
 
 
-def _is_loopback_request() -> bool:
-    return request.remote_addr in {"127.0.0.1", "::1"}
+def _is_hardened_loopback_request() -> bool:
+    if request.remote_addr not in {"127.0.0.1", "::1"}:
+        return False
+    return not any(
+        request.headers.get(header)
+        for header in ("X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host")
+    )
 
 
 def _read_link_health() -> dict[str, Any] | None:
@@ -656,7 +662,7 @@ def set_home_address_route() -> Any:
 
 @network_bp.get("/local-endpoints")
 def local_endpoints() -> Any:
-    if not _is_loopback_request():
+    if not _is_hardened_loopback_request():
         abort(404)
     response = LocalEndpointsResponse(
         v=1,
@@ -665,6 +671,15 @@ def local_endpoints() -> Any:
         generated_at=_utc_now_iso(),
     )
     return jsonify(response_to_dict(response))
+
+
+def _same_machine_requested(payload: dict[str, Any]) -> bool | None:
+    value = payload.get("same_machine")
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +702,33 @@ def pair_start() -> Any:
     role = "" if raw_role is None else raw_role
     if not isinstance(role, str) or role not in VALID_ROLES:
         return error_response(PAIRING_REQUEST_INVALID, detail="invalid role")
+
+    same_machine = _same_machine_requested(payload)
+    if same_machine is None:
+        return error_response(
+            PAIRING_REQUEST_INVALID,
+            detail="same_machine must be boolean",
+        )
+    if same_machine:
+        if not _is_hardened_loopback_request():
+            return error_response(LOCAL_REQUEST_ONLY)
+        ca_fp = _ca_fingerprint()
+        port = _secure_listener_port()
+        nonce = generate_nonce()
+        pair_link = _build_pair_link("127.0.0.1", port, nonce, ca_fp)
+        _nonces().add(
+            nonce,
+            device_label,
+            role=role,
+        )
+        response = PairStartResponse(
+            nonce=nonce,
+            pair_link=pair_link,
+            expires_in=300,
+            device_label=device_label,
+            ca_fingerprint=ca_fp,
+        )
+        return _jsonify_preserving_order(asdict(response))
 
     if read_posture() == "spl":
         service_token = load_service_token()
