@@ -1412,15 +1412,15 @@ def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
 def speakers_analyze_installation_check(args: Args) -> CheckResult:
     del args
     from solstone.think.speakers_analyze_installation import (
-        SPEAKERS_ANALYZE_REPAIR_TEXT,
         check_speakers_analyze_installation,
+        speakers_analyze_repair_text,
     )
 
     check = SPEAKERS_ANALYZE_INSTALLATION_CHECK
     result = check_speakers_analyze_installation()
     if result.ok:
         return make_result(check, "ok", "speakers-analyze installation ready")
-    return make_result(check, "fail", result.message, SPEAKERS_ANALYZE_REPAIR_TEXT)
+    return make_result(check, "fail", result.message, speakers_analyze_repair_text())
 
 
 def _make_feature_check(

@@ -56,6 +56,8 @@ make install
 
 `make install` creates `.venv/`, syncs dependencies from `pyproject.toml` and `uv.lock`, installs the package in editable mode, regenerates router skill references, and refreshes the `sol` + `journal` project skill symlinks into the journal.
 
+In a source checkout, bare `uv sync` removes the published speakers-analyze helper because the workspace config prunes that package from the active dev environment; `make speakers-analyze-helper` puts the published helper back, and `make install` runs it after the final sync. Use `uv sync --inexact` when you intentionally need a prune-free sync. From inside this workspace, `uv pip install` of the helper can report success with exit code 0 while installing nothing unless `--no-config` is passed, so use the Make target instead of hand-running uv.
+
 `.venv/bin/journal setup` runs doctor diagnostics, confirms the journal path, installs local transcription models, installs the `sol` user skill for Claude Code / Codex / Gemini when those agents are configured, installs the `sol` + `journal` router skills into the journal, creates or refreshes the source-checkout wrappers at `~/.local/bin/sol` and `~/.local/bin/journal`, and starts the background service. The default web interface listens on http://localhost:5015. Use `.venv/bin/journal setup --port 8000` to choose another port on the first run.
 
 After the first setup run, the wrapper lets you use `sol` from anywhere:

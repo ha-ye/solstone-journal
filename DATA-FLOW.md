@@ -1,6 +1,6 @@
 # what solstone sends to your AI provider — and what it doesn't
 
-solstone is local-first. your observers, your audio and screen, and your journal all stay on your machine, in plain files you own. this doc is the plain answer to the question a privacy-motivated owner should be able to *find* rather than *ask*: when solstone uses an AI model, what actually leaves your machine, who it goes to, and under whose terms.
+solstone is local-first. sol on your devices, your audio and screen, and your journal all stay on your machine, in plain files you own. this doc is the plain answer to the question a privacy-motivated owner should be able to *find* rather than *ask*: when solstone uses an AI model, what actually leaves your machine, who it goes to, and under whose terms.
 
 short version: with a local model, nothing leaves. with a hosted provider, only the specific task's text goes — straight from your machine to that provider, under your own key and your own account. sol pbc is never in that path and never sees it.
 

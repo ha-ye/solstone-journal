@@ -24,6 +24,7 @@ from solstone.think.utils import (
     get_journal,
     get_journal_info,
     get_project_root,
+    is_source_checkout,
     iter_segments,
     resolve_segment_dir,
     segment_key,
@@ -1166,6 +1167,49 @@ class TestJournalResolution:
 
         assert excinfo.value.path == str(target)
         assert isinstance(excinfo.value.error, PermissionError)
+
+
+class TestSourceCheckoutDetection:
+    def fake_utils_file(self, root: Path) -> str:
+        utils_file = root / "solstone" / "think" / "utils.py"
+        utils_file.parent.mkdir(parents=True)
+        utils_file.touch()
+        return str(utils_file)
+
+    def test_is_source_checkout_is_cwd_independent_when_git_present(
+        self, monkeypatch, tmp_path
+    ):
+        import solstone.think.utils as utils
+
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (root / ".git").mkdir()
+        unrelated = tmp_path / "elsewhere"
+        unrelated.mkdir()
+        monkeypatch.setattr(utils, "__file__", self.fake_utils_file(root))
+
+        monkeypatch.chdir(root)
+        assert is_source_checkout()
+        monkeypatch.chdir(unrelated)
+        assert is_source_checkout()
+
+    def test_is_source_checkout_is_cwd_independent_without_git(
+        self, monkeypatch, tmp_path
+    ):
+        import solstone.think.utils as utils
+
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        unrelated = tmp_path / "elsewhere"
+        unrelated.mkdir()
+        monkeypatch.setattr(utils, "__file__", self.fake_utils_file(root))
+
+        monkeypatch.chdir(root)
+        assert not is_source_checkout()
+        monkeypatch.chdir(unrelated)
+        assert not is_source_checkout()
 
 
 class TestGetJournalInfoConfigBranch:

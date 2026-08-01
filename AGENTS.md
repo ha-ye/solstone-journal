@@ -90,6 +90,7 @@ Verified against `Makefile`. Grouped by use.
 | Target | When to use |
 |--------|-------------|
 | `make install` | First setup and whenever `pyproject.toml` or `uv.lock` changes. Creates `.venv/`, syncs deps, runs `make skills`. |
+| `make speakers-analyze-helper` | Reinstall the published speakers-analyze helper into `.venv` after a source-checkout `uv sync` prunes it. Normally run by `make install`; useful after manual syncs. |
 | `make skills` | Regenerate generated router references, then rewrite the `sol` + `journal` router skill symlinks into `journal/`. (`make install` depends on this; rarely run alone.) |
 | `make update` | Upgrade all deps to latest, regenerate `uv.lock`. Expect test churn. |
 | `make update-prices` | Refresh genai-prices model-cost data when adding a new provider model or when pricing tests fail. |
@@ -522,15 +523,15 @@ The live journal also carries `journal/AGENTS.md` as its runtime-facing breadcru
 
 ## 13. Owner-facing copy: the system-anatomy canon
 
-- **Composition by register: owner-facing two parts, sol the keeper.** In owner-facing copy, name the two parts the owner has — `solstone = observers + journal` — and name sol as the keeper who lives in and tends the journal, not a third enumerated part. Never write a three-part owner-facing enumeration in owner-visible copy. The engineering/architecture register is retained and explicit: in architecture statements, technical docs, system/diagram-internal labels, code-side prose, and this repo's architecture sections, the system is `solstone = observers + sol agent + journal` — the sol agent is the running software that tends the journal. The split is by register, not contradiction: owner-facing → two parts, sol the keeper in the journal; engineering/architecture → the sol agent is the running software that tends the journal.
-- **Ban surveillance verbs in branded surfaces.** Never use "capture", "watch", "record", "monitor", "track", or "collect" in template copy, settings labels, error messages, onboarding text, or README / INSTALL prose. Prefer "observe alongside", "experience along with", or "take in what you take in".
-- **`capture` is code-only.** Keep it in module names such as `solstone/observe/`, function names, OS subsystem identifiers such as `com.solstone.capture`, and internal architecture diagrams. That is intentional and aligned with the canon.
+- **Owner-facing composition.** solstone is the platform; sol is the app on your devices; the journal is the memory sol keeps. In owner-facing copy, use `sol`, `the journal`, and `your journal`; do not write `solstone = observers + journal`, use “observer” as a customer-facing noun, or call sol a keeper. The engineering register remains distinct: `observer`/`observe` may remain in repo names, code, protocol fields, `OBSERVE.md`, `AGENTS.md`, and technical prose.
+- **Ban surveillance vocabulary in owner-facing surfaces.** Never use “capture”, “watch”, “record”, “monitor”, “track”, “collect”, “observe”, or bare “listen”/“hear” to describe sol in template copy, settings labels, error messages, onboarding text, or README / INSTALL prose. Prefer “sol experiences your day with you”, “sol takes in what you take in”, and “sol keeps it all in your journal”.
+- **Technical identifiers are not renamed.** Keep `capture` and `observer`/`observe` in module names, function names, protocol fields, OS subsystem identifiers, `OBSERVE.md`, `AGENTS.md`, and internal architecture diagrams. These are engineering vocabulary, not customer-facing copy.
 - **Name artifacts for owners, not pipelines.** In branded prose, say "raw media", "the originals", or "observations". Never say "raw captures" or "screen captures" in owner-facing strings. Code-side artifact names stay as-is.
-- **`sol` is one thing.** `sol` is the running software; there is no homunculus behind it. Use two registers for one entity: `sol` in conversation, `sol agent` in technical contexts.
-- **`keeper` is a surface-specific edge case.** `voice-terminology.md` makes `keeper` the role noun for `sol` in product copy generally. The `solstone-swift` surface bans `keeper` because the mobile UX uses the owner's chosen identity, default `sol`. When writing copy for a specific surface, follow that surface's terminology covenant.
+- **`sol` is one thing.** `sol` is the app and running software; there is no homunculus behind it. Use `sol` in owner-facing copy and `sol agent` in technical contexts—the same entity, not a keeper role.
+- **`keeper` is retired from customer-facing copy.** Use `sol` by name and the approved verbs; `sol agent` is reserved for technical contexts. Surface-specific rules may be stricter, but none reintroduce “keeper” to owner-facing copy.
 - **Edit with the right mental model.** Internal architecture vocabulary in this repo stays as-is: `solstone/observe/`, the capture pipeline, and screen capture log subsystems remain correct code language. Apply the canon to owner-facing strings only: UI copy, settings text, install / README prose, error messages, and onboarding. If an owner sees it, follow the canon; if it's code or internal docs about pipelines, `capture` is fine.
 
 | Surface | Terminology rule |
 |---------|------------------|
-| Code surfaces | `capture` is fine in code, module names, function names, subsystem ids, and internal architecture docs. |
-| Branded surfaces | `capture` is banned. Use owner-facing phrasing such as "observe alongside", "experience along with", "take in what you take in", "raw media", "the originals", or "observations". |
+| Code surfaces | `capture`, `observer`, and `observe` are fine in code, identifiers, protocol fields, subsystem ids, `AGENTS.md`, and internal architecture docs. |
+| Branded surfaces | `capture`, `observer`, `observe`, and surveillance verbs are banned in owner-facing prose. Use “sol experiences your day with you”, “sol takes in what you take in”, “the journal”, and “your journal”. |

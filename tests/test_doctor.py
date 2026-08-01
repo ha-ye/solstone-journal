@@ -600,7 +600,7 @@ class TestSpeakersAnalyzeInstallation:
 
         assert result.status == "fail"
         assert "asset-missing" in result.detail
-        assert result.fix == installation.SPEAKERS_ANALYZE_REPAIR_TEXT
+        assert result.fix == installation.speakers_analyze_repair_text()
 
 
 class TestHostDependencies:

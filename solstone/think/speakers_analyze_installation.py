@@ -40,7 +40,7 @@ from solstone.think.model_assets import (
     resolve_pyannote_segmentation_model,
     resolve_wespeaker_model,
 )
-from solstone.think.utils import get_journal
+from solstone.think.utils import get_journal, is_source_checkout
 
 HELPER_DIST_NAME = "solstone-core-speakers-analyze"
 MODELS_DIST_NAME = "solstone-journal-models"
@@ -56,9 +56,14 @@ GENERATION_FD_MIN = 3
 GENERATION_FD_MAX = 1_048_576
 GENERATION_TOKEN_MAX = (1 << 31) - 1
 
-SPEAKERS_ANALYZE_REPAIR_TEXT = (
+PACKAGED_SPEAKERS_ANALYZE_REPAIR_TEXT = (
     "Repair: reinstall the journal host stack with solstone-journal, or "
     "solstone-journal-cuda on NVIDIA hosts, and restart the journal."
+)
+SOURCE_CHECKOUT_SPEAKERS_ANALYZE_REPAIR_TEXT = (
+    "Repair: run make speakers-analyze-helper to install the published "
+    "speakers-analyze helper, then run make install to finish source-checkout "
+    "setup."
 )
 
 SpeakersAnalyzeInstallationStatus = Literal[
@@ -89,7 +94,7 @@ class SpeakersAnalyzeInstallationResult:
         detail = f": {self.detail}" if self.detail else ""
         return (
             f"Speakers-analyze installation is incomplete "
-            f"({self.status}{detail}). {SPEAKERS_ANALYZE_REPAIR_TEXT}"
+            f"({self.status}{detail}). {speakers_analyze_repair_text()}"
         )
 
 
@@ -116,6 +121,12 @@ class SpeakersAnalyzeGeneration:
 
 def speakers_analyze_path_for_executable(executable: str | Path | None = None) -> Path:
     return Path(executable or sys.executable).with_name(HELPER_BINARY_NAME)
+
+
+def speakers_analyze_repair_text() -> str:
+    if is_source_checkout():
+        return SOURCE_CHECKOUT_SPEAKERS_ANALYZE_REPAIR_TEXT
+    return PACKAGED_SPEAKERS_ANALYZE_REPAIR_TEXT
 
 
 def _packaging_platform_tags() -> set[str]:
@@ -604,18 +615,20 @@ def _now_iso() -> str:
 
 
 __all__ = [
-    "GENERATION_FD_ENV_KEY",
     "GENERATION_ENV_KEY",
+    "GENERATION_FD_ENV_KEY",
     "GENERATION_TOKEN_ENV_KEY",
     "HELPER_BINARY_NAME",
     "HELPER_DIST_NAME",
     "MODELS_DIST_NAME",
+    "PACKAGED_SPEAKERS_ANALYZE_REPAIR_TEXT",
     "ROOT_DIST_NAME",
-    "SPEAKERS_ANALYZE_REPAIR_TEXT",
+    "SOURCE_CHECKOUT_SPEAKERS_ANALYZE_REPAIR_TEXT",
     "SpeakersAnalyzeGeneration",
     "SpeakersAnalyzeInstallationResult",
     "check_speakers_analyze_installation",
     "enter_speakers_analyze_generation",
     "runtime_has_speakers_analyze_wheel_coverage",
     "speakers_analyze_path_for_executable",
+    "speakers_analyze_repair_text",
 ]

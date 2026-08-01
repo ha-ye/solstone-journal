@@ -108,7 +108,7 @@ what actually leaves your machine differs sharply between these paths: with the 
 
 ## install sol on your devices
 
-your journal needs sol alongside it — sol takes in your day on each device and keeps it in your journal. each platform ships its own package (the engineering docs call these observers); install one for each machine you want sol on.
+your journal needs sol alongside it — sol takes in your day on each device and keeps it in your journal. each platform ships its own package; install one for each machine you want sol on.
 
 **macOS:** download the signed app bundle from https://solstone.app/observers and drag it to Applications. it pairs itself with the running journal on first launch.
 
@@ -119,7 +119,7 @@ pipx install solstone-linux
 solstone-linux install-service
 ```
 
-`solstone-linux install-service` walks you through pairing the observer with your running journal. choose any name you'd like to identify this machine by.
+`solstone-linux install-service` walks you through pairing this machine with your running journal. choose any name you'd like to identify this machine by.
 
 **tmux terminal sessions:**
 
@@ -128,7 +128,7 @@ pipx install solstone-tmux
 solstone-tmux install-service
 ```
 
-(for observer packages, `uv tool install solstone-tmux` is also fine if you prefer uv.)
+(for these packages, `uv tool install solstone-tmux` is also fine if you prefer uv.)
 
 ## migrating from a pre-split install
 
@@ -192,7 +192,7 @@ Skipping `--journal` here silently resolves to `~/journal` and starts fresh — 
 2. optional: remove the installed `sol` agent skill: `sol skills uninstall`.
 3. uninstall the python packages: `uv tool uninstall solstone-journal && uv tool uninstall solstone` (or `pipx uninstall solstone-journal`).
 4. macOS only: drag `/Applications/solstone.app` to Trash.
-5. macOS only, optional: remove observer app data and the parakeet model cache:
+5. macOS only, optional: remove sol's app data and the parakeet model cache:
    ```bash
    rm -rf ~/Library/Application\ Support/solstone/
    ```
