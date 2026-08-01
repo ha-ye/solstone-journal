@@ -305,8 +305,7 @@ class AuthorizedClients:
                 fp = item.get("fingerprint")
                 if not isinstance(fp, str):
                     continue
-                kind = item.get("kind")
-                if isinstance(kind, str) and kind and kind != "cert":
+                if "kind" in item and item["kind"] != "cert":
                     dropped_non_cert = True
                     continue
                 last_seen = item.get("last_seen_at")

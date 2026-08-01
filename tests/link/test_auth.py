@@ -39,6 +39,76 @@ UNSUPPORTED_KIND_ROW = {
 }
 
 
+@pytest.mark.parametrize(
+    ("kind", "include_kind"),
+    [(None, False), ("cert", True)],
+    ids=["missing", "cert"],
+)
+def test_load_accepts_only_missing_or_exact_cert_kind(
+    tmp_path: Path,
+    kind: str | None,
+    include_kind: bool,
+) -> None:
+    path = tmp_path / "auth.json"
+    row = {
+        "fingerprint": "sha256:accepted",
+        "device_label": "Accepted",
+        "paired_at": "2026-07-01T00:00:00Z",
+        "instance_id": "inst-1",
+    }
+    if include_kind:
+        row["kind"] = kind
+    path.write_text(json.dumps([row], indent=2) + "\n", encoding="utf-8")
+
+    store = AuthorizedClients(path)
+
+    assert store.is_authorized(row["fingerprint"])
+    entry = store.get(row["fingerprint"])
+    assert entry is not None
+    assert entry.kind == "cert"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["browser", "widget", "", None, True, 7, [], {}],
+    ids=["browser", "widget", "empty", "null", "bool", "number", "list", "dict"],
+)
+def test_load_drops_every_present_non_cert_kind_with_redacted_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    kind: object,
+) -> None:
+    path = tmp_path / "auth.json"
+    row = {
+        "fingerprint": "sha256:malformed-kind",
+        "device_label": "Sensitive device label",
+        "paired_at": "2026-07-01T00:00:00Z",
+        "instance_id": "inst-1",
+        "kind": kind,
+        "secret": "row-content-must-not-appear",
+    }
+    path.write_text(json.dumps([row], indent=2) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+    caplog.set_level("WARNING", logger="solstone.think.link.auth")
+
+    store = AuthorizedClients(path)
+
+    assert store.get(row["fingerprint"]) is None
+    assert store.snapshot() == []
+    assert store.is_authorized(row["fingerprint"]) is False
+    assert path.read_bytes() == before
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "solstone.think.link.auth" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert row["fingerprint"] not in message
+    assert row["device_label"] not in message
+    assert row["secret"] not in message
+
+
 def test_empty_file_is_empty(tmp_path: Path) -> None:
     store = AuthorizedClients(tmp_path / "auth.json")
 
@@ -773,35 +843,85 @@ def test_cert_mutation_rewrites_ledger_dropping_legacy_browser_row(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "auth.json"
-    cert_row = {
-        "fingerprint": "sha256:cert",
-        "device_label": "Cert",
+    missing_kind_cert_row = {
+        "fingerprint": "sha256:missing-kind-cert",
+        "device_label": "Old label",
         "paired_at": "2026-07-01T00:02:00Z",
         "instance_id": "inst-1",
+        "role": "peer",
+        "last_seen_at": "2026-07-01T00:03:00Z",
+        "network": "anywhere",
+        "client_label": "missing-kind-client",
+        "label_ordinal": 2,
+    }
+    explicit_cert_row = {
+        "fingerprint": "sha256:explicit-cert",
+        "device_label": "Renamed",
+        "paired_at": "2026-07-01T00:04:00Z",
+        "instance_id": "inst-2",
         "role": "",
         "kind": "cert",
-        "network": "anywhere",
+        "last_seen_at": "2026-07-01T00:05:00Z",
+        "network": "local",
+        "client_label": "explicit-cert-client",
+        "label_ordinal": 1,
+    }
+    null_kind_row = {
+        "fingerprint": "sha256:null-kind",
+        "device_label": "Null kind",
+        "paired_at": "2026-07-01T00:06:00Z",
+        "instance_id": "inst-3",
+        "kind": None,
     }
     path.write_text(
-        json.dumps([LEGACY_BROWSER_ROW, cert_row], indent=2) + "\n",
+        json.dumps(
+            [
+                LEGACY_BROWSER_ROW,
+                null_kind_row,
+                missing_kind_cert_row,
+                explicit_cert_row,
+            ],
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     store = AuthorizedClients(path)
 
-    assert store.update_label(cert_row["fingerprint"], "Renamed") is not None
+    assert (
+        store.update_label(missing_kind_cert_row["fingerprint"], "Renamed")
+        is not None
+    )
 
     payload = _load_payload(path)
     assert payload == [
         {
-            "fingerprint": cert_row["fingerprint"],
+            "fingerprint": missing_kind_cert_row["fingerprint"],
             "device_label": "Renamed",
-            "paired_at": cert_row["paired_at"],
-            "instance_id": cert_row["instance_id"],
-            "role": "",
+            "paired_at": missing_kind_cert_row["paired_at"],
+            "instance_id": missing_kind_cert_row["instance_id"],
+            "role": "peer",
             "kind": "cert",
             "network": "anywhere",
+            "last_seen_at": "2026-07-01T00:03:00Z",
+            "client_label": "missing-kind-client",
+            "label_ordinal": 2,
+        },
+        {
+            "fingerprint": explicit_cert_row["fingerprint"],
+            "device_label": explicit_cert_row["device_label"],
+            "paired_at": explicit_cert_row["paired_at"],
+            "instance_id": explicit_cert_row["instance_id"],
+            "role": "",
+            "kind": "cert",
+            "network": "local",
+            "last_seen_at": "2026-07-01T00:05:00Z",
+            "client_label": "explicit-cert-client",
         }
     ]
+    entries = {entry.fingerprint: entry for entry in AuthorizedClients(path).snapshot()}
+    assert entries[missing_kind_cert_row["fingerprint"]].label_ordinal == 2
+    assert entries[explicit_cert_row["fingerprint"]].label_ordinal == 1
     assert all(
         item.get("kind") == "cert"
         and "pubkey_spki" not in item
