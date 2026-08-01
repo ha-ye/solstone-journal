@@ -41,7 +41,9 @@ def test_native_service_execs_launcher_sibling_with_preserved_flags() -> None:
 def test_native_service_refuses_a_non_ok_handshake(capsys) -> None:
     result = spl_native.exec_native_service(
         ["-v"],
-        handshake_checker=lambda: core_handshake.CoreHandshakeResult("fail", "version skew"),
+        handshake_checker=lambda: core_handshake.CoreHandshakeResult(
+            "fail", "version skew"
+        ),
         helper_locator=lambda: (_ for _ in ()).throw(AssertionError("must not locate")),
     )
 
