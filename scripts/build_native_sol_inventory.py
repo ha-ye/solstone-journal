@@ -47,8 +47,8 @@ ENTRY_TYPES = {
 }
 COMMAND_KINDS = {"command", "callback", "top-level"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-FINAL_ORACLE_TOTAL = 178
-FINAL_HTTP_TOTAL = 152
+FINAL_ORACLE_TOTAL = 173
+FINAL_HTTP_TOTAL = 147
 FINAL_JOURNAL_PYTHON_COMPAT_TOTAL = 23
 FINAL_TOP_LEVEL_CHAT_TOTAL = 1
 FINAL_TOP_LEVEL_IMPORT_TOTAL = 1
@@ -71,7 +71,7 @@ FINAL_HTTP_GROUP_COUNTS = {
     "sol": 4,
     "speakers": 31,
     "support": 11,
-    "thinking": 23,
+    "thinking": 18,
     "transcripts": 5,
 }
 

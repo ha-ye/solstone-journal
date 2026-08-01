@@ -11,9 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ORACLE = REPO_ROOT / "core/fixtures/native-sol/sol-call-grammar-v1.json"
 EXPECTED_SCHEMA = "sol-call-grammar-v1"
 EXPECTED_SOURCE = "ce65d06ba67ca4fad85ba3b3f71a1eec359bc6e5"
-EXPECTED_ENTRIES = 178
-EXPECTED_BYTES = 121548
-EXPECTED_SHA256 = "5efb306ed70e54a8b97b3178a07c4267cfd58594a37ed754871a3da80c0dba57"
+EXPECTED_ENTRIES = 173
+EXPECTED_BYTES = 120121
+EXPECTED_SHA256 = "db3b204207ad55c9dd241fac3817a07505d594a09c0f703d16e117158b831597"
 
 
 def main() -> int:
