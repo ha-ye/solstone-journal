@@ -1358,6 +1358,7 @@ def test_google_provider_derives_byo_with_historical_scout_config(
         "configured": True,
         "generate_ready": True,
         "cogitate_ready": True,
+        "issues": [],
     }
     assert payload["active_lane"]["lane"] == "byo"
     assert config_path.read_bytes() == before
