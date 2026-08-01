@@ -18,6 +18,24 @@ use bytes::Bytes;
 use thiserror::Error;
 use tokio::{task::JoinSet, time::sleep};
 
+/// How often a connected listen socket re-reports its health snapshot.
+///
+/// Matches the interval the web layer's freshness window is sized against; a
+/// slower cadence makes a healthy link read as offline.
+pub(crate) const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Cancels a spawned task when the guard leaves scope.
+///
+/// The refresh loop is bounded by the lifetime of the listen socket it reports
+/// on, including every error path out of the read loop.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 use crate::{
     BufferedWsReader, CallosumEmit, ListenControl, RelayAdmissionGate, RelayHealth,
     RelayHealthState, RelayTunnelFailure, RelayTunnelFailureSignal, RelayWebSocket,
@@ -51,6 +69,8 @@ pub struct RelayClientConfig {
     pub service_token: ServiceToken,
     /// The absolute bound for collecting the four-byte dispatch prefix.
     pub dispatch_read_deadline: Duration,
+    /// How often a connected listen socket re-reports its health snapshot.
+    pub health_refresh_interval: Duration,
     /// Maximum concurrently-prefix-peeking relay tunnels.
     pub global_admission_ceiling: usize,
 }
@@ -150,6 +170,25 @@ impl RelayClient {
             .map_err(|_| RelayError::ListenConnection)?;
         let (mut reader, _writer) = websocket.split();
         self.set_state(RelayHealthState::Connected, "connected");
+
+        // Refresh the health snapshot while the listen socket is up.
+        //
+        // The web layer treats a health snapshot older than its freshness
+        // window as evidence the link is down, so a connected home that stops
+        // reporting renders as `offline` to the owner even though the socket is
+        // healthy. Nothing else re-emits between tunnels, which on a quiet link
+        // is indefinitely.
+        let interval = self.inner.config.health_refresh_interval;
+        let refresh = {
+            let client = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(interval).await;
+                    client.emit_health();
+                }
+            })
+        };
+        let _refresh = AbortOnDrop(refresh);
 
         loop {
             let message = reader
@@ -519,6 +558,9 @@ mod tests {
 
     fn client_config(address: std::net::SocketAddr, token: &str) -> RelayClientConfig {
         RelayClientConfig {
+            // Effectively never for tests asserting exact event sequences; the
+            // refresh test shortens it explicitly.
+            health_refresh_interval: Duration::from_secs(3600),
             instance_id: "home-instance".to_owned(),
             relay_endpoint: format!("http://{address}"),
             service_token: ServiceToken::new(token.to_owned()),
@@ -815,6 +857,62 @@ mod tests {
         client.stop().await;
         running.abort();
         let _ = running.await;
+        Ok(())
+    }
+
+    /// A connected listen socket must keep re-reporting its health snapshot
+    /// even when no tunnel ever arrives.
+    ///
+    /// The web layer treats a stale snapshot as evidence the link is down, so a
+    /// home that connects and then goes quiet renders as `offline` to its owner
+    /// while the socket is perfectly healthy. Nothing else re-emits between
+    /// tunnels, so on a quiet link the silence is indefinite. Caught against a
+    /// live dashboard, not by the suite.
+    #[tokio::test]
+    async fn a_quiet_connected_listener_keeps_refreshing_its_health_snapshot() -> Result<(), String>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|_| "relay bind failed".to_owned())?;
+        let address = listener
+            .local_addr()
+            .map_err(|_| "relay address failed".to_owned())?;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.map_err(|_| ())?;
+            let _listen = accept_async(stream).await.map_err(|_| ())?;
+            // Never send a control frame: this is the quiet-link case.
+            future::pending::<()>().await;
+            Ok::<(), ()>(())
+        });
+
+        let emitter = Arc::new(Emitter::default());
+        let mut config = client_config(address, "test-token");
+        config.health_refresh_interval = Duration::from_millis(40);
+        let client = RelayClient::new(
+            config,
+            Arc::clone(&emitter) as Arc<dyn CallosumEmit>,
+            Arc::new(Dialer::new(oneshot::channel().0)),
+        );
+        let run = {
+            let client = client.clone();
+            tokio::spawn(async move { client.run().await })
+        };
+
+        // The test interval is 40ms, so several refreshes must land here.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let health_emits = emitter
+            .snapshot()
+            .into_iter()
+            .filter(|(event, _)| event == "health")
+            .count();
+        run.abort();
+        server.abort();
+
+        if health_emits < 3 {
+            return Err(format!(
+                "a quiet connected listener stopped refreshing health: {health_emits} emits"
+            ));
+        }
         Ok(())
     }
 
