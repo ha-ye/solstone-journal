@@ -14,7 +14,6 @@ use crate::transport::{ApiRequest, HttpMethod, QueryParam, TimeoutPolicy};
 
 const AI_KEY_ENV_VARS: &[&str] = &["GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
 const PROVIDERS: &[&str] = &["anthropic", "google", "openai", "local"];
-const SCOUT_TERMINAL_PHASES: &[&str] = &["invited", "requested", "ended", "repair_needed"];
 const CONFIDENTIAL_TERMINAL_PHASES: &[&str] = &[
     "not_verified",
     "needs_subscription",
@@ -30,20 +29,6 @@ const CONFIDENTIAL_RECHECK_NOT_STARTED_GUIDANCE: &str =
 const CONFIDENTIAL_RECHECK_POST_REFUSED_GUIDANCE: &str =
     "no accepted refresh to wait for; run sol call thinking confidential status.";
 const CONFIDENTIAL_RECHECK_READ_FAILED_GUIDANCE: &str = "refresh was accepted, but no completed result could be read; run sol call thinking confidential status.";
-
-#[must_use]
-pub fn scout_status(ctx: CommandContext<'_>) -> CommandOutput {
-    match get_scout_status(ctx) {
-        Ok(response) => {
-            let mut out = stdout_json_value(&response).stdout;
-            if let Some(guidance) = scout_guidance(response.get("state")) {
-                push_line(&mut out, guidance);
-            }
-            CommandOutput::success(out)
-        }
-        Err(error) => thinking_error(error),
-    }
-}
 
 #[must_use]
 pub fn confidential_status(ctx: CommandContext<'_>) -> CommandOutput {
@@ -64,30 +49,6 @@ pub fn confidential_status(ctx: CommandContext<'_>) -> CommandOutput {
         }
         Err(error) => thinking_error(error),
     }
-}
-
-#[must_use]
-pub fn scout_check(ctx: CommandContext<'_>) -> CommandOutput {
-    match post_scout_action(ctx, "/app/thinking/api/scout/check") {
-        Ok(response) => {
-            let mut out = stdout_json_value(&response).stdout;
-            if let Some(guidance) = scout_guidance(response.get("state")) {
-                push_line(&mut out, guidance);
-            }
-            CommandOutput::success(out)
-        }
-        Err(error) => thinking_error(error),
-    }
-}
-
-#[must_use]
-pub fn scout_enable(ctx: CommandContext<'_>) -> CommandOutput {
-    scout_enable_or_refresh(ctx, "/app/thinking/api/scout/enable")
-}
-
-#[must_use]
-pub fn scout_refresh(ctx: CommandContext<'_>) -> CommandOutput {
-    scout_enable_or_refresh(ctx, "/app/thinking/api/scout/refresh")
 }
 
 #[must_use]
@@ -201,17 +162,6 @@ pub fn confidential_recheck(ctx: CommandContext<'_>) -> CommandOutput {
         stdout_json_value(&payload)
     } else {
         stdout_json_with_guidance(&payload, CONFIDENTIAL_RECHECK_TIMEOUT_GUIDANCE, 1)
-    }
-}
-
-#[must_use]
-pub fn scout_disable(ctx: CommandContext<'_>) -> CommandOutput {
-    match post_scout_action(ctx, "/app/thinking/api/scout/disable") {
-        Ok(response) => stdout_json_value(&json!({
-            "result": response.get("result").cloned().unwrap_or_else(|| json!({})),
-            "status": response.get("status").cloned().unwrap_or_else(|| json!({})),
-        })),
-        Err(error) => thinking_error(error),
     }
 }
 
@@ -483,47 +433,6 @@ pub fn local_models(ctx: CommandContext<'_>) -> CommandOutput {
     }
 }
 
-fn scout_enable_or_refresh(ctx: CommandContext<'_>, route: &str) -> CommandOutput {
-    let parsed = match parse_args(ctx.args, &["--wait-seconds", "--poll-interval"], &[]) {
-        Ok(parsed) => parsed,
-        Err(error) => return stderr(error, 1),
-    };
-    let wait_seconds = match parse_float_option(parsed.value("--wait-seconds"), 900.0) {
-        Ok(value) => value,
-        Err(error) => return stderr(error, 1),
-    };
-    let poll_interval = match parse_float_option(parsed.value("--poll-interval"), 1.0) {
-        Ok(value) => value,
-        Err(error) => return stderr(error, 1),
-    };
-    let response = match post_scout_action(ctx, route) {
-        Ok(response) => response,
-        Err(error) => return thinking_error(error),
-    };
-    let mut out = String::new();
-    maybe_echo_portal(
-        &mut out,
-        response.get("operation"),
-        "continue to approve \u{2192}",
-    );
-    let (status, phase, guidance) =
-        match poll_scout_until_terminal(ctx, wait_seconds, poll_interval) {
-            Ok(result) => result,
-            Err(error) => return thinking_error_preserving_stdout(out, error),
-        };
-    render_scout_terminal(&mut out, &status, phase.as_deref(), guidance.as_deref());
-    let exit = if phase.as_deref() == Some("repair_needed") {
-        1
-    } else {
-        0
-    };
-    CommandOutput {
-        stdout: out,
-        stderr: String::new(),
-        exit,
-    }
-}
-
 fn local_provider_status(ctx: CommandContext<'_>) -> CommandOutput {
     match request_json(
         ctx,
@@ -552,16 +461,6 @@ fn request_model_query(ctx: CommandContext<'_>, method: HttpMethod, route: &str)
     }
 }
 
-fn get_scout_status(ctx: CommandContext<'_>) -> Result<Value, ClientError> {
-    request_json(
-        ctx,
-        HttpMethod::Get,
-        "/app/thinking/api/scout",
-        vec![],
-        None,
-    )
-}
-
 fn get_providers(ctx: CommandContext<'_>) -> Result<Value, ClientError> {
     request_json(
         ctx,
@@ -582,10 +481,6 @@ fn get_confidential_state(ctx: CommandContext<'_>) -> Result<Value, ClientError>
         .get("active_lane")
         .cloned()
         .unwrap_or_else(|| json!({})))
-}
-
-fn post_scout_action(ctx: CommandContext<'_>, route: &str) -> Result<Value, ClientError> {
-    request_json(ctx, HttpMethod::Post, route, vec![], None).map_err(action_error)
 }
 
 fn post_confidential_action(ctx: CommandContext<'_>, route: &str) -> Result<Value, ClientError> {
@@ -661,43 +556,6 @@ fn poll_confidential_recheck_until_complete(
     }
 }
 
-fn poll_scout_until_terminal(
-    ctx: CommandContext<'_>,
-    wait_seconds: f64,
-    poll_interval: f64,
-) -> Result<(Value, Option<String>, Option<String>), ClientError> {
-    let deadline = monotonic_seconds(ctx) + wait_seconds.max(0.0);
-    let interval = poll_interval.max(0.0);
-    loop {
-        let status = get_scout_status(ctx)?;
-        let Some(operation) = status.get("operation").and_then(Value::as_object) else {
-            return Ok((status, None, None));
-        };
-        let phase = operation
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if SCOUT_TERMINAL_PHASES.contains(&phase.as_str()) {
-            let guidance = operation
-                .get("guidance")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            return Ok((status, Some(phase), guidance));
-        }
-        if monotonic_seconds(ctx) >= deadline {
-            return Ok((
-                status,
-                Some("repair_needed".to_string()),
-                Some("Timed out waiting for Scout.".to_string()),
-            ));
-        }
-        if interval > 0.0 {
-            sleep(ctx, Duration::from_secs_f64(interval));
-        }
-    }
-}
-
 fn poll_confidential_until_terminal(
     ctx: CommandContext<'_>,
     wait_seconds: f64,
@@ -736,30 +594,6 @@ fn poll_confidential_until_terminal(
         if interval > 0.0 {
             sleep(ctx, Duration::from_secs_f64(interval));
         }
-    }
-}
-
-fn render_scout_terminal(
-    out: &mut String,
-    status: &Value,
-    phase: Option<&str>,
-    operation_guidance: Option<&str>,
-) {
-    push_line(
-        out,
-        format!("state: {}", display_value(status.get("state"))),
-    );
-    if let Some(phase) = phase {
-        push_line(out, format!("operation: {phase}"));
-    }
-    if let Some(guidance) = operation_guidance {
-        push_line(out, guidance);
-    }
-    if let Some(guidance) = phase
-        .and_then(scout_guidance_str)
-        .or_else(|| scout_guidance(status.get("state")))
-    {
-        push_line(out, guidance);
     }
 }
 
@@ -1028,23 +862,6 @@ fn env_provider(env_var: &str) -> &str {
         "ANTHROPIC_API_KEY" => "anthropic",
         "OPENAI_API_KEY" => "openai",
         _ => "",
-    }
-}
-
-fn scout_guidance(value: Option<&Value>) -> Option<&'static str> {
-    scout_guidance_str(value.and_then(Value::as_str).unwrap_or(""))
-}
-
-fn scout_guidance_str(value: &str) -> Option<&'static str> {
-    match value {
-        "off" => Some("Scout is off."),
-        "requested" => Some("Scout is waiting for approval."),
-        "invited" => Some("Scout is ready; use the Scout lane in Thinking."),
-        "on" => Some("Scout is on."),
-        "ended" => Some("Scout has ended; enable Scout to use it again."),
-        "manual_key_present" => Some("Clear the BYO Gemini key before enabling Scout."),
-        "repair_needed" => Some("Scout needs repair; try again from Thinking."),
-        _ => None,
     }
 }
 

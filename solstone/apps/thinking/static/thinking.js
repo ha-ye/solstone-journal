@@ -7,7 +7,6 @@
     keys: {},
     localModels: [],
     localAvailability: null,
-    scout: null,
     install: null,
     installPollGeneration: 0,
     runtimePollGeneration: 0,
@@ -23,15 +22,12 @@
     pendingSwitchTarget: '',
   };
   let copy = {};
-  let scoutCopy = {};
-  const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
   const confidentialTerminalPhases = new Set(['not_verified', 'repair_needed', 'early_access']);
   const installInFlightStates = new Set(['resolving', 'downloading', 'verifying', 'installing']);
   const installTerminalStates = new Set(['idle', 'installed', 'failed']);
   const localSetupMissingReasons = new Set(['local_model_missing', 'model_missing', 'binary_missing', 'runtime_missing']);
   const localServerUnhealthyReasons = new Set(['local_server_unhealthy', 'server_unhealthy']);
   const pollIntervalMs = 1500;
-  const scoutPollMaxMs = 15 * 60 * 1000;
   const confidentialPollMaxMs = 15 * 60 * 1000;
   const views = new Set(['main', 'byo-setup', 'confidential-setup', 'local-setup', 'lane-switch']);
   const providerEnv = {
@@ -508,13 +504,13 @@
     return formatCopy(text?.[reasonKey] || text?.reason_unknown || '', {provider, model});
   }
 
-  function byoModelStepAllowed(provider, validation, scoutEnabled) {
-    return validation?.valid === true && !(scoutEnabled === true && provider === 'google');
+  function byoModelStepAllowed(provider, validation) {
+    return validation?.valid === true;
   }
 
-  function byoEntryMode(provider, validation, scoutEnabled) {
+  function byoEntryMode(provider, validation) {
     if (provider === 'local') return 'endpoint';
-    if (byoModelStepAllowed(provider, validation, scoutEnabled)) return 'model';
+    if (byoModelStepAllowed(provider, validation)) return 'model';
     return 'paste';
   }
 
@@ -599,7 +595,6 @@
     value,
     text,
     providersPayload,
-    scoutEnabled,
     setMode,
     selectModel,
     resetDraft,
@@ -638,7 +633,7 @@
       return {status: 'invalid', validation};
     }
     resetDraft();
-    if (byoModelStepAllowed(provider, validation, scoutEnabled)) {
+    if (byoModelStepAllowed(provider, validation)) {
       selectModel(preselectByoModel(provider, providersPayload));
       setMode('model');
       renderFn();
@@ -759,7 +754,6 @@
 
   function applyCopy(payload) {
     copy = payload || {};
-    scoutCopy = copy.scout || {};
     providerLabels = copy.provider_labels || fallbackProviderLabels;
     setText('thinkingHeading', copy.heading || 'thinking');
   }
@@ -871,10 +865,6 @@
     return providerLabels[provider] || provider || 'provider';
   }
 
-  function scoutLabel(stateName) {
-    return (scoutCopy.state_labels || {})[stateName] || stateName || 'unknown';
-  }
-
   function configuredProviders() {
     return Object.entries(state.keys.api_keys || {})
       .filter(([, configured]) => !!configured)
@@ -886,7 +876,7 @@
   }
 
   function byoIsUsable() {
-    return configuredProviders().length > 0 || localEndpointConfigured() || !!state.providers.scout_enabled;
+    return configuredProviders().length > 0 || localEndpointConfigured();
   }
 
   function selectedByoProvider() {
@@ -899,7 +889,6 @@
     if (localEndpointConfigured() && activeProvider === 'local') return 'local';
     if (providerEnv[activeProvider]) return activeProvider;
     if (localEndpointConfigured() && configuredProviders().length === 0) return 'local';
-    if (state.providers.scout_enabled) return 'google';
     return configuredProviders()[0] || 'anthropic';
   }
 
@@ -954,7 +943,6 @@
 
   function byoKindForProvider(provider) {
     if (provider === 'local') return 'endpoint';
-    if (provider === 'google' && state.providers.scout_enabled) return 'scout';
     return 'key';
   }
 
@@ -1299,8 +1287,6 @@
     if (activeByo) {
       if (brain.byoKind === 'endpoint') {
         setText('byoLaneStatus', 'using endpoint · manage →');
-      } else if (brain.byoKind === 'scout') {
-        setText('byoLaneStatus', 'using scout · manage →');
       } else {
         setText('byoLaneStatus', `using ${providerLabel(byoProvider)} key · manage →`);
       }
@@ -1310,168 +1296,6 @@
       setText('byoLaneStatus', `manage ${providerLabel(byoProvider)} key →`);
     } else {
       setText('byoLaneStatus', 'add a key or URL →');
-    }
-  }
-
-  function checkstripTimeSegment(iso) {
-    const time = relativeTime(iso);
-    return time ? ` · ${time}` : '';
-  }
-
-  function renderScoutCheckstrip(scout) {
-    const strip = $('scoutCheckstrip');
-    const actions = scout.actions || {};
-    const operation = scout.operation;
-    const operationActive = !!operation && !scoutTerminalPhases.has(operation.phase);
-    const connectionErrors = new Set(['unauthorized', 'not_found', 'unreachable', 'tls_failed', 'malformed']);
-    let text = '';
-    let visible = false;
-    let checkVisible = false;
-
-    if (connectionErrors.has(scout.check_error)) {
-      text = "couldn't check over your scout connection · try again";
-      visible = true;
-      checkVisible = !!actions.check;
-    } else if (scout.check_error === 'no_credential') {
-      visible = false;
-    } else if (scout.checked === true && scout.state === 'requested') {
-      text = `checked over your scout connection${checkstripTimeSegment(scout.checked_at)} — still reviewing`;
-      visible = true;
-      checkVisible = !!actions.check;
-    } else if (scout.checked === true && scout.state === 'invited') {
-      text = `checked over your scout connection${checkstripTimeSegment(scout.checked_at)} — you're in 🎉`;
-      visible = true;
-      checkVisible = !!actions.check;
-    }
-
-    if (scout.state === 'on') {
-      visible = false;
-      checkVisible = false;
-    }
-
-    if (strip) strip.hidden = !visible;
-    setText('scoutCheckstripText', text);
-    setButtonState('scoutCheck', checkVisible, operationActive || !checkVisible);
-  }
-
-  function renderScoutNotice(scoutState) {
-    const notice = $('scoutNotice');
-    if (!notice) return;
-    notice.textContent = '';
-    if (scoutState === 'requested') {
-      notice.append(
-        document.createTextNode(
-          "nothing's set up yet, and nothing left your journal. want to start now? ",
-        ),
-      );
-      const byo = document.createElement('button');
-      byo.type = 'button';
-      byo.className = 'textlink';
-      byo.textContent = 'add your own key.';
-      byo.addEventListener('click', () => {
-        state.byoMode = 'pick';
-        renderByo();
-        showView('byo-setup');
-      });
-      notice.appendChild(byo);
-      return;
-    }
-    if (scoutState === 'invited') {
-      notice.textContent = 'turning this on opens your browser to share your scout token with this journal. your questions are processed by a cloud provider, stored only briefly, never used for training.';
-      return;
-    }
-    if (scoutState === 'on') {
-      notice.textContent = 'the token is never shown here — it lives in your journal and you never have to touch it. the scout program only provisions the token; your requests go straight to Gemini, not through us.';
-      return;
-    }
-    if (scoutState === 'manual_key_present') {
-      notice.textContent = scoutCopy.manual_key_block || 'a Gemini key you manage is already set.';
-      return;
-    }
-    if (scoutState === 'repair_needed') {
-      notice.textContent = 'scout needs a fresh check before it can be used here.';
-      return;
-    }
-    notice.textContent = 'nothing is set up yet. scout can cover Gemini when you join the program.';
-  }
-
-  function renderScout() {
-    const scout = state.scout;
-    if (!scout) {
-      setPill('scoutSetupPill', 'checking');
-        setText('scoutSetupSub', 'checking scout');
-        setText('scoutSetupMeta', '');
-        setText('scoutProvenanceLine', '');
-        setMessage('scoutLaneOperation', '');
-      setLink('scoutLaneOperationLink', '', '');
-      setHidden('scoutCheckstrip', true);
-      setButtonState('scoutEnable', false, true);
-      setButtonState('scoutRefresh', false, true);
-      setButtonState('scoutDisable', false, true);
-      setButtonState('scoutCheck', false, true);
-      return;
-    }
-
-    const scoutState = scout.state || 'off';
-    const label = scoutLabel(scoutState);
-    setPill('scoutSetupPill', label, scoutState === 'on' ? 'hot' : '');
-    setText('scoutSetupTitle', 'scout');
-
-    const sublines = {
-      off: 'off — pick scout if you want us to cover Gemini',
-      requested: "your request is in — we'll show your invite here the moment you're in",
-      invited: "you're in — turn it on so thinking is available",
-      on: 'on — thinking available',
-      ended: 'scout ended — check again if this looks wrong',
-      manual_key_present: scoutCopy.manual_key_block || 'a Gemini key you manage is already set.',
-      repair_needed: 'repair needed — try again from Thinking',
-    };
-    setText('scoutSetupSub', sublines[scoutState] || scout.guidance || label);
-
-    const provenance = scout.provenance || {};
-    const setupDate = shortDate(provenance.key_created_at || provenance.enabled_at);
-      setText(
-        'scoutSetupMeta',
-        scoutState === 'on'
-          ? `token set up in your journal${setupDate ? ` · ${setupDate}` : ''}`
-          : '',
-      );
-      setText(
-        'scoutProvenanceLine',
-        scoutState === 'on' ? copy.byo_setup?.scout_provenance || '' : '',
-      );
-
-    renderScoutCheckstrip(scout);
-    renderScoutNotice(scoutState);
-
-    const operation = scout.operation;
-    const operationActive = !!operation && !scoutTerminalPhases.has(operation.phase);
-    const actions = scout.actions || {};
-    setButtonState('scoutEnable', !!actions.enable && !operationActive, !actions.enable);
-    setButtonState(
-      'scoutRefresh',
-      !!actions.refresh && scoutState !== 'on',
-      operationActive || !actions.refresh || scoutState === 'on',
-    );
-    setButtonState('scoutDisable', !!actions.disable, operationActive || !actions.disable);
-
-    if (operation) {
-      const phase = operation.phase || '';
-      const phaseLabel = scoutLabel(phase);
-      const operationGuidance = operation.guidance || '';
-      setMessage(
-        'scoutLaneOperation',
-        operationGuidance ? `${phaseLabel} — ${operationGuidance}` : phaseLabel,
-        phase === 'repair_needed' ? 'error' : '',
-      );
-      setLink(
-        'scoutLaneOperationLink',
-        operation.portal_url || '',
-        scoutCopy.consent_cta || 'continue to approve →',
-      );
-    } else {
-      setMessage('scoutLaneOperation', '');
-      setLink('scoutLaneOperationLink', '', '');
     }
   }
 
@@ -1517,7 +1341,7 @@
     if (customInput) customInput.value = '';
     const selected = selectedByoProvider();
     const validation = state.keys.key_validation?.[selected];
-    const mode = byoEntryMode(selected, validation, !!state.providers.scout_enabled);
+    const mode = byoEntryMode(selected, validation);
     if (mode === 'model') state.byoSelectedModel = preselectByoModel(selected, state.providers);
     state.byoMode = mode;
     renderByo();
@@ -1631,7 +1455,7 @@
     const validation = state.keys.key_validation?.[provider];
     const configured = !!state.keys.api_keys?.[provider];
     let mode = state.byoMode;
-    if (mode === 'model' && !byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
+    if (mode === 'model' && !byoModelStepAllowed(provider, validation)) {
       resetByoDraft();
       mode = 'paste';
       state.byoMode = mode;
@@ -1650,9 +1474,6 @@
     setText('byoEndpointTitle', byoText.endpoint_heading || '');
     setText('byoEndpointSub', byoText.endpoint_sub || '');
     setText('byoEndpointHonesty', byoText.endpoint_honesty || '');
-    setText('byoScoutTitle', byoText.scout_heading || '');
-    setText('byoScoutAffordance', byoText.scout_sub || '');
-    setText('byoScoutTermsLink', byoText.scout_terms_link || '');
     setButtonText('byoSaveKey', byoText.paste_cta || '');
     document.querySelectorAll('[data-byo-key-link]').forEach((link) => {
       link.textContent = byoText.get_key || '';
@@ -1739,7 +1560,7 @@
     setByoModelResolutionTargets(guidance?.[googleModelResolutionTargetsField] || []);
     setSelectedByoProvider('google');
     const validation = state.keys.key_validation?.google;
-    if (byoModelStepAllowed('google', validation, !!state.providers.scout_enabled)) {
+    if (byoModelStepAllowed('google', validation)) {
       state.byoMode = 'model';
       state.byoSelectedModel = preselectByoModel('google', state.providers);
     } else {
@@ -2018,13 +1839,11 @@
   function byoSetupLabel(brain) {
     if (brain.kind !== 'byo') return activeLaneLabel(brain.kind);
     if (brain.byoKind === 'endpoint') return copy.lane_switch?.setup_endpoint || 'endpoint';
-    if (brain.byoKind === 'scout') return copy.lane_switch?.setup_scout || 'scout';
     return brain.providerLabel || activeLaneLabel('byo');
   }
 
   function byoSavedSetupLabel(provider) {
     if (provider === 'local') return copy.lane_switch?.setup_endpoint || 'your endpoint';
-    if (provider === 'google' && state.providers.scout_enabled) return copy.lane_switch?.setup_scout || 'scout';
     return copy.lane_switch?.setup_key || 'a saved key';
   }
 
@@ -2072,7 +1891,6 @@
     renderMainLanes();
     renderByo();
     renderLocalEndpoint();
-    renderScout();
     renderConfidentialSetup();
     renderLocal();
     renderLaneSwitch();
@@ -2092,24 +1910,6 @@
   async function refreshKeys() {
     state.keys = await api('api/keys');
     renderAll();
-  }
-
-  async function refreshScout() {
-    state.scout = await api('api/scout');
-    renderScout();
-    renderMainLanes();
-  }
-
-  async function pollScoutUntilTerminal() {
-    const started = Date.now();
-    while (Date.now() - started < scoutPollMaxMs) {
-      await refreshScout();
-      const operation = state.scout?.operation;
-      if (!operation || scoutTerminalPhases.has(operation.phase)) return operation || null;
-      await sleep(pollIntervalMs);
-    }
-    await refreshScout();
-    return state.scout?.operation || null;
   }
 
   function openConsentTab(operation) {
@@ -2369,67 +2169,6 @@
     showView('main');
   }
 
-  async function enableScout() {
-    setMessage('scoutLaneOperation', '');
-    let start;
-    try {
-      start = await api('api/scout/enable', {method: 'POST'});
-    } catch (err) {
-      setMessage('scoutLaneOperation', err.message, 'error');
-      return;
-    }
-    openConsentTab(start?.operation);
-
-    const operation = await pollScoutUntilTerminal();
-    const phase = operation?.phase;
-    if (state.scout?.state === 'on' || phase === 'invited') {
-      setSelectedByoProvider('google');
-      state.byoMode = 'paste';
-      await switchLane('byo');
-      await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
-      showView('main');
-      return;
-    }
-    if (phase === 'repair_needed') {
-      setMessage(
-        'scoutLaneOperation',
-        operation?.guidance || 'Scout needs repair — try again from Thinking.',
-        'error',
-      );
-      return;
-    }
-    if (phase === 'requested') {
-      setMessage(
-        'scoutLaneOperation',
-        operation?.guidance || state.scout?.guidance || 'Scout is waiting for approval.',
-      );
-    }
-  }
-
-  async function refreshScoutOp() {
-    const start = await api('api/scout/refresh', {method: 'POST'});
-    openConsentTab(start?.operation);
-    await pollScoutUntilTerminal();
-    if (state.scout?.state === 'on') {
-      await Promise.all([refreshProviders(), refreshKeys()]);
-    }
-    renderScout();
-    renderMainLanes();
-  }
-
-  async function checkScout() {
-    state.scout = await api('api/scout/check', {method: 'POST'});
-    renderScout();
-    renderMainLanes();
-  }
-
-  async function disableScout() {
-    const result = await api('api/scout/disable', {method: 'POST'});
-    state.scout = result.status || state.scout;
-    await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
-    showView('main');
-  }
-
   async function enableConfidential() {
     setMessage('confidentialLaneOperation', '');
     let start;
@@ -2503,7 +2242,6 @@
       value,
       text: copy.byo_setup || {},
       providersPayload: state.providers,
-      scoutEnabled: !!state.providers.scout_enabled,
       setMode: (mode) => {
         state.byoMode = mode;
       },
@@ -2539,7 +2277,7 @@
     const result = await api('api/validate-keys', {method: 'POST'});
     state.keys.key_validation = result.key_validation || {};
     const validation = state.keys.key_validation?.[provider] || {};
-    if (byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
+    if (byoModelStepAllowed(provider, validation)) {
       if (!state.byoSelectedModel) state.byoSelectedModel = preselectByoModel(provider, state.providers);
       state.byoMode = 'model';
       renderByo();
@@ -2698,7 +2436,7 @@
       setSelectedByoProvider(provider);
       resetByoDraft();
       const validation = state.keys.key_validation?.[provider];
-      const mode = byoEntryMode(provider, validation, !!state.providers.scout_enabled);
+      const mode = byoEntryMode(provider, validation);
       if (mode === 'model') state.byoSelectedModel = preselectByoModel(provider, state.providers);
       state.byoMode = mode === 'paste' && configuredProviders().length === 0 && activeBrain().kind !== 'byo' ? 'pick' : mode;
       renderByo();
@@ -2796,10 +2534,6 @@
       if (keyInput) keyInput.value = '';
       renderByo();
     });
-    $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
-    $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
-    $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
-    $('scoutCheck')?.addEventListener('click', () => checkScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('confidentialEnable')?.addEventListener('click', () => enableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
     $('confidentialRecheck')?.addEventListener('click', () => recheckConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
     $('confidentialDisable')?.addEventListener('click', () => disableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
@@ -2849,7 +2583,7 @@
       await refreshInstallStatus({autoResume: true});
       await refreshLocalRuntime({autoResume: viewFromHash() === 'local-setup'});
       await refreshLocalAvailability();
-      await Promise.all([refreshProviders(), refreshKeys(), refreshScout()]);
+      await Promise.all([refreshProviders(), refreshKeys()]);
     } catch (err) {
       setMessage('thinkingActiveDetail', err.message, 'error');
     }
