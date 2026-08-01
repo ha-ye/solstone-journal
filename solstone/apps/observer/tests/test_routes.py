@@ -651,7 +651,7 @@ def test_api_list_empty(observer_env):
     }
 
 
-def test_register_bound_observer_helper_returns_descriptor(observer_env):
+def test_register_bound_observer_helper_mints_cert_bound_record(observer_env):
     """Test creating a registered observer fixture."""
     env = observer_env()
 
@@ -668,6 +668,10 @@ def test_register_bound_observer_helper_returns_descriptor(observer_env):
     assert data["ingest_url"] == "/app/observer/ingest"
     assert data["key"] not in data["ingest_url"]
     assert data["protocol_version"] == OBSERVER_PROTOCOL_VERSION
+    record = observer_utils.load_observer(data["key"])
+    assert record is not None
+    assert record["device_binding"]["kind"] == "cert"
+    assert record["device_binding"]["device"] == env.pl_identity().fingerprint
 
 
 def test_api_create_refuses_hand_mint(observer_env):
