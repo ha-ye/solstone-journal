@@ -93,6 +93,13 @@
   `resolve_base_url` import; the redirect also leaves unspecified the final health-only corpus
   form and the native forwarding path for `journal spl` after Python `sol_cli` dispatch is
   removed. These are held for direction before destructive U6 work, while U4/U5 continue.
+- The redirected U4 TLS relay client is accepted after fresh-eyes review and independent
+  reruns of format, strict clippy, iOS library, and 114 SPL tests. It reconnects and emits the
+  retained health vocabulary through a neutral Callosum seam; acquires/releases global
+  admission across every prefix/dial path; replays only `0x16` tunnels to loopback; and routes
+  `SBO1` exactly like any other unknown prefix, without an HPKE/blob dependency. The prior
+  UUID-byte parse is intentionally absent because it existed only for the dropped blob path;
+  the configuration string remains the listener URL's single instance-ID source.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -133,6 +140,11 @@
   transfer or either observable ACK status. Fresh-eyes review caught the omission; the delegate
   added an auth-mode HPKE end-to-end test for `ok`/`collision` → `ACK(0x00)` and
   `duplicate` → `ACK(0x01)`. This is a delegate test-coverage omission, not contract rework.
+- **U4 TLS relay client — returned.** Fresh-eyes review found the generic `CallosumEmit` trait
+  still lived in U2's now-moot blob receiver, so a correct U6 deletion would have removed the
+  U4/U5 event seam. The delegate rehomed the unchanged trait in neutral retained code and
+  reran the gates. This is a scope-cut integration dependency, not a browser/blob behavior
+  defect or contract rework.
 - **U1 HPKE process I/O — returned.** The first runner used an unbounded `read_to_end`, which
   could exhaust process memory before the field parser applied its cap. Fresh-eyes review
   returned it; the delegate replaced it with bounded chunked reads and an `EndlessReader` test

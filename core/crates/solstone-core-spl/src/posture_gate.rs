@@ -6,6 +6,12 @@
 pub struct ServiceToken(String);
 
 impl ServiceToken {
+    /// Wraps a service credential without making it formattable.
+    #[must_use]
+    pub const fn new(value: String) -> Self {
+        Self(value)
+    }
+
     /// Returns the token only for the authenticated request that needs it.
     pub fn as_str(&self) -> &str {
         &self.0

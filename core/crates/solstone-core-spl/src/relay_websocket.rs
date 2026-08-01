@@ -6,8 +6,8 @@
 //! The caller provides a fully constructed relay URL, including its required
 //! `instance` and `token` query fields.  This adapter adds the matching bearer
 //! header without exposing either the request or upstream transport details to
-//! callers.  The stream is split exactly once so blob receive can own the
-//! reader while tunnel forwarding owns the sink.
+//! callers. The stream is split exactly once so the TLS loopback pipe can own
+//! independent reader and writer halves for concurrent tunnel forwarding.
 
 use bytes::Bytes;
 use futures_util::{
@@ -40,6 +40,9 @@ pub enum RelayWebSocketError {
     Request,
     #[error("relay websocket connection failed")]
     Connection,
+    /// The relay returned an HTTP status without exposing its response body.
+    #[error("relay websocket was rejected")]
+    Status(u16),
 }
 
 /// A connected relay WebSocket before its required one-time split.
@@ -63,9 +66,14 @@ impl RelayWebSocket {
         token: &ServiceToken,
     ) -> Result<Self, RelayWebSocketError> {
         let request = relay_request(full_url, token)?;
-        let (stream, _) = connect_async_with_config(request, Some(unbounded_config()), false)
-            .await
-            .map_err(|_| RelayWebSocketError::Connection)?;
+        let (stream, _) =
+            match connect_async_with_config(request, Some(unbounded_config()), false).await {
+                Ok(result) => result,
+                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                    return Err(RelayWebSocketError::Status(response.status().as_u16()));
+                }
+                Err(_) => return Err(RelayWebSocketError::Connection),
+            };
         let (writer, reader) = stream.split();
 
         Ok(Self {

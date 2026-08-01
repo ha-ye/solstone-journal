@@ -10,8 +10,6 @@ pub enum TunnelRoute {
     NeedMorePrefix,
     /// A TLS ClientHello prefix that belongs on the local loopback connection.
     TlsLoopback,
-    /// An SPL blob-transfer offer beginning with `SBO1`.
-    BlobReceive,
     /// A complete four-byte prefix that this service does not support.
     Unsupported,
 }
@@ -30,10 +28,6 @@ pub fn route_tunnel_prefix(prefix: &[u8]) -> TunnelRoute {
         return TunnelRoute::TlsLoopback;
     }
 
-    if prefix.starts_with(b"SBO1") {
-        return TunnelRoute::BlobReceive;
-    }
-
     TunnelRoute::Unsupported
 }
 
@@ -50,8 +44,8 @@ mod tests {
     }
 
     #[test]
-    fn routes_an_exact_sbo1_prefix_to_blob_receive() {
-        assert_eq!(route_tunnel_prefix(b"SBO1"), TunnelRoute::BlobReceive);
+    fn treats_the_retired_blob_prefix_as_unsupported() {
+        assert_eq!(route_tunnel_prefix(b"SBO1"), TunnelRoute::Unsupported);
     }
 
     #[test]

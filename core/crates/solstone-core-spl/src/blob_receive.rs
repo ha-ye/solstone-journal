@@ -24,8 +24,8 @@ use solstone_core_spl_hpke::{BlobFrameError, OFFER_LEN, P256Secret, ack, parse_o
 use thiserror::Error;
 
 use crate::{
-    BlobAdmissionGate, BufferedWsReader, PreparedAuthenticatedBlob, ValidatedBlobArchive,
-    WsByteSink, WsByteSource, prepare_authenticated_blob,
+    BlobAdmissionGate, BufferedWsReader, CallosumEmit, PreparedAuthenticatedBlob,
+    ValidatedBlobArchive, WsByteSink, WsByteSource, prepare_authenticated_blob,
 };
 
 const ENC_LEN: usize = 65;
@@ -195,12 +195,6 @@ pub fn parse_convey_ingest_status(response: &Value) -> Result<BlobIngestStatus, 
         Some("collision") => Ok(BlobIngestStatus::Collision),
         _ => Err(BlobIngestError::UnexpectedStatus),
     }
-}
-
-/// Synchronous Callosum emission needed for the admission-saturation event.
-pub trait CallosumEmit: Send + Sync {
-    /// Emits one named event with a JSON object payload.
-    fn emit(&self, event: &'static str, payload: Value);
 }
 
 /// Internal receiver failures that could not be represented by wire behavior.

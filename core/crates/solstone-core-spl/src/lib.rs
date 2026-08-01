@@ -14,11 +14,13 @@ mod authorized_clients;
 mod blob_archive;
 mod blob_content_type;
 mod blob_receive;
+mod callosum;
 mod health;
 mod link_state_files;
 mod loopback_pipe;
 mod posture_gate;
 mod reconnect_backoff;
+mod relay_client;
 mod relay_control;
 mod relay_health;
 mod relay_status_failure;
@@ -47,9 +49,10 @@ pub use blob_archive::{
 pub use blob_content_type::blob_content_type;
 pub use blob_receive::{
     BlobDeps, BlobError, BlobIngest, BlobIngestError, BlobIngestFuture, BlobIngestStatus,
-    BlobReceiveTiming, BrowserLedger, CallosumEmit, KeyError, LedgerError, LedgerRow,
-    UploadKeySource, parse_convey_ingest_status, receive_blob,
+    BlobReceiveTiming, BrowserLedger, KeyError, LedgerError, LedgerRow, UploadKeySource,
+    parse_convey_ingest_status, receive_blob,
 };
+pub use callosum::CallosumEmit;
 pub use health::{
     LINK_HEALTH_EVENT, OFFLINE_TUNNEL_REASONS, REASON_HOME_MISSING_MOBILE,
     REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE, REASON_RELAY_ADMISSION_SATURATED,
@@ -68,6 +71,9 @@ pub use posture_gate::{
 pub use reconnect_backoff::{
     INITIAL_RECONNECT_BASE, MAX_RECONNECT_BASE, ReconnectBackoffError, ReconnectSchedule,
     schedule_reconnect,
+};
+pub use relay_client::{
+    LoopbackConnect, LoopbackDialer, LoopbackStream, RelayClient, RelayClientConfig, RelayError,
 };
 pub use relay_control::{
     ListenControl, bearer_authorization_value, parse_listen_control, relay_tunnel_url,
