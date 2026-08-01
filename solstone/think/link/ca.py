@@ -56,8 +56,7 @@ class LoadedCa:
         """DER SubjectPublicKeyInfo of the CA public key.
 
         These are the bytes whose SHA-256 first-16 form the ``ca_fp_spki`` pin
-        carried in the 0x06 pair link, so a browser client that only holds the
-        pin can be handed this key to verify the home's pairing signature.
+        carried in the 0x06 pair link.
         """
         return self.cert.public_key().public_bytes(
             serialization.Encoding.DER,
