@@ -1031,7 +1031,7 @@ def rename() -> Any:
             CONVEY_OPERATION_FAILED,
             detail="couldn't save the new label",
         )
-    if not updated:
+    if updated is None:
         return error_response(PAIRED_DEVICE_NOT_FOUND, detail="fingerprint not paired")
     return jsonify(
         {

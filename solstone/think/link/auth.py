@@ -18,8 +18,8 @@ browser-uplink fields for UX:
       "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
       "network": "network",                    // optional; local display label source
       "client_label": "jer-laptop",            // optional; client self-name/hostname
-      "label_ordinal": 1,                       // optional; local display
-                                                // ordinal, 1 = no suffix
+      "label_ordinal": 2,                      // optional positive int;
+                                               // invalid/absent = 1; omitted when 1
       "kind": "cert",                          // cert | browser
       "pubkey_spki": "<hex>",                  // browser only
       "observer_handle": "<handle>"            // browser only
