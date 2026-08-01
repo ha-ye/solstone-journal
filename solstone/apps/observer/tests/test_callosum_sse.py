@@ -26,7 +26,6 @@ from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 
 DEVICE_FINGERPRINT = "sha256:" + ("c" * 64)
-BROWSER_FINGERPRINT = "sha256:" + ("b" * 64)
 
 
 @pytest.fixture(autouse=True)
@@ -38,29 +37,6 @@ def clear_sse_subscribers() -> Iterator[None]:
     with convey_bridge._SSE_LOCK:
         convey_bridge._SSE_SUBSCRIBERS_BY_KEY.clear()
         convey_bridge._SSE_LAST_CHAT_REQUEST_AT_BY_KEY.clear()
-
-
-def _create_observer(env, name: str = "sse-test") -> tuple[str, str]:
-    key = f"{name}-key-123456789"
-    assert save_observer(
-        {
-            "key": key,
-            "name": name,
-            "created_at": 1,
-            "enabled": True,
-            "revoked": False,
-            "device_binding": {"device": BROWSER_FINGERPRINT, "kind": "browser"},
-            "stats": {"segments_received": 0, "bytes_received": 0},
-        }
-    )
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint=BROWSER_FINGERPRINT,
-        device_label="sse-browser",
-        instance_id="instance-1",
-        pubkey_spki="30aa",
-        observer_handle=key,
-    )
-    return key, key[:8]
 
 
 def _pl_identity(fingerprint: str = DEVICE_FINGERPRINT) -> ConveyIdentity:
@@ -167,27 +143,41 @@ def test_callosum_sse_without_bearer_returns_401(observer_env):
     )
 
 
-def test_legacy_keyed_callosum_path_is_gone(observer_env):
+def test_legacy_keyed_callosum_path_is_gone(observer_env, monkeypatch):
     env = observer_env()
-    key, _ = _create_observer(env)
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _ = _create_bound_observer(env)
 
     resp = env.client.get(
         f"/app/observer/{key}/callosum",
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     assert resp.status_code == 404
 
 
-def test_callosum_sse_revoked_key_returns_403(observer_env):
+def test_callosum_sse_revoked_key_returns_403(observer_env, monkeypatch):
     env = observer_env()
-    key, key_prefix = _create_observer(env, "revoked-sse")
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, key_prefix = _create_bound_observer(env, "revoked-sse")
     revoke = env.client.delete(f"/app/observer/api/{key_prefix}")
     assert revoke.status_code == 200
 
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     assert resp.status_code == 403
@@ -198,9 +188,15 @@ def test_callosum_sse_revoked_key_returns_403(observer_env):
     )
 
 
-def test_callosum_sse_disabled_key_returns_403(observer_env):
+def test_callosum_sse_disabled_key_returns_403(observer_env, monkeypatch):
     env = observer_env()
-    key, _ = _create_observer(env, "disabled-sse")
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _ = _create_bound_observer(env, "disabled-sse")
     observer = load_observer(key)
     assert observer is not None
     observer["enabled"] = False
@@ -209,6 +205,7 @@ def test_callosum_sse_disabled_key_returns_403(observer_env):
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     assert resp.status_code == 403
@@ -219,13 +216,20 @@ def test_callosum_sse_disabled_key_returns_403(observer_env):
     )
 
 
-def test_callosum_sse_bearer_header_authenticates(observer_env):
+def test_callosum_sse_bearer_header_authenticates(observer_env, monkeypatch):
     env = observer_env()
-    valid_key, _ = _create_observer(env, "valid-sse")
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    valid_key, _ = _create_bound_observer(env, "valid-sse")
 
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {valid_key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     try:
@@ -237,19 +241,27 @@ def test_callosum_sse_bearer_header_authenticates(observer_env):
     resp = env.client.get(
         _route(),
         headers={"Authorization": "Bearer invalid-key"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     assert resp.status_code == 401
     _assert_reason(resp, reason_code="auth_key_invalid", detail="Invalid key")
 
 
-def test_callosum_sse_success_content_type(observer_env):
+def test_callosum_sse_success_content_type(observer_env, monkeypatch):
     env = observer_env()
-    key, _ = _create_observer(env)
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _ = _create_bound_observer(env)
 
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     try:
@@ -259,12 +271,19 @@ def test_callosum_sse_success_content_type(observer_env):
         resp.close()
 
 
-def test_callosum_sse_round_trip_payload(observer_env):
+def test_callosum_sse_round_trip_payload(observer_env, monkeypatch):
     env = observer_env()
-    key, key_prefix = _create_observer(env)
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, key_prefix = _create_bound_observer(env)
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     try:
@@ -284,7 +303,13 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
     monkeypatch,
 ):
     env = observer_env()
-    key, _key_prefix = _create_observer(env, "handle-sse")
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _key_prefix = _create_bound_observer(env, "handle-sse")
     monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(
         routes_module, "_SSE_DEVICE_RECHECK_SECONDS", 0.01, raising=False
@@ -293,6 +318,7 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
     resp = env.client.get(
         _route(),
         headers={OBSERVER_HANDLE_HEADER: key},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     try:
@@ -308,6 +334,8 @@ def test_callosum_sse_handle_revocation_midstream_emits_error(
         data = _parse_sse_data(chunk)
         assert data["reason_code"] == "pl_revoked"
         assert data["detail"] == "Observer revoked"
+        with pytest.raises(StopIteration):
+            next(iter(resp.response))
     finally:
         resp.close()
 
@@ -414,12 +442,19 @@ def test_busy_sse_closes_when_bound_device_removed(observer_env, monkeypatch):
 
 def test_callosum_sse_heartbeat(observer_env, monkeypatch):
     env = observer_env()
-    key, _ = _create_observer(env)
+    _authorize_device()
+    monkeypatch.setattr(
+        root_module,
+        "get_authorized_clients",
+        lambda: AuthorizedClients(authorized_clients_path()),
+    )
+    key, _ = _create_bound_observer(env)
     monkeypatch.setattr(routes_module, "_SSE_HEARTBEAT_SECONDS", 0.01)
 
     resp = env.client.get(
         _route(),
         headers={"Authorization": f"Bearer {key}"},
+        environ_overrides={"pl.identity": _pl_identity()},
         buffered=False,
     )
     try:

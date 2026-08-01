@@ -32,7 +32,6 @@ VALID_REGISTER_PAYLOAD = {
 }
 PL_FINGERPRINT = "sha256:" + ("c" * 64)
 PL_FINGERPRINT_2 = "sha256:" + ("d" * 64)
-BROWSER_FINGERPRINT = "sha256:" + ("e" * 64)
 LOCAL_REQUEST_ERROR = (
     "I couldn't register that observer because this request isn't authorized for "
     "that stream."
@@ -81,20 +80,6 @@ def _authorize_pl(fingerprint: str = PL_FINGERPRINT) -> None:
         fingerprint,
         "fedora-sat",
         "instance-1",
-    )
-
-
-def _authorize_browser(
-    *,
-    fingerprint: str = BROWSER_FINGERPRINT,
-    observer_handle: str | None = None,
-) -> None:
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint=fingerprint,
-        device_label="browser",
-        instance_id="instance-1",
-        pubkey_spki="30aa",
-        observer_handle=observer_handle,
     )
 
 
@@ -512,42 +497,6 @@ def test_register_adopts_cert_binding_for_existing_unbound_stream(observer_env):
     assert observer["device_binding"] == {
         "device": PL_FINGERPRINT,
         "kind": "cert",
-    }
-
-
-def test_register_adopts_browser_binding_for_existing_unbound_stream(observer_env):
-    env = observer_env()
-    key = "adoptbrowser123456789"
-    token = BROWSER_FINGERPRINT.removeprefix("sha256:")[:12]
-    hostname = f"browser-label-{token}"
-    payload = {
-        "platform": "browser",
-        "hostname": hostname,
-        "stream_type": "browser",
-        "version": "spl-browser-blob-v1",
-    }
-    stream = f"{hostname}.browser"
-    created_at = 1704312355000
-    stats = {"segments_received": 5, "bytes_received": 90}
-    _seed_unbound_observer(
-        key=key,
-        stream=stream,
-        created_at=created_at,
-        stats=stats,
-    )
-    _authorize_browser()
-
-    resp = env.client.post("/app/observer/register", json=payload)
-
-    assert resp.status_code == 200
-    assert resp.get_json()["key"] == key
-    observer = load_observer(key)
-    assert observer is not None
-    assert observer["created_at"] == created_at
-    assert observer["stats"] == stats
-    assert observer["device_binding"] == {
-        "device": BROWSER_FINGERPRINT,
-        "kind": "browser",
     }
 
 

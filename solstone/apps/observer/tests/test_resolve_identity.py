@@ -22,7 +22,6 @@ DL_KEY = "dlkey123456789"
 HEADER_HANDLE = "headerhandle123456789"
 FINGERPRINT = "sha256:" + ("c" * 64)
 OTHER_FINGERPRINT = "sha256:" + ("d" * 64)
-BROWSER_FINGERPRINT = "sha256:" + ("e" * 64)
 
 
 ROUTE_CASES = (
@@ -117,20 +116,6 @@ def _save_cert_observer(
         handle,
         name,
         device_binding={"device": fingerprint, "kind": "cert"},
-    )
-
-
-def _authorize_browser(
-    *,
-    fingerprint: str = BROWSER_FINGERPRINT,
-    observer_handle: str = HEADER_HANDLE,
-) -> None:
-    AuthorizedClients(authorized_clients_path()).add_browser(
-        fingerprint=fingerprint,
-        device_label="browser",
-        instance_id="instance-1",
-        pubkey_spki="30aa",
-        observer_handle=observer_handle,
     )
 
 
@@ -383,22 +368,16 @@ def test_all_device_routes_refuse_missing_matching_device_identity(
 @pytest.mark.parametrize(
     "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
 )
-@pytest.mark.parametrize("mismatch", ("wrong_kind", "wrong_handle"))
-def test_all_device_routes_refuse_browser_kind_or_handle_mismatch(
+def test_all_device_routes_refuse_legacy_browser_kind_binding(
     observer_env,
     route_case,
-    mismatch,
 ):
     env = observer_env()
     _save_observer(
         HEADER_HANDLE,
         "browser-observer",
-        device_binding={"device": BROWSER_FINGERPRINT, "kind": "browser"},
+        device_binding={"device": FINGERPRINT, "kind": "browser"},
     )
-    if mismatch == "wrong_kind":
-        _authorize_cert(BROWSER_FINGERPRINT)
-    else:
-        _authorize_browser(observer_handle="other-browser-handle")
 
     response = _route_response(env.client, route_case, HEADER_HANDLE)
 

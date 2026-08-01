@@ -18,6 +18,26 @@ import pytest
 import solstone.think.link.auth as auth_module
 from solstone.think.link.auth import MAX_DEVICE_LABEL_LEN, AuthorizedClients
 
+LEGACY_BROWSER_ROW = {
+    "fingerprint": "sha256:" + "a" * 64,
+    "device_label": "Browser",
+    "paired_at": "2026-07-01T00:00:00Z",
+    "instance_id": "inst-1",
+    "role": "",
+    "kind": "browser",
+    "pubkey_spki": "30aa",
+    "observer_handle": "handle123",
+}
+
+UNSUPPORTED_KIND_ROW = {
+    "fingerprint": "sha256:" + "b" * 64,
+    "device_label": "Legacy widget",
+    "paired_at": "2026-07-01T00:01:00Z",
+    "instance_id": "inst-1",
+    "role": "",
+    "kind": "legacy-widget",
+}
+
 
 def test_empty_file_is_empty(tmp_path: Path) -> None:
     store = AuthorizedClients(tmp_path / "auth.json")
@@ -682,6 +702,160 @@ def test_find_all_by_display_label(tmp_path: Path) -> None:
     assert reloaded.role == ""
     assert reloaded.last_seen_at == "2026-04-19T18:03:12Z"
     assert store.find_all_by_display_label("Jer") == []
+
+
+def test_old_cert_entry_defaults_to_cert_kind(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:legacy",
+                    "device_label": "legacy",
+                    "paired_at": "2026-07-01T00:00:00Z",
+                    "instance_id": "inst-1",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entry = AuthorizedClients(path).get("sha256:legacy")
+
+    assert entry is not None
+    assert entry.kind == "cert"
+    assert entry.observer_handle is None
+
+
+def test_load_drops_legacy_browser_row_with_redacted_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "auth.json"
+    cert_row = {
+        "fingerprint": "sha256:cert",
+        "device_label": "Cert",
+        "paired_at": "2026-07-01T00:02:00Z",
+        "instance_id": "inst-1",
+        "role": "",
+        "kind": "cert",
+    }
+    payload = json.dumps([LEGACY_BROWSER_ROW, cert_row], indent=2) + "\n"
+    path.write_text(payload, encoding="utf-8")
+    before = path.read_bytes()
+    caplog.set_level("WARNING", logger="solstone.think.link.auth")
+
+    store = AuthorizedClients(path)
+
+    assert [entry.fingerprint for entry in store.snapshot()] == [
+        cert_row["fingerprint"]
+    ]
+    assert store.get(LEGACY_BROWSER_ROW["fingerprint"]) is None
+    assert store.is_authorized(LEGACY_BROWSER_ROW["fingerprint"]) is False
+    cert_entry = store.get(cert_row["fingerprint"])
+    assert cert_entry is not None
+    assert cert_entry.kind == "cert"
+    assert path.read_bytes() == before
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "solstone.think.link.auth" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert LEGACY_BROWSER_ROW["fingerprint"] not in message
+    assert "30aa" not in message
+    assert "handle123" not in message
+
+
+def test_cert_mutation_rewrites_ledger_dropping_legacy_browser_row(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    cert_row = {
+        "fingerprint": "sha256:cert",
+        "device_label": "Cert",
+        "paired_at": "2026-07-01T00:02:00Z",
+        "instance_id": "inst-1",
+        "role": "",
+        "kind": "cert",
+        "network": "anywhere",
+    }
+    path.write_text(
+        json.dumps([LEGACY_BROWSER_ROW, cert_row], indent=2) + "\n",
+        encoding="utf-8",
+    )
+    store = AuthorizedClients(path)
+
+    assert store.update_label(cert_row["fingerprint"], "Renamed") is not None
+
+    payload = _load_payload(path)
+    assert payload == [
+        {
+            "fingerprint": cert_row["fingerprint"],
+            "device_label": "Renamed",
+            "paired_at": cert_row["paired_at"],
+            "instance_id": cert_row["instance_id"],
+            "role": "",
+            "kind": "cert",
+            "network": "anywhere",
+        }
+    ]
+    assert all(
+        item.get("kind") == "cert"
+        and "pubkey_spki" not in item
+        and "observer_handle" not in item
+        for item in payload
+    )
+
+
+def test_legacy_cert_kind_forms_both_authorize(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    explicit = {
+        "fingerprint": "sha256:explicit",
+        "device_label": "Explicit",
+        "paired_at": "2026-07-01T00:00:00Z",
+        "instance_id": "inst-1",
+        "kind": "cert",
+    }
+    missing = {
+        "fingerprint": "sha256:missing",
+        "device_label": "Missing",
+        "paired_at": "2026-07-01T00:01:00Z",
+        "instance_id": "inst-1",
+    }
+    path.write_text(json.dumps([explicit, missing], indent=2) + "\n", encoding="utf-8")
+
+    store = AuthorizedClients(path)
+
+    assert store.is_authorized(explicit["fingerprint"])
+    assert store.is_authorized(missing["fingerprint"])
+    assert store.get(explicit["fingerprint"]).kind == "cert"
+    assert store.get(missing["fingerprint"]).kind == "cert"
+
+
+def test_load_drops_any_unsupported_kind(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps([UNSUPPORTED_KIND_ROW], indent=2) + "\n", encoding="utf-8"
+    )
+    caplog.set_level("WARNING", logger="solstone.think.link.auth")
+
+    store = AuthorizedClients(path)
+
+    assert store.get(UNSUPPORTED_KIND_ROW["fingerprint"]) is None
+    assert store.snapshot() == []
+    assert store.is_authorized(UNSUPPORTED_KIND_ROW["fingerprint"]) is False
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "solstone.think.link.auth" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert UNSUPPORTED_KIND_ROW["fingerprint"] not in warnings[0].getMessage()
 
 
 def _load_payload(path: Path) -> list[dict[str, str]]:
