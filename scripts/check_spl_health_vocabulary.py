@@ -78,9 +78,10 @@ def _python_offline_set(path: Path) -> set[str] | None:
 
 
 def _rust_vocabulary(path: Path) -> dict[str, str]:
-    return {m.group("name"): m.group("value") for m in _RS_CONST.finditer(
-        path.read_text(encoding="utf-8")
-    )}
+    return {
+        m.group("name"): m.group("value")
+        for m in _RS_CONST.finditer(path.read_text(encoding="utf-8"))
+    }
 
 
 def _rust_offline_set(path: Path, rust: dict[str, str]) -> set[str] | None:
@@ -117,9 +118,13 @@ def check(root: Path, py_rel: str, rs_rel: str) -> list[str]:
     rs_reasons = {v for k, v in rs.items() if k.startswith("REASON_")}
 
     if not py_reasons:
-        problems.append(f"{py_rel}: no REASON_* constants found — the gate is not reading it")
+        problems.append(
+            f"{py_rel}: no REASON_* constants found — the gate is not reading it"
+        )
     if not rs_reasons:
-        problems.append(f"{rs_rel}: no REASON_* constants found — the gate is not reading it")
+        problems.append(
+            f"{rs_rel}: no REASON_* constants found — the gate is not reading it"
+        )
     if problems:
         return problems
 
