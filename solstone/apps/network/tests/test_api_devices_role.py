@@ -32,7 +32,7 @@ def test_devices_api_includes_role_field(link_env) -> None:
 @pytest.mark.parametrize(
     ("assigned", "client", "expected"),
     [
-        ("assigned", "client", "assigned (client)"),
+        ("assigned", "client", "assigned"),
         ("same", "same", "same"),
         ("assigned", "", "assigned"),
         ("", "client", "client"),

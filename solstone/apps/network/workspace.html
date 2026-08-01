@@ -1383,7 +1383,7 @@
           throw new Error(`rename failed: ${response.status}`);
         }
         const data = await response.json();
-        const persisted = typeof data.label === 'string' ? data.label : input.value.trim();
+        const persisted = typeof data.device_label === 'string' ? data.device_label : input.value.trim();
         device.device_label = persisted;
         replaceRenameInput(input, persisted);
         refreshDevices();

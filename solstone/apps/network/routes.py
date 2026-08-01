@@ -177,14 +177,6 @@ def _default_device_label() -> str:
     )
 
 
-def _display_label(assigned: str, client: str) -> str:
-    assigned = (assigned or "").strip()
-    client = (client or "").strip()
-    if assigned and client and assigned != client:
-        return f"{assigned} ({client})"
-    return assigned or client
-
-
 NETWORK_HOME = "home"
 
 
@@ -814,7 +806,7 @@ def _complete_pairing(
     *,
     network: str,
     sender_instance_id: str | None = None,
-) -> tuple[dict[str, Any], str, str]:
+) -> tuple[dict[str, Any], ClientEntry, str]:
     ca = load_or_generate_ca(ca_dir())
     cert_label = client_label or assigned_label or _default_device_label()
     client_cert_pem, fingerprint = sign_csr(ca, csr_pem, cert_label)
@@ -845,7 +837,7 @@ def _complete_pairing(
                 peer_instance_id=sender_instance_id,
             )
             create_state_directory(Path(get_journal()), journal_source_record_path.stem)
-        _authorized().add(
+        entry = _authorized().add(
             fingerprint=fingerprint,
             device_label=assigned_label,
             instance_id=state.instance_id,
@@ -900,7 +892,7 @@ def _complete_pairing(
                 "pair: auto-retire failed for label %r: %s", assigned_label, exc
             )
 
-    return response, fingerprint, paired_at
+    return response, entry, paired_at
 
 
 def _emit_pair_complete(
@@ -980,7 +972,7 @@ def pair() -> Any:
     # the peer would therefore read as `anywhere` for the owner's own machine.
     network = NETWORK_HOME if consumed.same_machine else _rough_network(g.identity.mode)
     try:
-        response, fingerprint, paired_at = _complete_pairing(
+        response, entry, paired_at = _complete_pairing(
             consumed,
             csr_pem,
             assigned_label,
@@ -992,8 +984,8 @@ def pair() -> Any:
         logger.info("pair: bad csr: %s", exc)
         return error_response(PAIRING_KEY_INVALID, detail=f"bad csr: {exc}")
     _emit_pair_complete(
-        _display_label(assigned_label, client_label),
-        fingerprint,
+        entry.display_label,
+        entry.fingerprint,
         paired_at,
         network=network,
     )
@@ -1041,7 +1033,13 @@ def rename() -> Any:
         )
     if not updated:
         return error_response(PAIRED_DEVICE_NOT_FOUND, detail="fingerprint not paired")
-    return jsonify({"fingerprint": fingerprint, "label": label.strip()})
+    return jsonify(
+        {
+            "fingerprint": updated.fingerprint,
+            "device_label": updated.device_label,
+            "display_label": updated.display_label,
+        }
+    )
 
 
 @network_bp.route("/unpair", methods=["POST"])
@@ -1140,7 +1138,7 @@ def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
         "fingerprint": entry.fingerprint,
         "fingerprint_short": short_fp,
         "device_label": entry.device_label,
-        "display_label": _display_label(entry.device_label, entry.client_label),
+        "display_label": entry.display_label,
         "paired_at": entry.paired_at,
         "last_seen_at": entry.last_seen_at,
         "role": entry.role,

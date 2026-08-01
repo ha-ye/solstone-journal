@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+import solstone.think.link.auth as auth_module
 from solstone.think.link.auth import MAX_DEVICE_LABEL_LEN, AuthorizedClients
 
 
@@ -98,6 +102,7 @@ def test_add_then_last_seen_key_absent_in_payload(tmp_path: Path) -> None:
     assert payload[0]["role"] == ""
     assert "last_seen_at" not in payload[0]
     assert "client_label" not in payload[0]
+    assert "label_ordinal" not in payload[0]
 
 
 def test_network_round_trips(tmp_path: Path) -> None:
@@ -126,6 +131,57 @@ def test_client_label_round_trips(tmp_path: Path) -> None:
     reloaded = AuthorizedClients(path).get("sha256:abc")
     assert reloaded is not None
     assert reloaded.client_label == "client-host"
+
+
+def test_label_ordinal_round_trips_and_invalid_values_default(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:good",
+                    "device_label": "phone",
+                    "paired_at": "2026-04-19T00:00:00Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": 3,
+                },
+                {
+                    "fingerprint": "sha256:bool",
+                    "device_label": "phone",
+                    "paired_at": "2026-04-19T00:00:01Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": True,
+                },
+                {
+                    "fingerprint": "sha256:zero",
+                    "device_label": "phone",
+                    "paired_at": "2026-04-19T00:00:02Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": 0,
+                },
+                {
+                    "fingerprint": "sha256:string",
+                    "device_label": "phone",
+                    "paired_at": "2026-04-19T00:00:03Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": "2",
+                },
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = {entry.fingerprint: entry for entry in AuthorizedClients(path).snapshot()}
+
+    assert entries["sha256:good"].label_ordinal == 3
+    assert entries["sha256:good"].display_label == "phone (3)"
+    assert entries["sha256:bool"].label_ordinal == 1
+    assert entries["sha256:zero"].label_ordinal == 1
+    assert entries["sha256:string"].label_ordinal == 1
 
 
 def test_missing_network_defaults_to_none(tmp_path: Path) -> None:
@@ -231,6 +287,70 @@ def test_touch_last_seen_preserves_network(tmp_path: Path) -> None:
     assert _load_payload(path)[0]["network"] == "anywhere"
 
 
+def test_add_allocates_ordinals_and_touch_preserves_after_reload(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+
+    first = store.add(
+        "sha256:a",
+        "iPhone",
+        "inst-1",
+        paired_at="2026-04-19T00:00:00Z",
+    )
+    second = store.add(
+        "sha256:b",
+        "iPhone",
+        "inst-1",
+        paired_at="2026-04-19T00:00:01Z",
+    )
+
+    assert first.display_label == "iPhone"
+    assert second.label_ordinal == 2
+    assert second.display_label == "iPhone (2)"
+    payload = {item["fingerprint"]: item for item in _load_payload(path)}
+    assert "label_ordinal" not in payload["sha256:a"]
+    assert payload["sha256:b"]["label_ordinal"] == 2
+
+    assert store.touch_last_seen(
+        "sha256:b",
+        now=dt.datetime(2026, 4, 19, 18, 3, 12, tzinfo=dt.UTC),
+    )
+    reloaded = AuthorizedClients(path).get("sha256:b")
+
+    assert reloaded is not None
+    assert reloaded.label_ordinal == 2
+    assert reloaded.display_label == "iPhone (2)"
+
+
+def test_blank_base_entries_keep_ordinal_one(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+
+    first = store.add("sha256:a", "", "inst-1")
+    second = store.add("sha256:b", "", "inst-1")
+
+    assert first.display_label == ""
+    assert second.display_label == ""
+    assert {entry.label_ordinal for entry in AuthorizedClients(path).snapshot()} == {1}
+    assert all("label_ordinal" not in item for item in _load_payload(path))
+
+
+def test_removed_sibling_does_not_renumber_sticky_ordinal(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+    store.add("sha256:a", "iPhone", "inst-1")
+    store.add("sha256:b", "iPhone", "inst-1")
+
+    assert store.remove("sha256:a") is True
+    reloaded = AuthorizedClients(path).get("sha256:b")
+
+    assert reloaded is not None
+    assert reloaded.label_ordinal == 2
+    assert reloaded.display_label == "iPhone (2)"
+
+
 def test_update_label_updates_and_persists(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     store = AuthorizedClients(path)
@@ -238,7 +358,10 @@ def test_update_label_updates_and_persists(tmp_path: Path) -> None:
 
     store.add(fingerprint, "old name", "inst-1")
 
-    assert store.update_label(fingerprint, "  new name  ") is True
+    updated = store.update_label(fingerprint, "  new name  ")
+    assert updated is not None
+    assert updated.device_label == "new name"
+    assert updated.display_label == "new name"
     entry = store.get(fingerprint)
     assert entry is not None
     assert entry.device_label == "new name"
@@ -252,7 +375,7 @@ def test_update_label_preserves_network(tmp_path: Path) -> None:
     store = AuthorizedClients(path)
 
     store.add("sha256:abc", "old name", "inst-1", network="anywhere")
-    assert store.update_label("sha256:abc", "new name") is True
+    assert store.update_label("sha256:abc", "new name") is not None
 
     entry = store.get("sha256:abc")
     assert entry is not None
@@ -266,13 +389,49 @@ def test_update_label_preserves_client_label(tmp_path: Path) -> None:
     store = AuthorizedClients(path)
 
     store.add("sha256:abc", "old name", "inst-1", client_label="client-host")
-    assert store.update_label("sha256:abc", "new name") is True
+    assert store.update_label("sha256:abc", "new name") is not None
 
     entry = store.get("sha256:abc")
     assert entry is not None
     assert entry.device_label == "new name"
     assert entry.client_label == "client-host"
     assert _load_payload(path)[0]["client_label"] == "client-host"
+
+
+def test_update_label_allocates_for_new_base_not_old_ordinal(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+    store.add("sha256:a", "iPhone", "inst-1")
+    store.add("sha256:b", "iPhone", "inst-1")
+
+    updated = store.update_label("sha256:b", "Work Phone")
+
+    assert updated is not None
+    assert updated.label_ordinal == 1
+    assert updated.display_label == "Work Phone"
+    payload = {item["fingerprint"]: item for item in _load_payload(path)}
+    assert "label_ordinal" not in payload["sha256:b"]
+
+
+def test_update_label_display_round_trip_promotes_base_label(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    store = AuthorizedClients(path)
+    base = "x" * MAX_DEVICE_LABEL_LEN
+    store.add("sha256:a", base, "inst-1")
+    target = store.add("sha256:b", "", "inst-1", client_label=base)
+    assert len(target.display_label) == MAX_DEVICE_LABEL_LEN + 4
+
+    updated = store.update_label("sha256:b", target.display_label)
+
+    assert updated is not None
+    assert updated.device_label == base
+    assert updated.label_ordinal == 2
+    assert updated.display_label == target.display_label
+    reloaded = AuthorizedClients(path).get("sha256:b")
+    assert reloaded is not None
+    assert reloaded.device_label == base
 
 
 @pytest.mark.parametrize(
@@ -298,11 +457,11 @@ def test_update_label_rejects_invalid_labels(
 def test_update_label_unknown_fp_returns_false(tmp_path: Path) -> None:
     store = AuthorizedClients(tmp_path / "auth.json")
 
-    assert store.update_label("sha256:deadbeef", "new name") is False
+    assert store.update_label("sha256:deadbeef", "new name") is None
 
     store.add("sha256:abc", "old name", "inst-1")
 
-    assert store.update_label("sha256:deadbeef", "new name") is False
+    assert store.update_label("sha256:deadbeef", "new name") is None
 
 
 def test_update_label_rereads_file_and_preserves_interleaved_last_seen(
@@ -316,12 +475,167 @@ def test_update_label_rereads_file_and_preserves_interleaved_last_seen(
 
     first.add(fingerprint, "old name", "inst-1")
     assert second.touch_last_seen(fingerprint, now=seen_at) is True
-    assert first.update_label(fingerprint, "new name") is True
+    assert first.update_label(fingerprint, "new name") is not None
 
     final = AuthorizedClients(path).get(fingerprint)
     assert final is not None
     assert final.device_label == "new name"
     assert final.last_seen_at == "2026-04-19T18:03:12Z"
+
+
+def test_backfill_label_ordinals_repairs_duplicates_idempotently(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:c",
+                    "device_label": "iPhone",
+                    "paired_at": "2026-04-19T00:00:03Z",
+                    "instance_id": "inst-1",
+                },
+                {
+                    "fingerprint": "sha256:a",
+                    "device_label": "iPhone",
+                    "paired_at": "2026-04-19T00:00:01Z",
+                    "instance_id": "inst-1",
+                },
+                {
+                    "fingerprint": "sha256:b",
+                    "device_label": "iPhone",
+                    "paired_at": "2026-04-19T00:00:02Z",
+                    "instance_id": "inst-1",
+                },
+                {
+                    "fingerprint": "sha256:blank-a",
+                    "device_label": "",
+                    "paired_at": "2026-04-19T00:00:01Z",
+                    "instance_id": "inst-1",
+                },
+                {
+                    "fingerprint": "sha256:blank-b",
+                    "device_label": "",
+                    "paired_at": "2026-04-19T00:00:02Z",
+                    "instance_id": "inst-1",
+                },
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before_load = path.read_bytes()
+    store = AuthorizedClients(path)
+
+    assert path.read_bytes() == before_load
+    assert store.backfill_label_ordinals() is True
+    payload = {item["fingerprint"]: item for item in _load_payload(path)}
+    assert "label_ordinal" not in payload["sha256:a"]
+    assert payload["sha256:b"]["label_ordinal"] == 2
+    assert payload["sha256:c"]["label_ordinal"] == 3
+    assert "label_ordinal" not in payload["sha256:blank-a"]
+    assert "label_ordinal" not in payload["sha256:blank-b"]
+
+    after_backfill = path.read_bytes()
+    assert store.backfill_label_ordinals() is False
+    assert path.read_bytes() == after_backfill
+
+    assert store.touch_last_seen(
+        "sha256:b",
+        now=dt.datetime(2026, 4, 19, 18, 3, 12, tzinfo=dt.UTC),
+    )
+    after_touch = path.read_bytes()
+    assert store.backfill_label_ordinals() is False
+    assert path.read_bytes() == after_touch
+    reloaded = AuthorizedClients(path).get("sha256:b")
+    assert reloaded is not None
+    assert reloaded.label_ordinal == 2
+
+
+def test_backfill_label_ordinals_preserves_sticky_non_duplicates(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "fingerprint": "sha256:a",
+                    "device_label": "iPhone",
+                    "paired_at": "2026-04-19T00:00:01Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": 1,
+                },
+                {
+                    "fingerprint": "sha256:b",
+                    "device_label": "iPhone",
+                    "paired_at": "2026-04-19T00:00:02Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": 3,
+                },
+                {
+                    "fingerprint": "sha256:c",
+                    "device_label": "iPad",
+                    "paired_at": "2026-04-19T00:00:03Z",
+                    "instance_id": "inst-1",
+                    "label_ordinal": 2,
+                },
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    assert AuthorizedClients(path).backfill_label_ordinals() is False
+    assert path.read_bytes() == before
+
+
+def test_concurrent_add_allocates_distinct_ordinals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "auth.json"
+    first = AuthorizedClients(path)
+    second = AuthorizedClients(path)
+    barrier = threading.Barrier(2)
+    real_hold_lock = auth_module.hold_lock
+
+    @contextmanager
+    def hold_lock_with_barrier(path_arg: Path, **kwargs: object) -> Iterator[None]:
+        barrier.wait(timeout=5)
+        with real_hold_lock(path_arg, **kwargs):
+            yield
+
+    monkeypatch.setattr(auth_module, "hold_lock", hold_lock_with_barrier)
+    errors: list[Exception] = []
+
+    def add(store: AuthorizedClients, fingerprint: str) -> None:
+        try:
+            store.add(fingerprint, "iPhone", "inst-1")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=add, args=(first, "sha256:a")),
+        threading.Thread(target=add, args=(second, "sha256:b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors
+    entries = {entry.fingerprint: entry for entry in AuthorizedClients(path).snapshot()}
+    assert {entry.label_ordinal for entry in entries.values()} == {1, 2}
+    assert sorted(entry.display_label for entry in entries.values()) == [
+        "iPhone",
+        "iPhone (2)",
+    ]
 
 
 def test_find_by_label(tmp_path: Path) -> None:

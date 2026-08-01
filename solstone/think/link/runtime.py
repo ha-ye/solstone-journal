@@ -12,10 +12,12 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from .auth import AuthorizedClients
 from .interface_watcher import (
     InterfaceWatcher,
     set_interface_watcher,
 )
+from .paths import authorized_clients_path
 
 logger = logging.getLogger("link.runtime")
 
@@ -32,6 +34,7 @@ class RuntimeState:
 _RUNTIME_LOCK = threading.Lock()
 _runtime: RuntimeState | None = None
 _atexit_registered = False
+_label_ordinal_backfill_ran = False
 
 
 def get_runtime_state() -> RuntimeState | None:
@@ -58,11 +61,28 @@ def _thread_main(runtime: RuntimeState) -> None:
         loop.close()
 
 
+def _backfill_label_ordinals_once() -> None:
+    global _label_ordinal_backfill_ran
+
+    if _label_ordinal_backfill_ran:
+        return
+    _label_ordinal_backfill_ran = True
+    try:
+        authorized = AuthorizedClients(authorized_clients_path())
+        repaired = authorized.backfill_label_ordinals()
+    except Exception:
+        logger.exception("link runtime label ordinal backfill failed")
+        return
+    if repaired:
+        logger.info("link runtime repaired duplicate label ordinals")
+
+
 def start_link_runtime(app: Any) -> None:
     """Start the interface watcher in the Convey process."""
     global _runtime, _atexit_registered
 
     with _RUNTIME_LOCK:
+        _backfill_label_ordinals_once()
         if _runtime is None:
             runtime = RuntimeState()
             thread = threading.Thread(
@@ -99,11 +119,12 @@ def stop_link_runtime(app: Any) -> None:
 
 
 def stop_all_link_runtime() -> None:
-    global _runtime
+    global _label_ordinal_backfill_ran, _runtime
 
     with _RUNTIME_LOCK:
         runtime = _runtime
         _runtime = None
+        _label_ordinal_backfill_ran = False
     if runtime is None:
         return
     for app in list(runtime.apps):

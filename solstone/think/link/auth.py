@@ -6,7 +6,8 @@
 The spl-protocol-fixed core shape is unchanged: `fingerprint`, `device_label`,
 `paired_at`, `instance_id`, and `role`. `device_label` is the home-assigned,
 renameable label for the paired client. Solstone also stores local-only
-`last_seen_at`, `network`, `client_label`, and browser-uplink fields for UX:
+`last_seen_at`, `network`, `client_label`, `label_ordinal`, and
+browser-uplink fields for UX:
 
     {
       "fingerprint": "sha256:<hex>",
@@ -17,6 +18,8 @@ renameable label for the paired client. Solstone also stores local-only
       "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
       "network": "network",                    // optional; local display label source
       "client_label": "jer-laptop",            // optional; client self-name/hostname
+      "label_ordinal": 1,                       // optional; local display
+                                                // ordinal, 1 = no suffix
       "kind": "cert",                          // cert | browser
       "pubkey_spki": "<hex>",                  // browser only
       "observer_handle": "<handle>"            // browser only
@@ -33,8 +36,8 @@ file write. Convey's pair and unpair routes own the pairing writer surface; the
 secure listener updates `last_seen_at` and uses this ledger for TLS verification
 and per-request authorization.
 
-`last_seen_at`, `network`, `client_label`, `kind`, `pubkey_spki`, and
-`observer_handle` are local-only — never transmitted externally.
+`last_seen_at`, `network`, `client_label`, `label_ordinal`, `kind`,
+`pubkey_spki`, and `observer_handle` are local-only — never transmitted externally.
 """
 
 from __future__ import annotations
@@ -64,9 +67,21 @@ class ClientEntry:
     last_seen_at: str | None = None
     network: str | None = None
     client_label: str = ""
+    label_ordinal: int = 1
     kind: str = "cert"
     pubkey_spki: str | None = None
     observer_handle: str | None = None
+
+    @property
+    def base_label(self) -> str:
+        return self.device_label or self.client_label
+
+    @property
+    def display_label(self) -> str:
+        base = self.base_label
+        if self.label_ordinal == 1 or not base:
+            return base
+        return f"{base} ({self.label_ordinal})"
 
 
 class AuthorizedClients:
@@ -115,24 +130,35 @@ class AuthorizedClients:
         paired_at: str | None = None,
         network: str | None = None,
         client_label: str = "",
-    ) -> None:
-        paired_at = paired_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        entry = ClientEntry(
-            fingerprint=fingerprint,
-            device_label=device_label,
-            paired_at=paired_at,
-            instance_id=instance_id,
-            role=role,
-            last_seen_at=None,
-            network=network,
-            client_label=client_label,
-        )
+    ) -> ClientEntry:
         with self._lock:
             with hold_lock(self._path):
                 current = self._load_file_locked()
+                paired_at = paired_at or dt.datetime.now(dt.UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                entry = ClientEntry(
+                    fingerprint=fingerprint,
+                    device_label=device_label,
+                    paired_at=paired_at,
+                    instance_id=instance_id,
+                    role=role,
+                    last_seen_at=None,
+                    network=network,
+                    client_label=client_label,
+                )
+                entry = replace(
+                    entry,
+                    label_ordinal=self._allocate_label_ordinal_locked(
+                        current,
+                        entry.base_label,
+                        fingerprint,
+                    ),
+                )
                 current[fingerprint] = entry
                 self._write(current)
                 self._entries = current
+                return entry
 
     def add_browser(
         self,
@@ -145,27 +171,37 @@ class AuthorizedClients:
         paired_at: str | None = None,
         network: str | None = None,
     ) -> ClientEntry:
-        paired_at = paired_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        entry = ClientEntry(
-            fingerprint=fingerprint,
-            device_label=device_label,
-            paired_at=paired_at,
-            instance_id=instance_id,
-            role="",
-            last_seen_at=None,
-            network=network,
-            client_label="",
-            kind="browser",
-            pubkey_spki=pubkey_spki,
-            observer_handle=observer_handle,
-        )
         with self._lock:
             with hold_lock(self._path):
                 current = self._load_file_locked()
+                paired_at = paired_at or dt.datetime.now(dt.UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                entry = ClientEntry(
+                    fingerprint=fingerprint,
+                    device_label=device_label,
+                    paired_at=paired_at,
+                    instance_id=instance_id,
+                    role="",
+                    last_seen_at=None,
+                    network=network,
+                    client_label="",
+                    kind="browser",
+                    pubkey_spki=pubkey_spki,
+                    observer_handle=observer_handle,
+                )
+                entry = replace(
+                    entry,
+                    label_ordinal=self._allocate_label_ordinal_locked(
+                        current,
+                        entry.base_label,
+                        fingerprint,
+                    ),
+                )
                 current[fingerprint] = entry
                 self._write(current)
                 self._entries = current
-        return entry
+                return entry
 
     def attach_observer_handle(self, fingerprint: str, observer_handle: str) -> bool:
         normalized = observer_handle.strip()
@@ -209,23 +245,34 @@ class AuthorizedClients:
                 self._entries = current
                 return True
 
-    def update_label(self, fingerprint: str, label: str) -> bool:
-        """Update device_label for a paired device. Returns False if not paired."""
+    def update_label(self, fingerprint: str, label: str) -> ClientEntry | None:
+        """Update device_label for a paired device. Returns None if not paired."""
         normalized = label.strip()
         if not normalized:
             raise ValueError("label must not be empty")
-        if len(normalized) > MAX_DEVICE_LABEL_LEN:
-            raise ValueError("label too long")
         with self._lock:
             with hold_lock(self._path):
                 current = self._load_file_locked()
                 existing = current.get(fingerprint)
                 if existing is None:
-                    return False
-                current[fingerprint] = replace(existing, device_label=normalized)
+                    return None
+                if normalized == existing.display_label:
+                    normalized = existing.base_label
+                if len(normalized) > MAX_DEVICE_LABEL_LEN:
+                    raise ValueError("label too long")
+                updated = replace(existing, device_label=normalized)
+                updated = replace(
+                    updated,
+                    label_ordinal=self._allocate_label_ordinal_locked(
+                        current,
+                        updated.base_label,
+                        fingerprint,
+                    ),
+                )
+                current[fingerprint] = updated
                 self._write(current)
                 self._entries = current
-                return True
+                return updated
 
     def snapshot(self) -> list[ClientEntry]:
         self.reload_if_stale()
@@ -253,13 +300,56 @@ class AuthorizedClients:
         except FileNotFoundError:
             self._mtime_ns = 0
 
+    def backfill_label_ordinals(self) -> bool:
+        """Repair duplicate label ordinals in authorized_clients.json."""
+        with self._lock:
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                groups: dict[str, list[ClientEntry]] = {}
+                for entry in current.values():
+                    base = entry.base_label
+                    if not base:
+                        continue
+                    groups.setdefault(base, []).append(entry)
+
+                changed = False
+                for entries in groups.values():
+                    seen: set[int] = set()
+                    needs_repair = False
+                    for entry in entries:
+                        if entry.label_ordinal in seen:
+                            needs_repair = True
+                            break
+                        seen.add(entry.label_ordinal)
+                    if not needs_repair:
+                        continue
+
+                    for ordinal, entry in enumerate(
+                        sorted(entries, key=lambda e: (e.paired_at, e.fingerprint)),
+                        start=1,
+                    ):
+                        if entry.label_ordinal == ordinal:
+                            continue
+                        current[entry.fingerprint] = replace(
+                            entry,
+                            label_ordinal=ordinal,
+                        )
+                        changed = True
+
+                if not changed:
+                    return False
+                self._write(current)
+                self._entries = current
+                return True
+
     def _load_file_locked(self) -> dict[str, ClientEntry]:
         if not self._path.exists():
             return {}
         try:
             raw = json.loads(self._path.read_text("utf-8"))
         except (json.JSONDecodeError, OSError):
-            # Unreadable authorized_clients.json means no clients are authorized. There is no last-good authorization cache.
+            # Unreadable authorized_clients.json means no clients are authorized.
+            # There is no last-good authorization cache.
             return {}
         out: dict[str, ClientEntry] = {}
         if isinstance(raw, list):
@@ -275,6 +365,14 @@ class AuthorizedClients:
                 kind = item.get("kind")
                 pubkey_spki = item.get("pubkey_spki")
                 observer_handle = item.get("observer_handle")
+                raw_label_ordinal = item.get("label_ordinal", 1)
+                label_ordinal = (
+                    raw_label_ordinal
+                    if isinstance(raw_label_ordinal, int)
+                    and not isinstance(raw_label_ordinal, bool)
+                    and raw_label_ordinal > 0
+                    else 1
+                )
                 out[fp] = ClientEntry(
                     fingerprint=fp,
                     device_label=str(item.get("device_label", "")),
@@ -284,6 +382,7 @@ class AuthorizedClients:
                     last_seen_at=last_seen if isinstance(last_seen, str) else None,
                     network=network if isinstance(network, str) else None,
                     client_label=client_label if isinstance(client_label, str) else "",
+                    label_ordinal=label_ordinal,
                     kind=kind if isinstance(kind, str) and kind else "cert",
                     pubkey_spki=pubkey_spki if isinstance(pubkey_spki, str) else None,
                     observer_handle=(
@@ -291,6 +390,24 @@ class AuthorizedClients:
                     ),
                 )
         return out
+
+    def _allocate_label_ordinal_locked(
+        self,
+        entries: dict[str, ClientEntry],
+        base_label: str,
+        fingerprint: str,
+    ) -> int:
+        if not base_label:
+            return 1
+        held = {
+            entry.label_ordinal
+            for entry in entries.values()
+            if entry.fingerprint != fingerprint and entry.base_label == base_label
+        }
+        ordinal = 1
+        while ordinal in held:
+            ordinal += 1
+        return ordinal
 
     def _write(self, entries: dict[str, ClientEntry]) -> None:
         payload = [
@@ -304,6 +421,7 @@ class AuthorizedClients:
                 **({"last_seen_at": e.last_seen_at} if e.last_seen_at else {}),
                 **({"network": e.network} if e.network else {}),
                 **({"client_label": e.client_label} if e.client_label else {}),
+                **({"label_ordinal": e.label_ordinal} if e.label_ordinal != 1 else {}),
                 **({"pubkey_spki": e.pubkey_spki} if e.pubkey_spki else {}),
                 **({"observer_handle": e.observer_handle} if e.observer_handle else {}),
             }
