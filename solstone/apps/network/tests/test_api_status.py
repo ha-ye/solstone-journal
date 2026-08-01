@@ -12,9 +12,6 @@ import solstone.convey.bridge as convey_bridge
 from solstone.apps.network import copy as link_copy
 from solstone.apps.network import routes as link_routes
 from solstone.apps.network.tests.conftest import _StubWatcher
-from solstone.think.link.local_endpoints import LocalEndpoint
-from solstone.think.link.paths import LinkState
-from solstone.think.link.window import read_posture
 from solstone.think.link.link_health import (
     REASON_HOME_MISSING_MOBILE,
     REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
@@ -22,6 +19,9 @@ from solstone.think.link.link_health import (
     REASON_RELAY_TUNNEL_UNREACHABLE,
     REASON_SERVICE_TOKEN_REJECTED,
 )
+from solstone.think.link.local_endpoints import LocalEndpoint
+from solstone.think.link.paths import LinkState
+from solstone.think.link.window import read_posture
 
 NOW = 1_700_000_000_000
 STATUS_FIELD_SET = {

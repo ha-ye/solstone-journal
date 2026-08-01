@@ -85,6 +85,7 @@ from solstone.think.link.ca import (
     sign_csr,
 )
 from solstone.think.link.interface_watcher import get_interface_watcher
+from solstone.think.link.link_health import OFFLINE_TUNNEL_REASONS
 from solstone.think.link.local_endpoints import (
     LocalEndpoint,
     LocalEndpointsResponse,
@@ -92,6 +93,7 @@ from solstone.think.link.local_endpoints import (
     response_to_dict,
 )
 from solstone.think.link.nonces import Nonce, NonceStore
+from solstone.think.link.pair_window import start_pair_window
 from solstone.think.link.paths import (
     DEFAULT_RELAY_URL,
     LinkState,
@@ -111,8 +113,6 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
-from solstone.think.link.link_health import OFFLINE_TUNNEL_REASONS
-from solstone.think.link.pair_window import start_pair_window
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
