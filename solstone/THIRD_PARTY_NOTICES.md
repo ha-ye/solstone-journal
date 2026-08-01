@@ -52,7 +52,7 @@ Attribution: parakeet.cpp project (mudler).
 
 Source:
 
-- Release binaries: https://github.com/mudler/parakeet.cpp/releases/tag/v0.4.0
+- Release binaries: https://github.com/mudler/parakeet.cpp/releases/tag/v0.5.0
 - Project: https://github.com/mudler/parakeet.cpp
 
 License notice: MIT.

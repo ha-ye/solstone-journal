@@ -51,20 +51,20 @@ PARAKEET_PROVIDER_NAME = "parakeet"
 
 PARAKEET_SERVER_PINS: dict[tuple[str, str], dict[str, str]] = {
     ("x86_64-unknown-linux-gnu", "vulkan"): {
-        "filename": "parakeet-v0.4.0-bin-linux-vulkan-x64.tar.gz",
-        "sha256": "12ee636ccb4a8b3c8f316f1f40c63f5aa4da178bf11563795b39385480ede87e",
+        "filename": "parakeet-v0.5.0-bin-linux-vulkan-x64.tar.gz",
+        "sha256": "36c8d4b93594ec18928c9c76b02e04b2d738e859deda8b5e3944bb34fc0646eb",
     },
     ("x86_64-unknown-linux-gnu", "cpu"): {
-        "filename": "parakeet-v0.4.0-bin-linux-cpu-x64.tar.gz",
-        "sha256": "0846509eeb64fcb40e0ad28cd16b5bec5387e4799e08c85fb600b428bb306240",
+        "filename": "parakeet-v0.5.0-bin-linux-cpu-x64.tar.gz",
+        "sha256": "636a9fc48ac023096037790f9b77d7e5043b200dd6399ec0438bd648c35d79b9",
     },
     ("aarch64-unknown-linux-gnu", "vulkan"): {
-        "filename": "parakeet-v0.4.0-bin-linux-vulkan-arm64.tar.gz",
-        "sha256": "b1e9251c9d247dffffc5e2db44bb993fb5ec40faab208ec83f7b89b8cc24efd0",
+        "filename": "parakeet-v0.5.0-bin-linux-vulkan-arm64.tar.gz",
+        "sha256": "b95483070eb87ed144b9f39826a69fb67ea516c68aacc4fcf13a121a746ad7e4",
     },
     ("aarch64-unknown-linux-gnu", "cpu"): {
-        "filename": "parakeet-v0.4.0-bin-linux-cpu-arm64.tar.gz",
-        "sha256": "6634487a4cdbd3185e7a127aa4f22fbc49ec56421f7bfb14f450400260597773",
+        "filename": "parakeet-v0.5.0-bin-linux-cpu-arm64.tar.gz",
+        "sha256": "a7c9064c64b84f6b041252d5d2334d4a47693636e9c7c6ab2c535fcef11cf88b",
     },
 }
 

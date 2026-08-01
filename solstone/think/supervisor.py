@@ -3197,7 +3197,7 @@ def _start_parakeet_bootstrap_if_needed(
 def _build_parakeet_cmd(
     binary_path: Path, gguf_path: Path, port: int, threads: int
 ) -> list[str]:
-    # Re-verify exact parakeet.cpp v0.4.0 CLI flag spellings at live bring-up.
+    # Re-verify exact parakeet.cpp v0.5.0 CLI flag spellings at live bring-up.
     cmd = [
         str(binary_path),
         "--model",

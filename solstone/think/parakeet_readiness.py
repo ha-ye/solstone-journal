@@ -32,7 +32,7 @@ MAC_MODEL_FILES = (
     "JointDecision.mlmodelc/weights/weight.bin",
     "Preprocessor.mlmodelc/weights/weight.bin",
 )
-PARAKEET_CPP_RELEASE_TAG = "v0.4.0"
+PARAKEET_CPP_RELEASE_TAG = "v0.5.0"
 PARAKEET_CPP_BINARY_NAME = "parakeet-server"
 PARAKEET_CPP_BINARY_BACKENDS = ("cpu", "vulkan")
 PARAKEET_CPP_MODEL_REPO = "mudler/parakeet-cpp-gguf"
