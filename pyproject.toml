@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solstone"
-version = "1.0.20"
+version = "1.0.21"
 description = "Navigate Life Intelligently"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -43,10 +43,10 @@ dependencies = [
     "requests",
     "psutil",
     "userpath>=1.9.2,<2",
-    "solstone-core==1.0.20; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "solstone-core==1.0.20; sys_platform == 'linux' and platform_machine == 'aarch64'",
-    "solstone-core==1.0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "solstone-core-unsupported-platform==1.0.20; (sys_platform != 'linux' and sys_platform != 'darwin') or (sys_platform == 'linux' and platform_machine != 'x86_64' and platform_machine != 'aarch64') or (sys_platform == 'darwin' and platform_machine != 'arm64')",
+    "solstone-core==1.0.21; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "solstone-core==1.0.21; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "solstone-core==1.0.21; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "solstone-core-unsupported-platform==1.0.21; (sys_platform != 'linux' and sys_platform != 'darwin') or (sys_platform == 'linux' and platform_machine != 'x86_64' and platform_machine != 'aarch64') or (sys_platform == 'darwin' and platform_machine != 'arm64')",
 ]
 
 [project.optional-dependencies]
@@ -214,8 +214,8 @@ build_py = "build_hooks.BuildPyWithoutTests"
 # published, so end-user wheel METADATA still carries the real pins.
 override-dependencies = [
     "solstone-journal-host==0.7.0; python_version < '3.12'",
-    "solstone-core-unsupported-platform==1.0.20; python_version < '3.12'",
-    "solstone-core-speakers-analyze==1.0.20; python_version < '3.12'",
+    "solstone-core-unsupported-platform==1.0.21; python_version < '3.12'",
+    "solstone-core-speakers-analyze==1.0.21; python_version < '3.12'",
 ]
 
 [tool.uv.workspace]

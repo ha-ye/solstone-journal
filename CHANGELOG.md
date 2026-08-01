@@ -4,10 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [1.0.21] - 2026-08-01
+
+### Changed
+
+- adding a device by hand is gone. the page in your journal that lists your devices no longer offers it, and the request behind it now refuses. pairing is how a device joins your journal.
+- `sol export --to <url> --key <key>` is retired. it refuses now and points at the paired form instead. `sol export --to <label>`, sending to a journal you have already paired with, is unchanged and works as it always has.
+- the part of your journal that carries the private network is now native Rust in place of Python. your paired devices reach your journal exactly as before, over the same private network, with nothing to re-pair and nothing to set up. it runs as a single program that starts and stops with your journal, with no Python in between.
+- two devices with the same name are told apart now. a second device calling itself "iPhone" is listed as "iPhone (2)" rather than reading the same as the first. on a journal that already holds two devices sharing a name, one of them takes its number on its own the first time the journal starts after this upgrade, so a device whose name reads differently afterwards is that, not a fault. the name you give a device is the name that shows, and the name a device proposed for itself at pairing is noted separately.
 
 ### Fixed
 
+- unpairing a device by name could take away the wrong device's access. when two of your devices shared a name, unpairing by that name acted on whichever one it found first. separately, a device that was reinstalled and paired again would revoke the older entry with the same name on its own, whether or not it was the same device. unpairing by name now only proceeds when the name points at exactly one device, and when it does not, it lists each candidate with the date it was paired and the exact command for the one you mean. pairing again revokes nothing, and an entry you no longer want stays until you remove it.
+- speaker analysis works on your audio again. on the last two releases every clip was turned away at that step as invalid, so nothing was analyzed for who was speaking.
+- a local model that has finished starting is left running. a model server that had loaded and was answering could be stopped about a minute later, because the check for whether there was room to start one was re-run against memory the model itself was now holding. it would start again and be stopped again, so a day's work could never finish and a backlog could sit still. that check now only decides whether to start a model, never whether to stop one that is already serving.
 - an import you open while it is still working now says it is running. the import history listed it correctly, but opening that same import showed it as failed until it finished — on every file type, and most noticeable on longer imports. the page now also keeps up on its own while the import runs, instead of waiting for a reload. reported and fixed by ha-ye.
 
 ## [1.0.20] - 2026-07-30
