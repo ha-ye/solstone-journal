@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Export journal data to a remote solstone instance.
+"""Export journal data to a paired solstone peer.
 
 Usage:
-    journal export --to URL --key KEY [--only TYPE] [--dry-run] [--day YYYYMMDD]
     journal export --to LABEL [--only TYPE] [--dry-run] [--day YYYYMMDD]
 """
 
@@ -29,7 +28,6 @@ from solstone.observe.pl_http import PlHttpSession
 from solstone.observe.transfer import (
     RETRY_BACKOFF,
     _build_segment_manifest,
-    _normalize_url,
     _parse_day_spec,
 )
 from solstone.think.entities.journal import load_all_journal_entities
@@ -57,6 +55,10 @@ _IMPORT_ID_RE = re.compile(r"^\d{8}_\d{6}$")
 _NEVER_TRANSFER_PATHS = frozenset({"convey.password_hash", "convey.secret"})
 EXPORT_AREAS = ("segments", "imports", "entities", "facets", "config")
 FULL_EXPORT_SET = frozenset(EXPORT_AREAS)
+URL_EXPORT_RETIRED_MESSAGE = (
+    "Sending to a URL with a key is retired. Use '--to <label>' to send to a "
+    "paired peer."
+)
 
 
 @dataclass
@@ -82,14 +84,9 @@ def _resolve_destination(
     key: str | None,
 ) -> tuple[str, str | None, PeerInfo | None]:
     if _is_url_destination(to):
-        if key is None:
-            parser.error("'--to <URL>' requires '--key <KEY>'")
-        return ("dl", _normalize_url(to), None)
+        parser.error(URL_EXPORT_RETIRED_MESSAGE)
     if key is not None:
-        parser.error(
-            "'--key' is only valid with '--to <URL>'; "
-            "use '--to <label>' for pl peer transfers"
-        )
+        parser.error("'--key' is retired; use '--to <label>' without '--key'")
     try:
         return ("pl", None, resolve_peer(to))
     except PeerLookupError as exc:

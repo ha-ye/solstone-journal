@@ -489,20 +489,13 @@ def test_config_always_staged(export_integration_env):
 
 
 def test_error_resilience(monkeypatch, capsys):
-    class _DummySession:
-        def __init__(self):
-            self.headers = {}
-
-        def close(self):
-            pass
-
     calls: list[str] = []
 
     monkeypatch.setattr(
         "solstone.observe.export.setup_cli",
         lambda parser: Namespace(
-            to="https://localhost:5000",
-            key="test-key-123456",
+            to="host-a",
+            key=None,
             only=None,
             dry_run=False,
             day=None,
@@ -514,7 +507,27 @@ def test_error_resilience(monkeypatch, capsys):
     monkeypatch.setattr(
         "solstone.observe.export._query_manifest", lambda session, base_url, key: {}
     )
-    monkeypatch.setattr("solstone.observe.export.requests.Session", _DummySession)
+    monkeypatch.setattr(
+        "solstone.observe.export.resolve_peer",
+        lambda label: Namespace(dir=Path("peer-dir"), instance_id="test-key-123456"),
+    )
+    monkeypatch.setattr(
+        "solstone.observe.export.load_client_identity",
+        lambda _peer_dir: object(),
+    )
+    monkeypatch.setattr("solstone.observe.export.relay_url", lambda: "https://relay")
+
+    class _DummyTunnelClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr("solstone.observe.export.TunnelClient", _DummyTunnelClient)
     monkeypatch.setattr(
         "solstone.observe.export.export_segments",
         lambda base_url, key, days, dry_run, session=None: (

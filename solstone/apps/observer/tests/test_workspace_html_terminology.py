@@ -72,10 +72,6 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
     expected_phrases = (
         'aria-label="devices"',
         '<h2 class="section-title">devices</h2>',
-        'aria-label="set up a device"',
-        '<h2 class="section-title">set up a device</h2>',
-        '<label for="observerName">device name</label>',
-        '<button type="submit">set up a device</button>',
         "loading devices…",
         'aria-label="device key"',
         '<h3 id="keyModalTitle">sol on <span id="modalObserverName"></span></h3>',
@@ -93,7 +89,6 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
         'Remove "${name}"? sol on that device won\'t be able to add to your journal.',
         "i couldn't remove that device — your journal may not be reachable.",
         "i couldn't retrieve the key for that device — your journal may not be reachable.",
-        "i couldn't set up that device — your journal may not be reachable.",
     )
     unescaped = text.replace("\\'", "'")
     for phrase in expected_phrases:

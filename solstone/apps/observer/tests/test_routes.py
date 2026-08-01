@@ -99,11 +99,7 @@ def _day_dir(env, day: str = "20250103"):
 
 
 def _create_observer(env, name: str) -> str:
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": name},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer(name)
     assert resp.status_code == 200
     return resp.get_json()["key"]
 
@@ -655,15 +651,11 @@ def test_api_list_empty(observer_env):
     }
 
 
-def test_api_create_observer(observer_env):
-    """Test creating a new observer."""
+def test_register_bound_observer_helper_returns_descriptor(observer_env):
+    """Test creating a registered observer fixture."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-laptop"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test-laptop")
 
     assert resp.status_code == 200
     data = resp.get_json()
@@ -678,26 +670,21 @@ def test_api_create_observer(observer_env):
     assert data["protocol_version"] == OBSERVER_PROTOCOL_VERSION
 
 
-def test_api_create_requires_name(observer_env):
-    """Test that creating a observer requires a name."""
+def test_api_create_refuses_hand_mint(observer_env):
     env = observer_env()
 
-    # Missing name
     resp = env.client.post(
         "/app/observer/api/create",
-        json={},
+        json={"name": "test-laptop"},
         content_type="application/json",
     )
-    assert resp.status_code == 400
-    assert "Name is required" in resp.get_json()["detail"]
-
-    # Empty name
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "   "},
-        content_type="application/json",
+    body = resp.get_json()
+    assert resp.status_code == 410
+    assert body["reason_code"] == "operation_no_longer_available"
+    assert body["detail"] == (
+        "Observer records are no longer created by hand. "
+        "A device registers itself when you pair it."
     )
-    assert resp.status_code == 400
 
 
 def test_api_list_shows_created_observer(observer_env):
@@ -705,11 +692,7 @@ def test_api_list_shows_created_observer(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "my-observer"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("my-observer")
     assert resp.status_code == 200
     key_prefix = resp.get_json()["prefix"]
 
@@ -734,11 +717,7 @@ def test_api_list_shows_created_observer(observer_env):
 
 def test_api_list_includes_last_chat_request_at(observer_env):
     env = observer_env()
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "my-observer"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("my-observer")
     assert resp.status_code == 200
     key_prefix = resp.get_json()["prefix"]
     handle = convey_bridge.register_sse_subscriber(key_prefix)
@@ -761,11 +740,7 @@ def test_api_delete_observer(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "to-revoke"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("to-revoke")
     key_prefix = resp.get_json()["prefix"]
 
     # Revoke it
@@ -788,11 +763,7 @@ def test_api_delete_observer(observer_env):
 
 def test_api_delete_dl_observer_does_not_touch_authorized_clients(observer_env):
     env = observer_env()
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "dl-delete"},
-        content_type="application/json",
-    )
+    resp = env.register_unbound_observer("dl-delete")
     key_prefix = resp.get_json()["prefix"]
     fingerprint = "sha256:" + ("e" * 64)
     AuthorizedClients(authorized_clients_path()).add(
@@ -1091,11 +1062,7 @@ def test_delete_source_requires_auth(observer_env):
 def test_delete_source_hard_pin_rejects_other_stream(observer_env):
     """A valid observer key can only delete allowlisted source streams."""
     env = observer_env()
-    create_resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
+    create_resp = env.register_bound_observer("test-observer")
     key = create_resp.get_json()["key"]
     headers = {"Authorization": f"Bearer {key}"}
 
@@ -1150,11 +1117,7 @@ def test_delete_source_hard_pin_rejects_other_stream(observer_env):
 
 def test_delete_source_location_happy_path(observer_env):
     env = observer_env()
-    create_resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
+    create_resp = env.register_bound_observer("test-observer")
     key = create_resp.get_json()["key"]
     seg_dir = _plant_location_segment(env)
 
@@ -1177,11 +1140,7 @@ def test_ingest_missing_segment(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Upload without segment
@@ -1199,11 +1158,7 @@ def test_ingest_missing_day(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Upload without day
@@ -1221,11 +1176,7 @@ def test_ingest_invalid_segment_format(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Invalid segment format
@@ -1243,11 +1194,7 @@ def test_ingest_invalid_day_format(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Invalid day format
@@ -1265,11 +1212,7 @@ def test_ingest_no_files(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Upload without files
@@ -1287,11 +1230,7 @@ def test_ingest_success(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test-observer")
     key = resp.get_json()["key"]
 
     # Upload a file
@@ -1315,6 +1254,29 @@ def test_ingest_success(observer_env):
     expected_file = _day_dir(env) / "test-observer" / "120000_300" / "test_audio.flac"
     assert expected_file.exists()
     assert expected_file.read_bytes() == test_data
+
+
+def test_ingest_unbound_record_authenticates_without_pl_identity(observer_env):
+    env = observer_env()
+    resp = env.register_unbound_observer("unbound-ingest")
+    assert resp.status_code == 200
+    key = resp.get_json()["key"]
+
+    test_data = b"unbound audio content"
+    resp = env.unbound_client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(test_data), "test_audio.flac"),
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["files"] == ["test_audio.flac"]
 
 
 def test_ingest_mixed_segment_stores_all_sources(observer_env):
@@ -1366,11 +1328,7 @@ def test_ingest_reuses_startup_contract_bundle(observer_env, monkeypatch):
 
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "contract-cache-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("contract-cache-test")
     key = resp.get_json()["key"]
 
     for index in range(2):
@@ -1401,11 +1359,7 @@ def test_ingest_updates_stats(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "stats-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("stats-test")
     key = resp.get_json()["key"]
 
     # Upload a file
@@ -1546,11 +1500,7 @@ def test_ingest_event_relay(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "event-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("event-test")
     key = resp.get_json()["key"]
 
     # Send an event
@@ -1585,11 +1535,7 @@ def test_ingest_event_missing_tract(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test")
     key = resp.get_json()["key"]
 
     # Missing tract
@@ -1608,11 +1554,7 @@ def test_ingest_revoked_key(observer_env):
     env = observer_env()
 
     # Create and revoke a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "revoked-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("revoked-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -1638,11 +1580,7 @@ def test_ingest_revoked_key(observer_env):
 def test_keyless_ingest_bearer_rejects_revoked_and_disabled_keys(observer_env):
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "keyless-revoked-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("keyless-revoked-test")
     revoked_data = resp.get_json()
     revoked_key = revoked_data["key"]
 
@@ -1663,11 +1601,7 @@ def test_keyless_ingest_bearer_rejects_revoked_and_disabled_keys(observer_env):
     assert body["reason_code"] == "pl_revoked"
     assert body["detail"] == "Observer revoked"
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "keyless-disabled-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("keyless-disabled-test")
     disabled_data = resp.get_json()
     disabled_key = disabled_data["key"]
     assert save_observer(
@@ -1707,11 +1641,7 @@ def test_ingest_event_revoked_key(observer_env):
     env = observer_env()
 
     # Create and revoke a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "revoked-event-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("revoked-event-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -1803,11 +1733,7 @@ def test_observer_health_missing_and_invalid_identity(observer_env):
 
 def test_observer_health_revoked_key(observer_env):
     env = observer_env()
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "revoked-health-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("revoked-health-test")
     data = resp.get_json()
     key = data["key"]
 
@@ -1829,11 +1755,7 @@ def test_api_get_key(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "key-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("key-test")
     create_data = resp.get_json()
     key = create_data["key"]
     key_prefix = create_data["prefix"]
@@ -1856,11 +1778,7 @@ def test_mint_responses_protocol_version_single_source_and_keyless_unconditional
     monkeypatch.setattr("solstone.observe.protocol.OBSERVER_PROTOCOL_VERSION", 99)
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "mint-protocol-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("mint-protocol-test")
     assert resp.status_code == 200
     create_data = resp.get_json()
     assert create_data["protocol_version"] == 99
@@ -1886,11 +1804,7 @@ def test_api_get_key_revoked(observer_env):
     env = observer_env()
 
     # Create then revoke
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "revoke-key-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("revoke-key-test")
     create_data = resp.get_json()
     key_prefix = create_data["prefix"]
 
@@ -1908,11 +1822,7 @@ def test_api_get_key_audit_log(observer_env):
 
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "audit-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("audit-test")
     create_data = resp.get_json()
     key_prefix = create_data["prefix"]
 
@@ -1962,11 +1872,7 @@ def test_ingest_collision_adjusts_segment(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "collision-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("collision-test")
     key = resp.get_json()["key"]
 
     # Create a conflicting segment directory under the stream
@@ -2011,11 +1917,7 @@ def test_ingest_no_collision_preserves_segment(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "no-collision-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("no-collision-test")
     key = resp.get_json()["key"]
 
     # Upload without any conflicting segment directory
@@ -2045,11 +1947,7 @@ def test_ingest_stats_use_adjusted_segment(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "stats-adjust-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("stats-adjust-test")
     key = resp.get_json()["key"]
 
     # Spec §5.2.6: the ladder fires on conflicting content at the requested
@@ -2094,11 +1992,7 @@ def test_ingest_creates_sync_history(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "history-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("history-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -2149,11 +2043,7 @@ def test_ingest_history_with_collision(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "collision-history-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("collision-history-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -2208,11 +2098,7 @@ def test_segments_endpoint_empty(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-empty-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-empty-test")
     key = resp.get_json()["key"]
 
     # Query segments - should be empty
@@ -2242,11 +2128,7 @@ def test_segments_endpoint_invalid_day(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-day-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-day-test")
     key = resp.get_json()["key"]
 
     resp = env.client.get(
@@ -2262,11 +2144,7 @@ def test_segments_endpoint_lists_uploads(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-list-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-list-test")
     key = resp.get_json()["key"]
 
     # Upload a file
@@ -2312,11 +2190,7 @@ def test_segments_endpoint_omits_submitted_name_when_name_unchanged(observer_env
     """Test segments endpoint omits submitted_name when no filename rewrite occurred."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-no-rewrite-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-no-rewrite-test")
     key = resp.get_json()["key"]
 
     test_data = b"test audio content"
@@ -2345,11 +2219,7 @@ def test_segments_endpoint_v2_empty(observer_env):
     """Test v2 segments endpoint returns collection envelope for no uploads."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-v2-empty-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-v2-empty-test")
     key = resp.get_json()["key"]
 
     resp = env.client.get(
@@ -2372,11 +2242,7 @@ def test_segments_endpoint_v2_populated(observer_env):
     """Test v2 segments endpoint envelopes uploaded segments."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-v2-list-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-v2-list-test")
     key = resp.get_json()["key"]
 
     test_data = b"test audio content"
@@ -2414,11 +2280,7 @@ def test_protocol_version_single_source(observer_env, monkeypatch):
     monkeypatch.setattr("solstone.observe.protocol.OBSERVER_PROTOCOL_VERSION", 99)
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-patched-protocol-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-patched-protocol-test")
     key = resp.get_json()["key"]
 
     resp = env.client.get(
@@ -2479,11 +2341,7 @@ def test_segments_endpoint_shows_collision(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-collision-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-collision-test")
     key = resp.get_json()["key"]
 
     # Spec §5.2.6: the ladder fires on conflicting content at the requested
@@ -2531,11 +2389,7 @@ def test_segments_endpoint_missing_file(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-missing-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-missing-test")
     key = resp.get_json()["key"]
 
     # Upload a file
@@ -2902,11 +2756,7 @@ def test_segments_endpoint_revoked_key(observer_env):
     env = observer_env()
 
     # Create and revoke a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-revoked-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-revoked-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -2931,11 +2781,7 @@ def test_segments_endpoint_deduplicates_by_sha256(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-dedup-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("segments-dedup-test")
     key = resp.get_json()["key"]
 
     # Upload a file
@@ -2985,11 +2831,7 @@ def test_segments_endpoint_shows_observed_status(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "observed-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("observed-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -3038,11 +2880,7 @@ def test_api_list_includes_segments_observed_stat(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "stats-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("stats-test")
     data = resp.get_json()
     key_prefix = data["prefix"]
 
@@ -3074,11 +2912,7 @@ def test_ingest_duplicate_segment_returns_duplicate_status(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "duplicate-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("duplicate-test")
     key = resp.get_json()["key"]
 
     # First upload
@@ -3216,11 +3050,7 @@ def test_ingest_duplicate_does_not_emit_event(observer_env, monkeypatch):
     monkeypatch.setattr(routes_module, "emit", emit_mock)
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "no-event-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("no-event-test")
     key = resp.get_json()["key"]
 
     test_data = b"test audio for event test"
@@ -3258,11 +3088,7 @@ def test_ingest_duplicate_increments_duplicates_rejected_stat(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "dup-stat-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("dup-stat-test")
     key = resp.get_json()["key"]
 
     test_data = b"test audio for stat test"
@@ -3306,11 +3132,7 @@ def test_ingest_conflicting_content_uses_deterministic_ladder(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "partial-dup-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("partial-dup-test")
     key = resp.get_json()["key"]
 
     audio_data = b"test audio content"
@@ -3371,11 +3193,7 @@ def test_ingest_same_segment_addition_records_written_file(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "partial-log-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("partial-log-test")
     data = resp.get_json()
     key = data["key"]
     key_prefix = data["prefix"]
@@ -4578,11 +4396,7 @@ def test_ingest_returns_collision_status_when_adjusted(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "collision-status-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("collision-status-test")
     key = resp.get_json()["key"]
 
     # Spec §5.2.6: the ladder fires on conflicting content at the requested
@@ -4616,11 +4430,7 @@ def test_ingest_zero_byte_file_rejected(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test-observer")
     key = resp.get_json()["key"]
 
     # Upload a 0-byte file
@@ -4642,11 +4452,7 @@ def test_ingest_mixed_zero_byte_files(observer_env):
     env = observer_env()
 
     # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "test-observer"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("test-observer")
     key = resp.get_json()["key"]
 
     # Upload one valid file and one 0-byte file
@@ -4686,11 +4492,7 @@ def test_ingest_contract_sidecar_invalid_quarantined_without_emit(
         lambda tract, event, **fields: emitted.append((tract, event, fields)),
     )
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "contract-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("contract-test")
     key = resp.get_json()["key"]
 
     invalid_audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00"}\n'
@@ -4740,7 +4542,7 @@ def test_ingest_contract_invalid_records_rejection(observer_env):
     assert rejection["segment"] == "120000_300"
     assert rejection["stream"] == "contract-rejection-test"
     assert rejection["summary"]
-    assert rejection["version"] is None
+    assert rejection["version"] == "test"
 
 
 def test_repeated_invalid_keeps_first_ts_increments_count(observer_env, monkeypatch):
@@ -4860,11 +4662,7 @@ def test_ingest_contract_sidecars_valid_are_accepted(observer_env, monkeypatch):
         lambda tract, event, **fields: emitted.append((tract, event, fields)),
     )
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "contract-valid-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("contract-valid-test")
     key = resp.get_json()["key"]
 
     audio = b'{"raw":"audio.flac"}\n{"start":"00:00:00","text":"hello"}\n'
@@ -4937,11 +4735,7 @@ def test_ingest_contract_sidecars_without_raw_are_accepted(observer_env, monkeyp
         lambda tract, event, **fields: emitted.append((tract, event, fields)),
     )
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "contract-no-raw-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("contract-no-raw-test")
     key = resp.get_json()["key"]
 
     audio = b'{"observer":"external"}\n{"start":"00:00:00","text":"hi"}\n'
@@ -4981,11 +4775,7 @@ def test_ingest_contract_screen_floor_violation_quarantined_without_emit(
         lambda tract, event, **fields: emitted.append((tract, event, fields)),
     )
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "contract-screen-invalid-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("contract-screen-invalid-test")
     key = resp.get_json()["key"]
 
     invalid_screen = b'{"observer":"tmux"}\n{"content":{}}\n'
@@ -5026,11 +4816,7 @@ def test_ingest_stream_qualifier_preserved(observer_env):
     env = observer_env()
 
     # Register as the tmux observer would (name = stream name with qualifier)
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "fedora.tmux"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("fedora.tmux")
     key = resp.get_json()["key"]
 
     test_data = b"tmux capture content"
@@ -5057,11 +4843,7 @@ def test_manifest_day_listing(observer_env):
     """Test manifest day listing from observer history."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "manifest-list-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("manifest-list-test")
     key = resp.get_json()["key"]
 
     resp = env.client.post(
@@ -5087,11 +4869,7 @@ def test_manifest_per_day(observer_env):
     """Test per-day manifest format matches transfer manifest v1."""
     env = observer_env()
 
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "manifest-day-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("manifest-day-test")
     key = resp.get_json()["key"]
 
     resp = env.client.post(
@@ -5120,9 +4898,9 @@ def test_manifest_per_day(observer_env):
     assert data["day"] == "20250103"
     assert isinstance(data["created_at"], int)
     assert "host" in data
-    assert "remote.host/120000_300" in data["segments"]
+    assert "manifest-day-test/120000_300" in data["segments"]
 
-    files = data["segments"]["remote.host/120000_300"]["files"]
+    files = data["segments"]["manifest-day-test/120000_300"]["files"]
     names = {file_info["name"] for file_info in files}
     assert {"audio.flac", "screen.webm"}.issubset(names)
     for file_info in files:

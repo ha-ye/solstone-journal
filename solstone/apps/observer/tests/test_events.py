@@ -57,11 +57,7 @@ def observer_journal(tmp_path, monkeypatch):
 
 def test_status_beacon_persisted_allowlisted(observer_env):
     env = observer_env()
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "beacon-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("beacon-test")
     assert resp.status_code == 200
     key = resp.get_json()["key"]
 
@@ -102,11 +98,7 @@ def test_status_beacon_persisted_allowlisted(observer_env):
 
 def test_legacy_status_event_no_beacon(observer_env):
     env = observer_env()
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "legacy-status-test"},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer("legacy-status-test")
     assert resp.status_code == 200
     key = resp.get_json()["key"]
 

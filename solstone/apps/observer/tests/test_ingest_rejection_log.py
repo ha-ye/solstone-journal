@@ -74,11 +74,7 @@ def _tick_rejection(
 
 
 def _create_observer(env, name: str) -> str:
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": name},
-        content_type="application/json",
-    )
+    resp = env.register_bound_observer(name)
     assert resp.status_code == 200
     return resp.get_json()["key"]
 
