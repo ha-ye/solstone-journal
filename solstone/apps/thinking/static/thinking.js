@@ -275,6 +275,12 @@
     return !operation || confidentialTerminalPhases.has(operation.phase || '');
   }
 
+  function confidentialEnableNeedsRecheck(activeLane) {
+    return activeLane?.confidential_enabled === true
+      && activeLane?.confidential_provenance_configured === true
+      && activeLane?.confidential_operation?.phase === 'not_verified';
+  }
+
   function confidentialOperationRender(operation, text) {
     const phase = operation?.phase || '';
     const states = text?.operation_states || {};
@@ -1056,6 +1062,11 @@
     const response = await api('api/brain/check', {method: 'POST', body: '{}'});
     if (response.brain) state.providers.brain = response.brain;
     renderGlance();
+  }
+
+  async function refreshConfidentialReadiness() {
+    await requestBrainCheck();
+    await refreshProviders();
   }
 
   function setCardActive(lane, active) {
@@ -2434,12 +2445,18 @@
     }
     openConsentTab(start?.operation);
     await startConfidentialPoll();
+    if (confidentialEnableNeedsRecheck(state.providers.active_lane)) {
+      try {
+        await refreshConfidentialReadiness();
+      } catch (err) {
+        setMessage('confidentialLaneOperation', err.message, 'error');
+      }
+    }
   }
 
   async function recheckConfidential() {
     setMessage('confidentialLaneOperation', '');
-    await requestBrainCheck();
-    await refreshProviders();
+    await refreshConfidentialReadiness();
   }
 
   async function disableConfidential() {

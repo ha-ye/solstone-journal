@@ -282,7 +282,7 @@ def test_thinking_deck_copy_constants() -> None:
         "confidential_verified": {
             "label": "sol is thinking with",
             "value": "confidential processing",
-            "detail": "confidential hardware verified · checked {checked}",
+            "detail": "confidential processing is ready · checked {checked}",
         },
         "confidential_available": {
             "label": "available",
@@ -486,7 +486,7 @@ def test_thinking_deck_copy_constants() -> None:
         "off": "",
         "inactive": "confidential processing is available.",
         "verifying": "checking the hardware…",
-        "verified": "confidential hardware verified · checked {checked}",
+        "verified": "confidential processing is ready · checked {checked}",
         "failed": "couldn't verify the service — sol isn't sending.",
         "stale": "your journal needs to re-check the service before sending.",
         "unreachable": "can't reach confidential processing right now — sol isn't sending.",

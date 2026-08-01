@@ -25,6 +25,7 @@ def _node_script(body: str) -> str:
         extract_js_const(source, "confidentialTerminalPhases"),
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "confidentialOperationIsTerminal"),
+        extract_js_function(source, "confidentialEnableNeedsRecheck"),
         extract_js_function(source, "confidentialOperationRender"),
         extract_js_function(source, "confidentialSetupMetaLine"),
         extract_js_function(source, "confidentialNoticeLine"),
@@ -35,6 +36,8 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "pollConfidentialUntilTerminal"),
         extract_js_function(source, "handleConfidentialPollError"),
         extract_js_function(source, "requestBrainCheck"),
+        extract_js_function(source, "refreshConfidentialReadiness"),
+        extract_js_function(source, "enableConfidential"),
         extract_js_function(source, "recheckConfidential"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
@@ -61,7 +64,7 @@ def test_confidential_render_mappings_are_pure() -> None:
         _node_script(
             """
 const confidentialCopy = copy.confidential;
-const verifiedLine = 'confidential hardware verified · checked just now';
+const verifiedLine = 'confidential processing is ready · checked just now';
 const verified = confidentialAttestationRender({
   state: 'verified',
   observed_at: '2026-07-12T12:00:00+00:00',
@@ -116,7 +119,7 @@ def test_confidential_verified_render_and_setup_lines() -> None:
         _node_script(
             """
 const confidentialCopy = copy.confidential;
-const expectedLine = 'confidential hardware verified · checked 1 min ago';
+const expectedLine = 'confidential processing is ready · checked 1 min ago';
 const verifiedAttestation = {state: 'verified', observed_at: '2026-07-12T12:00:00+00:00'};
 const verified = confidentialAttestationRender(verifiedAttestation, confidentialCopy, '1 min ago');
 const verifiedGlance = confidentialGlanceForAttestation(verifiedAttestation, copy, '1 min ago');
@@ -262,6 +265,84 @@ async function main() {
     'refreshProviders',
   ]), 'call order');
   assert(state.providers.refreshed === true, 'providers reread updates card state');
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+        )
+    )
+
+
+def test_confidential_enable_rechecks_after_successful_handoff() -> None:
+    _run_node(
+        _node_script(
+            """
+const calls = [];
+const messages = [];
+const state = {providers: {active_lane: {}}};
+async function api(path, options) {
+  calls.push({path, options});
+  if (path === 'api/confidential/enable') {
+    return {operation: {phase: 'starting', portal_url: 'https://portal.test/enable'}};
+  }
+  if (path === 'api/brain/check') {
+    return {brain: {state: 'checking'}};
+  }
+  throw new Error(`unexpected api call: ${path}`);
+}
+function renderAll() {
+  calls.push({path: 'renderAll'});
+}
+function renderGlance() {
+  calls.push({path: 'renderGlance'});
+}
+function openConsentTab(operation) {
+  assert(operation.portal_url === 'https://portal.test/enable', 'consent URL');
+  calls.push({path: 'openConsentTab'});
+}
+async function startConfidentialPoll() {
+  calls.push({path: 'startConfidentialPoll'});
+  state.providers.active_lane = {
+    confidential_enabled: true,
+    confidential_provenance_configured: true,
+    confidential_operation: {phase: 'not_verified'},
+  };
+}
+async function refreshProviders() {
+  calls.push({path: 'refreshProviders'});
+  state.providers.active_lane.confidential_attestation = {state: 'verified'};
+}
+function setMessage(id, message, tone = '') {
+  messages.push({id, message, tone});
+}
+
+async function main() {
+  assert(confidentialEnableNeedsRecheck({
+    confidential_enabled: true,
+    confidential_provenance_configured: true,
+    confidential_operation: {phase: 'not_verified'},
+  }) === true, 'successful handoff needs recheck');
+  for (const phase of ['repair_needed', 'early_access', 'waiting']) {
+    assert(confidentialEnableNeedsRecheck({
+      confidential_enabled: true,
+      confidential_provenance_configured: true,
+      confidential_operation: {phase},
+    }) === false, `${phase} does not recheck`);
+  }
+
+  await enableConfidential();
+
+  assert(JSON.stringify(calls.map((call) => call.path)) === JSON.stringify([
+    'api/confidential/enable',
+    'renderAll',
+    'openConsentTab',
+    'startConfidentialPoll',
+    'api/brain/check',
+    'renderGlance',
+    'refreshProviders',
+  ]), 'successful handoff rechecks then refreshes');
+  assert(state.providers.active_lane.confidential_attestation.state === 'verified', 'verified state loaded');
+  assert(messages.length === 1 && messages[0].message === '', 'operation message cleared once');
   console.log('PASS');
 }
 main().catch((error) => { console.error(error.stack || error); process.exit(1); });

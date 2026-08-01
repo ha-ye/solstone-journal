@@ -83,7 +83,7 @@ CONFIDENTIAL_ATTESTATION_STATES = {
     "off": "",
     "inactive": "confidential processing is available.",
     "verifying": "checking the hardware…",
-    "verified": "confidential hardware verified · checked {checked}",
+    "verified": "confidential processing is ready · checked {checked}",
     "failed": "couldn't verify the service — sol isn't sending.",
     "stale": "your journal needs to re-check the service before sending.",
     "unreachable": "can't reach confidential processing right now — sol isn't sending.",
