@@ -90,6 +90,14 @@ impl ClientError {
             ClientError::Unreachable { .. } | ClientError::Timeout { .. } => None,
         }
     }
+
+    #[must_use]
+    pub fn payload(&self) -> Option<&serde_json::Value> {
+        match self {
+            ClientError::ReasonRejected { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ClientError {

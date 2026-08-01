@@ -55,13 +55,17 @@ from solstone.apps.network.relay_link import (
     derive_rk,
     encode_pair_window_link,
 )
-from solstone.apps.observer.utils import revoke_observers_bound_to_device
+from solstone.apps.observer.utils import (
+    ObserverRevokeError,
+    revoke_observers_bound_to_device,
+)
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.reasons import (
     CONVEY_OPERATION_FAILED,
     FILE_READ_FAILED,
+    INTERNAL_ERROR,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
@@ -989,6 +993,17 @@ def pair() -> Any:
     return jsonify(response)
 
 
+def _revoked_observer_projection(observers: list[dict]) -> list[dict[str, str]]:
+    projected = [
+        {
+            "name": str(observer.get("name") or ""),
+            "prefix": str(observer.get("filename_prefix") or ""),
+        }
+        for observer in observers
+    ]
+    return sorted(projected, key=lambda item: (item["name"], item["prefix"]))
+
+
 @network_bp.route("/rename", methods=["POST"])
 def rename() -> Any:
     """Rename a paired device by fingerprint."""
@@ -1092,8 +1107,24 @@ def unpair() -> Any:
         authorized.remove(fingerprint)
     else:
         authorized.remove(fingerprint)
-    revoke_observers_bound_to_device(fingerprint)
-    return jsonify({"unpaired": fingerprint})
+    try:
+        revoked_observers = revoke_observers_bound_to_device(fingerprint)
+    except ObserverRevokeError as exc:
+        return error_response(
+            INTERNAL_ERROR,
+            detail="Failed to revoke one or more bound observer streams.",
+            extra={
+                "unpaired": fingerprint,
+                "revoked_observers": _revoked_observer_projection(exc.revoked),
+                "failed_operation": "observer_revoke",
+            },
+        )
+    return jsonify(
+        {
+            "unpaired": fingerprint,
+            "revoked_observers": _revoked_observer_projection(revoked_observers),
+        }
+    )
 
 
 def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
