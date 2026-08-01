@@ -29,6 +29,38 @@ _TEST_ONLY_GROUPS = frozenset(
 )
 
 
+def _repository_paths_under(root: Path, relative: str) -> list[str] | None:
+    """Return repository-visible paths under ``relative``, or None if git cannot say.
+
+    Tracked files and untracked-but-unignored files both count. Ignored build
+    output does not: a checkout that removed a directory's sources leaves its
+    ``__pycache__`` behind, and that is a property of one operator's disk rather
+    than of the repository. Reporting it as an unfinished retirement sends the
+    reader to the wave author instead of to their own working tree.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                relative,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 class CheckResult(NamedTuple):
     ok: bool
     checked_waves: tuple[str, ...]
@@ -314,9 +346,20 @@ def check_repository(
 
         checked.append(wave_id)
         for python_root in python_roots:
-            if (root / python_root).exists():
+            survivors = _repository_paths_under(root, python_root)
+            if survivors is None:
+                # git could not answer; fall back to the on-disk test rather than
+                # reporting a retirement we cannot prove.
+                if (root / python_root).exists():
+                    violations.append(
+                        f"{wave_id}: declared Python root still exists: {python_root}"
+                    )
+                continue
+            if survivors:
                 violations.append(
-                    f"{wave_id}: declared Python root still exists: {python_root}"
+                    f"{wave_id}: declared Python root still exists: {python_root} "
+                    f"({len(survivors)} file(s) in the repository, e.g. "
+                    f"{survivors[0]})"
                 )
 
         normalized_distribution = _normalize_distribution(distribution)
