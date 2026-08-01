@@ -32,7 +32,9 @@ use tokio::{
 use crate::{
     CallosumEmit, LinkServiceTokenRead, LinkStateRead, LoopbackConnect, LoopbackDialer,
     LoopbackStream, RelayClient, RelayClientConfig, RelayError, RelayServiceToken, ServiceDeps,
-    ServiceError, ServicePoll, ServiceToken, load_link_service_token, load_link_state, run_service,
+    ServiceError, ServicePoll, ServiceToken,
+    callosum::{LoggingEmit, Verbosity},
+    load_link_service_token, load_link_state, run_service,
 };
 
 const DEFAULT_RELAY_ENDPOINT: &str = "https://link.solstone.app";
@@ -76,20 +78,29 @@ impl NativeServiceError {
 ///
 /// Returns a class-only error if the runtime cannot start or the supervised
 /// service exits unexpectedly.
-pub fn run_native_service(journal_root: PathBuf) -> Result<(), NativeServiceError> {
+pub fn run_native_service(
+    journal_root: PathBuf,
+    verbosity: Verbosity,
+) -> Result<(), NativeServiceError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("spl-service")
         .build()
         .map_err(|_| NativeServiceError::Runtime)?;
-    runtime.block_on(run_native_service_async(journal_root))
+    runtime.block_on(run_native_service_async(journal_root, verbosity))
 }
 
-async fn run_native_service_async(journal_root: PathBuf) -> Result<(), NativeServiceError> {
+async fn run_native_service_async(
+    journal_root: PathBuf,
+    verbosity: Verbosity,
+) -> Result<(), NativeServiceError> {
     let callosum = CallosumOutput::start(journal_root.join("health").join("callosum.sock"));
+    if verbosity != Verbosity::Quiet {
+        eprintln!("spl service: starting; watching link posture");
+    }
     let (shutdown_send, shutdown_receive) = watch::channel(false);
     let signal_task = tokio::spawn(wait_for_shutdown_signal(shutdown_send));
-    let mut deps = ProcessServiceDeps::new(journal_root, callosum, shutdown_receive);
+    let mut deps = ProcessServiceDeps::new(journal_root, callosum, verbosity, shutdown_receive);
 
     let result = run_service(&mut deps).await.map_err(classify_service_error);
     signal_task.abort();
@@ -129,6 +140,7 @@ async fn wait_for_shutdown_signal(shutdown: watch::Sender<bool>) {
 struct ProcessServiceDeps {
     journal_root: PathBuf,
     callosum: Arc<CallosumOutput>,
+    verbosity: Verbosity,
     shutdown: watch::Receiver<bool>,
 }
 
@@ -136,11 +148,13 @@ impl ProcessServiceDeps {
     fn new(
         journal_root: PathBuf,
         callosum: Arc<CallosumOutput>,
+        verbosity: Verbosity,
         shutdown: watch::Receiver<bool>,
     ) -> Self {
         Self {
             journal_root,
             callosum,
+            verbosity,
             shutdown,
         }
     }
@@ -230,7 +244,10 @@ impl ServiceDeps for ProcessServiceDeps {
                 dispatch_read_deadline: DISPATCH_READ_DEADLINE,
                 global_admission_ceiling: GLOBAL_ADMISSION_CEILING,
             },
-            Arc::clone(&self.callosum) as Arc<dyn CallosumEmit>,
+            Arc::new(LoggingEmit::new(
+                Arc::clone(&self.callosum) as Arc<dyn CallosumEmit>,
+                self.verbosity,
+            )) as Arc<dyn CallosumEmit>,
             Arc::new(LocalLoopbackDialer),
         );
         let running_client = client.clone();
@@ -1024,7 +1041,12 @@ mod tests {
         let (shutdown_send, shutdown_receive) = tokio::sync::watch::channel(false);
         drop(shutdown_send);
         let callosum = super::CallosumOutput::inactive();
-        ProcessServiceDeps::new(root.to_path_buf(), callosum, shutdown_receive)
+        ProcessServiceDeps::new(
+            root.to_path_buf(),
+            callosum,
+            crate::callosum::Verbosity::Quiet,
+            shutdown_receive,
+        )
     }
 
     #[tokio::test]
@@ -1070,6 +1092,7 @@ mod tests {
         let mut deps = ProcessServiceDeps::new(
             journal.path().to_path_buf(),
             Arc::clone(&callosum),
+            crate::callosum::Verbosity::Quiet,
             shutdown_receive,
         );
 

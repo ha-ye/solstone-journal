@@ -28,7 +28,7 @@ mod ws_buffer;
 mod ws_sink;
 
 pub use admission::RelayAdmissionGate;
-pub use callosum::CallosumEmit;
+pub use callosum::{CallosumEmit, LoggingEmit, Verbosity};
 pub use health::{
     LINK_HEALTH_EVENT, OFFLINE_TUNNEL_REASONS, REASON_HOME_MISSING_MOBILE,
     REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE, REASON_RELAY_ADMISSION_SATURATED,

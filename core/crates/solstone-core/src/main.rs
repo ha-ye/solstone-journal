@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use std::{env, ffi::OsStr, path::PathBuf};
 
 use solstone_core_cli::{
-    Command, IndexerOptions, JournalPathOptions, SplCommand, USAGE, evaluate_args, version_line,
+    Command, IndexerOptions, JournalPathOptions, ServiceOptions, SplCommand, USAGE, evaluate_args,
+    version_line,
 };
 use solstone_core_indexer_store::db::reset_index;
 use solstone_core_indexer_store::scan::{
@@ -66,11 +67,11 @@ fn main() -> ExitCode {
 
 fn run_spl_process(command: SplCommand) -> ExitCode {
     match command {
-        SplCommand::Service(_) => run_spl_service(),
+        SplCommand::Service(options) => run_spl_service(options),
     }
 }
 
-fn run_spl_service() -> ExitCode {
+fn run_spl_service(options: ServiceOptions) -> ExitCode {
     let journal = match resolve_process_journal_path() {
         Ok(journal) => journal,
         Err(error) => {
@@ -78,7 +79,8 @@ fn run_spl_service() -> ExitCode {
             return ExitCode::from(EXIT_TEMPFAIL);
         }
     };
-    match solstone_core_spl::run_native_service(journal.path) {
+    let verbosity = solstone_core_spl::Verbosity::from_flags(options.verbose, options.debug);
+    match solstone_core_spl::run_native_service(journal.path, verbosity) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("spl service failed: {}", error.class());
