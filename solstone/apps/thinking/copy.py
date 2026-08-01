@@ -147,13 +147,6 @@ GLANCE = {
         "value": "your own endpoint",
         "detail": "sol thinks at the endpoint you set — your server, your rules",
     },
-    "byo_scout": {
-        "value": "scout · we cover it",
-        "detail": (
-            "covered through the scout program while you're in alpha — stays in "
-            "your journal"
-        ),
-    },
     "confidential_checking": {
         "label": "sol is waiting on",
         "value": "confidential processing",
@@ -209,14 +202,6 @@ BYO_SETUP = {
     "endpoint_honesty": (
         "sol checks the endpoint works before it relies on it. if it can't "
         "reach it, sol tells you — it never quietly falls back to anyone else."
-    ),
-    "scout_heading": "in the scout program?",
-    "scout_sub": (
-        "be an early tester for solstone — we'll cover your thinking, using Gemini."
-    ),
-    "scout_terms_link": "scout program terms ↗",
-    "scout_provenance": (
-        "covered through the scout program — the key stays in your journal."
     ),
     "paste_cta": "check this key →",
     "checking_key": "checking your key with {provider}…",
@@ -277,7 +262,6 @@ LANE_SWITCH = {
     "to_byo_note": "sol will think with your own engine. {setup} is still here.",
     "setup_key": "a saved key",
     "setup_endpoint": "your endpoint",
-    "setup_scout": "scout",
 }
 LOCAL_INSTALL = {
     "phases": {
@@ -376,34 +360,6 @@ LOCAL_RECOVERY = {
     },
 }
 CONFIDENTIAL_MORE_LABEL = "how it works →"
-SCOUT_STATE_OFF = "off"
-SCOUT_STATE_REQUESTED = "requested"
-SCOUT_STATE_INVITED = "invited"
-SCOUT_STATE_ON = "on"
-SCOUT_STATE_ENDED = "ended"
-SCOUT_STATE_MANUAL_KEY_PRESENT = "manual_key_present"
-SCOUT_STATE_REPAIR_NEEDED = "repair_needed"
-SCOUT_OP_STARTING = "starting"
-SCOUT_OP_WAITING = "waiting"
-SCOUT_STATE_LABELS = {
-    SCOUT_STATE_OFF: "off",
-    SCOUT_STATE_REQUESTED: "requested",
-    SCOUT_STATE_INVITED: "invited",
-    SCOUT_STATE_ON: "on",
-    SCOUT_STATE_ENDED: "ended",
-    SCOUT_STATE_MANUAL_KEY_PRESENT: "BYO key",
-    SCOUT_STATE_REPAIR_NEEDED: "repair needed",
-}
-SCOUT_RESTING_GUIDANCE = {
-    SCOUT_STATE_OFF: "Scout is off.",
-    SCOUT_STATE_REQUESTED: "Scout is waiting for approval.",
-    SCOUT_STATE_INVITED: "Scout is ready.",
-    SCOUT_STATE_ON: "Scout is on — thinking is available.",
-    SCOUT_STATE_ENDED: "Scout has ended.",
-    SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
-}
-SCOUT_MANUAL_KEY_BLOCK_COPY = "a Gemini key you manage is already set — clear it in your own key first, then turn on scout."
-SCOUT_CONSENT_CTA = "continue to approve →"
 
 
 def thinking_copy_payload() -> dict[str, Any]:
@@ -440,12 +396,6 @@ def thinking_copy_payload() -> dict[str, Any]:
             "states": {
                 key: dict(value) for key, value in LOCAL_RECOVERY["states"].items()
             },
-        },
-        "scout": {
-            "state_labels": dict(SCOUT_STATE_LABELS),
-            "resting_guidance": dict(SCOUT_RESTING_GUIDANCE),
-            "manual_key_block": SCOUT_MANUAL_KEY_BLOCK_COPY,
-            "consent_cta": SCOUT_CONSENT_CTA,
         },
     }
 

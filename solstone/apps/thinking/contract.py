@@ -76,67 +76,6 @@ def _body(fields: tuple[FieldSpec, ...], example: dict[str, object]) -> RequestS
 
 OPERATIONS: list[OperationSpec] = [
     OperationSpec(
-        operation_id="thinking.scout.status",
-        method="GET",
-        rule="/app/thinking/api/scout",
-        summary="Read Scout status",
-        description="Return Scout state and operation metadata.",
-        responses=(
-            _ok(
-                "Scout status.",
-                (
-                    FieldSpec("state", "string"),
-                    FieldSpec("operation", "object", raw_schema=_FREE_OBJECT),
-                ),
-            ),
-            _json_error(_SETTINGS_ERROR),
-        ),
-    ),
-    OperationSpec(
-        operation_id="thinking.scout.check",
-        method="POST",
-        rule="/app/thinking/api/scout/check",
-        summary="Check Scout",
-        description="Check Scout status over the connection.",
-        responses=(
-            _ok("Scout check result."),
-            _json_error(_SETTINGS_ERROR),
-        ),
-    ),
-    OperationSpec(
-        operation_id="thinking.scout.enable",
-        method="POST",
-        rule="/app/thinking/api/scout/enable",
-        summary="Enable Scout",
-        description="Start Scout enablement and return operation metadata.",
-        responses=(
-            _ok("Scout enable operation."),
-            _json_error(_LONG_POLL_START_ERRORS),
-        ),
-    ),
-    OperationSpec(
-        operation_id="thinking.scout.refresh",
-        method="POST",
-        rule="/app/thinking/api/scout/refresh",
-        summary="Refresh Scout",
-        description="Refresh Scout state and return operation metadata.",
-        responses=(
-            _ok("Scout refresh operation."),
-            _json_error(_LONG_POLL_START_ERRORS),
-        ),
-    ),
-    OperationSpec(
-        operation_id="thinking.scout.disable",
-        method="POST",
-        rule="/app/thinking/api/scout/disable",
-        summary="Disable Scout",
-        description="Disable Scout and return status metadata.",
-        responses=(
-            _ok("Scout disable result."),
-            _json_error(_SETTINGS_ERROR),
-        ),
-    ),
-    OperationSpec(
         operation_id="thinking.confidential.enable",
         method="POST",
         rule="/app/thinking/api/confidential/enable",

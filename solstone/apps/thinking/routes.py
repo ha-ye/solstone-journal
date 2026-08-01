@@ -15,8 +15,7 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, current_app, jsonify, request
 
-from solstone.apps.thinking import copy as thinking_copy
-from solstone.apps.thinking import local_bootstrap, local_recovery, scout_lane
+from solstone.apps.thinking import local_bootstrap, local_recovery
 from solstone.apps.thinking.copy import thinking_copy_payload
 from solstone.apps.thinking.google_model_pins import (
     GOOGLE_MODEL_RESOLUTION_TARGETS_FIELD,
@@ -76,8 +75,6 @@ from solstone.think.providers.runtime_health import (
 )
 from solstone.think.services import (
     operations,
-    scout,
-    scout_handoff,
     spp,
     spp_handoff,
     spp_transport,
@@ -164,27 +161,6 @@ def _remap_confidential_operation(raw: dict[str, Any] | None) -> dict[str, Any] 
     phase = str(payload.get("phase") or "")
     payload["phase"] = _CONFIDENTIAL_PHASE_TO_PRODUCT.get(phase, phase)
     return payload
-
-
-def _start_scout_operation(
-    kind: str,
-    portal_url: str | None,
-    flow: Callable[[], operations.HandoffResult],
-) -> Any:
-    try:
-        payload = operations.start_operation("scout", kind, portal_url, flow)
-    except operations.OperationBusyError:
-        return error_response(SERVICE_BUSY, detail="operation already running")
-    return (
-        jsonify(
-            {
-                "success": True,
-                "service": "scout",
-                "operation": scout_lane.remap_operation(payload),
-            }
-        ),
-        202,
-    )
 
 
 def _start_confidential_operation(
@@ -340,8 +316,6 @@ def _active_lane_payload(
     )
     return {
         "lane": active,
-        "scout_enabled": scout.is_scout_enabled(config),
-        "scout_provenance_configured": scout.scout_provenance(config) is not None,
         "confidential_enabled": spp.is_confidential_enabled(config),
         "confidential_audio": confidential_audio_enabled(transcribe_config),
         "confidential_provenance_configured": confidential_provenance_present,
@@ -384,7 +358,6 @@ def _keys_payload(config: dict[str, Any]) -> dict[str, Any]:
         "api_keys": _api_key_status(config),
         "env": _env_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
-        "scout_enabled": scout.is_scout_enabled(config),
     }
 
 
@@ -548,7 +521,6 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "local_runtime": local_recovery.runtime_view(),
         "local_override": _local_override_payload(config),
         "local_backend": "mlx" if local_bootstrap._is_mlx_backend() else "local",
-        "scout_enabled": scout.is_scout_enabled(config),
     }
 
 
@@ -598,100 +570,6 @@ def api_state() -> Any:
             "copy": thinking_copy_payload(),
         }
     )
-
-
-@thinking_bp.route("/api/scout")
-def scout_status() -> Any:
-    try:
-        return jsonify({"success": True, **scout_lane.status_payload()})
-    except Exception:
-        logger.exception("error loading scout status")
-        return _thinking_operation_failed()
-
-
-@thinking_bp.route("/api/scout/check", methods=["POST"])
-def scout_check() -> Any:
-    try:
-        return jsonify({"success": True, **scout_lane.status_payload(force=True)})
-    except Exception:
-        logger.exception("error checking scout status")
-        return _thinking_operation_failed()
-
-
-@thinking_bp.route("/api/scout/enable", methods=["POST"])
-def scout_enable() -> Any:
-    try:
-        state = scout_lane.resting_state()
-        if state == thinking_copy.SCOUT_STATE_ON:
-            return error_response(
-                INVALID_OPERATION_FOR_STATE,
-                detail="Scout is already on.",
-            )
-        if state == thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT:
-            return error_response(
-                INVALID_OPERATION_FOR_STATE,
-                detail=thinking_copy.SCOUT_MANUAL_KEY_BLOCK_COPY,
-            )
-        consent_url, nonce, base_url = scout_handoff.build_scout_handoff_url()
-        return _start_scout_operation(
-            "enable",
-            consent_url,
-            lambda: scout_handoff.run_scout_handoff(
-                refresh=False,
-                nonce=nonce,
-                base_url=base_url,
-            ),
-        )
-    except Exception:
-        logger.exception("error enabling scout")
-        return _thinking_operation_failed()
-
-
-@thinking_bp.route("/api/scout/refresh", methods=["POST"])
-def scout_refresh() -> Any:
-    try:
-        state = scout_lane.resting_state()
-        if state not in {
-            thinking_copy.SCOUT_STATE_REQUESTED,
-            thinking_copy.SCOUT_STATE_ON,
-        }:
-            return error_response(
-                INVALID_OPERATION_FOR_STATE,
-                detail="Scout refresh isn't available right now.",
-            )
-        consent_url, nonce, base_url = scout_handoff.build_scout_handoff_url()
-        return _start_scout_operation(
-            "refresh",
-            consent_url,
-            lambda: scout_handoff.run_scout_handoff(
-                refresh=True,
-                nonce=nonce,
-                base_url=base_url,
-            ),
-        )
-    except Exception:
-        logger.exception("error refreshing scout")
-        return _thinking_operation_failed()
-
-
-@thinking_bp.route("/api/scout/disable", methods=["POST"])
-def scout_disable() -> Any:
-    try:
-        outcome = scout.disable_scout()
-        return jsonify(
-            {
-                "success": True,
-                "service": "scout",
-                "result": {
-                    "was_enabled": outcome.was_enabled,
-                    "env_key_preserved": outcome.env_key_preserved,
-                },
-                "status": scout_lane.status_payload(),
-            }
-        )
-    except Exception:
-        logger.exception("error disabling scout")
-        return _thinking_operation_failed()
 
 
 @thinking_bp.route("/api/confidential/enable", methods=["POST"])
