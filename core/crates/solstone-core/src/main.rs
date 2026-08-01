@@ -30,7 +30,6 @@ const HPKE_MAX_FIELD_LENGTH: usize = 96 * 1024 * 1024;
 const HPKE_MAX_FIELD_COUNT: usize = 5;
 const HPKE_MAX_REQUEST_LENGTH: usize = HPKE_MAX_FIELD_COUNT * (HPKE_MAX_FIELD_LENGTH + 4);
 const HPKE_READ_CHUNK_LENGTH: usize = 64 * 1024;
-const SPL_SERVICE_UNAVAILABLE_LINE: &str = "spl: unavailable\n";
 const ZERO_EDGE_HINT: &str = "Zero edges indexed: edges are talent-derived, and the --rescan-full edge phase remains modification-time incremental — run journal indexer --rebuild-edges to force full edge re-extraction.";
 const SOL_IDENTITY_TOKEN: &str = "__solstone_identity=sol";
 const SOLSTONE_IDENTITY_TOKEN: &str = "__solstone_identity=solstone";
@@ -77,32 +76,35 @@ fn main() -> ExitCode {
 }
 
 fn run_spl_process(command: SplCommand) -> ExitCode {
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let stderr = std::io::stderr();
-    let mut input = stdin.lock();
-    let mut output = stdout.lock();
-    let mut error = stderr.lock();
-
-    run_spl_command(command, &mut input, &mut output, &mut error)
-}
-
-fn run_spl_command(
-    command: SplCommand,
-    input: &mut dyn Read,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> ExitCode {
     match command {
-        SplCommand::Hpke(command) => run_hpke_process_io(command, input, stdout, stderr),
-        // Service composition awaits the separately accepted U4/U5 process unit.
-        SplCommand::Service(_) => write_spl_service_unavailable(stderr),
+        SplCommand::Hpke(command) => {
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            let stderr = std::io::stderr();
+            let mut input = stdin.lock();
+            let mut output = stdout.lock();
+            let mut error = stderr.lock();
+            run_hpke_process_io(command, &mut input, &mut output, &mut error)
+        }
+        SplCommand::Service(_) => run_spl_service(),
     }
 }
 
-fn write_spl_service_unavailable(stderr: &mut dyn Write) -> ExitCode {
-    let _ = stderr.write_all(SPL_SERVICE_UNAVAILABLE_LINE.as_bytes());
-    ExitCode::from(EXIT_UNAVAILABLE)
+fn run_spl_service() -> ExitCode {
+    let journal = match resolve_process_journal_path() {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprint_journal_path_error(error);
+            return ExitCode::from(EXIT_TEMPFAIL);
+        }
+    };
+    match solstone_core_spl::run_native_service(journal.path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("spl service failed: {}", error.class());
+            ExitCode::from(EXIT_TEMPFAIL)
+        }
+    }
 }
 
 fn sol_identity_from_first_arg(args: &[std::ffi::OsString]) -> Option<&'static str> {
@@ -350,9 +352,9 @@ mod tests {
         io::{Cursor, Error as IoError, ErrorKind},
     };
 
-    use solstone_core_cli::{HpkeCommand, ServiceOptions, SplCommand};
+    use solstone_core_cli::HpkeCommand;
 
-    use super::{read_bounded_request, run_hpke_process_io, run_spl_command};
+    use super::{read_bounded_request, run_hpke_process_io};
 
     const RECIPIENT_PRIVATE_KEY_DER: &[u8] = &[
         0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
@@ -434,38 +436,12 @@ mod tests {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
-        let exit = run_spl_command(
-            SplCommand::Hpke(HpkeCommand::SealBase),
-            &mut input,
-            &mut stdout,
-            &mut stderr,
-        );
+        let exit = run_hpke_process_io(HpkeCommand::SealBase, &mut input, &mut stdout, &mut stderr);
 
         assert_eq!(exit, std::process::ExitCode::SUCCESS);
         assert!(stderr.is_empty());
         assert_eq!(parse_fields(&stdout)?.len(), 2);
         Ok(())
-    }
-
-    #[test]
-    fn spl_service_is_fixed_class_unavailable_until_service_composition() {
-        let mut input = Cursor::new(b"not-used".to_vec());
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let exit = run_spl_command(
-            SplCommand::Service(ServiceOptions {
-                verbose: false,
-                debug: false,
-            }),
-            &mut input,
-            &mut stdout,
-            &mut stderr,
-        );
-
-        assert_eq!(exit, std::process::ExitCode::from(69));
-        assert!(stdout.is_empty());
-        assert_eq!(stderr, b"spl: unavailable\n");
     }
 
     #[test]

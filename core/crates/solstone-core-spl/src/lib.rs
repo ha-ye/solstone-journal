@@ -26,6 +26,7 @@ mod relay_health;
 mod relay_status_failure;
 mod relay_websocket;
 mod service;
+mod service_process;
 mod service_shutdown;
 mod service_transition;
 mod tunnel_route;
@@ -88,6 +89,7 @@ pub use service::{
     POSTURE_POLL_INTERVAL, RelayRunTask, RelayServiceToken, ServiceDeps, ServiceError, ServicePoll,
     StartedRelay, run_service,
 };
+pub use service_process::{NativeServiceError, run_native_service};
 pub use service_shutdown::{RelayStop, ServiceShutdownError, stop_relay_run};
 pub use service_transition::{
     PostureObservation, ServiceAction, ServiceLifecycle, TokenObservation, transition,

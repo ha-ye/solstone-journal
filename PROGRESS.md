@@ -106,6 +106,16 @@
   idempotent pre-abort `disconnect`/`health` tail addresses the A7 lifecycle boundary, while a
   deterministic shutdown race test closes a pair that loses admission before task spawn. The
   independent format, 119-SPL/30-core test, strict-clippy, and iOS-library reruns are green.
+- **U5 native service composition accepted:** `spl service` now constructs the live Tokio
+  topology from read-only journal state, honors the exact `spl` posture/token security gate,
+  drives the relay listener and `127.0.0.1:7657` loopback pipe, drains Callosum during orderly
+  shutdown, and removes the exit-69 placeholder. A real subprocess proves the posture switch
+  closes the listen WebSocket and writes the final `disconnect`/`health` tail without a token.
+  The U5 Callosum priority lane is declared `expected-differs` in `DIVERGENCES.md`: it remains
+  nonblocking, preserves ordered terminal pairs by evicting ordinary telemetry first, and uses
+  an explicit bounded newest-wins policy only when all retained messages are terminal. Focused
+  saturation, unmatched-terminal, all-terminal, and wedged-output tests are green alongside
+  the independent format, 124-SPL/30-core test, strict-clippy, and iOS-library reruns.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -172,6 +182,25 @@
   lost. The delegate is revising the bounded output strategy and adding an output-saturation
   integration test. This is a delegate implementation omission caught by fresh-eyes, not
   contract rework.
+- **U5 Callosum tail follow-up — returned.** The first saturation repair protected only
+  `disconnect`/`health`; C3/A8 separately require every `tunnel_close`/`health` tail to survive
+  too, or the dashboard can retain a live tunnel. The delegate is extending the priority tail
+  and adding real Unix-socket saturation coverage. Ordinary nonterminal telemetry remains
+  bounded best-effort. This is a follow-up delegate correctness omission, not contract rework.
+- **U5 Callosum priority lane — corrected by supervisor.** The priority lane is an intentional
+  `expected-differs` improvement over Python's uniformly best-effort `send_or_drop`, motivated
+  by A8's live-tunnel dashboard failure. Its first proposed bounded backpressure would have
+  blocked the synchronous emit/finally path on a wedged consumer; the supervisor rejected that
+  new shutdown hazard. The delegate must use a nonblocking bounded strategy that evicts oldest
+  telemetry in favor of terminal events, prove it with a wedged-output test, and record the
+  exact behavior in `DIVERGENCES.md`. This is contract/acceptance rework, not a delegate
+  rejection.
+- **U5 priority-queue bounds — returned.** Fresh-eyes found that the first nonblocking queue
+  revision left pending terminal first-halves outside its capacity accounting, and its
+  all-terminal-capacity branch logged then lost a terminal event while the divergence record
+  implied otherwise. The delegate must cap every retained structure, retain the newest terminal
+  by evicting the oldest telemetry without blocking, and make the overflow record and tests
+  truthful. This is a delegate implementation correction, not contract rework.
 
 ### Explained twice
 
