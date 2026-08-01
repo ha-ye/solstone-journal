@@ -274,9 +274,10 @@ def test_export_pl_partial_and_dry_run_do_not_prompt(
     assert prompt_calls == 0
 
 
-def test_export_dl_never_prompts(
+def test_export_url_with_key_refuses_without_network_contact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from solstone.observe import export
 
@@ -285,25 +286,14 @@ def test_export_dl_never_prompts(
     _set_journal(monkeypatch, journal)
     area_calls: list[tuple] = []
     _patch_exporters(monkeypatch, area_calls)
-    prompt_calls = 0
+    session_calls = 0
 
-    class FakeSession:
-        def __init__(self) -> None:
-            self.headers = {}
+    def session_factory():
+        nonlocal session_calls
+        session_calls += 1
+        raise AssertionError("network contact")
 
-        def post(self, *_args, **_kwargs):
-            return PlHttpResponse(200, {}, b'{"ok": true}')
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(export.requests, "Session", FakeSession)
-
-    def prompt(*_args, **_kwargs):
-        nonlocal prompt_calls
-        prompt_calls += 1
-
-    monkeypatch.setattr(export, "maybe_prompt_unpair", prompt)
+    monkeypatch.setattr(export.requests, "Session", session_factory)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -318,16 +308,42 @@ def test_export_dl_never_prompts(
         ],
     )
 
-    export.main()
+    with pytest.raises(SystemExit) as exc:
+        export.main()
 
-    assert prompt_calls == 0
-    assert [call[1] for call in area_calls] == [
-        "segments",
-        "imports",
-        "entities",
-        "facets",
-        "config",
-    ]
+    assert exc.value.code == 2
+    assert (
+        "Sending to a URL with a key is retired. "
+        "Use '--to <label>' to send to a paired peer."
+    ) in capsys.readouterr().err
+    assert session_calls == 0
+    assert area_calls == []
+
+
+def test_export_url_without_key_refuses_with_retired_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from solstone.observe import export
+
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    _set_journal(monkeypatch, journal)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["sol", "--to", "https://receiver.test", "--day", "20260520"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        export.main()
+
+    assert exc.value.code == 2
+    assert (
+        "Sending to a URL with a key is retired. "
+        "Use '--to <label>' to send to a paired peer."
+    ) in capsys.readouterr().err
 
 
 def test_export_dl_regression_config_url_headers_and_body(

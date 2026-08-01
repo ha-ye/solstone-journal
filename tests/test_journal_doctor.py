@@ -339,6 +339,96 @@ def test_capture_health_check_maps_every_rollup_status(doctor, monkeypatch):
     assert result.detail == "rollup=unknown; observer records unavailable"
 
 
+def test_observer_binding_check_counts_active_unbound_records(doctor, monkeypatch):
+    now = DOCTOR_NOW_MS
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {"name": "unbound-a", "enabled": True, "last_seen": now},
+            {"name": "unbound-b", "enabled": True, "last_seen": now},
+            bound_observer(name="bound", enabled=True, last_seen=now),
+        ],
+    )
+
+    result = doctor.observer_binding_check(args(doctor))
+
+    assert result.name == "observer_binding"
+    assert result.status == "ok"
+    assert result.detail == (
+        "active observer records=3; unbound=2; streams=unbound-a, unbound-b"
+    )
+
+
+def test_observer_binding_check_ignores_revoked_unbound_records(
+    doctor,
+    monkeypatch,
+):
+    now = DOCTOR_NOW_MS
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {"name": "unbound-a", "enabled": True, "last_seen": now},
+            {"name": "revoked-unbound", "revoked": True, "last_seen": now},
+            bound_observer(name="bound", enabled=True, last_seen=now),
+        ],
+    )
+
+    result = doctor.observer_binding_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "active observer records=2; unbound=1; streams=unbound-a"
+
+
+def test_observer_binding_check_zero_observer_and_zero_unbound_wording(
+    doctor,
+    monkeypatch,
+):
+    monkeypatch.setattr("solstone.apps.observer.utils.list_observers", lambda: [])
+
+    result = doctor.observer_binding_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "active observer records=0; unbound=0"
+
+    now = DOCTOR_NOW_MS
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [bound_observer(name="bound", enabled=True, last_seen=now)],
+    )
+
+    result = doctor.observer_binding_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "active observer records=1; unbound=0"
+
+
+def test_observer_binding_check_warning_counts_match_bound_and_unbound(
+    doctor,
+    monkeypatch,
+):
+    now = DOCTOR_NOW_MS
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: now)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [{"name": "unbound", "enabled": True, "last_seen": now}],
+    )
+    unbound_counts = doctor.summary_counts(
+        [doctor.observer_binding_check(args(doctor))]
+    )
+
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [bound_observer(name="bound", enabled=True, last_seen=now)],
+    )
+    bound_counts = doctor.summary_counts([doctor.observer_binding_check(args(doctor))])
+
+    assert unbound_counts["failed"] == bound_counts["failed"] == 0
+    assert unbound_counts["warnings"] == bound_counts["warnings"] == 0
+
+
 def test_lockstep_stale_stamps_warn_on_capture_health_only(doctor, monkeypatch):
     now = DOCTOR_NOW_MS
     stale_stamp = now - (7 * HOUR_MS)
@@ -694,8 +784,14 @@ def test_new_doctor_checks_are_registered(doctor):
         doctor.OBSERVER_DELIVERY_STALL_CHECK,
         doctor.observer_delivery_stall_check,
     ) in doctor.JOURNAL_CHECKS
+    assert (
+        doctor.OBSERVER_BINDING_CHECK,
+        doctor.observer_binding_check,
+    ) in doctor.JOURNAL_CHECKS
     assert doctor.CAPTURE_HEALTH_CHECK.severity == "advisory"
     assert doctor.CAPTURE_HEALTH_CHECK.platforms == ("linux", "darwin")
+    assert doctor.OBSERVER_BINDING_CHECK.severity == "advisory"
+    assert doctor.OBSERVER_BINDING_CHECK.platforms == ("linux", "darwin")
     assert doctor.OBSERVER_DELIVERY_STALL_CHECK.severity == "advisory"
     assert doctor.OBSERVER_DELIVERY_STALL_CHECK.platforms == ("linux", "darwin")
 

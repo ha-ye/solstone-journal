@@ -23,6 +23,12 @@ if str(ROOT) not in sys.path:
 
 TEST_PL_FINGERPRINT = "sha256:" + ("c" * 64)
 
+from tests.observer_registration_helpers import (  # noqa: E402
+    pl_identity,
+    register_bound_observer,
+    register_unbound_observer,
+)
+
 
 @pytest.fixture(scope="module")
 def observer_app():
@@ -54,21 +60,11 @@ def observer_env(tmp_path, monkeypatch, observer_app):
 
     from solstone.convey import root as convey_root
     from solstone.convey import state
-    from solstone.convey.secure_listener import ConveyIdentity
     from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
     from solstone.think.link.auth import AuthorizedClients
     from solstone.think.link.paths import authorized_clients_path
 
     original_journal_root = state.journal_root
-
-    def _pl_identity() -> ConveyIdentity:
-        return ConveyIdentity(
-            mode="pl-via-spl",
-            fingerprint=TEST_PL_FINGERPRINT,
-            device_label="pl-observer",
-            paired_at="2026-05-20T00:00:00Z",
-            session_id="session-1",
-        )
 
     class BoundObserverClient:
         def __init__(self, client):
@@ -88,35 +84,12 @@ def observer_env(tmp_path, monkeypatch, observer_app):
                 and isinstance(headers, dict)
                 and ("Authorization" in headers or OBSERVER_HANDLE_HEADER in headers)
             ):
-                overrides["pl.identity"] = _pl_identity()
+                overrides["pl.identity"] = pl_identity(TEST_PL_FINGERPRINT)
             adjusted["environ_overrides"] = overrides
             return adjusted
 
-        def _bind_created_observer(self, response) -> None:
-            if response.status_code != 200:
-                return
-            data = response.get_json(silent=True)
-            key = data.get("key") if isinstance(data, dict) else None
-            if not isinstance(key, str) or not key:
-                return
-            from solstone.apps.observer.utils import load_observer, save_observer
-
-            observer = load_observer(key)
-            if observer is None:
-                return
-            observer["device_binding"] = {
-                "device": TEST_PL_FINGERPRINT,
-                "kind": "cert",
-            }
-            assert save_observer(observer)
-
         def post(self, path: str, *args: Any, **kwargs: Any):
-            response = self._client.post(
-                path, *args, **self._request_kwargs(path, kwargs)
-            )
-            if path == "/app/observer/api/create":
-                self._bind_created_observer(response)
-            return response
+            return self._client.post(path, *args, **self._request_kwargs(path, kwargs))
 
         def get(self, path: str, *args: Any, **kwargs: Any):
             return self._client.get(path, *args, **self._request_kwargs(path, kwargs))
@@ -153,13 +126,25 @@ def observer_env(tmp_path, monkeypatch, observer_app):
             paired_at="2026-05-20T00:00:00Z",
         )
         monkeypatch.setattr(convey_root, "get_authorized_clients", lambda: authorized)
-        client = BoundObserverClient(observer_app.test_client())
+        raw_client = observer_app.test_client()
+        client = BoundObserverClient(raw_client)
 
         class Env:
             def __init__(self):
                 self.journal = journal
                 self.client = client
+                self.unbound_client = raw_client
                 self.app = observer_app
+                self.register_bound_observer = lambda name: register_bound_observer(
+                    raw_client,
+                    name,
+                    TEST_PL_FINGERPRINT,
+                )
+                self.register_unbound_observer = lambda name: register_unbound_observer(
+                    raw_client,
+                    name,
+                )
+                self.pl_identity = lambda: pl_identity(TEST_PL_FINGERPRINT)
 
         return Env()
 

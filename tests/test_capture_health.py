@@ -33,6 +33,7 @@ def test_no_last_seen_is_offline(monkeypatch):
     result = get_capture_health()
 
     assert result["observers"][0]["status"] == "offline"
+    assert result["observers"][0]["device_binding_kind"] == "cert"
 
 
 def test_disabled_observers_excluded(monkeypatch):
@@ -89,6 +90,7 @@ def test_degraded_status_from_rejection(monkeypatch):
     assert result["status"] == "degraded"
     observer = result["observers"][0]
     assert observer["status"] == "degraded"
+    assert observer["device_binding_kind"] == "cert"
     assert observer["ingest_rejection"]["reason_code"] == "ingest_contract_invalid"
     assert "segment" not in observer["ingest_rejection"]
 
@@ -104,6 +106,7 @@ def test_legacy_observer_not_failed(monkeypatch):
 
     assert result["status"] == "active"
     assert result["observers"][0]["status"] == "active"
+    assert result["observers"][0]["device_binding_kind"] == "cert"
     assert "ingest_rejection" not in result["observers"][0]
 
     monkeypatch.setattr(
@@ -122,6 +125,7 @@ def test_legacy_observer_not_failed(monkeypatch):
 
     assert result["status"] == "active"
     assert result["observers"][0]["status"] == "active"
+    assert result["observers"][0]["device_binding_kind"] == "cert"
     assert "ingest_rejection" not in result["observers"][0]
     assert result["observers"][0]["beacon"]["version"] == "0.3.1"
 
@@ -138,4 +142,23 @@ def test_unbound_observer_uses_freshness_status(monkeypatch):
     assert result["status"] == "active"
     observer = result["observers"][0]
     assert observer["status"] == "active"
-    assert "unbound" not in observer
+    assert observer["device_binding_kind"] is None
+
+
+def test_all_unbound_active_rolls_up_to_active(monkeypatch):
+    monkeypatch.setattr("solstone.think.capture_health.now_ms", lambda: 1000)
+    monkeypatch.setattr(
+        "solstone.apps.observer.utils.list_observers",
+        lambda: [
+            {"name": "a", "enabled": True, "last_seen": 1000},
+            {"name": "b", "enabled": True, "last_seen": 990},
+        ],
+    )
+
+    result = get_capture_health()
+
+    assert result["status"] == "active"
+    assert [observer["device_binding_kind"] for observer in result["observers"]] == [
+        None,
+        None,
+    ]

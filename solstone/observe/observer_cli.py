@@ -30,6 +30,7 @@ from solstone.apps.observer.utils import (
     get_hist_dir,
     list_observers,
     load_history,
+    observer_device_binding_kind,
     observer_filename_prefix,
     pruned_segments,
     revoke_observer_record,
@@ -189,6 +190,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                     "name": r.get("name", ""),
                     "prefix": observer_filename_prefix(r),
                     "status": _status_label(r),
+                    "device_binding_kind": observer_device_binding_kind(r),
                     "last_seen": r.get("last_seen"),
                     "last_segment_received_at": r.get("last_segment_received_at"),
                     "last_segment_day": r.get("last_segment_day"),
@@ -204,22 +206,23 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
 
     print(
-        f"{'Name':<20} {'Prefix':<18} {'Status':<14} "
+        f"{'Name':<20} {'Prefix':<18} {'Status':<14} {'Binding':<10} "
         f"{'Last Seen':<18} {'Last Segment':<12} {'Segments':>10} {'Bytes':>12}"
     )
-    print("-" * 107)
+    print("-" * 118)
 
     for r in observers:
         name = r.get("name", "")
         prefix = observer_filename_prefix(r)
         status = _status_label(r)
+        binding = observer_device_binding_kind(r) or "unbound"
         last_seen = _fmt_time(r.get("last_seen"))
         last_segment = _fmt_compact_age(r.get("last_segment_received_at"))
         stats = r.get("stats", {})
         segments = stats.get("segments_received", 0)
         bytes_recv = _fmt_bytes(stats.get("bytes_received", 0))
         print(
-            f"{name:<20} {prefix:<18} {status:<14} "
+            f"{name:<20} {prefix:<18} {status:<14} {binding:<10} "
             f"{last_seen:<18} {last_segment:<12} {segments:>10} {bytes_recv:>12}"
         )
 
@@ -380,6 +383,7 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
                     "name": name,
                     "prefix": key_prefix,
                     "status": _status_label(observer),
+                    "device_binding_kind": observer_device_binding_kind(observer),
                     "created_at": observer.get("created_at"),
                     "last_seen": observer.get("last_seen"),
                     "last_segment_received_at": observer.get(
@@ -424,6 +428,7 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
     print(f"Observer: {name}")
     print_field("Prefix:", key_prefix)
     print_field("Status:", _status_label(observer))
+    print_field("Binding:", observer_device_binding_kind(observer) or "unbound")
     print_field("Created:", _fmt_time(observer.get("created_at")))
     print_field("Last seen:", _fmt_time(observer.get("last_seen")))
     print_field("Last segment:", last_segment_context)
@@ -496,6 +501,7 @@ def _status_all(json_output: bool = False) -> int:
                             "name": r.get("name", ""),
                             "prefix": observer_filename_prefix(r),
                             "status": _status_label(r),
+                            "device_binding_kind": observer_device_binding_kind(r),
                             "last_seen": r.get("last_seen"),
                             "last_segment_received_at": r.get(
                                 "last_segment_received_at"
@@ -517,18 +523,20 @@ def _status_all(json_output: bool = False) -> int:
     print(f"  Total bytes:    {_fmt_bytes(total_bytes)}")
 
     print(
-        f"\n{'Name':<20} {'Prefix':<18} {'Status':<14} "
+        f"\n{'Name':<20} {'Prefix':<18} {'Status':<14} {'Binding':<10} "
         f"{'Last Seen':<18} {'Last Segment':<12}"
     )
-    print("-" * 87)
+    print("-" * 98)
     for r in observers:
         name = r.get("name", "")
         prefix = observer_filename_prefix(r)
         status = _status_label(r)
+        binding = observer_device_binding_kind(r) or "unbound"
         last_seen = _fmt_time(r.get("last_seen"))
         last_segment = _fmt_compact_age(r.get("last_segment_received_at"))
         print(
-            f"{name:<20} {prefix:<18} {status:<14} {last_seen:<18} {last_segment:<12}"
+            f"{name:<20} {prefix:<18} {status:<14} {binding:<10} "
+            f"{last_seen:<18} {last_segment:<12}"
         )
 
     return 0

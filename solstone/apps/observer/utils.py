@@ -92,6 +92,11 @@ def observer_device_binding(record: dict[str, Any]) -> dict[str, str] | None:
         return None
 
 
+def observer_device_binding_kind(record: dict[str, Any]) -> str | None:
+    binding = observer_device_binding(record)
+    return None if binding is None else binding["kind"]
+
+
 def get_observers_dir(*, ensure_exists: bool = True) -> Path:
     """Get the observers storage directory."""
     return get_app_storage_path("observer", "observers", ensure_exists=ensure_exists)
@@ -515,6 +520,12 @@ def revoke_observer_record(identifier: str) -> dict:
     return observer
 
 
+class ObserverRevokeError(RuntimeError):
+    def __init__(self, message: str, revoked: list[dict]) -> None:
+        super().__init__(message)
+        self.revoked = revoked
+
+
 def revoke_observers_bound_to_device(device: str) -> list[dict]:
     """Revoke all observer records bound to a paired-device identity."""
     revoked: list[dict] = []
@@ -530,7 +541,7 @@ def revoke_observers_bound_to_device(device: str) -> list[dict]:
         observer["revoked"] = True
         observer["revoked_at"] = revoked_at
         if not save_observer(observer):
-            raise RuntimeError("failed to save observer")
+            raise ObserverRevokeError("failed to save observer", revoked)
         key_prefix = observer_filename_prefix(observer)
         log_app_action(
             app="observer",

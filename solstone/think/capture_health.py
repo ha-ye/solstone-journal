@@ -35,6 +35,7 @@ def get_capture_health() -> dict:
         get_active_ingest_rejection,
         get_health_beacon,
         list_observers,
+        observer_device_binding_kind,
     )
 
     try:
@@ -73,6 +74,7 @@ def get_capture_health() -> dict:
                 "name": o.get("name", "unknown"),
                 "last_seen": last_seen,
                 "status": obs_status,
+                "device_binding_kind": observer_device_binding_kind(o),
             }
 
             rejection = get_active_ingest_rejection(o)

@@ -157,6 +157,7 @@ JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darw
 JOURNAL_MAINT_TASKS_CHECK = Check("journal_maint_tasks", "blocker", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
 CAPTURE_HEALTH_CHECK = Check("capture_health", "advisory", ("linux", "darwin"))
+OBSERVER_BINDING_CHECK = Check("observer_binding", "advisory", ("linux", "darwin"))
 OBSERVER_INGEST_HEALTH_CHECK = Check(
     "observer_ingest_health", "advisory", ("linux", "darwin")
 )
@@ -1115,6 +1116,30 @@ def capture_health_check(args: Args) -> CheckResult:
     )
 
 
+def observer_binding_check(args: Args) -> CheckResult:
+    del args
+    result = get_capture_health()
+    observers = result.get("observers", [])
+    total = len(observers)
+    unbound = [
+        observer
+        for observer in observers
+        if observer.get("device_binding_kind") is None
+    ]
+    if not unbound:
+        return make_result(
+            OBSERVER_BINDING_CHECK,
+            "ok",
+            f"active observer records={total}; unbound=0",
+        )
+    names = ", ".join(str(observer.get("name", "unknown")) for observer in unbound)
+    return make_result(
+        OBSERVER_BINDING_CHECK,
+        "ok",
+        f"active observer records={total}; unbound={len(unbound)}; streams={names}",
+    )
+
+
 def _observer_delivery_stall_clause(
     observer: dict,
     facts: dict,
@@ -1475,6 +1500,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (TASK_PACE_CHECK, task_pace_check),
     (BRAIN_CHECK, brain_check),
     (CAPTURE_HEALTH_CHECK, capture_health_check),
+    (OBSERVER_BINDING_CHECK, observer_binding_check),
     (OBSERVER_DELIVERY_STALL_CHECK, observer_delivery_stall_check),
     (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
     (ORPHAN_SEGMENT_PDF_CHECK, orphan_segment_pdf_check),

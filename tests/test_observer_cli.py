@@ -440,6 +440,7 @@ def _table_cell(output: str, row: str, column: str) -> str:
             "Name",
             "Prefix",
             "Status",
+            "Binding",
             "Last Seen",
             "Last Segment",
             "Segments",
@@ -756,6 +757,7 @@ def test_cmd_list_json_includes_prefix_and_status(
     rows = {row["name"]: row for row in json.loads(captured.out)}
     assert rows["desktop"]["prefix"] == "abcdefgh"
     assert rows["desktop"]["status"] == "disconnected"
+    assert rows["desktop"]["device_binding_kind"] == "cert"
     assert "mode" not in rows["desktop"]
 
 
@@ -789,7 +791,9 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
     assert rc == 0
     rows = {row["name"]: row for row in json.loads(captured.out)}
     assert rows["unbound"]["status"] == "connected"
+    assert rows["unbound"]["device_binding_kind"] is None
     assert rows["revoked"]["status"] == "revoked"
+    assert rows["revoked"]["device_binding_kind"] is None
 
     rc = observer_cli.cmd_list(argparse.Namespace(json_output=False))
 
@@ -798,6 +802,9 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
     assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
         "connected"
     )
+    assert _table_cell(
+        captured.out, _table_row(captured.out, "unbound"), "Binding"
+    ) == ("unbound")
     assert _table_cell(captured.out, _table_row(captured.out, "revoked"), "Status") == (
         "revoked"
     )
@@ -808,7 +815,9 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert json.loads(captured.out)["status"] == "connected"
+    single = json.loads(captured.out)
+    assert single["status"] == "connected"
+    assert single["device_binding_kind"] is None
 
     rc = observer_cli.cmd_status(
         argparse.Namespace(identifier="unbound", json_output=False)
@@ -817,6 +826,7 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
     captured = capsys.readouterr()
     assert rc == 0
     assert "  Status:       connected\n" in captured.out
+    assert "  Binding:      unbound\n" in captured.out
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=True))
 
@@ -830,6 +840,12 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
         "unbound": "connected",
         "revoked": "revoked",
     }
+    assert {
+        row["name"]: row["device_binding_kind"] for row in payload["observers"]
+    } == {
+        "unbound": None,
+        "revoked": None,
+    }
 
     rc = observer_cli.cmd_status(argparse.Namespace(identifier=None, json_output=False))
 
@@ -839,6 +855,9 @@ def test_missing_binding_uses_connection_status_in_list_and_status(
     assert _table_cell(captured.out, _table_row(captured.out, "unbound"), "Status") == (
         "connected"
     )
+    assert _table_cell(
+        captured.out, _table_row(captured.out, "unbound"), "Binding"
+    ) == ("unbound")
 
 
 def test_fmt_compact_age_units_and_guards(

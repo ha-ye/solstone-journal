@@ -70,6 +70,23 @@ def test_legacy_link_prefix_serves_native_client_routes(
     assert client.get("/app/link/local-endpoints").status_code == 200
 
 
+@pytest.mark.parametrize(
+    "header",
+    ("X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host"),
+)
+def test_legacy_link_local_endpoints_proxy_headers_404(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    header: str,
+) -> None:
+    app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
+    client = app.test_client()
+
+    response = client.get("/app/link/local-endpoints", headers={header: "1.2.3.4"})
+
+    assert response.status_code == 404
+
+
 def _full_rule(prefix: str, suffix: str) -> str:
     return f"{prefix}/" if suffix == "/" else f"{prefix}{suffix}"
 

@@ -52,6 +52,7 @@ from solstone.convey.reasons import (
     INVALID_SEGMENT_OR_STREAM,
     LOCAL_REQUEST_ONLY,
     MISSING_REQUIRED_FIELD,
+    OPERATION_NO_LONGER_AVAILABLE,
     PAIRED_DEVICE_NOT_FOUND,
     PL_REVOKED,
     SETTINGS_OPERATION_FAILED,
@@ -462,53 +463,14 @@ def callosum_sse() -> Any:
 
 @observer_bp.route("/api/create", methods=["POST"])
 def api_create() -> Any:
-    """Create a new observer registration (legacy web-UI mint).
-
-    Used only by the observer management page's "add observer" button
-    (apps/observer/workspace.html). Auto-registering observer clients use
-    POST /app/observer/register instead, which takes a self-descriptor and
-    locks a stream identity onto the record. This route is kept for the
-    human-facing management flow; it always mints and returns ``prefix``.
-    """
-    data = request.get_json(force=True) if request.is_json else {}
-    name = data.get("name", "").strip()
-    if not name:
-        return error_response(MISSING_REQUIRED_FIELD, detail="Name is required")
-
-    # Generate key
-    key = _generate_key()
-
-    # Create observer record
-    observer_data = {
-        "key": key,
-        "name": name,
-        "created_at": now_ms(),
-        "last_seen": None,
-        "last_segment": None,
-        "last_segment_received_at": None,
-        "last_segment_day": None,
-        "enabled": True,
-        "stats": {
-            "segments_received": 0,
-            "bytes_received": 0,
-        },
-    }
-
-    if not save_observer(observer_data):
-        return error_response(
-            SETTINGS_OPERATION_FAILED,
-            detail="Failed to save observer",
-        )
-
-    # Log observer creation (journal-level, no facet)
-    log_app_action(
-        app="observer",
-        facet=None,
-        action="observer_create",
-        params={"name": name, "key_prefix": key[:8]},
+    """Refuse retired hand-created observer registrations."""
+    return error_response(
+        OPERATION_NO_LONGER_AVAILABLE,
+        detail=(
+            "Observer records are no longer created by hand. "
+            "A device registers itself when you pair it."
+        ),
     )
-
-    return jsonify(_register_descriptor(observer_data))
 
 
 _REGISTER_REQUIRED_FIELDS = ("platform", "hostname", "stream_type", "version")

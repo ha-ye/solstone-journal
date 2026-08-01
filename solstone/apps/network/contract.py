@@ -40,6 +40,19 @@ _LOCAL_ENDPOINT_SCHEMA = {
     },
 }
 
+_REVOKED_OBSERVER_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "name": {"type": "string"},
+            "prefix": {"type": "string"},
+        },
+        "required": ["name", "prefix"],
+    },
+}
+
 OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="link.pairStart",
@@ -54,8 +67,13 @@ OPERATIONS: list[OperationSpec] = [
             fields=(
                 FieldSpec("device_label", "string"),
                 FieldSpec("role", "string"),
+                FieldSpec("same_machine", "boolean"),
             ),
-            example={"device_label": "Jer iPhone", "role": "phone"},
+            example={
+                "device_label": "Jer iPhone",
+                "role": "phone",
+                "same_machine": False,
+            },
         ),
         responses=(
             ResponseSpec(
@@ -83,8 +101,8 @@ OPERATIONS: list[OperationSpec] = [
             ),
             _json_error(
                 403,
-                ("pl_revoked",),
-                "Access gate rejected a revoked paired-link identity.",
+                ("local_request_only", "pl_revoked"),
+                "Access gate rejected the pair-start request.",
             ),
             _json_error(
                 503,
@@ -307,9 +325,22 @@ OPERATIONS: list[OperationSpec] = [
         responses=(
             ResponseSpec(
                 status=200,
-                description="The revoked fingerprint.",
-                named_fields=(FieldSpec("unpaired", "string", required=True),),
-                example={"unpaired": "sha256:abc123"},
+                description="The revoked fingerprint and any observer records revoked with it.",
+                named_fields=(
+                    FieldSpec("unpaired", "string", required=True),
+                    FieldSpec(
+                        "revoked_observers",
+                        "array",
+                        required=True,
+                        raw_schema=_REVOKED_OBSERVER_SCHEMA,
+                    ),
+                ),
+                example={
+                    "unpaired": "sha256:abc123",
+                    "revoked_observers": [
+                        {"name": "phone-a", "prefix": "phone-a-"},
+                    ],
+                },
             ),
             _json_error(
                 400,
@@ -325,6 +356,11 @@ OPERATIONS: list[OperationSpec] = [
                 404,
                 ("paired_device_not_found",),
                 "No paired device matched the request.",
+            ),
+            _json_error(
+                500,
+                ("internal_error",),
+                "Observer revoke cascade failed after the device was unpaired.",
             ),
         ),
     ),

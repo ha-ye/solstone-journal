@@ -8,6 +8,7 @@ import logging
 from importlib import import_module
 
 import solstone.apps.network.routes as link_routes
+import solstone.apps.observer.utils as observer_utils
 from solstone.apps.observer.utils import load_observer, save_observer
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
@@ -56,8 +57,30 @@ def _save_bound_observer(handle: str, name: str, fingerprint: str) -> None:
     )
 
 
+def _save_unbound_observer(handle: str, name: str) -> None:
+    assert save_observer(
+        {
+            "key": handle,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
+    )
+
+
 def _post_unpair(env, payload: dict):
     return env.client.post("/app/network/unpair", json=payload)
+
+
+def _unpair_payload(
+    fingerprint: str, revoked_observers: list[dict] | None = None
+) -> dict:
+    return {
+        "unpaired": fingerprint,
+        "revoked_observers": revoked_observers or [],
+    }
 
 
 def _action_entries(env) -> list[dict]:
@@ -78,7 +101,7 @@ def test_unpair_phone_by_fingerprint_removes_authorized(link_env) -> None:
     response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PHONE_FINGERPRINT)
     assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
     assert load_journal_source_by_fingerprint(PHONE_FINGERPRINT) is None
 
@@ -93,11 +116,63 @@ def test_unpair_phone_revokes_bound_observer_records(link_env) -> None:
     response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(
+        PHONE_FINGERPRINT,
+        [
+            {"name": "phone-a", "prefix": "phone-a-"},
+            {"name": "phone-b", "prefix": "phone-b-"},
+        ],
+    )
     assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
     assert load_observer("phone-a-observer")["revoked"] is True
     assert load_observer("phone-b-observer")["revoked"] is True
     assert load_observer("other-observer")["revoked"] is False
+
+
+def test_unpair_phone_leaves_unbound_observer_records_unrevoked(link_env) -> None:
+    env = link_env()
+    _add_authorized(PHONE_FINGERPRINT, "phone")
+    _save_unbound_observer("phone-a-observer", "phone-a")
+    _save_unbound_observer("phone-b-observer", "phone-b")
+
+    response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
+
+    assert response.status_code == 200
+    assert response.get_json() == _unpair_payload(PHONE_FINGERPRINT)
+    assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
+    assert load_observer("phone-a-observer")["revoked"] is False
+    assert load_observer("phone-b-observer")["revoked"] is False
+
+
+def test_unpair_partial_observer_revoke_failure_reports_saved_revocations(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    _add_authorized(PHONE_FINGERPRINT, "phone")
+    _save_bound_observer("phone-a-observer", "phone-a", PHONE_FINGERPRINT)
+    _save_bound_observer("phone-b-observer", "phone-b", PHONE_FINGERPRINT)
+    real_save_observer = observer_utils.save_observer
+
+    def fail_second_bound_observer(observer: dict) -> bool:
+        if observer.get("name") == "phone-b":
+            return False
+        return real_save_observer(observer)
+
+    monkeypatch.setattr(observer_utils, "save_observer", fail_second_bound_observer)
+
+    response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
+
+    assert response.status_code == 500
+    body = response.get_json()
+    assert body["reason_code"] == "internal_error"
+    assert body["detail"] == "Failed to revoke one or more bound observer streams."
+    assert body["unpaired"] == PHONE_FINGERPRINT
+    assert body["failed_operation"] == "observer_revoke"
+    assert body["revoked_observers"] == [{"name": "phone-a", "prefix": "phone-a-"}]
+    assert _authorized().is_authorized(PHONE_FINGERPRINT) is False
+    assert load_observer("phone-a-observer")["revoked"] is True
+    assert load_observer("phone-b-observer")["revoked"] is False
 
 
 def test_unpair_cascade_runs_after_authorized_removal(
@@ -123,7 +198,7 @@ def test_unpair_cascade_runs_after_authorized_removal(
     response = _post_unpair(env, {"fingerprint": PHONE_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PHONE_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PHONE_FINGERPRINT)
     assert authorized_present_during_cascade == [False]
 
 
@@ -138,7 +213,7 @@ def test_unpair_unknown_role_removes_authorized_without_warning(
     response = _post_unpair(env, {"fingerprint": UNKNOWN_ROLE_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": UNKNOWN_ROLE_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(UNKNOWN_ROLE_FINGERPRINT)
     assert _authorized().is_authorized(UNKNOWN_ROLE_FINGERPRINT) is False
     assert [
         record
@@ -162,7 +237,7 @@ def test_unpair_peer_revokes_source_removes_authorized_and_logs_action(
     response = _post_unpair(env, {"device_label": "peer"})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PEER_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PEER_FINGERPRINT)
     assert _authorized().is_authorized(PEER_FINGERPRINT) is False
     source = load_journal_source_by_fingerprint(PEER_FINGERPRINT)
     assert source is not None
@@ -200,7 +275,7 @@ def test_unpair_peer_already_revoked_removes_authorized_and_warns(
     response = _post_unpair(env, {"fingerprint": PEER_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PEER_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PEER_FINGERPRINT)
     assert _authorized().is_authorized(PEER_FINGERPRINT) is False
     source = load_journal_source_by_fingerprint(PEER_FINGERPRINT)
     assert source is not None
@@ -221,7 +296,7 @@ def test_unpair_peer_missing_source_removes_authorized_and_warns(
     response = _post_unpair(env, {"fingerprint": PEER_FINGERPRINT})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PEER_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PEER_FINGERPRINT)
     assert _authorized().is_authorized(PEER_FINGERPRINT) is False
     assert load_journal_source_by_fingerprint(PEER_FINGERPRINT) is None
     assert "peer journal source missing" in caplog.text
@@ -245,7 +320,7 @@ def test_unpair_peer_save_failure_removes_authorized_and_logs_error(
     response = _post_unpair(env, {"device_label": "peer-save-fails"})
 
     assert response.status_code == 200
-    assert response.get_json() == {"unpaired": PEER_FINGERPRINT}
+    assert response.get_json() == _unpair_payload(PEER_FINGERPRINT)
     assert _authorized().is_authorized(PEER_FINGERPRINT) is False
     source = load_journal_source_by_fingerprint(PEER_FINGERPRINT)
     assert source is not None

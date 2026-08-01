@@ -51,6 +51,7 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
     segment_fully_sensed,
 )
+from tests.observer_registration_helpers import register_bound_observer
 
 DAY = "20990501"
 STREAM = "default"
@@ -480,24 +481,9 @@ def _completion(day: str):
 
 
 def _create_observer(env, name: str) -> str:
-    response = env.client.post(
-        "/app/observer/api/create",
-        json={"name": name},
-        content_type="application/json",
-    )
+    response = register_bound_observer(env.client, name, TEST_PL_FINGERPRINT)
     assert response.status_code == 200
-    key = response.get_json()["key"]
-
-    from solstone.apps.observer.utils import load_observer, save_observer
-
-    observer = load_observer(key)
-    assert observer is not None
-    observer["device_binding"] = {
-        "device": TEST_PL_FINGERPRINT,
-        "kind": "cert",
-    }
-    assert save_observer(observer)
-    return key
+    return response.get_json()["key"]
 
 
 def _pl_identity():
