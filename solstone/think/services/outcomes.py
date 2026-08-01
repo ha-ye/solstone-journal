@@ -88,7 +88,6 @@ TOKEN_TO_CODE: dict[str, str] = {
     "consent_timeout": EXPIRED,
     "nonce_invalid": MALFORMED,
     "unexpected_payload": MALFORMED,
-    "scout_server_bad_payload": MALFORMED,
     "portal_unreachable": NETWORK_ERROR,
     "tls_verification_failed": NETWORK_ERROR,
     "relay_unreachable": NETWORK_ERROR,
