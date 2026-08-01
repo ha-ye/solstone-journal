@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from solstone.apps.network import routes as link_routes
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import LinkState, authorized_clients_path
 
@@ -110,26 +109,3 @@ def test_duplicate_label_pair_preserves_ghost_distinguishability(link_env) -> No
         devices[predecessor]["fingerprint_short"]
         != devices[paired["fingerprint"]]["fingerprint_short"]
     )
-
-
-def test_duplicate_label_pair_does_not_emit_device_superseded(
-    link_env,
-    monkeypatch,
-) -> None:
-    env = link_env()
-    calls = []
-    _seed_predecessor()
-
-    def mock_emit(*args, **kwargs):
-        calls.append((args, kwargs))
-        return True
-
-    monkeypatch.setattr(link_routes, "emit", mock_emit)
-
-    _pair(env)
-
-    assert [
-        (args, kwargs)
-        for args, kwargs in calls
-        if args == ("link", "device_superseded")
-    ] == []

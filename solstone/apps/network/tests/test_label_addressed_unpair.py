@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+from werkzeug.test import TestResponse
+
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
 
@@ -19,7 +21,7 @@ def _write_authorized(entries: list[dict[str, object]]) -> None:
     path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _post_unpair(env, label: str):
+def _post_unpair(env, label: str) -> TestResponse:
     return env.client.post("/app/network/unpair", json={"device_label": label})
 
 
