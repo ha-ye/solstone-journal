@@ -51,7 +51,6 @@ def test_thinking_static_uses_moved_endpoints_and_local_reason():
         "api/local/availability",
         "api/local/bootstrap",
         "api/local/endpoint",
-        "api/scout",
     ):
         assert endpoint in text
     assert "gpu_probe_failed" in text
@@ -61,36 +60,12 @@ def test_thinking_static_uses_moved_endpoints_and_local_reason():
         "/app/settings/api/keys",
         "/app/settings/api/validate-keys",
         "/app/settings/api/local",
-        "/app/settings/api/scout",
     ):
         assert moved not in text
     # The confidential audio switch writes transcribe config, which the settings
     # app owns: this is the one settings endpoint thinking may call.
     assert "/app/settings/api/config" in text
     assert text.count("/app/settings") == 1
-
-
-def test_thinking_static_has_scout_orchestration_structures():
-    text = _static_text()
-
-    for name in (
-        "refreshScout",
-        "renderScout",
-        "pollScoutUntilTerminal",
-        "enableScout",
-        "checkScout",
-        "refreshScoutOp",
-        "disableScout",
-    ):
-        assert f"function {name}(" in text
-    assert "switchLane('byo')" in text
-    assert "setSelectedByoProvider('google')" in text
-    assert "phase === 'repair_needed'" in text
-    assert "api('api/scout/enable'" in text
-    assert "api('api/scout/check'" in text
-    assert "api('api/scout/refresh'" in text
-    assert "api('api/scout/disable'" in text
-    assert "$('scoutCheck')?.addEventListener" in text
 
 
 def test_thinking_surface_avoids_forbidden_owner_terms():

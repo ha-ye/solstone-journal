@@ -17,9 +17,6 @@ BLOCKED_COPY_RE = re.compile(
 def test_handoff_guidance_avoids_blocked_brand_terms() -> None:
     strings = [
         *(value or "" for value in outcomes.GUIDANCE.values()),
-        status.SCOUT_MANUAL_KEY_GUIDANCE,
-        status.SCOUT_PENDING_GUIDANCE,
-        status.SCOUT_DISABLED_GUIDANCE,
         status.SPL_NOT_ENABLED_GUIDANCE,
         status.SPL_INCONSISTENT_GUIDANCE,
     ]

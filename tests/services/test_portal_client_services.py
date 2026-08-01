@@ -29,15 +29,17 @@ class FakeResponse:
         return json.dumps(self._payload).encode("utf-8")
 
 
-def test_scout_is_default_handoff_service() -> None:
-    assert (
-        portal_client.browser_url("https://services.test", "NONCE")
-        == "https://services.test/enable/scout?nonce=NONCE"
-    )
-    assert (
-        portal_client.poll_url("https://services.test", "NONCE")
-        == "https://services.test/handoff/scout?nonce=NONCE"
-    )
+@pytest.mark.parametrize(
+    "builder",
+    [
+        portal_client.browser_url,
+        portal_client.poll_url,
+        portal_client.poll_handoff_once,
+    ],
+)
+def test_service_is_required_keyword(builder) -> None:
+    with pytest.raises(TypeError):
+        builder("https://services.test", "NONCE")
 
 
 def test_spl_handoff_urls_are_supported() -> None:
@@ -100,33 +102,14 @@ def test_browser_url_omits_instance_when_not_provided() -> None:
     assert "instance=" not in portal_client.browser_url(
         "https://services.test",
         "NONCE",
-        service="scout",
-    )
-    assert "instance=" not in portal_client.browser_url(
-        "https://services.test",
-        "NONCE",
         service="spp",
-    )
-
-
-def test_scout_browser_url_includes_instance_when_explicitly_provided() -> None:
-    instance = "00000000-0000-4000-8000-000000000000"
-
-    assert (
-        portal_client.browser_url(
-            "https://services.test",
-            "NONCE",
-            service="scout",
-            instance=instance,
-        )
-        == f"https://services.test/enable/scout?nonce=NONCE&instance={instance}"
     )
 
 
 @pytest.mark.parametrize("builder", [portal_client.browser_url, portal_client.poll_url])
 def test_unknown_service_url_builder_raises(builder) -> None:
     with pytest.raises(ValueError, match="unsupported handoff service"):
-        builder("https://services.test", "NONCE", service="bogus")
+        builder("https://services.test", "NONCE", service="scout")
 
 
 def test_poll_handoff_unknown_service_never_opens_network(monkeypatch) -> None:
@@ -139,7 +122,7 @@ def test_poll_handoff_unknown_service_never_opens_network(monkeypatch) -> None:
         portal_client.poll_handoff_once(
             "https://services.test",
             "NONCE",
-            service="bogus",
+            service="scout",
         )
 
 

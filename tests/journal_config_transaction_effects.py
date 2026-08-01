@@ -408,53 +408,6 @@ def _spl_disable_trigger(harness: JournalConfigEffectHarness) -> None:
     assert "disabled sol private link" not in harness.caplog.text
 
 
-def _scout_payload() -> dict[str, str]:
-    return {
-        "google_api_key": "google-key",
-        "dispatch_token": "dispatch",
-        "account_id": "acct",
-        "created_at": "2026-07-01T00:00:00+00:00",
-    }
-
-
-def _scout_provision_trigger(harness: JournalConfigEffectHarness) -> None:
-    harness.seed(_base_config())
-    module = importlib.import_module("solstone.think.services.scout")
-    with harness.caplog.at_level(logging.DEBUG, logger=module.log.name):
-        _expect_exception(lambda: module.provision_scout_handoff(_scout_payload()))
-    assert "provisioned scout service" not in harness.caplog.text
-
-
-def _scout_pending_trigger(harness: JournalConfigEffectHarness) -> None:
-    harness.seed(_base_config())
-    module = importlib.import_module("solstone.think.services.scout")
-    with harness.caplog.at_level(logging.DEBUG, logger=module.log.name):
-        _expect_exception(
-            lambda: module.record_scout_pending("acct", "now", "dispatch")
-        )
-    assert "recorded pending scout marker" not in harness.caplog.text
-
-
-def _scout_disable_trigger(harness: JournalConfigEffectHarness) -> None:
-    harness.seed(
-        _base_config(
-            env={"GOOGLE_API_KEY": "google-key"},
-            services={
-                "scout": {
-                    "account_id": "acct",
-                    "key_fingerprint_sha256": (
-                        "fc88e0ac64d2f3363d7281c688618a380635ca7453c1d460e54dcf15637e3d77"
-                    ),
-                }
-            },
-        )
-    )
-    module = importlib.import_module("solstone.think.services.scout")
-    with harness.caplog.at_level(logging.DEBUG, logger=module.log.name):
-        _expect_exception(module.disable_scout)
-    assert "disabled scout service" not in harness.caplog.text
-
-
 def _patch_local_endpoint(harness: JournalConfigEffectHarness) -> None:
     module = importlib.import_module("solstone.apps.thinking.routes")
     harness.monkeypatch.setattr(
@@ -754,27 +707,6 @@ JOURNAL_CONFIG_TRANSACTION_EFFECTS: tuple[JournalConfigEffectCase, ...] = (
         _spl_disable_trigger,
         'No "disabled sol private link" debug log.',
     ),
-    JournalConfigEffectCase(
-        "scout.provision",
-        "solstone/think/services/scout.py:provision_scout_handoff",
-        ("success_log",),
-        _scout_provision_trigger,
-        'No "provisioned scout service..." debug log.',
-    ),
-    JournalConfigEffectCase(
-        "scout.record_pending",
-        "solstone/think/services/scout.py:record_scout_pending",
-        ("success_log",),
-        _scout_pending_trigger,
-        'No "recorded pending scout marker..." debug log.',
-    ),
-    JournalConfigEffectCase(
-        "scout.disable.enabled",
-        "solstone/think/services/scout.py:disable_scout",
-        ("success_log",),
-        _scout_disable_trigger,
-        'No "disabled scout service" debug log.',
-    ),
 )
 
-assert len(JOURNAL_CONFIG_TRANSACTION_EFFECTS) == 32
+assert len(JOURNAL_CONFIG_TRANSACTION_EFFECTS) == 29

@@ -376,44 +376,14 @@ def test_provider_update_rejects_context_payload(settings_client_with_journal):
     assert payload["detail"] == "Unknown provider fields: contexts"
 
 
-def test_scout_enabled_google_provider_derives_byo_with_provenance(
-    settings_client_with_journal,
-):
-    client, journal_path = settings_client_with_journal
-    config_path = journal_path / "config" / "journal.json"
-    config = json.loads(config_path.read_text())
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "scout-key"
-    config.setdefault("services", {})["scout"] = {
-        "enabled_at": "2026-05-23T00:00:00Z",
-        "key_fingerprint_sha256": "fingerprint",
-    }
-    config["providers"]["active"] = {
-        "provider": "google",
-        "model": "gemini-3.5-flash",
-    }
-    _write_config(journal_path, config)
-
-    response = client.get("/app/thinking/api/providers")
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["active_lane"]["lane"] == "byo"
-    assert payload["active_lane"]["scout_enabled"] is True
-    assert payload["active_lane"]["scout_provenance_configured"] is True
-
-
-def test_byo_gemini_key_write_succeeds_when_scout_enabled(
+def test_byo_gemini_key_write_succeeds(
     settings_client_with_journal,
     monkeypatch,
 ):
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "scout-key"
-    config.setdefault("services", {})["scout"] = {
-        "enabled_at": "2026-05-23T00:00:00Z",
-        "key_fingerprint_sha256": "fingerprint",
-    }
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "existing-key"
     _write_config(journal_path, config)
     monkeypatch.setattr(
         "solstone.apps.thinking.routes.validate_key",
@@ -511,7 +481,7 @@ def test_validate_all_does_not_cache_result_for_a_concurrently_replaced_key(
     assert response.get_json()["key_validation"]["google"]["valid"] is True
 
 
-def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
+def test_thinking_status_payloads_are_secret_free(
     settings_client_with_journal, monkeypatch
 ):
     client, journal_path = settings_client_with_journal
@@ -521,9 +491,6 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "google-secret-key",
         "openai-secret-key",
         "anthropic-secret-key",
-        "scout-account-secret",
-        "dispatch-token-secret",
-        "fingerprint-secret",
         "confidential-account-secret",
         "confidential-credential-secret",
         "confidential-fingerprint-secret",
@@ -537,13 +504,6 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
             "ANTHROPIC_API_KEY": "anthropic-secret-key",
         }
     )
-    config.setdefault("services", {})["scout"] = {
-        "enabled_at": "2026-05-23T00:00:00Z",
-        "account_id": "scout-account-secret",
-        "dispatch_token": "dispatch-token-secret",
-        "key_fingerprint_sha256": "fingerprint-secret",
-        "key_created_at": "2026-05-23T00:00:00Z",
-    }
     config.setdefault("services", {})["confidential"] = {
         "enabled_at": "2026-05-24T00:00:00Z",
         "account_id": "confidential-account-secret",
@@ -595,8 +555,6 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
     providers_payload = responses[0].get_json()
     assert providers_payload["active_lane"] == {
         "lane": "byo",
-        "scout_enabled": True,
-        "scout_provenance_configured": True,
         "confidential_enabled": True,
         "confidential_audio": True,
         "confidential_provenance_configured": True,
@@ -1371,7 +1329,7 @@ def test_derive_provider_lane_derives_confidential_from_local_endpoint_provenanc
     )
 
 
-def test_get_providers_scout_google_grandfather_is_zero_touch(
+def test_google_provider_derives_byo_with_historical_scout_config(
     settings_client_with_journal,
 ):
     client, journal_path = settings_client_with_journal
@@ -1389,11 +1347,36 @@ def test_get_providers_scout_google_grandfather_is_zero_touch(
     _write_config(journal_path, config)
     before = config_path.read_bytes()
 
+    assert derive_provider_lane(config, "google") == "byo"
+
     response = client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
-    assert response.get_json()["active_lane"]["lane"] == "byo"
+    payload = response.get_json()
+    assert payload["provider_status"]["google"] == {
+        "provider": "google",
+        "configured": True,
+        "generate_ready": True,
+        "cogitate_ready": True,
+    }
+    assert payload["active_lane"]["lane"] == "byo"
     assert config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/app/thinking/api/scout"),
+        ("post", "/app/thinking/api/scout/check"),
+        ("post", "/app/thinking/api/scout/enable"),
+        ("post", "/app/thinking/api/scout/refresh"),
+        ("post", "/app/thinking/api/scout/disable"),
+    ],
+)
+def test_scout_routes_are_not_registered(settings_client, method, path):
+    response = getattr(settings_client, method)(path)
+
+    assert response.status_code == 404
 
 
 def test_providers_payload_local_status_uses_endpoint_readiness_under_byo(
@@ -1532,7 +1515,7 @@ def test_get_providers_uses_one_config_snapshot_across_lanes(
     from solstone.think import brain_health, models
     from solstone.think import journal_config as journal_config_module
     from solstone.think.providers import brain_state, local_endpoint
-    from solstone.think.services import scout, spp
+    from solstone.think.services import spp
 
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
@@ -1586,7 +1569,6 @@ def test_get_providers_uses_one_config_snapshot_across_lanes(
     monkeypatch.setattr(brain_health, "inspect_brain_state", inspect_once)
     monkeypatch.setattr(brain_state, "read_journal_config", fail_reread)
     monkeypatch.setattr(local_endpoint, "read_journal_config", fail_reread)
-    monkeypatch.setattr(scout, "read_journal_config", fail_reread)
     monkeypatch.setattr(spp, "read_journal_config", fail_reread)
     monkeypatch.setattr(journal_config_module, "read_journal_config", fail_reread)
     monkeypatch.setattr(models, "get_config", fail_reread)
@@ -1619,7 +1601,7 @@ def test_spp_narrow_routes_use_one_config_and_one_brain_inspection(
     from solstone.think import brain_health
     from solstone.think import journal_config as journal_config_module
     from solstone.think.providers import brain_state, local_endpoint
-    from solstone.think.services import scout, spp
+    from solstone.think.services import spp
 
     client, journal_path = settings_client_with_journal
     config = json.loads(
@@ -1652,7 +1634,6 @@ def test_spp_narrow_routes_use_one_config_and_one_brain_inspection(
     monkeypatch.setattr(brain_health, "inspect_brain_state", inspect_once)
     monkeypatch.setattr(brain_state, "read_journal_config", fail_reread)
     monkeypatch.setattr(local_endpoint, "read_journal_config", fail_reread)
-    monkeypatch.setattr(scout, "read_journal_config", fail_reread)
     monkeypatch.setattr(spp, "read_journal_config", fail_reread)
     monkeypatch.setattr(journal_config_module, "read_journal_config", fail_reread)
 

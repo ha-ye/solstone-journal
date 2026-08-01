@@ -419,9 +419,8 @@ def test_byo_gating_reason_mapping_and_empty_guard() -> None:
         _node_script(
             """
 async function main() {
-  assert(byoModelStepAllowed('anthropic', {valid: true}, false) === true, 'valid non-scout should allow model step');
-  assert(byoModelStepAllowed('google', {valid: true}, true) === false, 'google scout should hide model step');
-  assert(byoModelStepAllowed('google', {valid: true}, false) === true, 'google without scout should allow model step');
+  assert(byoModelStepAllowed('anthropic', {valid: true}) === true, 'valid key should allow model step');
+  assert(byoModelStepAllowed('google', {valid: true}) === true, 'valid Google key should allow model step');
   assert(byoKeyInputEmpty('   ') === true, 'blank input should be empty');
   assert(byoKeyInputEmpty('sk-live') === false, 'nonblank input should not be empty');
 
@@ -470,7 +469,6 @@ async function main() {
     value: '   ',
     text,
     providersPayload: {},
-    scoutEnabled: false,
     setMode: () => {},
     selectModel: () => {},
     resetDraft: () => {},
@@ -603,7 +601,6 @@ async function main() {
     value: 'bad-key',
     text,
     providersPayload,
-    scoutEnabled: false,
     setMode: (next) => { mode = next; },
     selectModel: (model) => { selected = model; },
     resetDraft: () => { resets += 1; },
@@ -645,7 +642,6 @@ async function main() {
     value: 'good-key',
     text,
     providersPayload,
-    scoutEnabled: false,
     setMode: (next) => { mode = next; },
     selectModel: (model) => { selected = model; },
     resetDraft: () => {},
@@ -653,44 +649,13 @@ async function main() {
     showStatus: () => {},
   });
 
-  assert(valid.status === 'model', 'valid non-scout key should open model step');
+  assert(valid.status === 'model', 'valid key should open model step');
   assert(
     JSON.stringify(validCalls.map((call) => call.path)) === JSON.stringify(['api/keys/check', 'api/keys']),
     'valid key should check then store keys',
   );
   assert(mode === 'model', 'valid key should set model mode');
   assert(selected === 'injected-lite', 'valid key should preselect injected lite tier');
-
-  mode = '';
-  selected = '';
-  const scout = await runByoKeyCheckFlow({
-    apiFn: async (path) => {
-      if (path === 'api/keys/check') return {valid: true, provider: 'google'};
-      if (path === 'api/keys') {
-        return {
-          key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
-        };
-      }
-      throw new Error(`unexpected path ${path}`);
-    },
-    applyKeys: () => {},
-    provider: 'google',
-    providerName: 'Gemini',
-    envVar: 'GOOGLE_API_KEY',
-    value: 'google-key',
-    text,
-    providersPayload,
-    scoutEnabled: true,
-    setMode: (next) => { mode = next; },
-    selectModel: (model) => { selected = model; },
-    resetDraft: () => {},
-    renderFn: () => {},
-    showStatus: () => {},
-  });
-
-  assert(scout.status === 'checked', 'valid scout google key should not open model step');
-  assert(mode === 'paste', 'scout google should stay on paste');
-  assert(selected === '', 'scout google should not select a model');
 
   const disagreementCalls = [];
   statuses.length = 0;
@@ -713,7 +678,6 @@ async function main() {
     value: 'later-rejected-key',
     text,
     providersPayload,
-    scoutEnabled: false,
     setMode: (next) => { mode = next; },
     selectModel: (model) => { selected = model; },
     resetDraft: () => {},
@@ -746,7 +710,6 @@ async function main() {
       value: 'write-fails-key',
       text,
       providersPayload,
-      scoutEnabled: false,
       setMode: (next) => { mode = next; },
       selectModel: (model) => { selected = model; },
       resetDraft: () => {},
@@ -948,7 +911,6 @@ function runCase(target, providerState) {
     providers: {
       ...providerState,
       active_lane: {lane: 'confidential'},
-      scout_enabled: false,
       configuration_guidance: {
         id: 'choose_exact_gemini_model',
         heading: 'choose an exact Gemini model',
@@ -1000,7 +962,7 @@ function showView(name) {
   shownViews.push(name);
 }
 
-function runCase(label, keys, scoutEnabled) {
+function runCase(label, keys) {
   nodes.clear();
   hiddenCalls.length = 0;
   shownViews.length = 0;
@@ -1015,7 +977,6 @@ function runCase(label, keys, scoutEnabled) {
     providers: {
       active: {provider: 'local', model: 'local/qwen3.5-4b'},
       active_lane: {lane: 'confidential'},
-      scout_enabled: scoutEnabled,
       configuration_guidance: {
         id: 'choose_exact_gemini_model',
         heading: 'choose an exact Gemini model',
@@ -1041,12 +1002,7 @@ function runCase(label, keys, scoutEnabled) {
   assert(JSON.stringify(state.byoModelResolutionTargets) === JSON.stringify(['confidential_prior']), `${label} should keep targets`);
 }
 
-runCase('missing key', {api_keys: {}, key_validation: {}}, false);
-runCase(
-  'scout google',
-  {api_keys: {google: true}, key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}}},
-  true,
-);
+runCase('missing key', {api_keys: {}, key_validation: {}});
 console.log('PASS');
 """
         )
@@ -1070,7 +1026,6 @@ resetHarness({
     active: {provider: 'local', model: 'local/qwen'},
     active_lane: {lane: 'local'},
     provider_status: {local: {generate_ready: true, cogitate_ready: true}},
-    scout_enabled: false,
     model_tiers: {
       anthropic: [{tier: 'lite', label: 'Claude Lite', model: 'claude-lite'}],
     },
@@ -1111,7 +1066,6 @@ resetHarness({
   providers: {
     active: {provider: 'anthropic', model: 'claude-lite'},
     active_lane: {lane: 'byo'},
-    scout_enabled: false,
     model_tiers: {
       anthropic: [{tier: 'lite', label: 'Claude Lite', model: 'claude-lite'}],
     },
@@ -1151,7 +1105,6 @@ resetHarness({
   providers: {
     active: {provider: '', model: ''},
     active_lane: {lane: 'none'},
-    scout_enabled: false,
   },
   keys: {
     api_keys: {},
@@ -1187,7 +1140,6 @@ resetHarness({
   providers: {
     active: {provider: 'anthropic', model: 'claude-lite'},
     active_lane: {lane: 'byo'},
-    scout_enabled: false,
   },
   keys: {
     api_keys: {anthropic: true},
@@ -1224,7 +1176,6 @@ async function main() {
     providers: {
       active: {provider: '', model: ''},
       provider_status: {local: {generate_ready: true, cogitate_ready: true}},
-      scout_enabled: false,
     },
     keys: {
       api_keys: {},
@@ -1253,7 +1204,6 @@ async function main() {
       active: {provider: 'anthropic', model: 'claude-lite'},
       active_lane: {lane: 'byo'},
       provider_status: {local: {generate_ready: true, cogitate_ready: true}},
-      scout_enabled: false,
     },
     keys: {
       api_keys: {anthropic: true},
@@ -1277,7 +1227,7 @@ main().catch((error) => { console.error(error.stack || error); process.exit(1); 
     )
 
 
-def test_byo_render_shows_model_panel_only_for_valid_non_scout_key() -> None:
+def test_byo_render_shows_model_panel_for_valid_key() -> None:
     _run_node(
         _node_render_script(
             """
@@ -1289,7 +1239,6 @@ const state = {
   byoCustomModel: '',
   byoCustomCheckedModel: '',
   providers: {
-    scout_enabled: false,
     active: {provider: 'anthropic', model: 'injected-mid-id'},
     model_tiers: {
       anthropic: [
@@ -1315,26 +1264,9 @@ const state = {
 
 renderByo();
 
-assert(lastHidden('byoModelPanel') === false, 'valid non-scout key should show model panel');
-assert(lastHidden('byoPastePanel') === true, 'valid non-scout key should hide paste panel');
+assert(lastHidden('byoModelPanel') === false, 'valid key should show model panel');
+assert(lastHidden('byoPastePanel') === true, 'valid key should hide paste panel');
 assert($('byoModelGrid').children.length === 3, 'shown model panel should render tier cards');
-
-hiddenCalls.length = 0;
-nodes.get('byoModelGrid').children = [];
-state.selectedByoProvider = 'google';
-state.byoMode = 'model';
-state.byoSelectedModel = '';
-state.byoCustomOpen = false;
-state.byoCustomModel = '';
-state.byoCustomCheckedModel = '';
-state.providers.scout_enabled = true;
-
-renderByo();
-
-assert(lastHidden('byoModelPanel') === true, 'scout google should not show model panel');
-assert(lastHidden('byoPastePanel') === false, 'scout google should fall back to paste panel');
-assert(state.byoMode === 'paste', 'scout google should reset model mode to paste');
-assert(state.byoSelectedModel === '', 'scout google fallback should clear selected model');
 console.log('PASS');
 """
         )
@@ -1576,7 +1508,6 @@ const state = {
   byoCustomCheckedModel: 'old-custom',
   byoMode: 'model',
   providers: {
-    scout_enabled: false,
     byo_models: {openai: 'remembered-gpt'},
     active: {provider: 'anthropic', model: 'old-active'},
     model_tiers: {
@@ -1684,7 +1615,6 @@ const state = {
   byoCustomModel: 'old-custom',
   byoCustomCheckedModel: 'old-custom',
   providers: {
-    scout_enabled: false,
     byo_models: {google: 'remembered-google'},
     active: {provider: 'google', model: 'active-google'},
     model_tiers: {
@@ -1705,7 +1635,7 @@ const state = {
 
 changeByoProvider('google');
 
-assert(state.byoMode === 'model', 'cached-valid google should land on model with scout off');
+assert(state.byoMode === 'model', 'cached-valid Google should land on model');
 assert(state.byoSelectedModel === 'remembered-google', 'remembered model should win preselection');
 assert(state.byoCustomOpen === false, 'custom open state should not carry over');
 assert(state.byoCustomModel === '', 'custom text should not carry over');
@@ -1737,11 +1667,6 @@ assert(
 );
 
 state.keys.key_validation.google = {valid: true, timestamp: '2026-07-13T12:00:00Z'};
-state.providers.scout_enabled = true;
-changeByoProvider('google');
-assert(state.byoMode === 'paste', 'scout google should never land on model');
-
-state.providers.scout_enabled = false;
 changeByoProvider('google');
 assert(state.byoMode === 'model', 'valid google should return to model before choosing a different key');
 $('byoKeyInput').value = 'just-checked-key';

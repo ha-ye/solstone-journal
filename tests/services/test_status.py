@@ -12,7 +12,7 @@ from solstone.think.link.paths import (
     save_service_token,
     service_token_path,
 )
-from solstone.think.services import scout, status
+from solstone.think.services import status
 from tests.helpers.journal_config import seed_journal_config
 
 
@@ -28,13 +28,6 @@ def _write_config(journal_copy: Path, config: dict) -> None:
     seed_journal_config(config, journal_copy)
 
 
-def _clear_scout(journal_copy: Path) -> None:
-    config = _read_config(journal_copy)
-    config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
-    config.pop("services", None)
-    _write_config(journal_copy, config)
-
-
 def _set_posture(journal_copy: Path, posture: str) -> None:
     config = _read_config(journal_copy)
     config.setdefault("link", {})["posture"] = posture
@@ -43,74 +36,6 @@ def _set_posture(journal_copy: Path, posture: str) -> None:
 
 def _assert_shape(result: dict[str, str | None]) -> None:
     assert set(result) == {"service", "state", "guidance"}
-
-
-def test_scout_status_disabled(journal_copy: Path) -> None:
-    _clear_scout(journal_copy)
-
-    result = status.scout_status()
-
-    _assert_shape(result)
-    assert result == {
-        "service": "scout",
-        "state": "disabled",
-        "guidance": status.SCOUT_DISABLED_GUIDANCE,
-    }
-
-
-def test_scout_status_manual_key(journal_copy: Path) -> None:
-    _clear_scout(journal_copy)
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-secret"
-    _write_config(journal_copy, config)
-
-    result = status.scout_status()
-
-    _assert_shape(result)
-    assert result == {
-        "service": "scout",
-        "state": "manual_key",
-        "guidance": status.SCOUT_MANUAL_KEY_GUIDANCE,
-    }
-    assert "manual-secret" not in json.dumps(result)
-
-
-def test_scout_status_pending_hides_provenance(journal_copy: Path) -> None:
-    _clear_scout(journal_copy)
-    scout.record_scout_pending("acct-secret", 1_700_000_000_000)
-
-    result = status.scout_status()
-
-    _assert_shape(result)
-    assert result == {
-        "service": "scout",
-        "state": "pending",
-        "guidance": status.SCOUT_PENDING_GUIDANCE,
-    }
-    serialized = json.dumps(result)
-    assert "acct-secret" not in serialized
-    assert "1700000000000" not in serialized
-
-
-def test_scout_status_enabled_hides_provenance(journal_copy: Path) -> None:
-    _clear_scout(journal_copy)
-    scout.provision_scout_handoff(
-        {
-            "google_api_key": "google-secret",
-            "dispatch_token": "dispatch-secret",
-            "account_id": "acct-secret",
-            "created_at": "2026-05-24T00:00:00Z",
-        }
-    )
-
-    result = status.scout_status()
-
-    _assert_shape(result)
-    assert result == {"service": "scout", "state": "enabled", "guidance": None}
-    serialized = json.dumps(result)
-    assert "google-secret" not in serialized
-    assert "dispatch-secret" not in serialized
-    assert "acct-secret" not in serialized
 
 
 def test_spl_status_enabled_when_posture_spl_and_token_present(
@@ -193,7 +118,6 @@ def test_status_helpers_do_not_create_link_dirs(tmp_path: Path, monkeypatch) -> 
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
-    status.scout_status()
     status.spl_status()
 
     assert not (journal / "link").exists()

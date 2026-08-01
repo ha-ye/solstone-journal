@@ -36,24 +36,22 @@ def test_start_operation_raises_busy_for_same_service() -> None:
         release.wait(2)
         return operations.HandoffResult("enabled", None, False)
 
-    operations.start_operation("scout", "enable", "https://portal.test/scout", flow)
+    operations.start_operation("spl", "enable", "https://portal.test/spl", flow)
     _wait_until(started.is_set)
 
     with pytest.raises(operations.OperationBusyError):
-        operations.start_operation(
-            "scout", "refresh", "https://portal.test/scout", flow
-        )
+        operations.start_operation("spl", "refresh", "https://portal.test/spl", flow)
 
     release.set()
 
 
 def test_different_services_can_run_concurrently() -> None:
-    scout_started = threading.Event()
+    backup_started = threading.Event()
     spl_started = threading.Event()
     release = threading.Event()
 
-    def scout_flow():
-        scout_started.set()
+    def backup_flow():
+        backup_started.set()
         release.wait(2)
         return operations.HandoffResult("enabled", None, False)
 
@@ -63,11 +61,11 @@ def test_different_services_can_run_concurrently() -> None:
         return operations.HandoffResult("enabled", None, False)
 
     operations.start_operation(
-        "scout", "enable", "https://portal.test/scout", scout_flow
+        "backup", "enable", "https://portal.test/backup", backup_flow
     )
     operations.start_operation("spl", "spl_enable", "https://portal.test/spl", spl_flow)
 
-    _wait_until(scout_started.is_set)
+    _wait_until(backup_started.is_set)
     _wait_until(spl_started.is_set)
     release.set()
 
@@ -76,30 +74,30 @@ def test_sweep_drops_completed_entry_after_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     operations.start_operation(
-        "scout",
+        "spl",
         "enable",
-        "https://portal.test/scout",
+        "https://portal.test/spl",
         lambda: operations.HandoffResult("enabled", None, False),
     )
-    _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "enabled")
+    _wait_until(lambda: operations.operation_for_service("spl")["phase"] == "enabled")
 
     monkeypatch.setattr(operations, "OPERATION_GRACE_SECONDS", -1.0)
 
-    assert operations.operation_for_service("scout") is None
+    assert operations.operation_for_service("spl") is None
 
 
 def test_flow_exception_becomes_retryable_error() -> None:
     def fail():
         raise RuntimeError("boom")
 
-    operations.start_operation("scout", "enable", "https://portal.test/scout", fail)
+    operations.start_operation("spl", "enable", "https://portal.test/spl", fail)
 
     def is_error() -> bool:
-        operation = operations.operation_for_service("scout")
+        operation = operations.operation_for_service("spl")
         return operation is not None and operation["phase"] == "error"
 
     _wait_until(is_error)
-    operation = operations.operation_for_service("scout")
+    operation = operations.operation_for_service("spl")
     assert operation["retryable"] is True
     # terminal phase ⇒ no actionable portal CTA.
     assert operation["portal_url"] is None
@@ -107,15 +105,15 @@ def test_flow_exception_becomes_retryable_error() -> None:
 
 def test_terminal_enabled_entry_drops_portal_url_in_grace() -> None:
     operations.start_operation(
-        "scout",
+        "spl",
         "enable",
-        "https://portal.test/scout",
+        "https://portal.test/spl",
         lambda: operations.HandoffResult("enabled", None, False),
     )
-    _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "enabled")
+    _wait_until(lambda: operations.operation_for_service("spl")["phase"] == "enabled")
     # entry stays in the registry for the 30s grace window after ending, but a
     # terminal phase must not surface an actionable consent CTA.
-    op = operations.operation_for_service("scout")
+    op = operations.operation_for_service("spl")
     assert op["phase"] == "enabled"
     assert op["portal_url"] is None
 
@@ -144,39 +142,37 @@ def test_non_terminal_phases_keep_portal_url() -> None:
         release.wait(2)
         return operations.HandoffResult("enabled", None, False)
 
-    start = operations.start_operation(
-        "scout", "enable", "https://portal.test/scout", flow
-    )
+    start = operations.start_operation("spl", "enable", "https://portal.test/spl", flow)
     assert start["phase"] == "starting"
-    assert start["portal_url"] == "https://portal.test/scout"
+    assert start["portal_url"] == "https://portal.test/spl"
     _wait_until(started.is_set)
-    waiting = operations.operation_for_service("scout")
+    waiting = operations.operation_for_service("spl")
     assert waiting["phase"] == "waiting"
-    assert waiting["portal_url"] == "https://portal.test/scout"
+    assert waiting["portal_url"] == "https://portal.test/spl"
     release.set()
 
 
 def test_pending_phase_keeps_portal_url() -> None:
     operations.start_operation(
-        "scout",
+        "spl",
         "enable",
-        "https://portal.test/scout",
+        "https://portal.test/spl",
         lambda: operations.HandoffResult("pending", "approve in the portal", False),
     )
-    _wait_until(lambda: operations.operation_for_service("scout")["phase"] == "pending")
-    op = operations.operation_for_service("scout")
-    assert op["portal_url"] == "https://portal.test/scout"
+    _wait_until(lambda: operations.operation_for_service("spl")["phase"] == "pending")
+    op = operations.operation_for_service("spl")
+    assert op["portal_url"] == "https://portal.test/spl"
 
 
 def test_clear_registry_empties_entries() -> None:
     operations.start_operation(
-        "scout",
+        "spl",
         "enable",
-        "https://portal.test/scout",
+        "https://portal.test/spl",
         lambda: operations.HandoffResult("enabled", None, False),
     )
-    _wait_until(lambda: operations.operation_for_service("scout") is not None)
+    _wait_until(lambda: operations.operation_for_service("spl") is not None)
 
     operations.clear_registry()
 
-    assert operations.operation_for_service("scout") is None
+    assert operations.operation_for_service("spl") is None

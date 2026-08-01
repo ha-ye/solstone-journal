@@ -652,10 +652,8 @@ def test_service_mutation_paths_report_changed_and_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    scout = importlib.import_module("solstone.think.services.scout")
     spl = importlib.import_module("solstone.think.services.spl")
     spp = importlib.import_module("solstone.think.services.spp")
-    monkeypatch.setattr(scout, "datetime", _FixedDateTime)
     monkeypatch.setattr(spp, "_now_iso", lambda: "2026-07-19T12:00:00+00:00")
     monkeypatch.setattr(
         spl,
@@ -706,48 +704,7 @@ def test_service_mutation_paths_report_changed_and_noop(
             }
         },
     )
-    scout_payload = {
-        "google_api_key": "google-key",
-        "dispatch_token": "dispatch",
-        "account_id": "acct",
-        "created_at": "2026-07-01T00:00:00+00:00",
-    }
-    scout_noop = _base_config(
-        env={"GOOGLE_API_KEY": "google-key"},
-        services={
-            "scout": {
-                "enabled_at": "2026-07-19T12:00:00+00:00",
-                "account_id": "acct",
-                "key_created_at": "2026-07-01T00:00:00+00:00",
-                "dispatch_token": "dispatch",
-                scout.KEY_FINGERPRINT_FIELD: scout._fingerprint_key("google-key"),
-            }
-        },
-    )
     cases = [
-        (
-            scout,
-            _base_config(),
-            scout_noop,
-            lambda: scout.provision_scout_handoff(scout_payload),
-        ),
-        (
-            scout,
-            _base_config(),
-            _base_config(
-                services={
-                    "scout": {
-                        "state": "pending",
-                        "account_id": "acct",
-                        "since": "now",
-                        "checked_at": "2026-07-19T12:00:00+00:00",
-                        "dispatch_token": "dispatch",
-                    }
-                }
-            ),
-            lambda: scout.record_scout_pending("acct", "now", "dispatch"),
-        ),
-        (scout, scout_noop, _base_config(), scout.disable_scout),
         (
             spl,
             _base_config(link={"posture": "direct"}),

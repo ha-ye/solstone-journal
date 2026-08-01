@@ -227,7 +227,6 @@ def _node_script(body: str) -> str:
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         "function assertEqual(actual, expected, message) { if (actual !== expected) throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
-        "const scoutCopy = copy.scout || {};",
         "const fallbackProviderLabels = {};",
         "let providerLabels = copy.provider_labels || fallbackProviderLabels;",
         "let state = null;",
@@ -277,7 +276,6 @@ function baseState(options = {}) {
       active: options.active || {provider: 'local', model: 'local/test'},
       model_tiers: {},
       byo_models: {},
-      scout_enabled: false,
       brain: {},
     },
     keys: {

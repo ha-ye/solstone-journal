@@ -8,7 +8,6 @@ from solstone.think.services.constants import (
     NONCE_LENGTH_CHARS,
     NONCE_REGEX,
     SERVICE_BACKUP,
-    SERVICE_SCOUT,
     SERVICE_SPL,
     SERVICE_SPP,
     SUPPORTED_SERVICES,
@@ -31,8 +30,7 @@ def test_minted_nonces_match_regex_and_are_high_cardinality() -> None:
 
 
 def test_supported_services_are_explicit_allow_list() -> None:
-    assert SERVICE_SCOUT == "scout"
     assert SERVICE_SPL == "spl"
     assert SERVICE_BACKUP == "backup"
     assert SERVICE_SPP == "spp"
-    assert SUPPORTED_SERVICES == frozenset({"scout", "spl", "backup", "spp"})
+    assert SUPPORTED_SERVICES == frozenset({"spl", "backup", "spp"})

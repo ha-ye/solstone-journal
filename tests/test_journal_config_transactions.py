@@ -12,8 +12,6 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
-import pytest
-
 from tests.helpers.journal_config import seed_journal_config
 
 
@@ -161,18 +159,6 @@ def _canonical_marker_worker(
         raise
 
 
-def _scout_pending_worker(journal_path: str, barrier: Any, errors: Any) -> None:
-    os.environ["SOLSTONE_JOURNAL"] = journal_path
-    try:
-        barrier.wait(timeout=5)
-        from solstone.think.services.scout import record_scout_pending
-
-        record_scout_pending("acct-scout", "2026-07-18T00:00:00Z", "dispatch")
-    except BaseException:
-        errors.put(traceback.format_exc())
-        raise
-
-
 def _spl_disable_worker(journal_path: str, barrier: Any, errors: Any) -> None:
     os.environ["SOLSTONE_JOURNAL"] = journal_path
     try:
@@ -252,44 +238,29 @@ def test_onboarding_finalize_interleaves_with_provider_progress(
     assert status["install_state"] == "downloading"
 
 
-@pytest.mark.parametrize(
-    ("service_worker", "marker", "assertion"),
-    [
-        (_scout_pending_worker, "scout", "scout"),
-        (_spl_disable_worker, "spl", "spl"),
-    ],
-)
-def test_scout_and_spl_coordinate_with_canonical_writer(
+def test_spl_coordinates_with_canonical_writer(
     tmp_path: Path,
-    service_worker: Any,
-    marker: str,
-    assertion: str,
 ) -> None:
     ctx = multiprocessing.get_context("spawn")
-    journal = tmp_path / f"journal-{marker}"
+    journal = tmp_path / "journal-spl"
     seed_journal_config(
         {
             "link": {"posture": "spl"},
-            "services": {"scout": {"state": "old", "account_id": "old"}},
         },
         journal,
     )
     barrier = ctx.Barrier(2)
     errors = ctx.Queue()
     processes = [
-        ctx.Process(target=service_worker, args=(str(journal), barrier, errors)),
+        ctx.Process(target=_spl_disable_worker, args=(str(journal), barrier, errors)),
         ctx.Process(
             target=_canonical_marker_worker,
-            args=(str(journal), barrier, errors, marker),
+            args=(str(journal), barrier, errors, "spl"),
         ),
     ]
 
     _join_processes(processes, errors)
 
     data = _read_config(journal)
-    assert data["canonical_markers"][marker] is True
-    if assertion == "scout":
-        assert data["services"]["scout"]["state"] == "pending"
-        assert data["services"]["scout"]["account_id"] == "acct-scout"
-    else:
-        assert data["link"]["posture"] == "direct"
+    assert data["canonical_markers"]["spl"] is True
+    assert data["link"]["posture"] == "direct"

@@ -49,12 +49,6 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="lane-local"' in html
     assert 'id="lane-confidential"' in html
     assert 'id="lane-byo"' in html
-    assert 'id="scoutEnable"' in html
-    assert 'id="scoutCheck"' in html
-    assert 'id="scoutRefresh"' in html
-    assert 'id="scoutDisable"' in html
-    assert 'id="scoutLaneOperation"' in html
-    assert 'id="scoutLaneOperationLink"' in html
     for view in (
         "main",
         "byo-setup",
@@ -167,15 +161,6 @@ def test_thinking_state_degrades_when_initial_payload_fails(
     assert payload["copy"] == thinking_copy.thinking_copy_payload()
 
 
-def test_scout_consent_static_behavior_is_wired() -> None:
-    js = STATIC.read_text(encoding="utf-8")
-
-    assert "window.open(url, '_blank', 'noopener')" in js
-    assert "scoutLaneOperationLink" in js
-    assert "operation.portal_url || ''" in js
-    assert "!!actions.enable && !operationActive" in js
-
-
 def test_confidential_live_static_behavior_is_wired() -> None:
     html = WORKSPACE.read_text(encoding="utf-8")
     js = STATIC.read_text(encoding="utf-8")
@@ -267,13 +252,6 @@ def test_thinking_deck_copy_constants() -> None:
             "value": "your own endpoint",
             "detail": "sol thinks at the endpoint you set — your server, your rules",
         },
-        "byo_scout": {
-            "value": "scout · we cover it",
-            "detail": (
-                "covered through the scout program while you're in alpha — stays in "
-                "your journal"
-            ),
-        },
         "confidential_checking": {
             "label": "sol is waiting on",
             "value": "confidential processing",
@@ -329,14 +307,6 @@ def test_thinking_deck_copy_constants() -> None:
         "endpoint_honesty": (
             "sol checks the endpoint works before it relies on it. if it can't "
             "reach it, sol tells you — it never quietly falls back to anyone else."
-        ),
-        "scout_heading": "in the scout program?",
-        "scout_sub": (
-            "be an early tester for solstone — we'll cover your thinking, using Gemini."
-        ),
-        "scout_terms_link": "scout program terms ↗",
-        "scout_provenance": (
-            "covered through the scout program — the key stays in your journal."
         ),
         "paste_cta": "check this key →",
         "checking_key": "checking your key with {provider}…",
@@ -398,7 +368,6 @@ def test_thinking_deck_copy_constants() -> None:
         "to_byo_note": "sol will think with your own engine. {setup} is still here.",
         "setup_key": "a saved key",
         "setup_endpoint": "your endpoint",
-        "setup_scout": "scout",
     }
     assert thinking_copy.LOCAL_INSTALL == {
         "phases": {

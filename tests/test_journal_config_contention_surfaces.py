@@ -72,51 +72,6 @@ def test_maintenance_scripts_propagate_busy_without_success_print(
     assert success_text not in capsys.readouterr().out
 
 
-def test_scout_busy_paths_propagate_without_success_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    scout = importlib.import_module("solstone.think.services.scout")
-    monkeypatch.setattr(scout, "mutate_journal_config", _raise_busy)
-    payload = {
-        "google_api_key": "google-key",
-        "dispatch_token": "dispatch",
-        "account_id": "acct",
-        "created_at": "2026-07-01T00:00:00+00:00",
-    }
-
-    seed_journal_config({}, tmp_path)
-    with caplog.at_level(logging.DEBUG, logger=scout.log.name):
-        with pytest.raises(LockTimeout):
-            scout.provision_scout_handoff(payload)
-    assert "provisioned scout service" not in caplog.text
-
-    caplog.clear()
-    seed_journal_config({}, tmp_path)
-    with caplog.at_level(logging.DEBUG, logger=scout.log.name):
-        with pytest.raises(LockTimeout):
-            scout.record_scout_pending("acct", "now", "dispatch")
-    assert "recorded pending scout marker" not in caplog.text
-
-    caplog.clear()
-    seed_journal_config(
-        {
-            "env": {"GOOGLE_API_KEY": "google-key"},
-            "services": {
-                "scout": {
-                    "account_id": "acct",
-                    scout.KEY_FINGERPRINT_FIELD: scout._fingerprint_key("google-key"),
-                }
-            },
-        },
-        tmp_path,
-    )
-    with caplog.at_level(logging.DEBUG, logger=scout.log.name):
-        with pytest.raises(LockTimeout):
-            scout.disable_scout()
-    assert "disabled scout service" not in caplog.text
-
-
 def test_spl_busy_paths_propagate_without_success_effect_or_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

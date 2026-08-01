@@ -176,7 +176,6 @@ class TestInitDetection:
             b"when you finish, <b>thinking</b> opens to the lane you picked. "
             b"the fork lives in thinking from here on \xe2\x80\x94 switch anytime."
         ) in resp.data
-        assert b"apply to scout" not in resp.data
 
     def test_init_no_legacy_trust_note(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -721,7 +720,7 @@ class TestInitFinalize:
         assert resp.status_code == 200
         assert resp.get_json()["redirect"] == expected_redirect
 
-    @pytest.mark.parametrize("lane", ["scout", 123, ["local"]])
+    @pytest.mark.parametrize("lane", ["retired", 123, ["local"]])
     def test_finalize_invalid_lane_returns_reason(self, fresh_client, lane):
         _commit_journal_identity()
 

@@ -14,9 +14,7 @@
     "confidential_enabled": false,
     "confidential_operation": null,
     "confidential_provenance_configured": false,
-    "lane": "byo",
-    "scout_enabled": false,
-    "scout_provenance_configured": false
+    "lane": "byo"
   },
   "api_keys": {
     "anthropic": false,
@@ -199,6 +197,5 @@
       "label": "OpenAI (GPT)",
       "name": "openai"
     }
-  ],
-  "scout_enabled": false
+  ]
 }
