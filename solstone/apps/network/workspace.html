@@ -1446,10 +1446,20 @@
     time.textContent = device.last_seen_at
       ? `last seen ${relativeTime(device.last_seen_at)}`
       : `paired ${relativeTime(device.paired_at)}`;
+    const deviceLabel = device.device_label || '';
+    const clientLabel = device.client_label || '';
+    let clientMeta = null;
+    if (clientLabel && deviceLabel && clientLabel !== deviceLabel) {
+      clientMeta = document.createElement('span');
+      clientMeta.className = 'link-device-client-label';
+      clientMeta.textContent = (window.LinkCopy.DEVICE_CLIENT_LABEL_META_FORMAT || 'paired as {client_label}')
+        .replace('{client_label}', clientLabel);
+    }
     const fp = document.createElement('code');
     fp.className = 'link-device-fp';
     fp.textContent = shortFingerprint(device);
     meta.appendChild(time);
+    if (clientMeta) meta.appendChild(clientMeta);
     meta.appendChild(fp);
     main.appendChild(title);
     main.appendChild(meta);
@@ -1520,7 +1530,7 @@
     host.innerHTML = '';
     const needle = term.trim().toLowerCase();
     const visible = needle
-      ? devices.filter((device) => String(device.device_label || '').toLowerCase().includes(needle))
+      ? devices.filter((device) => String(device.display_label || '').toLowerCase().includes(needle))
       : devices;
     const byStatus = { online: [], recent: [], offline: [] };
     visible.forEach((device) => {

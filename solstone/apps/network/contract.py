@@ -63,6 +63,7 @@ _DEVICE_SCHEMA = {
             "fingerprint_short": {"type": "string"},
             "device_label": {"type": "string"},
             "display_label": {"type": "string"},
+            "client_label": {"type": "string"},
             "paired_at": {"type": "string"},
             "last_seen_at": {"type": ["string", "null"]},
             "role": {"type": "string"},
@@ -75,6 +76,7 @@ _DEVICE_SCHEMA = {
             "fingerprint_short",
             "device_label",
             "display_label",
+            "client_label",
             "paired_at",
             "last_seen_at",
             "role",
@@ -431,8 +433,8 @@ OPERATIONS: list[OperationSpec] = [
             ),
             _json_error(
                 400,
-                ("missing_required_field",),
-                "Neither fingerprint nor device label was supplied.",
+                ("invalid_operation_for_state", "missing_required_field"),
+                "The unpair request was incomplete or ambiguous.",
             ),
             _json_error(
                 403,

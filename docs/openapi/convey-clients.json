@@ -7688,6 +7688,9 @@
                       "items": {
                         "additionalProperties": true,
                         "properties": {
+                          "client_label": {
+                            "type": "string"
+                          },
                           "device_label": {
                             "type": "string"
                           },
@@ -7733,6 +7736,7 @@
                           "fingerprint_short",
                           "device_label",
                           "display_label",
+                          "client_label",
                           "paired_at",
                           "last_seen_at",
                           "role",
@@ -8797,8 +8801,9 @@
                 }
               }
             },
-            "description": "Neither fingerprint nor device label was supplied.",
+            "description": "The unpair request was incomplete or ambiguous.",
             "x-reason-codes": [
+              "invalid_operation_for_state",
               "missing_required_field"
             ]
           },

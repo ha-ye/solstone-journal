@@ -420,6 +420,9 @@ pub fn unpair(ctx: CommandContext<'_>) -> CommandOutput {
                     exit: 1,
                 };
             }
+            if let Some(promoted) = promote_invalid_state_detail(&error) {
+                return link_error(promoted);
+            }
             if let Some(output) = unpair_partial_failure_output(&error) {
                 return output;
             }
@@ -534,16 +537,8 @@ fn post_private_link(ctx: CommandContext<'_>, path: &str) -> Result<Value, Clien
     match request_json(ctx, HttpMethod::Post, path, vec![], None) {
         Ok(response) => Ok(response),
         Err(error) => {
-            if error.reason_code() == Some("invalid_operation_for_state")
-                && error.detail().is_some()
-            {
-                return Err(ClientError::ReasonRejected {
-                    status: error.status().unwrap_or(400),
-                    error: error.detail().unwrap_or(error.message()).to_string(),
-                    reason_code: error.reason_code().map(str::to_string),
-                    detail: error.detail().map(str::to_string),
-                    payload: Box::new(Value::Null),
-                });
+            if let Some(promoted) = promote_invalid_state_detail(&error) {
+                return Err(promoted);
             }
             if error.reason_code() == Some("service_busy") {
                 return Err(ClientError::ReasonRejected {
@@ -560,6 +555,19 @@ fn post_private_link(ctx: CommandContext<'_>, path: &str) -> Result<Value, Clien
             Err(error)
         }
     }
+}
+
+fn promote_invalid_state_detail(error: &ClientError) -> Option<ClientError> {
+    if error.reason_code() != Some("invalid_operation_for_state") || error.detail().is_none() {
+        return None;
+    }
+    Some(ClientError::ReasonRejected {
+        status: error.status().unwrap_or(400),
+        error: error.detail().unwrap_or(error.message()).to_string(),
+        reason_code: error.reason_code().map(str::to_string),
+        detail: error.detail().map(str::to_string),
+        payload: Box::new(Value::Null),
+    })
 }
 
 fn poll_private_link_until_terminal(

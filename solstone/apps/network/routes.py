@@ -169,6 +169,10 @@ def _utc_now_iso() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _short_fingerprint(fingerprint: str) -> str:
+    return fingerprint.removeprefix("sha256:")[:16]
+
+
 def _default_device_label() -> str:
     now = dt.datetime.now()
     return link_copy.DEVICE_LABEL_DEFAULT_FORMAT.format(
@@ -854,44 +858,6 @@ def _complete_pairing(
                 pass
         raise
 
-    # Auto-retire a superseded device cert when a device re-pairs after losing
-    # its local identity (reinstall / data-clear / restore). The returning
-    # device sends a new keypair → new fingerprint, just appended above.
-    # Recognize it by home-assigned device label and revoke the prior entry
-    # (removal == cert revocation) so exactly one entry per label remains.
-    # Best-effort: any failure is logged and swallowed — the new pair stands and
-    # the prior orphan persists (status quo), never rolled back. Peers are never
-    # retired, and a blank label never collapses unlabeled devices.
-    if not is_peer(consumed.role) and assigned_label.strip():
-        try:
-            authorized = _authorized()
-            superseded = [
-                entry
-                for entry in authorized.snapshot()
-                if entry.device_label
-                and entry.device_label == assigned_label
-                and entry.fingerprint != fingerprint
-                and entry.role == ""
-                and entry.instance_id == state.instance_id
-            ]
-            for entry in superseded:
-                if authorized.remove(entry.fingerprint):
-                    emit(
-                        "link",
-                        "device_superseded",
-                        device_label=assigned_label,
-                        retired_fingerprint=entry.fingerprint,
-                        retired_fingerprint_short=entry.fingerprint.replace(
-                            "sha256:", ""
-                        )[:16],
-                        replaced_by=fingerprint,
-                        network=network,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "pair: auto-retire failed for label %r: %s", assigned_label, exc
-            )
-
     return response, entry, paired_at
 
 
@@ -907,7 +873,7 @@ def _emit_pair_complete(
         "pair_complete",
         device_label=device_label,
         fingerprint=fingerprint,
-        fingerprint_short=fingerprint.replace("sha256:", "")[:16],
+        fingerprint_short=_short_fingerprint(fingerprint),
         paired_at=paired_at,
         network=network,
     )
@@ -1042,6 +1008,26 @@ def rename() -> Any:
     )
 
 
+def _ambiguous_unpair_label_detail(label: str, entries: list[ClientEntry]) -> str:
+    sorted_entries = sorted(
+        entries, key=lambda entry: (entry.paired_at, entry.fingerprint)
+    )
+    lines = [link_copy.UNPAIR_AMBIGUOUS_LABEL_HEADER_FORMAT.format(label=label)]
+    for entry in sorted_entries:
+        lines.append(
+            link_copy.UNPAIR_AMBIGUOUS_LABEL_CANDIDATE_FORMAT.format(
+                paired_at=entry.paired_at,
+                short_fp=_short_fingerprint(entry.fingerprint),
+            )
+        )
+        lines.append(
+            link_copy.UNPAIR_AMBIGUOUS_LABEL_COMMAND_FORMAT.format(
+                fingerprint=entry.fingerprint
+            )
+        )
+    return "\n".join(lines)
+
+
 @network_bp.route("/unpair", methods=["POST"])
 def unpair() -> Any:
     """Revoke a paired device by label or fingerprint.
@@ -1059,12 +1045,19 @@ def unpair() -> Any:
     device_label = device_label or None
 
     authorized = _authorized()
+    entry: ClientEntry | None = None
     if fingerprint is not None:
         entry = authorized.get(fingerprint)
     elif device_label is not None:
-        entry = authorized.find_by_label(device_label)
-        if entry is not None:
+        matches = authorized.find_all_by_display_label(device_label)
+        if len(matches) == 1:
+            entry = matches[0]
             fingerprint = entry.fingerprint
+        elif matches:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail=_ambiguous_unpair_label_detail(device_label, matches),
+            )
     else:
         return error_response(
             MISSING_REQUIRED_FIELD,
@@ -1082,8 +1075,7 @@ def unpair() -> Any:
             detail=detail,
         )
 
-    fp_hex = fingerprint.removeprefix("sha256:")
-    short_fp = fp_hex[:16]
+    short_fp = _short_fingerprint(fingerprint)
     role = entry.role
 
     if is_peer(role):
@@ -1133,12 +1125,13 @@ def unpair() -> Any:
 
 
 def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
-    short_fp = entry.fingerprint.replace("sha256:", "")[:16]
+    short_fp = _short_fingerprint(entry.fingerprint)
     return {
         "fingerprint": entry.fingerprint,
         "fingerprint_short": short_fp,
         "device_label": entry.device_label,
         "display_label": entry.display_label,
+        "client_label": entry.client_label,
         "paired_at": entry.paired_at,
         "last_seen_at": entry.last_seen_at,
         "role": entry.role,

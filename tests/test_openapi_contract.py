@@ -413,6 +413,7 @@ def test_link_devices_declares_device_item_schema():
         "fingerprint_short",
         "device_label",
         "display_label",
+        "client_label",
         "paired_at",
         "last_seen_at",
         "role",

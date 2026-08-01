@@ -55,7 +55,7 @@ def test_entry_to_json_composes_display_label(
     payload = link_routes._entry_to_json(entry)
 
     assert payload["display_label"] == expected
-    assert "client_label" not in payload
+    assert payload["client_label"] == client
 
 
 def test_devices_api_legacy_entry_defaults_to_role_less(link_env) -> None:
@@ -84,4 +84,4 @@ def test_devices_api_legacy_entry_defaults_to_role_less(link_env) -> None:
     assert len(devices) == 1
     assert devices[0]["role"] == ""
     assert devices[0]["display_label"] == "legacy"
-    assert "client_label" not in devices[0]
+    assert devices[0]["client_label"] == ""

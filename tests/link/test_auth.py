@@ -638,21 +638,24 @@ def test_concurrent_add_allocates_distinct_ordinals(
     ]
 
 
-def test_find_by_label(tmp_path: Path) -> None:
+def test_find_all_by_display_label(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     store = AuthorizedClients(path)
 
-    assert store.find_by_label("Jer") is None
+    assert store.find_all_by_display_label("Jer") == []
 
     store.add("sha256:abc", "Jer", "inst-1")
     store.add("sha256:empty", "", "inst-1", client_label="client-host")
-    entry = store.find_by_label("Jer")
-    assert entry is not None
+    entries = store.find_all_by_display_label("Jer")
+    assert len(entries) == 1
+    entry = entries[0]
     assert entry.fingerprint == "sha256:abc"
     assert entry.role == ""
-    assert store.find_by_label("Nope") is None
-    assert store.find_by_label("") is None
-    assert store.find_by_label("client-host") is None
+    assert store.find_all_by_display_label("Nope") == []
+    assert store.find_all_by_display_label("") == []
+    client_entries = store.find_all_by_display_label("client-host")
+    assert len(client_entries) == 1
+    assert client_entries[0].fingerprint == "sha256:empty"
 
     time.sleep(0.02)
     path.write_text(
@@ -672,12 +675,13 @@ def test_find_by_label(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    reloaded = store.find_by_label("External")
-    assert reloaded is not None
+    reloaded_entries = store.find_all_by_display_label("External")
+    assert len(reloaded_entries) == 1
+    reloaded = reloaded_entries[0]
     assert reloaded.fingerprint == "sha256:xyz"
     assert reloaded.role == ""
     assert reloaded.last_seen_at == "2026-04-19T18:03:12Z"
-    assert store.find_by_label("Jer") is None
+    assert store.find_all_by_display_label("Jer") == []
 
 
 def _load_payload(path: Path) -> list[dict[str, str]]:

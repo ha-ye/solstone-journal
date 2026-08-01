@@ -19,6 +19,18 @@ def test_device_section_copy_is_locked() -> None:
         "this device loses access to your journal immediately and can't reconnect until "
         "you pair it again. anything stored on the device stays on the device."
     )
+    assert copy.UNPAIR_AMBIGUOUS_LABEL_HEADER_FORMAT == (
+        "more than one device is named '{label}'. pick the one you mean and run its command:"
+    )
+    assert (
+        copy.UNPAIR_AMBIGUOUS_LABEL_CANDIDATE_FORMAT
+        == "- paired {paired_at}, fingerprint {short_fp}"
+    )
+    assert (
+        copy.UNPAIR_AMBIGUOUS_LABEL_COMMAND_FORMAT
+        == "  sol call link unpair {fingerprint}"
+    )
+    assert copy.DEVICE_CLIENT_LABEL_META_FORMAT == "paired as {client_label}"
     assert copy.DEVICE_STATUS_LABELS == {
         "online": "online",
         "recent": "recently seen",

@@ -284,13 +284,14 @@ class AuthorizedClients:
         with self._lock:
             return self._entries.get(fingerprint)
 
-    def find_by_label(self, label: str) -> ClientEntry | None:
+    def find_all_by_display_label(self, label: str) -> list[ClientEntry]:
         self.reload_if_stale()
         with self._lock:
-            for entry in self._entries.values():
-                if label and entry.device_label == label:
-                    return entry
-        return None
+            return [
+                entry
+                for entry in self._entries.values()
+                if label and entry.display_label == label
+            ]
 
     def _reload_locked(self) -> None:
         entries = self._load_file_locked()

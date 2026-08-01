@@ -169,7 +169,7 @@ def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None
         ".replace('{label}', device.display_label || device.device_label || '')" in body
     )
     assert "const previous = device.device_label || '';" in body
-    assert "String(device.device_label || '').toLowerCase().includes(needle)" in body
+    assert "String(device.display_label || '').toLowerCase().includes(needle)" in body
 
     commit_start = body.index("async function commit()")
     commit_end = body.index("function cancel()", commit_start)
@@ -178,6 +178,29 @@ def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None
     assert "replaceRenameInput(input, persisted);" in commit_body
     assert "refreshDevices();" in commit_body
     assert "renderRecentlyPaired(latestDevices);" not in commit_body
+
+
+def test_workspace_device_meta_renders_pairing_client_label_once(link_env) -> None:
+    env = link_env()
+    response = env.client.get("/app/network/workspace")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+
+    assert "const deviceLabel = device.device_label || '';" in body
+    assert "const clientLabel = device.client_label || '';" in body
+    assert "if (clientLabel && deviceLabel && clientLabel !== deviceLabel)" in body
+    assert "DEVICE_CLIENT_LABEL_META_FORMAT" in body
+
+    meta_start = body.index("const meta = document.createElement('div');")
+    meta_end = body.index("main.appendChild(title);", meta_start)
+    meta_body = body[meta_start:meta_end]
+    assert meta_body.index("meta.appendChild(time);") < meta_body.index(
+        "if (clientMeta) meta.appendChild(clientMeta);"
+    )
+    assert meta_body.index("if (clientMeta) meta.appendChild(clientMeta);") < (
+        meta_body.index("meta.appendChild(fp);")
+    )
 
 
 def test_pair_modal_error_state_present(link_env) -> None:
