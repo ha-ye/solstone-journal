@@ -514,7 +514,7 @@ def _device_binding_for_entry(entry) -> dict[str, str]:
     return {"device": entry.fingerprint, "kind": entry.kind}
 
 
-def _resolve_register_device_binding(data: dict[str, Any]) -> dict[str, str] | None:
+def _resolve_register_device_binding() -> dict[str, str] | None:
     entry = _authorized_pl_entry()
     if entry is not None:
         return _device_binding_for_entry(entry)
@@ -557,7 +557,7 @@ def register() -> Any:
             ),
         )
 
-    device_binding = _resolve_register_device_binding(data)
+    device_binding = _resolve_register_device_binding()
 
     for field in _REGISTER_REQUIRED_FIELDS:
         value = data.get(field)
