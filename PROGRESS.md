@@ -81,6 +81,18 @@
   from product scope. No lane work is deleted or reverted pending the supervisor's replacement
   boundary. The in-progress U2 owned-dependency continuation is checkpointed as buildable but
   unaccepted; it must be assessed against that new scope rather than completed by inertia.
+- **Redirect applied (2026-07-31):** U1 and U2 are now moot, including the HPKE crate/CLI,
+  blob receiver, BlobDeps, and their corpus sections; their checkpoint commits remain evidence
+  and are not rewritten. U4 is delegated as an `0x16`-only relay client: `SBO1` is an unknown
+  prefix and never reaches blob code. U5 remains the real service composition. U3's accepted
+  blob-only progress and per-sender APIs are retained temporarily because the still-present U2
+  code consumes them; U6 will delete them atomically with U2 rather than introduce temporary
+  compatibility code. This is the explicitly permitted retain choice, not a divergence.
+- **U6 scope decisions pending supervisor direction:** deleting the specified `convey_client.py`
+  leaves no production caller but breaks its dedicated test module and the OpenAPI test's
+  `resolve_base_url` import; the redirect also leaves unspecified the final health-only corpus
+  form and the native forwarding path for `journal spl` after Python `sol_cli` dispatch is
+  removed. These are held for direction before destructive U6 work, while U4/U5 continue.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
