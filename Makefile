@@ -596,6 +596,9 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Checking conversion-wave retirements ==="
 	@$(MAKE) check-conversion-retirements
+	@echo ""
+	@echo "=== Checking spl health vocabulary ==="
+	@$(MAKE) check-spl-health-vocabulary
 	@echo "=== Running access-imports-clean check ==="
 	@$(MAKE) check-access-imports-clean
 	@echo ""
@@ -797,6 +800,13 @@ check-rust-release-manifest: .installed
 # Conversion-wave Python and package retirement gate
 check-conversion-retirements:
 	python3 scripts/check_conversion_retirements.py
+
+# The spl link-health vocabulary spans two languages after the native cutover:
+# the native service emits the reason codes and the callosum event name, and the
+# web layer consumes them. Nothing else makes them agree, and drift is silent and
+# owner-visible. This gate reads BOTH sides from source.
+check-spl-health-vocabulary:
+	python3 scripts/check_spl_health_vocabulary.py
 
 # Package dependency and script ownership consistency gate
 check-extras-consistency: .installed
