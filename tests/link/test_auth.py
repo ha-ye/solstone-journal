@@ -109,6 +109,70 @@ def test_load_drops_every_present_non_cert_kind_with_redacted_warning(
     assert row["secret"] not in message
 
 
+def test_load_drops_multiple_unsupported_kind_rows_with_single_redacted_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = tmp_path / "auth.json"
+    unsupported_rows = [
+        {
+            "fingerprint": "sha256:null-kind-marker",
+            "device_label": "Null kind marker",
+            "paired_at": "2026-07-01T00:00:00Z",
+            "instance_id": "inst-1",
+            "kind": None,
+        },
+        {
+            "fingerprint": "sha256:browser-kind-marker",
+            "device_label": "Browser kind marker",
+            "paired_at": "2026-07-01T00:01:00Z",
+            "instance_id": "inst-2",
+            "kind": "browser",
+        },
+        {
+            "fingerprint": "sha256:number-kind-marker",
+            "device_label": "Number kind marker",
+            "paired_at": "2026-07-01T00:02:00Z",
+            "instance_id": "inst-3",
+            "kind": 5,
+        },
+    ]
+    valid_cert_row = {
+        "fingerprint": "sha256:valid-cert",
+        "device_label": "Valid cert",
+        "paired_at": "2026-07-01T00:03:00Z",
+        "instance_id": "inst-4",
+        "kind": "cert",
+    }
+    path.write_text(
+        json.dumps([*unsupported_rows, valid_cert_row], indent=2) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    caplog.set_level("WARNING", logger="solstone.think.link.auth")
+
+    store = AuthorizedClients(path)
+
+    for row in unsupported_rows:
+        assert store.get(row["fingerprint"]) is None
+        assert store.is_authorized(row["fingerprint"]) is False
+    assert [entry.fingerprint for entry in store.snapshot()] == [
+        valid_cert_row["fingerprint"]
+    ]
+    assert store.is_authorized(valid_cert_row["fingerprint"]) is True
+    assert path.read_bytes() == before
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "solstone.think.link.auth" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    for row in unsupported_rows:
+        assert row["fingerprint"] not in message
+        assert row["device_label"] not in message
+
+
 def test_empty_file_is_empty(tmp_path: Path) -> None:
     store = AuthorizedClients(tmp_path / "auth.json")
 
@@ -889,8 +953,7 @@ def test_cert_mutation_rewrites_ledger_dropping_legacy_browser_row(
     store = AuthorizedClients(path)
 
     assert (
-        store.update_label(missing_kind_cert_row["fingerprint"], "Renamed")
-        is not None
+        store.update_label(missing_kind_cert_row["fingerprint"], "Renamed") is not None
     )
 
     payload = _load_payload(path)
@@ -917,7 +980,7 @@ def test_cert_mutation_rewrites_ledger_dropping_legacy_browser_row(
             "network": "local",
             "last_seen_at": "2026-07-01T00:05:00Z",
             "client_label": "explicit-cert-client",
-        }
+        },
     ]
     entries = {entry.fingerprint: entry for entry in AuthorizedClients(path).snapshot()}
     assert entries[missing_kind_cert_row["fingerprint"]].label_ordinal == 2
