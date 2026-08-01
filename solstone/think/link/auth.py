@@ -6,8 +6,7 @@
 The spl-protocol-fixed core shape is unchanged: `fingerprint`, `device_label`,
 `paired_at`, `instance_id`, and `role`. `device_label` is the home-assigned,
 renameable label for the paired client. Solstone also stores local-only
-`last_seen_at`, `network`, `client_label`, `label_ordinal`, and
-browser-uplink fields for UX:
+`last_seen_at`, `network`, `client_label`, `label_ordinal`, and `kind` for UX:
 
     {
       "fingerprint": "sha256:<hex>",
@@ -20,10 +19,12 @@ browser-uplink fields for UX:
       "client_label": "jer-laptop",            // optional; client self-name/hostname
       "label_ordinal": 2,                      // optional positive int;
                                                // invalid/absent = 1; omitted when 1
-      "kind": "cert",                          // cert | browser
-      "pubkey_spki": "<hex>",                  // browser only
-      "observer_handle": "<handle>"            // browser only
+      "kind": "cert"
     }
+
+This is a cert-only ledger. Legacy rows whose nonempty `kind` is not `cert`
+are dropped on load with one warning per load call. Loading never rewrites the
+file.
 
 Role-less linked systems are stored with `role: ""`; peers are stored with
 `role: "peer"`. The peer role is provenance, not a behavioral authorization
@@ -36,14 +37,15 @@ file write. Convey's pair and unpair routes own the pairing writer surface; the
 secure listener updates `last_seen_at` and uses this ledger for TLS verification
 and per-request authorization.
 
-`last_seen_at`, `network`, `client_label`, `label_ordinal`, `kind`,
-`pubkey_spki`, and `observer_handle` are local-only — never transmitted externally.
+`last_seen_at`, `network`, `client_label`, `label_ordinal`, and `kind` are
+local-only — never transmitted externally.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,6 +53,7 @@ from pathlib import Path
 from solstone.think.journal_io import hold_lock, write_json
 
 MAX_DEVICE_LABEL_LEN = 80
+logger = logging.getLogger(__name__)
 
 
 def is_peer(role: str) -> bool:
@@ -69,7 +72,6 @@ class ClientEntry:
     client_label: str = ""
     label_ordinal: int = 1
     kind: str = "cert"
-    pubkey_spki: str | None = None
     observer_handle: str | None = None
 
     @property
@@ -159,64 +161,6 @@ class AuthorizedClients:
                 self._write(current)
                 self._entries = current
                 return entry
-
-    def add_browser(
-        self,
-        *,
-        fingerprint: str,
-        device_label: str,
-        instance_id: str,
-        pubkey_spki: str,
-        observer_handle: str | None = None,
-        paired_at: str | None = None,
-        network: str | None = None,
-    ) -> ClientEntry:
-        with self._lock:
-            with hold_lock(self._path):
-                current = self._load_file_locked()
-                paired_at = paired_at or dt.datetime.now(dt.UTC).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                )
-                entry = ClientEntry(
-                    fingerprint=fingerprint,
-                    device_label=device_label,
-                    paired_at=paired_at,
-                    instance_id=instance_id,
-                    role="",
-                    last_seen_at=None,
-                    network=network,
-                    client_label="",
-                    kind="browser",
-                    pubkey_spki=pubkey_spki,
-                    observer_handle=observer_handle,
-                )
-                entry = replace(
-                    entry,
-                    label_ordinal=self._allocate_label_ordinal_locked(
-                        current,
-                        entry.base_label,
-                        fingerprint,
-                    ),
-                )
-                current[fingerprint] = entry
-                self._write(current)
-                self._entries = current
-                return entry
-
-    def attach_observer_handle(self, fingerprint: str, observer_handle: str) -> bool:
-        normalized = observer_handle.strip()
-        if not normalized:
-            raise ValueError("observer_handle must not be empty")
-        with self._lock:
-            with hold_lock(self._path):
-                current = self._load_file_locked()
-                existing = current.get(fingerprint)
-                if existing is None or existing.kind != "browser":
-                    return False
-                current[fingerprint] = replace(existing, observer_handle=normalized)
-                self._write(current)
-                self._entries = current
-                return True
 
     def remove(self, fingerprint: str) -> bool:
         with self._lock:
@@ -353,6 +297,7 @@ class AuthorizedClients:
             # There is no last-good authorization cache.
             return {}
         out: dict[str, ClientEntry] = {}
+        dropped_non_cert = False
         if isinstance(raw, list):
             for item in raw:
                 if not isinstance(item, dict):
@@ -360,12 +305,13 @@ class AuthorizedClients:
                 fp = item.get("fingerprint")
                 if not isinstance(fp, str):
                     continue
+                kind = item.get("kind")
+                if isinstance(kind, str) and kind and kind != "cert":
+                    dropped_non_cert = True
+                    continue
                 last_seen = item.get("last_seen_at")
                 network = item.get("network")
                 client_label = item.get("client_label")
-                kind = item.get("kind")
-                pubkey_spki = item.get("pubkey_spki")
-                observer_handle = item.get("observer_handle")
                 raw_label_ordinal = item.get("label_ordinal", 1)
                 label_ordinal = (
                     raw_label_ordinal
@@ -384,12 +330,12 @@ class AuthorizedClients:
                     network=network if isinstance(network, str) else None,
                     client_label=client_label if isinstance(client_label, str) else "",
                     label_ordinal=label_ordinal,
-                    kind=kind if isinstance(kind, str) and kind else "cert",
-                    pubkey_spki=pubkey_spki if isinstance(pubkey_spki, str) else None,
-                    observer_handle=(
-                        observer_handle if isinstance(observer_handle, str) else None
-                    ),
                 )
+        if dropped_non_cert:
+            logger.warning(
+                "authorized_clients.json: ignored one or more entries with an "
+                "unsupported kind (expected cert)"
+            )
         return out
 
     def _allocate_label_ordinal_locked(
@@ -423,8 +369,6 @@ class AuthorizedClients:
                 **({"network": e.network} if e.network else {}),
                 **({"client_label": e.client_label} if e.client_label else {}),
                 **({"label_ordinal": e.label_ordinal} if e.label_ordinal != 1 else {}),
-                **({"pubkey_spki": e.pubkey_spki} if e.pubkey_spki else {}),
-                **({"observer_handle": e.observer_handle} if e.observer_handle else {}),
             }
             for e in entries.values()
         ]
