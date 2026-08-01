@@ -662,6 +662,16 @@ def _resolve_identity() -> tuple[
 
     binding = observer_device_binding(observer)
     if binding is None:
+        if DEVICE_BINDING_FIELD in observer:
+            return (
+                None,
+                None,
+                ObserverIdentityRejection(
+                    PL_REVOKED,
+                    "Paired device revoked",
+                    observer["filename_prefix"],
+                ),
+            )
         return observer, observer["filename_prefix"], None
 
     if binding["kind"] != DEVICE_BINDING_KIND_CERT:

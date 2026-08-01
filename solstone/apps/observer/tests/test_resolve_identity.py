@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from flask import Flask, g
 
 import solstone.convey.root as root_module
 from solstone.apps.observer.routes import OBSERVER_CALLOSUM_SSE_ROUTE
 from solstone.apps.observer.utils import (
+    get_observers_dir,
+    load_observer,
     resolve_observer_identity,
     save_observer,
 )
@@ -95,6 +99,26 @@ def _save_observer(
     if device_binding is not None:
         record["device_binding"] = device_binding
     assert save_observer(record)
+
+
+def _save_observer_with_null_device_binding(handle: str, name: str):
+    record = {
+        "key": handle,
+        "name": name,
+        "created_at": now_ms(),
+        "enabled": True,
+        "stats": {
+            "segments_received": 0,
+            "bytes_received": 0,
+        },
+        "device_binding": None,
+    }
+    assert save_observer(record)
+    path = get_observers_dir(ensure_exists=False) / f"{handle[:8]}.json"
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert "device_binding" in persisted
+    assert persisted["device_binding"] is None
+    return path
 
 
 def _authorize_cert(fingerprint: str = FINGERPRINT) -> None:
@@ -382,3 +406,29 @@ def test_all_device_routes_refuse_legacy_browser_kind_binding(
     response = _route_response(env.client, route_case, HEADER_HANDLE)
 
     _assert_route_reason(response, status=403, reason_code="pl_revoked")
+
+
+@pytest.mark.parametrize(
+    "route_case", ROUTE_CASES, ids=[case[0] for case in ROUTE_CASES]
+)
+def test_all_device_routes_refuse_present_null_device_binding(
+    observer_env,
+    route_case,
+):
+    env = observer_env()
+    path = _save_observer_with_null_device_binding(
+        HEADER_HANDLE,
+        "null-binding-observer",
+    )
+    before = path.read_bytes()
+
+    response = _route_response(env.client, route_case, HEADER_HANDLE)
+
+    _assert_route_reason(response, status=403, reason_code="pl_revoked")
+    assert path.read_bytes() == before
+    observer = load_observer(HEADER_HANDLE)
+    assert observer is not None
+    assert observer["enabled"] is True
+    assert observer.get("revoked") is not True
+    assert "device_binding" in observer
+    assert observer["device_binding"] is None

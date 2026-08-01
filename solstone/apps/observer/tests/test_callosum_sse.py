@@ -88,6 +88,25 @@ def _create_unbound_observer(env, name: str = "sse-unbound") -> tuple[str, str]:
     return key, key[:8]
 
 
+def _create_null_binding_observer(
+    env,
+    name: str = "sse-null-binding",
+) -> tuple[str, str]:
+    key = f"{name}-key-123456789"
+    assert save_observer(
+        {
+            "key": key,
+            "name": name,
+            "created_at": 1,
+            "enabled": True,
+            "revoked": False,
+            "device_binding": None,
+            "stats": {"segments_received": 0, "bytes_received": 0},
+        }
+    )
+    return key, key[:8]
+
+
 def _route() -> str:
     return OBSERVER_CALLOSUM_SSE_ROUTE
 
@@ -359,6 +378,29 @@ def test_unbound_callosum_sse_survives_device_rechecks(observer_env, monkeypatch
         for _ in range(2):
             chunk = _next_chunk(resp)
             assert not chunk.startswith("event: error\n")
+    finally:
+        resp.close()
+
+
+def test_callosum_sse_refuses_present_null_device_binding(observer_env):
+    env = observer_env()
+    key, key_prefix = _create_null_binding_observer(env)
+
+    resp = env.client.get(
+        _route(),
+        headers={OBSERVER_HANDLE_HEADER: key},
+        buffered=False,
+    )
+    try:
+        assert resp.status_code == 403
+        _assert_reason(
+            resp,
+            reason_code="pl_revoked",
+            detail="Paired device revoked",
+        )
+        assert not resp.content_type.startswith("text/event-stream")
+        assert b"event: " not in resp.get_data()
+        assert convey_bridge.subscription_count(key_prefix) == 0
     finally:
         resp.close()
 
